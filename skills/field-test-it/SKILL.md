@@ -34,23 +34,23 @@ and what broke there is fixed and re-proven there" is a user-facing outcome whos
 the ledgered device session itself: behaviour observed through it, typed by tier (PHYSICAL or EMULATOR). Simulators and desktops lie by omission —
 rendering, input, permissions, lifecycle, and performance differ — so the device session is the
 authority, and every fix is re-verified against it. Composes `diagnose` (on-device repro is a
-diagnosis with a hardware oracle), `browser-drive` (the BROWSER tier), `computer-drive` (the
-DESKTOP tier), `clean-env-drive` (the CLEAN-ENV tier), `human-handoff` (device and permission
+diagnosis with a hardware oracle), `browser-drive` (the BROWSER tier), `computer-drive` (the DESKTOP tier), `clean-env-drive` (the CLEAN-ENV tier), `human-handoff` (device and permission
 grants), `remediate-finding` (fix each defect), `acceptance-review` (build-blind review),
-`compound-learn` (hardware-only defects feed the retro); rides `evidence-manifest` (each fix carries the
-on-device repro + re-verify artifacts at `head_sha`; negative control = revert reintroduces the on-device failure),
-`merge-serialization`, `reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`,
+`compound-learn` (hardware-only defects feed the retro); rides `evidence-manifest` (each fix carries the on-device repro + re-verify artifacts at `head_sha`; negative control = revert reintroduces the on-device failure),
+`merge-serialization`, `reviewed-sha-freshness`, `dispatch-lifecycle`,
 `ledger-contract`, `sandbox-policy` (`PROFILE=rw` fix workers; device installs are host-side
 rw work on the coordinator's machine — there is no device "danger lane": an ephemeral VM cannot
 pair a phone), `gate-classification` (pairing/permission grants and anything outside the paired
 device set are one-way human items — a stranger's device is never touched),
 `attention-budget`. Worker TASK pack: one of matt | addy | gstack — never co-mount.
 
+DEFERRED READS: liveness-resume.md on a stall or resume.
+
 ## Terminal outcomes
 
 - **FIELD-PROVEN** — every defect observed on-device is fixed and re-verified on-device at
   `head_sha`; the regression baseline is re-ledgered; every fix's revert-negative-control holds.
-- **FIELD-PROVEN-WITH-PARKED** — ≥1 defect needs something the session lacks (a specific physical
+- **FIELD-PROVEN-WITH-PARKED** (degraded) — ≥1 defect needs something the session lacks (a specific physical
   device/OS, a storefront account, a human gesture grant) and is PARKED with the exact device +
   step it waits on. A defect verified only in a desktop browser is PARKED, not proven.
 

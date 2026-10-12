@@ -1,6 +1,6 @@
 # Playbook — record-decision  (write the ADR, in the repo's own convention)
 
-Recipe: Addy `documentation-and-adrs` + Matt's ADR format. A decision the fleet made that a future
+Recipe: Addy `documentation-and-adrs`, in the ADR format stated below. A decision the fleet made that a future
 reader would be surprised by is not recorded by the commit that implements it. This playbook writes
 that record — into the target repo's EXISTING scheme, never a second competing one.
 

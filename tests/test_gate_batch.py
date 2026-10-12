@@ -375,7 +375,7 @@ class HelpAndWiring(unittest.TestCase):
     def test_conductor_close_names_the_mechanism(self):
         # Orphan-wiring philosophy (#284): the close playbook's gate rule is
         # doctrine wearing a mechanism's clothes unless it names the tool.
-        text = (ROOT / "playbooks" / "conductor-close.md").read_text(
+        text = (ROOT / "runtime" / "conductor-close.md").read_text(
             encoding="utf-8")
         self.assertIn("gate-batch.py", text)
         self.assertIn("stale", text)

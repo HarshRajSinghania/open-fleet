@@ -1,7 +1,7 @@
 # Playbook — data-migration  (expand → dual-write → backfill → switch → contract, phase by phase)
 
-Recipe: Addy `deprecation-and-migration` expand/contract schema rules + the matt expand–contract
-slicing and the gstack data-migration review lens. The unit is ONE phase of ONE table or shape — a
+Recipe: Addy `deprecation-and-migration` expand/contract schema rules; the expand–contract
+slicing and the review lens are stated as fleet rules below. The unit is ONE phase of ONE table or shape — a
 deploy-gated step, not a slice. Data is the one thing a reverted deploy does not roll back, so the
 rule is absolute: **never change a shape in place; old and new code must both be valid against the
 schema at every step**. `migrate-it` runs a table through the whole ladder; a single-phase schema

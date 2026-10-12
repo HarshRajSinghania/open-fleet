@@ -8,12 +8,14 @@ alone. Field record: `docs/runs/2026-09-14-clean-sweep-tracker.md` (three
 review rounds; every Required came from a forced repro, never from reading
 green runs).
 
-Authority: reviewers executing this playbook run PROFILE=rw (sandbox-policy.md),
-not ro — killing mutants means running tests and writing scratch clones
-outside the repo, which a read-only sandbox cannot do. The grant is bounded
-by this playbook, not the sandbox: commit NOTHING, mutate only scratch
-copies, report findings — the isolated worktree plus the PR gate is the
-same envelope that bounds builders.
+Authority: reviewers executing this playbook need PROFILE=rw, not ro —
+killing mutants means running tests and writing scratch clones outside the
+repo, which a read-only profile cannot do. This playbook grants nothing:
+rw is the coordinator's sandbox-policy.md grant (the autonomous-write
+opt-in in spawn_worker.sh), and a reviewer spawned ro must report the hunt
+as not run rather than improvise write access. Under that grant the bounds
+are: commit NOTHING, mutate only scratch copies, report findings — the
+isolated worktree plus the PR gate is the same envelope that bounds builders.
 
 ## Killer mutants (the core move)
 

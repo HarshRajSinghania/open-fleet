@@ -41,9 +41,11 @@ review), `acceptance-review` (build-blind review: voice, accuracy, reachability)
 `compound-learn`, `publish-evidence` (the map + pages leave the tree as versioned links);
 rides `evidence-manifest` (per cell: base → head SHA, the anchors for every
 claim, the rename negative control, the re-derived map), `merge-serialization` (cells touching one
-doc file are a chain), `reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`,
-`ledger-contract`, `attention-budget`, `gate-classification` (which entities merit a tutorial or an
+doc file are a chain), `reviewed-sha-freshness`, `dispatch-lifecycle`,
+`ledger-contract`, `attention-budget`, `sandbox-policy`, `gate-classification` (which entities merit a tutorial or an
 explanation is the human's call). Worker TASK pack: one of matt | addy — never co-mount.
+
+DEFERRED READS: liveness-resume.md when a worker stalls or a run resumes.
 
 ## Two terminal outcomes
 

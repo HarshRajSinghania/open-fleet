@@ -1,6 +1,7 @@
 # Playbook — acceptance-review  (REVIEW: does it do the right thing, right?)
 
-Recipe: Matt `code-review` two-axis (isolated) + gstack review-army dispatch mechanics. Always-on for
+Recipe: Matt `code-review` two-axis (isolated); the review-army dispatch mechanics are fleet
+runtime (dispatch-lifecycle.md), not a second loaded pack. Always-on for
 any non-trivial diff. Build-blind: the reviewer is a FRESH session that did not write the code.
 
 ## Blind-fix first (anti-anchoring)
@@ -35,7 +36,7 @@ and recorded RED, which is why that mission sits at `doctrine-only`.
 Run the axes as separate fresh-context workers so they can't pollute each other; aggregate side by
 side; do NOT rerank across axes (code can pass one and fail the other — that's the point).
 
-## Anti-false-positive gate (gstack)
+## Anti-false-positive gate
 
 A finding MUST quote its verbatim motivating code line; if it can't, confidence drops and it goes to
 an appendix. Kills the "field doesn't exist on the model" FP class. Multiple axes flagging the same

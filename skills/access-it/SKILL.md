@@ -46,7 +46,7 @@ result + a revert-to-violation negative control), `sandbox-policy` (`PROFILE=rw`
 - **CONFORMANT** — *near-unreachable*: only when the frozen surface has NO success criteria past the
   ~30-40% automation ceiling (rare — most surfaces have screen-reader/cognitive criteria). The oracle
   is clean across the surface, every criterion is covered, and each fix's negative control holds.
-- **CONFORMANT-WITH-MANUAL-PARKED** — the automatable criteria are clean, and the criteria past the
+- **CONFORMANT-WITH-MANUAL-PARKED** (degraded) — the automatable criteria are clean, and the criteria past the
   automation ceiling (screen-reader / keyboard-trap / cognitive) are PARKED to a human + assistive-tech
   reviewer, each named with the criterion and why the oracle cannot decide it.
 

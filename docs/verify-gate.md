@@ -136,6 +136,8 @@ worker-set; anything else in the environment is ignored):
   local reviewer artifact — a downgrade, see [Trust boundary](#trust-boundary). **Requires
   `ORCA_EXECUTE_NC`**: with the GitHub authority gone, the negative control is the only oracle left,
   and a control nobody ran is a file the worker wrote.
+- `ORCA_UNIT_LANE` — `A | B | 0`, the coordinator's lane decision from dispatch, forwarded as
+  `--lane`; a Lane-0 mutation and dark-eligibility outside Lane A then fail in verify.py.
 - `ORCA_LIGHTING` — the coordinator's lighting decision (`dark-eligible` waives the build-blind human
   review; gate-classification.md). `dark-eligible` **requires `ORCA_EXECUTE_NC`** for the same
   reason: six of the ten manifest-gaming attacks in the 2026-09-10 review landed in these two lanes,

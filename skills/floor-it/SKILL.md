@@ -48,7 +48,7 @@ never co-mount.
 
 - **FLOORED** — every frozen dimension has a wired tool, a demonstrated-RED proof (local + canary
   PR), CI blocks on it, and the guard script is itself in CI; CONSTRAINTS.md is committed.
-- **FLOORED-WITH-PARKED** — ≥1 frozen dimension has no measurable tool (e.g. "code is tasteful")
+- **FLOORED-WITH-PARKED** (degraded) — ≥1 frozen dimension has no measurable tool (e.g. "code is tasteful")
   and is PARKED, named with the human gate that covers it; or the run parked AT the freeze
   (headless). The bar ships incomplete-but-honest, never with a vacuous check.
 

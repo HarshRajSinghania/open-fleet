@@ -14,7 +14,7 @@ holds its shape. The two never disagree — a run updates both or neither.
 | Field | Value |
 |---|---|
 | Upstream | `stablyai/orca` (`https://github.com/stablyai/orca`) |
-| Installed version | **v1.4.215** (release bundle; the on-PATH app is still v1.4.204 — update owed, not blocking: the witness ran against the identical release artifact, extracted at `/tmp/orca-1215`) |
+| Installed version | **v1.4.215** (release bundle; at the witness the on-PATH app was v1.4.204 and the witness ran against the identical release artifact at `/tmp/orca-1215`. That owed update has since landed and overshot: `orca --version` here reported **1.4.224** on 2026-10-13 — the doctrine below is NOT witnessed at 224, and a pin-it re-pin is owed) |
 | Build commit | `3eb1adec20ff90503196ebfd1fe6dbaaefaad736` (`orca-local-build.json`, arm64; tag `v1.4.215` = `083f583a53e4c74a65acf420eee4ca2e0efa9df1`) |
 | Witnessed | 2026-09-28 (`live`: release binary + version-matched guides + read-only probes; the app was not running, so runtime-bound probes parked on substrate) |
 | Upstream HEAD then | `5219b8ada9da6bf625c750e5513c36037464a516` (main, 2026-09-28) |

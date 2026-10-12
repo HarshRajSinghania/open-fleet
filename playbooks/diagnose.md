@@ -1,6 +1,6 @@
 # Playbook — diagnose  (the DEBUG phase; the engine of root-cause)
 
-Recipe: Matt `diagnosing-bugs` (feedback-loop-first) + Addy `debugging-and-error-recovery`.
+Recipe: Matt `diagnosing-bugs` (feedback-loop-first); error-recovery discipline is stated below.
 
 ## Redact first (before anything is pasted)
 

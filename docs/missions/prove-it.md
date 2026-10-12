@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel characterize and mutate workers per critical path; you own the one-way doors.
-> **Activation load:** ~26,100 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~29,000 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 14% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** self-run — [2026-09-16 run](../runs/2026-09-16-prove-it-self-run.md) (PF-2 kind gate, COVERED, 4/4 mutants killed).
 
 > Point it at the money, auth, and data paths nothing currently protects. Come back to a
@@ -212,6 +212,7 @@ Runtime policies:
 [`liveness-resume`](../../runtime/liveness-resume.md) ·
 [`evidence-manifest`](../../runtime/evidence-manifest.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
+[`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`attention-budget`](../../runtime/attention-budget.md)
 
 ## Related missions

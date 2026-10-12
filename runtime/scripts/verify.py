@@ -2095,13 +2095,16 @@ def check_intent(m, is_mutation):
     return [f"intent packet incomplete — non-empty {missing} required (mutation unit)"] if missing else []
 
 
-def check_lighting(m, is_mutation, dispatch_lighting=None):
+def check_lighting(m, is_mutation, dispatch_lighting=None, dispatch_lane=None):
     """10. Lighting is a legal value when present; omission defaults to lit — "Recording nothing
     means lit" (gate-classification.md). dark-eligibility's stop-list is a human gate; verify.py
     machine-checks that the value is legal and, when the dispatch supplied a lighting, that the
     worker's manifest did not swap it (the dispatch value is authoritative for the review waiver
     in check_review). Omission being lit means a dark-eligible dispatch + omitted manifest
-    lighting is a swap."""
+    lighting is a swap. Lane rides this same leg: with a dispatch-supplied `--lane` (likewise
+    authoritative) a manifest `lane` may record it but not swap it, a Lane-0 unit may not be
+    verified as a landed mutation, and dark-eligibility requires Lane A — the halves of
+    dark-eligibility that used to rest on narration because verify.py never saw lane data."""
     if not is_mutation:
         return []
     lighting = m.get("lighting", "lit")  # omission means lit (gate-classification.md); an
@@ -2111,6 +2114,21 @@ def check_lighting(m, is_mutation, dispatch_lighting=None):
     if dispatch_lighting is not None and lighting != dispatch_lighting:
         return [f"lighting swap: manifest says {lighting!r} but dispatch classed the unit "
                 f"{dispatch_lighting!r} (the dispatch value is authoritative)"]
+    lane = m.get("lane")
+    if lane is not None and lane not in ("A", "B", "0"):
+        return [f"lane must be one of {['A', 'B', '0']}, got {lane!r}"]
+    if dispatch_lane is None:
+        return []
+    if lane is not None and lane != dispatch_lane:
+        return [f"lane swap: manifest says {lane!r} but dispatch classed the unit "
+                f"{dispatch_lane!r} (the dispatch value is authoritative)"]
+    if dispatch_lane == "0":
+        return ["Lane 0 (refuse-and-surface) unit is being verified as a landed mutation — "
+                "Lane 0 work is recorded and surfaced, never built (gate-classification.md)"]
+    effective = dispatch_lighting if dispatch_lighting is not None else lighting
+    if effective == "dark-eligible" and dispatch_lane != "A":
+        return [f"dark-eligible unit on Lane {dispatch_lane}: dark-eligibility requires "
+                "Lane A (gate-classification.md)"]
     return []
 
 
@@ -2436,7 +2454,7 @@ def check_replay_request(m, is_mutation, execute_nc, nc_command):
 
 def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
            base=None, symbol=None, execute_nc=False, unit_class=None, no_gh=False, lighting=None,
-           dispatch_record=None, dispatch_pubkey=None, nc_command=None):
+           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None):
     """Return (fatal_errors, notes). fatal_errors non-empty => exit 2."""
     m, err = load_manifest(manifest_path)
     if err:
@@ -2475,7 +2493,7 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
         lambda: check_commands(m, is_mut, nc_command),
         lambda: check_redaction(m, manifest_path),
         lambda: check_intent(m, is_mut),
-        lambda: check_lighting(m, is_mut, lighting),
+        lambda: check_lighting(m, is_mut, lighting, lane),
         lambda: check_reviewer_mode(m, is_mut),
         lambda: check_provenance(m),
         lambda: check_replay_request(m, is_mut, execute_nc, nc_command),
@@ -2554,6 +2572,10 @@ def main(argv=None):
     ap.add_argument("--lighting", default=None, choices=sorted(LIGHTING_VALUES),
                     help="unit lighting from the dispatch record (lit|dark-eligible); dark-eligible "
                          "waives the independent-review requirement — set by the coordinator, not the worker")
+    ap.add_argument("--lane", default=None, choices=["A", "B", "0"],
+                    help="unit lane from the dispatch record (A|B|0, gate-classification.md); "
+                         "supplied, it binds Lane-0 refusal and dark-eligibility's Lane-A "
+                         "requirement — set by the coordinator, not the worker")
     ap.add_argument("--dispatch-record", default=None,
                     help="coordinator-signed dispatch record (path or path@ref) binding "
                          "contract-digest/unit-class/lighting — makes the native hook path sound (#135)")
@@ -2629,7 +2651,8 @@ def main(argv=None):
     out, load_err = verify(args.manifest, args.contract_source, args.contract_digest,
                            repo, args.base, args.symbol, args.execute_nc,
                            args.unit_class, args.no_gh, args.lighting,
-                           args.dispatch_record, args.dispatch_pubkey, args.nc_command)
+                           args.dispatch_record, args.dispatch_pubkey, args.nc_command,
+                           lane=args.lane)
     if load_err:
         print(f"FAIL: {load_err}", file=sys.stderr)
         print("verify: evidence manifest malformed/unreadable — unit is NOT done", file=sys.stderr)

@@ -1839,6 +1839,19 @@ class ASelfPinnedKeyNeverChoosesItsJudge(RunReportBinding):
         self.assertIsNone(at)
         self.assertIn("O-3.3", why)
 
+    def test_a_key_introduced_off_the_base_by_the_pin_never_enforces(self):
+        # Full-review forge: the claim commit introduces its own pubkey
+        # while the grading base carries none. enforcement_key used to fall
+        # back to that pin key, so a self-signed transcript verified against
+        # a key the claimant chose. The switch must read at the base only.
+        base = self.rev
+        _git(self.repo, "checkout", "-q", "-b", "claim")
+        rev = self._pin()
+        pub, at, why = run_report.enforcement_key(rev, self.repo, base=base)
+        self.assertIsNone(pub)
+        self.assertEqual(at, base)
+        self.assertIn("grading base", why)
+
     def test_a_named_base_reopens_the_lane(self):
         _git(self.repo, "checkout", "-q", "-b", "trunk")
         self._drop_named_bases()

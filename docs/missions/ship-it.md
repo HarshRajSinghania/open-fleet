@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — coordinator plus parallel isolated builders and build-blind reviewers; you own the one-way doors (freeze, promotion, deploy).
-> **Activation load:** ~33,300 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~33,200 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — it ran ([self-run report](../runs/2026-08-28-ship-it-self-run.md),
 > artifacts still hash true at `748b328`), but the verifier transcript was never recorded, so
 > the outcome rests on prose (`runtime/scripts/run_report.py`, issue #259)
@@ -236,12 +236,12 @@ Runtime policies:
 [`reviewed-sha-freshness`](../../runtime/reviewed-sha-freshness.md) ·
 [`evidence-manifest`](../../runtime/evidence-manifest.md) ·
 [`gate-classification`](../../runtime/gate-classification.md) ·
-[`liveness-resume`](../../runtime/liveness-resume.md) ·
+[`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`attention-budget`](../../runtime/attention-budget.md) ·
 `orca-dag-semantics` (phase-cued: read when composing the DAG, not standing load)
 
-Deferred reads, loaded on entering their phase and never at activation: [`plan-review`](../../playbooks/plan-review.md) on the map-it handoff route · [`risk-review`](../../playbooks/risk-review.md) when a slice's surface triggers a lens · [`release`](../../playbooks/release.md) at RELEASE · [`observe`](../../playbooks/observe.md) at DEPLOYED_AND_VERIFIED · [`human-handoff`](../../playbooks/human-handoff.md) at a handoff · [`completion-audit`](../../playbooks/completion-audit.md) + [`compound-learn`](../../playbooks/compound-learn.md) at run close · [`mission-chaining`](../../runtime/mission-chaining.md) as a chain link.
+Deferred reads, loaded on entering their phase and never at activation: [`liveness-resume`](../../runtime/liveness-resume.md) when a worker stalls or a run resumes · [`plan-review`](../../playbooks/plan-review.md) on the map-it handoff route · [`risk-review`](../../playbooks/risk-review.md) when a slice's surface triggers a lens · [`release`](../../playbooks/release.md) at RELEASE · [`observe`](../../playbooks/observe.md) at DEPLOYED_AND_VERIFIED · [`human-handoff`](../../playbooks/human-handoff.md) at a handoff · [`completion-audit`](../../playbooks/completion-audit.md) + [`compound-learn`](../../playbooks/compound-learn.md) at run close · [`mission-chaining`](../../runtime/mission-chaining.md) as a chain link.
 
 ## Related missions
 

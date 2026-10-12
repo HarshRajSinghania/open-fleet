@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus isolated per-phase workers; phases of one table are strictly serial, and the destructive CONTRACT step is your one-way door.
-> **Activation load:** ~33,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~33,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at "we need to rename this column and we cannot take downtime." Come back to a table
@@ -250,9 +250,9 @@ Runtime policies:
 [`merge-serialization`](../../runtime/merge-serialization.md) ·
 [`reviewed-sha-freshness`](../../runtime/reviewed-sha-freshness.md) ·
 [`dispatch-lifecycle`](../../runtime/dispatch-lifecycle.md) ·
-[`liveness-resume`](../../runtime/liveness-resume.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`attention-budget`](../../runtime/attention-budget.md) ·
+[`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`gate-classification`](../../runtime/gate-classification.md)
 
 ## Related missions

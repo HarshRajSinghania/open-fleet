@@ -35,12 +35,12 @@ You dispatch, verify against authoritative state, and keep the ledger; you do no
 
 Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `decide-and-freeze`, `decompose-dag`,
 `build-change`, `acceptance-review`, `runtime-prove`, `linear-enumeration`; rides `dispatch-lifecycle`,
-`merge-serialization`, `reviewed-sha-freshness`, `evidence-manifest`, `gate-classification`, `liveness-resume`,
+`merge-serialization`, `reviewed-sha-freshness`, `evidence-manifest`, `gate-classification`, `sandbox-policy`,
 `ledger-contract`, `attention-budget`. Worker TASK pack: exactly one of matt | addy |
 gstack (tdd=matt, build/verify=addy|matt, review/ship=gstack; the grill is coordinator-side, matt) — never
 co-mount two routers.
 
-DEFERRED READS, loaded ON ENTERING their phase and never at activation: plan-review.md on the map-it handoff route · risk-review.md when a slice's surface triggers a lens ·
+DEFERRED READS, loaded ON ENTERING their phase and never at activation: liveness-resume.md when a worker stalls or a run resumes · plan-review.md on the map-it handoff route · risk-review.md when a slice's surface triggers a lens ·
 release.md at RELEASE · observe.md at DEPLOYED_AND_VERIFIED · human-handoff.md at a handoff ·
 completion-audit.md + compound-learn.md at run close · mission-chaining.md as a chain link.
 

@@ -46,7 +46,7 @@ Worker TASK pack: one of matt | addy — never co-mount.
 
 - **OFFLOADED** — the doctor is clear (no fail AND no warn) and the provision loop is green end
   to end; state holds the AUTHENTICATED snapshot id; destroy is implemented and tested.
-- **OFFLOADED-WITH-PARKED** — ≥1 park, each naming its checkpoint: a provider quota or plan cap
+- **OFFLOADED-WITH-PARKED** (degraded) — ≥1 park, each naming its checkpoint: a provider quota or plan cap
   (with the upgrade or smaller-scope ask), an unauthenticated agent login (the human re-runs
   device-auth), or an interactive step the human has not run yet.
 

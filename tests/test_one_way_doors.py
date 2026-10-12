@@ -97,6 +97,26 @@ class TestPolicyAgreement(unittest.TestCase):
             self.assertIn(phrase, text,
                           f"{phrase!r} left gate-classification.md — the registry has drifted")
 
+    def test_every_session_kind_the_summaries_name_is_defined_here(self):
+        # Full review: ARCHITECTURE.md/AGENTS.md promise spawned/headless/
+        # interactive autonomy, but this canonical policy defined behaviour
+        # for interactive and unattended only — "spawned" appeared solely as
+        # a smuggling example. Every kind the summaries name needs its
+        # resolver defined in the policy they summarise.
+        text = GATE_POLICY.read_text(encoding="utf-8").lower()
+        bullets = text.split("\n- **")
+        for kind, behaviour in (("spawned", "auto-pick"), ("headless", "park"),
+                                ("interactive", "in-session")):
+            with self.subTest(kind=kind):
+                named = [b for b in bullets if b.startswith(kind)]
+                self.assertTrue(named, f"no definition bullet names session kind {kind}")
+                self.assertIn(behaviour, named[0],
+                              f"the {kind} bullet does not define its resolver")
+        for doc in ("ARCHITECTURE.md", "AGENTS.md"):
+            summary = (ROOT / doc).read_text(encoding="utf-8").lower()
+            for kind in ("spawned", "headless", "interactive"):
+                self.assertIn(kind, summary, f"{kind} missing from {doc}")
+
     def test_every_door_title_is_a_sentence_not_an_id(self):
         for door in load()["doors"]:
             self.assertGreater(len(door["title"].split()), 2, door["id"])

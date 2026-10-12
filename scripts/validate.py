@@ -525,6 +525,14 @@ def validate_skill(skill_dir, protocols):
             "no machine-checkable composition: the Composes/rides clause must name "
             "at least one playbook or runtime policy in backticks"
         )
+    flat = re.sub(r"\s+", " ", text.lower())
+    if not re.search(r"pack:\s*(?:exactly one of|one of|matt|addy|gstack)\b", flat) \
+            or "co-mount" not in flat:
+        errors.append(
+            "no worker-pack statement: state the one upstream pack a worker TASK "
+            "loads (`pack: one of matt | addy | gstack — never co-mount`) — the "
+            "one-router-per-worker rule (AGENTS.md) was prose-only until the full review"
+        )
     ride_refs = [
         ref
         for clause in RIDES_CLAUSE_RE.findall(text)
@@ -534,6 +542,12 @@ def validate_skill(skill_dir, protocols):
         errors.append(
             "mutating mission must ride `evidence-manifest` in a rides clause "
             "(SHA-bound definition of done; a Composes mention alone does not count)"
+        )
+    if name in MUTATING_MISSIONS and "sandbox-policy" not in ride_refs:
+        errors.append(
+            "mutating mission must ride `sandbox-policy` in a rides clause "
+            "(least-privilege worker profiles; six mutating missions omitted it "
+            "entirely until the full review caught the omission by grep)"
         )
 
     # every lowercase `<name>.md` mention must resolve (catches renames outside the clause)
@@ -560,6 +574,20 @@ def check_protocol_doc_refs(protocols):
                 continue
             for e in md_ref_errors(text, protocols):
                 failures.append(f"{f.relative_to(ROOT)}: {e}")
+            if d == PLAYBOOKS_DIR:
+                packs = {
+                    {"mattpocock": "matt", "garrytan": "gstack",
+                     "addyosmani": "addy"}.get(found, found)
+                    for found in re.findall(
+                        r"\b(mattpocock|matt|addyosmani|addy|garrytan|gstack)\b",
+                        text.lower())
+                }
+                if len(packs) > 1:
+                    failures.append(
+                        f"{f.relative_to(ROOT)}: one-router rule: names {sorted(packs)} — "
+                        "a playbook draws on one upstream router pack; state any second "
+                        "technique as fleet rules in the body, never as a second loaded pack"
+                    )
             lines = len(text.splitlines())
             if lines > caps[d]:
                 failures.append(
@@ -774,6 +802,45 @@ IDENTITY_POINT_SAME = 0.85
 # live catalog's closest pair has ONE near point out of six, so this has wide clearance.
 IDENTITY_POINT_NEAR = 0.4
 
+# Concept canonicalisation for the identity gate (full-review probe T2b): the
+# routing synonym table is eleven user-word entries, so a paraphrase that
+# swaps every content word for an unlisted synonym (issue→ticket,
+# reproduced→replicated, verified→confirmed, worktree→checkout,
+# human→person, commit→revision) shared NO stems with the original and read
+# as divergent on every point. Stemming cannot close that; only folding the
+# mission-identity vocabulary onto shared concepts can. Keys are eval.py
+# stems, values the canonical concept; "" drops a token whose synonym is a
+# stopword ("single" for "one"). This is deliberately a closed, reviewable
+# table — an open-ended thesaurus would make the gate's verdicts unexplainable.
+_IDENTITY_CONCEPTS = {}
+for _concept, _aliases in {
+    "issu": ("ticket", "item", "entr", "finding"),
+    "open": ("unresolv", "outstand", "remain"),
+    "backlog": ("queu",),
+    "fixed": ("frozen", "repair", "remediat"),
+    "reproduc": ("replicat", "recreat"),
+    "verif": ("confirm", "check", "validat"),
+    "independentl": ("separatel", "separat", "independent", "alon", "isolat"),
+    "clos": ("resolv", "complet", "finish", "done"),
+    "recount": ("enumeration", "enumerat", "count"),
+    "zero": ("none", "empt", "drain", "clear"),
+    "worktre": ("checkout", "workspac"),
+    "merg": ("landing", "land"),
+    "serialis": ("sequentiall", "sequenc"),
+    "park": ("held", "asid", "block"),
+    "human": ("person", "maintainer"),
+    "decis": ("decision", "decid"),
+    "requir": ("must", "need"),
+    "repositor": ("project", "repo", "codebas"),
+    "test": ("automat", "suit"),
+    "review": ("sign",),
+    "commit": ("revision", "rev", "sha"),
+    "find": ("show",),
+    "": ("singl", "each"),
+}.items():
+    for _alias in _aliases:
+        _IDENTITY_CONCEPTS[_alias] = _concept
+
 
 def _identity_tokens(value):
     """Identity-point tokens, STEMMED and synonym-expanded (#288).
@@ -793,7 +860,8 @@ def _identity_tokens(value):
     except Exception:  # noqa: BLE001 — a tokenizer failure must not silently widen the gate
         tokens = {w for w in re.findall(r"[a-z0-9_]+", (value or "").lower())
                   if w not in _IDENTITY_STOPWORDS}
-    return {t for t in tokens if t not in _IDENTITY_STOPWORDS}
+    folded = {_IDENTITY_CONCEPTS.get(t, t) for t in tokens if t not in _IDENTITY_STOPWORDS}
+    return {t for t in folded if t}
 
 
 def _point_similarity(a, b):
@@ -867,6 +935,46 @@ def identity_collisions(root=None):
                     "argument for keeping both belongs in ARCHITECTURE.md"
                 )
     return errors, warnings
+
+
+# Proof ratchet (full review): the catalog stood at 22 missions with 3 proven
+# past doctrine-only and none external — the predecessor died at 12 with 2
+# proven (ARCHITECTURE.md). Breadth may grow again only when proof pays for
+# it: each mission beyond the base total must be offset by one more mission
+# proven past doctrine-only than the base had. Raising either base is a
+# deliberate, reasoned edit in the diff that earns it — never drift.
+CATALOG_BASE_TOTAL = 22
+CATALOG_BASE_PROVEN = 3
+
+
+def check_proof_ratchet(root=None):
+    """Fail when catalog breadth outruns proof past the ratchet above."""
+    skills_dir = (root or ROOT) / "skills"
+    total = proven = 0
+    if skills_dir.exists():
+        for skill_dir in sorted(skills_dir.iterdir()):
+            skill_md = skill_dir / "SKILL.md" if skill_dir.is_dir() else None
+            if not skill_md or not skill_md.exists():
+                continue
+            text, read_err = read_text_safe(skill_md)
+            if read_err:
+                continue
+            data, err = parse_frontmatter(text)
+            meta = data.get("metadata") if not err and isinstance(data, dict) else None
+            if not isinstance(meta, dict):
+                continue
+            total += 1
+            if meta.get("proof") in ("self-run", "external-run"):
+                proven += 1
+    allowed = CATALOG_BASE_TOTAL + max(0, proven - CATALOG_BASE_PROVEN)
+    if total <= allowed:
+        return []
+    return [
+        f"catalog proof ratchet: {total} missions with {proven} proven past "
+        f"doctrine-only exceeds the allowed {allowed} (base {CATALOG_BASE_TOTAL} "
+        f"missions / {CATALOG_BASE_PROVEN} proven) — advance an existing mission's "
+        "proof with a bound run report before adding breadth"
+    ]
 
 
 def check_evals():
@@ -1069,6 +1177,13 @@ def main():
             print(f"   - {error}")
     for warning in identity_warnings:
         print(f"WARN mission identity — {warning}")
+
+    ratchet_failures = check_proof_ratchet()
+    if ratchet_failures:
+        all_passed = False
+        print("\nFAIL catalog proof ratchet — breadth has outrun proof:")
+        for failure in ratchet_failures:
+            print(f"   - {failure}")
 
     eval_errors = check_evals()
     if eval_errors:

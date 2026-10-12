@@ -1,6 +1,7 @@
 # Playbook — build-change  (the BUILD phase, per unit)
 
-Recipe: Matt `tdd` (seams + tautology guard) + Addy `incremental-implementation` / `/build auto`.
+Recipe: Matt `tdd` (seams + tautology guard), landed in incremental slices — the slice discipline
+is stated as fleet rules below, never as a second loaded pack.
 
 ## Entry: plan gate for irreversible slices
 

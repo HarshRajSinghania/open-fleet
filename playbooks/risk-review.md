@@ -1,7 +1,7 @@
 # Playbook — risk-review  (REVIEW: scope-gated specialist lenses)
 
-Recipe: Addy specialist skills (security, performance, accessibility, data-migration) + gstack
-scope-gating + adaptive suppression. NOT run on every diff — DISPATCHED when the change surface
+Recipe: Addy specialist skills (security, performance, accessibility, data-migration),
+scope-gated with adaptive suppression as stated below. NOT run on every diff — DISPATCHED when the change surface
 triggers the lens.
 
 ## Two invocation modes

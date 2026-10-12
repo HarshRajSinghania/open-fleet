@@ -28,7 +28,7 @@ metadata:
 
 You are the **COORDINATOR**. Unlike a findings mission, here BASELINE MEASUREMENT PRECEDES inventory,
 fixes interact systemically, measurements are noisy, and DONE is a STATISTICALLY-DEFINED BUDGET over
-journeys — not closure of a finding list. Composes `risk-review` (perf lens), `browser-drive` (the BASELINE
+journeys — not closure of a finding list. Composes `explain-the-number`, `risk-review` (perf lens), `browser-drive` (the BASELINE
 and re-measure capture), `remediate-finding`, `acceptance-review`, `runtime-prove`, `compound-learn`; rides `merge-serialization`,
 `reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`, `evidence-manifest`,
 `ledger-contract`, `attention-budget`. Worker TASK pack: one of addy | gstack.
@@ -47,14 +47,17 @@ sample count. Lab CWV = median of ≥5 runs (e.g. 5–10; report spread) at a pi
 p95/p99 = the percentile over ≥N requests (e.g. 1k–10k) at stated concurrency, two independent load runs agree.
 Baseline and candidate MUST share source, sample size, and pinned conditions — a lab-vs-field or
 warm-vs-cold comparison is not a delta. A number you can't measure to its contract is `unmeasured`
-(human-flagged), never a downgraded proxy; never fabricate a metric.
+(human-flagged), never a downgraded proxy; never fabricate a metric. A number inside its contract
+is still `unmeasured` when `explain-the-number` returns inconclusive: no named limiter, an untuned
+side, a result past the changed slice's share of the run, errors uncounted, or no proof the timed
+work happened.
 
 ## Pipeline
 
 ```
 HUMAN SCOPE CONFIRM: freeze the critical-journey list + per-journey budgets (an unbounded journey
-  list is an unbounded mission) → declare metric contracts → BASELINE every journey (to contract)
-  → rank breaches by gap×traffic
+  list is an unbounded mission) → declare metric contracts → BASELINE every journey (to contract,
+  and `explain-the-number` is not inconclusive) → rank breaches by gap×traffic
   → DIAGNOSE the bottleneck (profile; symptom→cause tree; name the one dominant cause)
   → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
@@ -98,8 +101,9 @@ Stalls → WATCH; death → RESUME scoped to header coordinator + ledger task id
 
 Optimizing without a baseline (can't prove a win). One fast run = "fixed" (perf is noisy). Confirming
 below the metric's contract. Comparing across conditions (lab-vs-field, warm-vs-cold is not a delta).
-A GUARD pinned to the post-fix best run (it flakes; guard at the declared budget). Scattershot
-micro-opts instead of the profiled bottleneck. Unbounded journey list (needs the human-confirmed set).
+A GUARD pinned to the post-fix best run (it flakes; guard at the declared budget). A speedup
+larger than the removed slice can produce (explain-the-number.md). Scattershot micro-opts instead
+of the profiled bottleneck. Unbounded journey list (needs the human-confirmed set).
 
 ## Related
 `clean-sweep` (general findings), `review-it` (per-diff perf lens), `ship-it` (owns deploy + canary,

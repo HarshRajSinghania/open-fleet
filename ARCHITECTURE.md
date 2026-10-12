@@ -181,8 +181,8 @@ change in what a coordinator reads at activation, not a relabelling. Where they 
 
 | Mission | Activation load | Headroom to the cap |
 |---|---|---|
-| `oss-contribute` | ~33,900 | ~100 |
 | `field-test-it` | ~33,900 | ~100 |
+| `oss-contribute` | ~33,900 | ~100 |
 | `absorb-it` | ~33,900 | ~100 |
 
 The cap is **34,000**. The lightest mission, `offload-it`, is ~14,700, so the whole catalog sits in a ~19,200-token band.

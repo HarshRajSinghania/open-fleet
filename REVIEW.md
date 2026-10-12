@@ -6,9 +6,12 @@
 > them now passes. A 2026-09-12 release audit followed as #321–#338, with its evidence under
 > [`docs/reports/release-20260912/`](docs/reports/release-20260912/).
 >
-> This file keeps the `REVIEW.md` path because it is still the most recent review — the path means
-> "the current review", and archiving is what happens when a NEW review supersedes one, not when a
-> backlog finishes. Citations carrying a section or attack-id anchor still mean the archived
+> This file keeps the `REVIEW.md` path for the 2026-09-11 review, but it is no longer the newest
+> review. Two later ones were filed under `docs/reviews/` without displacing it: the
+> [2026-09-14 holistic review](docs/reviews/2026-09-14-holistic-review.md) and the
+> [2026-09-28 release-readiness review](docs/reviews/2026-09-28-release-readiness-review.md).
+> Read those for the current state; this one is the record of the 2026-09-11 attack round.
+> Citations carrying a section or attack-id anchor still mean the archived
 > [2026-09-10 review](docs/reviews/2026-09-10-review.md), never this file: anchors are numbered per
 > review, so a bare one mis-resolves against whichever review holds this path (#295).
 

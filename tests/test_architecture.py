@@ -501,6 +501,33 @@ class TestArchitecture(unittest.TestCase):
         remediate = (PLAYBOOKS / "remediate-finding.md").read_text(encoding="utf-8")
         self.assertRegex(remediate, r"(?i)autonomy block")
 
+    def test_a_number_is_not_evidence_until_it_is_explained(self):
+        # pstack 0.15.20 benchmark-checklist, folded into speed-it rather than a mission.
+        # Deleting the playbook name, or the inconclusive verdict, puts a lucky run back
+        # in charge of the budget.
+        skill = (ROOT / "skills" / "speed-it" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`explain-the-number`", skill)
+        play = (PLAYBOOKS / "explain-the-number.md").read_text(encoding="utf-8")
+        for needle in ("Limiter", "Tuned", "Limits", "Errors", "The work happened", "inconclusive"):
+            self.assertIn(needle, play, f"explain-the-number.md lost {needle}")
+        review = (PLAYBOOKS / "risk-review.md").read_text(encoding="utf-8")
+        self.assertIn("`explain-the-number`", review)
+        self.assertIn("one safety fact", review)
+
+    def test_a_repeated_correction_is_not_another_agent_line(self):
+        # pstack /correct. The ladder lives in its own playbook so compound-learn's growth
+        # does not blow field-test-it's activation cap. The pointer has to stay, or the
+        # ladder is orphaned from the retro that every mutating mission runs.
+        retro = (PLAYBOOKS / "compound-learn.md").read_text(encoding="utf-8")
+        self.assertIn("encode-lesson.md", retro)
+        self.assertIn("not another agent-context line", retro)
+        ladder = (PLAYBOOKS / "encode-lesson.md").read_text(encoding="utf-8")
+        for needle in ("Architecture", "Types", "A lint or CI check", "specimen",
+                       "unenforced instruction"):
+            self.assertIn(needle, ladder, f"encode-lesson.md lost {needle}")
+        floor = (ROOT / "skills" / "floor-it" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`encode-lesson`", floor)
+
     def test_mutating_missions_compose_compound_learn(self):
         # E5: compound-learn is the retro; a mutating mission that omits it
         # silently drops the learning loop.

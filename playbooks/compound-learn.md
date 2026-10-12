@@ -41,6 +41,7 @@ Rules:
 - Prefer the target's existing context file (`AGENTS.md`, `CLAUDE.md`, `docs/GOTCHAS.md`) —
   never invent a second competing file if one exists.
 - Keep proposals short (≤ 8 bullets total). Vague "be careful" lines are noise — drop them.
+- A correction seen twice is not another agent-context line: read encode-lesson.md and park that unit.
 - **NEVER** let a worker `git add` / commit / push into `AGENTS.md` (or equivalent) without a
   recorded human approve of the exact lines. Auto-written agent rules are a known negative.
 - Taste-class merges of approved lines may proceed after the human says yes; one-way if the

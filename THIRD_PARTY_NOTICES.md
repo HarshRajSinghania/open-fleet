@@ -13,9 +13,11 @@ endorsed by Stably (the maker of Orca) or by the authors of the packs below.
 | [mattpocock/skills](https://github.com/mattpocock/skills) | recipes adapted in playbooks (grilling, to-spec, to-tickets, tdd, diagnosing-bugs, code-review, research, wizard, resolving-merge-conflicts, codebase-design, agent-brief) | MIT | Copyright (c) 2026 Matt Pocock |
 | [garrytan/gstack](https://github.com/garrytan/gstack) | recipes adapted in playbooks (review-army dispatch, ship's release state machine, canary, plan reviews, document-release, qa browser rules, user-challenge governance) | MIT | Copyright (c) 2026 Garry Tan |
 | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | recipes adapted in playbooks (incremental-implementation, debugging-and-error-recovery, security/perf/a11y/data-migration lenses, deprecation-and-migration, observability-and-instrumentation, documentation-and-adrs) | MIT | Copyright (c) 2025 Addy Osmani |
+| [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) | recipes adapted in `explain-the-number` and `encode-lesson` (benchmark checklist, prove-the-number, repeated-correction ladder) | MIT | Copyright (c) 2026 Lauren Tan |
 | Ed25519 reference implementation (D. J. Bernstein, N. Duif, T. Lange, P. Schwabe, B.-Y. Yang; ed25519.cr.yp.to) | vendored as `runtime/scripts/ed25519.py`, ported to Python 3 with verification hardening | public domain | — |
 
-Copyright notices were read from each project's `LICENSE` file on 2026-09-28. The MIT License
+Copyright notices for the packs above the pstack row were read from each project's `LICENSE`
+file on 2026-09-28. The pstack notice was read from its `LICENSE` on 2026-10-12. The MIT License
 text they share:
 
 ```text

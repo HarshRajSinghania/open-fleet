@@ -6,6 +6,14 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **pstack 0.15.20 read, not vendored.** Two habits folded in as playbooks:
+  `explain-the-number` (a budget number is `unmeasured` until the limiter, the limit
+  arithmetic, the error count, and proof the timed work happened are in the run) and
+  `encode-lesson` (a correction seen twice becomes architecture, types, a lint, or a
+  test, proved RED on a past specimen). No new mission. The router, the swarm, and
+  "land even if CI flakes" stayed out. Witness:
+  `docs/research/2026-10-12-pstack-adoption-audit.md`.
+
 Four pull requests merged after the `v0.7.0` tag (first-parent `v0.7.0..a3fba89`). None
 changes a mission, a playbook or the verifier; each is listed with what it does not prove.
 

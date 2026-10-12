@@ -49,7 +49,7 @@ resets the streak. Two coordinators reading the same log reach the same gate ver
   concrete step-by-step exploit scenario; never test live APIs. One verified finding → grep the whole
   tree for VARIANTS. (Full audit→re-attack loop is `harden-it`; this is the bounded review lens.)
 - **Performance:** measure-first (no optimizing without a baseline); symptom→cause tree (slow load →
-  bundle vs TTFB); CWV targets; every fix carries a before→after to its metric contract; add a CI
+  bundle vs TTFB); CWV targets; before→after to its metric contract, and a delta `explain-the-number` calls inconclusive is not measured; add a CI
   regression budget (GUARD). Backend red flags: N+1 fetch patterns; an index added with no query
   plan before and after; a cache key omitting an input the response depends on (tenant, locale,
   viewer); a cache with no staleness window or invalidation; a pool size raised in answer to
@@ -87,4 +87,4 @@ resets the streak. Two coordinators reading the same log reach the same gate ver
 ## Completion
 
 Every triggered lens ran (or is a recorded gate-off); each finding names its lens, severity, and (for
-security) an exploit scenario; findings emit in the shared schema for the mission's ledger.
+security) an exploit scenario. A clearance that rests on one safety fact is unproven until a run shows it; findings emit in the shared schema for the mission's ledger.

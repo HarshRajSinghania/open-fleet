@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel hotspot workers under a pre-declared measurement contract; you own the one-way doors.
-> **Activation load:** ~26,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~27,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 14% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Declare the journeys and their budgets. Come back to every one of them measured within budget
@@ -57,6 +57,9 @@ is taken:
 Baseline and candidate must share source, sample size, and pinned conditions — a lab-vs-field or
 warm-vs-cold comparison is not a delta, and two runs is a smoke minimum, not proof. A number that
 cannot be measured to its contract is `unmeasured` and human-flagged, never a downgraded proxy.
+So is a number [`explain-the-number`](../../playbooks/explain-the-number.md) calls inconclusive:
+no named limiter, an untuned side, a result past the changed slice's share of the run, errors
+uncounted, or no proof the timed work happened.
 And a metric is **never fabricated** — every pasted number is spot-checked against the artifacts
 in its [evidence manifest](../concepts.md#the-evidence-manifest).
 
@@ -185,6 +188,7 @@ migration, that journey would park with a human reference and the run would end
 
 ## Composes
 Playbooks:
+[`explain-the-number`](../../playbooks/explain-the-number.md) ·
 [`risk-review`](../../playbooks/risk-review.md) (performance lens) ·
 [`remediate-finding`](../../playbooks/remediate-finding.md) ·
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·

@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel wiring and prove-fires workers, one dimension each; freezing the bar is your one-way gate.
-> **Activation load:** ~30,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~31,000 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at a repo whose standards live in people's heads. Come back to a committed, numbered
@@ -158,6 +158,7 @@ Playbooks:
 [`decide-and-freeze`](../../playbooks/decide-and-freeze.md) ·
 [`remediate-finding`](../../playbooks/remediate-finding.md) ·
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·
+[`encode-lesson`](../../playbooks/encode-lesson.md) ·
 [`compound-learn`](../../playbooks/compound-learn.md) ·
 [`human-handoff`](../../playbooks/human-handoff.md)
 

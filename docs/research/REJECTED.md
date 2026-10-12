@@ -41,6 +41,16 @@ kept somewhere even when the mission is not.
 | `localize-it` | 2026-08-28 roadmap | not a mission | translation correctness is not git-verifiable — no unfakeable oracle | 2026-08-28 |
 | `factory-it` / `loop-it` / `ralph-it` | 2026-08-16 delta plan | not a mission — mission-identity test fails | a loop is an ingredient or a mode, not an outcome with its own proof | 2026-08-16 |
 | `orchestrate-it` / `factory-it` / `ralph-it` | 2026-07-15 gap analysis | not a mission — ingredients or modes | naming the technique instead of the outcome is the ingredient-shaped entry point this catalog exists to remove | 2026-07-15 |
+| `poteto-mode` (a second router over every playbook) | pstack 0.15.20 | not a mission — ingredient | AGENTS.md already routes intent to one outcome; co-mounting every playbook in one worker is the pack-router fight the one-pack rule exists to prevent | 2026-10-12 |
+| `correct-it` | pstack `/correct` | `encode-lesson` playbook, composed by floor-it, pointed at from compound-learn | the oracle is still "a check goes RED on a specimen"; a repeated class is a reflect output, not a new denominator | 2026-10-12 |
+| `hillclimb-it` | pstack hillclimb | mode of speed-it | one metric, before/after, keep-or-revert is speed-it's loop; a target instead of a budget does not change the oracle | 2026-10-12 |
+| `swarm-it` / `arena-it` | pstack | dispatch ingredient | parallelism and multi-model panels are runtime, not an outcome | 2026-10-12 |
+| `autopilot-it` (land the stack even if CI flakes) | pstack autopilot-full / shipping | ship-it and absorb-it, and a refusal | a green-or-flaky merge contradicts reviewed-sha freshness and the unanswered-thread rule | 2026-10-12 |
+| `show-work-it` | pstack show-me-your-work | ledger-contract + evidence-manifest | a TSV the author writes is a weaker oracle than a SHA-bound manifest an independent verifier re-derives | 2026-10-12 |
+| `verify-skill-it` | pstack create-verification-skill | runtime-prove Part B + field-test-it | a generated project-local skill is a harness shape; driving the real entry point is already the proof | 2026-10-12 |
+| `blast-it` | pstack blast-radius | one sentence in risk-review, not a mission | "the one safety fact is unproven until a run shows it" is a clearance rule on the existing lens; it does not change review-it's oracle | 2026-10-12 |
+| `eval-it` (blinded A/B of a skill edit) | pstack eval playbook | tests/ and evals/, not a user outcome | same shape as the rejected fault-injection candidate: it tests the fleet, not the user's repo | 2026-10-12 |
+| `visual-parity-it` | pstack visual-parity | field-test-it oracle tier, not added | reproduce on a target, fix, re-verify, revert — the proof shape is field-test-it's; a pixel oracle would be a tier, and no tier was added in this pass | 2026-10-12 |
 
 The candidates that *passed* on 2026-09-10 (`migrate-it`, `oncall-it`, `absorb-it`,
 `document-it`) are argued in the

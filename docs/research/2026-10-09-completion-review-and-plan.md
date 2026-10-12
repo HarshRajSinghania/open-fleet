@@ -123,8 +123,8 @@ claim; H-10 is the honest one.
 
 ### Changelog honesty
 
-`CHANGELOG.md` `[Unreleased]` is empty. Thirteen first-parent commits after `v0.7.0`
-include the plugin-install witness (#539), the external poller (#540), and the second-
+`CHANGELOG.md` `[Unreleased]` is empty. Thirteen commits after `v0.7.0`
+(four of them first-parent merges) include the plugin-install witness (#539), the external poller (#540), and the second-
 maintainer CODEOWNERS prep (#541). Same shape as G-17: the version surface undercounts
 HEAD. Not a launch S0, but it is the exact failure this repo exists to refuse. Fix on the
 next cut (0.7.1 if the shrink forces a new tag; otherwise fold into 1.0 notes).

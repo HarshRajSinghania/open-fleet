@@ -16,14 +16,16 @@ Stop at the first level that makes the mistake unwritable.
    is already common, fail only on a change that adds more.
 4. **A test** that calls the behavior the way a user does. A test that would still pass if every
    function it calls returned nothing does not count.
-5. **Docs or an agent rule, last,** and only for a judgment call.
+5. **Docs or an agent rule do not finish the lesson.** Use them only to name a judgment call
+   that levels 1–4 cannot make unwritable, then park that unit for a human.
 
 ## Prove it on a specimen
 
 Name the level, why each higher level does not work, and the specimen: a past commit, diff, or
-fixture the new check must fail on. The check goes RED on that specimen and GREEN once the
-specimen is gone — the same shape as floor-it's PROVE-FIRES. Exceptions sit on the offending
-line with a reason, an expiry, and a human's approval.
+fixture the new check must fail on. For levels 1–4 the check goes RED on that specimen and
+GREEN once the specimen is gone — the same shape as floor-it's PROVE-FIRES. Exceptions sit on
+the offending line with a reason, an expiry, and a human's approval. Level 5 has no such check,
+so it parks and does not close.
 
 The follow-up is one unit on the park register. It is one-way when it deletes a public API or
 freezes a new bar, and mechanical otherwise. A terminal verdict that cites an unenforced instruction

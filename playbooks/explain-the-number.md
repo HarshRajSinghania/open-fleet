@@ -22,8 +22,10 @@ Answer from a run. A guess from reading the code is not an answer.
    not move the number still needs the limiter, or you cannot call the change useless.
 2. **Tuned.** Every side runs the way production runs it: release build, production flags, pools,
    caches as warm or cold as production, same versions and data. One side on defaults is a
-   configuration comparison. A limiter that is a setting means that side is untuned: tune it and
-   measure again. If you cannot tune it, do not pick a winner.
+   configuration comparison. A limiter that is a setting you are not changing means that side is
+   untuned: tune it and measure again. When the declared experiment is that setting, the baseline
+   keeps the production value and only that setting moves. If you cannot tune the rest, do not
+   pick a winner.
 3. **Limits.** Do the arithmetic. Bytes per second against disk and network. Operations per
    second times cost per operation against the cores. Time saved against the time the changed
    piece took. Removing a slice that is 10% of the run can make the run at most about 11%

@@ -526,8 +526,17 @@ def validate_skill(skill_dir, protocols):
             "at least one playbook or runtime policy in backticks"
         )
     flat = re.sub(r"\s+", " ", text.lower())
-    if not re.search(r"pack:\s*(?:exactly one of|one of|matt|addy|gstack)\b", flat) \
-            or "co-mount" not in flat:
+    pack_ok = False
+    for stmt in re.findall(r"pack:\s*([^.]*)", flat):
+        if "never co-mount" not in stmt:
+            continue
+        head = stmt.split("—")[0].split("(")[0].strip()
+        head = re.sub(r"^(?:exactly one of|one of)\s+", "", head)
+        names = [t.strip() for t in re.split(r"[|,/]", head) if t.strip()]
+        if names and all(n in ("matt", "addy", "gstack") for n in names):
+            pack_ok = True
+            break
+    if not pack_ok:
         errors.append(
             "no worker-pack statement: state the one upstream pack a worker TASK "
             "loads (`pack: one of matt | addy | gstack — never co-mount`) — the "
@@ -943,8 +952,7 @@ def identity_collisions(root=None):
 # it: each mission beyond the base total must be offset by one more mission
 # proven past doctrine-only than the base had. Raising either base is a
 # deliberate, reasoned edit in the diff that earns it — never drift.
-CATALOG_BASE_TOTAL = 22
-CATALOG_BASE_PROVEN = 3
+CATALOG_BASE = (22, 3)  # (missions, proven past doctrine-only) at the full review
 
 
 def check_proof_ratchet(root=None):
@@ -966,13 +974,13 @@ def check_proof_ratchet(root=None):
             total += 1
             if meta.get("proof") in ("self-run", "external-run"):
                 proven += 1
-    allowed = CATALOG_BASE_TOTAL + max(0, proven - CATALOG_BASE_PROVEN)
+    allowed = CATALOG_BASE[0] + max(0, proven - CATALOG_BASE[1])
     if total <= allowed:
         return []
     return [
         f"catalog proof ratchet: {total} missions with {proven} proven past "
-        f"doctrine-only exceeds the allowed {allowed} (base {CATALOG_BASE_TOTAL} "
-        f"missions / {CATALOG_BASE_PROVEN} proven) — advance an existing mission's "
+        f"doctrine-only exceeds the allowed {allowed} (base {CATALOG_BASE[0]} "
+        f"missions / {CATALOG_BASE[1]} proven) — advance an existing mission's "
         "proof with a bound run report before adding breadth"
     ]
 

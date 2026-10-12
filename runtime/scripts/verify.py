@@ -2195,7 +2195,7 @@ class _Transcript:
     # envelope. This binds the verifier's identity, nothing more.
     TOOLCHAIN = ("verify.py", "_verify_sig.py", "diff_scope.py", "ed25519.py", "dispatch-sign.py")
     ARGS = ("contract_source", "contract_digest", "repo", "base", "symbol", "execute_nc",
-            "unit_class", "no_gh", "lighting", "dispatch_record", "dispatch_pubkey",
+            "unit_class", "no_gh", "lighting", "lane", "dispatch_record", "dispatch_pubkey",
             "nc_command", "git_dir", "evidence_root", "provenance")
 
     @classmethod

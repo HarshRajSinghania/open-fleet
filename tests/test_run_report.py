@@ -1459,6 +1459,20 @@ class SignedTranscriptRequired(SignedKeyFixture):
         errors = self._check()
         self.assertTrue(any("argument" in e and "report-only" in e for e in errors), errors)
 
+    def test_a_lane_changed_or_omitted_from_the_signed_tuple_is_refused(self):
+        # Greptile on PR #544: --lane changes the verdict, so it must be in the
+        # signed tuple — a signed lane the shown invocation lacks (and a tuple
+        # omitting lane entirely) both refuse, like every other policy flag.
+        self._commit(pubkey=True, transcript=self._envelope(
+            self._verdict(args={"lane": "0"})))
+        errors = self._check()
+        self.assertTrue(any("argument" in e and "lane" in e for e in errors), errors)
+        verdict = self._verdict()
+        del verdict["args"]["lane"]
+        self._commit(pubkey=True, transcript=self._envelope(verdict))
+        errors = self._check()
+        self.assertTrue(any("partial" in e and "lane" in e for e in errors), errors)
+
     def test_a_transcript_signing_no_argument_tuple_is_refused(self):
         verdict = self._verdict()
         verdict["args"] = {}

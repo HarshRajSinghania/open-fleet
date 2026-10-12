@@ -101,14 +101,16 @@ class TestValidatorFailureBranches(unittest.TestCase):
             self.assertTrue(any("frontmatter budget" in e for e in errs), errs)
 
     def test_a_mission_must_state_its_one_worker_pack(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            d = make_skill(tmp, "Composes `diagnose`.\n")
-            md = d / "SKILL.md"
-            md.write_text(md.read_text(encoding="utf-8").replace(
-                "Worker TASK pack: one of matt | addy — never co-mount.\n", ""),
-                encoding="utf-8")
-            errs = validate.validate_skill(d, PROTOCOLS)
-            self.assertTrue(any("worker-pack statement" in e for e in errs), errs)
+        good = "Worker TASK pack: one of matt | addy — never co-mount.\n"
+        for bad in ("", "Worker TASK pack: one of foo | bar — never co-mount.\n",
+                    "Worker TASK pack: matt; co-mount addy.\n"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                d = make_skill(tmp, "Composes `diagnose`.\n")
+                md = d / "SKILL.md"
+                md.write_text(md.read_text(encoding="utf-8").replace(good, bad),
+                              encoding="utf-8")
+                errs = validate.validate_skill(d, PROTOCOLS)
+                self.assertTrue(any("worker-pack statement" in e for e in errs), errs)
 
     def test_a_mutating_mission_must_ride_sandbox_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,7 +361,7 @@ class TestProofStatus(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "skills").mkdir()
-            for i in range(validate.CATALOG_BASE_TOTAL + 1):
+            for i in range(validate.CATALOG_BASE[0] + 1):
                 make_skill(root / "skills", "Composes `diagnose`.\n", name=f"m{i:02d}-it")
             failures = validate.check_proof_ratchet(root=root)
             self.assertTrue(any("proof ratchet" in f for f in failures), failures)
@@ -368,7 +370,7 @@ class TestProofStatus(unittest.TestCase):
                 "proof: doctrine-only", "proof: self-run"), encoding="utf-8")
             failures = validate.check_proof_ratchet(root=root)
             self.assertTrue(failures, "one proven mission must not pay for growth alone")
-            for i in range(1, validate.CATALOG_BASE_PROVEN + 1):
+            for i in range(1, validate.CATALOG_BASE[1] + 1):
                 p = root / "skills" / f"m{i:02d}-it" / "SKILL.md"
                 p.write_text(p.read_text(encoding="utf-8").replace(
                     "proof: doctrine-only", "proof: self-run"), encoding="utf-8")

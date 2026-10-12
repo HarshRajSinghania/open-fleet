@@ -479,7 +479,7 @@ def verifier_ran(manifest_path, rev, root):
 # key came from, so the invocation the report body SHOWS can be parsed into the same shape and
 # compared. Two are switches; the rest take a value and are None when unset.
 SIGNED_ARGS = ("contract_source", "contract_digest", "repo", "base", "symbol", "execute_nc",
-               "unit_class", "no_gh", "lighting", "dispatch_record", "dispatch_pubkey",
+               "unit_class", "no_gh", "lighting", "lane", "dispatch_record", "dispatch_pubkey",
                "nc_command", "git_dir", "evidence_root", "provenance")
 _SWITCH_ARGS = ("execute_nc", "no_gh")
 # h409 F-5: the verifier TOOLCHAIN a signed transcript names — verify.py and every sibling it

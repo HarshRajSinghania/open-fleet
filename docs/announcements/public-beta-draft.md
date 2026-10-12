@@ -2,7 +2,8 @@
 
 **Status: draft.** This text is not posted anywhere. It is published only when every box under
 [Gates before publishing](#gates-before-publishing) is checked, and it says only what the tree
-supports at the 0.7.0 cut (`fda5e4e`). The
+supports at the 0.7.0 cut (`8a5211b`, the commit tag `v0.7.0` names; the cut was prepared
+at `fda5e4e`). The
 [2026-09-28 release-readiness review](../reviews/2026-09-28-release-readiness-review.md#8-what-it-takes-to-release)
 drew the line this draft follows: the version cut is release hygiene, the announcement is what
 the P0 and P1 findings gate. A maintainer who posts this early is announcing claims the
@@ -15,7 +16,7 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
 - [ ] The release being announced is tagged, its provenance commit is recorded, and its GitHub
       Release exists ([#511](https://github.com/ravidsrk/orca-fleet/issues/511); the ops.md tag
       and record blocks, then the "Publishing Releases" block for the historical tags). The
-      candidate is `v0.7.0` on `fda5e4e`; the size row below can move it to a later tag, and
+      candidate is `v0.7.0` on `8a5211b`; the size row below can move it to a later tag, and
       then every version and SHA in this file changes with it before posting.
 - [ ] The `dist` branch holds the 0.7.0 bundle (`publish-dist.yml` ran on the tag push) and the
       plugin install has been witnessed on a clean machine, transcript under
@@ -108,7 +109,7 @@ beta to that release is a tracked epic on the issue tracker.
 
 ### Closing line
 
-Cut from `fda5e4e` (or the announced tag's cut, per the gate list); every frozen gate green in
+Cut from `8a5211b` (or the announced tag's cut, per the gate list); every frozen gate green in
 CI at that commit. Release notes are the CHANGELOG section the tag carries.
 
 ## Where it goes, in order

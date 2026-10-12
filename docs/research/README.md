@@ -9,6 +9,7 @@ the snapshots stay as they were written.
 | Date | Document |
 |------|----------|
 | standing | [Rejected mission candidates — the ledger of what failed the identity test, with source, shape, and reason](REJECTED.md) |
+| 2026-10-09 | [Product review, research, and completion plan — public beta then 1.0](2026-10-09-completion-review-and-plan.md) |
 | 2026-09-10 | [Upstream deep audit — adoption gaps, mechanism gaps, and new-mission proposals (orca, gstack, addyosmani, mattpocock)](2026-09-10-upstream-deep-audit-and-mission-proposals.md) — per-source appendices in [2026-09-10-upstream-audit/](2026-09-10-upstream-audit/) |
 | 2026-09-09 | [Upstream adoption audit — orca-fleet vs mattpocock/skills, garrytan/gstack, addyosmani/agent-skills, stablyai/orca](2026-09-09-upstream-adoption-audit.md) |
 | 2026-08-28 | [Positioning & comparison — convergent topology · evidence-protocol table · one-way-door governance](2026-08-28-positioning-and-comparison.md) |

@@ -6,6 +6,26 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+Four pull requests merged after the `v0.7.0` tag (first-parent `v0.7.0..a3fba89`). None
+changes a mission, a playbook or the verifier; each is listed with what it does not prove.
+
+- **0.7.0 provenance recorded** (#538). `docs/releases.json` moves 0.7.0 out of `preparing`
+  into `releases`, bound to tag `v0.7.0` and cut commit `8a5211b`.
+- **Plugin install witnessed** (#539, H-08). A clean-container plugin install and its uninstall
+  control are retained at `docs/completion/evidence/CF-02b-plugin-install.txt` and
+  `CF-02b-plugin-uninstall.txt`: 22 missions registered, zero after uninstall.
+  `docs/completion/PLUGIN-INSTALL-WITNESS.md`, `docs/install.md` and `docs/distribution.md`
+  state the limits. It witnesses install and uninstall, not an authenticated model turn or an
+  Orca run.
+- **External CI health reader** (#540, #528). `scripts/external-ci-monitor.py` reads `main`'s
+  latest `validate` conclusion from outside Actions, with contract tests and a retained outage
+  drill (`docs/completion/evidence/T-13-external-monitor-drill.txt`). The poller is in the tree;
+  the scheduled watch that runs it is configured but paused (H-09, pending activation).
+- **Critical-path peer ownership prepared** (#541, #530). `.github/CODEOWNERS` adds
+  `agentsalpha` on `runtime/`, `scripts/`, `.github/` and `docs/ops.md`; the merge was
+  authorized as a one-way decision in `docs/DECISIONS.md`. The write invitation is not yet
+  accepted and no peer `APPROVED` review exists (H-10), so the bus factor is still one.
+
 ## [0.7.0] - 2026-09-28
 
 The 2026-09-16 self-test campaign ran all 21 missions against orca-fleet itself

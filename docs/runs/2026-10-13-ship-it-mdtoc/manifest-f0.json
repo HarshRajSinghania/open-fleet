@@ -1,0 +1,138 @@
+{
+  "unit": "mdtoc-f0-foundation",
+  "claim": "F0 scaffold: mdtoc package + argparse CLI + green unittest smoke suite + README usage, on fleet/build-f0 @02f1258",
+  "base_sha": "0b9f660d93e64cf57e8245b0f1eb6eb0010ae158",
+  "head_sha": "02f12580231e7a5eead9e9f6a26c4acf0ebb9ce0",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/f0.md@ece804243577d26fc33222ef9c4f1b333be4c29f",
+    "digest": "sha256:af975e05cdda982ab506d8a192a0af412d408218e0f6844b00101c7255e418fe",
+    "criterion_ids": [
+      "FC-1",
+      "FC-2",
+      "FC-3"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "FC-1",
+      "text": "mdtoc package + argparse CLI; python3 -m mdtoc --help exits 0",
+      "addressed": true
+    },
+    {
+      "id": "FC-2",
+      "text": "unittest discover green with smoke tests",
+      "addressed": true
+    },
+    {
+      "id": "FC-3",
+      "text": "README Usage section stub",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-f0",
+      "ts": "2026-10-13T12:31:52Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.04,
+      "commit": "02f12580231e7a5eead9e9f6a26c4acf0ebb9ce0",
+      "wtree": "35640caff188a96d9c0352aceb0ac3895cf103a7",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-tests.txt"
+    },
+    {
+      "label": "runtime-prove-f0",
+      "ts": "2026-10-13T12:32:07Z",
+      "cmd": "python3 -m mdtoc --help",
+      "cmd_sha256": "f2f6a193ff8c25fd6c7a091c54f37407370c9f1bf1b59c871301b09b5b4c6460",
+      "exit": 0,
+      "duration_s": 0.012,
+      "commit": "02f12580231e7a5eead9e9f6a26c4acf0ebb9ce0",
+      "wtree": "35640caff188a96d9c0352aceb0ac3895cf103a7",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-prove.txt"
+    },
+    {
+      "label": "neg-control-f0",
+      "ts": "2026-10-13T12:32:49Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.028,
+      "commit": "02f12580231e7a5eead9e9f6a26c4acf0ebb9ce0",
+      "wtree": "577cbeebb676988111d6621ff8df415d9e017d62",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-nc.txt"
+    },
+    {
+      "label": "verifier-f0",
+      "ts": "2026-10-13T12:41:34Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-f0.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/f0.md@ece804243577d26fc33222ef9c4f1b333be4c29f --contract-digest sha256:af975e05cdda982ab506d8a192a0af412d408218e0f6844b00101c7255e418fe --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-f0.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "30aa13d8a70f44060c0fe61c87504429a441f5d7e13d65cd8aa7cfc32d57d201",
+      "exit": 0,
+      "duration_s": 0.562,
+      "commit": "ece804243577d26fc33222ef9c4f1b333be4c29f",
+      "wtree": "1a42aab7ed71affafdb733996b58743842c219ec",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-verifier.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "Scaffold the mdtoc package so later slices land behavior on a tested seam",
+    "ruled_out": "Implementing TOC behavior in F0 (slices S1-S3 own it); adding packaging/metadata beyond a stdlib package",
+    "why": "Foundation-first: every later slice needs the CLI/test harness to land red-first tests against"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (rename --check to --chekc in mdtoc/cli.py) turned the suite RED: test_help_exits_zero assertion failed \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-nc.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "FC-1",
+      "FC-2"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/f0-record.md",
+    "reviewed_sha": "02f12580231e7a5eead9e9f6a26c4acf0ebb9ce0"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-tests.txt",
+      "sha256": "ce90ee7eab549d6484639696e8119f808394e6f2f36bc0c23b00be57b7acb179"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-prove.txt",
+      "sha256": "2eda090e3971334fc9f342d262b75b0de1fc737a1d0106701fe49b5307c16528"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-nc.txt",
+      "sha256": "a38ea8d3e49452e6d6df3cfee38e997b63aaf832dc03362d6092f30aa8e7d206"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/f0.md",
+      "sha256": "d008ddfbc3cb86adbe5c69d866736d98393cc59dcaccf04c014a74490fc6318b"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/f0-record.md",
+      "sha256": "37b098e13ec8ab619b0875d4966c988d6a602093f0d947486ca02c8972f38db4"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/f0-worker-done.json",
+      "sha256": "0e3d11604fed9b85e6a021dd2ee3a5853dd13812544380ee4eb9bf4899107872"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/f0-review-done.json",
+      "sha256": "8c7a085014fc4aa8769c607594579ce5c0fcefa191516e1220bdf6c700f3f099"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-f0.json",
+      "sha256": "850393ed81e4abe780cb165bac903ada718d215cda4584fc30676639f6f79ec5"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/f0-verifier.txt",
+      "sha256": "a9ffa9cb6ed59ff90f107d1613b739b8e3dcf828a99fc7f07976aa6729ae13fd"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+hand negative control (coordinator-executed): rename --check flag; suite must go RED
+diff --git a/mdtoc/cli.py b/mdtoc/cli.py
+index 6467f7d..73d9cce 100644
+--- a/mdtoc/cli.py
++++ b/mdtoc/cli.py
+@@ -12,7 +12,7 @@ def build_parser():
+     )
+     parser.add_argument("files", nargs="+", metavar="FILE", help="Markdown files")
+     parser.add_argument(
+-        "--check",
++        "--chekc",
+         action="store_true",
+         help="exit 1 if a TOC is stale or missing; do not write",
+     )
+== unittest under mutant ==
+.Fmdtoc: /nonexistent/none.md: [Errno 2] No such file or directory: '/nonexistent/none.md'
+.usage: mdtoc [-h] [--chekc] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+..
+======================================================================
+FAIL: test_help_exits_zero (tests.test_smoke.SmokeTests.test_help_exits_zero)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/hand-f0/tests/test_smoke.py", line 22, in test_help_exits_zero
+    self.assertIn(flag, result.stdout)
+AssertionError: '--check' not found in "usage: mdtoc [-h] [--chekc] [--stdout] [--max-depth N] [--version]\n             FILE [FILE ...]\n\nInsert or update a table of contents in Markdown files.\n\npositional arguments:\n  FILE           Markdown files\n\noptions:\n  -h, --help     show this help message and exit\n  --chekc        exit 1 if a TOC is stale or missing; do not write\n  --stdout       print the result instead of writing the file\n  --max-depth N  deepest heading level to include\n  --version      show program's version number and exit\n"
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.013s
+
+FAILED (failures=1)
+mutant-exit:1

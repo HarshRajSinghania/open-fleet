@@ -252,13 +252,34 @@ def runtime_files():
             and "__pycache__" not in path.parts]
 
 
+def plugin_files():
+    """Root files that make the bundle tree itself an installable lean plugin.
+
+    The bundle doubles as the plugin distribution (announcement gate 3): pointing the
+    marketplace at this tree ships skills/ + hooks + the gate runtime without the source
+    repo's receipt trees. The hook commands resolve under the plugin root, so a root
+    runtime/ must ride along — the same runtime_files() set the missions vendor."""
+    files = [ROOT / ".claude-plugin" / "plugin.json", ROOT / "hooks" / "hooks.json"]
+    files.extend(runtime_files())
+    return files
+
+
 def build(out_dir):
     """Write the distribution tree. Returns (missions built, unresolved refs)."""
     protocols = validate.known_protocol_names()
     problems = missing_inputs(protocols)
     if problems:
         return 0, problems
-    skills_out = Path(out_dir) / "skills"
+    out = Path(out_dir)
+    for stale in (out / ".claude-plugin", out / "hooks", out / "runtime"):
+        # Never delete the source's own tree: --out at the repo root must not eat its inputs.
+        if stale.exists() and stale.resolve() != (ROOT / stale.name).resolve():
+            shutil.rmtree(stale)
+    for source in plugin_files():
+        destination = out / source.relative_to(ROOT)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    skills_out = out / "skills"
     if skills_out.exists():
         shutil.rmtree(skills_out)
     built, problems = 0, []

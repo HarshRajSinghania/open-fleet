@@ -132,7 +132,8 @@ missions have no fix authority).
 | `docs/runs/2026-10-13-review-it-linux/quote-check.txt` | `8d69be5335156e147dbde971e04e5805389c07ea8327484aa54b9764b06a66f0` | coordinator re-read + empirical git 2026-10-13 |
 | `docs/runs/2026-10-13-review-it-linux/verdict.md` | `e01333b6f792a293be32e4ef89560f1aaee3ac858b502941922387bb389f4e03` | coordinator aggregate 2026-10-13 |
 | `docs/runs/2026-10-13-review-it-linux/verifier.txt` | `9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618` | evidence-run.py verify.py 2026-10-13 (absolute-path record) |
-| `docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt` | `9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618` | evidence-run.py verify.py re-record (binding record) 2026-10-13 |
+| `docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt` | `9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618` | evidence-run.py verify.py re-record (dangling-wtree record) 2026-10-13 |
+| `docs/runs/2026-10-13-review-it-linux/verifier-rerecord2.txt` | `9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618` | evidence-run.py verify.py re-record on committed tree (binding record) 2026-10-13 |
 
 ## Gates
 

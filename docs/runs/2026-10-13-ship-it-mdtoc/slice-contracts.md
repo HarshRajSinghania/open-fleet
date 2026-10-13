@@ -1,7 +1,7 @@
 # Slice contracts — mdtoc ship-it run (frozen at decompose)
 
 Frozen spec: ravidsrk/mdtoc `SPEC.md` @ 0b9f660d93e64cf57e8245b0f1eb6eb0010ae158
-(maintainer-approved 2026-10-13). Union of slice criteria = AC-1..AC-8.
+(maintainer-approved 2026-10-13). Union of slice criteria = AC-1..AC-9 (= spec AC-1..AC-8; AC-9 is spec AC-6 second half, split for extractor-clean ids).
 
 ## F0 — foundation scaffold
 - FC-1: `mdtoc` package exists (`mdtoc/__init__.py`, CLI module) and
@@ -13,16 +13,16 @@ Frozen spec: ravidsrk/mdtoc `SPEC.md` @ 0b9f660d93e64cf57e8245b0f1eb6eb0010ae158
 - AC-2: TOC links use GitHub anchor slugs, incl. `-1`/`-2` for duplicates.
 - AC-3: Headings inside fenced code blocks are ignored.
 
-## S2 — file update + modes (AC-1, AC-4, AC-5, AC-6-placement)
+## S2 — file update + modes (AC-1, AC-4, AC-5, AC-6)
 - AC-1: markers insert/update, idempotent.
 - AC-4: `--check` exit 1 stale / 0 current; `--stdout` never writes.
 - AC-5: default H2–H4; `--max-depth 1..6`.
-- AC-6p: without markers, insert after first H1, else file top.
+- AC-6: without markers, insert after first H1, else file top (spec AC-6 first half).
 
-## S3 — multi-file + error model + docs (AC-6-errors, AC-7)
-- AC-6e: missing or non-UTF-8 file → stderr message, exit 2.
+## S3 — multi-file + error model + docs (AC-7, AC-9)
 - AC-7: multiple files per invocation; per-file errors don't abort; exit
   aggregates.
+- AC-9: missing or non-UTF-8 file → stderr message, exit 2 (spec AC-6 second half).
 
 ## Integrated (coordinator, at BASE head)
 - AC-8: full `python3 -m unittest` green at the integrated head and every

@@ -1,0 +1,38 @@
+{
+  "id": "ea61cf2b-17f0-4982-827c-b0d4df0a3242",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_7d10b502ce01",
+    "messages": [
+      {
+        "id": "msg_660bb94e5df2",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_1b49ff90-0fec-4b3d-800d-f6c1f3402759",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S1 fix round done",
+        "body": "Fixed all three Required findings on branch fleet/build-s1 (head af83a56e816cce655524da6e46531178405c6c33), each red-first: slug suffixes now checked against taken slugs (a, a-1, a-1-1, a-2), headings are slugged from plain text with code spans, links, images and emphasis stripped while the visible TOC text stays original, and fences opened on list-item lines are detected. Also fixed both nits: empty headings are no longer rendered as links (they still consume a slug slot) and --max-depth below 1 is a clean argparse error. Full suite is green (python3 -m unittest discover, 28 tests OK); nothing pushed, SPEC.md untouched, and O1 (combining marks) is left for a later slice.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_70d29afa81a2\",\"dispatchId\":\"ctx_e17b23bff6b1\",\"outcome\":\"succeeded\",\"filesModified\":[\"mdtoc/toc.py\",\"mdtoc/cli.py\",\"tests/test_toc.py\"]}",
+        "created_at": "2026-10-13T12:54:15Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "cec65a30-7c39-45ba-b378-c024b8979717",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

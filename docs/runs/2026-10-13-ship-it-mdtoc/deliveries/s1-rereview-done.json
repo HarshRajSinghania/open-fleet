@@ -1,0 +1,38 @@
+{
+  "id": "6d39919b-b64a-44db-bcba-e6ef2c48ca67",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_3d0ae88697c1",
+    "messages": [
+      {
+        "id": "msg_44f335b3f5dd",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_db1b9ca2-88bc-45b2-a215-f51e621dc9eb",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S1 re-review: PASS at af83a56",
+        "body": "Re-reviewed S1 at head af83a56e816cce655524da6e46531178405c6c33: R1 (suffix collision), R2 (anchor from rendered text) and R3 (list-item fence) are all fixed, each with a guarding test, and the 28 tests pass. No regressions in the AC-2/AC-3 areas marked met, and no new Critical or Required findings from the fix diff. Left over, all Optional: TOC link text still nests the raw link markup (e.g. [**Bold** [l](u)](#bold-l)), plus O1 combining marks and inline HTML in headings.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_3256a0978414\",\"dispatchId\":\"ctx_226bebab56b5\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1-r2.md\"}",
+        "created_at": "2026-10-13T13:11:40Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "01467c42-df08-4ebf-b921-0f3b0799b8ce",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "id": "b82f0f32-b4f0-4118-86c9-ca5bf27de536",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_1edca77cb6b3",
+    "messages": [
+      {
+        "id": "msg_841895fdaf70",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_b26b1239-4686-4d7d-befa-3f4b6c64ddcb",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S1 review: FAIL",
+        "body": "Reviewed S1 (head 50560a1f1db5e41d1d73b9eccb77b1db44b1f9f1) read-only against AC-2/AC-3: verdict FAIL although all 20 tests pass. Three Required defects were found by probing and none is guarded by a test: a duplicate-suffix collision (A, A, A-1, A gives a-1 twice, toc.py:53), slugs built from raw markdown instead of rendered text (toc.py:43), and a fence opened on a list-item line leaking headings (toc.py:7); the --stdout wiring did not regress F0. Left for the builder: fix the three and add a test for each; Optional/Nit items (combining marks, empty headings, --max-depth 0) can wait.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_d29ad1260b3c\",\"dispatchId\":\"ctx_278c9425d7d4\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1.md\"}",
+        "created_at": "2026-10-13T12:51:00Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "a88a0259-f7a6-40c6-9df5-298d28aa9d5b",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -1,0 +1,17 @@
+TASK pack: matt (tdd). Slice S2 — file update + modes (mdtoc).
+Your worktree is on fleet/build-s2 off BASE fleet/ship-mdtoc-20261013 (F0+S1 landed).
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s2.md (AC-1, AC-4, AC-5, AC-6). Frozen spec: SPEC.md in repo root.
+TDD (red first), using S1's scan/slug/render:
+- AC-1: default mode inserts or updates the TOC between <!-- toc --> and <!-- /toc -->
+  markers in place; running twice yields no further change (idempotent, byte-stable).
+- AC-6: without markers, insert after the first H1 if present, else at the top,
+  adding the marker pair so later runs update in place.
+- AC-4: --check exits 1 when the TOC is stale or missing, 0 when current, writing
+  nothing; --stdout (from S1) never writes.
+- AC-5: only headings at levels 2..max_depth are included by default (max_depth
+  default 4); --max-depth N with N in 1..6, values outside are an argparse error (exit 2).
+Preserve the rest of the file byte-for-byte outside the TOC region, including the
+final newline. Add tests for each behavior incl. idempotence (run twice, compare bytes),
+check-mode exit codes, no-marker placement, and depth limiting. Full suite green via
+python3 -m unittest discover. Commit on your branch; do not push; do not edit SPEC.md.
+worker_done exactly once naming branch, head SHA, test result, --files-modified.

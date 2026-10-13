@@ -1,0 +1,65 @@
+..mdtoc: /nonexistent/none.md: [Errno 2] No such file or directory: '/nonexistent/none.md'
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+...F.F......F...F
+======================================================================
+FAIL: test_duplicate_numbering_counts_excluded_levels (tests.test_toc.RenderTests.test_duplicate_numbering_counts_excluded_levels)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s1/tests/test_toc.py", line 61, in test_duplicate_numbering_counts_excluded_levels
+    self.assertEqual(render_toc(text), "- [A](#a-1)\n")
+AssertionError: '- [A](#a)\n' != '- [A](#a-1)\n'
+- - [A](#a)
++ - [A](#a-1)
+?         ++
+
+
+======================================================================
+FAIL: test_nested_list_with_duplicate_slugs (tests.test_toc.RenderTests.test_nested_list_with_duplicate_slugs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s1/tests/test_toc.py", line 54, in test_nested_list_with_duplicate_slugs
+    self.assertEqual(
+AssertionError: '- [A](#a)\n  - [B](#b)\n- [A](#a)\n' != '- [A](#a)\n  - [B](#b)\n- [A](#a-1)\n'
+  - [A](#a)
+    - [B](#b)
+- - [A](#a)
++ - [A](#a-1)
+?         ++
+
+
+======================================================================
+FAIL: test_duplicates_get_suffixes_in_order (tests.test_toc.SlugTests.test_duplicates_get_suffixes_in_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s1/tests/test_toc.py", line 24, in test_duplicates_get_suffixes_in_order
+    self.assertEqual(slugify_all(["A", "B", "A", "A", "B"]), ["a", "b", "a-1", "a-2", "b-1"])
+AssertionError: Lists differ: ['a', 'b', 'a', 'a', 'b'] != ['a', 'b', 'a-1', 'a-2', 'b-1']
+
+First differing element 2:
+'a'
+'a-1'
+
+- ['a', 'b', 'a', 'a', 'b']
++ ['a', 'b', 'a-1', 'a-2', 'b-1']
+?              ++     ++     ++
+
+
+======================================================================
+FAIL: test_stdout_prints_toc_and_does_not_write (tests.test_toc.StdoutTests.test_stdout_prints_toc_and_does_not_write)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s1/tests/test_toc.py", line 83, in test_stdout_prints_toc_and_does_not_write
+    self.assertEqual(result.stdout, "- [One](#one)\n- [One](#one-1)\n")
+AssertionError: '- [One](#one)\n- [One](#one)\n' != '- [One](#one)\n- [One](#one-1)\n'
+  - [One](#one)
+- - [One](#one)
++ - [One](#one-1)
+?             ++
+
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.032s
+
+FAILED (failures=4)

@@ -1,0 +1,15 @@
+TASK pack: matt (tdd). Slice S1 — heading scan + GitHub slug + TOC render (mdtoc).
+Your worktree is on fleet/build-s1 off BASE fleet/ship-mdtoc-20261013 (F0 landed).
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s1.md (AC-2, AC-3). Frozen spec: SPEC.md in repo root.
+TDD (red first): implement heading scanning (ATX # through ###### with levels
+and text, skipping fenced code blocks delimited by triple-backtick or ~~~),
+GitHub-compatible anchor slugs (lowercase; drop punctuation except hyphens and
+word characters; spaces become hyphens; duplicate headings get -1, -2 suffixes
+in document order), and a TOC renderer (nested markdown list of - [text](#slug)).
+Tracer bullet: wire `mdtoc --stdout FILE` to print the generated TOC for FILE
+(no in-file update yet — that is S2; without --stdout keep F0 behavior).
+Put logic in mdtoc/ modules as you see fit; add unit tests for slugging
+(duplicates, punctuation, unicode), fence exclusion (both fence types), and
+--stdout output. Full suite green via python3 -m unittest discover.
+Commit on your branch; do not push; do not edit SPEC.md. Send worker_done
+exactly once naming branch, head SHA, test result, and --files-modified.

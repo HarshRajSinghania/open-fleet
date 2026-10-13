@@ -23,6 +23,6 @@ at teardown.
 | task_id | unit | BUILD_DONE | PR_OPEN | BOT | REVIEWED | MERGED | WT_CLEAN | lighting | park | evidence |
 |---|---|---|---|---|---|---|---|---|---|---|
 | task_11560fce010c | F0 foundation | t | n/a | n/a | t | t | t | lit | | head 02f1258; review PASS task_7d2ad49a1f14 (reviews/f0.md); verify OK executed-NC (manifest-f0.json); merged 03e13d38 ancestry-verified |
-| pending | S1 scan+slug (AC-2,3) | f | n/a | n/a | f | f | f | lit | | |
+| task_2e1867b1d215 | S1 scan+slug (AC-2,3) | t | n/a | n/a | t | t | t | lit | | head af83a56 after fix round task_70d29afa81a2; reviews s1.md FAIL → s1-r2.md PASS (reviews/s1-record.md); verify OK executed-NC (manifest-s1.json); merged 4e1ad707 ancestry-verified |
 | pending | S2 update+modes (AC-1,4,5,6) | f | n/a | n/a | f | f | f | lit | | |
 | pending | S3 multi-file+errors (AC-7,9) | f | n/a | n/a | f | f | f | lit | | |

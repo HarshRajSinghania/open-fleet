@@ -1,0 +1,38 @@
+{
+  "id": "38760a64-0718-4dad-8eea-e8f287dd4a0c",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_699a29b9777a",
+    "messages": [
+      {
+        "id": "msg_267208add958",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_a850c6a3-663e-4758-8768-e72afd16bf5a",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S1 done: heading scan, slugs, TOC render",
+        "body": "Implemented (tests first, red then green) mdtoc/toc.py with fence-aware ATX heading scan, GitHub slugs with -1/-2 duplicate suffixes, and nested TOC render, and wired 'mdtoc --stdout FILE' to print the TOC without writing (AC-2, AC-3). Branch fleet/build-s1, head 50560a1 (committed, not pushed); 'python3 -m unittest discover' passes 20/20 tests. Left for later slices: in-file update/markers (S2), --check, and multi-file/error aggregation; default depth is H2-H4 and --max-depth is passed through to render but not range-validated.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_2e1867b1d215\",\"dispatchId\":\"ctx_42fe4db1b4b2\",\"outcome\":\"succeeded\",\"filesModified\":[\"mdtoc/toc.py\",\"mdtoc/cli.py\",\"tests/test_toc.py\"]}",
+        "created_at": "2026-10-13T12:44:20Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "26c56394-4fd5-4535-aab1-dfa9ebe3965a",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

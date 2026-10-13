@@ -264,7 +264,16 @@ class ReleaseCutWalkthrough(unittest.TestCase):
             run("git", "commit", "--allow-empty", "-m", "Fixture release tooling")
             refs = run("git", "show-ref", "--tags").stdout
             latest = max(tuple(map(int, r["version"].split("."))) for r in historical)
-            version = ".".join(map(str, (*latest[:2], latest[2] + 1)))
+            # A real tag can exist before its provenance row lands (the tag push
+            # precedes the record commit), and the clone inherits that tag. Deriving
+            # the rehearsed version from the inventory alone then collides with it,
+            # failing every run inside that window (#555). Skip tagged versions:
+            # the rehearsal proves the blocks work, not that the next number is free.
+            tagged = {line.split(" refs/tags/")[-1] for line in refs.splitlines()}
+            patch = latest[2]
+            while f"v{latest[0]}.{latest[1]}.{patch + 1}" in tagged:
+                patch += 1
+            version = ".".join(map(str, (*latest[:2], patch + 1)))
             env.update(RELEASE_VERSION=version, RELEASE_DATE="2026-09-12")
             doc = (repo / "docs/ops.md").read_text()
 

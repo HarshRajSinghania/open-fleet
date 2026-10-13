@@ -1,0 +1,1 @@
+preflight: OK — mode=readonly (binary + repo checks only; no BASE/PR invariants)

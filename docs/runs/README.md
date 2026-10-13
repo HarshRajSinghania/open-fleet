@@ -17,8 +17,10 @@ test reruns at the exact head and verification against the frozen contract and r
 remain coordinator-owned. **no** means the recorded report does not satisfy these binding checks
 here — history, kept, supporting no proof-tier advance.
 
-Three reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
-prove-it run, and the 2026-09-21 harden-it run, the tiers earned under the binding gate. Every other row reads **no**, and that
+Four reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
+prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the binding gate), plus
+the 2026-10-13 review-it Linux witness, which binds at `doctrine-only` as substrate evidence
+and advances no tier. Every other row reads **no**, and that
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;
@@ -48,6 +50,7 @@ git repositories and includes a fully bound positive case alongside a dozen refu
 | 2026-09-23 | [pin-it](2026-09-23-pin-it-488.md) | this catalog's runtime doctrine against the Orca v1.4.209 release binary (#488) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (3 behavioral + 2 text drifts fixed in the re-pin; parks carried; successor 2026-12-23) |
 | 2026-09-28 | [pin-it](2026-09-28-pin-it-500.md) | this catalog's runtime doctrine against the Orca v1.4.215 release binary (#500, early re-pin) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (zero drift; additive surfaces noted; terminal-stop hedge confirmed; parks carried; successor 2026-12-28) |
 | 2026-10-13 | [pin-it](2026-10-12-pin-it-224.md) | this catalog's runtime doctrine against Orca v1.4.224 (installed mac binary + Linux `orca-ide serve` substrate; delta vs the frozen 1.4.215 inventory + live replay) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (2 drifts patched; fencing / abandon retention / `terminal stop` / doctor-shape parks retired live; legacy replay + `caller.orcaSessionId` parked; successor 2026-12-28) |
+| 2026-10-13 | [review-it](2026-10-13-review-it-linux.md) | stablyai/orca PR #28206 (external PR), executed on Ubuntu 24.04 via `orca-ide` 1.4.224 — the Linux witness (#527) | external-run | yes — binds at `doctrine-only` (substrate evidence; no tier advance claimed) | NO-GO (0 Critical, 2 Required: submodule Force Delete toast hides superproject data loss; 4 read-only workers, target untouched, verdict retained not posted) |
 
 ### Self-test campaign 2026-09-16
 

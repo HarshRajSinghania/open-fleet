@@ -1,0 +1,19 @@
+{
+  "flags": {
+    "FRONTEND": true,
+    "BACKEND": true,
+    "PROMPTS": false,
+    "TESTS": true,
+    "DOCS": false,
+    "CONFIG": false,
+    "MIGRATIONS": false,
+    "API": false,
+    "AUTH": true,
+    "SECURITY": false,
+    "A11Y": false,
+    "PERF": false
+  },
+  "error": null,
+  "base": "cbeb53714640288d172e9d59c53c0e0bff85f6ba",
+  "unmatched": []
+}

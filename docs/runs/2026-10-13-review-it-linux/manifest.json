@@ -1,0 +1,181 @@
+{
+  "unit": "review-it-linux-28206",
+  "claim": "review-it Linux witness run (#527): NO-GO verdict on stablyai/orca#28206 @6dcd957a (0 Critical, 2 Required \u2014 submodule Force Delete toast hides superproject data loss), bound to the reviewed SHA; 4 read-only workers (3 acceptance axes + security lens) on Ubuntu via orca-ide.",
+  "base_sha": "cbeb53714640288d172e9d59c53c0e0bff85f6ba",
+  "head_sha": "6dcd957a65daf77fe49f15afbb998b262427224c",
+  "base_branch": "main",
+  "contract": {
+    "source": "docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab",
+    "digest": "sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4",
+    "criterion_ids": [
+      "RC-1",
+      "RC-2",
+      "RC-3",
+      "RC-4",
+      "RC-5",
+      "RC-6",
+      "RC-7"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "RC-1",
+      "text": "Fixed point pinned pre-dispatch and re-checked at verdict (PR OPEN, head unchanged)",
+      "addressed": true
+    },
+    {
+      "id": "RC-2",
+      "text": "Three acceptance axes from isolated fresh workers, blind-fix first, no cross-rerank",
+      "addressed": true
+    },
+    {
+      "id": "RC-3",
+      "text": "Risk lenses gated by diff_scope --strict; security ran, other gate-offs recorded",
+      "addressed": true
+    },
+    {
+      "id": "RC-4",
+      "text": "Every finding quoted verbatim at head; coordinator re-read 14/14 quotes (quote-check.txt)",
+      "addressed": true
+    },
+    {
+      "id": "RC-5",
+      "text": "Verdict NO-GO (0 Critical, 2 Required) bound to reviewed SHA in this manifest",
+      "addressed": true
+    },
+    {
+      "id": "RC-6",
+      "text": "No code modified anywhere; target worktree clean at close; nothing posted upstream",
+      "addressed": true
+    },
+    {
+      "id": "RC-7",
+      "text": "Linux substrate named with status reachability retained (status-linux.json)",
+      "addressed": true
+    }
+  ],
+  "pr": {
+    "number": 28206,
+    "url": "https://github.com/stablyai/orca/pull/28206",
+    "reviewed_sha": "6dcd957a65daf77fe49f15afbb998b262427224c"
+  },
+  "negative_control": {
+    "tool": "source-binding",
+    "artifact": "docs/runs/2026-10-13-review-it-linux/quote-check.txt",
+    "command": "coordinator re-read of every quoted line at head_sha + empirical git refusal precedence (recorded in artifact)"
+  },
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/axis-standards.md",
+      "sha256": "67c61823632e039c2df5343466da54a50deb3a5959d8125774d19a36eb193198"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/axis-spec.md",
+      "sha256": "c0ff6c9ac3c8d9f8cde134e90291cbd65f05886514fb5852a73530c8f0f1f428"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/axis-test-adequacy.md",
+      "sha256": "86658e8fc7a0945f544901d8b83fea6f7ebf364282deeb8c0ff0670e549bd9c5"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/lens-security.md",
+      "sha256": "e209565ea235f6da3ed155e17f21f7b6cc43bd12b99ed224bf58e576d9eab84e"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/verdict.md",
+      "sha256": "e01333b6f792a293be32e4ef89560f1aaee3ac858b502941922387bb389f4e03"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/quote-check.txt",
+      "sha256": "8d69be5335156e147dbde971e04e5805389c07ea8327484aa54b9764b06a66f0"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/worker-done-delivery.json",
+      "sha256": "bafc798bcaae1ac5106b40b20fb2bebe193ef6f4d11e4c4ff01863ddd7e7b4c3"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/diff-scope.json",
+      "sha256": "a62f7cd3becc69234eda84aef11ed29f87722cf82add307dd02f93133aa18a15"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/spec-source.md",
+      "sha256": "9d2ce4f29f540d0df72b6ab549bc11c7b1e4c36808d670dc61a9977e3835f4aa"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/preflight.txt",
+      "sha256": "93ecaa481e589bb9b515f1c57969305f02d6c8551c358648abe595c5173e764d"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/status-linux.json",
+      "sha256": "4097d520df90edc6e9b9206ac07d11ae31eb26e0bea81551471db1f720e97cc4"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/dispatch-record.json",
+      "sha256": "ed0c05196c313ec50be15e57058ee07621d31cca4ce5137b957ec91eb226c1a8"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex",
+      "sha256": "4063344914de0fd53c0bc2e8d756419d828f1b54a29340c2c19e10184cdeaf31"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/coordinator-driver.py",
+      "sha256": "2b6ec30381d7169773bd2c283eaf1f36c046cbc0dca30fe909f183f87d3a0057"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/pr.json",
+      "sha256": "e3af9b77cfbf1444c609f61b4fc0d5ef2afcda54d1f16ea9f48b7b0cd690aab7"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/verifier.txt",
+      "sha256": "9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/task-list-final.json",
+      "sha256": "cef579b6371ce4ffd0d241127d1b9bbba4d184ff06ca336e12aa2ac9cf85fe0f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt",
+      "sha256": "9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord2.txt",
+      "sha256": "9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 on Ubuntu 24.04.5 LTS arm64 (OrbStack); orca-ide 1.4.224 serve; Claude Code 2.1.296 workers (PROFILE=ro) via Orca run_18440e737a97",
+  "commands": [
+    {
+      "label": "verifier",
+      "ts": "2026-10-13T07:58:25Z",
+      "cmd": "python3 /home/ravindra/orca-fleet/runtime/scripts/verify.py --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --contract-source docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab --contract-digest sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4 --unit-class report-only --dispatch-record docs/runs/2026-10-13-review-it-linux/dispatch-record.json --dispatch-pubkey docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex --repo stablyai/orca",
+      "cmd_sha256": "d7c77f3cb06470d679ff4acd18b1ba9f7878082b03f8c6b00edaa25497c3f73b",
+      "exit": 0,
+      "duration_s": 0.344,
+      "commit": "d9259acc10b30cd177f67d294a656d12802cedab",
+      "wtree": "1d1874313a2486a17c6e63b1d080ef1159b0c8b4",
+      "artifact": "docs/runs/2026-10-13-review-it-linux/verifier.txt"
+    },
+    {
+      "label": "verifier-rerecord",
+      "ts": "2026-10-13T08:01:49Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --contract-source docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab --contract-digest sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4 --unit-class report-only --dispatch-record docs/runs/2026-10-13-review-it-linux/dispatch-record.json --dispatch-pubkey docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex --repo stablyai/orca",
+      "cmd_sha256": "678f76fd24487e07c9ad628b5ace3efe6c3c0ee334434fc49c558b7bc1c3db6e",
+      "exit": 0,
+      "duration_s": 0.301,
+      "commit": "602cd99aeefbddf19367df3d968a13b1fcb0ee02",
+      "wtree": "573a31bdd2043f688ffe6fed531880b10e6f7c21",
+      "artifact": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt"
+    },
+    {
+      "label": "verifier-rerecord2",
+      "ts": "2026-10-13T08:36:32Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --contract-source docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab --contract-digest sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4 --unit-class report-only --dispatch-record docs/runs/2026-10-13-review-it-linux/dispatch-record.json --dispatch-pubkey docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex --repo stablyai/orca",
+      "cmd_sha256": "678f76fd24487e07c9ad628b5ace3efe6c3c0ee334434fc49c558b7bc1c3db6e",
+      "exit": 0,
+      "duration_s": 0.312,
+      "commit": "bda8a27f721e6f0f1ca208b8a9710a8852ad562b",
+      "wtree": "3757a27b48a1c8668f7d90bdbadc958d31d7073c",
+      "artifact": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord2.txt"
+    }
+  ]
+}

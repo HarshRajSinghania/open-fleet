@@ -154,7 +154,8 @@ Every mission has a hard dependency on companions not published in this repo
    and `scripts/validate.py` fails when this number and the pin disagree). Tested against
    v1.4.209 through v1.4.224; upstream ships almost daily, and a weekly probe files an issue
    when the catalog falls behind (`runtime/orca-pin.md`).
-2. **The `orca` CLI** (`orca-ide` on Linux outside Orca terminals).
+2. **The `orca` CLI** (`orca-ide` on Linux outside Orca terminals; Linux is exercised by one
+   recorded `review-it` run on Ubuntu, [2026-10-13](docs/runs/2026-10-13-review-it-linux.md)).
 3. **Orca's two public skills, `orchestration` and `orca-cli`**, installed for the agent host —
    they provide the worktrees, terminals, task DAG, ask/reply and `worker_done` primitives.
    orca-fleet is the *outcome* layer; those two are the *substrate*, and without them no mission

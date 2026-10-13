@@ -1,0 +1,10 @@
+TASK pack: matt (tdd). Slice S4 — slug + rendered-text hardening (mdtoc). Closes three carried S1/integrated-prove deviations.
+Your worktree is on fleet/build-s4 off BASE fleet/ship-mdtoc-20261013 (F0+S1+S2+S3 landed).
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s4.md (AC-2). Frozen spec: SPEC.md in repo root.
+TDD (red first). Current deviations to fix (measured at BASE, GitHub expectation on the right):
+1. `## [See [inner](http://x)](http://y)` -> slug `see-inner`, label `See inner`. Today: slug `see-innerhttpy`, label is raw markup. Resolve nested link/image markup innermost-first until stable.
+2. `## Hello <em>World</em>` -> slug `hello-world`, label `Hello World`. Today tags leak into both. Strip inline HTML tags from the rendered text — but a tag inside a code span is literal text: `## Use `<div>` here` -> slug `use-div-here`, label `Use <div> here`.
+3. Decomposed accents slug like GitHub: `## Café` written e + U+0301 -> slug keeps the combining mark (`cafe` + U+0301). Today the mark is dropped. Slug keep-set: Unicode categories L*, M*, N*, plus `_` and `-`; spaces become `-`; everything else dropped (lowercase first).
+Also: TOC labels and slugs derive from the same rendered text (render_toc currently emits raw heading text as the label). A heading whose rendered text is empty is omitted from the TOC.
+Do not regress any existing behavior (duplicate suffixes, code spans, emphasis, CRLF, marker discipline). Full suite green via python3 -m unittest discover; add guard tests for each case above including the code-span-tag case. Commit on your branch; do not push; do not edit SPEC.md.
+worker_done exactly once naming branch, head SHA, test result, --files-modified.

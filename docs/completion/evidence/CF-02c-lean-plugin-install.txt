@@ -1,4 +1,10 @@
 # 2026-10-13 — CF-02c lean plugin install on a clean Ubuntu container (v0.7.1)
+# Re-captured same day after PR review found the first capture defective: its
+# wrapper read $? after an intervening echo (so every recorded exit was the
+# echo's 0, including the fail-closed gate control's) and the fingerprint
+# script body was not retained. This capture fixes the wrapper (exit read
+# immediately) and cats the fingerprint script before running it. The first
+# capture's substantive results are reproduced below, not carried over.
 # HOME=/home/witness; fresh ubuntu:24.04 container, Python 3.12.3, Claude Code 2.1.296.
 # Prepared from the official Ubuntu image and official claude.ai installer; no host
 # Claude settings, credentials, skills, plugins or repository mounted/copied in.
@@ -15,8 +21,8 @@
 
 
 $ date -u +%Y-%m-%dT%H:%M:%SZ; uname -a; cat /etc/os-release | head -3; /home/witness/.local/bin/claude --version; python3 --version; ls -la ~/.claude/skills; ls -la ~/.claude/plugins; command -v orca || true
-2026-10-13T18:08:30Z
-Linux 9600a054e829 7.2.9-orbstack-00391-g2b298d05fbd4 #1 SMP PREEMPT Mon Oct 12 05:39:36 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+2026-10-13T18:23:13Z
+Linux 5a0302317f78 7.2.9-orbstack-00391-g2b298d05fbd4 #1 SMP PREEMPT Mon Oct 12 05:39:36 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
 PRETTY_NAME="Ubuntu 24.04.5 LTS"
 NAME="Ubuntu"
 VERSION_ID="24.04"
@@ -51,8 +57,8 @@ $ /home/witness/.local/bin/claude plugin list --json
     "scope": "user",
     "enabled": true,
     "installPath": "/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1",
-    "installedAt": "2026-10-13T18:08:37.089Z",
-    "lastUpdated": "2026-10-13T18:08:37.089Z",
+    "installedAt": "2026-10-13T18:23:19.774Z",
+    "lastUpdated": "2026-10-13T18:23:19.774Z",
     "projectEnabled": false
   }
 ]
@@ -124,15 +130,37 @@ exit=0
 $ ORCA_MANIFEST=/nonexistent.json /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/runtime/scripts/verify-gate.sh --event stop
 verify-gate: evidence manifest named but missing: /nonexistent.json — BLOCKING (fail-closed)
 
-exit=0
+exit=2
 
 $ git clone --quiet --branch dist --single-branch https://github.com/ravidsrk/orca-fleet.git ~/dist-tree && git clone --quiet https://github.com/ravidsrk/orca-fleet.git ~/src && git -C ~/src checkout -q 5331b9b89655cee25c97cb30fcf6007eaa409a44 && git -C ~/src rev-parse HEAD
 5331b9b89655cee25c97cb30fcf6007eaa409a44
 
 exit=0
 
+$ cat /tmp/plugin-fingerprint.py
+
+from pathlib import Path
+import hashlib
+cache = Path("/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1")
+dist = Path("/home/witness/dist-tree")
+def files(root):
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                  if p.is_file() and ".git" not in p.relative_to(root).parts)
+def fingerprint(root, names):
+    h = hashlib.sha256()
+    for name in names:
+        h.update(name.encode() + b"\0" + hashlib.sha256((root / name).read_bytes()).hexdigest().encode() + b"\n")
+    return h.hexdigest()
+dist_files, cache_files = files(dist), files(cache)
+print("paths only in dist tree:", sorted(set(dist_files) - set(cache_files)))
+print("paths only in installed copy (bookkeeping/generated):", sorted(set(cache_files) - set(dist_files)))
+a, b = fingerprint(cache, dist_files), fingerprint(dist, dist_files)
+print("installed tree SHA256:", a)
+print("published dist tree SHA256:", b)
+assert a == b
+print("all", len(dist_files), "dist paths match the installed copy")
+
 $ python3 /tmp/plugin-fingerprint.py
-# Script executed:
 paths only in dist tree: []
 paths only in installed copy (bookkeeping/generated): []
 installed tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a

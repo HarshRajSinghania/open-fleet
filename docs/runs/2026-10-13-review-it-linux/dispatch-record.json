@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "review-it-linux-28206",
+    "contract_digest": "sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4",
+    "unit_class": "report-only"
+  },
+  "sig_b64": "qpUQYimZOAq0ulrw6nNz83aMRbqVuMT6WQY5lT2DwbYj/W/CSAV6aUww6B2j2n5hB+fWvTEryaLnCEhKyRbNCg=="
+}

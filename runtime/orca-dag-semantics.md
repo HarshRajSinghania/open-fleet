@@ -3,7 +3,7 @@
 Ground truth about how Orca's orchestration DAG behaves for fleets that drive it with CLI verbs
 (`run-create` / `task-create` / `worker-start` / `check` / `send`). Sourced from live-DB research
 plus the version-matched guide the binary serves (`orca skills get orchestration`); treat as
-operational contract, not product marketing. Current schema line: v42 at the pin (`db/contract-constants.ts:22` at v1.4.215 / 3eb1adec; v41 was the v1.4.209 line, and v42 adds the orca-session-id columns, `migrate-v42.ts`).
+operational contract, not product marketing. Current schema line: v43 at the pin (`db/contract-constants.ts:23` at v1.4.224 / 2bb20586; v42 was the v1.4.215 line — orca-session-id columns — and v43 only respells stored `session:<id>` addresses as `orca_session_id:<id>`, `migrate-v43.ts`).
 
 ## A Run is the durable scope primitive
 

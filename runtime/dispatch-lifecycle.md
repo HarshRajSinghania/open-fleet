@@ -14,7 +14,7 @@ When BASE is CREATED, record its fork-point SHA (`git rev-parse <default>`) in t
 
 The normal supervised spawn is **`orca orchestration worker-start`** with `--task --worktree --name --agent --setup run --json` (worktree → terminal →
 readiness → dispatch). It exits 0 only when the worker is **ready**, read narrowly: at v1.4.199 that meant the preamble WRITE WAS ACCEPTED, not
-that a turn started (`local-worker-start.ts:263`). **v1.4.200** flipped it to an observed turn-start (`worker-start-readiness-settlement.ts:91-129`), else `outcome_unknown`; **v1.4.203 (pinned then, `docs/runs/2026-09-16-pin-it-416`) and the current pin v1.4.215 (pin-it-500 P01/P02/P38)** keep it, and the top-level contract is unchanged, so v5 already branches right (#302).
+that a turn started (`local-worker-start.ts:263`). **v1.4.200** flipped it to an observed turn-start (`worker-start-readiness-settlement.ts:91-129`), else `outcome_unknown`; **v1.4.203 (pinned then, `docs/runs/2026-09-16-pin-it-416`) and v1.4.215 (pin-it-500 P01/P02/P38)** keep it; the v1.4.224 delta changed no `worker-start` usage or flags, and the top-level contract is unchanged, so v5 already branches right (#302).
 
 The receipt carries more than the flat four: `runId, taskId, dispatchId, state, stage, setup, launch{requested,effective}, mode, effects[],
 residualResources[]`, and on a bad start `failedStage, lastError, recovery, nextCommands` (`worker-start-receipt.ts:42-69`). The agent terminal is the
@@ -44,8 +44,8 @@ The runtime enforces this and the fleet had none of it written down. Every missi
 
 - `worker_done` **requires `--outcome succeeded|failed`** and **omits `--to`** — an active Dispatch defaults to its owning Run mailbox, which is the preferred
   address; a terminal handle is not (`cli/specs/orchestration.ts:76-77`, `orchestration/worker-contract:71`).
-- Every worker send carries `--from <worker_handle> --dispatch-capability <capability>`, both handed to it in the preamble
-  (`orchestration/worker-contract:13,25-27`).
+- Every worker send carries the preamble's exact flags (`--from <worker_handle>`; `--dispatch-capability`
+  only when the preamble carries it — a current 1.4.224 host's does not) (`worker-contract:5-6,14`).
 - Evidence rides TYPED flags — `--report-path <path>`, `--files-modified <csv>` — not a hand-rolled `--payload` JSON blob, which PowerShell strips quotes from
   (`cli/specs/orchestration.ts:49`).
 - A worker runs `check --terminal <its own handle>` at checkpoints and once before `worker_done`. A `consumer_fenced` from that check means **stop**: it no
@@ -71,7 +71,7 @@ one worker per axis — never by a reviewer worker fanning out its own.
 Operational specifics: a worktree id is the composite `<repoId>::<worktreePath>` returned by `worktree create --json` — pass `path:/abs/worktree/path`
 (unambiguous) or that full id, never the bare repo id. The CLI is `orca-ide` on Linux (`bundled-cli-launcher-path.ts:4`; upstream's shared CLI-resolution stub under `skill-stubs/_shared`, lines 12-14, says why: bare `orca` there is the GNOME screen reader) — every fleet script resolves the name through `runtime/scripts/orca_cli.py` (#510), never spells it. After an accepted `worker_done`, run **`worker-release --dispatch <id>`** (Orca preserves inspectable output, then closes only the exact
 agent terminal that dispatch owned) — or `worker-retain` at the user's explicit request. Its exit contract: `retained`, `release_pending`, and
-`already_released` all exit 0 (it is idempotent); an unknown dispatch exits 1 (`dispatch_not_found`, witnessed at v1.4.204, re-verified at v1.4.209 and v1.4.215) and needs the receipt's own recovery action
+`already_released` all exit 0 (it is idempotent); an unknown dispatch exits 1 (`dispatch_not_found`, witnessed at v1.4.204, re-verified at v1.4.209, v1.4.215, and live at v1.4.224) and needs the receipt's own recovery action
 (`orchestration-worker-specs.ts:101`). The pane that outlived its `worker_done` under a new handle (the old dual-writer class) is now fenced by the runtime at
 settlement; release is still the fleet's hygiene step — never on a timeout, TUI-idle, or a heartbeat gap (those are liveness questions, liveness-resume.md,
 not completion).
@@ -127,7 +127,7 @@ recovery action; the loop is the manual one (task-create → worker-start → `c
 - Mutations accept `--retry-request <id>` WITHIN one method: re-issue through the same method and the runtime dedupes; across methods it is refused (E2)
   (`request-show --request <id>`; `completed`/`pending`/`absent`). Use it on every non-idempotent orchestration call.
 - Group addresses are the sender's own Run (orchestration guide, Addresses): every group except `@worktree:<id>` reaches that Run's live Dispatches and excludes its coordinator — a blocker goes to `run:<id>`, an unbound sender is refused, and `--run` does not grant membership. `@worktree:<id>` also reaches coordinators.
-  The runtime rejects a group for `worker_done` and `heartbeat` only (`message-send-handler.ts:55-59`); a `merge_ready` to `@all` fans out inside that Run. Lifecycle messages go to `dispatch:<id>` or `run:<id>`.
+  The runtime rejects a group for `worker_done` and `heartbeat` only (`message-send-handler.ts:55-59`); a `merge_ready` to `@all` fans out inside that Run. Lifecycle messages go to `dispatch:<id>` or `run:<id>`; mail to a `dispatch:<id>` whose terminal now coordinates its own child Run is redirected to that Run's mailbox with a `recipient_run_bound_redirect` warning (replayed live at v1.4.224; pinning the parent with `--run` instead errors `recipient_run_mismatch`).
   A `worker_done` for the active `taskId`+`dispatchId` auto-completes the task; reserve `task-update --status completed` for recovery and override.
 - The runtime writes no `type=dispatch`/`type=handoff` rows on inject, though both are valid `send --type` values a fleet could write and the retired
   coordinator ignores. `merge_ready` is fleet-written only (merge-serialization.md); point at the evidence manifest with the typed `--report-path <path>`
@@ -145,12 +145,12 @@ Retire each unit's worktree when its unit MERGES, not at run end — tearing dow
 `WT_CLEAN`. Verify first: the PR is `state=MERGED`, the branch is deleted, and `git status` in the worktree is clean. NEVER remove the coordinator's own
 worktree, a dirty worktree, or one whose branch is unmerged; if removal is refused, archive instead of forcing. Both leak and force-clean classes are
 ledgered: `unit · worktree · retired ts`. Name the verbs: terminals first with `terminal close --worktree <selector> --all`, the canonical teardown that stops
-every process the workspace owns and durably removes its tabs, layouts, and resume records (`cli/specs/terminal-close.ts:8-14`; `terminal stop` is deprecated-and-hidden in source but its handler is still present at ee1c5220 — `core.ts:240-247`, `handlers/terminal.ts:137-142` — so removal is unproven and the live re-probe stays parked)
+every process the workspace owns and durably removes its tabs, layouts, and resume records (`cli/specs/terminal-close.ts:8-14`; `terminal stop` stays deprecated-and-hidden but EXECUTES — witnessed live at v1.4.224 stopping every terminal in the worktree — so it is a working blunt instrument, never the canonical teardown: spawns keep using `close`)
 — then the tree with `worktree rm --worktree id:<repoId>::<path>` (`orca-cli:91`). A bulk close that cannot confirm every PTY is `unverifiable`, not clean:
 ledger it as a leak, never force it.
 
 ## Live probes owed (pin-it)
 
-The live PIN is v1.4.215 (`docs/runs/2026-09-28-pin-it-500.md` — witnessed against the release bundle while the on-PATH app lagged at the 2026-09-28 witness; `runtime/pins.json` `witness_binary`/`onpath_at_witness` carry the divergence). Before it: 1.4.209 `docs/runs/2026-09-23-pin-it-488.md`, 1.4.204 `docs/runs/2026-09-20-pin-it-427.md`. Every probe the 1.4.203 session parked
-for want of a live Orca terminal was retired at 1.4.204 (scratch Run + workers, receipts on disk): MANUAL-host `worker-start` (no args → LAUNCHED_UNUSABLE), inject `input_accepted` (never replayed), `--types` whole-batch wake, `merge_ready --to @all` (resolution error only), bogus-dep refutation, and gate→preamble (resolution NOT injected).
-Still PARKED per the v1.4.215 register: doctor verdict shapes, the legacy-takeover live replay, the roster/remote/OS/isolated-runtime probes, `terminal stop` execute, and the worker-list / send-no-sender re-probes.
+The live PIN is v1.4.224 (`docs/runs/2026-10-12-pin-it-224.md` — delta re-witness plus live replay on the Linux `orca-ide serve` substrate; installed app + CLI co-resident 1.4.224). Before it: 1.4.215 `docs/runs/2026-09-28-pin-it-500.md`, 1.4.209 `docs/runs/2026-09-23-pin-it-488.md`, 1.4.204 `docs/runs/2026-09-20-pin-it-427.md`. Every probe the 1.4.203 session parked
+for want of a live Orca terminal was retired at 1.4.204 (scratch Run + workers, receipts on disk): MANUAL-host `worker-start` (no args → LAUNCHED_UNUSABLE), inject `input_accepted` (never replayed), `--types` whole-batch wake, `merge_ready --to @all` (resolution error only), bogus-dep refutation, and gate→preamble (resolution NOT injected). The 1.4.224 run retired most of the live queue on a manual-terminal Dispatch: fencing paths, manual-terminal worker-abandon retention, `terminal stop` execute, worker-list content, send-no-sender wording, doctor verdict shapes.
+Still PARKED per the v1.4.224 register: the legacy-takeover live replay (needs a legacy Run), `caller.orcaSessionId` and worker-abandon on agent-owned terminals plus a literal send-side `consumer_fenced` (need an agent-backed Dispatch), and the roster/remote/isolated-runtime probes (other hosts/accounts; Linux arm64 witnessed).

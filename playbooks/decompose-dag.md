@@ -24,7 +24,7 @@ Record every returned id in the ledger (id ↔ slice table = the run scope liven
 **The spec is where the worker learns its `worker_done` contract** — the runtime enforces it and
 will not teach it. Each slice's spec states: `worker_done` requires `--outcome succeeded|failed`
 and OMITS `--to` (it defaults to the Dispatch's Run mailbox); every send carries `--from
-<worker_handle> --dispatch-capability <capability>` from the preamble; the evidence manifest rides
+<worker_handle>` plus any other flag the preamble carries, verbatim; the evidence manifest rides
 the typed `--report-path <path>` (with `--files-modified`), never a `reportPath` payload key; and
 the worker runs `check --terminal <its own handle>` before `worker_done` — a `consumer_fenced`
 there means STOP and send nothing (dispatch-lifecycle.md).

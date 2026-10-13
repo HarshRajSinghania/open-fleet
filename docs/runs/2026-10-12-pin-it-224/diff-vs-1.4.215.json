@@ -1,0 +1,98 @@
+{
+  "baseline": "docs/runs/2026-09-28-pin-it-500",
+  "fresh": "docs/runs/2026-10-12-pin-it-224",
+  "agent_context": {
+    "baseline_file": "agent-context-1.4.215.json",
+    "fresh_file": "agent-context.json",
+    "baseline_count": 239,
+    "fresh_count": 249,
+    "added": [
+      "account rm",
+      "account select",
+      "environment cancel-stop",
+      "environment forget",
+      "environment recover",
+      "environment rollback",
+      "environment status",
+      "environment stop",
+      "environment update",
+      "repo set"
+    ],
+    "removed": [],
+    "changed": [
+      "account add",
+      "account list",
+      "agent hooks prepare-codex",
+      "automations create",
+      "automations edit",
+      "file diff",
+      "file open",
+      "file open-changed",
+      "orchestration check",
+      "orchestration run-current",
+      "orchestration run-use",
+      "orchestration task-update",
+      "orchestration worker-start",
+      "profile state exports",
+      "profile state rollback",
+      "serve",
+      "status",
+      "worktree create",
+      "worktree set"
+    ]
+  },
+  "help_root": {
+    "baseline_file": "help-root-1.4.215.txt",
+    "fresh_file": "help-root.txt",
+    "status": "changed",
+    "added_lines": 19,
+    "removed_lines": 13,
+    "preview": [
+      "@@ -20,2 +20,4 @@",
+      "-  account add               Add a managed Claude or Codex account on this Orca host",
+      "-  account list              List managed Claude and Codex accounts on this Orca host",
+      "+  account add               Add a managed agent account on this Orca host",
+      "+  account list              List managed agent accounts on this Orca host",
+      "+  account select            Select an OpenCode or Devin account for new launches",
+      "+  account rm                Remove an OpenCode or Devin account and its private data",
+      "@@ -64,0 +67 @@",
+      "+  repo set                  Set whether non-Orca worktrees are shown for a repo",
+      "@@ -78,3 +81,3 @@",
+      "-  file open                 Open a workspace file in the Orca editor",
+      "-  file diff                 Open a workspace file diff in the Orca editor",
+      "-  file open-changed         Open all git-changed files for a workspace",
+      "+  file open                 Open a file as a tab, view stays put (--focus brings you to it)",
+      "+  file diff                 Open a file diff as a tab, view stays put (--focus brings you to it)",
+      "+  file open-changed         Open changed files as tabs, view stays put (--focus brings you there)",
+      "@@ -97,2 +100,2 @@",
+      "-  orchestration run-use     Bind this coordinator terminal to an existing Run",
+      "-  orchestration run-current Show this terminal's bound Run",
+      "+  orchestration run-use     Bind this coordinator to an existing Run"
+    ]
+  },
+  "terminal_help": {
+    "baseline_file": "terminal-help-1.4.215.txt",
+    "fresh_file": "terminal-help.txt",
+    "status": "identical",
+    "added_lines": 0,
+    "removed_lines": 0,
+    "preview": []
+  },
+  "guides": {
+    "baseline_dir": "guides-1.4.215",
+    "fresh_dir": "guides",
+    "added": [],
+    "removed": [],
+    "changed": [
+      "orca-cli--automations.md",
+      "orca-cli.md",
+      "orchestration--coordinator-loop.md",
+      "orchestration--messaging-and-gates.md",
+      "orchestration--recovery-and-cleanup.md",
+      "orchestration--worker-contract.md",
+      "orchestration.md"
+    ],
+    "identical": 7
+  },
+  "drift": true
+}

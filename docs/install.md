@@ -74,16 +74,20 @@ Run these inside a Claude Code session:
 /plugin install orca-fleet@orca-fleet
 ```
 
-A plugin install copies the whole repo, so the bare-name lookups and the `../../ARCHITECTURE.md`
-link resolve inside the plugin directory — and it is the one path where the completion gate wires itself, because
-`${CLAUDE_PLUGIN_ROOT}` resolves the plugin directory. Follow the install UI to choose a scope,
+Since 0.7.1 the marketplace sources the plugin from the generated `dist` tree: the install
+copies that lean tree (each mission self-contained, its playbooks and runtime docs vendored
+under its own `references/`), so the bare-name lookups resolve inside the plugin directory —
+and it is the one path where the completion gate wires itself, because
+`${CLAUDE_PLUGIN_ROOT}` resolves the plugin directory. At v0.7.0 and earlier a plugin
+install copied the whole repo instead. Follow the install UI to choose a scope,
 then check the reported activation status. Type `/` and look for skills such as
 `/orca-fleet:review-it`. See the upstream [plugin installation guide](https://code.claude.com/docs/en/discover-plugins)
 for host-specific scope and activation behavior.
 
 The [clean-container transcript](completion/evidence/CF-02b-plugin-install.txt) records Claude
 Code 2.1.285 installing all 22 missions and discovering `Stop` and `TaskCompleted` hooks on
-Ubuntu 24.04.4. Every tracked file matches the `v0.7.0` cut. The
+Ubuntu 24.04.4 — the v0.7.0 whole-tree install; the lean shape's witness is run per the same
+[procedure](completion/PLUGIN-INSTALL-WITNESS.md) at its own tag. Every tracked file matches the `v0.7.0` cut. The
 [uninstall control](completion/evidence/CF-02b-plugin-uninstall.txt) removes the mission
 registrations and checks the gate blocks a missing manifest. This witnesses packaging and
 registration; it does not claim an authenticated agent turn, an agent event invoking the gate,

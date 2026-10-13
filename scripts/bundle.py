@@ -93,11 +93,14 @@ REQUIRED_RUNTIME = tuple(f"runtime/scripts/{name}" for name in (
 )) + ("runtime/one-way-doors.json", "runtime/pins.json")
 # build-change's mandatory reporting input is outside the protocol directories.
 SUPPORT_DOCS = ("docs/runs/TEMPLATE.md",)
+# The bundle doubles as the installable lean plugin, so its manifests are build inputs too.
+PLUGIN_MANIFESTS = (".claude-plugin/plugin.json", "hooks/hooks.json")
 
 
 def missing_inputs(protocols):
     """Check declared requirements before discovered files can define the inventory."""
-    problems = [f"missing required source: {name}" for name in (*REQUIRED_RUNTIME, *SUPPORT_DOCS)
+    problems = [f"missing required source: {name}"
+                for name in (*REQUIRED_RUNTIME, *SUPPORT_DOCS, *PLUGIN_MANIFESTS)
                 if not (ROOT / name).is_file()]
     for path in [*SKILLS_DIR.glob("*/SKILL.md"), *(ROOT / "playbooks").glob("*.md"),
                  *(ROOT / "runtime").glob("*.md")]:

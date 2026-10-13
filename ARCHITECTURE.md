@@ -183,8 +183,8 @@ change in what a coordinator reads at activation, not a relabelling. Where they 
 | Mission | Activation load | Headroom to the cap |
 |---|---|---|
 | `reshape-it` | ~33,700 | ~300 |
-| `oncall-it` | ~33,400 | ~600 |
-| `migrate-it` | ~33,400 | ~600 |
+| `oncall-it` | ~33,500 | ~500 |
+| `migrate-it` | ~33,500 | ~500 |
 
 The cap is **34,000**. The lightest mission, `offload-it`, is ~14,900, so the whole catalog sits in a ~18,900-token band.
 <!-- END GENERATED: activation-load -->

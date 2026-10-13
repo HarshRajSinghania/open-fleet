@@ -51,7 +51,7 @@ must act now." Full DAG context: orca-dag-semantics.md.
 |-------|------|----------|
 | **Mechanical** | one defensible answer (tooling with a repo precedent, naming, retry-on-transient) | coordinator auto-resolves; append the DECISIONS log (ledger-contract.md) |
 | **Taste** | reasonable disagreement, reversible (API shape, copy, structure within spec) | pick recommendation (or Lane B); log DECISIONS; human may veto |
-| **One-way** | hard/impossible to reverse or out-of-authority — the enumerated registry is `one-way-doors.json`: merge to default, deploy, rollback, deletion, spend, freeze, scope change, secret rotation, live credentials | HUMAN ONLY. Never auto-resolved. Never defaulted on timeout. |
+| **One-way** | hard/impossible to reverse or out-of-authority — the enumerated registry is `one-way-doors.json`: merge to default, deploy, rollback, deletion, spend, freeze, scope change, secret rotation, live credentials | HUMAN ONLY. Never auto-resolved. Never defaulted on timeout. Signed when `.orca/human-grant-pubkey` is pinned (decisions.py). |
 
 ## Three lanes (what a unit is allowed to do)
 

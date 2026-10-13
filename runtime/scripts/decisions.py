@@ -32,9 +32,14 @@ What ``append`` refuses to write, and why each refusal exists:
   field (which keeps the format at six fields). Only the append-time
   ``--source`` flag supplies it: the same text typed into ``--why`` prose is
   refused, because a worker can type any prose. The name records who the
-  coordinator states granted the door; it is a record-format check, not
-  identity authentication -- authentication is the channel that delivered
-  the human's answer to the coordinator, never this file.
+  coordinator states granted the door; without a pinned key it is a
+  record-format check, not identity authentication. Committing the human's
+  ed25519 public key as ``.orca/human-grant-pubkey`` turns authentication on:
+  append then requires ``--grant-sig`` (produced by ``sign-grant`` with the
+  human's seed, kept off every repo and worker via ``grant-keygen``), the
+  signature binds id+answer+why+task, and ``check`` verifies every recorded
+  signature (a signed line with no pinned key fails closed). Lines written
+  before the pin landed carry no signature and stay readable history.
 
 Subcommands
     append   validate and append one line
@@ -67,8 +72,11 @@ How to wire
     --answer 0 --why "diff touched no auth surface" --task t-14``
 """
 import argparse
+import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,7 +99,21 @@ DEFAULT_DOORS = Path(__file__).resolve().parent.parent / "one-way-doors.json"
 NEVER_GATE = ("security", "privacy", "data-migration")
 GATE_OFF_STREAK = 10
 
-HUMAN_SOURCE_SUFFIX = re.compile(r"\[source=human:([^\s\]]+)\]\s*$")
+HUMAN_SOURCE_SUFFIX = re.compile(
+    r"\[source=human:([^\s\]]+?)(?: sig=([0-9a-fA-F]{128}))?\]\s*$")
+GRANT_PUBKEY_REL = Path(".orca") / "human-grant-pubkey"
+_ED = None
+
+
+def _ed25519():
+    global _ED
+    if _ED is None:
+        here = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location("ed25519", here / "ed25519.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ED = mod
+    return _ED
 HUMAN_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*$")
 # A source naming an agent role is the fake-human shape itself: the marker
 # exists to name the person who granted the door.
@@ -181,17 +203,60 @@ def fold(text):
     return " ".join(_canon(t) for t in tokens if t not in _FILLER)
 
 
-def human_source_of(record):
-    """The recorded human name, or None. Only the canonical suffix of the
-    why field counts, the name must be person-shaped, and an agent role
-    name is refused by shape."""
-    match = HUMAN_SOURCE_SUFFIX.search(record.get("why", ""))
+def human_grant_of(record):
+    """(name, sig-hex-or-None, why-core) from the canonical why suffix, or
+    (None, None, why). Only the suffix counts, the name must be
+    person-shaped, and an agent role name is refused by shape."""
+    why = record.get("why", "")
+    match = HUMAN_SOURCE_SUFFIX.search(why)
     if not match:
-        return None
-    name = match.group(1)
+        return None, None, why
+    name, sig = match.group(1), match.group(2)
     if not HUMAN_NAME.match(name) or name.lower() in RESERVED_HUMAN_NAMES:
-        return None
-    return name
+        return None, None, why
+    return name, sig.lower() if sig else None, why[:match.start()].rstrip()
+
+
+def human_source_of(record):
+    """The recorded human name, or None (see human_grant_of)."""
+    return human_grant_of(record)[0]
+
+
+def grant_payload(ident, answer, why_core, task_id=""):
+    """Canonical bytes a human grant signature binds (domain-separated)."""
+    return ("orca-fleet human grant v1\n" + "\n".join(
+        [ident, answer, why_core, task_id or ""])).encode("utf-8")
+
+
+def grant_pubkey(log_path):
+    """Pinned human-grant pubkey bytes for this log, or None when unpinned.
+
+    Only the owning repository ROOT's pin counts (the first ancestor of the
+    log carrying `.git`, else this script's own repo). A key dropped beside
+    the log by a worker must never outrank the committed root pin — the
+    ancestor search this replaced let `docs/.orca/…` override the human's
+    key (PR #546 review). A malformed pin is could-not-run, never a pass."""
+    resolved = Path(log_path).resolve()
+    root = Path(__file__).resolve().parent.parent.parent
+    for parent in resolved.parents:
+        if (parent / ".git").exists():
+            root = parent
+            break
+    for pin in [root / GRANT_PUBKEY_REL]:
+        try:
+            if not pin.exists():
+                continue
+            text = pin.read_text(encoding="utf-8").strip()
+        except OSError as err:
+            raise DecisionsError(f"{pin} is unreadable: {err}") from err
+        try:
+            pub = bytes.fromhex(text)
+        except ValueError as err:
+            raise DecisionsError(f"{pin} is not a hex public key: {err}") from err
+        if len(pub) != 32:
+            raise DecisionsError(f"{pin} is not a 32-byte public key")
+        return pub
+    return None
 
 
 def door_hits(text, net):
@@ -237,7 +302,7 @@ def parse_line(line):
     return record
 
 
-def validate(record, net):
+def validate(record, net, grant_pub=None):
     """Return a list of violation strings for one parsed record."""
     problems = []
     if not record["id"]:
@@ -251,15 +316,40 @@ def validate(record, net):
     shapes = secret_hits(record["raw"])
     if shapes:
         problems.append(f"credential-shaped text ({', '.join(shapes)}) — the log is permanent")
+    suffix_match = HUMAN_SOURCE_SUFFIX.search(record.get("why", ""))
+    if record["class"] != "one-way" and suffix_match and suffix_match.group(2):
+        problems.append("grant signature on a non-one-way line — a signed suffix "
+                        "only ever binds a one-way grant; refusing an unchecked "
+                        "signed-looking marker")
     hits = door_hits(record["raw"], net)
     if hits and record["class"] != "one-way":
         problems.append(
             f"matches the one-way net ({', '.join(hits)}) but is classed {record['class']!r} — "
             "one-way doors are human-only and are never auto-resolved"
         )
-    if record["class"] == "one-way" and human_source_of(record) is None:
-        problems.append("class one-way with no human source — the why must end with "
-                        "[source=human:<name>] recorded via append --source")
+    if record["class"] == "one-way":
+        name, sig, why_core = human_grant_of(record)
+        if name is None:
+            problems.append("class one-way with no human source — the why must end with "
+                            "[source=human:<name>] recorded via append --source")
+        elif sig is not None:
+            if grant_pub is None:
+                problems.append(
+                    "carries a grant signature but no human grant pubkey is pinned "
+                    "(.orca/human-grant-pubkey) — a signature nothing can verify fails closed")
+            else:
+                try:
+                    verified = _ed25519().checkvalid(
+                        bytes.fromhex(sig),
+                        grant_payload(record["id"], record["answer"], why_core,
+                                      record.get("task_id", "")),
+                        grant_pub)
+                except Exception:
+                    verified = False
+                if not verified:
+                    problems.append(
+                        "grant signature does not verify against the pinned human "
+                        "grant pubkey for this line's id/answer/why/task")
     return problems
 
 
@@ -359,12 +449,22 @@ def tally(records, lens):
 
 
 def cmd_append(args, net):
+    pub = grant_pubkey(args.file)
     ts = args.ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     why = args.why
+    if args.grant_sig and args.klass != "one-way":
+        print("decisions: --grant-sig binds a one-way human grant; it has no meaning "
+              f"on a {args.klass} line", file=sys.stderr)
+        return EXIT_VIOLATION
     if args.klass == "one-way" and not args.source:
         print("decisions: class one-way with no human source — requires --source human:<name>, passed by the "
               "coordinator who received the grant — a source marker typed into --why "
               "is prose any worker can write, not a source", file=sys.stderr)
+        return EXIT_VIOLATION
+    if args.grant_sig and pub is None:
+        print("decisions: --grant-sig given but no human grant pubkey is pinned "
+              "(.orca/human-grant-pubkey) — refusing a signature nothing can verify",
+              file=sys.stderr)
         return EXIT_VIOLATION
     if args.source:
         match = re.fullmatch(r"human:(\S+)", args.source)
@@ -373,13 +473,37 @@ def cmd_append(args, net):
             print("decisions: --source must be shaped human:<name> and name a person, "
                   "not an agent role", file=sys.stderr)
             return EXIT_VIOLATION
-        suffix = f"[source={args.source}]"
-        if suffix not in why:
-            if "source=" in why:
+        embedded = HUMAN_SOURCE_SUFFIX.search(why)
+        effective_sig = args.grant_sig
+        if embedded:
+            if embedded.group(1) != name or (
+                    embedded.group(2) and effective_sig
+                    and embedded.group(2).lower() != effective_sig.lower()):
                 print("decisions: --why carries a source marker that does not match "
                       "--source; refusing a smuggled or mismatched source", file=sys.stderr)
                 return EXIT_VIOLATION
-            why = f"{why} {suffix}"
+            effective_sig = effective_sig or embedded.group(2)
+            why = why[:embedded.start()].rstrip()
+        elif "source=" in why:
+            print("decisions: --why carries a source marker that does not match "
+                  "--source; refusing a smuggled or mismatched source", file=sys.stderr)
+            return EXIT_VIOLATION
+        if effective_sig and args.klass != "one-way":
+            print("decisions: a grant signature embedded in --why binds a one-way "
+                  f"grant; it has no meaning on a {args.klass} line", file=sys.stderr)
+            return EXIT_VIOLATION
+        if args.klass == "one-way" and pub is not None and not effective_sig:
+            print("decisions: a human grant pubkey is pinned, so a one-way append "
+                  "requires --grant-sig from the human's key (`sign-grant`)",
+                  file=sys.stderr)
+            return EXIT_VIOLATION
+        if effective_sig:
+            if not re.fullmatch(r"[0-9a-fA-F]{128}", effective_sig):
+                print("decisions: --grant-sig must be 128 hex characters", file=sys.stderr)
+                return EXIT_VIOLATION
+            why = f"{why} [source={args.source} sig={effective_sig.lower()}]"
+        else:
+            why = f"{why} [source={args.source}]"
     for name, value in (("id", args.id), ("answer", args.answer), ("why", why),
                         ("task", args.task or "")):
         if SEP_CHAR in value or "\n" in value:
@@ -393,7 +517,7 @@ def cmd_append(args, net):
         print("decisions: refusing to write an unparseable line", file=sys.stderr)
         return EXIT_VIOLATION
     record["lineno"] = 0
-    problems = validate(record, net)
+    problems = validate(record, net, pub)
     if problems:
         print("decisions: refused:", file=sys.stderr)
         for p in problems:
@@ -440,16 +564,84 @@ def cmd_tally(args, _net):
 
 
 def cmd_check(args, net):
+    pub = grant_pubkey(args.file)
     records = read_lines(args.file)
     failures = []
     for record in records:
-        for problem in validate(record, net):
+        for problem in validate(record, net, pub):
             failures.append(f"{args.file}:{record['lineno']}: {problem}")
     if failures:
         for f in failures:
             print(f, file=sys.stderr)
         return EXIT_VIOLATION
     print(f"decisions: {len(records)} record(s) valid in {args.file}")
+    return EXIT_OK
+
+
+def _seed_in_unignored_worktree(path):
+    """True when `path` sits in ANY git work tree without ignore coverage.
+
+    Delegates to dispatch-sign.py's custody probe (the fleet's single
+    implementation: a .git-ancestor walk plus an env-aware rev-parse, then
+    check-ignore, failing closed on unknown ignore status) so the two seed
+    tools can never drift apart (PR #546 review)."""
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location(
+        "dispatch_sign", here / "dispatch-sign.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._in_unignored_worktree(path)
+
+
+def cmd_grant_keygen(args, _net):
+    """Generate the human grant seed OFF-repo and its public key beside it."""
+    out = Path(args.out).expanduser()
+    pub_path = Path(str(out) + ".pub")
+    if _seed_in_unignored_worktree(out) and not args.in_repo_ok:
+        print("decisions: grant-keygen refuses to write a human seed inside a git "
+              "work tree that does not ignore it (it is a private key — one "
+              "`git add -A` would publish it; keep it with your other keys, e.g. "
+              "~/.orca-fleet/human-grant-key; --in-repo-ok overrides)", file=sys.stderr)
+        return EXIT_VIOLATION
+    if out.exists() or pub_path.exists():
+        print(f"decisions: refusing to overwrite {out} or {pub_path}", file=sys.stderr)
+        return EXIT_VIOLATION
+    seed = os.urandom(32)
+    pub = _ed25519().publickey(seed)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(seed.hex() + "\n")
+        pub_path.write_text(pub.hex() + "\n", encoding="utf-8")
+    except OSError as err:
+        raise DecisionsError(f"grant key could not be written: {err}") from err
+    print(pub.hex())
+    print(f"decisions: seed at {out} (never commit it, never give it to a worker); "
+          f"commit {pub_path} as .orca/human-grant-pubkey to turn signed grants on",
+          file=sys.stderr)
+    return EXIT_OK
+
+
+def cmd_sign_grant(args, _net):
+    """Print the grant signature (hex only) for one exact decision line."""
+    try:
+        seed = bytes.fromhex(Path(args.key).expanduser().read_text(
+            encoding="utf-8").strip())
+    except (OSError, ValueError) as err:
+        raise DecisionsError(f"grant key {args.key} is not a readable hex seed: {err}") from err
+    if len(seed) != 32:
+        raise DecisionsError(f"grant key {args.key} is not a 32-byte seed")
+    why = args.why
+    embedded = HUMAN_SOURCE_SUFFIX.search(why)
+    if embedded:
+        why = why[:embedded.start()].rstrip()
+    ed = _ed25519()
+    sig = ed.signature(
+        grant_payload(args.id.strip(), args.answer.strip(), why.strip(),
+                      (args.task or "").strip()),
+        seed, ed.publickey(seed))
+    print(sig.hex())
     return EXIT_OK
 
 
@@ -470,6 +662,9 @@ def build_parser():
     a.add_argument("--why", required=True, help="why — never empty")
     a.add_argument("--task", default=None, help="optional task id")
     a.add_argument("--source", default=None, help="human:<name> — required for class one-way")
+    a.add_argument("--grant-sig", default=None,
+                   help="128-hex grant signature from sign-grant; required for one-way "
+                        "once .orca/human-grant-pubkey is pinned")
     a.add_argument("--ts", default=None, help="ISO timestamp (default: now, UTC)")
 
     sub.add_parser("active", help="list non-superseded decisions").add_argument(
@@ -480,12 +675,26 @@ def build_parser():
     t.add_argument("--json", action="store_true", help="emit JSON")
 
     sub.add_parser("check", help="validate an existing log")
+
+    k = sub.add_parser("grant-keygen", help="generate the human grant keypair (seed off-repo)")
+    k.add_argument("--out", required=True, help="seed path, e.g. ~/.orca-fleet/human-grant-key")
+    k.add_argument("--in-repo-ok", action="store_true",
+                   help="allow writing the seed inside this repo (not recommended)")
+
+    s = sub.add_parser("sign-grant", help="print the grant signature for one decision line")
+    s.add_argument("--key", required=True, help="human grant seed path from grant-keygen")
+    s.add_argument("--id", required=True)
+    s.add_argument("--answer", required=True)
+    s.add_argument("--why", required=True)
+    s.add_argument("--task", default=None)
     return p
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    handlers = {"append": cmd_append, "active": cmd_active, "tally": cmd_tally, "check": cmd_check}
+    handlers = {"append": cmd_append, "active": cmd_active, "tally": cmd_tally,
+                "check": cmd_check, "grant-keygen": cmd_grant_keygen,
+                "sign-grant": cmd_sign_grant}
     try:
         net = load_doors(args.doors)
         return handlers[args.command](args, net)

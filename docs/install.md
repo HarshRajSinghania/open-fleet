@@ -175,6 +175,14 @@ cut; that is a measured footprint, not a claimed reduction. Use the published se
 `dist` bundles when copying individual missions. A future lean plugin should be a separately
 generated distribution with preserved evidence references, rather than pruning source receipts.
 
+**Lean plugin (since 0.7.1):** that separately generated distribution now exists. The bundle
+tree carries the plugin manifest, hooks, and gate runtime at its root, and the marketplace
+sources the plugin from the `dist` branch, so a plugin install copies the generated tree
+(about 24 MB by build-time `du`) instead of the whole source tree. The archives stay in the
+source tree; symlinked source checkouts are unchanged. The clean-machine witness for this
+shape follows the same [procedure](completion/PLUGIN-INSTALL-WITNESS.md), fingerprinting the
+installed copy against the bundle built at the tagged commit.
+
 ## Check the install
 
 Ask your agent "which missions are available?" — the outcome-named skills should list; with the

@@ -6,6 +6,15 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The plugin install is now the lean generated tree.** `scripts/bundle.py` emits the
+  plugin manifest, hooks, and gate runtime at the bundle root, so the published `dist`
+  tree is itself the installable plugin; the marketplace now sources the plugin from
+  the `dist` branch instead of the whole repository. A plugin install copies about
+  24 MB (build-time `du`) instead of the 66 MiB whole tree measured at v0.7.0. The
+  receipt archives stay in the source tree, untouched — this is the "separately
+  generated distribution" the #518 packaging decision named. Copy installers see no
+  change. (Public-beta draft gate 3.)
+
 - **ship-it earns the catalog's first `external-run`** (#515). A maintainer-frozen
   spec became [ravidsrk/mdtoc](https://github.com/ravidsrk/mdtoc) BUILT @ `046d1f8d`
   on the Linux witness VM: six slices, three review-forced fix rounds, an integrated

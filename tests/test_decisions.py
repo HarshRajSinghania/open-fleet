@@ -235,6 +235,137 @@ class TestOneWayNet(DecisionsBase):
         self.assertIn("could not run", r.stderr)
 
 
+class TestSignedGrants(DecisionsBase):
+    """A pinned human pubkey (.orca/human-grant-pubkey) turns the source
+    marker from a recorded claim into a verified signature."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = Path(self.tmp) / "human.key"
+        self.keygen = subprocess.run(
+            [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(self.key)],
+            capture_output=True, text=True)
+
+    def _pin(self):
+        subprocess.run(["git", "init", "-q", self.tmp], capture_output=True)
+        pub = Path(str(self.key) + ".pub").read_text(encoding="utf-8").strip()
+        orca = Path(self.tmp) / ".orca"
+        orca.mkdir(parents=True, exist_ok=True)
+        (orca / "human-grant-pubkey").write_text(pub + "\n", encoding="utf-8")
+
+    def _sign(self, ident="gate-s1", answer="approved", why="deploy to production",
+              extra=()):
+        return subprocess.run(
+            [sys.executable, str(DECISIONS), "sign-grant", "--key", str(self.key),
+             "--id", ident, "--answer", answer, "--why", why, *extra],
+            capture_output=True, text=True)
+
+    def test_keygen_writes_a_seed_and_a_pubkey_outside_the_repo(self):
+        self.assertEqual(self.keygen.returncode, 0, self.keygen.stderr)
+        self.assertRegex(Path(str(self.key) + ".pub").read_text().strip(), r"^[0-9a-f]{64}$")
+        import stat
+        self.assertEqual(stat.S_IMODE(self.key.stat().st_mode), 0o600,
+                         "the seed is a private key and must be owner-only")
+
+    def test_keygen_refuses_a_seed_inside_this_repo(self):
+        inside = ROOT / "grant-key-refusal-probe"
+        self.assertFalse(inside.exists())
+        try:
+            r = subprocess.run(
+                [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(inside)],
+                capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("inside a git work tree", r.stderr)
+            self.assertFalse(inside.exists())
+            r = subprocess.run(
+                [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(inside),
+                 "--in-repo-ok"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(inside.exists())
+        finally:
+            inside.unlink(missing_ok=True)
+            Path(str(inside) + ".pub").unlink(missing_ok=True)
+
+    def test_keygen_refuses_a_seed_inside_an_unrelated_repo(self):
+        # PR #546 review (round 2): checking only this script's own repo let a
+        # seed land committable in any other checkout on the machine.
+        other = Path(self.tmp) / "other-repo"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], capture_output=True)
+        target = other / "human.key"
+        r = subprocess.run(
+            [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(target)],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("inside a git work tree", r.stderr)
+        self.assertFalse(target.exists())
+
+    def test_a_key_beside_the_log_never_overrides_the_root_pin(self):
+        # PR #546 review (P1): the first ancestor key won, so a worker could
+        # pin its own key at docs/.orca and sign its own grants. Only the
+        # repository-root pin may count.
+        rogue_key = Path(self.tmp) / "rogue.key"
+        subprocess.run([sys.executable, str(DECISIONS), "grant-keygen",
+                        "--out", str(rogue_key)], capture_output=True, text=True)
+        rogue_pub = Path(str(rogue_key) + ".pub").read_text(encoding="utf-8")
+        self._pin()
+        beside = self.log.parent / ".orca"
+        beside.mkdir(parents=True, exist_ok=True)
+        (beside / "human-grant-pubkey").write_text(rogue_pub, encoding="utf-8")
+        sig = subprocess.run(
+            [sys.executable, str(DECISIONS), "sign-grant", "--key", str(rogue_key),
+             "--id", "gate-s1", "--answer", "approved", "--why", "deploy to production"],
+            capture_output=True, text=True)
+        self.assertEqual(sig.returncode, 0, sig.stderr)
+        r = self.append("gate-s1", "one-way", "approved", "deploy to production",
+                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip()))
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_an_embedded_signature_on_a_non_one_way_line_is_refused(self):
+        why = f"routine [source=human:lia sig={'a' * 128}]"
+        r = self.append("gate-s2", "taste", "yes", why,
+                        extra=("--source", "human:lia"))
+        self.assertEqual(r.returncode, 1)
+
+    def test_a_pinned_key_makes_an_unsigned_one_way_append_refuse(self):
+        self._pin()
+        r = self.append("gate-s1", "one-way", "approved", "deploy to production",
+                        extra=("--source", "human:lia"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("grant", r.stderr.lower())
+
+    def test_a_signed_grant_appends_checks_and_tamper_fails(self):
+        self._pin()
+        sig = self._sign()
+        self.assertEqual(sig.returncode, 0, sig.stderr)
+        r = self.append("gate-s1", "one-way", "approved", "deploy to production",
+                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip()))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("sig=", self.log.read_text(encoding="utf-8"))
+        self.assertEqual(self.run_dec("check").returncode, 0)
+        text = self.log.read_text(encoding="utf-8").replace(
+            "· approved ·", "· rejected ·")
+        self.log.write_text(text, encoding="utf-8")
+        bad = self.run_dec("check")
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn("signature", bad.stderr.lower())
+
+    def test_a_signature_for_other_content_is_refused(self):
+        self._pin()
+        sig = self._sign(why="deploy to production")
+        r = self.append("gate-s1", "one-way", "approved", "merge to main",
+                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip()))
+        self.assertEqual(r.returncode, 1)
+
+    def test_without_a_pin_a_grant_sig_fails_closed(self):
+        sig = self._sign()
+        self.assertEqual(sig.returncode, 0, sig.stderr)
+        r = self.append("gate-s1", "one-way", "approved", "deploy to production",
+                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip()))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pubkey", r.stderr.lower())
+
+
 class TestActive(DecisionsBase):
     def test_newest_line_for_an_id_wins(self):
         self.seed([

@@ -52,6 +52,9 @@ class RuntimeStateIsNotCommittable(unittest.TestCase):
         self.assertFalse(self._ignored(".orca/dispatch-pubkey"),
                          "the pubkey is ignored — signature enforcement can no longer be "
                          "turned on by committing it")
+        self.assertFalse(self._ignored(".orca/human-grant-pubkey"),
+                         "the human grant pubkey is ignored — signed one-way grants "
+                         "can no longer be turned on by committing it")
 
     def test_the_rule_excludes_contents_so_the_exception_can_work(self):
         # `.orca/` would read more naturally and would NOT work: git never descends into an
@@ -59,7 +62,8 @@ class RuntimeStateIsNotCommittable(unittest.TestCase):
         # pubkey exception above possible. Same idiom as `.secrets/*` + `!.secrets/*.pub`.
         rules = [ln.strip() for ln in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
                  if ln.strip().startswith((".orca", "!.orca"))]
-        self.assertEqual(rules, [".orca/*", "!.orca/dispatch-pubkey"],
+        self.assertEqual(rules, [".orca/*", "!.orca/dispatch-pubkey",
+                                 "!.orca/human-grant-pubkey"],
                          "the runtime-state rule changed shape — a bare `.orca/` would make "
                          "the pubkey exception silently inert")
 

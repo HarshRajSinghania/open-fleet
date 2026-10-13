@@ -1,0 +1,24 @@
+orca orchestration ask
+
+Usage: orca orchestration ask (--question <text> | --resume <message_id>) [--to <run:id>] [--run <run_id>] [--options <csv>] [--timeout-ms <n>] [--from <handle>] [--retry-request <id>] [--json]
+
+Ask the coordinator a question and block until answered
+
+Options:
+  --help                 Show this help message
+  --json                 Emit machine-readable JSON
+  --pairing-code
+  --environment
+  --to
+  --run
+  --question
+  --resume
+  --dispatch-capability
+  --options
+  --timeout-ms <ms>     Maximum wait time before timing out
+  --from
+  --retry-request
+
+Notes:
+  From an active Dispatch, a new question defaults to its owning Run mailbox.
+  Timeout leaves the question pending; resume with the original message ID.

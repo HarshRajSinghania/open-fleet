@@ -1,0 +1,45 @@
+# Re-pin delta inventory — 1.4.215 pin → 1.4.224 candidate (refreshed 2026-10-13)
+
+Status: RE-WITNESS IN PROGRESS. The pin does NOT move in this branch state.
+`runtime/orca-pin.md` and `runtime/pins.json` still name v1.4.215.
+
+## Refresh basis
+
+- This worktree was fast-forwarded to main `00eee98e` (post-#544) on 2026-10-13;
+  the 2026-10-12 starter files in this directory are kept and re-used.
+- Installed binary: `orca --version` → 1.4.224, which is also the latest GitHub
+  release and the newest tag in the source clone (`~/projects/orca`, fetched
+  2026-10-13; tag `v1.4.224` package.json = 1.4.224). There is no newer target.
+- Starter diff (`diff-vs-1.4.215.json`): agent-context 239 → 249 commands
+  (10 added, 0 removed, 19 changed), 7 of 14 guide files changed, drift=true.
+- Fresh repo-local receipts: `receipts-refresh-2026-10-13/` (version, status,
+  agent-context at 1.4.224, help for send/ask/task-update/worktree-create/
+  worker-start).
+- Substrate limit today: `status.json` in that receipt set reads
+  `app.running=false, runtime.state=not_running`. Every live control-plane
+  replay below is therefore BLOCKED-BY-SUBSTRATE and parked, never classified
+  from that receipt (pin-it SKILL.md anti-pattern).
+
+## Changed-mechanics claims (delta over the frozen 1.4.215 inventory)
+
+| id | Changed mechanic (215 → 224) | Fleet surface | Receipt | Disposition |
+|---|---|---|---|---|
+| D224-1 | Canonical worker `send`/`ask` forms drop `--dispatch-capability`; the guide now says carry any flag the preamble carries (an older host adds the capability). The flag itself is still accepted at 224, and `dispatch_capability_invalid` still exists. | dispatch-lifecycle.md, decompose-dag.md (both taught "every send carries --dispatch-capability") | guides/orchestration--worker-contract.md; receipts-refresh send-help.txt + ask-help.txt (flag still listed); source tag v1.4.224 `src/main/runtime/rpc/errors.ts:132` | PATCHED in this branch (conditional-capability wording) |
+| D224-2 | `send`/`ask` can return `consumer_fenced` when run from another party's terminal | Already taught for `check` (dispatch-lifecycle.md, liveness-resume.md); send/ask wording is additive | guides/orchestration--worker-contract.md | PARKED-LIVE: needs a running app + two terminals to replay |
+| D224-3 | OpenCode accepts `--model` in an existing worktree (new-worktree override and effort unsupported) | No fleet doctrine claims OpenCode rejects `--model` (spawn_worker.sh opencode notes concern the autonomous launch flag) | guides/orchestration--coordinator-loop.md | CURRENT — no fleet claim to patch |
+| D224-4 | `worker-abandon` settle retains an owned terminal; new cancel-Task recipe (`task-update --status failed --result cancelled`) | liveness-resume.md / dispatch-lifecycle.md recovery paths | guides/orchestration--recovery-and-cleanup.md | PARKED-LIVE: guide-only until replayed against a running app |
+| D224-5 | `task-update --result` usage changed `<json>` → `<text>` | task_ops.py passes a JSON string as the result text; receipt typing may differ | agent-context diff (both receipts in this run dir) | PARKED-LIVE: needs one live task-update with a JSON result |
+| D224-6 | `status --json` can carry `caller.orcaSessionId` | No fleet claim reads it | receipts-refresh status.json (absent: app not running, as expected) | PARKED-LIVE |
+| D224-7 | Additive commands/flags only: `account rm/select`, `environment *` (8), `repo set`, worktree `--pr/--gitlab-*/--unread`, automations `--extra-agent-args` | Fleet teaches none of these; 0 commands removed | agent-context diff; receipts-refresh worktree-create-help.txt | CURRENT — no fleet claim to patch |
+| D224-8 | Summary-only wording: `check`, `run-current`, `run-use`, `worker-start` (notes), `terminal` help identical | Fleet command shapes unchanged | receipts-refresh worker-start-help.txt; terminal-help.txt identical per starter diff | CURRENT |
+
+## What finishing this re-pin still needs
+
+1. A running Orca app + bound coordinator terminal, then live replay of
+   D224-2, D224-4, D224-5 and D224-6 (plus the inherited park register from
+   the 2026-09-28 run: P40, P27, D9-execute, live re-probes).
+2. Only then: rewrite the witness/version fields of `runtime/orca-pin.md`,
+   bump `runtime/pins.json` (`orca.binary`, `fleet_floor.binary`, `triple`),
+   and re-check the receiver half (`validate.py` pin claims + `pins.py`).
+3. Land as its own merge after a build-blind review of the doctrine patches,
+   per orca-pin.md §How to re-pin steps 6–7, closing or carrying #508.

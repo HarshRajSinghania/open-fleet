@@ -44,8 +44,8 @@ The runtime enforces this and the fleet had none of it written down. Every missi
 
 - `worker_done` **requires `--outcome succeeded|failed`** and **omits `--to`** — an active Dispatch defaults to its owning Run mailbox, which is the preferred
   address; a terminal handle is not (`cli/specs/orchestration.ts:76-77`, `orchestration/worker-contract:71`).
-- Every worker send carries `--from <worker_handle> --dispatch-capability <capability>`, both handed to it in the preamble
-  (`orchestration/worker-contract:13,25-27`).
+- Every worker send carries the preamble's exact flags (`--from <worker_handle>`; `--dispatch-capability`
+  only when the preamble carries it — a current 1.4.224 host's does not) (`worker-contract:5-6,14`).
 - Evidence rides TYPED flags — `--report-path <path>`, `--files-modified <csv>` — not a hand-rolled `--payload` JSON blob, which PowerShell strips quotes from
   (`cli/specs/orchestration.ts:49`).
 - A worker runs `check --terminal <its own handle>` at checkpoints and once before `worker_done`. A `consumer_fenced` from that check means **stop**: it no

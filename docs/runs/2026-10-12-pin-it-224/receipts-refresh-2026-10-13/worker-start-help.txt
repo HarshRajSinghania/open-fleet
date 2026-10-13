@@ -1,0 +1,48 @@
+orca orchestration worker-start
+
+Usage: orca orchestration worker-start (--task <task_id> | --spec <text>) [--on <saved-environment>] [--worktree <current|selector|new-child|new-top-level>] (--agent <agent> | --terminal <handle>) [--task-title <text>] [--deps <json_array>] [--parent <task_id>] [--model <id>] [--effort <level>] [--name <name>] [--repo <selector>] [--base-branch <ref>] [--display-name <text>] [--comment <text>] [--setup <run|skip|inherit>] [--retry-of <dispatch_id>] [--timeout-ms <n>] [--run <run_id>] [--from <handle>] [--retry-request <id>] [--json]
+
+Start one supervised worker on the Run home or a connected Orca server
+
+Options:
+  --help                 Show this help message
+  --json                 Emit machine-readable JSON
+  --pairing-code
+  --environment
+  --task
+  --spec
+  --task-title <text>    Concise title for an orchestration task
+  --deps
+  --parent
+  --on
+  --worktree <selector>  Worktree selector such as identity:<identity>, id:<repo-id>::<path>, name:<displayName>, branch:<branch>, issue:<number>, path:<path>, or active/current
+  --name <name>          Name for the new worktree or automation
+  --repo <selector>      Repo selector such as id:<id>, name:<name>, or path:<path>
+  --base-branch <ref>    Base branch/ref to create the worktree from
+  --display-name <name>  Override the Orca display name
+  --comment <text>       Comment stored in Orca metadata
+  --setup run|skip|inherit Setup policy for repo-defined setup hooks
+  --agent <id>          Launch a known TUI agent in the first terminal
+  --model <id>          Provider model id for a new agent launch
+  --effort <level>      Reasoning effort for the selected model
+  --terminal <handle>  Runtime-issued terminal handle
+  --retry-of
+  --timeout-ms <ms>     Maximum wait time before timing out
+  --run
+  --from
+  --retry-request
+
+Notes:
+  Current and existing worktrees never rerun setup; a fresh agent terminal is created unless --terminal is explicit.
+  When reusing --terminal, pass --worktree for that terminal; current means the coordinator worktree.
+  --agent takes an Orca agent id enabled on the worker server, such as claude, codex, cursor, antigravity, muse, zcode, opencode, or opencode2.
+  --model supports Claude, Codex, Cursor, Antigravity, and Muse opaque provider model ids; --effort requires --model. OMP accepts --model only; --effort is unsupported. Neither can combine with --terminal. OpenCode model selection requires an existing worktree, a verified execution-host CLI, and an available model; effort is unsupported. Other agents, including zcode, launch with the model from their own config.
+  New worktrees use agent-first creation and default --setup to run. Repository start-immediately runs setup beside the agent; wait-for-setup gates agent readiness and task input.
+  Creation flags (--name, --repo, --base-branch, --display-name, --comment, --setup) are rejected for current/existing worktrees. Use exact --repo on the selected server; project/host convenience routing remains on worktree create.
+  How the worker runs follows the user's own setting for new agent tabs; there is no flag for it and no caller needs to ask. A dispatch the setting cannot apply to still starts, so the placement, agent, and launch options passed here are always the ones honoured.
+  Drive every worker the same way whichever way it was started: the same orchestration verbs, the same handle. Mail, dispatch, worker-show, worker-read and the whole lifecycle behave identically. The start receipt records which one ran, for operators and telemetry.
+  Not every worker has a terminal. Read output with worker-read --source auto or --source transcript, which always work; --source terminal is refused when there is none, and orca terminal verbs do not accept every worker handle. Nothing above needs you to know which kind you have — the orchestration verbs cover all of them.
+  --on selects only the worker server; the Run and this command remain on the current Orca server.
+  Remote current and new-child are invalid; discover an exact remote selector or use new-top-level.
+  --retry-of needs --task naming the failed Task (--spec creates a new one) and does not inherit placement; repeat the intended --on/worktree and --agent/terminal choices.
+  The call exits 0 only for ready. Failed or outcome_unknown exits 1 and JSON includes stage/failedStage, setup, effects, residualResources, and recovery commands when needed.

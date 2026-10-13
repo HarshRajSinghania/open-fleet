@@ -184,7 +184,7 @@ change in what a coordinator reads at activation, not a relabelling. Where they 
 |---|---|---|
 | `clean-sweep` | ~34,000 | ~0 |
 | `reshape-it` | ~33,700 | ~300 |
-| `oncall-it` | ~33,400 | ~600 |
+| `oncall-it` | ~33,500 | ~500 |
 
 The cap is **34,000**. The lightest mission, `offload-it`, is ~14,900, so the whole catalog sits in a ~19,100-token band.
 <!-- END GENERATED: activation-load -->

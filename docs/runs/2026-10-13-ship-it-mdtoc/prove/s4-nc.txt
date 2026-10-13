@@ -1,0 +1,19 @@
+hand negative control (coordinator-executed): remove M* (combining marks) from the slug keep-set; suite must go RED
+diff --git a/mdtoc/toc.py b/mdtoc/toc.py
+index 454cb30..840dfc2 100644
+--- a/mdtoc/toc.py
++++ b/mdtoc/toc.py
+@@ -84,7 +84,7 @@ def github_slug(text):
+     return "".join(
+         "-" if c == " " else c
+         for c in text.lower()
+-        if c in " _-" or unicodedata.category(c)[0] in "LMN"
++        if c in " _-" or unicodedata.category(c)[0] in "LN"  # NC MUTANT: combining marks dropped
+     )
+ 
+ 
+== unittest under mutant (see s4-nc-run.txt, evidence-bound) ==
+----------------------------------------------------------------------
+Ran 88 tests in 0.597s
+
+FAILED (failures=1)

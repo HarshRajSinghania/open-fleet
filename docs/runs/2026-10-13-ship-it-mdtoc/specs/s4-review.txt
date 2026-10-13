@@ -1,0 +1,13 @@
+TASK pack: gstack (review). Build-blind acceptance review of slice S4 (slug + rendered-text hardening).
+Head: resolve with git rev-parse HEAD in your cwd (fleet/build-s4) — must be ec5b1f5fb0dce6391174a03b8989d6bde9844f96.
+Diff: git diff c574a54731095b063b8e3a155dcedb17e5076a52...HEAD
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s4.md (AC-2). Frozen spec: SPEC.md in repo root.
+You did not write this code. Judge with quoted lines and executable probes against GitHub's actual slug rules (lowercase; drop punctuation; spaces -> hyphens; keep letters/marks/numbers/underscore/hyphen; duplicate headings get -1/-2):
+1. Nested links/images: `## [See [inner](http://x)](http://y)` -> label `See inner`, slug `see-inner`.
+2. Inline HTML: `## Hello <em>World</em>` -> `Hello World` / `hello-world`; but a tag inside a code span is literal: `## Use `<div>` here` -> label `Use <div> here`, slug `use-div-here`.
+3. Combining marks: decomposed `## Café` (e + U+0301) keeps the mark in the slug; precomposed form unchanged.
+4. Labels and slugs derive from the same rendered text; a heading whose rendered text is empty is omitted.
+Probe adversarially: unbalanced brackets/backticks, a link whose text contains `]`, an HTML comment in a heading, emphasis inside a link, a heading that is only an image with empty alt, reference-style links, autolinks `<http://x>`. Confirm no regression: full suite green, duplicate suffixes still assigned across ALL headings (including ones filtered out by depth), CRLF and marker behavior untouched. Static test-adequacy: name the guarding test per claim or mark unguarded. Findings: severity + path:line + verbatim quote.
+Verdict line at top WITH THE FULL 40-char head SHA: PASS or FAIL.
+Write report to /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

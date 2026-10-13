@@ -1,0 +1,9 @@
+TASK pack: gstack (review). Build-blind RE-review (round 2) of slice S4 after the autolink fix round.
+Head: resolve with git rev-parse HEAD in your cwd (fleet/build-s4) — must be 4aa77558d1be809ed98acb5ea2847386ef3e9a5d.
+Fix diff: git diff ec5b1f5fb0dce6391174a03b8989d6bde9844f96...HEAD ; full slice diff: git diff c574a54731095b063b8e3a155dcedb17e5076a52...HEAD
+Round-1 review: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4.md (PASS, 1 MEDIUM: autolinks `<http://x>` eaten as HTML tags so the heading vanishes). Coordinator disposition: fix the MEDIUM; add the two missing guards the reviewer flagged (precomposed-accent assertion; duplicate suffixes counting depth-filtered headings). Known limits by design (do not re-raise): sentinel codepoint collision, quoted `>` in tag attributes, balanced parens in link destinations, reference-style links.
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s4.md (AC-2). Frozen spec: SPEC.md in repo root.
+You did not write this code. Re-probe with executable evidence: (a) URL/email autolinks as headings and mixed with text; (b) real tags still stripped, tags in code spans still literal; (c) all round-1 claims (nested links, combining marks, empty rendered text omitted, duplicate suffixes) unregressed; (d) the two new guards exist and would fail if the behavior broke. Name the guarding test per claim or mark unguarded.
+Findings: severity + path:line + verbatim quote. Verdict line at top WITH THE FULL 40-char head SHA: PASS or FAIL.
+Write report to /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4-r2.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

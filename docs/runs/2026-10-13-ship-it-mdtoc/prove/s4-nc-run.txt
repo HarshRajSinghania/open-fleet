@@ -1,0 +1,21 @@
+...........mdtoc: /nonexistent/none.md: no such file
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+...........F................................................................
+======================================================================
+FAIL: test_decomposed_accent_keeps_combining_mark (tests.test_toc.RenderedTextTests.test_decomposed_accent_keeps_combining_mark)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s4/tests/test_toc.py", line 56, in test_decomposed_accent_keeps_combining_mark
+    self.assertEqual(github_slug("Cafe\u0301"), "cafe\u0301")
+AssertionError: 'cafe' != 'café'
+- cafe
++ café
+?     +
+
+
+----------------------------------------------------------------------
+Ran 88 tests in 0.597s
+
+FAILED (failures=1)

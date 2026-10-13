@@ -1,0 +1,186 @@
+{
+  "unit": "mdtoc-s4-slug-hardening",
+  "claim": "S4: GitHub-faithful slugs + rendered-text labels (nested links resolved, inline HTML stripped, autolinks kept as text, combining marks kept) on fleet/build-s4 @4aa7755 (after round-1 PASS-with-MEDIUM + fix round + round-2 clean PASS)",
+  "base_sha": "c574a54731095b063b8e3a155dcedb17e5076a52",
+  "head_sha": "4aa77558d1be809ed98acb5ea2847386ef3e9a5d",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/s4.md@95b0d729ee125669a9023b3cce4a51b55fca29e0",
+    "digest": "sha256:058443a30f3a4f93a2a996f62ebfe8ab09a24cedf82498ed5fcc11c581113b93",
+    "criterion_ids": [
+      "AC-2"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-2",
+      "text": "GitHub anchor slugs; rendered text strips HTML/nested-link markup; combining marks kept; labels = rendered text",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-s4",
+      "ts": "2026-10-13T14:00:20Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.616,
+      "commit": "ec5b1f5fb0dce6391174a03b8989d6bde9844f96",
+      "wtree": "9f192b27df31ded51cc1db267367668953352f43",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-tests.txt"
+    },
+    {
+      "label": "runtime-prove-s4",
+      "ts": "2026-10-13T14:00:20Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/m3.md",
+      "cmd_sha256": "a063e57f892e4b5d6a5aa512f47951ba9aa2e072b6b659bffb2bb40b0d5c988e",
+      "exit": 0,
+      "duration_s": 0.014,
+      "commit": "ec5b1f5fb0dce6391174a03b8989d6bde9844f96",
+      "wtree": "9f192b27df31ded51cc1db267367668953352f43",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-prove.txt"
+    },
+    {
+      "label": "neg-control-s4",
+      "ts": "2026-10-13T14:00:21Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.619,
+      "commit": "ec5b1f5fb0dce6391174a03b8989d6bde9844f96",
+      "wtree": "e4e5a09776fe8d7dfe4f81f7d575b65cb2e45ae5",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc-run.txt"
+    },
+    {
+      "label": "tests-s4-fixed",
+      "ts": "2026-10-13T14:08:52Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.703,
+      "commit": "4aa77558d1be809ed98acb5ea2847386ef3e9a5d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-tests-fixed.txt"
+    },
+    {
+      "label": "runtime-prove-s4-fixed",
+      "ts": "2026-10-13T14:08:52Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/m3.md",
+      "cmd_sha256": "a063e57f892e4b5d6a5aa512f47951ba9aa2e072b6b659bffb2bb40b0d5c988e",
+      "exit": 0,
+      "duration_s": 0.015,
+      "commit": "4aa77558d1be809ed98acb5ea2847386ef3e9a5d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-prove-fixed.txt"
+    },
+    {
+      "label": "neg-control-s4-fixed",
+      "ts": "2026-10-13T14:08:52Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.723,
+      "commit": "4aa77558d1be809ed98acb5ea2847386ef3e9a5d",
+      "wtree": "6462048020fe06b8d17a89596033d1ff265f7874",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc-run-fixed.txt"
+    },
+    {
+      "label": "verifier-s4",
+      "ts": "2026-10-13T14:14:20Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-s4.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/s4.md@95b0d729ee125669a9023b3cce4a51b55fca29e0 --contract-digest sha256:058443a30f3a4f93a2a996f62ebfe8ab09a24cedf82498ed5fcc11c581113b93 --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-s4.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "f0a1fb860f3ee267e088811d99371a20b86f24665f7a49c4c6ae3add40984d6d",
+      "exit": 0,
+      "duration_s": 1.75,
+      "commit": "95b0d729ee125669a9023b3cce4a51b55fca29e0",
+      "wtree": "43d333b5e926eb5f050cc4da1a13986f970d1a67",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-verifier.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "Close the three carried GitHub-slug deviations (nested links, inline HTML, decomposed accents) and make labels derive from rendered text",
+    "ruled_out": "Reference-style link resolution (no definition lookup); balanced-paren destinations; sentinel-collision hardening beyond documentation",
+    "why": "AC-2 defines slugs by reference to GitHub; inputs that leaked raw markup or dropped combining marks produced links GitHub itself would not resolve to the rendered anchor"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (drop M* combining marks from the slug keep-set in mdtoc/toc.py at 4aa7755) turned the suite RED: 1 failure in the decomposed-accent guard \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc-fixed.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "AC-2"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4-record.md",
+    "reviewed_sha": "4aa77558d1be809ed98acb5ea2847386ef3e9a5d"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-tests.txt",
+      "sha256": "7c9df1c6e0f9c9fcf322caead4d7ddf9bb055748aeca7a1ba50f5eb5c64f451e"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-prove.txt",
+      "sha256": "58a7b8e965e219ee5fb16ea1ba8d9217068edecfae612d8e7f8f281de40d1531"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc.txt",
+      "sha256": "f1594fae839efb2da722f9c2b7cdd63fd3a62a2529d49648f31696b83305cde1"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc-run.txt",
+      "sha256": "eaafa1d1d7d34226221a9a938214dbaf75fe69e542cfcf3993d609abef569e33"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-tests-fixed.txt",
+      "sha256": "e24f22bef3877acb6e5a7271f34d179ad3d6768a618c0ee800c60f7c06ae0e44"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-prove-fixed.txt",
+      "sha256": "58a7b8e965e219ee5fb16ea1ba8d9217068edecfae612d8e7f8f281de40d1531"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc-fixed.txt",
+      "sha256": "6a672ab37ddd1c130fea8837f6ba5c385ca1ec25e1988e2a26dbfda6a834f4ec"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-nc-run-fixed.txt",
+      "sha256": "cf259964d283e878346d6e8b363181070bbcb96cdace098a69b91a5ab4f92f8e"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4.md",
+      "sha256": "c3811d6a3e3ed85cf4b12f5fa503bbf76051c8af7bcb098195c18f28cb0987fe"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4-r2.md",
+      "sha256": "b1e80e7126c80be6f3fea6dc46dc0d91f64cfbe17384d0529d255a22f8acabd2"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4-record.md",
+      "sha256": "cb4fd221325087d232c200347dd1fbb0f053142a34fd0b2f278a881711d9b538"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s4-worker-done.json",
+      "sha256": "bc2e39fd985c565b83fd0d28dc24951af4afd6a0ef317038151d3cdafa7aa3d9"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s4-fix-done.json",
+      "sha256": "b788b0b488def63b97c609a7ff6983ab3dc6c77e339bbd065bb8f5635f381330"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s4-review-done.json",
+      "sha256": "fb17cdac7d008f4ed9844317364b535c37a73bff48a38237c3c4369215f27c08"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s4-rereview-done.json",
+      "sha256": "f22021b935576da2df06c45e6bff398ef31f0f1148780dedc893e89164e6bd23"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s4-verifier.txt",
+      "sha256": "acd37824eceffa08984735bbf41517deec4a564dc59bfa2dc46dfe1758abb8b2"
+    }
+  ]
+}

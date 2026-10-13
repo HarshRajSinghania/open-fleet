@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "mdtoc-s4-slug-hardening",
+    "contract_digest": "sha256:058443a30f3a4f93a2a996f62ebfe8ab09a24cedf82498ed5fcc11c581113b93",
+    "unit_class": "mutation"
+  },
+  "sig_b64": "Bg/MLIW4y34ofqJAHE44rfUa2U2cWuYqXM8j3VYJu9kJUaVWwBn3FmQkKHjRfa6GVYpVG3NMfw6lbAOSvpWMBA=="
+}

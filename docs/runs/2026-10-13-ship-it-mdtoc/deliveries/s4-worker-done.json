@@ -1,0 +1,38 @@
+{
+  "id": "ba181779-7bee-4947-9778-b63e0e384df9",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_14c630f1ab45",
+    "messages": [
+      {
+        "id": "msg_9b96fc2adf5d",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_6c587a47-f9cf-4b20-b069-28b2e74ca6bd",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S4 done",
+        "body": "On branch fleet/build-s4 (head ec5b1f5fb0dce6391174a03b8989d6bde9844f96, not pushed) I fixed all three deviations red-first: nested link/image markup resolves innermost-first, inline HTML tags are stripped except inside code spans (which are now literal, including link/emphasis syntax), and slugs keep Unicode L*/M*/N* plus _ and -, so decomposed accents survive. TOC labels now use the same rendered text as slugs and empty-rendered headings are omitted; the full suite passes (88 tests, python3 -m unittest discover) with guard tests for each case including the code-span tag. Nothing left; ruff is not installed here so lint was not run, and I replaced one old test that asserted raw-markup labels.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_204bc820b2ec\",\"dispatchId\":\"ctx_167611d46bfc\",\"outcome\":\"succeeded\",\"filesModified\":[\"mdtoc/toc.py\",\"tests/test_toc.py\"]}",
+        "created_at": "2026-10-13T13:57:29Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "43cbd22b-51ad-455e-acba-351e951e1dc7",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

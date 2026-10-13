@@ -275,7 +275,7 @@ class TestSignedGrants(DecisionsBase):
                 [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(inside)],
                 capture_output=True, text=True)
             self.assertEqual(r.returncode, 1)
-            self.assertIn("inside this repo", r.stderr)
+            self.assertIn("inside a git work tree", r.stderr)
             self.assertFalse(inside.exists())
             r = subprocess.run(
                 [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(inside),
@@ -286,19 +286,32 @@ class TestSignedGrants(DecisionsBase):
             inside.unlink(missing_ok=True)
             Path(str(inside) + ".pub").unlink(missing_ok=True)
 
+    def test_keygen_refuses_a_seed_inside_an_unrelated_repo(self):
+        # PR #546 review (round 2): checking only this script's own repo let a
+        # seed land committable in any other checkout on the machine.
+        other = Path(self.tmp) / "other-repo"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], capture_output=True)
+        target = other / "human.key"
+        r = subprocess.run(
+            [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(target)],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("inside a git work tree", r.stderr)
+        self.assertFalse(target.exists())
+
     def test_a_key_beside_the_log_never_overrides_the_root_pin(self):
         # PR #546 review (P1): the first ancestor key won, so a worker could
         # pin its own key at docs/.orca and sign its own grants. Only the
         # repository-root pin may count.
-        self._pin()
         rogue_key = Path(self.tmp) / "rogue.key"
         subprocess.run([sys.executable, str(DECISIONS), "grant-keygen",
                         "--out", str(rogue_key)], capture_output=True, text=True)
+        rogue_pub = Path(str(rogue_key) + ".pub").read_text(encoding="utf-8")
+        self._pin()
         beside = self.log.parent / ".orca"
         beside.mkdir(parents=True, exist_ok=True)
-        (beside / "human-grant-pubkey").write_text(
-            Path(str(rogue_key) + ".pub").read_text(encoding="utf-8"),
-            encoding="utf-8")
+        (beside / "human-grant-pubkey").write_text(rogue_pub, encoding="utf-8")
         sig = subprocess.run(
             [sys.executable, str(DECISIONS), "sign-grant", "--key", str(rogue_key),
              "--id", "gate-s1", "--answer", "approved", "--why", "deploy to production"],

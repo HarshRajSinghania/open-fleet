@@ -76,6 +76,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -577,19 +578,29 @@ def cmd_check(args, net):
     return EXIT_OK
 
 
+def _seed_in_unignored_worktree(path):
+    """True when `path` sits in ANY git work tree without ignore coverage.
+
+    Delegates to dispatch-sign.py's custody probe (the fleet's single
+    implementation: a .git-ancestor walk plus an env-aware rev-parse, then
+    check-ignore, failing closed on unknown ignore status) so the two seed
+    tools can never drift apart (PR #546 review)."""
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location(
+        "dispatch_sign", here / "dispatch-sign.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._in_unignored_worktree(path)
+
+
 def cmd_grant_keygen(args, _net):
     """Generate the human grant seed OFF-repo and its public key beside it."""
     out = Path(args.out).expanduser()
     pub_path = Path(str(out) + ".pub")
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    try:
-        out.resolve().relative_to(repo_root)
-        inside = True
-    except ValueError:
-        inside = False
-    if inside and not args.in_repo_ok:
-        print("decisions: grant-keygen refuses to write a human seed inside this repo "
-              "(it is a private key — keep it with your other keys, e.g. "
+    if _seed_in_unignored_worktree(out) and not args.in_repo_ok:
+        print("decisions: grant-keygen refuses to write a human seed inside a git "
+              "work tree that does not ignore it (it is a private key — one "
+              "`git add -A` would publish it; keep it with your other keys, e.g. "
               "~/.orca-fleet/human-grant-key; --in-repo-ok overrides)", file=sys.stderr)
         return EXIT_VIOLATION
     if out.exists() or pub_path.exists():

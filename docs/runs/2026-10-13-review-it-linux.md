@@ -1,6 +1,6 @@
 # Run report — review-it external-run (Linux witness, #527), 2026-10-13
 
-RUN: mission=review-it tier=doctrine-only inventory_at=fa878b464a75673de9a20c33a595a490e506e236 manifest=docs/runs/2026-10-13-review-it-linux/manifest.json verifier=GREEN waves=1
+RUN: mission=review-it tier=doctrine-only inventory_at=314d63feafff694ffc51df10c21e15da288fed83 manifest=docs/runs/2026-10-13-review-it-linux/manifest.json verifier=GREEN waves=1
 
 | Field | Value |
 |---|---|
@@ -60,13 +60,18 @@ hides superproject data loss). Aggregate: `verdict.md`.
 
 ## Verifier outcome (recorded exactly)
 
-`python3 runtime/scripts/evidence-run.py --label verifier-rerecord --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --artifact docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --contract-source docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab --contract-digest sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4 --unit-class report-only --dispatch-record docs/runs/2026-10-13-review-it-linux/dispatch-record.json --dispatch-pubkey docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex --repo stablyai/orca`
+`python3 runtime/scripts/evidence-run.py --label verifier-rerecord2 --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --artifact docs/runs/2026-10-13-review-it-linux/verifier-rerecord2.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --contract-source docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab --contract-digest sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4 --unit-class report-only --dispatch-record docs/runs/2026-10-13-review-it-linux/dispatch-record.json --dispatch-pubkey docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex --repo stablyai/orca`
 
-(The first recorded run used an absolute VM path for the verifier, which the
-binder does not count as this repo's verifier; the re-record above in
-repo-relative form is the binding record. Both transcripts are retained.)
+(Three records are retained: the first used an absolute VM path, which the
+binder does not count as this repo's verifier; the repo-relative re-record's
+`wtree` named an uncommitted working tree, which a fresh checkout cannot
+resolve (PR review catch); the binding record is `verifier-rerecord2`,
+recorded in the VM on a clean tree so its `wtree` is the committed tree
+`3757a27b` in reachable history. A host-side attempt between them failed
+closed — Homebrew git is worker-writable on a soundness lane — and was
+discarded, never recorded.)
 
-Output (verbatim, also in `verifier-rerecord.txt`): `NOTE: --base not given — ancestry
+Output (verbatim, also in `verifier-rerecord2.txt`): `NOTE: --base not given — ancestry
 check skipped (pre-merge/offline)` · `NOTE: dispatch record signature verified
 against the supplied key (#135) — a soundness boundary only if that key is
 trusted (off-worker: CI/MCP/SDK or an auditor)` · `verify: OK — all required
@@ -108,7 +113,7 @@ missions have no fix authority).
 
 | Artifact | sha256 | producer |
 |---|---|---|
-| `docs/runs/2026-10-13-review-it-linux/manifest.json` | `3ac30dbc6ec90774470cc99b903edd833d027d70e74924c52678d987cb2c155b` | coordinator + evidence-run.py 2026-10-13 |
+| `docs/runs/2026-10-13-review-it-linux/manifest.json` | `0f0c32bfc820eeadcac1999132fb76ea360b74016bcef0ebe7adf1ab191b3ad3` | coordinator + evidence-run.py 2026-10-13 |
 | `docs/runs/2026-10-13-review-it-linux/contract.md` | `d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4` | coordinator (frozen @d9259acc) 2026-10-13 |
 | `docs/runs/2026-10-13-review-it-linux/spec-source.md` | `9d2ce4f29f540d0df72b6ab549bc11c7b1e4c36808d670dc61a9977e3835f4aa` | gh API capture 2026-10-13 |
 | `docs/runs/2026-10-13-review-it-linux/pr.json` | `e3af9b77cfbf1444c609f61b4fc0d5ef2afcda54d1f16ea9f48b7b0cd690aab7` | gh API capture 2026-10-13 |

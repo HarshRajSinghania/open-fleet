@@ -1257,6 +1257,7 @@ class TestBundleForCopyInstallers(unittest.TestCase):
         # hooks resolve under the plugin root — without them the lean install registers
         # skills but no completion gate (observed against the pre-plugin dist tree).
         import json as _json
+        import os
         mod, tempfile = self._bundle()
         with tempfile.TemporaryDirectory() as tmp:
             built, problems = mod.build(tmp)
@@ -1271,9 +1272,15 @@ class TestBundleForCopyInstallers(unittest.TestCase):
             self.assertEqual(len(commands), 2)
             for command in commands:
                 named = command.split('"')[1] if command.startswith('"') else command.split()[0]
-                target = root / named.replace("${CLAUDE_PLUGIN_ROOT}/", "")
+                self.assertTrue(named.startswith("${CLAUDE_PLUGIN_ROOT}/"),
+                                f"hook command is not plugin-root relative: {command}")
+                target = (root / named.replace("${CLAUDE_PLUGIN_ROOT}/", "")).resolve()
+                self.assertTrue(target.is_relative_to(root.resolve()),
+                                f"hook command escapes the bundle: {command}")
                 self.assertTrue(target.is_file(),
                                 f"hook command resolves outside the bundle: {command}")
+                self.assertTrue(os.access(target, os.X_OK),
+                                f"bundled hook script is not executable: {target}")
             self.assertTrue((root / "skills").is_dir())
 
     def test_a_non_md_outbound_link_is_flagged(self):

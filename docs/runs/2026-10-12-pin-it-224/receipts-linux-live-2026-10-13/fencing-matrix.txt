@@ -1,0 +1,376 @@
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title F-COORD --json
+{
+  "id": "82ea6d5a-0e8b-477b-ba04-9d6e30d72fdd",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_85a6d8c8-2f01-483f-b63b-a68d55444317",
+      "tabId": "307bcc1e-e8db-44c5-8724-536ccd13a138",
+      "paneKey": "307bcc1e-e8db-44c5-8724-536ccd13a138:4fbc1602-0b8c-449e-82af-5708fea66ee0",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@f1cc1448",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "F-COORD",
+      "executionHostId": "local",
+      "incarnationId": "0cfb9e56-6094-49c5-8dd7-ea4160878acf",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_85a6d8c8-2f01-483f
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title F-WORKER --json
+{
+  "id": "1a979a7e-0bf8-4231-b6b6-bd33544c3c61",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_1713f4d5-65b7-47dc-9356-eaaeb741a9b7",
+      "tabId": "e2bd3576-b2f1-402c-a58b-ac7648d6bf98",
+      "paneKey": "e2bd3576-b2f1-402c-a58b-ac7648d6bf98:f3e83d86-465a-4b52-8ff3-8c1f48b94a6f",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@d5b15c69",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "F-WORKER",
+      "executionHostId": "local",
+      "incarnationId": "e63ff38f-c70a-423c-9790-ef6f53f96f83",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_1713f4d5-65b7-47d
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title F-OTHER --json
+{
+  "id": "815720f9-f1be-4fa4-b401-9806d81f605b",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_35ab52e5-7c69-43f1-99d9-5153c03f50d8",
+      "tabId": "86b4f54d-34d2-479e-8e22-116b5cb8b0c1",
+      "paneKey": "86b4f54d-34d2-479e-8e22-116b5cb8b0c1:bbdefca4-ba12-418a-9b9e-3a3b9965448c",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@b177ef71",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "F-OTHER",
+      "executionHostId": "local",
+      "incarnationId": "f08c36e2-9221-4cc4-9616-62571a50a60c",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_35ab52e5-7c69-43f1
+exit 0
+
+$ orca-ide orchestration run-create --objective fencing matrix (disposable) --from term_85a6d8c8-2f01-483f-b63b-a68d55444317 --json
+{
+  "id": "a0f51400-7607-4811-930c-ba8e122f60b7",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_6bc830247dbb",
+      "objective": "fencing matrix (disposable)",
+      "coordinator_handle": "term_85a6d8c8-2f01-483f-b63b-a68d55444317",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T06:08:01Z",
+      "updated_at": "2026-10-13T06:08:01Z"
+    },
+    "mutation": {
+      "requestId": "ec6b36f4-f22f-4376-805f-e491e791eee7",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration task-create --spec fencing matrix task --run run_6bc830247dbb --from term_85a6d8c8-2f01-483f-b63b-a68d55444317 --json
+{
+  "id": "3eaae1da-4920-4901-b3e6-1c34f462782a",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_20c73eb80e67",
+      "run_id": "run_6bc830247dbb",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_85a6d8c8-2f01-483f-b63b-a68d55444317",
+      "created_by_pane_key": "307bcc1e-e8db-44c5-8724-536ccd13a138:4fbc1602-0b8c-449e-82af-5708fea66ee0",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@f1cc1448:0cfb9e56-6094-49c5-8dd7-ea4160878acf",
+      "created_by_run_generation": 1,
+      "task_title": "fencing matrix task",
+      "display_name": "fencing matrix task",
+      "spec": "fencing matrix task",
+      "status": "rea
+exit 0
+
+$ orca-ide orchestration dispatch --task task_20c73eb80e67 --to term_1713f4d5-65b7-47dc-9356-eaaeb741a9b7 --run run_6bc830247dbb --from term_85a6d8c8-2f01-483f-b63b-a68d55444317 --json
+{
+  "id": "5ac2acd1-ff0f-4a7c-80fc-7979b0b3bf02",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_8636cbb2a8b3",
+      "run_id": "run_6bc830247dbb",
+      "task_id": "task_20c73eb80e67",
+      "contract_version": 1,
+      "launch_token_hash": null,
+      "assignee_handle": "term_1713f4d5-65b7-47dc-9356-eaaeb741a9b7",
+      "assignee_pane_key": "e2bd3576-b2f1-402c-a58b-ac7648d6bf98:f3e83d86-465a-4b52-8ff3-8c1f48b94a6f",
+      "assignee_orca_session_id": null,
+      "capability_hash": null,
+      "process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@d5b15c69:e63ff38f-c70a-423c-9790-ef6f53f96f83",
+      "capability_revoked_at": null,
+      "retry_of_dispa
+exit 0
+
+MATRIX run/task/dispatch run_6bc830247dbb task_20c73eb80e67 ctx_8636cbb2a8b3
+== A: heartbeat send from OTHER party terminal ==
+$ orca-ide orchestration send --type heartbeat --dispatch-id ctx_8636cbb2a8b3 --from term_35ab52e5-7c69-43f1-99d9-5153c03f50d8 --run run_6bc830247dbb --subject probe --body probe --json
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "worker_identity_changed",
+    "message": "term_35ab52e5-7c69-43f1-99d9-5153c03f50d8 is not the exact process that owns Dispatch ctx_8636cbb2a8b3."
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+exit 1
+
+== B: status send from OTHER with run pin ==
+$ orca-ide orchestration send --type status --from term_35ab52e5-7c69-43f1-99d9-5153c03f50d8 --run run_6bc830247dbb --subject probe --body probe --json
+{
+  "id": "924df246-08e2-44a3-9631-6e7d3ee1f533",
+  "ok": true,
+  "result": {
+    "message": {
+      "id": "msg_7f65e1a59a75",
+      "run_id": "run_6bc830247dbb",
+      "delivery_contract": "current_delivery",
+      "from_handle": "term_35ab52e5-7c69-43f1-99d9-5153c03f50d8",
+      "to_handle": "run:run_6bc830247dbb",
+      "subject": "probe",
+      "body": "probe",
+      "type": "status",
+      "priority": "normal",
+      "thread_id": null,
+      "payload": null,
+      "created_at": "2026-10-13T06:08:01Z",
+      "delivered_at": null
+    },
+    "mutation": {
+      "requestId": "631a137c-c12f-4f7f-ac5c-ec9c01aec68e",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2
+exit 0
+
+== C: heartbeat send from WORKER terminal but run pinned from other session ==
+== D: ask from OTHER party terminal ==
+$ orca-ide orchestration ask --question probe question --from term_35ab52e5-7c69-43f1-99d9-5153c03f50d8 --run run_6bc830247dbb --timeout-ms 5000 --json
+{
+  "id": "bec51a78-cdb5-4693-b822-2eea59d7ff52",
+  "ok": false,
+  "error": {
+    "code": "dispatch_inactive",
+    "message": "ask requires an active supervised Dispatch. Orchestration mutation request ID: 1c4cf7f7-6021-4dca-827d-08aebbef75dc.",
+    "data": {
+      "orchestrationRequestId": "1c4cf7f7-6021-4dca-827d-08aebbef75dc",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "ask",
+        "--question",
+        "probe question",
+        "--from",
+        "term_35ab52e5-7c69-43f1-99d9-5153c03f50d8",
+        "--run",
+        "run_6bc830247dbb",
+        "--timeout-ms",
+        "5000",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a
+exit 1
+
+== E: ask from WORKER handle spoofed by external process ==
+$ orca-ide orchestration ask --question probe question --from term_1713f4d5-65b7-47dc-9356-eaaeb741a9b7 --run run_6bc830247dbb --timeout-ms 5000 --json
+{
+  "id": "f9a0e49d-d52b-4724-938f-2c0ed4ac09c0",
+  "ok": true,
+  "result": {
+    "answer": null,
+    "messageId": "msg_31266db9f141",
+    "threadId": "msg_31266db9f141",
+    "timedOut": true,
+    "cancelled": false,
+    "connectionLost": false,
+    "timeoutMs": 5000,
+    "mutation": {
+      "requestId": "cab7841a-7fde-444e-8fec-e38eaae2baf7",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 1
+
+MATRIX_DONE
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title T-COORD1 --json
+{
+  "id": "331151e3-f41c-432f-b243-f147a217fcd4",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_ce0d2839-5630-4a5c-98b5-be717eba8890",
+      "tabId": "ac91e529-390b-4e69-85e5-120ce5815b91",
+      "paneKey": "ac91e529-390b-4e69-85e5-120ce5815b91:fab7e55d-f5c5-4dc1-bd35-d4a75cb99d0c",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@011b2d46",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "T-COORD1",
+      "executionHostId": "local",
+      "incarnationId": "d576a39a-f4a5-445d-92a0-e35493c0d772",
+      "hostPlatform": "linux",
+      "surface": "background",
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title T-COORD2 --json
+{
+  "id": "9950a222-0f23-4c22-9415-2d64c3b64f53",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_ca8fb075-aef5-45ee-8a64-607d51d1a648",
+      "tabId": "b780f55f-6dff-4fc9-8c05-bff3fb8c52b5",
+      "paneKey": "b780f55f-6dff-4fc9-8c05-bff3fb8c52b5:557b316a-437f-4516-9a6b-e702df8ac600",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@1080c135",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "T-COORD2",
+      "executionHostId": "local",
+      "incarnationId": "bb78845b-2d18-44e9-9430-d66df0158e3b",
+      "hostPlatform": "linux",
+      "surface": "background",
+exit 0
+
+$ orca-ide orchestration run-create --objective takeover fencing (disposable) --from term_ce0d2839-5630-4a5c-98b5-be717eba8890 --json
+{
+  "id": "0d420f06-3a80-4bb6-a815-b21f27e25282",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_299b9b3f9c45",
+      "objective": "takeover fencing (disposable)",
+      "coordinator_handle": "term_ce0d2839-5630-4a5c-98b5-be717eba8890",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T06:08:46Z",
+      "updated_at": "2026-10-13T06:08:46Z"
+    },
+    "mutation": {
+      "requestId": "86d5bd44-24ac-4b30-8ac3-cad7f80f0ea4",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+RUN run_299b9b3f9c45 coord1 term_ce0d2839-5630-4a5c-98b5-be717eba8890 coord2 term_ca8fb075-aef5-45ee-8a64-607d51d1a648
+== run-use by coord2 (new consumer generation) ==
+$ orca-ide orchestration run-use --id run_299b9b3f9c45 --from term_ca8fb075-aef5-45ee-8a64-607d51d1a648 --json
+{
+  "id": "b902c13f-2507-45f3-851e-c8edf403a2b6",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_299b9b3f9c45",
+      "objective": "takeover fencing (disposable)",
+      "coordinator_handle": "term_ca8fb075-aef5-45ee-8a64-607d51d1a648",
+      "consumer_generation": 2,
+      "legacy": 0,
+      "created_at": "2026-10-13T06:08:46Z",
+      "updated_at": "2026-10-13T06:08:46Z"
+    },
+    "mutation": {
+      "requestId": "1b0dd674-fc41-4c72-8c9d-cc9cc0f6b72b",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+== status send from fenced coord1 ==
+$ orca-ide orchestration send --type status --from term_ce0d2839-5630-4a5c-98b5-be717eba8890 --run run_299b9b3f9c45 --subject probe --body probe --json
+{
+  "id": "0d1c8ca5-3f2e-44c3-bc1c-c2fb40433c2c",
+  "ok": true,
+  "result": {
+    "message": {
+      "id": "msg_a0dd1bf02bc2",
+      "run_id": "run_299b9b3f9c45",
+      "delivery_contract": "current_delivery",
+      "from_handle": "term_ce0d2839-5630-4a5c-98b5-be717eba8890",
+      "to_handle": "run:run_299b9b3f9c45",
+      "subject": "probe",
+      "body": "probe",
+      "type": "status",
+      "priority": "normal",
+      "thread_id": null,
+      "payload": null,
+      "created_at": "2026-10-13T06:08:46Z",
+      "delivered_at": null
+    },
+    "mutation": {
+      "requestId": "255224a8-c0e5-4edb-a360-67186a09507d",
+      "replayed": false
+   
+exit 0
+
+== task-create from fenced coord1 ==
+$ orca-ide orchestration task-create --spec probe --run run_299b9b3f9c45 --from term_ce0d2839-5630-4a5c-98b5-be717eba8890 --json
+{
+  "id": "78172e0c-2517-4f39-8771-cc3da67964b2",
+  "ok": false,
+  "error": {
+    "code": "consumer_fenced",
+    "message": "This coordinator terminal is no longer bound to Run run_299b9b3f9c45. Orchestration mutation request ID: 3613f686-2bb7-4932-8b6a-cc0c91d7148d.",
+    "data": {
+      "orchestrationRequestId": "3613f686-2bb7-4932-8b6a-cc0c91d7148d",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "task-create",
+        "--spec",
+        "probe",
+        "--run",
+        "run_299b9b3f9c45",
+        "--from",
+        "term_ce0d2839-5630-4a5c-98b5-be717eba8890",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+exit 1
+
+TAKEOVER_DONE
+{
+  "id": "c1ad5999-732d-471e-94b9-ec79dbaa67f9",
+  "ok": true,
+  "result": {
+    "stopped": 5
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}

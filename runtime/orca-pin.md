@@ -20,7 +20,7 @@ holds its shape. The two never disagree — a run updates both or neither.
 | Upstream HEAD then | `0a1f99fb3a` (main, pulled 2026-10-13; newest tag + latest release both v1.4.224, 2026-10-10) |
 | Run record | docs/runs/2026-10-12-pin-it-224.md (ledger + park register) + docs/runs/2026-10-12-pin-it-224/ (starter diff, delta inventory D224-1…10, receipts) |
 | Prior pin | v1.4.215 `3eb1adec` (2026-09-28, docs/runs/2026-09-28-pin-it-500.md) |
-| Verdict | **PINNED-WITH-PARKED** — two fleet-visible drifts patched (conditional dispatch capability; OMP/OpenCode `--model` roster); fencing, abandon retention, `terminal stop`, worker-list, no-sender, and doctor shapes all retired live; legacy replay, `caller.orcaSessionId`, and other-host probes stay parked on named substrates |
+| Verdict | **PINNED-WITH-PARKED** — two fleet-visible drifts patched (conditional dispatch capability; OMP/OpenCode `--model` roster); fencing paths, `terminal stop`, worker-list, no-sender, and doctor shapes retired live; legacy replay, `caller.orcaSessionId`, agent-owned abandon, send-side `consumer_fenced`, and other-host probes stay parked on named substrates |
 
 ## What moved since v1.4.215 (diff summary)
 
@@ -38,8 +38,11 @@ serve substrate. Unchanged fleet-used surface carries the 2026-09-28 receipts.
   `task-update --result <text>` stored verbatim (`task_ops.py` JSON text stays parseable;
   its docstring now says `<text>`); cancel = `--status failed --result cancelled`;
   wrong-party `worker_done` → `worker_identity_changed`; a consuming `check` from an
-  unbound terminal → `consumer_fenced`; `worker-abandon` settles the Dispatch and leaves
-  the terminal live (worker `unsupervised`); `terminal stop` EXECUTES (see §correction);
+  unbound terminal and post-takeover Run mutations → `consumer_fenced` (plain `status`
+  mail to a Run is NOT fenced — a literal `send`/`ask` → `consumer_fenced` stays parked,
+  D224-2); `worker-abandon` on a manual-terminal Dispatch settles and leaves the terminal
+  live (worker `unsupervised`) — the agent-owned-terminal settle stays parked on agent
+  credentials (D224-4); `terminal stop` EXECUTES (see §correction);
   `worker-list` returns the full projection; sender-less `send` →
   `no_active_sender_terminal`; mail to a `dispatch:<id>` whose terminal now coordinates a
   child Run redirects with `recipient_run_bound_redirect` (the #513 note, shipped v1.4.217);

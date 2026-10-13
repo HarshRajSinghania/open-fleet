@@ -1,0 +1,19 @@
+hand negative control (coordinator-executed): return on first per-file error in cli.main; suite must go RED
+diff --git a/mdtoc/cli.py b/mdtoc/cli.py
+index 1a82f71..da1f344 100644
+--- a/mdtoc/cli.py
++++ b/mdtoc/cli.py
+@@ -67,7 +67,7 @@ def main(argv=None):
+                         f.write(new)
+         except FileNotFoundError:
+             print(f"mdtoc: {name}: no such file", file=sys.stderr)
+-            status = 2
++            return 2  # NC MUTANT: abort on first error
+         except UnicodeDecodeError:
+             print(f"mdtoc: {name}: not valid UTF-8", file=sys.stderr)
+             status = 2
+== unittest under mutant (see s3-nc-run.txt, evidence-bound) ==
+----------------------------------------------------------------------
+Ran 78 tests in 0.602s
+
+FAILED (failures=2)

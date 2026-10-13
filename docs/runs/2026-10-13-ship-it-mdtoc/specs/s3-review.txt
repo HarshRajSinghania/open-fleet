@@ -1,0 +1,11 @@
+TASK pack: gstack (review). Build-blind acceptance review of slice S3 (multi-file + error model + docs).
+Head: resolve with git rev-parse HEAD in your cwd (fleet/build-s3) — must be 04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a.
+Diff: git diff fedebc75210f0944e1d4f39c262717c9f53cd4f4...HEAD
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s3.md (AC-7, AC-9). Frozen spec: SPEC.md in repo root (AC-7; AC-9 is the error half of AC-6).
+You did not write this code. Judge per criterion with quoted lines and executable probes:
+AC-7 multiple files per invocation, each processed independently; a per-file error does not stop the others; exit aggregates (2 if any file errored, else 1 if --check found any stale, else 0); --stdout prints each file's full updated document in argument order.
+AC-9 missing or non-UTF-8 file: stderr message naming the file, exit 2, nothing written for that file.
+Probe: error first vs error last; --check with stale+error mix; --stdout where one file errors (what reaches stdout and stderr?); a file listed twice; a directory passed as FILE. Confirm no S1/S2 regression (run the full suite; spot-check the S2 marker discipline). Check the README Usage section states the real CLI surface and exit codes (quote any claim the code contradicts). Static test-adequacy: name the guarding test per claim or mark unguarded. Findings: severity + path:line + verbatim quote.
+Verdict line at top WITH THE FULL 40-char head SHA: PASS or FAIL.
+Write report to /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s3.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "mdtoc-s3-multifile-errors",
+    "contract_digest": "sha256:32fbb80a0594296c8a1751422108d235d73bbdc260d0915bcfc6dab5feb929e2",
+    "unit_class": "mutation"
+  },
+  "sig_b64": "icXEJD/z+VlGzSy3a/bArZrfk7lOGvVSMxTSu/NCEha5F5aC0opjzYkTEfaLz88WFAuLFqo28UVfIMucY7NhBg=="
+}

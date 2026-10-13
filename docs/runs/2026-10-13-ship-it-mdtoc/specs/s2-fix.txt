@@ -1,0 +1,12 @@
+TASK pack: matt (tdd). Slice S2 FIX ROUND — review findings on head 5afaf7c (mdtoc).
+Your worktree is on fleet/build-s2 (S2 builder head 5afaf7c). Build-blind review PASSed AC-1/4/5/6 but raised 2 MEDIUM findings; the coordinator dispositions them fix-now, plus 3 LOWs. Review: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2.md. Contract unchanged: contracts/s2.md (AC-1, AC-4, AC-5, AC-6). Frozen spec: SPEC.md in repo root.
+TDD (red first) — required fixes:
+- F1 (MEDIUM, fences): marker matching must be fence-aware. Only <!-- toc --> / <!-- /toc --> outside fenced code blocks count as the TOC region. A fenced marker example earlier in the file is left byte-for-byte untouched and the real pair outside fences is the one updated. Reuse S1's fence scanner.
+- F2 (MEDIUM, duplicates): exactly one marker pair outside fences is legal. Two or more pairs, or any stray/unbalanced marker outside fences, is a clean error (ValueError -> exit 2, nothing written). --check must never report current while an illegal marker state exists.
+- F3 (LOW): add a guard test for the lone close marker case (<!-- /toc --> only -> exit 2).
+- F4 (LOW, coordinator disposition of SPEC AC-4 "prints the result"): --stdout prints the full updated document text, never writes the file. Update any earlier --stdout test to this reading; add a --stdout test on a file that already has markers.
+- F5 (LOW): --check combined with --stdout is an argparse error (exit 2). Add a guard test.
+- F6 (LOW): add a guard test for the H1-only file with trailing newline ("# T\n").
+Left as documented known limits — do NOT fix: mixed line endings, non-atomic write, setext H1 as anchor, --max-depth 1 empty TOC.
+Full suite green via python3 -m unittest discover. Commit on fleet/build-s2; do not push; do not edit SPEC.md.
+worker_done exactly once naming branch, head SHA, test result, --files-modified.

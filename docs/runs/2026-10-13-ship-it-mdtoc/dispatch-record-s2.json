@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "mdtoc-s2-update-modes",
+    "contract_digest": "sha256:b34d2c016f48a1a2542f2a286928afe4df72867b33cbf0c26bc7e74045408cf9",
+    "unit_class": "mutation"
+  },
+  "sig_b64": "zfApW3fKIjUnewsE66LgnDAuNA5uIrmSSU0jcgic8VBeKKx0XWRAtHiTe+48lOOUxqGsN6fea9TOV6igx0/KDQ=="
+}

@@ -1,0 +1,38 @@
+{
+  "id": "1204d585-a2a0-4a70-b0ce-08b8d93759cb",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_225fa31da952",
+    "messages": [
+      {
+        "id": "msg_abcbc42765e1",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_d89f544b-b66e-4a84-bfc6-b87c0f2f8b38",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S2 done",
+        "body": "Implemented S2 test-first on branch fleet/build-s2 (head 5afaf7c, not pushed): update_text in toc.py, plus --check, in-place write and a 1..6 --max-depth argparse check in cli.py, covering AC-1/4/5/6. Full suite is green (60 tests via python3 -m unittest discover, including idempotence, check exit codes, placement and depth tests); ruff is not installed so lint was not run. Unbalanced toc markers are a clean error (exit 2) and CRLF is preserved; --stdout still prints only the TOC as in S1; per-file exit aggregation (AC-7) is left for another slice. Files modified: mdtoc/cli.py, mdtoc/toc.py, tests/test_update.py.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_a485af881dfc\",\"dispatchId\":\"ctx_329b042057e7\",\"outcome\":\"succeeded\",\"filesModified\":[\"mdtoc/cli.py\",\"mdtoc/toc.py\",\"tests/test_update.py\"]}",
+        "created_at": "2026-10-13T13:18:46Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "3cc1d55f-e4af-4638-8998-9cddb48dc104",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

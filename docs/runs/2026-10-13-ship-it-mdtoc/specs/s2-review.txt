@@ -1,0 +1,15 @@
+TASK pack: gstack (review). Build-blind acceptance review of slice S2 (file update + modes).
+Head: resolve with git rev-parse HEAD in your cwd (fleet/build-s2).
+Diff: git diff 4e1ad707ae38979c740cd14fa5513761ad65406d...HEAD
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s2.md (AC-1, AC-4, AC-5, AC-6). Frozen spec: SPEC.md in repo root.
+You did not write this code. Judge per criterion with quoted lines:
+AC-1 idempotence (byte-stable second run) and content outside markers preserved byte-for-byte;
+AC-4 --check exit codes + writes nothing, --stdout never writes;
+AC-5 depth default 2..4 and --max-depth bounds (invalid values rejected);
+AC-6 no-marker placement (after first H1, else top) and markers added for later updates.
+Probe edge cases: unpaired/duplicated markers, markers inside code fences, CRLF file,
+empty file, file whose only heading is H1. Static test-adequacy: name the guarding test
+per claim or mark unguarded. Findings: severity + path:line + verbatim quote.
+Verdict line at top WITH THE FULL 40-char head SHA: PASS or FAIL.
+Write report to /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

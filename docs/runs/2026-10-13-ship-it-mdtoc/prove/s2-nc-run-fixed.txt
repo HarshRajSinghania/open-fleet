@@ -1,0 +1,182 @@
+..mdtoc: /nonexistent/none.md: [Errno 2] No such file or directory: '/nonexistent/none.md'
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+........FFFF.FFF........F..........E.......F..........F...........
+======================================================================
+ERROR: test_fenced_marker_example_is_untouched (tests.test_update.CliFileTests.test_fenced_marker_example_is_untouched)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_update.py", line 186, in test_fenced_marker_example_is_untouched
+    self.assertEqual(update_text(text), f"{fenced}# T\n{OPEN}\n- [A](#a)\n{CLOSE}\n## A\n")
+                     ^^^^^^^^^^^^^^^^^
+  File "/home/ravindra/ship527/nc-s2-fixed/mdtoc/toc.py", line 130, in update_text
+    region = _marker_region(text)
+             ^^^^^^^^^^^^^^^^^^^^
+  File "/home/ravindra/ship527/nc-s2-fixed/mdtoc/toc.py", line 117, in _marker_region
+    raise ValueError(f"expected exactly one {OPEN_MARKER} / {CLOSE_MARKER} marker pair")
+ValueError: expected exactly one <!-- toc --> / <!-- /toc --> marker pair
+
+======================================================================
+FAIL: test_backtick_fence_excluded (tests.test_toc.ScanTests.test_backtick_fence_excluded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 46, in test_backtick_fence_excluded
+    self.assertEqual([h.text for h in scan_headings(text)], ["A", "B"])
+AssertionError: Lists differ: ['A', 'in code', 'B'] != ['A', 'B']
+
+First differing element 1:
+'in code'
+'B'
+
+First list contains 1 additional elements.
+First extra element 2:
+'B'
+
+- ['A', 'in code', 'B']
++ ['A', 'B']
+
+======================================================================
+FAIL: test_fence_on_list_item_line_excluded (tests.test_toc.ScanTests.test_fence_on_list_item_line_excluded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 60, in test_fence_on_list_item_line_excluded
+    self.assertEqual(scan_headings("- ```\n  # x\n  ```\n# y\n"), [Heading(1, "y")])
+AssertionError: Lists differ: [Heading(level=1, text='x'), Heading(level=1, text='y')] != [Heading(level=1, text='y')]
+
+First differing element 0:
+Heading(level=1, text='x')
+Heading(level=1, text='y')
+
+First list contains 1 additional elements.
+First extra element 1:
+Heading(level=1, text='y')
+
+- [Heading(level=1, text='x'), Heading(level=1, text='y')]
++ [Heading(level=1, text='y')]
+
+======================================================================
+FAIL: test_fence_on_numbered_and_nested_list_item_line_excluded (tests.test_toc.ScanTests.test_fence_on_numbered_and_nested_list_item_line_excluded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 63, in test_fence_on_numbered_and_nested_list_item_line_excluded
+    self.assertEqual(scan_headings("1. ~~~\n   # x\n   ~~~\n"), [])
+AssertionError: Lists differ: [Heading(level=1, text='x')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+Heading(level=1, text='x')
+
+- [Heading(level=1, text='x')]
++ []
+
+======================================================================
+FAIL: test_fence_on_own_line_inside_list_excluded (tests.test_toc.ScanTests.test_fence_on_own_line_inside_list_excluded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 67, in test_fence_on_own_line_inside_list_excluded
+    self.assertEqual(scan_headings("- item\n  ```\n  # x\n  ```\n"), [])
+AssertionError: Lists differ: [Heading(level=1, text='x')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+Heading(level=1, text='x')
+
+- [Heading(level=1, text='x')]
++ []
+
+======================================================================
+FAIL: test_other_fence_type_does_not_close (tests.test_toc.ScanTests.test_other_fence_type_does_not_close)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 54, in test_other_fence_type_does_not_close
+    self.assertEqual([h.text for h in scan_headings(text)], ["real"])
+AssertionError: Lists differ: ['still code', 'real'] != ['real']
+
+First differing element 0:
+'still code'
+'real'
+
+First list contains 1 additional elements.
+First extra element 1:
+'real'
+
+- ['still code', 'real']
++ ['real']
+
+======================================================================
+FAIL: test_tilde_fence_excluded (tests.test_toc.ScanTests.test_tilde_fence_excluded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 50, in test_tilde_fence_excluded
+    self.assertEqual([h.text for h in scan_headings(text)], ["A", "B"])
+AssertionError: Lists differ: ['A', 'in code', 'B'] != ['A', 'B']
+
+First differing element 1:
+'in code'
+'B'
+
+First list contains 1 additional elements.
+First extra element 2:
+'B'
+
+- ['A', 'in code', 'B']
++ ['A', 'B']
+
+======================================================================
+FAIL: test_unclosed_fence_swallows_rest (tests.test_toc.ScanTests.test_unclosed_fence_swallows_rest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 57, in test_unclosed_fence_swallows_rest
+    self.assertEqual([h.text for h in scan_headings("# A\n```\n# B\n")], ["A"])
+AssertionError: Lists differ: ['A', 'B'] != ['A']
+
+First list contains 1 additional elements.
+First extra element 1:
+'B'
+
+- ['A', 'B']
++ ['A']
+
+======================================================================
+FAIL: test_stdout_prints_updated_document_and_does_not_write (tests.test_toc.StdoutTests.test_stdout_prints_updated_document_and_does_not_write)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_toc.py", line 109, in test_stdout_prints_updated_document_and_does_not_write
+    self.assertEqual(
+AssertionError: '# T\[30 chars]\n- [no](#no)\n- [One](#one-1)\n<!-- /toc -->\[32 chars]ne\n' != '# T\[30 chars]\n- [One](#one-1)\n<!-- /toc -->\n\n## One\n``[19 chars]ne\n'
+  # T
+  
+  <!-- toc -->
+  - [One](#one)
+- - [no](#no)
+  - [One](#one-1)
+  <!-- /toc -->
+  
+  ## One
+  ```
+  ## no
+  ```
+  ## One
+
+
+======================================================================
+FAIL: test_only_fenced_markers_means_insert_real_pair (tests.test_update.CliFileTests.test_only_fenced_markers_means_insert_real_pair)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_update.py", line 191, in test_only_fenced_markers_means_insert_real_pair
+    self.assertTrue(out.startswith(f"# T\n\n{OPEN}\n- [A](#a)\n{CLOSE}\n"))
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_h1_in_fence_is_not_the_anchor (tests.test_update.UpdateTextTests.test_h1_in_fence_is_not_the_anchor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2-fixed/tests/test_update.py", line 44, in test_h1_in_fence_is_not_the_anchor
+    self.assertTrue(out.startswith(f"{OPEN}\n- [A](#a)\n{CLOSE}\n\n```\n"))
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 69 tests in 0.461s
+
+FAILED (failures=10, errors=1)

@@ -1,0 +1,38 @@
+{
+  "id": "d95cacd1-7b93-466e-8274-7e773795085c",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_6a3c2407af14",
+    "messages": [
+      {
+        "id": "msg_a582b84d0a76",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_9887de8f-81ec-465f-b21c-1f7fa2e0f083",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S2 review: PASS",
+        "body": "Reviewed S2 at head 5afaf7c582d26d4836946dae8c27970fce9a2d42 against AC-1/4/5/6; all four are met and guarded by tests, and the suite passes (60 tests OK). Two MEDIUM edge-case findings, both unguarded and confirmed by probe: markers inside a code fence get rewritten (toc.py:90), and duplicated or stray markers leave the second pair stale (toc.py:102), so --check misses it. Several LOW notes remain (--stdout prints TOC only, --check plus --stdout, mixed line endings); none block the verdict.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_44c348100fae\",\"dispatchId\":\"ctx_f83b49176af2\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2.md\"}",
+        "created_at": "2026-10-13T13:24:52Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "fd0d230f-1749-495a-8cf7-3b118e5b47de",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

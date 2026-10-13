@@ -1,0 +1,38 @@
+{
+  "id": "e7725c09-6ec5-4613-a4d3-5054060047ea",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_e2f5d4948766",
+    "messages": [
+      {
+        "id": "msg_620186097139",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_16c3a8bd-d8ff-4c2c-8d2f-438769b695ed",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S2 r2 re-review: PASS",
+        "body": "Re-reviewed S2 at head a960241d781231af4d1bf30ffba27b9887e363d1 with CLI probes: fenced marker example untouched, duplicate/stray markers exit 2 with nothing written and --check never 0, --stdout prints the full document, and --check with --stdout exits 2. AC-1/4/5/6 all hold with a guarding test named for each claim, the 69 unit tests pass, and the CRLF, empty-file, unclosed-marker and H1-only edge probes show no regression. One new LOW remains: markers inside inline code spans are still matched (it only silently rewrites prose when no real pair exists), and I left it for you to defer or fix.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_74d1c45f852d\",\"dispatchId\":\"ctx_7eb72a8cf43a\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2-r2.md\"}",
+        "created_at": "2026-10-13T13:34:31Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "2988dcb2-ae06-40fa-8cd7-afa5cd415dc9",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -1,0 +1,9 @@
+..mdtoc: /nonexistent/none.md: [Errno 2] No such file or directory: '/nonexistent/none.md'
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+..................................................................
+----------------------------------------------------------------------
+Ran 69 tests in 0.462s
+
+OK

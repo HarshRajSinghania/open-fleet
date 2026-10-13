@@ -1,0 +1,1030 @@
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title PIN-COORD --json
+{
+  "id": "f6d36063-2de4-467b-9a9e-d7a2d361877b",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "tabId": "bc2d2f9e-a5a9-459f-a992-35170d82f320",
+      "paneKey": "bc2d2f9e-a5a9-459f-a992-35170d82f320:a0eccdd7-2989-4a94-b70b-0c0bf6a455bb",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@31f200f3",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "PIN-COORD",
+      "executionHostId": "local",
+      "incarnationId": "d1dcfb80-623a-44e1-a91e-312a7fdd1284",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_9c19e63b-74e4-4950-a7dd-96637a206f9c is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_9c19e63b-74e4-4950-a7dd-96637a206f9c` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title PIN-WORKER --json
+{
+  "id": "895cdf68-29b9-411c-a5b6-1ea3f092fdd1",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+      "tabId": "a66e0671-c169-4998-a00c-8287fff8e62a",
+      "paneKey": "a66e0671-c169-4998-a00c-8287fff8e62a:082ec440-a3a1-4783-9595-5ce2c0c96065",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@974de5fe",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "PIN-WORKER",
+      "executionHostId": "local",
+      "incarnationId": "1c8138b8-132d-47b3-8f94-be6db9da7997",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2 is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title PIN-OTHER --json
+{
+  "id": "2a6f090e-b62b-43b6-8ee1-95f0ce312489",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_d1edb201-eea3-409e-9881-6756ab8e2d36",
+      "tabId": "01f286f3-5ed2-4ad1-8079-7c1b8f67cad6",
+      "paneKey": "01f286f3-5ed2-4ad1-8079-7c1b8f67cad6:6dc8de03-31ee-4998-a4d8-306b9bcdd115",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@6bd0f9bc",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "PIN-OTHER",
+      "executionHostId": "local",
+      "incarnationId": "24b34b65-cd50-49ad-a161-271c2685746b",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_d1edb201-eea3-409e-9881-6756ab8e2d36 is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_d1edb201-eea3-409e-9881-6756ab8e2d36` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+HANDLES term_9c19e63b-74e4-4950-a7dd-96637a206f9c term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2 term_d1edb201-eea3-409e-9881-6756ab8e2d36
+$ orca-ide orchestration run-create --objective pin-it dispatch probes (disposable) --from term_9c19e63b-74e4-4950-a7dd-96637a206f9c --json
+{
+  "id": "f505e671-90f6-4379-8f09-ac3ec3b65bee",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_92abc595a252",
+      "objective": "pin-it dispatch probes (disposable)",
+      "coordinator_handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T05:23:22Z",
+      "updated_at": "2026-10-13T05:23:22Z"
+    },
+    "mutation": {
+      "requestId": "08392bae-aad2-46db-a735-a0c46091d26d",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+RUN run_92abc595a252
+$ orca-ide orchestration task-create --spec probe fencing --run run_92abc595a252 --from term_9c19e63b-74e4-4950-a7dd-96637a206f9c --json
+{
+  "id": "a3dda245-6d60-4395-8db0-c1c1e6453a91",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_7a31201f2f79",
+      "run_id": "run_92abc595a252",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "created_by_pane_key": "bc2d2f9e-a5a9-459f-a992-35170d82f320:a0eccdd7-2989-4a94-b70b-0c0bf6a455bb",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@31f200f3:d1dcfb80-623a-44e1-a91e-312a7fdd1284",
+      "created_by_run_generation": 1,
+      "task_title": "probe fencing",
+      "display_name": "probe fencing",
+      "spec": "probe fencing",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-13 05:23:22",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "62f3f14d-b569-4999-b4c1-3a39d3538657",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+T1 task_7a31201f2f79
+$ orca-ide orchestration dispatch --task task_7a31201f2f79 --to term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2 --run run_92abc595a252 --from term_9c19e63b-74e4-4950-a7dd-96637a206f9c --return-preamble --json
+{
+  "id": "37361c1b-65fe-4b34-8a85-af070c188542",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_b0037fd39d50",
+      "run_id": "run_92abc595a252",
+      "task_id": "task_7a31201f2f79",
+      "contract_version": 1,
+      "launch_token_hash": null,
+      "assignee_handle": "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+      "assignee_pane_key": "a66e0671-c169-4998-a00c-8287fff8e62a:082ec440-a3a1-4783-9595-5ce2c0c96065",
+      "assignee_orca_session_id": null,
+      "capability_hash": null,
+      "process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@974de5fe:1c8138b8-132d-47b3-8f94-be6db9da7997",
+      "capability_revoked_at": null,
+      "retry_of_dispatch_id": null,
+      "creator_dispatch_id": null,
+      "creator_handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "creator_pane_key": "bc2d2f9e-a5a9-459f-a992-35170d82f320:a0eccdd7-2989-4a94-b70b-0c0bf6a455bb",
+      "creator_orca_session_id": null,
+      "host_scope": null,
+      "status": "dispatched",
+      "failure_count": 0,
+      "last_failure": null,
+      "termination_reason": null,
+      "depth": 1,
+      "consumer_generation": 0,
+      "dispatched_at": "2026-10-13 05:23:22",
+      "completed_at": null,
+      "created_at": "2026-10-13 05:23:22",
+      "last_heartbeat_at": null
+    },
+    "injected": false,
+    "preamble": "You are working inside Orca, a multi-agent IDE. You are a dispatched worker.\nYour coordinator's terminal handle is: term_9c19e63b-74e4-4950-a7dd-96637a206f9c\nYour task ID is: task_7a31201f2f79\n\nThe coordinator cannot see this terminal, so reach it with the `orca orchestration`\ncommands below; a question or result left only in this terminal never gets to it.\nDon't post to Slack, GitHub, or other channels during the run; report through these
+exit 0
+
+DISPATCH1: ctx_b0037fd39d50 keys: ['assignee_handle', 'assignee_orca_session_id', 'assignee_pane_key', 'capability_hash', 'capability_revoked_at', 'completed_at', 'consumer_generation', 'contract_version', 'created_at', 'creator_dispatch_id', 'creator_handle', 'creator_orca_session_id', 'creator_pane_key', 'depth', 'dispatched_at', 'failure_count', 'host_scope', 'id', 'last_failure', 'last_heartbeat_at', 'launch_token_hash', 'process_incarnation', 'retry_of_dispatch_id', 'run_id', 'status', 'task_id', 'termination_reason']
+PREAMBLE_HEAD: You are working inside Orca, a multi-agent IDE. You are a dispatched worker.
+Your coordinator's terminal handle is: term_9c19e63b-74e4-4950-a7dd-96637a206f9c
+Your task ID is: task_7a31201f2f79
+
+The coordinator cannot see this terminal, so reach it with the `orca orchestration`
+commands below; a question or result left only in this terminal never gets to it.
+Don't post to Slack, GitHub, or other channels during the run; report through these commands.
+
+=== CLI COMMANDS ===
+
+```sh
+  # Report the task outcome (required, exactly once).
+  #
+  # --body must be a 3-sentence executive summary (what you did,
+  # what you found, what's left). Never send an empty body; the coordinator
+  # reads the body first and only opens artifacts if it needs more detail.
+  # Append --files-modified only when files changed, and append --report-path
+  # only when you produced a durable report. Always pass real values; do not
+  # send the example placeholders literally.
+  #
+  # Send worker_done exactly once. Use --outcome succeeded when the
+  # requested work is done, or replace it with --outcome failed when it is not.
+  # Never encode failure only in prose and never silently exit.
+  # Include BOTH taskId and
+$ orca-ide orchestration send --type worker_done --dispatch-id ctx_b0037fd39d50 --from term_d1edb201-eea3-409e-9881-6756ab8e2d36 --outcome succeeded --subject probe --body probe --run run_92abc595a252 --json
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "worker_identity_changed",
+    "message": "term_d1edb201-eea3-409e-9881-6756ab8e2d36 is not the exact process that owns Dispatch ctx_b0037fd39d50."
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+exit 1
+
+$ orca-ide orchestration check --terminal term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2 --run run_92abc595a252 --json
+{
+  "id": "ec4b2bfa-d54a-4534-bc94-66e93e796624",
+  "ok": false,
+  "error": {
+    "code": "consumer_fenced",
+    "message": "This coordinator terminal is no longer bound to Run run_92abc595a252. Orchestration mutation request ID: 91bcf85e-ded6-4cc7-840c-a8fddf8306f2.",
+    "data": {
+      "orchestrationRequestId": "91bcf85e-ded6-4cc7-840c-a8fddf8306f2",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "check",
+        "--terminal",
+        "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+        "--run",
+        "run_92abc595a252",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 1
+
+$ orca-ide orchestration task-create --spec probe abandon retention --run run_92abc595a252 --from term_9c19e63b-74e4-4950-a7dd-96637a206f9c --json
+{
+  "id": "0e214669-8967-4d0a-b57f-21e5a0d249cf",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_41f3ca987d31",
+      "run_id": "run_92abc595a252",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "created_by_pane_key": "bc2d2f9e-a5a9-459f-a992-35170d82f320:a0eccdd7-2989-4a94-b70b-0c0bf6a455bb",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@31f200f3:d1dcfb80-623a-44e1-a91e-312a7fdd1284",
+      "created_by_run_generation": 1,
+      "task_title": "probe abandon retention",
+      "display_name": "probe abandon retention",
+      "spec": "probe abandon retention",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-13 05:23:22",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "8897c345-f2fe-4de0-bbfb-3d1a4c8fabb5",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+T2 task_41f3ca987d31
+$ orca-ide orchestration dispatch --task task_41f3ca987d31 --to term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2 --run run_92abc595a252 --from term_9c19e63b-74e4-4950-a7dd-96637a206f9c --json
+{
+  "id": "6fb6070b-b188-4bc1-a115-5aa03def4917",
+  "ok": false,
+  "error": {
+    "code": "runtime_error",
+    "message": "Terminal term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2 already has an active dispatch (ctx_b0037fd39d50 for task task_7a31201f2f79) Orchestration mutation request ID: e29ed2c3-cac5-47a7-85aa-e356506377ad.",
+    "data": {
+      "orchestrationRequestId": "e29ed2c3-cac5-47a7-85aa-e356506377ad",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "dispatch",
+        "--task",
+        "task_41f3ca987d31",
+        "--to",
+        "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+        "--run",
+        "run_92abc595a252",
+        "--from",
+        "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 1
+
+DISPATCH2: None
+$ orca-ide orchestration worker-abandon --dispatch  --json
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Missing required --dispatch"
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+exit 1
+
+$ orca-ide terminal list --json
+{
+  "id": "c8d83a9f-5da1-4875-ba88-13a07a505270",
+  "ok": true,
+  "result": {
+    "terminals": [
+      {
+        "handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+        "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@3e5e47ca",
+        "incarnationId": "8c3f88cf-9280-4707-bea1-12b75abd66b8",
+        "orphaned": false,
+        "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+        "worktreePath": "/tmp/probe-repo",
+        "branch": "refs/heads/master",
+        "tabId": "66cc3596-cc36-4b36-a462-117871f380de",
+        "leafId": "f71dcc6f-8a96-4834-bc77-76624d66b9ec",
+        "title": "ravindra@orca-linux-witness: /tmp/probe-repo",
+        "connected": true,
+        "writable": true,
+        "lastOutputAt": 1791868636835,
+        "preview": "ravindra@orca-linux-witness:/tmp/probe-repo$",
+        "executionHostId": "local"
+      },
+      {
+        "handle": "term_3f9b19d3-adb6-48e1-9ed5-e45155bc1ae8",
+        "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@d96767ff",
+        "incarnationId": "384025f2-0204-426f-81a0-c305618f14b8",
+        "orphaned": false,
+        "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+        "worktreePath": "/tmp/probe-repo",
+        "branch": "refs/heads/master",
+        "tabId": "3dcbb4b1-736a-4480-adc4-d488271ca40c",
+        "leafId": "5e97038b-54bd-4014-bb94-2199f35bccea",
+        "title": "PIN-PROBE-2",
+        "connected": true,
+        "writable": true,
+        "lastOutputAt": 1791868663883,
+        "preview": "ravindra@orca-linux-witness:/tmp/probe-repo$",
+        "executionHostId": "local"
+      },
+      {
+        "handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+        "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@31f200f3",
+exit 0
+
+TERMINALS_AFTER_ABANDON: ['term_9949ed97-a669-4862-a495-4520506b6921', 'term_3f9b19d3-adb6-48e1-9ed5-e45155bc1ae8', 'term_9c19e63b-74e4-4950-a7dd-96637a206f9c', 'term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2', 'term_d1edb201-eea3-409e-9881-6756ab8e2d36'] worker-retained: True
+$ orca-ide terminal send --terminal term_9c19e63b-74e4-4950-a7dd-96637a206f9c --text orca-ide status --json > /tmp/in-session-status.json --enter --json
+{
+  "id": "906db777-7bf7-484b-a860-6f3804f46511",
+  "ok": true,
+  "result": {
+    "send": {
+      "handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "accepted": true,
+      "bytesWritten": 53,
+      "prompt": {
+        "requestId": "33a4c7df-bc57-4a0a-b9b5-f9e718dee4ba",
+        "stages": [
+          "input_accepted"
+        ],
+        "provider": "unsupported",
+        "observation": "unsupported",
+        "processIncarnation": "d1dcfb80-623a-44e1-a91e-312a7fdd1284",
+        "generation": 3,
+        "baselineWorkingSequence": 0
+      }
+    },
+    "mutation": {
+      "requestId": "33a4c7df-bc57-4a0a-b9b5-f9e718dee4ba",
+      "replayed": false
+    },
+    "warnings": [
+      "input was accepted, but this provider cannot report delivery. Inspect the terminal before retrying."
+    ]
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+IN_SESSION_STATUS caller: None meta: {'runtimeId': 'a22e7fec-a2b2-4db1-b39a-29d0b541a17a'}
+{
+  "id": "ebce1936-e1ef-430c-937e-d5584c341bea",
+  "ok": true,
+  "result": {
+    "dispatchId": "ctx_b0037fd39d50",
+    "state": "abandoned",
+    "alreadySettled": false,
+    "stale": false,
+    "processAction": "none",
+    "warning": "The assignment was abandoned; its unsupervised terminal process was retained.",
+    "residualResources": [],
+    "mutation": {
+      "requestId": "7e23fa60-d047-424d-83bb-04303452bdf8",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+---LIST---
+['term_9949ed97-a669-4862-a495-4520506b6921', 'term_3f9b19d3-adb6-48e1-9ed5-e45155bc1ae8', 'term_9c19e63b-74e4-4950-a7dd-96637a206f9c', 'term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2', 'term_d1edb201-eea3-409e-9881-6756ab8e2d36']
+---SHOW---
+{
+  "id": "94585532-778b-4ce5-b6ef-a62fc7736dcd",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_b0037fd39d50",
+      "runId": "run_92abc595a252",
+      "taskId": "task_7a31201f2f79",
+      "task_id": "task_7a31201f2f79",
+      "contractVersion": 1,
+      "assigneeHandle": "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+      "assigneePaneKey": "a66e0671-c169-4998-a00c-8287fff8e62a:082ec440-a3a1-4783-9595-5ce2c0c96065",
+      "processIncarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@974de5fe:1c8138b8-132d-47b3-8f94-be6db9da7997",
+      "capabilityRevokedAt": "2026-10-13T05:24:02.815Z",
+      "retryOfDispatchId": null,
+      "creatorDispatchId": null,
+      "hostScope": null,
+      "status": "failed",
+      "failureCount": 0,
+      "lastFailure": "abandoned",
+      "terminationReason": null,
+      "depth": 1,
+      "dispatchedAt": "2026-10-13 05:23:22",
+      "completedAt": "2026-10-13T05:24:02.815Z",
+      "createdAt": "2026-10-13 05:23:22",
+      "lastHeartbeatAt": null
+    },
+    "worker": {
+      "dispatchId": "ctx_b0037fd39d50",
+      "runtimeEpoch": null,
+      "state": "unsupervised",
+      "stage": "context_only",
+      "worktreeId": null,
+      "agentTerminalHandle": "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+      "setupState": "not_applicable",
+      "effects": [],
+      "residualResources": [],
+      "startOptions": {},
+      "lastE{
+  "id": "9ac5c023-3daf-43f7-b3aa-5c0a73d1db78",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_92abc595a252",
+      "objective": "pin-it dispatch probes (disposable)",
+      "coordinator_handle": "term_9c19e63b-74e4-4950-a7dd-96637a206f9c",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T05:23:22Z",
+      "updated_at": "2026-10-13T05:23:22Z"
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+==WORKER-LIST==
+{
+  "id": "e8cc143d-0d88-408e-8b43-abf31e95038b",
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_b0037fd39d50",
+        "taskId": "task_7a31201f2f79",
+        "runId": "run_92abc595a252",
+        "workerState": "unsupervised",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_f9bcafb7-8e1b-4fbe-bcf4-96fbebc1c7a2",
+        "terminalState": "retained",
+        "resource": null,
+        "projection": {
+          "id": "ctx_b0037fd39d50",
+          "dispatchId": "ctx_b0037fd39d50",
+          "taskId": "task_7a31201f2f79",
+          "runId": "run_92abc595a252",
+          "role": "worker",
+          "parent": null,
+          "provider": null,
+          "host": {
+            "kind": "local",
+            "id": "local"
+          },
+          "workspace": null,
+          "stage": {
+            "worker": "unsupervised",
+            "dispatch":
+==SEND-NO-SENDER==
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "no_active_sender_terminal",
+    "message": "Could not determine the sender terminal for this orchestration command. Pass --from with your own terminal's handle — another pane's handle would act on its mailbox — or run the command inside a live Orca terminal with ORCA_TERMINAL_HANDLE set."
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+
+==TERMINAL-STOP==
+{
+  "id": "dbc318aa-71be-4b06-acb2-deb11b1f12c2",
+  "ok": true,
+  "result": {
+    "stopped": 5
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+
+==AFTER==
+0
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title R-COORD --json
+{
+  "id": "fa60913d-3bf7-4833-b547-4c336410d1c9",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_577e95d1-854b-4f8a-b266-894bee0e222b",
+      "tabId": "60b45138-061e-4554-9b06-594eb537e0e8",
+      "paneKey": "60b45138-061e-4554-9b06-594eb537e0e8:b2aeebb0-fd03-4f30-91fc-6932e926f03f",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@499915de",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "R-COORD",
+      "executionHostId": "local",
+      "incarnationId": "459d121d-4d2b-4445-9e42-a01bcff0c054",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_577e95d1-854b-4f8a-b266-894bee0e222b is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_577e95d1-854b-4f8a-b266-894bee0e222b` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title R-WORKER --json
+{
+  "id": "f7d48b35-3ce3-4c84-b76e-42da25a3d88f",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_b82c3e25-0a32-4717-8305-07af07038dd4",
+      "tabId": "08ed486f-6fca-4df5-b139-0e9d3ae74694",
+      "paneKey": "08ed486f-6fca-4df5-b139-0e9d3ae74694:0c4f8027-83b5-4382-bcf7-01fe3c570beb",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@465b4438",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "R-WORKER",
+      "executionHostId": "local",
+      "incarnationId": "925bad37-2c58-49d8-9da8-f9c5f7eccb0c",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_b82c3e25-0a32-4717-8305-07af07038dd4 is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_b82c3e25-0a32-4717-8305-07af07038dd4` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title R-GRAND --json
+{
+  "id": "82993e5f-7021-40ab-841a-4a282e980180",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_44839c6c-1eb4-49d4-8bc2-69de460b813e",
+      "tabId": "a9812efd-5dba-458d-8e74-29d7d3098109",
+      "paneKey": "a9812efd-5dba-458d-8e74-29d7d3098109:31903b26-1b36-4c23-aa8f-5ea9aa008c67",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@62a113ff",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "R-GRAND",
+      "executionHostId": "local",
+      "incarnationId": "da9e7c9f-f1c0-437c-b0ff-d3c3363fe323",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_44839c6c-1eb4-49d4-8bc2-69de460b813e is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_44839c6c-1eb4-49d4-8bc2-69de460b813e` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+HANDLES term_577e95d1-854b-4f8a-b266-894bee0e222b term_b82c3e25-0a32-4717-8305-07af07038dd4 term_44839c6c-1eb4-49d4-8bc2-69de460b813e
+$ orca-ide orchestration run-create --objective redirect probe parent (disposable) --from term_577e95d1-854b-4f8a-b266-894bee0e222b --json
+{
+  "id": "11885a1c-3d5e-430e-9d6e-8412b5e8b330",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_3a7709b11469",
+      "objective": "redirect probe parent (disposable)",
+      "coordinator_handle": "term_577e95d1-854b-4f8a-b266-894bee0e222b",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T05:29:36Z",
+      "updated_at": "2026-10-13T05:29:36Z"
+    },
+    "mutation": {
+      "requestId": "ee51ed1b-ead7-407a-8a4a-c726e21212a3",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration task-create --spec parent task --run run_3a7709b11469 --from term_577e95d1-854b-4f8a-b266-894bee0e222b --json
+{
+  "id": "89f02905-5c09-49b7-b803-854ab3ada547",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_941d6fd2feec",
+      "run_id": "run_3a7709b11469",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_577e95d1-854b-4f8a-b266-894bee0e222b",
+      "created_by_pane_key": "60b45138-061e-4554-9b06-594eb537e0e8:b2aeebb0-fd03-4f30-91fc-6932e926f03f",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@499915de:459d121d-4d2b-4445-9e42-a01bcff0c054",
+      "created_by_run_generation": 1,
+      "task_title": "parent task",
+      "display_name": "parent task",
+      "spec": "parent task",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-13 05:29:36",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "1f0937ea-190f-4b12-8d22-5210f8d08300",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration dispatch --task task_941d6fd2feec --to term_b82c3e25-0a32-4717-8305-07af07038dd4 --run run_3a7709b11469 --from term_577e95d1-854b-4f8a-b266-894bee0e222b --json
+{
+  "id": "3d87dc8c-b362-48dd-a9b2-785a377f95d7",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_41e270965182",
+      "run_id": "run_3a7709b11469",
+      "task_id": "task_941d6fd2feec",
+      "contract_version": 1,
+      "launch_token_hash": null,
+      "assignee_handle": "term_b82c3e25-0a32-4717-8305-07af07038dd4",
+      "assignee_pane_key": "08ed486f-6fca-4df5-b139-0e9d3ae74694:0c4f8027-83b5-4382-bcf7-01fe3c570beb",
+      "assignee_orca_session_id": null,
+      "capability_hash": null,
+      "process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@465b4438:925bad37-2c58-49d8-9da8-f9c5f7eccb0c",
+      "capability_revoked_at": null,
+      "retry_of_dispatch_id": null,
+      "creator_dispatch_id": null,
+      "creator_handle": "term_577e95d1-854b-4f8a-b266-894bee0e222b",
+      "creator_pane_key": "60b45138-061e-4554-9b06-594eb537e0e8:b2aeebb0-fd03-4f30-91fc-6932e926f03f",
+      "creator_orca_session_id": null,
+      "host_scope": null,
+      "status": "dispatched",
+      "failure_count": 0,
+      "last_failure": null,
+      "termination_reason": n
+exit 0
+
+PARENT RUN/TASK/DISPATCH run_3a7709b11469 task_941d6fd2feec ctx_41e270965182
+$ orca-ide orchestration run-create --objective redirect probe child (disposable) --from term_b82c3e25-0a32-4717-8305-07af07038dd4 --json
+{
+  "id": "94c6a358-3568-4d17-a3da-4d9eaaf721d0",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_17e258fb15ca",
+      "objective": "redirect probe child (disposable)",
+      "coordinator_handle": "term_b82c3e25-0a32-4717-8305-07af07038dd4",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T05:29:36Z",
+      "updated_at": "2026-10-13T05:29:36Z"
+    },
+    "mutation": {
+      "requestId": "f262c8a5-fb80-4ca9-a86d-5dd02f17acad",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration task-create --spec child task --run run_17e258fb15ca --from term_b82c3e25-0a32-4717-8305-07af07038dd4 --json
+{
+  "id": "763aa271-fce1-4b6a-8a8c-caf1fc3cc5ea",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_edc340634b5d",
+      "run_id": "run_17e258fb15ca",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_b82c3e25-0a32-4717-8305-07af07038dd4",
+      "created_by_pane_key": "08ed486f-6fca-4df5-b139-0e9d3ae74694:0c4f8027-83b5-4382-bcf7-01fe3c570beb",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@465b4438:925bad37-2c58-49d8-9da8-f9c5f7eccb0c",
+      "created_by_run_generation": 1,
+      "task_title": "child task",
+      "display_name": "child task",
+      "spec": "child task",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-13 05:29:36",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "0d69ff93-58f5-4935-a54c-6c743ce753e8",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration dispatch --task task_edc340634b5d --to term_44839c6c-1eb4-49d4-8bc2-69de460b813e --run run_17e258fb15ca --from term_b82c3e25-0a32-4717-8305-07af07038dd4 --json
+{
+  "id": "56a8f3a5-8948-46a7-9aaf-b7fe14959d14",
+  "ok": false,
+  "error": {
+    "code": "nested_worker_depth_exceeded",
+    "message": "Sub-worker dispatch is not permitted at depth 2 (max 1). Complete this task yourself. Orchestration mutation request ID: 9212e102-e9b3-4907-be2b-bc9e913681fb.",
+    "data": {
+      "effectsApplied": false,
+      "nextSteps": [
+        "Do the work in this terminal instead of dispatching a sub-worker.",
+        "To allow deeper nesting, open Settings → Orchestration in the Orca desktop app and raise \"Nested worker depth\"."
+      ],
+      "orchestrationRequestId": "9212e102-e9b3-4907-be2b-bc9e913681fb",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "dispatch",
+        "--task",
+        "task_edc340634b5d",
+        "--to",
+        "term_44839c6c-1eb4-49d4-8bc2-69de460b813e",
+        "--run",
+        "run_17e258fb15ca",
+        "--from",
+        "term_b82c3e25-0a32-4717-8305-07af07038dd4",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 1
+
+CHILD RUN/TASK/DISPATCH run_17e258fb15ca task_edc340634b5d None
+$ orca-ide orchestration send --type status --to dispatch:ctx_41e270965182 --from term_577e95d1-854b-4f8a-b266-894bee0e222b --run run_3a7709b11469 --subject redirect probe --body does this land in the child run mailbox? --json
+{
+  "id": "65404d33-8455-43d8-9a0c-f580f84191f6",
+  "ok": false,
+  "error": {
+    "code": "recipient_run_mismatch",
+    "message": "dispatch:ctx_41e270965182 belongs to Run run_17e258fb15ca, not explicitly requested Run run_3a7709b11469. Orchestration mutation request ID: 72449b76-6888-4ab4-99de-889fcdf33b4b.",
+    "data": {
+      "orchestrationRequestId": "72449b76-6888-4ab4-99de-889fcdf33b4b",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "send",
+        "--type",
+        "status",
+        "--to",
+        "dispatch:ctx_41e270965182",
+        "--from",
+        "term_577e95d1-854b-4f8a-b266-894bee0e222b",
+        "--run",
+        "run_3a7709b11469",
+        "--subject",
+        "redirect probe",
+        "--body",
+        "does this land in the child run mailbox?",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 1
+
+REDIRECT_PROBE_DONE
+{
+  "id": "5710d718-83e6-4bbb-915c-100aa2adcc45",
+  "ok": true,
+  "result": {
+    "message": {
+      "id": "msg_edbffed639c7",
+      "run_id": "run_17e258fb15ca",
+      "delivery_contract": "current_delivery",
+      "from_handle": "term_577e95d1-854b-4f8a-b266-894bee0e222b",
+      "to_handle": "run:run_17e258fb15ca",
+      "subject": "redirect probe retry",
+      "body": "no --run pin",
+      "type": "status",
+      "priority": "normal",
+      "thread_id": null,
+      "payload": null,
+      "created_at": "2026-10-13T05:29:46Z",
+      "delivered_at": null
+    },
+    "warnings": [
+      {
+        "code": "recipient_run_bound_redirect",
+        "recipient": "dispatch:ctx_41e270965182",
+        "message": "dispatch:ctx_41e270965182 is assigned to a terminal that now coordinates Run run_17e258fb15ca; queued for run:run_17e258fb15ca, the mailbox that terminal reads."
+      }
+    ],
+    "mutation": {
+      "requestId": "3ff1ffb4-9377-462e-9441-0189ed7fcc48",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+{
+  "id": "b3d289c4-d435-44ad-929c-85f49de34adb",
+  "ok": true,
+  "result": {
+    "stopped": 3
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Unknown command: doctor",
+    "data": {
+      "suggestions": [
+        "goto"
+      ],
+      "nextSteps": [
+        "Did you mean: orca goto"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Unknown command: vm recipe list",
+    "data": {
+      "suggestions": [],
+      "nextSteps": []
+    }
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+
+{
+  "recipeId": "probe-nonexistent",
+  "repoPath": "/Users/ravindra/projects/orca-fleet-pin-it-20261012",
+  "ok": false,
+  "checks": [
+    {
+      "id": "orca_yaml.exists",
+      "status": "fail",
+      "message": "No orca.yaml found at /Users/ravindra/projects/orca-fleet-pin-it-20261012/orca.yaml",
+      "remediation": "Add environmentRecipes to the repo orca.yaml."
+    }
+  ]
+}
+{
+  "recipeId": "probe-local",
+  "repoPath": "/tmp/doctor-repo",
+  "ok": true,
+  "checks": [
+    {
+      "id": "orca_yaml.parse",
+      "status": "pass",
+      "message": "orca.yaml parsed successfully."
+    },
+    {
+      "id": "recipe.exists",
+      "status": "pass",
+      "message": "Found recipe \"Probe Local (disposable)\"."
+    },
+    {
+      "id": "recipe.create",
+      "status": "pass",
+      "message": "Command path exists: ./scripts/orca-vm/create.sh"
+    },
+    {
+      "id": "recipe.destroy",
+      "status": "pass",
+      "message": "Command path exists: ./scripts/orca-vm/destroy.sh"
+    },
+    {
+      "id": "recipe.suspend",
+      "status": "pass",
+      "message": "Command path exists: ./scripts/orca-vm/suspend.sh"
+    },
+    {
+      "id": "recipe.resume",
+      "status": "pass",
+      "message": "Command path exists: ./scripts/orca-vm/resume.sh"
+    }
+  ]
+}
+{
+  "recipeId": "probe-warn",
+  "repoPath": "/tmp/doctor-repo",
+  "ok": false,
+  "checks": [
+    {
+      "id": "orca_yaml.parse",
+      "status": "pass",
+      "message": "orca.yaml parsed successfully."
+    },
+    {
+      "id": "recipe.exists",
+      "status": "pass",
+      "message": "Found recipe \"Probe Warn (disposable)\"."
+    },
+    {
+      "id": "recipe.create",
+      "status": "pass",
+      "message": "Command path exists: ./scripts/orca-vm/create-json.sh"
+    },
+    {
+      "id": "recipe.destroy",
+      "status": "warn",
+      "message": "Destroy is explicitly disabled.",
+      "remediation": "Only use destroy: none when provider resources are cleaned up elsewhere."
+    },
+    {
+      "id": "recipe.provision",
+      "status": "fail",
+      "message": "Recipe stdout must be one JSON object.",
+      "remediation": "Check recipe output. Last captured output: {schemaVersion:1,pairingCode:probe-none,projectRoot:/tmp/doctor-repo}"
+    }
+  ],
+  "provisionTranscript": {
+    "provision": {
+      "exitCode": 0,
+      "signal": null,
+      "stdout": "{schemaVersion:1,pairingCode:probe-none,projectRoot:/tmp/doctor-repo}\n",
+      "stderr": "",
+      "parseError": "Recipe stdout must be one JSON object."
+    }
+  }
+}
+{
+  "id": "d01c0454-c81e-432d-9d81-3687c684d48e",
+  "ok": false,
+  "error": {
+    "code": "dispatch_not_found",
+    "message": "Dispatch ctx_nonexistent_probe was not found. Orchestration mutation request ID: 9259f097-10ff-42ee-af6c-563f3ace2a2a.",
+    "data": {
+      "orchestrationRequestId": "9259f097-10ff-42ee-af6c-563f3ace2a2a",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "worker-release",
+        "--dispatch",
+        "ctx_nonexistent_probe",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+release-exit:1

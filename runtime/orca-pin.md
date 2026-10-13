@@ -14,53 +14,64 @@ holds its shape. The two never disagree — a run updates both or neither.
 | Field | Value |
 |---|---|
 | Upstream | `stablyai/orca` (`https://github.com/stablyai/orca`) |
-| Installed version | **v1.4.215** (release bundle; at the witness the on-PATH app was v1.4.204 and the witness ran against the identical release artifact at `/tmp/orca-1215`. That owed update has since landed and overshot: `orca --version` here reported **1.4.224** on 2026-10-13 — the doctrine below is NOT witnessed at 224, and a pin-it re-pin is owed) |
-| Build commit | `3eb1adec20ff90503196ebfd1fe6dbaaefaad736` (`orca-local-build.json`, arm64; tag `v1.4.215` = `083f583a53e4c74a65acf420eee4ca2e0efa9df1`) |
-| Witnessed | 2026-09-28 (`live`: release binary + version-matched guides + read-only probes; the app was not running, so runtime-bound probes parked on substrate) |
-| Upstream HEAD then | `5219b8ada9da6bf625c750e5513c36037464a516` (main, 2026-09-28) |
-| Run record | docs/runs/2026-09-28-pin-it-500.md (ledger + park register) + docs/runs/2026-09-28-pin-it-500/ (receipts) |
-| Prior pin | v1.4.209 `ee1c5220` (2026-09-23, docs/runs/2026-09-23-pin-it-488.md) |
-| Verdict | **PINNED-WITH-PARKED** — no behavioral drift; live re-probes wait on a running app, doctor shapes on a per-workspace-env recipe, legacy replay on a legacy Run |
+| Installed version | **v1.4.224** (installed app + CLI co-resident 1.4.224 on macOS — app `CFBundleShortVersionString` + `orca --version`, receipt `mac-coresidency.txt`; live mechanics witnessed on the 1.4.224 Linux `orca-ide serve` substrate) |
+| Build commit | `2bb20586ebc39d605e16d95f57420e20a16e7485` (tag `v1.4.224` target commit, "release: v1.4.224"; upstream builds from release branches, so the tag IS the release source) |
+| Witnessed | 2026-10-13 (`live`: DELTA re-dump — guides + help + agent-context from the installed 1.4.224 binary diffed against the frozen 1.4.215 inventory — plus live replay on Linux serve 1.4.224 under a real manual-terminal Dispatch; receipts in the run record) |
+| Upstream HEAD then | `0a1f99fb3a` (main, pulled 2026-10-13; newest tag + latest release both v1.4.224, 2026-10-10) |
+| Run record | docs/runs/2026-10-12-pin-it-224.md (ledger + park register) + docs/runs/2026-10-12-pin-it-224/ (starter diff, delta inventory D224-1…10, receipts) |
+| Prior pin | v1.4.215 `3eb1adec` (2026-09-28, docs/runs/2026-09-28-pin-it-500.md) |
+| Verdict | **PINNED-WITH-PARKED** — two fleet-visible drifts patched (conditional dispatch capability; OMP/OpenCode `--model` roster); fencing, abandon retention, `terminal stop`, worker-list, no-sender, and doctor shapes all retired live; legacy replay, `caller.orcaSessionId`, and other-host probes stay parked on named substrates |
 
-## What moved since v1.4.209 (diff summary)
+## What moved since v1.4.215 (diff summary)
 
-- **Nothing behavioral.** Zero drifts, zero removals, zero error-text changes across the
-  release-source range (`e4d8a9dbc2..083f583a`, v1.4.210/211/212/214/215 — all patches).
-  Every drift row from the v1.4.209 pin re-verified CURRENT (see the run record's table).
-- **New surface (additive, no doctrine claims):** `host name`, `profile state exports`,
-  `profile state rollback` (profile SQLite recovery, `47ddfbdc0d`/`82412dab8b`).
-- **Guides:** 1 of 14 served files differs — `orchestration--coordinator-loop` (`--model`
-  now also for Antigravity + Muse terminals; opencode/zcode reject it). Help root: one
-  line (`linear` read → read/write, `c2d9d12b1f`). agent-context 236 → 239, nothing
-  removed. One spawn_worker.sh roster line patched (muse → at-PIN set, 52a1e2875b);
-  nothing else claims these surfaces.
-- **Internals, reviewed:** the structured-session identity theme (creator `orcaSessionId`
-  plumbing across depth/check/runs/dispatch, preamble wording + `leadLine`), pane
-  reservation (`a375936c04`), worktree listing versioning (`ad6cb0e05c`), relay readiness
-  coalescing (`1fc0bfe46d`) — no CLI-contract change in any of them.
-- **Method note:** upstream builds from release branches, not main@build-commit (proven:
-  `c2d9d12b1f` predates the 209 build yet missed the 209 binary and tag). Verdicts rest on
-  the tag range; `ls-remote` tag shas are objects — peel them (run record §Source range).
-- **Unchanged, re-verified:** the whole v1.4.209 register — worker-list ordering + scope
-  (D1/P05/P22), archive-hook gate (D2), idle-gated delivery (D3), error texts (D4/D5),
-  search/--shell/browser-identity (D6–D8), status ESRCH-only (D10), remote 12s fail (D11),
-  readiness (P01/P02/P38), inject (P04), depth refusal (P08), release unknown (P09), run
-  verbs + Delivery batch + `--types` wake (P10/P12/P24), keepalives (P14), retry/group
-  (P15/P16), bogus-dep (P20), projection (P21/P47), gate promotion (P26), ask/gate
-  (P30/P32/P33), sandbox/recipe/doctor (P40 stays parked — surface zero-diff),
-  terminal-stop hedge (D9 — spec + handler confirmed at release sources; §correction).
+Method: DELTA, not re-derivation — the 1.4.224 guides, help root, and agent-context were
+re-dumped from the installed binary and diffed against the frozen 1.4.215 inventory
+(`diff-vs-1.4.215.json`); only changed mechanics were classified (D224-1…10 in the run
+record's delta inventory), and every mechanics-changed row was replayed live on the Linux
+serve substrate. Unchanged fleet-used surface carries the 2026-09-28 receipts.
 
-## Noted since the pin (inherited by the next re-pin, #508)
+- **Two fleet-visible drifts, PATCHED:** the canonical worker `send`/`ask` forms now carry
+  `--dispatch-capability` only when the dispatch preamble carries one (an older host adds
+  it); `dispatch-lifecycle.md` + `decompose-dag.md` taught "every send carries it" and now
+  teach the conditional. The flag stays accepted; `dispatch_capability_invalid` stays real.
+- **Replayed live at 224 (receipt `dispatch-probes.txt`):** task lifecycle incl.
+  `task-update --result <text>` stored verbatim (`task_ops.py` JSON text stays parseable;
+  its docstring now says `<text>`); cancel = `--status failed --result cancelled`;
+  wrong-party `worker_done` → `worker_identity_changed`; a consuming `check` from an
+  unbound terminal → `consumer_fenced`; `worker-abandon` settles the Dispatch and leaves
+  the terminal live (worker `unsupervised`); `terminal stop` EXECUTES (see §correction);
+  `worker-list` returns the full projection; sender-less `send` →
+  `no_active_sender_terminal`; mail to a `dispatch:<id>` whose terminal now coordinates a
+  child Run redirects with `recipient_run_bound_redirect` (the #513 note, shipped v1.4.217);
+  `vm recipe doctor` verdicts are `{recipeId, repoPath, ok, checks[{id,status,message,
+  remediation?}]}` with `pass`/`warn`/`fail` all observed, and `sandbox_doctor.py` judges
+  the real transcripts correctly (P40 retired for shapes; a clean `--provision` pass still
+  needs a real provider — offload-it's self-test, not a pin claim).
+- **Additive only, no doctrine claims:** agent-context 239 → 249 (10 added, 0 removed —
+  `account rm/select`, `environment *`, `repo set`, worktree `--pr/--gitlab-*/--unread`,
+  automations `--extra-agent-args`, metadata `surface`/`runMode`); 7 of 14 guides changed.
+  `worker-start --model` now also covers OMP, and OpenCode accepts it in an existing
+  worktree — the second drift patched this run (the spawn_worker.sh roster comment still
+  had both rejecting it; source-verdict at the tag, D224-3/9). `dsh` joined the upstream `--agent` set at
+  v1.4.218; the fleet roster does not adopt it.
+- **Schema v43** (`contract-constants.ts:23` at the tag): stored `session:<id>` addresses
+  respelled `orca_session_id:<id>`; no fleet code or doctrine keys the old spelling
+  (D224-10; `orca-dag-semantics.md` schema line advanced).
+- **Still parked:** `caller.orcaSessionId` — absent for external CLI and in-terminal shell
+  callers at 224 (both receipts on disk); observing it present needs a structured agent
+  session. No fleet claim reads it.
 
-Upstream `main` past v1.4.215, not yet in a tagged release, as of 2026-09-28 (#513):
+## Noted since the pin (inherited by the next re-pin)
 
-- `7438bc80f5` (#23325): mail to `dispatch:<id>` is redirected to `run:<child>` when that
-  worker now leads a child Run, with a new send warning `recipient_run_bound_redirect`
-  (`recipient-routing.ts:20-134` at main `2f8f4f576d`). Re-witness the addressing rules in
-  `dispatch-lifecycle.md` (group addresses, `dispatch_inactive`) and the conductor-handle rule
-  in `merge-serialization.md` when it ships.
-- `45f3512a33` (#22468): `dsh` (DeepSeek Harness) joins the agents `worker-start --agent`
-  accepts; the `spawn_worker.sh` roster does not list it.
+Both 2026-09-28 compass points (#513) shipped and were dispositioned in this run:
+`recipient_run_bound_redirect` (v1.4.217) replayed live — `dispatch-lifecycle.md`
+addressing now names it; `dsh` (v1.4.218) is upstream-available and deliberately not on
+the `spawn_worker.sh` roster. New notes at v1.4.224:
+
+- The Linux witness's first `serve` logged `[agent-state-rules] download failed: HTTP 404`
+  — witness-first-run noise to watch, not a doctrine claim (relates to #526).
+- `caller.orcaSessionId` (D224-6) waits on a structured agent session in the witness VM
+  (an agent account signed in there) — the same substrate the self-run programs need.
 - A weekly probe (`runtime/scripts/upstream_probe.py`, `.github/workflows/upstream-drift.yml`,
   #516) files an `upstream-drift` issue when a new minor lands or the pin falls ten patches
   behind, so the date trigger below is no longer the only thing keeping a quiet upstream honest.
@@ -74,8 +85,9 @@ A re-pin fires on whichever comes first:
 3. A `SPAWN=NOTE … run pin-it` sighting in the field, or any dispatch-doc drift report.
 
 Owner: the **pin-it** mission (its coordinator runs the loop; the maintainer files the issue).
-Next trigger: **2026-12-28** (quarterly from the 2026-09-28 re-pin), filed as the successor
-issue — it inherits this run's park register (docs/runs/2026-09-28-pin-it-500.md).
+Next trigger: **2026-12-28** (the standing quarterly date, kept) or the next minor / drift
+sighting, whichever first — the successor run inherits this run's park register
+(docs/runs/2026-10-12-pin-it-224.md) and carries #508 forward.
 
 ## How to re-pin (so a stranger can reproduce the diff)
 
@@ -107,3 +119,9 @@ sources (`core.ts:240`, hidden + deprecated; `handlers/terminal.ts:137`); `stop`
 in `terminal --help` (terminal-help-1.4.215.txt) — the listing half is answered. The
 execute-or-refuse half re-parks: the app was not running, so the probe returned
 `runtime_unavailable` (substrate, not mechanism evidence).
+
+2026-10-13 resolution (v1.4.224 re-pin): EXECUTES. On the Linux serve substrate,
+`orca-ide terminal stop --worktree path:/tmp/probe-repo --json` returned `{"stopped": 5}`
+(and 3 on the second sweep) and `terminal list` came back empty — the hidden deprecated
+verb works and stops every terminal in the worktree. Doctrine keeps `terminal close` as
+the canonical teardown; `stop` is recorded as a working blunt instrument. D1/D10 closed.

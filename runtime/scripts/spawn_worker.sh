@@ -101,14 +101,17 @@
 #   claude/codex/gemini → ro + rw + danger
 #   cursor              → rw + danger (`tui-agent-permissions.ts` maps cursor to `--yolo`;
 #                         ro → WORKER_CMD). `--model` is accepted at the PIN for claude, codex,
-#                         cursor, antigravity, and muse (the catalogs with
-#                         supportsWorkerLaunchPreferences; muse since v1.4.215,
-#                         52a1e2875b #22383). gemini/grok/omp carry catalogs
-#                         WITHOUT the flag, and opencode/pi/droid/kilo carry NO catalog at all,
-#                         so all of those reject --model ("does not support launch-time model
-#                         selection", worker-launch-preferences.ts). --effort requires --model,
-#                         and both are passed only when the user named a model; this script
-#                         omits both so the worker inherits the configured default.
+#                         cursor, antigravity, muse (since v1.4.215, 52a1e2875b #22383), and —
+#                         new in the 215→224 range — omp and opencode: their catalogs gained
+#                         supportsWorkerLaunchPreferences + launchArgs (opencode additionally
+#                         requires an existing worktree and a TUI that can verify the selection,
+#                         worker-launch-preferences.ts:73-86 at v1.4.224). gemini/grok carry
+#                         catalogs WITHOUT the flag, and pi/droid/kilo carry NO catalog at all,
+#                         so those reject --model ("does not support launch-time model
+#                         selection", worker-launch-preferences.ts). --effort requires --model
+#                         plus a catalog effort option for that model, and both are passed only
+#                         when the user named a model; this script omits both so the worker
+#                         inherits the configured default.
 #   antigravity         → rw + danger. `--agent antigravity`; the binary is `agy`
 #                         (`tui-agent-config.ts` detectCmd) plus
 #                         `--dangerously-skip-permissions`. ro → WORKER_CMD

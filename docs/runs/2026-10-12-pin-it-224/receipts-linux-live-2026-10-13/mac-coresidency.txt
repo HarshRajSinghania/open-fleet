@@ -1,0 +1,4 @@
+macOS co-residency 2026-10-13:
+app CFBundleShortVersionString: 1.4.224
+cli --version: 1.4.224
+tag commit: 2bb20586ebc39d605e16d95f57420e20a16e7485

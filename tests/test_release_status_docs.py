@@ -199,12 +199,18 @@ class DispatchLifecycleNamesTheCurrentPin(unittest.TestCase):
                 self.assertIn(token, self.TEXT)
 
     def test_parked_live_probes_survive(self):
+        # A pin bump may RETIRE a park only by naming it with its evidence; it may
+        # never silently drop one. The v1.4.224 register: legacy replay, the
+        # session-id field, and other-host probes stay parked; doctor shapes and
+        # `terminal stop` execute were retired live and stay NAMED as retired.
         section = flat(self.TEXT.split("## Live probes owed (pin-it)", 1)[1])
-        for probe in ("doctor verdict shapes", "legacy-takeover live replay",
-                      "roster/remote/OS/isolated-runtime probes"):
+        for probe in ("legacy-takeover live replay", "`caller.orcaSessionId`",
+                      "roster/remote/isolated-runtime probes",
+                      "doctor verdict shapes", "`terminal stop` execute"):
             with self.subTest(probe=probe):
                 self.assertIn(probe, section)
-        self.assertIn("live re-probe stays parked", flat(self.TEXT))
+        self.assertIn(f"Still PARKED per the {self.PIN} register", section)
+        self.assertIn("but EXECUTES", flat(self.TEXT))
 
 
 if __name__ == "__main__":

@@ -230,15 +230,18 @@ def grant_payload(ident, answer, why_core, task_id=""):
 def grant_pubkey(log_path):
     """Pinned human-grant pubkey bytes for this log, or None when unpinned.
 
-    The pin is searched in the log file's ancestors (the repo holding the
-    log), then in this script's own repo — a copied fleet checkout grades
-    its own log against its own pin. A malformed pin is could-not-run, never
-    a silent pass."""
-    candidates = []
+    Only the owning repository ROOT's pin counts (the first ancestor of the
+    log carrying `.git`, else this script's own repo). A key dropped beside
+    the log by a worker must never outrank the committed root pin — the
+    ancestor search this replaced let `docs/.orca/…` override the human's
+    key (PR #546 review). A malformed pin is could-not-run, never a pass."""
     resolved = Path(log_path).resolve()
-    candidates.extend(parent / GRANT_PUBKEY_REL for parent in resolved.parents)
-    candidates.append(Path(__file__).resolve().parent.parent.parent / GRANT_PUBKEY_REL)
-    for pin in candidates:
+    root = Path(__file__).resolve().parent.parent.parent
+    for parent in resolved.parents:
+        if (parent / ".git").exists():
+            root = parent
+            break
+    for pin in [root / GRANT_PUBKEY_REL]:
         try:
             if not pin.exists():
                 continue
@@ -312,6 +315,11 @@ def validate(record, net, grant_pub=None):
     shapes = secret_hits(record["raw"])
     if shapes:
         problems.append(f"credential-shaped text ({', '.join(shapes)}) — the log is permanent")
+    suffix_match = HUMAN_SOURCE_SUFFIX.search(record.get("why", ""))
+    if record["class"] != "one-way" and suffix_match and suffix_match.group(2):
+        problems.append("grant signature on a non-one-way line — a signed suffix "
+                        "only ever binds a one-way grant; refusing an unchecked "
+                        "signed-looking marker")
     hits = door_hits(record["raw"], net)
     if hits and record["class"] != "one-way":
         problems.append(
@@ -478,6 +486,10 @@ def cmd_append(args, net):
         elif "source=" in why:
             print("decisions: --why carries a source marker that does not match "
                   "--source; refusing a smuggled or mismatched source", file=sys.stderr)
+            return EXIT_VIOLATION
+        if effective_sig and args.klass != "one-way":
+            print("decisions: a grant signature embedded in --why binds a one-way "
+                  f"grant; it has no meaning on a {args.klass} line", file=sys.stderr)
             return EXIT_VIOLATION
         if args.klass == "one-way" and pub is not None and not effective_sig:
             print("decisions: a human grant pubkey is pinned, so a one-way append "

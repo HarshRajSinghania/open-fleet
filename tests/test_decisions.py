@@ -247,6 +247,7 @@ class TestSignedGrants(DecisionsBase):
             capture_output=True, text=True)
 
     def _pin(self):
+        subprocess.run(["git", "init", "-q", self.tmp], capture_output=True)
         pub = Path(str(self.key) + ".pub").read_text(encoding="utf-8").strip()
         orca = Path(self.tmp) / ".orca"
         orca.mkdir(parents=True, exist_ok=True)
@@ -262,6 +263,56 @@ class TestSignedGrants(DecisionsBase):
     def test_keygen_writes_a_seed_and_a_pubkey_outside_the_repo(self):
         self.assertEqual(self.keygen.returncode, 0, self.keygen.stderr)
         self.assertRegex(Path(str(self.key) + ".pub").read_text().strip(), r"^[0-9a-f]{64}$")
+        import stat
+        self.assertEqual(stat.S_IMODE(self.key.stat().st_mode), 0o600,
+                         "the seed is a private key and must be owner-only")
+
+    def test_keygen_refuses_a_seed_inside_this_repo(self):
+        inside = ROOT / "grant-key-refusal-probe"
+        self.assertFalse(inside.exists())
+        try:
+            r = subprocess.run(
+                [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(inside)],
+                capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("inside this repo", r.stderr)
+            self.assertFalse(inside.exists())
+            r = subprocess.run(
+                [sys.executable, str(DECISIONS), "grant-keygen", "--out", str(inside),
+                 "--in-repo-ok"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(inside.exists())
+        finally:
+            inside.unlink(missing_ok=True)
+            Path(str(inside) + ".pub").unlink(missing_ok=True)
+
+    def test_a_key_beside_the_log_never_overrides_the_root_pin(self):
+        # PR #546 review (P1): the first ancestor key won, so a worker could
+        # pin its own key at docs/.orca and sign its own grants. Only the
+        # repository-root pin may count.
+        self._pin()
+        rogue_key = Path(self.tmp) / "rogue.key"
+        subprocess.run([sys.executable, str(DECISIONS), "grant-keygen",
+                        "--out", str(rogue_key)], capture_output=True, text=True)
+        beside = self.log.parent / ".orca"
+        beside.mkdir(parents=True, exist_ok=True)
+        (beside / "human-grant-pubkey").write_text(
+            Path(str(rogue_key) + ".pub").read_text(encoding="utf-8"),
+            encoding="utf-8")
+        sig = subprocess.run(
+            [sys.executable, str(DECISIONS), "sign-grant", "--key", str(rogue_key),
+             "--id", "gate-s1", "--answer", "approved", "--why", "deploy to production"],
+            capture_output=True, text=True)
+        self.assertEqual(sig.returncode, 0, sig.stderr)
+        r = self.append("gate-s1", "one-way", "approved", "deploy to production",
+                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip()))
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_an_embedded_signature_on_a_non_one_way_line_is_refused(self):
+        why = f"routine [source=human:lia sig={'a' * 128}]"
+        r = self.append("gate-s2", "taste", "yes", why,
+                        extra=("--source", "human:lia"))
+        self.assertEqual(r.returncode, 1)
 
     def test_a_pinned_key_makes_an_unsigned_one_way_append_refuse(self):
         self._pin()

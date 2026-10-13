@@ -1,0 +1,432 @@
+$ orca-ide terminal create --worktree path:/tmp/probe-repo --title PIN-PROBE --json
+{
+  "id": "4817fecb-4726-4d99-ab8b-4bc90b7c9635",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "tabId": "66cc3596-cc36-4b36-a462-117871f380de",
+      "paneKey": "66cc3596-cc36-4b36-a462-117871f380de:f71dcc6f-8a96-4834-bc77-76624d66b9ec",
+      "ptyId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@3e5e47ca",
+      "worktreeId": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo",
+      "title": "PIN-PROBE",
+      "executionHostId": "local",
+      "incarnationId": "8c3f88cf-9280-4707-bea1-12b75abd66b8",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_9949ed97-a669-4862-a495-4520506b6921 is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_9949ed97-a669-4862-a495-4520506b6921` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+HANDLE: term_9949ed97-a669-4862-a495-4520506b6921
+$ orca-ide orchestration run-create --objective pin-it 1.4.224 live probe (disposable) --from term_9949ed97-a669-4862-a495-4520506b6921 --json
+{
+  "id": "2745b38a-d977-494c-814f-4a46f8035ffc",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_20e0e89dc492",
+      "objective": "pin-it 1.4.224 live probe (disposable)",
+      "coordinator_handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T05:17:16Z",
+      "updated_at": "2026-10-13T05:17:16Z"
+    },
+    "mutation": {
+      "requestId": "8a8fb1f3-ac23-4cd8-a399-b5c0684bad64",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+RUN_ID: run_20e0e89dc492
+$ orca-ide orchestration task-create --spec probe task-update result typing --run run_20e0e89dc492 --from term_9949ed97-a669-4862-a495-4520506b6921 --json
+{
+  "id": "3edbc7da-daca-483a-ab5f-506e3945c399",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_2415fa4ed99e",
+      "run_id": "run_20e0e89dc492",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "created_by_pane_key": "66cc3596-cc36-4b36-a462-117871f380de:f71dcc6f-8a96-4834-bc77-76624d66b9ec",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@3e5e47ca:8c3f88cf-9280-4707-bea1-12b75abd66b8",
+      "created_by_run_generation": 1,
+      "task_title": "probe task-update result typing",
+      "display_name": "probe task-update result typing",
+      "spec": "probe task-update result typing",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-13 05:17:16",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "b99e95e0-e979-4cab-9cda-3d3f5ffc4a6c",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+TASK1: task_2415fa4ed99e ready
+$ orca-ide orchestration task-update --id task_2415fa4ed99e --status completed --result {"probe":"json-result"} --run run_20e0e89dc492 --from term_9949ed97-a669-4862-a495-4520506b6921 --json
+{
+  "id": "3a227918-a4e2-44c4-a470-ddcdf9947e8d",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_2415fa4ed99e",
+      "run_id": "run_20e0e89dc492",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "created_by_pane_key": "66cc3596-cc36-4b36-a462-117871f380de:f71dcc6f-8a96-4834-bc77-76624d66b9ec",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@3e5e47ca:8c3f88cf-9280-4707-bea1-12b75abd66b8",
+      "created_by_run_generation": 1,
+      "task_title": "probe task-update result typing",
+      "display_name": "probe task-update result typing",
+      "spec": "probe task-update result typing",
+      "status": "completed",
+      "deps": "[]",
+      "result": "{\"probe\":\"json-result\"}",
+      "created_at": "2026-10-13 05:17:16",
+      "completed_at": "2026-10-13T05:17:17.064Z"
+    },
+    "mutation": {
+      "requestId": "0e3a5a8e-d261-48fb-b792-b7cb63d33747",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+RESULT_FIELD_TYPE_REPR: '{"probe":"json-result"}'
+$ orca-ide orchestration task-create --spec probe cancel recipe --run run_20e0e89dc492 --from term_9949ed97-a669-4862-a495-4520506b6921 --json
+{
+  "id": "0a045da1-42e8-400c-99ed-b80fb8871d3e",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_d88211e5eeb6",
+      "run_id": "run_20e0e89dc492",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "created_by_pane_key": "66cc3596-cc36-4b36-a462-117871f380de:f71dcc6f-8a96-4834-bc77-76624d66b9ec",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@3e5e47ca:8c3f88cf-9280-4707-bea1-12b75abd66b8",
+      "created_by_run_generation": 1,
+      "task_title": "probe cancel recipe",
+      "display_name": "probe cancel recipe",
+      "spec": "probe cancel recipe",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-13 05:17:17",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "1dc7665d-1269-4233-8455-e37baafcf8ac",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration task-update --id task_d88211e5eeb6 --status failed --result cancelled --run run_20e0e89dc492 --from term_9949ed97-a669-4862-a495-4520506b6921 --json
+{
+  "id": "e2108e60-a8ce-4886-b8c6-cd7e1d3d1992",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_d88211e5eeb6",
+      "run_id": "run_20e0e89dc492",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "created_by_pane_key": "66cc3596-cc36-4b36-a462-117871f380de:f71dcc6f-8a96-4834-bc77-76624d66b9ec",
+      "created_by_process_incarnation": "2d709174-778b-443e-a858-bdc7d32b4a70::/tmp/probe-repo@@3e5e47ca:8c3f88cf-9280-4707-bea1-12b75abd66b8",
+      "created_by_run_generation": 1,
+      "task_title": "probe cancel recipe",
+      "display_name": "probe cancel recipe",
+      "spec": "probe cancel recipe",
+      "status": "failed",
+      "deps": "[]",
+      "result": "cancelled",
+      "created_at": "2026-10-13 05:17:17",
+      "completed_at": "2026-10-13T05:17:17.193Z"
+    },
+    "mutation": {
+      "requestId": "562c1f80-acee-43a1-a455-425c607b12cf",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+exit 0
+
+$ orca-ide orchestration run-show --run run_20e0e89dc492 --from term_9949ed97-a669-4862-a495-4520506b6921 --json
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Unknown flag --run for command: orchestration run-show",
+    "data": {
+      "validFlags": [
+        "environment",
+        "help",
+        "id",
+        "json",
+        "pairing-code"
+      ],
+      "suggestions": [
+        "id",
+        "json"
+      ],
+      "nextSteps": [
+        "Did you mean: --id, --json",
+        "Valid flags: --environment, --help, --id, --json, --pairing-code"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+exit 1
+
+{
+  "id": "68349aab-30ce-43f4-870e-7cd33a71ac09",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_20e0e89dc492",
+      "objective": "pin-it 1.4.224 live probe (disposable)",
+      "coordinator_handle": "term_9949ed97-a669-4862-a495-4520506b6921",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-13T05:17:16Z",
+      "updated_at": "2026-10-13T05:17:16Z"
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+---
+term_3f9b19d3-adb6-48e1-9ed5-e45155bc1ae8
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Unknown flag --from for command: orchestration check",
+    "data": {
+      "validFlags": [
+        "ack",
+        "all",
+        "environment",
+        "format",
+        "help",
+        "json",
+        "pairing-code",
+        "peek",
+        "retry-request",
+        "run",
+        "terminal",
+        "timeout-ms",
+        "types",
+        "unread",
+        "wait"
+      ],
+      "suggestions": [
+        "terminal",
+        "json",
+        "run"
+      ],
+      "nextSteps": [
+        "Did you mean: --terminal, --json, --run",
+        "Valid flags: --ack, --all, --environment, --format, --help, --json, --pairing-code, --peek, --retry-request, --run, --terminal, --timeout-ms, --types, --unread, --wait"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+{
+  "id": "c93446c3-d022-4abb-970f-693ddc912179",
+  "ok": true,
+  "result": {
+    "runId": "run_20e0e89dc492",
+    "messages": [],
+    "count": 0,
+    "acknowledged": null
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+---SELF---
+{
+  "id": "d9661fee-a3bf-4355-9a57-79028e3b20b2",
+  "ok": true,
+  "result": {
+    "runId": "run_20e0e89dc492",
+    "messages": [],
+    "count": 0,
+    "acknowledged": null
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Unknown flag --task for command: orchestration send",
+    "data": {
+      "validFlags": [
+        "body",
+        "dispatch-capability",
+        "dispatch-id",
+        "environment",
+        "files-modified",
+        "from",
+        "help",
+        "json",
+        "outcome",
+        "pairing-code",
+        "payload",
+        "phase",
+        "priority",
+        "report-path",
+        "retry-request",
+        "run",
+        "subject",
+        "task-id",
+        "thread-id",
+        "to",
+        "type"
+      ],
+      "suggestions": [
+        "phase",
+        "task-id",
+        "to"
+      ],
+      "nextSteps": [
+        "Did you mean: --phase, --task-id, --to",
+        "Valid flags: --body, --dispatch-capability, --dispatch-id, --environment, --files-modified, --from, --help, --json, --outcome, --pairing-code, --payload, --phase, --priority, --report-path, --retry-request, --run, --subject, --task-id, --thread-id, --to, --type"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "Missing required --subject"
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}
+{
+  "id": "88103a19-1b4c-443e-b265-c74851efb532",
+  "ok": false,
+  "error": {
+    "code": "run_required",
+    "message": "No recipient or active Dispatch Run could be resolved. No effects were applied. Orchestration mutation request ID: 28754818-b269-4b15-aa53-3109aae3a9a7.",
+    "data": {
+      "effectsApplied": false,
+      "guide": {
+        "topic": "orchestration",
+        "full": true
+      },
+      "nextCommandArgs": [
+        "skills",
+        "get",
+        "orchestration",
+        "--full"
+      ],
+      "nextSteps": [
+        "Using this same Orca CLI executable, run: skills get orchestration --full",
+        "Read the returned guide completely and do not retry the previous command unchanged."
+      ],
+      "orchestrationRequestId": "28754818-b269-4b15-aa53-3109aae3a9a7",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "send",
+        "--type",
+        "heartbeat",
+        "--task-id",
+        "task_2415fa4ed99e",
+        "--from",
+        "term_3f9b19d3-adb6-48e1-9ed5-e45155bc1ae8",
+        "--subject",
+        "probe",
+        "--body",
+        "probe",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}
+{
+  "id": "aefa8023-d791-4629-907c-426a25302de9",
+  "ok": true,
+  "result": {
+    "message": {
+      "id": "msg_36b46af675be",
+      "run_id": "run_20e0e89dc492",
+      "delivery_contract": "current_delivery",
+      "from_handle": "term_3f9b19d3-adb6-48e1-9ed5-e45155bc1ae8",
+      "to_handle": "run:run_20e0e89dc492",
+      "subject": "probe",
+      "body": "probe",
+      "type": "heartbeat",
+      "priority": "normal",
+      "thread_id": null,
+      "payload": "{\"taskId\":\"task_2415fa4ed99e\"}",
+      "created_at": "2026-10-13T05:18:53Z",
+      "delivered_at": null
+    },
+    "mutation": {
+      "requestId": "5167b60d-356b-40ff-9cf5-70a93d2fa584",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "a22e7fec-a2b2-4db1-b39a-29d0b541a17a"
+  }
+}

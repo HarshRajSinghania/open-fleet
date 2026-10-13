@@ -67,6 +67,11 @@ grep -n 'CLAUDE_PLUGIN_ROOT' "$PLUGIN_ROOT/hooks/hooks.json"
 test -x "$PLUGIN_ROOT/runtime/scripts/verify-gate.sh"
 ```
 
+For a lean install (0.7.1+, sourced from the `dist` tree) there is no root `playbooks/`:
+record `ls "$PLUGIN_ROOT/skills/ship-it/references" | head -5` instead, and
+`cat "$PLUGIN_ROOT/DIST-PROVENANCE.txt"` — it names the tag and source commit the tree
+was built from.
+
 The hooks must name the executable gate through `${CLAUDE_PLUGIN_ROOT}` on both events.
 Inventory plus path checks establish discovery and wiring; do not describe them as an
 observed event invoking the gate.
@@ -104,6 +109,15 @@ then SHA256 of that inventory. Require identical fingerprints and list any untra
 separately; host bookkeeping or Python bytecode is not part of the source inventory.
 Missing or changed source paths fail the copy check. Combined with the source validator,
 this proves the copied mission/protocol files resolve to the validated tree.
+
+For a lean install the installed copy is generated output, not a source copy, so fingerprint
+it against the bundle, not the source tree: in the full-history source checkout at the commit
+`DIST-PROVENANCE.txt` names, run `python3 scripts/bundle.py --out "$SOURCE_ROOT-bundle"`
+(plus the `LICENSE` / `THIRD_PARTY_NOTICES.md` / `DIST-PROVENANCE.txt` files the publish
+workflow adds), then fingerprint every file in that tree against the installed copy with the
+same inventory command. Bundle rewrites are expected and identical by construction; a path
+present in one tree and missing or changed in the other fails the copy check. The source
+validator still runs in the full-history checkout.
 
 If witnessing an immutable release, also require `INSTALL_COMMIT` to equal that tag's
 peeled commit. A marketplace install normally follows its tracked branch, so a later install

@@ -1,7 +1,7 @@
 # Ledger — ship-it mdtoc external run (#515)
 
 RUN: run_4e3ed8344520 · COORDINATOR: term_de3f1b7c-4e1f-4b8f-93e0-6f63e5044871 · BASE: fleet/ship-mdtoc-20261013 · FORK_POINT: 0b9f660d93e64cf57e8245b0f1eb6eb0010ae158 · T0: 2026-10-13 · SOURCE: ravidsrk/mdtoc SPEC.md @0b9f660d (maintainer-approved freeze; human gate #1) · WIP: builders=2 reviewers=2
-PHASE: BUILDING
+PHASE: BUILT (046d1f8d0ff63b7193bc06e0c373ba60d9e06849 pushed to origin/fleet/ship-mdtoc-20261013)
 
 Substrate: Linux witness VM (Ubuntu 24.04.5 arm64, orca-ide 1.4.224 serve,
 Claude Code 2.1.296 workers). Lane: offline (no gh in VM) — local merges to
@@ -28,4 +28,5 @@ at teardown.
 | task_bfa7e23e0f20 | S3 multi-file+errors (AC-7,9) | t | n/a | n/a | t | t | t | lit | | head 04a9e8f; review PASS (reviews/s3.md, LOW-only: duplicate-FILE + style carried as known limits); verify OK executed-NC (manifest-s3.json, contract amended @27cc97e for denominator extractor); merged c574a547 ancestry-verified |
 | task_204bc820b2ec | S4 slug hardening (AC-2) | t | n/a | n/a | t | t | t | lit | | head 4aa7755 after fix round task_479d83732bdf; reviews s4.md PASS+1 MEDIUM (autolinks eaten as tags, dispositioned fix-now) → s4-r2.md PASS no findings (reviews/s4-record.md); verify OK executed-NC (manifest-s4.json); merged c9a6f683 ancestry-verified |
 | task_de5d11f52acc | S5 EOL+BOM seams (AC-1,6) | t | n/a | n/a | t | t | t | lit | | head 47ef84f; origin integrated FAIL F1-F4; review PASS (reviews/s5.md, LOW test-gaps folded into integrated battery); verify OK executed-NC (manifest-s5.json); merged 046d1f8d ancestry-verified |
-| task_1dbe4c4cb564 | Integrated acceptance @c9a6f683 | f | n/a | n/a | t | f | t | lit | | FAIL (reviews/integrated.md): CR-only idempotence + BOM placement; S5 closes; re-review at final BASE |
+| task_1dbe4c4cb564 | Integrated acceptance @c9a6f683 | f | n/a | n/a | t | f | t | lit | | FAIL (reviews/integrated.md): CR-only idempotence + BOM placement; closed by S5 |
+| task_fe34045197bf | Integrated acceptance @046d1f8d | t | n/a | n/a | t | t | t | lit | | PASS (reviews/integrated-r2.md, reviews/integrated-record.md); verify OK executed-NC (manifest-integrated.json); BASE pushed 046d1f8d — terminal BUILT |

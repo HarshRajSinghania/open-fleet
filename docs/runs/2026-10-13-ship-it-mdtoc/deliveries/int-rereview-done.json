@@ -1,0 +1,38 @@
+{
+  "id": "2bd95ea3-e0a7-4b69-b702-a0443c5f826f",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_1ea6e590ba7c",
+    "messages": [
+      {
+        "id": "msg_169fa9285751",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_65e918f5-ec4c-4871-89d9-2ccd7eb312ef",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "mdtoc integrated r2: PASS",
+        "body": "Re-ran F1-F4 repros byte-for-byte at 046d1f8d0ff63b7193bc06e0c373ba60d9e06849 and all four are fixed; re-judged AC-1..AC-9 (all PASS, 110 tests OK) and probed new seams (marker offsets under CR/BOM, BOM+markers+CR, first-terminator choice, relative indent after depth filtering) with no defects found. Nothing blocks shipping; the latched limits are not spec defects. Python 3.11 was not run since it is not installed, so the README's 3.11 claim is checked by reading only.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_fe34045197bf\",\"dispatchId\":\"ctx_a62d0d86b43e\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated-r2.md\"}",
+        "created_at": "2026-10-13T14:42:13Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "1feb6893-cf33-41fa-8d27-4b8034d39a05",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -1,0 +1,23 @@
+PASS AC-1 stale TOC replaced
+PASS AC-1 second run byte-identical
+PASS AC-2 duplicate suffixes
+PASS AC-2 nested link
+PASS AC-2 inline HTML
+PASS AC-2 autolink
+PASS AC-2 combining mark
+PASS AC-3 fenced heading excluded
+PASS AC-4 check missing -> 1
+PASS AC-6 insert after H1
+PASS AC-5 default depth excludes H5
+PASS AC-4 check current -> 0
+PASS AC-4 stdout prints, no write
+PASS AC-5 invalid depth -> 2
+PASS AC-7+AC-9 mixed -> 2
+PASS AC-7 later file updated
+PASS F1 CR-only idempotent, all-CR
+PASS F3 exotic separator not a break
+PASS F2 BOM byte-0 + after H1
+PASS F2 BOM+CR combined
+PASS F4 lone H4 column 0
+PASS AC-8 suite green
+RESULT: ALL PASS

@@ -212,7 +212,7 @@ evidence-based definition of done. Click through for the full guide to each.
 
 | Mission | Proof | Outcome (definition of done) | Use when |
 |---|---|---|---|
-| 🚢 **[ship-it](docs/missions/ship-it.md)** | `doctrine-only` | Intent or a frozen spec → a released, verified change, stopped at the highest release state you authorized (`BUILT` → `PROMOTION_READY` → `RELEASED` → `DEPLOYED_AND_VERIFIED`) | "build and ship this", spec-to-shipped-product |
+| 🚢 **[ship-it](docs/missions/ship-it.md)** | `external-run` | Intent or a frozen spec → a released, verified change, stopped at the highest release state you authorized (`BUILT` → `PROMOTION_READY` → `RELEASED` → `DEPLOYED_AND_VERIFIED`) | "build and ship this", spec-to-shipped-product |
 | 🧹 **[clean-sweep](docs/missions/clean-sweep.md)** | `self-run` | A finite backlog exhausted to zero, PR-per-finding, every close backed by a merged SHA + a test that failed pre-fix; re-enumerated until dry | "close every issue", "fix everything in this audit", "the README lies" |
 | 🛡️ **[harden-it](docs/missions/harden-it.md)** | `self-run` | A threat model closed: audit → exploit → fix → **re-attack the fix** → clean re-audit finds zero unrefuted P0/P1 (or `HARDENED-WITH-OPEN-ITEMS`) | "harden this", "security sweep", "red team" |
 | ⚡ **[speed-it](docs/missions/speed-it.md)** | `doctrine-only` | A perf budget met against a pre-declared measurement contract: `WITHIN-BUDGET` or `OPTIMIZED-WITH-PARKED` | "the app is slow", "perf budget", "Core Web Vitals" |

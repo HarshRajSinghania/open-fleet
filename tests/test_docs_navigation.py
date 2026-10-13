@@ -134,6 +134,12 @@ class NavigableDocsHaveNoDeadLinks(unittest.TestCase):
     level up: their relative links resolve against the live directory they were copied from, which
     is what makes them faithful copies (see that directory's README).
 
+    A run's artifact directory under `docs/runs/` is the same shape again: retained worker
+    artifacts (reviews, ledgers) quote probe inputs verbatim -- a slug review's `[a](u)` is the
+    input under test, not a link a reader follows -- and the files are sha256-pinned evidence, so
+    editing them to appease a link checker would break provenance. The run REPORTS themselves
+    (top-level `docs/runs/*.md`) stay navigable and checked.
+
     Everything a reader actually navigates is checked.
     """
 
@@ -164,7 +170,8 @@ class NavigableDocsHaveNoDeadLinks(unittest.TestCase):
     def _navigable(self):
         out = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT,
                              capture_output=True, text=True, check=True).stdout.split()
-        return [f for f in out if not f.startswith(self.EVIDENCE_TREES)]
+        return [f for f in out if not f.startswith(self.EVIDENCE_TREES)
+                and not (f.startswith("docs/runs/") and f.count("/") > 2)]
 
     def test_no_navigable_doc_links_to_something_that_is_not_there(self):
         files = self._navigable()

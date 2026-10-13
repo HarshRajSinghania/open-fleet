@@ -54,7 +54,7 @@ it is still listed, the promotion has not landed yet.
 - [ ] `reshape-it` — this catalog's churn-hot modules, characterization net pinned first.
 - [ ] `review-it` — the next real PR here or upstream, with artifacts retained in the run directory.
 - [ ] `root-cause` — the next real defect filed here, or an open bug in a small OSS repo.
-- [ ] `ship-it` — the next mutating slice here; the 2026-08-28 run reached promotion-ready but never recorded its verifier transcript.
+
 - [ ] `speed-it` — the catalog-gates journey against a declared wall-clock budget, guarded in CI.
 
 <!-- call-for-runs:open:end -->

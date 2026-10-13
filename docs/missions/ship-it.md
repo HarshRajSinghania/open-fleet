@@ -4,9 +4,11 @@
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — coordinator plus parallel isolated builders and build-blind reviewers; you own the one-way doors (freeze, promotion, deploy).
 > **Activation load:** ~33,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — it ran ([self-run report](../runs/2026-08-28-ship-it-self-run.md),
-> artifacts still hash true at `748b328`), but the verifier transcript was never recorded, so
-> the outcome rests on prose (`runtime/scripts/run_report.py`, issue #259)
+> **Proof:** external-run — the 2026-10-13 run built ravidsrk/mdtoc from a maintainer-frozen
+> spec to BUILT @ `046d1f8d` on the Linux witness VM (six slices, an integrated FAIL closed by
+> a seam-fix slice, re-review PASS); binding report [`docs/runs/2026-10-13-ship-it-mdtoc.md`](../runs/2026-10-13-ship-it-mdtoc.md).
+> The earlier [self-run report](../runs/2026-08-28-ship-it-self-run.md) still hashes true at
+> `748b328` but never recorded its verifier transcript, so it binds nothing (issue #259).
 
 > Give it an idea or a frozen spec. Come back to a change that is built, reviewed at the
 > integrated whole, proven at a real entry point, landed on an integration branch, and taken

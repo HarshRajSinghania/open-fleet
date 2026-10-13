@@ -30,9 +30,10 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
       0.7.0. The witness transcript's `du -sh`, re-run at that tag's commit, shows the reduced
       size. Disclosing the full size is not a substitute: the review requires the copy to
       shrink before a public beta, and this box stays unchecked until it has.
-- [ ] One recorded `review-it` or `ship-it` run on an Ubuntu host driven by `orca-ide`, so the
-      Linux sentence below can drop the word "untested" (review §8, item 6). Until then the
-      sentence stays as written.
+- [x] One recorded `review-it` or `ship-it` run on an Ubuntu host driven by `orca-ide`, so the
+      Linux sentence below can drop the word "untested" (review §8, item 6). Done 2026-10-13:
+      `review-it` on Ubuntu 24.04 via `orca-ide` 1.4.224, NO-GO verdict bound to the reviewed
+      SHA (`docs/runs/2026-10-13-review-it-linux.md`, #527); the sentence below names it.
 - [ ] An external monitor polls the Actions API for `main`'s latest `validate` conclusion
       (`docs/ops.md`, incident step 1), so a no-runner outage is seen by something outside
       Actions ([#520](https://github.com/ravidsrk/orca-fleet/issues/520)'s outer layer).
@@ -77,11 +78,11 @@ recipe. The full boundary is stated in the README under
 [Before you run a mission](../../README.md#before-you-run-a-mission).
 
 **What you need.** The Orca app running with the orchestration experimental feature enabled, at
-or above the catalog pin (`runtime/pins.json`, v1.4.215 at this cut); the `orca` CLI, which is
+or above the catalog pin (`runtime/pins.json`, v1.4.224 at this cut); the `orca` CLI, which is
 `orca-ide` on Linux; Orca's `orchestration` and `orca-cli` skills installed for your agent host;
-`git` and `gh`; Python 3.11 or newer. Every recorded run so far happened on macOS. Linux is
-supported by the code as of 0.7.0, which resolves the CLI name correctly there for the first
-time, and untested by a recorded run.
+`git` and `gh`; Python 3.11 or newer. Most recorded runs happened on macOS; Linux, supported
+by the code as of 0.7.0, has one recorded run — a `review-it` verdict executed end to end on
+Ubuntu via `orca-ide` (`docs/runs/2026-10-13-review-it-linux.md`).
 
 **Install.** Symlink individual missions into your agent's skills directory (the verified path),
 or install the whole catalog as a Claude Code plugin, which is the one path that wires the

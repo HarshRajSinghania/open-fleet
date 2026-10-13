@@ -6,6 +6,8 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-13
+
 - **The plugin install is now the lean generated tree.** `scripts/bundle.py` emits the
   plugin manifest, hooks, and gate runtime at the bundle root, so the published `dist`
   tree is itself the installable plugin; the marketplace now sources the plugin from

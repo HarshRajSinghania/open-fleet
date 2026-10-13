@@ -1,0 +1,19 @@
+hand negative control (coordinator-executed): drop bare CR from the terminator set in _EOL; suite must go RED
+diff --git a/mdtoc/toc.py b/mdtoc/toc.py
+index b8fa7ed..f95b496 100644
+--- a/mdtoc/toc.py
++++ b/mdtoc/toc.py
+@@ -21,7 +21,7 @@ _STAR_EMPHASIS = re.compile(r"\*+")
+ _UNDERSCORE_EMPHASIS = re.compile(r"(?<!\w)(_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)")
+ 
+ 
+-_EOL = re.compile(r"\r\n|\r|\n")
++_EOL = re.compile(r"\r\n|\n")  # NC MUTANT: bare CR not a terminator
+ _LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+ BOM = "\ufeff"
+ 
+== unittest under mutant (see s5-nc-run.txt, evidence-bound) ==
+----------------------------------------------------------------------
+Ran 110 tests in 0.687s
+
+FAILED (failures=3)

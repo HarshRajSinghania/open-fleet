@@ -1,0 +1,13 @@
+TASK pack: gstack (review). Build-blind acceptance review of slice S5 (line-ending + BOM seam fixes).
+Head: resolve with git rev-parse HEAD in your cwd (fleet/build-s5) — must be 47ef84f2f0463c191b83182b77ddf3f0c641ec51.
+Diff: git diff c9a6f683bb497d975e4bcd76b5163689e4da794d...HEAD
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s5.md (AC-1, AC-6). Originating FAIL: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated.md findings F1-F4.
+You did not write this code. Re-run the originating repros byte-for-byte and judge with quoted lines:
+F1 CR-only `# T\r## A\r`: update is idempotent from run 1, all-CR output, --check 0 right after. Also CR-only with markers pre-existing.
+F3 exotic separators: `# T\x0cx\n## A` and a U+0085 variant — heading never split, TOC never mid-line. Which splitlines call sites remain, if any?
+F2 BOM: `\xef\xbb\xbf# T\n## A` — TOC after H1, BOM only at byte 0, idempotent; BOM without H1; BOM + CR-only combined; BOM'd first-line H2 listed.
+F4 indent: shallowest-included-relative; lone H4 renders at column 0. (Recorded known limit: first heading deeper than a later sibling still indents the first item — do not re-raise unless you judge it a criterion violation.)
+No LF/CRLF regression: existing round-trip tests are the oracle, plus probe a CRLF doc and a mixed-EOL doc (first-seen terminator wins). Probe: BOM-only empty file, file that is exactly "\r", CRLF file whose first line ends CR-only then CRLF (which terminator wins and is it stable?), BOM after leading blank line (not byte 0 — must stay literal text). Static test-adequacy: guarding test per claim or unguarded. Findings: severity + path:line + verbatim quote.
+Verdict line at top WITH THE FULL 40-char head SHA: PASS or FAIL.
+Write report to /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s5.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

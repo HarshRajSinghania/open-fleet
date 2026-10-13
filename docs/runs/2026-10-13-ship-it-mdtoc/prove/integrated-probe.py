@@ -48,6 +48,15 @@ with tempfile.TemporaryDirectory() as td:
     g = d / "h.md"; g.write_text("# H\n## B\n")
     p = run(str(d / "gone.md"), str(g)); check("AC-7 later file updated", p.returncode == 2 and "- [B](#b)" in g.read_text())
 
+# S5 seams (integrated-review F1-F4 repros)
+cr1 = update_text("# T\r## A\r")
+check("F1 CR-only idempotent, all-CR", update_text(cr1) == cr1 and "\n" not in cr1.replace("\r", ""))
+check("F3 exotic separator not a break", render_toc("## A\x0cB\n").strip() == "- [A\x0cB](#ab)")
+bom = update_text("﻿# T\n## A\n")
+check("F2 BOM byte-0 + after H1", bom.startswith("﻿# T\n\n<!-- toc -->") and update_text(bom) == bom)
+check("F2 BOM+CR combined", update_text("﻿# T\r## A\r").startswith("﻿# T\r\r<!-- toc -->"))
+check("F4 lone H4 column 0", render_toc("#### Deep\n").startswith("- [Deep]"))
+
 p = subprocess.run([sys.executable, "-m", "unittest", "discover"], cwd=WT, capture_output=True, text=True)
 check("AC-8 suite green", p.returncode == 0 and "OK" in p.stderr,
       p.stderr.strip().splitlines()[-2] if p.stderr.strip() else "")

@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-HEAD = "c9a6f683bb497d975e4bcd76b5163689e4da794d"
+HEAD = "046d1f8d0ff63b7193bc06e0c373ba60d9e06849"
 BASE = "0b9f660d93e64cf57e8245b0f1eb6eb0010ae158"
 HOME = os.path.expanduser("~")
 RD = "/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc"
@@ -69,11 +69,11 @@ open("/tmp/int.md", "w").write(
     "# Handbook\n\n```md\n<!-- toc -->\n<!-- /toc -->\n```\n\n<!-- toc -->\n<!-- /toc -->\n\n"
     "## Getting <em>Started</em>\n\n## Café\n\n### From source\n\n## Getting Started\n")
 
-evid("tests-integrated", f"{RD}/prove/int-tests.txt", FIXED, 0,
+evid("tests-integrated-fixed", f"{RD}/prove/int-tests-fixed.txt", FIXED, 0,
      "python3", "-m", "unittest", "discover")
-evid("integrated-battery", f"{RD}/prove/int-battery.txt", FIXED, 0,
+evid("integrated-battery-fixed", f"{RD}/prove/int-battery-fixed.txt", FIXED, 0,
      "python3", f"{RD}/prove/integrated-probe.py", FIXED)
-evid("runtime-prove-integrated", f"{RD}/prove/int-prove.txt", FIXED, 0,
+evid("runtime-prove-integrated-fixed", f"{RD}/prove/int-prove-fixed.txt", FIXED, 0,
      "python3", "-m", "mdtoc", "--stdout", "/tmp/int.md")
 
 run(["cp", "-a", FIXED, NC])
@@ -84,10 +84,10 @@ assert old in src, "mutant anchor not found"
 mutant = old + "\n    yield from enumerate(text.splitlines())  # NC MUTANT: fence-awareness off\n    return"
 open(toc, "w").write(src.replace(old, mutant))
 diff = run(["git", "-C", NC, "diff"]).stdout
-evid("neg-control-integrated", f"{RD}/prove/int-nc-run.txt", NC, 1,
+evid("neg-control-integrated-fixed", f"{RD}/prove/int-nc-run-fixed.txt", NC, 1,
      "python3", "-m", "unittest", "discover")
-nc_out = open(f"{RD}/prove/int-nc-run.txt").read()
-with open(f"{RD}/prove/int-nc.txt", "w") as f:
+nc_out = open(f"{RD}/prove/int-nc-run-fixed.txt").read()
+with open(f"{RD}/prove/int-nc-fixed.txt", "w") as f:
     f.write("hand negative control (coordinator-executed): disable fence-awareness in _outside_fences; suite must go RED\n")
     f.write(diff)
     f.write("== unittest under mutant (see int-nc-run.txt, evidence-bound) ==\n")

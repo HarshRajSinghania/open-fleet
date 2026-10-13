@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "mdtoc-s5-eol-bom-seams",
+    "contract_digest": "sha256:7a5bf38bc72770452d40cdbcf468220463f2a9d25a91bfd635ea63c694caadc4",
+    "unit_class": "mutation"
+  },
+  "sig_b64": "pc632Gqa1Yw+yZbHOi88TjwOhDSWFA/224VPEmGH3za0RzuKOEc/nuthlKIojwN7nmH0SthwQU0bfAal17wnCg=="
+}

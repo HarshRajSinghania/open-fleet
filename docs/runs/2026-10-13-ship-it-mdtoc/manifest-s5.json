@@ -1,0 +1,131 @@
+{
+  "unit": "mdtoc-s5-eol-bom-seams",
+  "claim": "S5: Markdown line-ending model (CRLF/CR/LF only, first-seen terminator), BOM pinned at byte 0, shallowest-relative TOC indent on fleet/build-s5",
+  "base_sha": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+  "head_sha": "47ef84f2f0463c191b83182b77ddf3f0c641ec51",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/s5.md@fbb0874c79d09ab3a8e192da742290c518557fb5",
+    "digest": "sha256:7a5bf38bc72770452d40cdbcf468220463f2a9d25a91bfd635ea63c694caadc4",
+    "criterion_ids": [
+      "AC-1",
+      "AC-6"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-1",
+      "text": "idempotent for LF/CRLF/CR-only; only CRLF/CR/LF split lines; first-seen terminator used; relative indent",
+      "addressed": true
+    },
+    {
+      "id": "AC-6",
+      "text": "insert after first H1 else top; BOM stays at byte 0, never hides first heading",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-s5",
+      "ts": "2026-10-13T14:29:53Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.712,
+      "commit": "47ef84f2f0463c191b83182b77ddf3f0c641ec51",
+      "wtree": "1b0866726013f2bd58b55b5c424568c6ef36ffb6",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-tests.txt"
+    },
+    {
+      "label": "runtime-prove-s5",
+      "ts": "2026-10-13T14:29:53Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/m4.md",
+      "cmd_sha256": "e871ff60c8f019b3b095c1674e48832321638b97703351f6ecaa69b7071de591",
+      "exit": 0,
+      "duration_s": 0.015,
+      "commit": "47ef84f2f0463c191b83182b77ddf3f0c641ec51",
+      "wtree": "1b0866726013f2bd58b55b5c424568c6ef36ffb6",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-prove.txt"
+    },
+    {
+      "label": "neg-control-s5",
+      "ts": "2026-10-13T14:29:54Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.713,
+      "commit": "47ef84f2f0463c191b83182b77ddf3f0c641ec51",
+      "wtree": "5cbaba0964d1d73ff52068f7c582db65764e3459",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-nc-run.txt"
+    },
+    {
+      "label": "verifier-s5",
+      "ts": "2026-10-13T14:35:34Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-s5.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/s5.md@fbb0874c79d09ab3a8e192da742290c518557fb5 --contract-digest sha256:7a5bf38bc72770452d40cdbcf468220463f2a9d25a91bfd635ea63c694caadc4 --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-s5.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "33bcc8ed6d879e92135c51376d6fbadff0d3dafb890d0e78fd4441164d65dbf0",
+      "exit": 0,
+      "duration_s": 1.75,
+      "commit": "fbb0874c79d09ab3a8e192da742290c518557fb5",
+      "wtree": "ced3250546d0c3ab387e945a84e626b32e1c3670",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-verifier.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "Close integrated-review F1-F4: Markdown line-ending model, BOM pinned at byte 0, relative indent",
+    "ruled_out": "Double-BOM stripping (byte-0-only rule); mixed-EOL normalization beyond first-seen-terminator for inserted lines",
+    "why": "The integrated FAIL showed real inputs (Windows BOM, classic CR) breaking idempotence and corrupting heading structure \u2014 the tool's core promise is byte-safety outside the TOC region"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (drop bare CR from the _EOL terminator set in mdtoc/toc.py at 47ef84f) turned the suite RED: 3 failures in the CR-only guards \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-nc.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "AC-1"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s5-record.md",
+    "reviewed_sha": "47ef84f2f0463c191b83182b77ddf3f0c641ec51"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-tests.txt",
+      "sha256": "25a72d6fa99279992bbb29291d9cf9c57baae155d5726417fb7f5332609b2c0b"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-prove.txt",
+      "sha256": "08488cf1becadfb7842f2d058d85fe658ed0628c8c5471a8525bcbbd807b1cd6"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-nc.txt",
+      "sha256": "aed254af504e7a7f0a584e91aceb2e0a152fa78b4401cb2cbf8b052b8a44e80b"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-nc-run.txt",
+      "sha256": "7aaf313fbedc16584fe236d8fc59034c37d9480d1cd9011a63c57b18f0581a58"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s5.md",
+      "sha256": "449a44a9ddd72c5f0e4954d603b1777ea51a7271d72eaa7222f9c6ae19d205d4"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s5-record.md",
+      "sha256": "7ed9e8f8045c3f65d6f25d4e8dae2f2997a9eb484f1c39ec47206135f607caf4"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s5-worker-done.json",
+      "sha256": "6b7ebc7b42cf41a5f6b1a7a4fe324948a638d425b0a3d1c8c801b165a8887f65"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s5-review-done.json",
+      "sha256": "19a6bfafecb37b98c8167b6d41aee13ce397fc6d55febbec401bd6df6da8ae9d"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s5-verifier.txt",
+      "sha256": "efda0e8cd326b67049ac1be594c7e74116c5c7849b33f71833dcbf906ab7f2f7"
+    }
+  ]
+}

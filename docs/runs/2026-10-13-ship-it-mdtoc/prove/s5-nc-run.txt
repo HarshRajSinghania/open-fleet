@@ -1,0 +1,49 @@
+..............F.FF........mdtoc: /nonexistent/none.md: no such file
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+...................................................................................
+======================================================================
+FAIL: test_check_exits_zero_after_write (tests.test_seams.CrOnlyTests.test_check_exits_zero_after_write)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s5/tests/test_seams.py", line 36, in test_check_exits_zero_after_write
+    self.assertEqual(p.read_bytes(), first)
+AssertionError: b'# T\r\n<!-- toc -->\r\n- [A](#a)\r\n<!-- /toc -->\n\n## A\r' != b'# T\r\n<!-- toc -->\n<!-- /toc -->\n\n## A\r'
+
+======================================================================
+FAIL: test_insert_is_cr_only_and_idempotent (tests.test_seams.CrOnlyTests.test_insert_is_cr_only_and_idempotent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s5/tests/test_seams.py", line 15, in test_insert_is_cr_only_and_idempotent
+    self.assertEqual(once, f"# T\r\r{OPEN}\r- [A](#a)\r{CLOSE}\r\r## A\r")
+AssertionError: '# T\r\n<!-- toc -->\n<!-- /toc -->\n\n## A\r' != '# T\r\r<!-- toc -->\r- [A](#a)\r<!-- /toc -->\r\r## A\r'
+- # T
+?    -
++ # T+ - <!-- toc -->
+?             ^
++ <!-- toc -->?             ^
++ - [A](#a)- <!-- /toc -->
+?              ^
++ <!-- /toc -->?              ^
+- 
++   ## A
+
+
+======================================================================
+FAIL: test_markers_cr_only (tests.test_seams.CrOnlyTests.test_markers_cr_only)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s5/tests/test_seams.py", line 22, in test_markers_cr_only
+    self.assertEqual(once, f"# T\r{OPEN}\r- [A](#a)\r{CLOSE}\r## A\r")
+AssertionError: '# T\r<!-- toc -->\n<!-- /toc -->\r## A\r' != '# T\r<!-- toc -->\r- [A](#a)\r<!-- /toc -->\r## A\r'
+  # T- <!-- toc -->
+?             ^
++ <!-- toc -->?             ^
++ - [A](#a)  <!-- /toc -->  ## A
+
+
+----------------------------------------------------------------------
+Ran 110 tests in 0.687s
+
+FAILED (failures=3)

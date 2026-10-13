@@ -136,6 +136,10 @@
     {
       "path": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt",
       "sha256": "9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618"
+    },
+    {
+      "path": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord2.txt",
+      "sha256": "9fa574c6572cc376b2eaa9e1bf49d1305fba36b893b7df8f3fd0e8797226b618"
     }
   ],
   "toolchain": "CPython 3.12.3 on Ubuntu 24.04.5 LTS arm64 (OrbStack); orca-ide 1.4.224 serve; Claude Code 2.1.296 workers (PROFILE=ro) via Orca run_18440e737a97",
@@ -161,6 +165,17 @@
       "commit": "602cd99aeefbddf19367df3d968a13b1fcb0ee02",
       "wtree": "573a31bdd2043f688ffe6fed531880b10e6f7c21",
       "artifact": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord.txt"
+    },
+    {
+      "label": "verifier-rerecord2",
+      "ts": "2026-10-13T08:36:32Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-review-it-linux/manifest.json --contract-source docs/runs/2026-10-13-review-it-linux/contract.md@d9259acc10b30cd177f67d294a656d12802cedab --contract-digest sha256:d70a985efe136f3499ad1297f395f010cb6d8db2a95621b03c1dfea6c574aae4 --unit-class report-only --dispatch-record docs/runs/2026-10-13-review-it-linux/dispatch-record.json --dispatch-pubkey docs/runs/2026-10-13-review-it-linux/dispatch-pubkey.hex --repo stablyai/orca",
+      "cmd_sha256": "678f76fd24487e07c9ad628b5ace3efe6c3c0ee334434fc49c558b7bc1c3db6e",
+      "exit": 0,
+      "duration_s": 0.312,
+      "commit": "bda8a27f721e6f0f1ca208b8a9710a8852ad562b",
+      "wtree": "3757a27b48a1c8668f7d90bdbadc958d31d7073c",
+      "artifact": "docs/runs/2026-10-13-review-it-linux/verifier-rerecord2.txt"
     }
   ]
 }

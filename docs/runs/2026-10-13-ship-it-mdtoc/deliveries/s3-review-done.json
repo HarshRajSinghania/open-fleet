@@ -1,0 +1,38 @@
+{
+  "id": "4f456841-96be-42c4-b3a6-43e7ff52f166",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_e1beba053730",
+    "messages": [
+      {
+        "id": "msg_110bc153eecc",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_541afae0-9101-42ce-afce-b2425662e729",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S3 review: PASS",
+        "body": "Reviewed S3 at 04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a: AC-7 and AC-9 both pass; the full suite is 78 tests OK and probes (error first/last/middle, --check stale+error, --stdout with an erroring file, duplicate file, directory arg) behaved correctly with exit aggregation 2>1>0. README Usage matches the real CLI and exit codes, and I saw no S1/S2 regression. Remaining are low items only: an overlong except line at cli.py:75, and unguarded tests for directory, duplicate file, and --stdout with the error last or in the middle.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_7a94b5ad3be7\",\"dispatchId\":\"ctx_d0a82021e465\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s3.md\"}",
+        "created_at": "2026-10-13T13:49:47Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "9a9e5de0-7c4b-446c-9950-950276a25c54",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

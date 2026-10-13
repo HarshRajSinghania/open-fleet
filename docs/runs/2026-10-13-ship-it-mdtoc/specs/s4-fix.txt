@@ -1,0 +1,9 @@
+TASK pack: matt (tdd). Slice S4 FIX ROUND — one MEDIUM from the build-blind review on head ec5b1f5 (mdtoc).
+Your worktree is on fleet/build-s4. Review: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4.md (PASS with 1 MEDIUM + LOWs). Contract unchanged: contracts/s4.md.
+TDD (red first) — required fixes:
+- F1 (MEDIUM): an autolink is not an HTML tag. `## <http://example.com>` must yield label `http://example.com` and slug `httpexamplecom` (GitHub renders the URL as text). Same for `<https://…>`, other schemes, and email autolinks `<a@b.c>`. Today _HTML_TAG eats them and the heading vanishes from the TOC. Convert autolinks to their inner text before (or as part of) tag stripping; keep real tag stripping and the code-span literal rule intact. Guard tests: URL autolink heading; autolink mixed with text; email autolink; `<div>` still stripped; `` `<span>` `` in a code span still literal.
+- F2 (guard, behavior already correct): add the missing explicit assertion that a precomposed accent (single-codepoint é) slugs unchanged.
+- F3 (guard, behavior already correct): add a test pinning duplicate-slug suffixes counting depth-filtered headings (render with max_level=2 over `## A`, `### A`, `## A` -> slugs a, a-2).
+Left as documented known limits — do NOT fix: sentinel codepoint collision, quoted `>` inside tag attributes, balanced parens in link destinations, reference-style links.
+Full suite green via python3 -m unittest discover. Commit on fleet/build-s4; do not push; do not edit SPEC.md.
+worker_done exactly once naming branch, head SHA, test result, --files-modified.

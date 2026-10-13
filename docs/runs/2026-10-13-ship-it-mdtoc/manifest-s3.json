@@ -1,0 +1,131 @@
+{
+  "unit": "mdtoc-s3-multifile-errors",
+  "claim": "S3: multi-file invocation with per-file independence, aggregated exit codes, clean missing/non-UTF-8 errors, README usage docs on fleet/build-s3",
+  "base_sha": "fedebc75210f0944e1d4f39c262717c9f53cd4f4",
+  "head_sha": "04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/s3.md@27cc97efd70780ccaa937848188349401208c204",
+    "digest": "sha256:32fbb80a0594296c8a1751422108d235d73bbdc260d0915bcfc6dab5feb929e2",
+    "criterion_ids": [
+      "AC-7",
+      "AC-9"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-7",
+      "text": "multiple files per invocation; per-file errors don't abort; exit aggregates",
+      "addressed": true
+    },
+    {
+      "id": "AC-9",
+      "text": "missing or non-UTF-8 file -> stderr message, exit 2",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-s3",
+      "ts": "2026-10-13T13:47:17Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.622,
+      "commit": "04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a",
+      "wtree": "879d53b29b3fdbe65d39a4e3e679c02aa28fab9d",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-tests.txt"
+    },
+    {
+      "label": "runtime-prove-s3",
+      "ts": "2026-10-13T13:47:18Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/m1.md /tmp/m2.md",
+      "cmd_sha256": "e348c5354ea6e1a72368898b4193d07641246dd38d2e1fb17877600ebabcfdbe",
+      "exit": 0,
+      "duration_s": 0.014,
+      "commit": "04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a",
+      "wtree": "879d53b29b3fdbe65d39a4e3e679c02aa28fab9d",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-prove.txt"
+    },
+    {
+      "label": "neg-control-s3",
+      "ts": "2026-10-13T13:47:18Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.624,
+      "commit": "04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a",
+      "wtree": "bde87be0159f42f4a7e249dcf4ecf0476c6cf038",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-nc-run.txt"
+    },
+    {
+      "label": "verifier-s3",
+      "ts": "2026-10-13T13:53:52Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-s3.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/s3.md@27cc97efd70780ccaa937848188349401208c204 --contract-digest sha256:32fbb80a0594296c8a1751422108d235d73bbdc260d0915bcfc6dab5feb929e2 --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-s3.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "b9716db717e07d0921bd83d0f5a52a8ebb0c49b3efb6c42b078cf462721e2092",
+      "exit": 0,
+      "duration_s": 1.585,
+      "commit": "27cc97efd70780ccaa937848188349401208c204",
+      "wtree": "178cc4c126ed4d45c6a6cd77f874ce3e461deeaf",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-verifier.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "Multi-file invocation with per-file independence + aggregated exit codes (AC-7), clean missing/non-UTF-8 errors (AC-9), README usage docs",
+    "ruled_out": "Duplicate-FILE deduplication (processed twice, recorded as known limit); atomic writes",
+    "why": "Batch use over a docs tree is the realistic invocation; one bad file must never block the rest, and the exit code must still say so"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (return on first per-file error in cli.main at 04a9e8f) turned the suite RED: 2 failures in the multi-file independence guards \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-nc.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "AC-7"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s3-record.md",
+    "reviewed_sha": "04a9e8f3c4fb9acdea6e0279b5719c37bdfcd43a"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-tests.txt",
+      "sha256": "b78460fda6b6044c446d9a71fa27632f8d30b4ffd55e9a3b339faf9380b31fde"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-prove.txt",
+      "sha256": "cd1a04e909af22203db9dfea37ae4b26fb140a38788ea94872c9333a43e72ec3"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-nc.txt",
+      "sha256": "d27b032240ae976abb6268472e64a3c538e2e87c1ca9b4c105f2883bcca70356"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-nc-run.txt",
+      "sha256": "fe63d702380592a85f0869b24e443827cdec390ea74be0b79fe87a995e38e0ab"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s3.md",
+      "sha256": "a65973e742eff7a7aa01cf37802148115477a569f5fced48b9d56ff8e3bf9b83"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s3-record.md",
+      "sha256": "c9180d436082fc0e3809ed356f86d27b5bd290f7b822f80b6be49e601665cd4f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s3-worker-done.json",
+      "sha256": "b73eedbcfba59f2d0c7dcc36ec44bac77d825a563a9dd86f61b0d98ba5960cb4"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s3-review-done.json",
+      "sha256": "a65b41d91e5da3e90306fcb5a5600aa1279b7bfce71e6a7bb2f1c493fc61072d"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s3-verifier.txt",
+      "sha256": "759427b4aea0eec0187536b2c3ac22616c6252a0a8546c24e9056c49338a8d51"
+    }
+  ]
+}

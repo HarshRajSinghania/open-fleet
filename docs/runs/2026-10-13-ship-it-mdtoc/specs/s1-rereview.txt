@@ -1,0 +1,11 @@
+TASK pack: gstack (review). Build-blind RE-review of slice S1 after its fix round.
+New head: resolve with git rev-parse HEAD in your cwd (builder worktree, fleet/build-s1).
+Prior review (FAIL, 3 Required): /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1.md
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s1.md (AC-2, AC-3).
+Judge ONLY: (1) each of the 3 Required findings from the prior review is actually fixed at
+this head — quote the fixing line and the guarding test for each; (2) no regression in
+AC-2/AC-3 areas the first review marked met; (3) any NEW Critical/Required introduced by
+the fix diff (git diff 50560a1f1db5e41d1d73b9eccb77b1db44b1f9f1...HEAD).
+Verdict line at top WITH THE FULL 40-char head SHA: PASS or FAIL.
+Write report to /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1-r2.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

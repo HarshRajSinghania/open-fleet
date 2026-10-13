@@ -1,0 +1,9 @@
+TASK pack: matt (tdd). Slice S3 — multi-file + error model + docs (mdtoc).
+Your worktree is on fleet/build-s3 off BASE fleet/ship-mdtoc-20261013 (F0+S1+S2 landed).
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s3.md (AC-7, AC-9). Frozen spec: SPEC.md in repo root (AC-7 and the second half of AC-6).
+TDD (red first):
+- AC-7: multiple files may be given in one invocation and each is processed independently; a per-file error (missing file, non-UTF-8, illegal marker state) does not stop the others. Exit-code aggregation: 2 if any file errored, else 1 if --check found any stale file, else 0. --stdout prints each file's full updated document in argument order.
+- AC-9: a missing or non-UTF-8 file is a clean error: message on stderr naming the file, exit 2 (aggregated per AC-7). Nothing written for that file.
+- Docs: finish the README Usage section for the complete CLI surface (default update, --check, --stdout, --max-depth, multiple files, exit codes 0/1/2, marker rules incl. exactly-one-pair and fence handling).
+Preserve every S1/S2 behavior; full suite green via python3 -m unittest discover. Add tests for: two good files both updated; good+missing (good still updated, exit 2); good+non-UTF-8 (exit 2, stderr names file); --check with one stale + one current (exit 1); --check with one error + one stale (exit 2); --stdout with two files. Commit on your branch; do not push; do not edit SPEC.md.
+worker_done exactly once naming branch, head SHA, test result, --files-modified.

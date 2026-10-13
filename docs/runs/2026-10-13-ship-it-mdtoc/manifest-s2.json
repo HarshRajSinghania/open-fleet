@@ -1,0 +1,189 @@
+{
+  "unit": "mdtoc-s2-update-modes",
+  "claim": "S2: in-place TOC update between fence-aware markers (idempotent), exactly-one-pair marker discipline, no-marker placement, --check/--stdout modes, --max-depth validation on fleet/build-s2 @a960241 (after round-1 PASS-with-MEDIUMs + fix round + round-2 PASS)",
+  "base_sha": "4e1ad707ae38979c740cd14fa5513761ad65406d",
+  "head_sha": "a960241d781231af4d1bf30ffba27b9887e363d1",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/s2.md@ece804243577d26fc33222ef9c4f1b333be4c29f",
+    "digest": "sha256:b34d2c016f48a1a2542f2a286928afe4df72867b33cbf0c26bc7e74045408cf9",
+    "criterion_ids": [
+      "AC-1",
+      "AC-4",
+      "AC-5",
+      "AC-6"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-1",
+      "text": "markers insert/update, idempotent",
+      "addressed": true
+    },
+    {
+      "id": "AC-4",
+      "text": "--check exit 1 stale / 0 current; --stdout never writes",
+      "addressed": true
+    },
+    {
+      "id": "AC-5",
+      "text": "default H2-H4; --max-depth 1..6",
+      "addressed": true
+    },
+    {
+      "id": "AC-6",
+      "text": "without markers insert after first H1 else top",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-s2",
+      "ts": "2026-10-13T13:23:15Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.396,
+      "commit": "5afaf7c582d26d4836946dae8c27970fce9a2d42",
+      "wtree": "863a162a1a60cafddc8dff365cd608a13177fe4c",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-tests.txt"
+    },
+    {
+      "label": "runtime-prove-s2",
+      "ts": "2026-10-13T13:23:15Z",
+      "cmd": "python3 -m mdtoc --check /tmp/sample2.md",
+      "cmd_sha256": "d68d15afacaa7c74ab9c7e0bab978909f33e2e8ef63451c8349378f02e040c50",
+      "exit": 1,
+      "duration_s": 0.013,
+      "commit": "5afaf7c582d26d4836946dae8c27970fce9a2d42",
+      "wtree": "863a162a1a60cafddc8dff365cd608a13177fe4c",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-prove.txt"
+    },
+    {
+      "label": "tests-s2-fixed",
+      "ts": "2026-10-13T13:34:55Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.486,
+      "commit": "a960241d781231af4d1bf30ffba27b9887e363d1",
+      "wtree": "8c288f2acc3851c794a7a9181276556ea44c1620",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-tests-fixed.txt"
+    },
+    {
+      "label": "runtime-prove-s2-fixed",
+      "ts": "2026-10-13T13:34:55Z",
+      "cmd": "python3 -m mdtoc --check /tmp/sample2.md",
+      "cmd_sha256": "d68d15afacaa7c74ab9c7e0bab978909f33e2e8ef63451c8349378f02e040c50",
+      "exit": 1,
+      "duration_s": 0.014,
+      "commit": "a960241d781231af4d1bf30ffba27b9887e363d1",
+      "wtree": "8c288f2acc3851c794a7a9181276556ea44c1620",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-prove-fixed.txt"
+    },
+    {
+      "label": "neg-control-s2-fixed",
+      "ts": "2026-10-13T13:35:15Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.486,
+      "commit": "a960241d781231af4d1bf30ffba27b9887e363d1",
+      "wtree": "13628f3b6e04a4f0ef534c08a3f2e54f35de4841",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-nc-run-fixed.txt"
+    },
+    {
+      "label": "verifier-s2",
+      "ts": "2026-10-13T13:43:10Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-s2.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/s2.md@ece804243577d26fc33222ef9c4f1b333be4c29f --contract-digest sha256:b34d2c016f48a1a2542f2a286928afe4df72867b33cbf0c26bc7e74045408cf9 --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-s2.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "b2d9f293b3cc7b2674c18a796e458acde5ae525cf2e03ab145df940208d9326f",
+      "exit": 0,
+      "duration_s": 1.426,
+      "commit": "f32edeab56184670711a1acfe731df086b7481c9",
+      "wtree": "701fec852038e2327645e35e89e734467e09ac98",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-verifier.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "In-place TOC update between markers, check/stdout modes, depth limiting (AC-1, AC-4, AC-5, AC-6 placement half)",
+    "ruled_out": "Multi-file aggregation and per-file error semantics (S3); inline-code-span marker matching (deferred LOW, fails safe); setext anchors",
+    "why": "The update is the user-visible behavior of the tool; marker discipline is what keeps it from corrupting docs that merely show the markers"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (disable _outside_fences fence-awareness in mdtoc/toc.py at a960241) turned the suite RED: 10 failures + 1 error incl. fenced-marker and fence-heading guards \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-nc-fixed.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "AC-1"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2-record.md",
+    "reviewed_sha": "a960241d781231af4d1bf30ffba27b9887e363d1"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-tests.txt",
+      "sha256": "08a15606bded1907db04a4c9ddc4a5c305da88d1dcf6a991993066e7f4c80e45"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-prove.txt",
+      "sha256": "72fed77514f448387929858be27e43471fe1513ac8d0642cd541a6da9525a8b6"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-nc.txt",
+      "sha256": "494d5a1a8920eeefafe8bebda3984a35503883f2cfb2f689caa6363aea2e5332"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-tests-fixed.txt",
+      "sha256": "268a25ddb952c38a16e958f165c6b773cbbff605adbd930b99d1aff9049787a2"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-prove-fixed.txt",
+      "sha256": "72fed77514f448387929858be27e43471fe1513ac8d0642cd541a6da9525a8b6"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-nc-fixed.txt",
+      "sha256": "939458eb6a46bfaee357d12f609659617f3738c553f355cba25a29a964f72429"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-nc-run-fixed.txt",
+      "sha256": "aeca732a276251d1a750ab0e4717d7d9d5df29967d58c808bdcec201624d6462"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2.md",
+      "sha256": "846486dbbb2281befca69a88078c368d38323ec6df8b3242bb32a151011c4b54"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2-r2.md",
+      "sha256": "2c5cb38d0a6f1d6228c52035aa64f34cc8a6f0af2062805a399d76d064ff75bd"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s2-record.md",
+      "sha256": "2262c731f11db273edcc7edb9aea97857b35f89a9e385f5ebdc8a7ed21793aa2"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s2-worker-done.json",
+      "sha256": "aa30c9526524a23c7d494a6997496b3bc618ad254e8fa5be4afff2f82aabe147"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s2-fix-done.json",
+      "sha256": "0622c118e56900d16679437aacb32f45d8067f26dd0c95a843230448146d2994"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s2-review-done.json",
+      "sha256": "d71c113be94690b5bbd70948cef180ae5e09fc1e46377e823b7e8af995391471"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s2-rereview-done.json",
+      "sha256": "5ead44a89c995bef26354a0177883d9c5b9fada8d79aabeb4fc47650107f99d2"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s2-verifier.txt",
+      "sha256": "0981fbd4735d1ed7bdc90b45eac3eaa940715f863614823684f4f212f94e04c9"
+    }
+  ]
+}

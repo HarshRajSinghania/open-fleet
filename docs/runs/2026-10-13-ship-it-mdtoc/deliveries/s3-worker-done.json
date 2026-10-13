@@ -1,0 +1,38 @@
+{
+  "id": "305676e8-83b8-4f8f-a0e5-6b2539b6d13e",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_1f5e38c8d7c5",
+    "messages": [
+      {
+        "id": "msg_7fd30b2cfe71",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_09535e61-402d-497e-80e4-71964515aba5",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S3 done: fleet/build-s3 @ 04a9e8f",
+        "body": "Branch fleet/build-s3, head 04a9e8f (committed, not pushed): added tests/test_multi.py (9 tests covering all requested cases plus illegal-marker and --stdout-with-error), cleaned per-file stderr messages ('FILE: no such file' / 'FILE: not valid UTF-8'), and finished the README Usage section (modes, exit codes 0/1/2, marker and fence rules). The S2 CLI already implemented AC-7/AC-9 aggregation, so the new tests passed without a red phase; the only code change was the message wording. Full suite: python3 -m unittest discover, 78 tests OK; SPEC.md untouched; nothing left.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_bfa7e23e0f20\",\"dispatchId\":\"ctx_b24aa759807e\",\"outcome\":\"succeeded\",\"filesModified\":[\"mdtoc/cli.py\",\"README.md\",\"tests/test_multi.py\"]}",
+        "created_at": "2026-10-13T13:44:59Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "07ab420f-3e84-467f-89e8-5eb216abeeb7",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

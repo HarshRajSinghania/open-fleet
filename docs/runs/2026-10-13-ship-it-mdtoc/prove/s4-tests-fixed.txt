@@ -1,0 +1,9 @@
+...........mdtoc: /nonexistent/none.md: no such file
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+...................................................................................
+----------------------------------------------------------------------
+Ran 95 tests in 0.678s
+
+OK

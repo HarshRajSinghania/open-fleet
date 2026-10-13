@@ -1,0 +1,38 @@
+{
+  "id": "30fe85d2-fe15-42aa-b4b0-0f935e32bbf6",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_735b034b1599",
+    "messages": [
+      {
+        "id": "msg_09ae6591b994",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_2672ffc2-1168-463b-8690-587fc3e25ab8",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "mdtoc integrated review: FAIL",
+        "body": "Reviewed mdtoc at c9a6f683bb497d975e4bcd76b5163689e4da794d against AC-1..AC-9 with 95 green tests and executable probes; verdict FAIL. AC-2/3/4/5/7/8/9 pass, but AC-1 is violated for CR-only files (second run changes bytes), AC-6 is violated for BOM files (TOC placed before the BOM, which lands mid-file), and U+000B/U+000C/U+0085 split headings when the TOC is inserted; there are also low-severity indent and empty-heading issues. Nothing in the worktree was modified; the fixes (EOL detection incl. CR, BOM handling, splitting lines on CR/LF only) and tests are left for the coordinator.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_1dbe4c4cb564\",\"dispatchId\":\"ctx_5dce07114041\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated.md\"}",
+        "created_at": "2026-10-13T14:21:43Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "19fba9f2-ba1e-4279-906a-93fd541458bb",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -1,0 +1,14 @@
+usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+
+Insert or update a table of contents in Markdown files.
+
+positional arguments:
+  FILE           Markdown files
+
+options:
+  -h, --help     show this help message and exit
+  --check        exit 1 if a TOC is stale or missing; do not write
+  --stdout       print the result instead of writing the file
+  --max-depth N  deepest heading level to include
+  --version      show program's version number and exit

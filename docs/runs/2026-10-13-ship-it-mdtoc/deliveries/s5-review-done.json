@@ -1,0 +1,38 @@
+{
+  "id": "0ef26060-aff4-44f0-99a5-2be364de4307",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_74501879a21e",
+    "messages": [
+      {
+        "id": "msg_b2c8e0080b81",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_0c34024d-407b-4d3a-ad96-679ddf34bf73",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S5 review: PASS",
+        "body": "Reviewed S5 at head 47ef84f2f0463c191b83182b77ddf3f0c641ec51 and re-ran the F1-F4 repros plus the CRLF, mixed-EOL, BOM-only, lone-CR and late-BOM probes. All were correct and idempotent, no splitlines call sites remain, and the 110 unittest tests pass (ruff and uv are not installed on this host, so lint was not run). Verdict is PASS, with only low-severity test gaps: BOM+CR-only, BOM-only/empty file, late BOM, lone CR and CR-then-CRLF stability have no guarding tests.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_598a9408a628\",\"dispatchId\":\"ctx_c731da13d17d\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s5.md\"}",
+        "created_at": "2026-10-13T14:32:28Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "27ff795d-7ab4-4e32-9b49-d342855c3770",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -1,0 +1,7 @@
+NOTE: --base not given — ancestry check skipped (pre-merge/offline)
+NOTE: dispatch record signature verified against the supplied key (#135) — a soundness boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)
+NOTE: commands ledger FRESH — 2 exit-0 record(s) bound to head_sha's tree 4ad13f538b77. This is the worker's own runner, so the coordinator's clean-env re-run at head_sha still stands as the stronger authority (evidence-manifest.md §2)
+NOTE: negative control EXECUTED — with the hand control applied at head_sha the bound command exited 1 on an assertion failure (RED, as required)
+NOTE: the same command exits 0 at clean head_sha — the RED above is the control's doing, not a broken suite
+NOTE: no-gh review is coordinator-attested via the frozen out-of-band contract (local reviewer artifact at head_sha) plus an EXECUTED negative control, not GitHub-verified — the weaker guarantee (merge-serialization.md)
+verify: OK — all required checks passed

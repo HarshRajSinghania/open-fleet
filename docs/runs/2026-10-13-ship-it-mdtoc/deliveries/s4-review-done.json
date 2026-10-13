@@ -1,0 +1,38 @@
+{
+  "id": "0a534eb1-85ad-43ad-b830-1e1b5d53f01d",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_3b36e256d155",
+    "messages": [
+      {
+        "id": "msg_d8586cc33d5b",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_e8f8893a-404c-4793-95f8-c37ac16ed3d4",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S4 review: PASS",
+        "body": "Reviewed S4 at head ec5b1f5fb0dce6391174a03b8989d6bde9844f96 against AC-2: all four claims (nested links, inline HTML vs code spans, combining marks, shared label/slug text) hold under probes and the 88-test suite is green with CRLF/marker code untouched. Found one medium issue (autolink <http://x> is stripped as an HTML tag so that heading is omitted from the TOC) plus a few low/info items, and duplicate-suffix-vs-depth behavior is correct but has no guarding test. Nothing blocking; the coordinator may want a follow-up for autolinks, and no worktree files were modified.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_0b0d754f0f19\",\"dispatchId\":\"ctx_5669e61cd712\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s4.md\"}",
+        "created_at": "2026-10-13T14:02:36Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "59d3fad2-0bf1-4d67-b783-6c5b7e3dafe0",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

@@ -212,7 +212,7 @@ evidence-based definition of done. Click through for the full guide to each.
 
 | Mission | Proof | Outcome (definition of done) | Use when |
 |---|---|---|---|
-| 🚢 **[ship-it](docs/missions/ship-it.md)** | `doctrine-only` | Intent or a frozen spec → a released, verified change, stopped at the highest release state you authorized (`BUILT` → `PROMOTION_READY` → `RELEASED` → `DEPLOYED_AND_VERIFIED`) | "build and ship this", spec-to-shipped-product |
+| 🚢 **[ship-it](docs/missions/ship-it.md)** | `external-run` | Intent or a frozen spec → a released, verified change, stopped at the highest release state you authorized (`BUILT` → `PROMOTION_READY` → `RELEASED` → `DEPLOYED_AND_VERIFIED`) | "build and ship this", spec-to-shipped-product |
 | 🧹 **[clean-sweep](docs/missions/clean-sweep.md)** | `self-run` | A finite backlog exhausted to zero, PR-per-finding, every close backed by a merged SHA + a test that failed pre-fix; re-enumerated until dry | "close every issue", "fix everything in this audit", "the README lies" |
 | 🛡️ **[harden-it](docs/missions/harden-it.md)** | `self-run` | A threat model closed: audit → exploit → fix → **re-attack the fix** → clean re-audit finds zero unrefuted P0/P1 (or `HARDENED-WITH-OPEN-ITEMS`) | "harden this", "security sweep", "red team" |
 | ⚡ **[speed-it](docs/missions/speed-it.md)** | `doctrine-only` | A perf budget met against a pre-declared measurement contract: `WITHIN-BUDGET` or `OPTIMIZED-WITH-PARKED` | "the app is slow", "perf budget", "Core Web Vitals" |
@@ -261,7 +261,7 @@ Every mission's `metadata:` block carries a validator-enforced `proof:` field: `
 named commit: a run report with a `RUN:` header, an evidence manifest inside the run's own
 `docs/runs/` directory, and an integrity inventory that re-hashes at the commit the header names.
 <!-- BEGIN GENERATED: proof-status — scripts/gen-badges.py -->
-**Today `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`; no mission reads `external-run` yet.**
+**Today `ship-it` reads `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
 <!-- END GENERATED: proof-status -->
 The [run archive](docs/runs/) records every run
 that really happened and says, per run, whether and why it binds. Be precise about what the gate

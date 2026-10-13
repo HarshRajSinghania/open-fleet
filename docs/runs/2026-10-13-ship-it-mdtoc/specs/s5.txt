@@ -1,0 +1,11 @@
+TASK pack: matt (tdd). Slice S5 — line-ending + BOM seam fixes (mdtoc). Closes the integrated review's FAIL findings F1-F4.
+Your worktree is on fleet/build-s5 off BASE fleet/ship-mdtoc-20261013. Integrated review: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated.md (read F1-F4). Contract: .../contracts/s5.md (AC-1, AC-6). Frozen spec: SPEC.md in repo root.
+TDD (red first) — one root cause, four findings:
+- F1: CR-only files must be idempotent. Today eol only recognises CRLF. Rule: the file's EOL is its FIRST line terminator among CRLF / CR / LF (default LF for empty or single-line files); every inserted or TOC line uses it. `# T\r## A\r` run 3x must be byte-stable from run 1, and --check after run 1 exits 0.
+- F3: lines split ONLY on CRLF/CR/LF. str.splitlines() also breaks at \x0b \x0c \x1c-\x1e \x85 U+2028 U+2029 — Markdown does not. A heading containing \x0c or U+0085 must stay one heading; the TOC must never be inserted mid-line. Apply everywhere lines are split or offsets computed (scanning, fences, markers, insertion).
+- F2: a leading UTF-8 BOM (U+FEFF) stays at byte 0 forever. The first line is heading-parsed with the BOM disregarded; insert-at-top goes after the BOM; insert-after-H1 finds a BOM'd H1. A BOM'd file's other bytes change only inside the TOC region. Idempotent.
+- F4: nested indent is relative to the shallowest INCLUDED heading level, so the first TOC item never starts with 4+ spaces (an indented code block in CommonMark). E.g. first heading #### x renders `- [x](#x)` at column 0; relative ordering/depth differences preserved. Update any test that pinned absolute indents.
+Guard tests for each: CR-only insert+idempotent+check; CR-only with markers; exotic separators in a heading (\x0c, \x85); BOM with H1 / BOM without H1 / BOM idempotence / BOM first-line H2 appears in TOC; H4-first indent. No regression: full suite green via python3 -m unittest discover, LF/CRLF behavior byte-identical to before (existing CRLF tests are the oracle).
+Left as known limits — do NOT fix: `## #` listed as `[#](#)`, escaped `\#` in labels.
+Commit on your branch; do not push; do not edit SPEC.md.
+worker_done exactly once naming branch, head SHA, test result, --files-modified.

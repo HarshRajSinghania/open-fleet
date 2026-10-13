@@ -1,0 +1,18 @@
+TASK pack: matt (tdd). Slice S1 FIX round — address the build-blind review FAIL.
+Review report (read it first): /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1.md
+Your worktree is fleet/build-s1 at the reviewed head. Fix ALL THREE Required findings,
+each with a red-first regression test:
+1. Slug collision: headings ["A","A","A-1","A"] must slug a, a-1, a-1-1, a-2 (a generated
+   suffix must be checked against slugs already taken, GitHub-style).
+2. Inline markup: heading text is slugged from its rendered plain text — strip emphasis
+   markers, code-span backticks, and link/image syntax (keep link text) before slugging.
+   Example: a heading written with bold markers and a link slugs like GitHub (bold-l).
+   The VISIBLE TOC text keeps the original heading text.
+3. Fence on a list-item line (a dash, space, then triple-backtick) must open a fence
+   so following #-lines are not headings; add the missing list-fence tests.
+Also fix the two cheap reviewer Nits if they fall out naturally (empty heading render;
+--max-depth 0 handling may be a clean argparse error now), but Required items are the gate.
+Full suite green (python3 -m unittest discover), including pre-existing tests unchanged in
+expectation except where behavior is now correct per above. Commit on your branch; do not
+push; do not edit SPEC.md. worker_done exactly once naming branch, head SHA, test result,
+--files-modified.

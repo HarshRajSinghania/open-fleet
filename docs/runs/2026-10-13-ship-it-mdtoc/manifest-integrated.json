@@ -1,0 +1,275 @@
+{
+  "unit": "mdtoc-ship-integrated",
+  "claim": "Integrated: ravidsrk/mdtoc built from frozen SPEC.md to BUILT on fleet/ship-mdtoc-20261013 @046d1f8d (F0+S1+S2+S3+S4+ S5 seam fixes after integrated FAIL; re-review PASS)",
+  "base_sha": "0b9f660d93e64cf57e8245b0f1eb6eb0010ae158",
+  "head_sha": "046d1f8d0ff63b7193bc06e0c373ba60d9e06849",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/integrated.md@faf90eb293702af50e8e9310c26cab90f3cac16a",
+    "digest": "sha256:01b5aea7cd817b4170207ca627ceaa8db3732866eea0581fe69d865d22f1ad4e",
+    "criterion_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8",
+      "AC-9"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-1",
+      "text": "insert/update between markers, idempotent",
+      "addressed": true
+    },
+    {
+      "id": "AC-2",
+      "text": "GitHub anchor slugs incl. duplicate suffixes",
+      "addressed": true
+    },
+    {
+      "id": "AC-3",
+      "text": "headings in fenced code ignored",
+      "addressed": true
+    },
+    {
+      "id": "AC-4",
+      "text": "--check 1 stale/missing, 0 current; --stdout prints, never writes",
+      "addressed": true
+    },
+    {
+      "id": "AC-5",
+      "text": "default depth H2-H4; --max-depth 1..6",
+      "addressed": true
+    },
+    {
+      "id": "AC-6",
+      "text": "no markers: insert after first H1, else top",
+      "addressed": true
+    },
+    {
+      "id": "AC-7",
+      "text": "multiple files; per-file errors don't stop others; exit aggregates",
+      "addressed": true
+    },
+    {
+      "id": "AC-8",
+      "text": "unittest suite covers slugging/fences/update/check; green",
+      "addressed": true
+    },
+    {
+      "id": "AC-9",
+      "text": "missing or non-UTF-8 file: stderr message, exit 2",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-integrated",
+      "ts": "2026-10-13T14:16:10Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.665,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-tests.txt"
+    },
+    {
+      "label": "integrated-battery",
+      "ts": "2026-10-13T14:16:11Z",
+      "cmd": "python3 /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/integrated-probe.py /home/ravindra/ship527/int-head",
+      "cmd_sha256": "17f0700f18c19362063527ae0bcc90d7fb87a6746abb1c32affca0aa4448ab23",
+      "exit": 0,
+      "duration_s": 0.769,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-battery.txt"
+    },
+    {
+      "label": "runtime-prove-integrated",
+      "ts": "2026-10-13T14:16:11Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/int.md",
+      "cmd_sha256": "4238fcef0aecff3c783cf76438a29e2bd462b8ce7e53ec2991999b329626871d",
+      "exit": 0,
+      "duration_s": 0.015,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-prove.txt"
+    },
+    {
+      "label": "neg-control-integrated",
+      "ts": "2026-10-13T14:16:12Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.664,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "f747a9fe7baf61c5fbaf617f176ceb7b5be13884",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-run.txt"
+    },
+    {
+      "label": "tests-integrated-fixed",
+      "ts": "2026-10-13T14:36:19Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.71,
+      "commit": "046d1f8d0ff63b7193bc06e0c373ba60d9e06849",
+      "wtree": "1b0866726013f2bd58b55b5c424568c6ef36ffb6",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-tests-fixed.txt"
+    },
+    {
+      "label": "integrated-battery-fixed",
+      "ts": "2026-10-13T14:36:20Z",
+      "cmd": "python3 /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/integrated-probe.py /home/ravindra/ship527/int-head",
+      "cmd_sha256": "17f0700f18c19362063527ae0bcc90d7fb87a6746abb1c32affca0aa4448ab23",
+      "exit": 0,
+      "duration_s": 0.831,
+      "commit": "046d1f8d0ff63b7193bc06e0c373ba60d9e06849",
+      "wtree": "1b0866726013f2bd58b55b5c424568c6ef36ffb6",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-battery-fixed.txt"
+    },
+    {
+      "label": "runtime-prove-integrated-fixed",
+      "ts": "2026-10-13T14:36:20Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/int.md",
+      "cmd_sha256": "4238fcef0aecff3c783cf76438a29e2bd462b8ce7e53ec2991999b329626871d",
+      "exit": 0,
+      "duration_s": 0.016,
+      "commit": "046d1f8d0ff63b7193bc06e0c373ba60d9e06849",
+      "wtree": "1b0866726013f2bd58b55b5c424568c6ef36ffb6",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-prove-fixed.txt"
+    },
+    {
+      "label": "neg-control-integrated-fixed",
+      "ts": "2026-10-13T14:36:21Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.719,
+      "commit": "046d1f8d0ff63b7193bc06e0c373ba60d9e06849",
+      "wtree": "e689132e0d649b5d19aac791176d590d6c6633cf",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-run-fixed.txt"
+    },
+    {
+      "label": "verifier-integrated",
+      "ts": "2026-10-13T14:45:34Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-integrated.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/integrated.md@faf90eb293702af50e8e9310c26cab90f3cac16a --contract-digest sha256:01b5aea7cd817b4170207ca627ceaa8db3732866eea0581fe69d865d22f1ad4e --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-integrated.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "5b81f1d539b2a1e3c8f47e667e04e7bc2ef68e32abb0e5c8865fce6710568d4d",
+      "exit": 0,
+      "duration_s": 1.646,
+      "commit": "94df84f7fcbb07f6f32deabff361ae1da54b9f5b",
+      "wtree": "7d74e11ac3709464334b710c00dbd6d351ee5394",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier.txt"
+    },
+    {
+      "label": "verifier-integrated-rerecord",
+      "ts": "2026-10-13T14:46:06Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-integrated.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/integrated.md@faf90eb293702af50e8e9310c26cab90f3cac16a --contract-digest sha256:01b5aea7cd817b4170207ca627ceaa8db3732866eea0581fe69d865d22f1ad4e --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-integrated.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "5b81f1d539b2a1e3c8f47e667e04e7bc2ef68e32abb0e5c8865fce6710568d4d",
+      "exit": 0,
+      "duration_s": 1.781,
+      "commit": "f04ed24d287c86bdf565a21c4636308fe57865ef",
+      "wtree": "95533ee6ce12dfce4db07f15e0b52c0090782191",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier-rerecord.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "Prove the assembled product meets the whole frozen spec at one bound SHA (the run's BUILT terminal)",
+    "ruled_out": "Release/packaging (no-gh lane ends at BUILT); the recorded known limits (inline-code markers, setext, reference links, non-atomic writes)",
+    "why": "Slice verdicts prove parts; only an integrated pass over the merge product catches seam defects \u2014 it caught CR-only/BOM breakage the slices missed"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (disable _outside_fences fence-awareness in mdtoc/toc.py at 046d1f8d) turned the suite RED: 19 failures + 1 error \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-fixed.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "AC-3"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated-record.md",
+    "reviewed_sha": "046d1f8d0ff63b7193bc06e0c373ba60d9e06849"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-tests.txt",
+      "sha256": "35355a683b00eebadce4238a9c50fcadd2b512f9387d7db716f77e5eeff9c23f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-battery.txt",
+      "sha256": "a2b010fcb6ce3075d357428e508fa0cc707d76513d11fe09faecb5e66af17e9b"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-prove.txt",
+      "sha256": "8dd50026580593f2e633833894a7a98ec5bdead216c5db4522cbc95c2088c12f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc.txt",
+      "sha256": "c29cd8d4ea2eba90ecbc193115f31166f32dc2411d081bd1839e427ea8a035ea"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-run.txt",
+      "sha256": "2a4ac4a670a1c70a78069afffc54e80046b3bb3430ef6484f437c444dfb49aa6"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-tests-fixed.txt",
+      "sha256": "bfaf00929c9b500fd2f41893e5d0a27329d5f4349ce8eb3a440a31fe4c088e20"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-battery-fixed.txt",
+      "sha256": "a12f88c6e7c8de415a26d4c398724c875680418be4c474c8a303b12bebf568f4"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-prove-fixed.txt",
+      "sha256": "8dd50026580593f2e633833894a7a98ec5bdead216c5db4522cbc95c2088c12f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-fixed.txt",
+      "sha256": "297169237fa6fe7b54c9578d641729feb0d93c3db4382358673b29c46e099970"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-run-fixed.txt",
+      "sha256": "9ab837fd15775c073947d35da242bb7b9558f3e471001051b5e8ce3c35384aa0"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/integrated-probe.py",
+      "sha256": "3a71659d5b5998388f9be7b38637e223140d5b4b41cad692e1d7735263133ad7"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated.md",
+      "sha256": "8ebc5bc2ff78980e8e9822310d3cbb782fc22377c0aad444bca67a75881e14a3"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated-r2.md",
+      "sha256": "db432946a1cfa25330b87975074c15eaec13678970965cd3170d5bc95428f576"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/integrated-record.md",
+      "sha256": "28053586fe16f09c867526436fc0ffcf60ad54605a80ffbccbb74a25a6d52df2"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/int-review-done.json",
+      "sha256": "ba9d58bf5246bd6d23b1e8738fa74c674aafa77e87d46edd5714e37afbda9bc0"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/int-rereview-done.json",
+      "sha256": "b538d5c8a06cdbadb54bca58f913953dd00fb168aa77752a35535b16a18dc992"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier.txt",
+      "sha256": "50793f96e46b5780d40489f26fa3361157cfb57e2017c6a42f06dc011642688d"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier-rerecord.txt",
+      "sha256": "50793f96e46b5780d40489f26fa3361157cfb57e2017c6a42f06dc011642688d"
+    }
+  ]
+}

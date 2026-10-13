@@ -17,10 +17,11 @@ test reruns at the exact head and verification against the frozen contract and r
 remain coordinator-owned. **no** means the recorded report does not satisfy these binding checks
 here — history, kept, supporting no proof-tier advance.
 
-Four reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
-prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the binding gate), plus
-the 2026-10-13 review-it Linux witness, which binds at `doctrine-only` as substrate evidence
-and advances no tier. Every other row reads **no**, and that
+Five reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
+prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the binding gate), the
+2026-10-13 review-it Linux witness, which binds at `doctrine-only` as substrate evidence
+and advances no tier, and the 2026-10-13 ship-it mdtoc run, the catalog's first `external-run`
+tier advance. Every other row reads **no**, and that
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;
@@ -51,6 +52,7 @@ git repositories and includes a fully bound positive case alongside a dozen refu
 | 2026-09-28 | [pin-it](2026-09-28-pin-it-500.md) | this catalog's runtime doctrine against the Orca v1.4.215 release binary (#500, early re-pin) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (zero drift; additive surfaces noted; terminal-stop hedge confirmed; parks carried; successor 2026-12-28) |
 | 2026-10-13 | [pin-it](2026-10-12-pin-it-224.md) | this catalog's runtime doctrine against Orca v1.4.224 (installed mac binary + Linux `orca-ide serve` substrate; delta vs the frozen 1.4.215 inventory + live replay) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (2 drifts patched; fencing / abandon retention / `terminal stop` / doctor-shape parks retired live; legacy replay + `caller.orcaSessionId` parked; successor 2026-12-28) |
 | 2026-10-13 | [review-it](2026-10-13-review-it-linux.md) | stablyai/orca PR #28206 (external PR), executed on Ubuntu 24.04 via `orca-ide` 1.4.224 — the Linux witness (#527) | external-run | yes — binds at `doctrine-only` (substrate evidence; no tier advance claimed) | NO-GO (0 Critical, 2 Required: submodule Force Delete toast hides superproject data loss; 4 read-only workers, target untouched, verdict retained not posted) |
+| 2026-10-13 | [ship-it](2026-10-13-ship-it-mdtoc.md) | ravidsrk/mdtoc (new product repo) from a maintainer-frozen spec, on the Linux witness VM (#515) | external-run | yes | BUILT @ `046d1f8d` (6 slices, 110 tests; integrated FAIL → seam-fix slice → re-review PASS; offline local-merge lane, BASE pushed) |
 
 ### Self-test campaign 2026-09-16
 
@@ -94,9 +96,10 @@ ASSERTED until ≥3 runs at differing WIP settings measure verified-CLOSED-per-h
 
 ## Field-proof plan (#212)
 
-Every mission in the catalog except `clean-sweep` and `prove-it` is `doctrine-only`; `clean-sweep`
-earned `self-run` on the 2026-09-14 tracker run closed above and `prove-it` on the 2026-09-16 run
-archived above. Each advance is a **mission run** — Orca up, human
+Every mission in the catalog except `clean-sweep`, `prove-it`, `harden-it`, and `ship-it` is `doctrine-only`; `clean-sweep`
+earned `self-run` on the 2026-09-14 tracker run closed above, `prove-it` on the 2026-09-16 run,
+`harden-it` on the 2026-09-21 run, and `ship-it` the catalog's first `external-run` on the
+2026-10-13 mdtoc run archived above. Each advance is a **mission run** — Orca up, human
 demonstrations under [`docs/reports/`](../reports/) say so themselves. Every mission has a row here,
 and a test enforces that (#292): a mission with no path to a proof tier is a mission whose claim
 cannot be checked, and adding one must not be cheaper than planning how to prove it. Targets that
@@ -119,7 +122,7 @@ make each run concrete, self-run candidates first:
 | field-test-it | needs a device/emulator app — an external mobile repo | external-run | `FIELD-PROVEN` | a target + a paired device |
 | clean-sweep | EARNED 2026-09-14: tracker run closed DRY-WITH-PARKED with artifacts in the run's own directory, an inventory pinned to the tip it names, and the verifier re-executed at promotion — [close report](2026-09-14-clean-sweep-self-run.md) | self-run | `DRY` (or `-WITH-PARKED`) | Orca |
 | review-it | the next real PR here or upstream — the 2026-07-13 gstack run kept its artifacts in the coordinator run dir, so nothing here can re-hash them | external-run | `NO-GO` / `GO` | Orca; a live PR + retained artifacts |
-| ship-it | the next mutating slice here — the 2026-08-28 run reached `PROMOTION_READY` and its five hashes still re-derive, but it never recorded the verifier transcript | self-run | `BUILT` at minimum | Orca; a second GitHub identity, or the executed-control lane |
+| ship-it | EARNED `external-run` 2026-10-13: ravidsrk/mdtoc built from a maintainer-frozen spec to BUILT @ `046d1f8d` on the Linux witness via the executed-control lane — [run report](2026-10-13-ship-it-mdtoc.md) | external-run | `BUILT` | — (see the archive row above) |
 | oss-contribute | the next upstream tracker — the 2026-07-16 chimely run kept its artifacts in the fork worktree | external-run | `CONTRIBUTED` (or `-WITH-PARKED`) | Orca; an upstream target + retained artifacts |
 | absorb-it | this repo's own inbound PR queue once it has one; otherwise an external repo with open community PRs | external-run | `ABSORBED` (or `-WITH-PARKED`) | Orca; an inbound queue that exists |
 | document-it | this catalog's own zero-coverage doc cells — `runtime/scripts/` has modules with no guide entry | self-run | `DOCUMENTED` | Orca; a frozen public surface to document against |

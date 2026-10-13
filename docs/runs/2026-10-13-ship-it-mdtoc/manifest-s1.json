@@ -1,0 +1,173 @@
+{
+  "unit": "mdtoc-s1-scan-slug",
+  "claim": "S1: fence-aware heading scan, GitHub slugs (collision-safe suffixes, inline-markup stripping), list-item fences, TOC render + --stdout tracer on fleet/build-s1 @af83a56 (after review FAIL + fix round)",
+  "base_sha": "03e13d382bf429e5158627a50ead394e6bf6db43",
+  "head_sha": "af83a56e816cce655524da6e46531178405c6c33",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/s1.md@dfe7457ce4559cb50e1fc4ee3bd1dcaf8d0bb81e",
+    "digest": "sha256:02a4f8efe04825ee7ef3848006d09f6dec959df6ada9ee74b53d2bfa08247e99",
+    "criterion_ids": [
+      "AC-2",
+      "AC-3"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-2",
+      "text": "GitHub anchor slugs incl. duplicate -1/-2 suffixes",
+      "addressed": true
+    },
+    {
+      "id": "AC-3",
+      "text": "Headings inside fenced code blocks ignored",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-s1",
+      "ts": "2026-10-13T12:49:08Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.051,
+      "commit": "50560a1f1db5e41d1d73b9eccb77b1db44b1f9f1",
+      "wtree": "c6059f43af6594bfdb4c4c23f8b9b218aed356b3",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-tests.txt"
+    },
+    {
+      "label": "runtime-prove-s1",
+      "ts": "2026-10-13T12:49:08Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/sample.md",
+      "cmd_sha256": "f1b9def30f89e76f361cc7dafd14d4933978de385b3c565a3f3f9f13ba828a87",
+      "exit": 0,
+      "duration_s": 0.012,
+      "commit": "50560a1f1db5e41d1d73b9eccb77b1db44b1f9f1",
+      "wtree": "c6059f43af6594bfdb4c4c23f8b9b218aed356b3",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-prove.txt"
+    },
+    {
+      "label": "neg-control-s1",
+      "ts": "2026-10-13T12:49:34Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.053,
+      "commit": "50560a1f1db5e41d1d73b9eccb77b1db44b1f9f1",
+      "wtree": "4669829e2ce8a2145f5ee850daab2d03a258cb70",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-nc-run.txt"
+    },
+    {
+      "label": "tests-s1-fixed",
+      "ts": "2026-10-13T12:58:47Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.07,
+      "commit": "af83a56e816cce655524da6e46531178405c6c33",
+      "wtree": "e7835fdbee994ada75dcaa25d1383138d9411f52",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-tests-fixed.txt"
+    },
+    {
+      "label": "runtime-prove-s1-fixed",
+      "ts": "2026-10-13T12:58:47Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/sample.md",
+      "cmd_sha256": "f1b9def30f89e76f361cc7dafd14d4933978de385b3c565a3f3f9f13ba828a87",
+      "exit": 0,
+      "duration_s": 0.102,
+      "commit": "af83a56e816cce655524da6e46531178405c6c33",
+      "wtree": "e7835fdbee994ada75dcaa25d1383138d9411f52",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-prove-fixed.txt"
+    },
+    {
+      "label": "verifier-s1",
+      "ts": "2026-10-13T13:16:18Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-s1.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/s1.md@dfe7457ce4559cb50e1fc4ee3bd1dcaf8d0bb81e --contract-digest sha256:02a4f8efe04825ee7ef3848006d09f6dec959df6ada9ee74b53d2bfa08247e99 --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-s1.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "22cd4de0cdd43e2bbeef228d4b837d0cf9048086c0e578129642eb4a7c0ce7d5",
+      "exit": 0,
+      "duration_s": 0.722,
+      "commit": "dfe7457ce4559cb50e1fc4ee3bd1dcaf8d0bb81e",
+      "wtree": "39fca2fd9f30883b84d9c2de3d3c3f037909b118",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-verifier.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
+  "intent": {
+    "goal": "Heading scan + GitHub slug + TOC render with --stdout tracer (AC-2, AC-3)",
+    "ruled_out": "In-file update and modes (S2); setext headings (not in frozen spec)",
+    "why": "The slug/scan core is the correctness heart of the tool; everything else is I/O around it"
+  },
+  "negative_control": {
+    "tool": "hand",
+    "result": "hand mutant (disable slug collision loop in mdtoc/toc.py) turned the suite RED: 4 failures incl. duplicate-suffix and generated-suffix tests \u2014 mutant killed",
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-nc.txt",
+    "command": "python3 -m unittest discover",
+    "criterion_ids": [
+      "AC-2"
+    ]
+  },
+  "review": {
+    "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1-record.md",
+    "reviewed_sha": "af83a56e816cce655524da6e46531178405c6c33"
+  },
+  "reviewer_mode": "same-vendor-fresh",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-tests.txt",
+      "sha256": "fd062a59cac8803c7bc3721b57991d21cd77c38d5111678c3b3161cc110d9467"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-prove.txt",
+      "sha256": "90468d52985fd09653f75d3036f3cdcc760ee8cae4ba1593f28b0d6b8e047f0f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-nc.txt",
+      "sha256": "69ece8f7d1b7d6c73b92dfac5840d8aacfe7b8b7b7c2f98bf750a59f7d91da1b"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-tests-fixed.txt",
+      "sha256": "3e25a278fc9c69baae0963e335ecb23e45f5991695dfba9876c3e08f3e4f1a79"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-prove-fixed.txt",
+      "sha256": "90468d52985fd09653f75d3036f3cdcc760ee8cae4ba1593f28b0d6b8e047f0f"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1.md",
+      "sha256": "47f026a3a85352e9d57b780d8a6d4d128df5510bbf390b875e39c952e9de62fc"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1-r2.md",
+      "sha256": "8a040867ec09d7702fa08b0ca4369aa9881d04e07436e242bbed05c1c643a7d8"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1-record.md",
+      "sha256": "5d6ae2d534bb5d1e6918548cb5dfca9fedff1af5be7b062fd3249392816b8f13"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s1-worker-done.json",
+      "sha256": "ca21c056f8383244afbee672e81f43a3ff31679c6613883fbd528127bcc535f0"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s1-fix-done.json",
+      "sha256": "3aca6f4ec567b8a15c9bdf881a7e16fc88d5faad87a84fddf2e8a47c95a51c75"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s1-review-done.json",
+      "sha256": "05f0d0f70cc3b78ee9437d4d5d732e2b283049284656b92f2fdd0ddb287c6f45"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/deliveries/s1-rereview-done.json",
+      "sha256": "de0dd1fc76ef6564ac93295e2d95cba8284c3762ed5ab0db07f91fcfe9391a7c"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-nc-run.txt",
+      "sha256": "bfabe95006528506b251f9503eed04c64317650d6a60096e0089c739a2277298"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/s1-verifier.txt",
+      "sha256": "950453dc2aec88ddcd7a4d5f3a247eb9df44600ae7ab3ff84bf98ac7c66b6289"
+    }
+  ]
+}

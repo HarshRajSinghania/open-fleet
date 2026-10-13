@@ -1,0 +1,38 @@
+{
+  "id": "e5d00f8a-16cb-4f92-8d8a-6ec9670b38bc",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_030449cddefd",
+    "messages": [
+      {
+        "id": "msg_0a06ac3e8292",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_9a9485ea-4c67-4d90-a537-d3b30f933877",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "F0 review: PASS",
+        "body": "Reviewed F0 diff statically and ran unittest discover (5 tests OK, worktree untouched). FC-1..FC-3 all met with no Critical/Required findings; four Nits, one Optional, one FYI (scope creep of S3 error loop, no max-depth range check, README documents unimplemented --check, hardcoded test path). Nothing left for F0; report is at the given path.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_7d2ad49a1f14\",\"dispatchId\":\"ctx_aae6da285ce5\",\"outcome\":\"succeeded\",\"reportPath\":\"/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/f0.md\"}",
+        "created_at": "2026-10-13T12:33:34Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "6b8ce20b-3060-4ab2-b2cd-2b43a1d52db2",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

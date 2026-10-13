@@ -6,6 +6,13 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **ship-it earns the catalog's first `external-run`** (#515). A maintainer-frozen
+  spec became [ravidsrk/mdtoc](https://github.com/ravidsrk/mdtoc) BUILT @ `046d1f8d`
+  on the Linux witness VM: six slices, three review-forced fix rounds, an integrated
+  FAIL closed by a seam-fix slice, re-review PASS. Run report:
+  `docs/runs/2026-10-13-ship-it-mdtoc.md` (binds via `run_report.py`), envelope:
+  `docs/reports/ship-it-external-run/`. run by Ravindra Kumar (@ravidsrk).
+
 - **pstack 0.15.20 read, not vendored.** Two habits folded in as playbooks:
   `explain-the-number` (a budget number is `unmeasured` until the limiter, the limit
   arithmetic, the error count, and proof the timed work happened are in the run) and

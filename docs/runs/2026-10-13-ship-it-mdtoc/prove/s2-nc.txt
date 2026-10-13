@@ -1,0 +1,150 @@
+hand negative control (coordinator-executed): extra blank line inside TOC block; suite must go RED
+diff --git a/mdtoc/toc.py b/mdtoc/toc.py
+index 40b4593..eb8d72e 100644
+--- a/mdtoc/toc.py
++++ b/mdtoc/toc.py
+@@ -97,7 +97,7 @@ def update_text(text, min_level=DEFAULT_MIN_LEVEL, max_level=DEFAULT_MAX_LEVEL):
+     """
+     eol = "\r\n" if "\r\n" in text else "\n"
+     toc = render_toc(text, min_level, max_level).replace("\n", eol)
+-    inner = eol + toc
++    inner = eol + eol + toc
+     if _MARKED.search(text):
+         return _MARKED.sub(lambda m: OPEN_MARKER + inner + CLOSE_MARKER, text, count=1)
+     if OPEN_MARKER in text or CLOSE_MARKER in text:
+== unittest under mutant ==
+..mdtoc: /nonexistent/none.md: [Errno 2] No such file or directory: '/nonexistent/none.md'
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+...............................F...........FFFF...FF.FF..
+======================================================================
+FAIL: test_default_mode_updates_in_place (tests.test_update.CliFileTests.test_default_mode_updates_in_place)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 102, in test_default_mode_updates_in_place
+    self.assertEqual(self.read(), f"# T\n{OPEN}\n- [A](#a)\n{CLOSE}\n## A\n".encode())
+AssertionError: b'# T\n<!-- toc -->\n\n- [A](#a)\n<!-- /toc -->\n## A\n' != b'# T\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n## A\n'
+
+======================================================================
+FAIL: test_empty_file (tests.test_update.UpdateTextTests.test_empty_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 60, in test_empty_file
+    self.assertEqual(update_text(""), f"{OPEN}\n{CLOSE}\n")
+AssertionError: '<!-- toc -->\n\n<!-- /toc -->\n' != '<!-- toc -->\n<!-- /toc -->\n'
+  <!-- toc -->
+- 
+  <!-- /toc -->
+
+
+======================================================================
+FAIL: test_fills_empty_marker_pair (tests.test_update.UpdateTextTests.test_fills_empty_marker_pair)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 19, in test_fills_empty_marker_pair
+    self.assertEqual(update_text(text), f"# T\n{OPEN}\n- [A](#a)\n{CLOSE}\n## A\n")
+AssertionError: '# T\n<!-- toc -->\n\n- [A](#a)\n<!-- /toc -->\n## A\n' != '# T\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n## A\n'
+  # T
+  <!-- toc -->
+- 
+  - [A](#a)
+  <!-- /toc -->
+  ## A
+
+
+======================================================================
+FAIL: test_h1_in_fence_is_not_the_anchor (tests.test_update.UpdateTextTests.test_h1_in_fence_is_not_the_anchor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 44, in test_h1_in_fence_is_not_the_anchor
+    self.assertTrue(out.startswith(f"{OPEN}\n- [A](#a)\n{CLOSE}\n\n```\n"))
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_h1_without_trailing_newline (tests.test_update.UpdateTextTests.test_h1_without_trailing_newline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 57, in test_h1_without_trailing_newline
+    self.assertEqual(out, f"# T\n\n{OPEN}\n{CLOSE}\n")
+AssertionError: '# T\n\n<!-- toc -->\n\n<!-- /toc -->\n' != '# T\n\n<!-- toc -->\n<!-- /toc -->\n'
+  # T
+  
+  <!-- toc -->
+- 
+  <!-- /toc -->
+
+
+======================================================================
+FAIL: test_no_markers_h1_directly_followed_by_heading (tests.test_update.UpdateTextTests.test_no_markers_h1_directly_followed_by_heading)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 35, in test_no_markers_h1_directly_followed_by_heading
+    self.assertEqual(out, f"# T\n\n{OPEN}\n- [A](#a)\n{CLOSE}\n\n## A\n")
+AssertionError: '# T\n\n<!-- toc -->\n\n- [A](#a)\n<!-- /toc -->\n\n## A\n' != '# T\n\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n\n## A\n'
+  # T
+  
+  <!-- toc -->
+- 
+  - [A](#a)
+  <!-- /toc -->
+  
+  ## A
+
+
+======================================================================
+FAIL: test_no_markers_inserts_after_first_h1 (tests.test_update.UpdateTextTests.test_no_markers_inserts_after_first_h1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 31, in test_no_markers_inserts_after_first_h1
+    self.assertEqual(out, f"# T\n\n{OPEN}\n- [A](#a)\n{CLOSE}\n\n## A\n")
+AssertionError: '# T\n\n<!-- toc -->\n\n- [A](#a)\n<!-- /toc -->\n\n## A\n' != '# T\n\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n\n## A\n'
+  # T
+  
+  <!-- toc -->
+- 
+  - [A](#a)
+  <!-- /toc -->
+  
+  ## A
+
+
+======================================================================
+FAIL: test_no_markers_no_h1_inserts_at_top (tests.test_update.UpdateTextTests.test_no_markers_no_h1_inserts_at_top)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 48, in test_no_markers_no_h1_inserts_at_top
+    self.assertEqual(out, f"{OPEN}\n- [A](#a)\n{CLOSE}\n\nintro\n\n## A\n")
+AssertionError: '<!-- toc -->\n\n- [A](#a)\n<!-- /toc -->\n\nintro\n\n## A\n' != '<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n\nintro\n\n## A\n'
+  <!-- toc -->
+- 
+  - [A](#a)
+  <!-- /toc -->
+  
+  intro
+  
+  ## A
+
+
+======================================================================
+FAIL: test_replaces_stale_content_between_markers (tests.test_update.UpdateTextTests.test_replaces_stale_content_between_markers)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s2/tests/test_update.py", line 23, in test_replaces_stale_content_between_markers
+    self.assertEqual(update_text(text), f"# T\n{OPEN}\n- [A](#a)\n{CLOSE}\n## A\n\ntail")
+AssertionError: '# T\n<!-- toc -->\n\n- [A](#a)\n<!-- /toc -->\n## A\n\ntail' != '# T\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n## A\n\ntail'
+  # T
+  <!-- toc -->
+- 
+  - [A](#a)
+  <!-- /toc -->
+  ## A
+  
+  tail
+
+
+----------------------------------------------------------------------
+Ran 60 tests in 0.387s
+
+FAILED (failures=9)
+mutant-exit:1

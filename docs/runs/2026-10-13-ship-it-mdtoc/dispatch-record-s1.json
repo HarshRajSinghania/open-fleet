@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "mdtoc-s1-scan-slug",
+    "contract_digest": "sha256:02a4f8efe04825ee7ef3848006d09f6dec959df6ada9ee74b53d2bfa08247e99",
+    "unit_class": "mutation"
+  },
+  "sig_b64": "4cPgS7FugzikIVFEGanDGUcGauszg6lw0WYCYMKl3Wygh+mJ1Lpa8pZ/h7iseQWm3gvh6rJ+34v9jL51wOkpBg=="
+}

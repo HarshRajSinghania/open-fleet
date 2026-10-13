@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "mdtoc-ship-integrated",
+    "contract_digest": "sha256:01b5aea7cd817b4170207ca627ceaa8db3732866eea0581fe69d865d22f1ad4e",
+    "unit_class": "mutation"
+  },
+  "sig_b64": "5lWFgsF6D586ZEzpvwhow9DAmuOCJUyi1vXlegY8RjedSeecsJapfleF0YEGjY7YW/6hQuYZf4SxT7KHv9drCg=="
+}

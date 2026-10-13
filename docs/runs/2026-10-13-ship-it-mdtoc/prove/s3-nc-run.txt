@@ -1,0 +1,38 @@
+...F...F...mdtoc: /nonexistent/none.md: no such file
+.usage: mdtoc [-h] [--check] [--stdout] [--max-depth N] [--version]
+             FILE [FILE ...]
+mdtoc: error: the following arguments are required: FILE
+..................................................................
+======================================================================
+FAIL: test_good_plus_missing_still_updates_good_exit_2 (tests.test_multi.MultiFileTests.test_good_plus_missing_still_updates_good_exit_2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s3/tests/test_multi.py", line 41, in test_good_plus_missing_still_updates_good_exit_2
+    self.assertEqual(Path(a).read_text(), UPDATED)
+AssertionError: '# T\n<!-- toc -->\n- [Old](#old)\n<!-- /toc -->\n## A\n' != '# T\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n## A\n'
+  # T
+  <!-- toc -->
+- - [Old](#old)
++ - [A](#a)
+  <!-- /toc -->
+  ## A
+
+
+======================================================================
+FAIL: test_stdout_with_error_still_prints_others (tests.test_multi.MultiFileTests.test_stdout_with_error_still_prints_others)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/ravindra/ship527/nc-s3/tests/test_multi.py", line 92, in test_stdout_with_error_still_prints_others
+    self.assertEqual(r.stdout, UPDATED)
+AssertionError: '' != '# T\n<!-- toc -->\n- [A](#a)\n<!-- /toc -->\n## A\n'
++ # T
++ <!-- toc -->
++ - [A](#a)
++ <!-- /toc -->
++ ## A
+
+
+----------------------------------------------------------------------
+Ran 78 tests in 0.602s
+
+FAILED (failures=2)

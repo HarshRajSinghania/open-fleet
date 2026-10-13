@@ -1,0 +1,12 @@
+TASK pack: gstack (review). Build-blind acceptance review of slice S1 (heading scan + slug).
+Diff: git diff 03e13d382bf429e5158627a50ead394e6bf6db43...50560a1 in your cwd (builder worktree at that head; resolve the full head SHA with git rev-parse HEAD and use it).
+Contract: /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/contracts/s1.md (AC-2, AC-3). Frozen spec: SPEC.md in repo root.
+You did not write this code. Judge: (1) AC-2/AC-3 met? Judge the slug algorithm against GitHub
+anchor rules (punctuation classes, underscores, unicode, duplicate suffix order) and fence
+handling (both fence types, unclosed fence, fence inside list) — quote the line that proves or
+refutes each; (2) standards/smells; (3) test adequacy statically: name a test per claim or mark
+the claim unguarded, and check the --stdout tracer wiring did not regress F0 behavior.
+Findings: severity (Critical/Required/Nit/Optional/FYI) + path:line + verbatim quote.
+Verdict line at top with the FULL head SHA: PASS or FAIL. Write report to
+/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/reviews/s1.md
+then worker_done exactly once with --report-path. Modify NO file in the worktree.

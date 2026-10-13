@@ -1,0 +1,38 @@
+{
+  "id": "813f2c41-32a9-4a3a-b497-3410be63ef91",
+  "ok": true,
+  "result": {
+    "runId": "run_4e3ed8344520",
+    "deliveryId": "delivery_efe0ebbe263e",
+    "messages": [
+      {
+        "id": "msg_62d5e9871b00",
+        "run_id": "run_4e3ed8344520",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_f6325e42-dec2-47d9-bad0-b6c50564d969",
+        "to_handle": "run:run_4e3ed8344520",
+        "subject": "S2 fix round done",
+        "body": "Fixed F1-F6 TDD (red first, 8 new/changed tests failed before the fix): markers are now matched fence-aware via a shared fence scanner, exactly one pair outside fences is legal (otherwise ValueError, exit 2, nothing written, also under --check), --stdout prints the full updated document, and --check with --stdout is an argparse error. Added guards for lone close marker, # T newline H1-only, and --stdout on a file with markers. Result: python3 -m unittest discover -> Ran 69 tests, OK, on branch fleet/build-s2 head a960241d781231af4d1bf30ffba27b9887e363d1 (committed, not pushed, SPEC.md untouched; ruff not installed so lint was not run); known limits left alone.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_68f8e06228eb\",\"dispatchId\":\"ctx_e5b9792651e2\",\"outcome\":\"succeeded\",\"filesModified\":[\"mdtoc/toc.py\",\"mdtoc/cli.py\",\"tests/test_toc.py\",\"tests/test_update.py\"]}",
+        "created_at": "2026-10-13T13:30:13Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "replayed": false,
+    "acknowledged": "delivery_6a3c2407af14",
+    "timedOut": false,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "aa25a9ea-b2a9-4214-ab88-196ab429dbb5",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "9d17845f-469c-4679-a163-948529ac9369"
+  }
+}

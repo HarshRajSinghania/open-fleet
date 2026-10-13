@@ -1,0 +1,19 @@
+hand negative control (coordinator-executed): disable fence-awareness in _outside_fences; suite must go RED
+diff --git a/mdtoc/toc.py b/mdtoc/toc.py
+index 09182eb..6f205a3 100644
+--- a/mdtoc/toc.py
++++ b/mdtoc/toc.py
+@@ -28,6 +28,8 @@ class Heading(NamedTuple):
+ 
+ def _outside_fences(text):
+     """Yield (line_index, line) for lines that are not fenced code or fence delimiters."""
++    yield from enumerate(text.splitlines())  # NC MUTANT: fence-awareness off
++    return
+     fence = None
+     for index, line in enumerate(text.splitlines()):
+         m = _FENCE.match(line) or (_LIST_FENCE.match(line) if fence is None else None)
+== unittest under mutant (see int-nc-run.txt, evidence-bound) ==
+----------------------------------------------------------------------
+Ran 95 tests in 0.640s
+
+FAILED (failures=10, errors=1)

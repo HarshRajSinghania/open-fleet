@@ -1,0 +1,116 @@
+{
+  "unit": "mdtoc-ship-integrated",
+  "claim": "Integrated: ravidsrk/mdtoc built from frozen SPEC.md to BUILT on fleet/ship-mdtoc-20261013 (F0+S1+S2+S3+S4)",
+  "base_sha": "0b9f660d93e64cf57e8245b0f1eb6eb0010ae158",
+  "head_sha": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+  "base_branch": "fleet/ship-mdtoc-20261013",
+  "contract": {
+    "source": "docs/runs/2026-10-13-ship-it-mdtoc/contracts/integrated.md@faf90eb293702af50e8e9310c26cab90f3cac16a",
+    "digest": "sha256:01b5aea7cd817b4170207ca627ceaa8db3732866eea0581fe69d865d22f1ad4e",
+    "criterion_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8",
+      "AC-9"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "AC-1",
+      "text": "insert/update between markers, idempotent",
+      "addressed": true
+    },
+    {
+      "id": "AC-2",
+      "text": "GitHub anchor slugs incl. duplicate suffixes",
+      "addressed": true
+    },
+    {
+      "id": "AC-3",
+      "text": "headings in fenced code ignored",
+      "addressed": true
+    },
+    {
+      "id": "AC-4",
+      "text": "--check 1 stale/missing, 0 current; --stdout prints, never writes",
+      "addressed": true
+    },
+    {
+      "id": "AC-5",
+      "text": "default depth H2-H4; --max-depth 1..6",
+      "addressed": true
+    },
+    {
+      "id": "AC-6",
+      "text": "no markers: insert after first H1, else top",
+      "addressed": true
+    },
+    {
+      "id": "AC-7",
+      "text": "multiple files; per-file errors don't stop others; exit aggregates",
+      "addressed": true
+    },
+    {
+      "id": "AC-8",
+      "text": "unittest suite covers slugging/fences/update/check; green",
+      "addressed": true
+    },
+    {
+      "id": "AC-9",
+      "text": "missing or non-UTF-8 file: stderr message, exit 2",
+      "addressed": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "tests-integrated",
+      "ts": "2026-10-13T14:16:10Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 0,
+      "duration_s": 0.665,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/int-tests.txt"
+    },
+    {
+      "label": "integrated-battery",
+      "ts": "2026-10-13T14:16:11Z",
+      "cmd": "python3 /Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/integrated-probe.py /home/ravindra/ship527/int-head",
+      "cmd_sha256": "17f0700f18c19362063527ae0bcc90d7fb87a6746abb1c32affca0aa4448ab23",
+      "exit": 0,
+      "duration_s": 0.769,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/int-battery.txt"
+    },
+    {
+      "label": "runtime-prove-integrated",
+      "ts": "2026-10-13T14:16:11Z",
+      "cmd": "python3 -m mdtoc --stdout /tmp/int.md",
+      "cmd_sha256": "4238fcef0aecff3c783cf76438a29e2bd462b8ce7e53ec2991999b329626871d",
+      "exit": 0,
+      "duration_s": 0.015,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "4ad13f538b77d70b1d378f7419c7817f7bde29ef",
+      "artifact": "/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/int-prove.txt"
+    },
+    {
+      "label": "neg-control-integrated",
+      "ts": "2026-10-13T14:16:12Z",
+      "cmd": "python3 -m unittest discover",
+      "cmd_sha256": "3643e93aff8f9ed2a161271c129bf800c99f01f3bc706c1f853784bd4ebb4805",
+      "exit": 1,
+      "duration_s": 0.664,
+      "commit": "c9a6f683bb497d975e4bcd76b5163689e4da794d",
+      "wtree": "f747a9fe7baf61c5fbaf617f176ceb7b5be13884",
+      "artifact": "/Users/ravindra/projects/orca-fleet-ship-mdtoc-20261013/docs/runs/2026-10-13-ship-it-mdtoc/prove/int-nc-run.txt"
+    }
+  ],
+  "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers"
+}

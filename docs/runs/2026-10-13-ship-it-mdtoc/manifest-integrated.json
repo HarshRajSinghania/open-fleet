@@ -165,6 +165,17 @@
       "commit": "94df84f7fcbb07f6f32deabff361ae1da54b9f5b",
       "wtree": "7d74e11ac3709464334b710c00dbd6d351ee5394",
       "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier.txt"
+    },
+    {
+      "label": "verifier-integrated-rerecord",
+      "ts": "2026-10-13T14:46:06Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-13-ship-it-mdtoc/manifest-integrated.json --contract-source docs/runs/2026-10-13-ship-it-mdtoc/contracts/integrated.md@faf90eb293702af50e8e9310c26cab90f3cac16a --contract-digest sha256:01b5aea7cd817b4170207ca627ceaa8db3732866eea0581fe69d865d22f1ad4e --unit-class mutation --dispatch-record docs/runs/2026-10-13-ship-it-mdtoc/dispatch-record-integrated.json --dispatch-pubkey docs/runs/2026-10-13-ship-it-mdtoc/dispatch-pubkey.hex --repo ravidsrk/mdtoc --no-gh --execute-nc --nc-command 'python3 -m unittest discover'",
+      "cmd_sha256": "5b81f1d539b2a1e3c8f47e667e04e7bc2ef68e32abb0e5c8865fce6710568d4d",
+      "exit": 0,
+      "duration_s": 1.781,
+      "commit": "f04ed24d287c86bdf565a21c4636308fe57865ef",
+      "wtree": "95533ee6ce12dfce4db07f15e0b52c0090782191",
+      "artifact": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier-rerecord.txt"
     }
   ],
   "toolchain": "CPython 3.12.3 Ubuntu 24.04.5 arm64 (OrbStack); orca-ide 1.4.224; Claude Code 2.1.296 workers",
@@ -254,6 +265,10 @@
     },
     {
       "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier.txt",
+      "sha256": "50793f96e46b5780d40489f26fa3361157cfb57e2017c6a42f06dc011642688d"
+    },
+    {
+      "path": "docs/runs/2026-10-13-ship-it-mdtoc/prove/int-verifier-rerecord.txt",
       "sha256": "50793f96e46b5780d40489f26fa3361157cfb57e2017c6a42f06dc011642688d"
     }
   ]

@@ -2,8 +2,9 @@
 
 **Status: draft.** This text is not posted anywhere. It is published only when every box under
 [Gates before publishing](#gates-before-publishing) is checked, and it says only what the tree
-supports at the 0.7.0 cut (`8a5211b`, the commit tag `v0.7.0` names; the cut was prepared
-at `fda5e4e`). The
+supports at the 0.7.1 cut (`5331b9b`, the commit tag `v0.7.1` names — retargeted from 0.7.0
+by the size gate below, whose rule made the announced release the first tag cut after the
+shrink). The
 [2026-09-28 release-readiness review](../reviews/2026-09-28-release-readiness-review.md#8-what-it-takes-to-release)
 drew the line this draft follows: the version cut is release hygiene, the announcement is what
 the P0 and P1 findings gate. A maintainer who posts this early is announcing claims the
@@ -17,15 +18,17 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
       Release exists ([#511](https://github.com/ravidsrk/orca-fleet/issues/511); the ops.md tag
       and record blocks, then the "Publishing Releases" block for the historical tags). The
       candidate is `v0.7.0` on `8a5211b`; the size row below can move it to a later tag, and
-      then every version and SHA in this file changes with it before posting. Done: tag `v0.7.0`,
-      GitHub Release published 2026-09-30, provenance in `docs/releases.json` (#538); #511 closed.
+      then every version and SHA in this file changes with it before posting. Done twice over:
+      tag `v0.7.0`, GitHub Release published 2026-09-30, provenance in `docs/releases.json`
+      (#538); then retargeted — the announced release is `v0.7.1`, tagged 2026-10-13 at
+      `5331b9b` with its GitHub Release published and provenance recorded (#552, #553).
 - [x] The `dist` branch holds the 0.7.0 bundle (`publish-dist.yml` ran on the tag push) and the
       plugin install has been witnessed on a clean machine, transcript under
       `docs/completion/evidence/` per [the witness procedure](../completion/PLUGIN-INSTALL-WITNESS.md)
       ([#518](https://github.com/ravidsrk/orca-fleet/issues/518)). Done in #539: dist populated
       with 22 self-contained bundles at the cut; `CF-02b-plugin-install.txt` /
       `CF-02b-plugin-uninstall.txt` retained; #518 closed.
-- [ ] The receipt trees under `docs/runs/` and `docs/reports/` are shrunk or relocated out of
+- [x] The receipt trees under `docs/runs/` and `docs/reports/` are shrunk or relocated out of
       the plugin copy (review P1-5, the third part of #518), and the tree of the announced
       tag is the shrunk one. The plugin path copies the marketplace's default-branch tip, and
       the `dist` branch and any tag-based install copy the tag, so both must carry the shrink:
@@ -33,13 +36,13 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
       0.7.0. The witness transcript's `du -sh`, re-run at that tag's commit, shows the reduced
       size. Disclosing the full size is not a substitute: the review requires the copy to
       shrink before a public beta, and this box stays unchecked until it has.
-      Status 2026-10-13: NOT done. The tracked tree measures 67 MB (`docs/runs` 15 MB,
-      `docs/reports` 13 MB); the #518 packaging decision (`docs/install.md`) keeps the bound
-      archives in the source tree and measures the whole-tree plugin at 66 MiB, with a future
-      lean plugin as "a separately generated distribution with preserved evidence references".
-      That lean distribution does not exist yet. Closing this box needs either building it (and
-      cutting the first tag after it) or a maintainer amendment of this gate accepting the
-      disclosed footprint — the 2026-10-09 completion review still counts the shrink unpaid.
+      Done 2026-10-13 by building it: the bundle now emits the plugin manifest, hooks, and
+      gate runtime, and the marketplace sources the plugin from the `dist` branch (#551),
+      so a plugin install copies the generated tree, not the source tree. Witnessed at the
+      announced tag: `CF-02c-lean-plugin-install.txt` — installed copy 24M (was 66M),
+      22 skills + both hooks discovered, all 1,652 dist paths fingerprint-match the
+      installed copy; uninstall half retained alongside (the host keeps the deregistered
+      cache on disk; recorded, not hidden). First tag carrying the shrink: `v0.7.1`.
 - [x] One recorded `review-it` or `ship-it` run on an Ubuntu host driven by `orca-ide`, so the
       Linux sentence below can drop the word "untested" (review §8, item 6). Done 2026-10-13:
       `review-it` on Ubuntu 24.04 via `orca-ide` 1.4.224, NO-GO verdict bound to the reviewed
@@ -60,7 +63,7 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
 
 ### Title
 
-orca-fleet 0.7.0: outcome-named autonomous fleets for the Orca runtime, now in public beta
+orca-fleet 0.7.1: outcome-named autonomous fleets for the Orca runtime, now in public beta
 
 ### Body
 
@@ -96,7 +99,7 @@ recipe. The full boundary is stated in the README under
 or above the catalog pin (`runtime/pins.json`, v1.4.224 at this cut); the `orca` CLI, which is
 `orca-ide` on Linux; Orca's `orchestration` and `orca-cli` skills installed for your agent host;
 `git` and `gh`; Python 3.11 or newer. Most recorded runs happened on macOS; Linux, supported
-by the code as of 0.7.0, has two recorded runs on Ubuntu via `orca-ide`: a `review-it` verdict
+by the code as of 0.7.1, has two recorded runs on Ubuntu via `orca-ide`: a `review-it` verdict
 (`docs/runs/2026-10-13-review-it-linux.md`) and the full external `ship-it` build
 (`docs/runs/2026-10-13-ship-it-mdtoc.md`).
 
@@ -107,7 +110,7 @@ completion gate by construction. Copy installers, including the `skills` CLI, mu
 and says which ones carry the gate.
 
 **Support window.** The catalog is re-witnessed against the installed Orca binary on every
-re-pin; 0.7.0 was tested against v1.4.209 through v1.4.215. Orca ships almost daily, so a weekly
+re-pin; 0.7.1 was tested against v1.4.209 through v1.4.224. Orca ships almost daily, so a weekly
 probe files an issue when the pin falls behind, and a quarterly re-pin runs regardless.
 
 **What is not claimed.** Only `ship-it` is external-run, and its run stopped at `BUILT` on an
@@ -132,7 +135,7 @@ CI at that commit. Release notes are the CHANGELOG section the tag carries.
 
 ## Where it goes, in order
 
-1. The GitHub Release body for `v0.7.0` (already generated from the CHANGELOG by
+1. The GitHub Release body for `v0.7.1` (already generated from the CHANGELOG by
    `release.yml`; this text is the human summary above it, added by editing the Release).
 2. The repository README, one line under the title, linking the Release.
 3. The listings the [distribution page](../distribution.md) tracks, each led by the proof

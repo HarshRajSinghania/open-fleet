@@ -1,0 +1,155 @@
+# 2026-10-13 — CF-02c lean plugin install on a clean Ubuntu container (v0.7.1)
+# HOME=/home/witness; fresh ubuntu:24.04 container, Python 3.12.3, Claude Code 2.1.296.
+# Prepared from the official Ubuntu image and official claude.ai installer; no host
+# Claude settings, credentials, skills, plugins or repository mounted/copied in.
+# The marketplace now sources the plugin from the published dist branch, so the
+# installed copy is the generated lean tree: fingerprint is against a dist checkout
+# (whose DIST-PROVENANCE.txt names v0.7.1 at 5331b9b), per the adapted procedure.
+# Operator: coordinator session on behalf of ravidsrk; maintainer install witness,
+# not an independent external mission run. Orca is absent. No model credential in
+# the container: discovery and registration only, no authenticated model turn.
+
+# claude installer tail:
+
+✅ Installation complete!
+
+
+$ date -u +%Y-%m-%dT%H:%M:%SZ; uname -a; cat /etc/os-release | head -3; /home/witness/.local/bin/claude --version; python3 --version; ls -la ~/.claude/skills; ls -la ~/.claude/plugins; command -v orca || true
+2026-10-13T18:08:30Z
+Linux 9600a054e829 7.2.9-orbstack-00391-g2b298d05fbd4 #1 SMP PREEMPT Mon Oct 12 05:39:36 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+PRETTY_NAME="Ubuntu 24.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+2.1.296 (Claude Code)
+Python 3.12.3
+ls: cannot access '/home/witness/.claude/skills': No such file or directory
+ls: cannot access '/home/witness/.claude/plugins': No such file or directory
+
+exit=0
+
+$ /home/witness/.local/bin/claude plugin marketplace add ravidsrk/orca-fleet
+Adding marketplace…SSH not configured, cloning via HTTPS: https://github.com/ravidsrk/orca-fleet.git
+Refreshing marketplace cache (timeout: 120s)…
+Cloning repository (timeout: 120s): https://github.com/ravidsrk/orca-fleet.git
+Clone complete, validating marketplace…
+Cleaning up old marketplace cache…
+✔ Successfully added marketplace: orca-fleet (declared in user settings)
+
+exit=0
+
+$ /home/witness/.local/bin/claude plugin install orca-fleet@orca-fleet
+Installing plugin "orca-fleet@orca-fleet"...✔ Successfully installed plugin: orca-fleet@orca-fleet (scope: user)
+SSH not configured, cloning via HTTPS: https://github.com/ravidsrk/orca-fleet.git
+
+exit=0
+
+$ /home/witness/.local/bin/claude plugin list --json
+[
+  {
+    "id": "orca-fleet@orca-fleet",
+    "version": "0.7.1",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1",
+    "installedAt": "2026-10-13T18:08:37.089Z",
+    "lastUpdated": "2026-10-13T18:08:37.089Z",
+    "projectEnabled": false
+  }
+]
+
+exit=0
+
+$ /home/witness/.local/bin/claude plugin details orca-fleet@orca-fleet
+orca-fleet 0.7.1
+  Description: Outcome-named autonomous fleets for the Orca runtime: each mission is one outcome with its own state machine and an evidence-backed definition of done. One router per worker. No vendor-named fleets. MIT.
+  Source: orca-fleet@orca-fleet
+
+Component inventory
+  Skills (22)  absorb-it, access-it, attest-it, clean-sweep, deflake-it, document-it, field-test-it, floor-it, harden-it, map-it, migrate-it, modernize-it, offload-it, oncall-it, oss-contribute, pin-it, prove-it, reshape-it, review-it, root-cause, ship-it, speed-it
+  Agents (0)
+  Hooks (2)  TaskCompleted, Stop  (harness-only — no model context cost)
+  MCP servers (0)
+  LSP servers (0)
+
+Projected token cost
+  Always-on:   ~4,556 tok   added to every session
+
+Per-component (rounded)
+  component       always-on  on-invoke
+  absorb-it            ~220      ~1.9k
+  access-it            ~230      ~1.5k
+  attest-it            ~180      ~1.4k
+  clean-sweep          ~260      ~1.9k
+  deflake-it           ~160      ~1.3k
+  document-it          ~220      ~1.7k
+  field-test-it        ~210      ~2.1k
+  floor-it             ~230        ~2k
+  harden-it            ~200      ~1.3k
+  map-it               ~160      ~1.3k
+  migrate-it           ~240      ~1.9k
+  modernize-it         ~190      ~1.5k
+  offload-it           ~200      ~1.5k
+  oncall-it            ~230      ~1.7k
+  oss-contribute       ~230        ~2k
+  pin-it               ~210      ~2.1k
+  prove-it             ~240       ~990
+  reshape-it           ~220        ~2k
+  review-it            ~200      ~1.1k
+  root-cause           ~180      ~1.1k
+  ship-it              ~200      ~1.9k
+  speed-it             ~160      ~1.5k
+
+  On-invoke cost is paid each time a skill or agent fires.
+  Token counts are estimates and may differ from actual usage.
+
+exit=0
+PLUGIN_ROOT=/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1
+
+$ du -sh /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1; python3 -c "import json;print(json.load(open('/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/.claude-plugin/plugin.json'))['version'])"; ls /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/skills/ship-it/references | head -5; cat /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/DIST-PROVENANCE.txt; grep -n CLAUDE_PLUGIN_ROOT /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/hooks/hooks.json; test -x /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/runtime/scripts/verify-gate.sh
+24M	/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1
+0.7.1
+ARCHITECTURE.md
+README.md
+acceptance-review.md
+agent-brief.md
+attention-budget.md
+Built by scripts/bundle.py from v0.7.1 at 5331b9b89655cee25c97cb30fcf6007eaa409a44.
+Every mission under skills/ carries its playbooks and runtime docs under references/.
+Source: https://github.com/ravidsrk/orca-fleet
+10:            "command": "\"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/verify-gate.sh\" --event task"
+21:            "command": "\"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/verify-gate.sh\" --event stop"
+
+exit=0
+
+$ ORCA_MANIFEST=/nonexistent.json /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1/runtime/scripts/verify-gate.sh --event stop
+verify-gate: evidence manifest named but missing: /nonexistent.json — BLOCKING (fail-closed)
+
+exit=0
+
+$ git clone --quiet --branch dist --single-branch https://github.com/ravidsrk/orca-fleet.git ~/dist-tree && git clone --quiet https://github.com/ravidsrk/orca-fleet.git ~/src && git -C ~/src checkout -q 5331b9b89655cee25c97cb30fcf6007eaa409a44 && git -C ~/src rev-parse HEAD
+5331b9b89655cee25c97cb30fcf6007eaa409a44
+
+exit=0
+
+$ python3 /tmp/plugin-fingerprint.py
+# Script executed:
+paths only in dist tree: []
+paths only in installed copy (bookkeeping/generated): []
+installed tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
+published dist tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
+all 1652 dist paths match the installed copy
+
+exit=0
+
+$ cd ~/src && python3 scripts/validate.py 2>&1 | tail -2
+
+All 22 missions valid; three-layer separation holds; evals valid.
+
+exit=0
+
+$ timeout 25 /home/witness/.local/bin/claude -p 'Reply with exactly: ok' --output-format stream-json 2>&1 | head -c 1200; true
+Error: When using --print, --output-format=stream-json requires --verbose
+
+exit=0
+
+result: clean-machine install of the lean (dist-sourced) plugin; see above for discovery, size, fingerprint, and the credential boundary.

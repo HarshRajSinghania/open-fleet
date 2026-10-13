@@ -182,10 +182,12 @@ generated distribution with preserved evidence references, rather than pruning s
 **Lean plugin (since 0.7.1):** that separately generated distribution now exists. The bundle
 tree carries the plugin manifest, hooks, and gate runtime at its root, and the marketplace
 sources the plugin from the `dist` branch, so a plugin install copies the generated tree
-(about 24 MB by build-time `du`) instead of the whole source tree. The archives stay in the
-source tree; symlinked source checkouts are unchanged. The clean-machine witness for this
-shape follows the same [procedure](completion/PLUGIN-INSTALL-WITNESS.md), fingerprinting the
-installed copy against the bundle built at the tagged commit.
+instead of the whole source tree. The archives stay in the source tree; symlinked source
+checkouts are unchanged. Witnessed clean-machine at the `v0.7.1` tag: the installed copy
+measures 24 MB and all 1,652 published dist paths fingerprint-match it
+([`CF-02c-lean-plugin-install.txt`](completion/evidence/CF-02c-lean-plugin-install.txt),
+per the [witness procedure](completion/PLUGIN-INSTALL-WITNESS.md)); the uninstall half
+records that the host keeps the deregistered cache on disk.
 
 ## Check the install
 

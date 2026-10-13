@@ -288,7 +288,7 @@ class BundleClosureTests(unittest.TestCase):
         # Copy build inputs so omission never mutates the shared source checkout.
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp).resolve() / "source"
-            for directory in ("skills", "playbooks", "runtime", "docs"):
+            for directory in ("skills", "playbooks", "runtime", "docs", ".claude-plugin", "hooks"):
                 shutil.copytree(ROOT / directory, source / directory)
             shutil.copy2(ROOT / "ARCHITECTURE.md", source / "ARCHITECTURE.md")
             with mock.patch.object(bundle, "ROOT", source), \
@@ -300,7 +300,8 @@ class BundleClosureTests(unittest.TestCase):
                                  "runtime/scripts/wtree.sh", "runtime/scripts/verify.py",
                                  "runtime/one-way-doors.json", "playbooks/build-change.md",
                                  "playbooks/observe.md", "runtime/evidence-manifest.md",
-                                 "docs/runs/TEMPLATE.md"):
+                                 "docs/runs/TEMPLATE.md",
+                                 ".claude-plugin/plugin.json", "hooks/hooks.json"):
                     with self.subTest(missing=relative):
                         path = source / relative
                         saved = path.read_bytes()

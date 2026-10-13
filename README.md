@@ -261,7 +261,7 @@ Every mission's `metadata:` block carries a validator-enforced `proof:` field: `
 named commit: a run report with a `RUN:` header, an evidence manifest inside the run's own
 `docs/runs/` directory, and an integrity inventory that re-hashes at the commit the header names.
 <!-- BEGIN GENERATED: proof-status — scripts/gen-badges.py -->
-**Today `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`; no mission reads `external-run` yet.**
+**Today `ship-it` reads `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
 <!-- END GENERATED: proof-status -->
 The [run archive](docs/runs/) records every run
 that really happened and says, per run, whether and why it binds. Be precise about what the gate

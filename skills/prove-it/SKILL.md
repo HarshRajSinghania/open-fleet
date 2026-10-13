@@ -34,7 +34,7 @@ the denominator is a FINITE CRITICAL SURFACE, done is MUTATION-SENSITIVE coverag
 surfaced during characterization spawn a NESTED remediation loop. Composes `characterize`, `build-change`, `design-twice` (choosing the
 seam to pin), `remediate-finding` (for surfaced bugs), `acceptance-review`, `runtime-prove`, `compound-learn`;
 rides `merge-serialization`, `reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`,
-`evidence-manifest`, `ledger-contract`, `attention-budget`. Worker TASK pack: one of matt | addy
+`evidence-manifest`, `ledger-contract`, `sandbox-policy`, `attention-budget`. Worker TASK pack: one of matt | addy
 — never co-mount.
 
 ## Two terminal outcomes

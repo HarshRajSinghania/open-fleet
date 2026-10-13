@@ -50,6 +50,7 @@ WEIGHTS = {
     "test_bind_check": 2.2,
     "test_bundle": 23.0,
     "test_call_for_runs": 0.1,
+    "test_chain_check": 0.1,  # 2026-10-13: 0.07 s wall, rounded
     "test_check_reply": 2.4,
     "test_decisions": 1.4,
     "test_deny_hook": 48.9,

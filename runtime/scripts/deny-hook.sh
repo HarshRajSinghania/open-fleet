@@ -507,12 +507,38 @@ esac
 FULL_CMD=$CMD
 has() { printf '%s' "$CMD" | grep -qE "$1" 2>/dev/null; }
 
+# Canonicalise the executable spelling of the FIRST word: an absolute or
+# relative path, a leading backslash, or surrounding quotes name the same
+# command as the bare word. Every rule below anchors on bare names (`rm`,
+# `git`, `tee`), so `/bin/rm -rf /` and `/usr/bin/git push --force` walked
+# past rules that denied the bare spellings (full-review probe). An
+# assignment word is never touched — its VALUE may contain slashes
+# (`FOO=/a/b git …`) and basename-cutting it would eat the prefix run.
+canon_first() {
+  _cf=$1
+  case "$_cf" in \\*) _cf=${_cf#\\} ;; esac
+  _t=${_cf%% *}
+  case "$_t" in
+    [A-Za-z_]*=*) printf '%s' "$_cf"; return ;;
+    */*|\\*|\"*|\'*) : ;;
+    *) printf '%s' "$_cf"; return ;;
+  esac
+  _u=$_t
+  _u=${_u#\\}; _u=${_u#\"}; _u=${_u%\"}; _u=${_u#\'}; _u=${_u%\'}
+  _b=${_u##*/}
+  [ -n "$_b" ] || { printf '%s' "$_cf"; return; }
+  case "$_cf" in
+    *\ *) printf '%s %s' "$_b" "${_cf#* }" ;;
+    *)    printf '%s' "$_b" ;;
+  esac
+}
+
 # Drop env/sudo-style prefixes so a refused command cannot be laundered by putting something
 # harmless in front of it. `sudo` is peeled but REATTACHED — the rules below match `sudo`
 # themselves — because an assignment under it (`sudo GIT_DIR=x git push -d`) otherwise hid
 # the whole command from every anchored pattern (PR #321 review).
 strip_prefix() {
-  _c=$1
+  _c=$(canon_first "$1")
   _pre=""
   case "$_c" in
     sudo\ *)
@@ -532,6 +558,7 @@ strip_prefix() {
       done ;;
   esac
   while : ; do
+    _c=$(canon_first "$_c")
     case "$_c" in
       env\ *)     _c=${_c#env } ;;
       nohup\ *)   _c=${_c#nohup } ;;
@@ -659,6 +686,7 @@ skip_tok() {
 git_redirected() {
   _r=$1
   while : ; do
+    _r=$(canon_first "$_r")
     case "$_r" in
       \ *)          _r=${_r# } ;;
       env\ *)       _r=${_r#env } ;;

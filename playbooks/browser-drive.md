@@ -1,7 +1,7 @@
 # Playbook — browser-drive  (drive a real browser as an evidence source)
 
 Recipe: gstack `qa` browser rules + the `$B` headless fallback table + the `GSTACK_STEP_OK` sentinel;
-Addy `browser-testing-with-devtools` profile-isolation and untrusted-content boundaries; Orca's
+profile-isolation and untrusted-content boundaries are stated as fleet rules below; Orca's
 embedded-browser verbs. Any mission phase whose oracle is a rendered page runs through here.
 
 ## Engine selection (engine-agnostic, declared once)

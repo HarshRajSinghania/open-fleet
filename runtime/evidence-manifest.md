@@ -41,6 +41,7 @@ the `worker_done` payload. Shape (JSON; a mission may add fields):
   "binding_audit": {"coverage": "AC-1..AC-3 (3/3)", "method": "criterion quoted, covering test quoted, criterion-violating mutation went RED"},
   "intent": {"goal": "<one sentence>", "ruled_out": "<what was not chosen>", "why": "<load-bearing rationale>"},
   "lighting": "lit",
+  "lane": "A",
   "artifacts": [{"path": "docs/reports/<unit>/negctrl.txt", "sha256": "<sha256 of those exact bytes>"}],
   "pr": {"number": 0, "url": "", "reviewed_sha": "<SHA the reviewer approved>", "reviewed_wtree": "<tree SHA of the reviewed content — optional; a content-identical head move keeps freshness>"},
   "reviewer_mode": "<cross-vendor | same-vendor-fresh | instructed-isolation — how independent the review REALLY was>",
@@ -106,7 +107,7 @@ Rules:
 - `pr.reviewed_sha` is the SHA the build-blind reviewer actually reviewed (see reviewed-sha-freshness.md). It gates the merge.
 - `review.artifact` (the local reviewer record at head_sha) is REQUIRED on a mutation unit in the no-gh lane (dispatch `--no-gh`; merge-serialization.md) — the coordinator-attested stand-in for §2's GitHub review lookup; the gh lane and report-only/planning units omit it.
 - `intent` is REQUIRED on mutation units: goal · ruled_out · why, all non-empty — discarded agent reasoning captured (not the completion oracle; that stays §2). A missing or empty packet fails verification.
-- `lighting` is `lit` (default) or `dark-eligible` per gate-classification.md. The verifier machine-checks only that the value is legal and unswapped against the dispatch-supplied value (and, via the review leg, that a `dark-eligible` unit carries an out-of-band coordinator contract). The stop-list / Lane-0/B decision is a human gate at dispatch — verify.py never sees lane data.
+- `lighting` is `lit` (default) or `dark-eligible` per gate-classification.md. The verifier machine-checks only that the value is legal and unswapped against the dispatch-supplied value (and, via the review leg, that a `dark-eligible` unit carries an out-of-band coordinator contract). With dispatch-supplied `--lane` the verifier also rejects a lane swap, a Lane-0 mutation, and dark outside Lane A; the stop-list decision stays a human dispatch gate.
 - `provenance` (optional, any class) is supporting metadata; a named standard (not `none`) makes `spec_version`, `model`, `reviewer` and `retention` required non-empty — presence only: not truth, operational logging, disclosure, marking or conformance. `retention` names the run's Rekor-style transparency-log RECEIPT (`log_index`, `entry_uuid`, `signature` over the signed inventory's digest) committed beside the inventory — an OPTIONAL coordinator upload with an egress.py receipt, never a gate; the check owed is OFFLINE — its fields binding that digest (verify.py today: presence only) — and proves the receipt covers these bytes, not that the log is reachable or trusted.
 - `claim` is the worker's narration — the verifier ignores it except as a hint.
 
@@ -133,7 +134,7 @@ the EXECUTED negative control — deterministically, before any LLM judgment (im
 | The metric contract is met (measurement units) | the benchmark/coverage/streak satisfies the manifest's `metric_contract` (pre-declared target + confidence + method), not a lucky single run |
 | The review was independent | `reviewer_mode` is recorded AND machine-checked for a legal value (verify.py); whether reviewer/verifier artifacts are byte-identical to (or trivially derived from) the worker's own output is a COORDINATOR judgment; instructed isolation is named as the weaker guarantee it is |
 | Intent packet is present *(mutation units)* | `intent.goal`, `intent.ruled_out`, and `intent.why` are non-empty strings — presence only; wisdom is a human/taste check |
-| Lighting is legal | `lighting` is `lit` or `dark-eligible` AND matches the dispatch-supplied value — a swap fails (verify.py); the Lane A / unfakeable-oracle / stop-list eligibility itself is a human gate at dispatch (gate-classification.md), not machine-checked |
+| Lighting is legal | `lighting` is `lit` or `dark-eligible` AND matches the dispatch-supplied value — a swap fails (verify.py); with dispatch-supplied `--lane`, a lane swap, a Lane-0 mutation, and dark outside Lane A also fail — the stop-list eligibility itself stays a human gate at dispatch (gate-classification.md) |
 
 Verification failing on any required check → NOT done; re-dispatch, or SUSPECT if provenance says done but git disagrees.
 

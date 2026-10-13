@@ -41,7 +41,7 @@ pack: one of matt | addy | gstack — never co-mount.
 ## Terminal outcomes
 
 - **GO** — zero Critical and zero Required (merge-blocking) findings.
-- **NO-GO** — any Critical OR any Required → default NO-GO. Conditional notes may accompany
+- **NO-GO** (degraded) — any Critical OR any Required → default NO-GO. Conditional notes may accompany
   (e.g. "NO-GO conditional — 0 Critical, fixable Required") but do not rename the outcome; human
   override to merge despite Required is recorded, never a silent GO.
 

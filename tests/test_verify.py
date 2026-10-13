@@ -706,6 +706,27 @@ class MetaChecks(unittest.TestCase):
         errs = verify.check_lighting({}, True, dispatch_lighting="dark-eligible")
         self.assertTrue(any("swap" in e for e in errs), errs)
 
+    def test_lane_is_checked_when_dispatch_supplies_it(self):
+        # Full review: verify.py never saw lane data, so the Lane-0/B half of
+        # dark-eligibility rested on narration. The dispatch-supplied lane is
+        # authoritative exactly like dispatch lighting.
+        self.assertEqual(verify.check_lighting({}, True), [])  # unsupplied: unchanged
+        self.assertEqual(verify.check_lighting({"lane": "A"}, True, dispatch_lane="A"), [])
+        self.assertTrue(verify.check_lighting({"lane": "Z"}, True))  # illegal value
+        errs = verify.check_lighting({"lane": "B"}, True, dispatch_lane="A")
+        self.assertTrue(any("swap" in e for e in errs), errs)
+        errs = verify.check_lighting({}, True, dispatch_lane="0")
+        self.assertTrue(any("Lane 0" in e for e in errs), errs)
+        errs = verify.check_lighting({"lighting": "dark-eligible"}, True,
+                                     dispatch_lane="B",
+                                     dispatch_lighting="dark-eligible")
+        self.assertTrue(any("Lane A" in e for e in errs), errs)
+        self.assertEqual(
+            verify.check_lighting({"lighting": "dark-eligible"}, True,
+                                  dispatch_lane="A",
+                                  dispatch_lighting="dark-eligible"), [])
+        self.assertEqual(verify.check_lighting({}, False, dispatch_lane="0"), [])
+
     def test_reviewer_mode_legal_for_mutation(self):
         self.assertTrue(verify.check_reviewer_mode({"reviewer_mode": "self"}, True))
         self.assertTrue(verify.check_reviewer_mode({}, True))

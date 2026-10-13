@@ -52,7 +52,7 @@ matt | addy | gstack — never co-mount.
 - **RESHAPED** — every confirmed target module deepened: interface surface smaller by measurement,
   and the carve-out pair holds — the seam's pinned mutant still KILLED at `head_sha` (the oracle is
   live) AND reverting the deepening enlarges the interface measurement back.
-- **RESHAPED-WITH-PARKED** — ≥1 confirmed module cannot deepen without a one-way API-break or
+- **RESHAPED-WITH-PARKED** (degraded) — ≥1 confirmed module cannot deepen without a one-way API-break or
   behaviour-change decision; it is PARKED with the exact decision named, never deepened silently.
 
 ## Pipeline

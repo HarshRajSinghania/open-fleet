@@ -56,6 +56,8 @@ def make_skill(tmp, body, frontmatter_extra="proof: doctrine-only\nautonomy: L4\
         elif line.strip():
             top.append(line)
     block = "metadata:\n" + "".join(f"  {k}: {v}\n" for k, v in meta.items())
+    if "pack:" not in body.lower():
+        body += "\nWorker TASK pack: one of matt | addy — never co-mount.\n"
     (d / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: A fixture. Use when testing.\n"
         + ("\n".join(top) + "\n" if top else "") + block + "---\n" + body,
@@ -65,6 +67,64 @@ def make_skill(tmp, body, frontmatter_extra="proof: doctrine-only\nautonomy: L4\
 
 
 class TestValidatorFailureBranches(unittest.TestCase):
+
+    def test_name_must_match_the_folder(self):
+        # Full-review mutant: deleting the name/folder check left the suite green.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_skill(tmp, "Composes `diagnose`.\n")
+            md = d / "SKILL.md"
+            md.write_text(md.read_text(encoding="utf-8").replace(
+                "name: demo-skill", "name: other-skill"), encoding="utf-8")
+            errs = validate.validate_skill(d, PROTOCOLS)
+            self.assertTrue(any("does not match folder" in e for e in errs), errs)
+
+    def test_description_over_1024_chars_fails(self):
+        # Full-review mutant: deleting the description cap left the suite green.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_skill(tmp, "Composes `diagnose`.\n")
+            md = d / "SKILL.md"
+            md.write_text(md.read_text(encoding="utf-8").replace(
+                "A fixture. Use when testing.", "x" * 1100 + " Use when testing."),
+                encoding="utf-8")
+            errs = validate.validate_skill(d, PROTOCOLS)
+            self.assertTrue(any("description length" in e for e in errs), errs)
+
+    def test_frontmatter_over_34_lines_fails(self):
+        # Full-review mutant: deleting the frontmatter cap left the suite green.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_skill(tmp, "Composes `diagnose`.\n")
+            md = d / "SKILL.md"
+            text = md.read_text(encoding="utf-8")
+            md.write_text(text.replace("metadata:\n", "metadata:\n" + "# pad\n" * 25, 1),
+                          encoding="utf-8")
+            errs = validate.validate_skill(d, PROTOCOLS)
+            self.assertTrue(any("frontmatter budget" in e for e in errs), errs)
+
+    def test_a_mission_must_state_its_one_worker_pack(self):
+        good = "Worker TASK pack: one of matt | addy — never co-mount.\n"
+        for bad in ("", "Worker TASK pack: one of foo | bar — never co-mount.\n",
+                    "Worker TASK pack: matt; co-mount addy.\n"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                d = make_skill(tmp, "Composes `diagnose`.\n")
+                md = d / "SKILL.md"
+                md.write_text(md.read_text(encoding="utf-8").replace(good, bad),
+                              encoding="utf-8")
+                errs = validate.validate_skill(d, PROTOCOLS)
+                self.assertTrue(any("worker-pack statement" in e for e in errs), errs)
+
+    def test_a_mutating_mission_must_ride_sandbox_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_skill(tmp, "Composes `diagnose`; rides `evidence-manifest`.\n",
+                           name="ship-it")
+            errs = validate.validate_skill(
+                d, {"diagnose", "evidence-manifest", "sandbox-policy"})
+            self.assertTrue(any("must ride `sandbox-policy`" in e for e in errs), errs)
+
+    def test_body_over_110_lines_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            errs = validate.validate_skill(
+                make_skill(tmp, "Composes `diagnose`.\n" + "line\n" * 115), PROTOCOLS)
+            self.assertTrue(any("body lines" in e for e in errs), errs)
 
     def test_unknown_frontmatter_field_fails(self):
         # Issue #263: top level is the spec allowlist and nothing else — the
@@ -297,6 +357,28 @@ class TestUnreadableSkill(unittest.TestCase):
 class TestProofStatus(unittest.TestCase):
     """The predecessor died presenting unproven missions as proven — machine-check it."""
 
+    def test_catalog_growth_must_be_paid_for_with_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "skills").mkdir()
+            for i in range(validate.CATALOG_BASE[0] + 1):
+                make_skill(root / "skills", "Composes `diagnose`.\n", name=f"m{i:02d}-it")
+            failures = validate.check_proof_ratchet(root=root)
+            self.assertTrue(any("proof ratchet" in f for f in failures), failures)
+            one = root / "skills" / "m00-it" / "SKILL.md"
+            one.write_text(one.read_text(encoding="utf-8").replace(
+                "proof: doctrine-only", "proof: self-run"), encoding="utf-8")
+            failures = validate.check_proof_ratchet(root=root)
+            self.assertTrue(failures, "one proven mission must not pay for growth alone")
+            for i in range(1, validate.CATALOG_BASE[1] + 1):
+                p = root / "skills" / f"m{i:02d}-it" / "SKILL.md"
+                p.write_text(p.read_text(encoding="utf-8").replace(
+                    "proof: doctrine-only", "proof: self-run"), encoding="utf-8")
+            self.assertEqual(validate.check_proof_ratchet(root=root), [])
+
+    def test_live_catalog_sits_on_the_ratchet(self):
+        self.assertEqual(validate.check_proof_ratchet(), [])
+
     def test_missing_proof_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             errs = validate.validate_skill(
@@ -508,6 +590,10 @@ class TestProtocolDocRefs(unittest.TestCase):
     def test_dangling_ref_in_playbook_fails(self):
         failures = self._with_dirs("The LAND phase runs per land.md as always.\n")
         self.assertTrue(any("land.md" in f for f in failures), failures)
+
+    def test_a_playbook_naming_two_router_packs_fails(self):
+        failures = self._with_dirs("Recipe: Matt `tdd` + Addy `incremental-implementation`.\n")
+        self.assertTrue(any("one-router" in f for f in failures), failures)
 
     def test_resolving_ref_in_playbook_passes(self):
         failures = self._with_dirs("Escalate per diagnose.md when the loop stalls.\n")
@@ -1079,6 +1165,33 @@ class MissionIdentity(unittest.TestCase):
             errors, _warnings = validate.identity_collisions(root=root)
         self.assertTrue(any("restate one identity" in e for e in errors),
                         f"a paraphrased identity passed: {errors}")
+
+    def test_a_disjoint_vocabulary_paraphrase_is_refused(self):
+        # Full-review probe T2b: every content word swapped for a synonym the
+        # routing table never mentions (ticket/queue/replicated/repaired/
+        # confirmed/recounting/checkout/person/checks/revision) left no shared
+        # stems, so the identity read as divergent. Concept canonicalisation,
+        # not string overlap, has to close this.
+        original = {
+            "unit": "one open issue from the frozen backlog",
+            "state_machine": "open then reproduced then fixed then independently verified then closed",
+            "convergence": "a full re-enumeration of the backlog finds zero open issues",
+            "ordering": "one issue per isolated worktree, merges serialised",
+            "parking": "PARKED when a human decision is required",
+            "oracle": "the repository test suite at the reviewed commit",
+        }
+        paraphrase = {
+            "unit": "a single unresolved ticket from the fixed queue",
+            "state_machine": "outstanding then replicated then repaired then separately confirmed then resolved",
+            "convergence": "recounting every queued ticket shows none remain unresolved",
+            "ordering": "each ticket alone in its own checkout, landings serialised",
+            "parking": "held aside whenever a person must decide",
+            "oracle": "the project automated checks at the signed-off revision",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, ("alpha-it", original), ("beta-it", paraphrase))
+            errors, _warnings = validate.identity_collisions(root=root)
+        self.assertTrue(errors, "a disjoint-vocabulary paraphrase passed the identity gate")
 
     def test_inflection_alone_does_not_defeat_the_test(self):
         # Stemming closes the cheapest paraphrase of all: pluralising and re-tensing.

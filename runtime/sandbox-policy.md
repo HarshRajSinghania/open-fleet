@@ -93,7 +93,8 @@ Two rules the guide states and a lane will otherwise learn the expensive way:
   cannot tell two sandboxes apart, and remote placement resolves to the wrong host. Snapshot
   BEFORE `serve`, or not at all.
 
-Lane contract: N sandboxes for N parallel danger lanes; harvest work OFF the mortal disk via
+Lane contract (BLOCKED until that placement binding exists — today every danger spawn is refused,
+so no mission may plan on this lane): N sandboxes for N parallel danger lanes; harvest work OFF the mortal disk via
 `git push` to the lane's own work branch BEFORE teardown (never straight to BASE — sandbox work
 enters BASE through the normal PR + review + merge-train pipeline); DESTROY per lane and verify;
 record `lane · sandbox · pushed branch@sha · destroyed ts` in the ledger. A lane whose sandbox died

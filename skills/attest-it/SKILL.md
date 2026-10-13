@@ -44,7 +44,7 @@ ledger), `liveness-resume` (DAG-scoped RESUME). Worker TASK pack: one of matt | 
 
 - **CONFORMANT** — every obligation in the frozen catalog is VERIFIED: evidence bound to authoritative
   state, independently re-derived, no control marked satisfied without a linked artifact.
-- **CONFORMANT-WITH-GAPS** — one or more obligations are GAPs, each parked to a named human/legal owner
+- **CONFORMANT-WITH-GAPS** (degraded) — one or more obligations are GAPs, each parked to a named human/legal owner
   with the missing evidence stated. A GAP is a first-class terminal, not a failure to hide.
 
 ## Pipeline

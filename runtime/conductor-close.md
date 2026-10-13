@@ -1,4 +1,4 @@
-# Playbook — conductor-close  (post-merge evidence closure, once per unit)
+# Runtime policy — conductor-close (post-merge evidence closure, once per unit)
 
 ACTOR: the COORDINATOR (conductor) itself, never a dispatched worker — the unit's
 workers are released by the time it runs, and every record it writes is labelled

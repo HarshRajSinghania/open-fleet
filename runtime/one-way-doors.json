@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The fleet's one-way door registry \u2014 the single enumerated list that gate-classification.md's classification table and sandbox-policy.md's Ask-First bucket point at (#366: freeze entered through gate-classification's freeze-gate prose and mission-scheduling, not the old MD list, so the registry now OWNS the enumeration). A door is hard or impossible to reverse, or out of the fleet's authority: HUMAN ONLY, never auto-resolved, never defaulted on timeout. Each door carries a keyword net of destructive PHRASINGS. The net exists so an unregistered wording can never be auto-decided: runtime/scripts/decisions.py refuses a DECISIONS line whose text matches a net but whose class is not one-way, and refuses a one-way line that carries no human source. Keywords are matched case-insensitively as substrings against the whole line after whitespace folding, so each is a multi-word phrase \u2014 a single common word would fire on ordinary prose and train people to ignore the refusal.",
+  "note": "The fleet's one-way door registry — the single enumerated list that gate-classification.md's classification table and sandbox-policy.md's Ask-First bucket point at (#366: freeze entered through gate-classification's freeze-gate prose and mission-scheduling, not the old MD list, so the registry now OWNS the enumeration). A door is hard or impossible to reverse, or out of the fleet's authority: HUMAN ONLY, never auto-resolved, never defaulted on timeout. Each door carries a keyword net of destructive PHRASINGS. The net exists so an unregistered wording can never be auto-decided: runtime/scripts/decisions.py refuses a DECISIONS line whose text matches a net but whose class is not one-way, and refuses a one-way line that carries no human source. Keywords are matched as substrings against the whole line after decisions.py fold() canonicalisation (case, hyphens and punctuation flatten; filler words drop; common verb forms and a small destructive-verb synonym set fold to one token), so each is a multi-word phrase — a single common word would fire on ordinary prose and train people to ignore the refusal.",
   "doors": [
     {
       "id": "merge-to-default",
@@ -21,7 +21,10 @@
         "bypass branch protection",
         "force push to main",
         "force-push to main",
-        "force push to master"
+        "force push to master",
+        "land on main",
+        "land on master",
+        "land on the default branch"
       ]
     },
     {
@@ -39,7 +42,13 @@
         "npm publish",
         "push the image to the registry",
         "apply the terraform plan",
-        "kubectl apply to prod"
+        "kubectl apply to prod",
+        "roll out to production",
+        "roll out to prod",
+        "push to production",
+        "push to prod",
+        "take it live",
+        "go live in production"
       ]
     },
     {
@@ -54,7 +63,9 @@
         "roll back the release",
         "revert the release",
         "revert the deployment",
-        "restore the previous version in prod"
+        "restore the previous version in prod",
+        "back out the release",
+        "back out the deploy"
       ]
     },
     {
@@ -75,7 +86,11 @@
         "wipe the volume",
         "destroy the environment",
         "terraform destroy",
-        "rm -rf"
+        "rm -rf",
+        "tear down the environment",
+        "get rid of the branch",
+        "get rid of the database",
+        "empty the bucket"
       ]
     },
     {

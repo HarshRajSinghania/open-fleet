@@ -33,7 +33,7 @@ clean-sweep. Composes `diagnose`, `agent-brief` (the DIAGNOSED-WITH-HANDOFF cont
 `gate-classification` (the fix handoff is a separately authorized gate), `sandbox-policy` (investigation workers run
 PROFILE=rw in a THROWAWAY worktree — nothing from it lands on BASE or default; a networked,
 destructive, or otherwise host-unsafe repro goes to an ephemeral sandbox). Worker TASK pack: one of
-matt | addy. A multi-hypothesis bug uses competing-hypothesis debate (the theory that survives
+matt | addy — never co-mount. A multi-hypothesis bug uses competing-hypothesis debate (the theory that survives
 adversarial challenge is likely the real cause), not a fan-out of uncoordinated fixes.
 
 ## Terminal outcomes

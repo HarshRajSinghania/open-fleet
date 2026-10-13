@@ -479,7 +479,7 @@ def verifier_ran(manifest_path, rev, root):
 # key came from, so the invocation the report body SHOWS can be parsed into the same shape and
 # compared. Two are switches; the rest take a value and are None when unset.
 SIGNED_ARGS = ("contract_source", "contract_digest", "repo", "base", "symbol", "execute_nc",
-               "unit_class", "no_gh", "lighting", "dispatch_record", "dispatch_pubkey",
+               "unit_class", "no_gh", "lighting", "lane", "dispatch_record", "dispatch_pubkey",
                "nc_command", "git_dir", "evidence_root", "provenance")
 _SWITCH_ARGS = ("execute_nc", "no_gh")
 # h409 F-5: the verifier TOOLCHAIN a signed transcript names — verify.py and every sibling it
@@ -576,8 +576,11 @@ def enforcement_key(rev, root, base=None):
     if at is None:
         return None, None, f"{why} — the unsigned lane needs an ancestry proof, so the claim fails closed"
     pin = blob_at(at, PUBKEY_PIN, root)
-    if at != rev and pin is None:  # no key on the base: the pin's own key, exactly as before
-        pin, at, why = blob_at(rev, PUBKEY_PIN, root), rev, "the pin; the grading base carries no key"
+    # No fallback to the pin's own key when the grading base carries none: a
+    # claim commit that introduces its own pubkey off the base would then
+    # verify its own signed legs against a key it chose (full-review forge).
+    # With no key at the switch, the signed legs fail closed on any claimed
+    # envelope and the unsigned grandfather lane is the only lane left.
     if pin is None:
         return None, at, why
     try:

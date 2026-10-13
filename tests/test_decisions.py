@@ -190,6 +190,35 @@ class TestOneWayNet(DecisionsBase):
                         extra=("--source", "the-boss"))
         self.assertEqual(r.returncode, 1)
 
+    def test_one_way_append_requires_the_source_flag_not_why_text(self):
+        # Review probe: a worker can type any text into --why, so a
+        # source=human: marker smuggled in prose must not satisfy the
+        # human-only rule. Only the coordinator's explicit --source may.
+        r = self.append("gate-35", "one-way", "approved",
+                        "deploy to production [source=human:maintainer]")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("--source", r.stderr)
+
+    def test_an_agent_named_human_source_is_refused(self):
+        for name in ("human:agent", "human:coordinator", "human:worker", "human:bot"):
+            with self.subTest(name=name):
+                r = self.append("gate-36", "one-way", "approved", "deploy to production",
+                                extra=("--source", name))
+                self.assertEqual(r.returncode, 1, name)
+
+    def test_euphemised_one_way_phrasings_still_trip_the_net(self):
+        for ident, why, door in (
+            ("gate-e1", "just merging it into main today", "merge-to-default"),
+            ("gate-e2", "land on main once CI is green", "merge-to-default"),
+            ("gate-e3", "roll out to production tonight", "deploy"),
+            ("gate-e4", "erase the database and start over", "deletion"),
+            ("gate-e5", "rotating credentials this afternoon", "secret-rotation"),
+        ):
+            with self.subTest(why=why):
+                r = self.append(ident, "mechanical", "yes", why)
+                self.assertEqual(r.returncode, 1, why)
+                self.assertIn(door, r.stderr)
+
     def test_every_door_id_can_be_tripped(self):
         doors = json.loads(DOORS.read_text(encoding="utf-8"))["doors"]
         for door in doors:
@@ -389,6 +418,16 @@ class TestCheck(DecisionsBase):
         r = self.run_dec("check")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("2 record(s) valid", r.stdout)
+
+    def test_a_human_source_outside_the_why_suffix_fails(self):
+        # The marker counts only as the canonical suffix of the why field
+        # the writer emits. The same text in the answer field is smuggled
+        # prose, not a recorded grant.
+        self.seed(["2026-09-01T00:00:00Z · gate-9 · one-way · approved source=human:lia · "
+                   "deploy to production · t-1"])
+        r = self.run_dec("check")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("human source", r.stderr)
 
     def test_a_mis_classified_one_way_line_fails(self):
         self.seed(["2026-09-01T00:00:00Z · gate-1 · mechanical · yes · rotate the secret today · t-1"])

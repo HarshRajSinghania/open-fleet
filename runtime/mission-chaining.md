@@ -16,13 +16,17 @@ small. Sequential only. No DAG, no expression language, no preset catalog.
   "continue anyway" edge. A terminal is **degraded** — it STOPS the chain and parks it (advancing is
   a one-way human gate, gate-classification.md, recorded in the ledger) — if its name carries a
   degradation marker (`-WITH-PARKED`, `-WITH-OPEN-ITEMS`, `-WITH-GAPS`, `-WITH-MANUAL-PARKED`,
-  `-WITH-BLOCKED`, `-WITH-QUARANTINE`, `-WITH-PINNED`) OR is `NO-GO` / `INCONCLUSIVE`. Every other
+  `-WITH-BLOCKED`, `-WITH-QUARANTINE`, `-WITH-PINNED`) OR is `NO-GO` / `INCONCLUSIVE` / `ABANDONED`
+  (migrate-it's rolled-back terminal: the expand was undone, so nothing landed to build a next leg
+  on). Every other
   named terminal is **clean** and may proceed when the chain named it (e.g. `BUILT`, `RELEASED`, `DRY`,
   `CLEAN`, `STABLE`, `COVERED`, `CURRENT`, `WITHIN-BUDGET`, `CONFORMANT`, `CONTRIBUTED`, `MAPPED`,
   `GO`, `DIAGNOSED`), including **handoff terminals** such as
   `DIAGNOSED-WITH-HANDOFF` and `awaiting-maintainer-merge` (oss-contribute's normal terminal: your
   part is done, an upstream human owns the merge) — a handoff, not a degradation. The rule classifies
-  every mission's terminal, so a chaining coordinator is never left guessing.
+  every mission's terminal, so a chaining coordinator is never left guessing. Run it, don't
+  eyeball it: `runtime/scripts/chain_check.py gate --allowed <declared set> <terminal>` at each
+  boundary (`audit` keeps every mission's "(degraded)" labels agreeing with this rule).
 - **One mission active per repo at a time.** Each link is a FULL run: its own preflight, its own
   integration BASE, its own convergence proof. Carrying a BASE from one mission into the next is
   an explicit human decision, never a default.

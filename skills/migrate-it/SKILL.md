@@ -38,16 +38,16 @@ Thin loop-holder: you plan the phases, dispatch one phase at a time, verify agai
 state (the dumped schema, the parity probe, the deploy record), and keep the ledger FILE (your
 memory is compacted; the ledger survives). You never write migrations, review, or merge.
 
-Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `data-migration` (the phase
-contract), `remediate-finding` (each phase is built and closed as one unit), `acceptance-review`
+Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `data-migration` (the phase contract), `remediate-finding` (each phase is built and closed as one unit), `acceptance-review`
 (build-blind review per phase), `completion-audit` (bake and zero-reader criteria are classified by
 verification mode, never waved through), `compound-learn`; rides `evidence-manifest` (per phase:
 base → head SHA, the down round-trip diff, the parity probe, both dual-validity runs),
-`merge-serialization` (the migrations directory is a merge chain), `reviewed-sha-freshness`,
-`dispatch-lifecycle`, `liveness-resume`, `ledger-contract`, `attention-budget`,
+`merge-serialization` (the migrations directory is a merge chain), `reviewed-sha-freshness`, `dispatch-lifecycle`, `ledger-contract`, `attention-budget`, `sandbox-policy`,
 `gate-classification` (CONTRACT is one-way). Worker TASK pack: one of matt | addy — never
 co-mount. The release states each phase passes through are release.md's; this mission runs that
 machine once per phase, never once per run.
+
+DEFERRED READS: liveness-resume.md on a stall or resume.
 
 ## Three terminal outcomes
 
@@ -56,7 +56,7 @@ machine once per phase, never once per run.
 - **MIGRATED-WITH-PARKED** (degraded) — the ladder is complete up to a phase whose bake or
   zero-reader evidence the fleet cannot reach: `CODE_CLOSED` + `VERIFY_AT_SCALE` naming the query
   and the window, or a `needs-human` one-way gate. Never reported as MIGRATED.
-- **ABANDONED** — the migration is rolled back down the ladder using the exercised down paths,
+- **ABANDONED** (degraded) — the migration is rolled back down the ladder using the exercised down paths,
   with the state it was returned to receipted. A migration left half-expanded is not a terminal.
 
 ## Pipeline

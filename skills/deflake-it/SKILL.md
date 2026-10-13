@@ -32,8 +32,8 @@ contract. Rerun behavior IS the mission, not verification-after-a-fix. Composes 
 `build-change`, `remediate-finding` (the finding is a flake; the red-by-revert ratchet is its
 negative control), `acceptance-review`, `compound-learn`; rides `merge-serialization`,
 `reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`, `evidence-manifest`,
-`ledger-contract`, `attention-budget`. The suite green streak IS the prove step (no separate
-runtime-prove pass). Worker TASK pack: one of matt | addy.
+`ledger-contract`, `sandbox-policy`, `attention-budget`. The suite green streak IS the prove step (no separate
+runtime-prove pass). Worker TASK pack: one of matt | addy — never co-mount.
 
 ## Two terminal outcomes
 

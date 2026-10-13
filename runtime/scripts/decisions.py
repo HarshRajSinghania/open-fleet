@@ -28,8 +28,13 @@ What ``append`` refuses to write, and why each refusal exists:
   ``runtime/one-way-doors.json`` but whose class is NOT ``one-way`` -- an agent
   must not be able to reclassify its own gate by choosing a milder word;
 * a ``one-way`` line with no human source -- one-way doors are human-only, so
-  the line must carry ``source=human:<name>`` (written into the ``why`` field,
-  which keeps the format at six fields). ``--source`` supplies it.
+  the line must carry ``[source=human:<name>]`` as the suffix of the ``why``
+  field (which keeps the format at six fields). Only the append-time
+  ``--source`` flag supplies it: the same text typed into ``--why`` prose is
+  refused, because a worker can type any prose. The name records who the
+  coordinator states granted the door; it is a record-format check, not
+  identity authentication -- authentication is the channel that delivered
+  the human's answer to the coordinator, never this file.
 
 Subcommands
     append   validate and append one line
@@ -86,7 +91,15 @@ DEFAULT_DOORS = Path(__file__).resolve().parent.parent / "one-way-doors.json"
 NEVER_GATE = ("security", "privacy", "data-migration")
 GATE_OFF_STREAK = 10
 
-HUMAN_SOURCE = re.compile(r"source=human:\S+")
+HUMAN_SOURCE_SUFFIX = re.compile(r"\[source=human:([^\s\]]+)\]\s*$")
+HUMAN_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*$")
+# A source naming an agent role is the fake-human shape itself: the marker
+# exists to name the person who granted the door.
+RESERVED_HUMAN_NAMES = frozenset({
+    "agent", "ai", "anonymous", "auto", "automatic", "bot", "coordinator",
+    "fleet", "human", "model", "nobody", "none", "orca", "system",
+    "unknown", "worker",
+})
 TS_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 # Shapes, not values. A match is reported by NAME; the matched text is never echoed.
@@ -122,12 +135,63 @@ def load_doors(path=None):
         if not did or not isinstance(keywords, list) or not keywords:
             raise DecisionsError(f"one-way door registry {p}: door {did!r} has no keyword net")
         for kw in keywords:
-            net.append((did, str(kw).lower()))
+            net.append((did, fold(str(kw))))
     return net
 
 
+# The keyword net is substring matching, so both the registered phrases and
+# the probed line go through the same canonicalisation: case, hyphens and
+# punctuation flatten, filler words drop ("merge it to main" is "merge to
+# main"), common verb forms fold to their base ("merging"/"rotating"), and a
+# small destructive-verb synonym set folds to one token ("erase the
+# database" is "delete database"). A net that only catches the registered
+# spelling is a rewording invitation, and rewording was the review probe.
+_FILLER = frozenset({"the", "a", "an", "it", "this", "that", "these", "those",
+                     "our", "your", "their", "its"})
+_SYNONYMS = {"erase": "delete", "wipe": "delete", "destroy": "delete",
+             "remove": "delete", "purge": "delete", "nuke": "delete",
+             "launch": "deploy", "rollout": "deploy"}
+_FORMS = {}
+for _base, _forms in {
+    "merge": ("merges", "merged", "merging"), "deploy": ("deploys", "deployed", "deploying"),
+    "ship": ("ships", "shipped", "shipping"), "release": ("releases", "released", "releasing"),
+    "publish": ("publishes", "published", "publishing"), "promote": ("promotes", "promoted", "promoting"),
+    "delete": ("deletes", "deleted", "deleting"), "drop": ("drops", "dropped", "dropping"),
+    "rotate": ("rotates", "rotated", "rotating"), "revoke": ("revokes", "revoked", "revoking"),
+    "erase": ("erases", "erased", "erasing"), "remove": ("removes", "removed", "removing"),
+    "freeze": ("freezes", "froze", "freezing"), "land": ("lands", "landed", "landing"),
+    "charge": ("charges", "charged", "charging"), "grant": ("grants", "granted", "granting"),
+    "create": ("creates", "created", "creating"), "provision": ("provisions", "provisioned", "provisioning"),
+    "revert": ("reverts", "reverted", "reverting"), "restore": ("restores", "restored", "restoring"),
+}.items():
+    for _form in _forms:
+        _FORMS[_form] = _base
+
+
+def _canon(token):
+    token = _FORMS.get(token, token)
+    token = _SYNONYMS.get(token, token)
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        token = token[:-1]
+    return token
+
+
 def fold(text):
-    return re.sub(r"\s+", " ", text).strip().lower()
+    tokens = re.findall(r"[a-z0-9]+", text.lower().replace("-", " ").replace("_", " "))
+    return " ".join(_canon(t) for t in tokens if t not in _FILLER)
+
+
+def human_source_of(record):
+    """The recorded human name, or None. Only the canonical suffix of the
+    why field counts, the name must be person-shaped, and an agent role
+    name is refused by shape."""
+    match = HUMAN_SOURCE_SUFFIX.search(record.get("why", ""))
+    if not match:
+        return None
+    name = match.group(1)
+    if not HUMAN_NAME.match(name) or name.lower() in RESERVED_HUMAN_NAMES:
+        return None
+    return name
 
 
 def door_hits(text, net):
@@ -193,8 +257,9 @@ def validate(record, net):
             f"matches the one-way net ({', '.join(hits)}) but is classed {record['class']!r} — "
             "one-way doors are human-only and are never auto-resolved"
         )
-    if record["class"] == "one-way" and not HUMAN_SOURCE.search(record["raw"]):
-        problems.append("class one-way with no human source — needs source=human:<name>")
+    if record["class"] == "one-way" and human_source_of(record) is None:
+        problems.append("class one-way with no human source — the why must end with "
+                        "[source=human:<name>] recorded via append --source")
     return problems
 
 
@@ -296,12 +361,25 @@ def tally(records, lens):
 def cmd_append(args, net):
     ts = args.ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     why = args.why
+    if args.klass == "one-way" and not args.source:
+        print("decisions: class one-way with no human source — requires --source human:<name>, passed by the "
+              "coordinator who received the grant — a source marker typed into --why "
+              "is prose any worker can write, not a source", file=sys.stderr)
+        return EXIT_VIOLATION
     if args.source:
-        if not re.fullmatch(r"human:\S+", args.source):
-            print("decisions: --source must be shaped human:<name>", file=sys.stderr)
+        match = re.fullmatch(r"human:(\S+)", args.source)
+        name = match.group(1) if match else ""
+        if not HUMAN_NAME.match(name) or name.lower() in RESERVED_HUMAN_NAMES:
+            print("decisions: --source must be shaped human:<name> and name a person, "
+                  "not an agent role", file=sys.stderr)
             return EXIT_VIOLATION
-        if f"source={args.source}" not in why:
-            why = f"{why} [source={args.source}]"
+        suffix = f"[source={args.source}]"
+        if suffix not in why:
+            if "source=" in why:
+                print("decisions: --why carries a source marker that does not match "
+                      "--source; refusing a smuggled or mismatched source", file=sys.stderr)
+                return EXIT_VIOLATION
+            why = f"{why} {suffix}"
     for name, value in (("id", args.id), ("answer", args.answer), ("why", why),
                         ("task", args.task or "")):
         if SEP_CHAR in value or "\n" in value:

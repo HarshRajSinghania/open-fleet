@@ -26,6 +26,7 @@
 #   ORCA_BASE             integration base branch, for the ancestry check (optional)
 #   ORCA_SYMBOL           a unit symbol to grep on the base (optional)
 #   ORCA_UNIT_CLASS       mutation | report-only | planning, from dispatch (optional; missing => mutation)
+#   ORCA_UNIT_LANE        A | B | 0, from dispatch (optional; forwarded as --lane)
 #   ORCA_PROVENANCE       ci|mcp|sdk|dispatch — asserts the env came from OFF the worker (optional)
 #   ORCA_NC_COMMAND       forwarded as --nc-command: the AUTHORITATIVE criterion-bound command the
 #                         control must turn RED, supplied out of band the way the contract is.
@@ -61,6 +62,7 @@ SYMBOL="${ORCA_SYMBOL:-}"
 UNIT_CLASS="${ORCA_UNIT_CLASS:-}"
 NO_GH="${ORCA_NO_GH:-}"
 LIGHTING="${ORCA_LIGHTING:-}"
+UNIT_LANE="${ORCA_UNIT_LANE:-}"
 RECORD="${ORCA_DISPATCH_RECORD:-}"
 PUBKEY="${ORCA_DISPATCH_PUBKEY:-}"
 # #135 key SOURCE: an injected ORCA_DISPATCH_PUBKEY (off-worker orchestrator) else the committed
@@ -104,6 +106,7 @@ set -- --manifest "$MANIFEST"
 [ -n "$UNIT_CLASS" ] && set -- "$@" --unit-class "$UNIT_CLASS"
 [ -n "$NO_GH" ] && set -- "$@" --no-gh
 [ -n "$LIGHTING" ] && set -- "$@" --lighting "$LIGHTING"
+[ -n "$UNIT_LANE" ] && set -- "$@" --lane "$UNIT_LANE"
 [ -n "$RECORD" ] && set -- "$@" --dispatch-record "$RECORD"
 [ -n "$PUBKEY" ] && set -- "$@" --dispatch-pubkey "$PUBKEY"
 [ -n "${ORCA_EXECUTE_NC:-}" ] && set -- "$@" --execute-nc

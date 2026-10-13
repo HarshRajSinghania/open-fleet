@@ -121,6 +121,27 @@ class TestHighTierDenies(HookBase):
                 self.assertIsNotNone(block, command)
                 self.assertEqual(block["permissionDecision"], "deny", command)
 
+    def test_an_absolute_executable_path_does_not_launder_a_refused_command(self):
+        # Review probe: /bin/rm and /usr/bin/git slipped the anchored rules
+        # that denied the bare spellings.
+        for command in (
+            "/bin/rm -rf /",
+            "/usr/bin/git push --force origin topic",
+            "sudo /bin/rm -rf /",
+            "/usr/bin/env rm -rf /",
+            "env /usr/bin/git push -f origin topic",
+            "'/bin/rm' -rf /",
+            "/usr/local/bin/orca orchestration reset",
+            "FOO=/a/b /usr/bin/git push --force origin topic",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        for command in ("/bin/echo hello", "/usr/bin/git status", "/opt/tools/rm.sh -rf /"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decision(self.fire(event("Bash", command=command))), command)
+
     def test_every_forbidden_shape_is_denied(self):
         for command in HIGH_DENY_COMMANDS:
             with self.subTest(command=command):

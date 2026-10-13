@@ -48,7 +48,7 @@ state), `attention-budget`, `orca-pin` (the pin record: read the prior pin + run
 
 - **PINNED** — every claim in the frozen inventory is CURRENT with a live receipt, and every patched
   claim's replacement text is receipt-backed at the merged SHA.
-- **PINNED-WITH-PARKED** — claims whose re-witness needs something the session cannot get (a remote
+- **PINNED-WITH-PARKED** (degraded) — claims whose re-witness needs something the session cannot get (a remote
   host, a paid tier, a human-only surface, an unfixable-in-session precondition) are PARKED, each
   named with the exact probe it waits on; a parked claim's doctrine text is marked unverified,
   never silently kept.

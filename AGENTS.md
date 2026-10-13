@@ -103,7 +103,9 @@ states which pack a worker uses in the dispatched TASK.
 - `metadata.proof:` is required (`doctrine-only` | `self-run` | `external-run`); advancing past
   doctrine-only requires a run report that BINDS (`runtime/scripts/run_report.py`): a `RUN:`
   header, a manifest in the run's own directory, and an inventory that re-hashes at the commit it
-  names. Never present a mission as more proven than its evidence.
+  names. Never present a mission as more proven than its evidence. Catalog growth is on a
+  proof ratchet in `scripts/validate.py`: a mission beyond the base count must be paid for by
+  advancing an existing mission past doctrine-only.
 - `metadata` also carries the six identity points (`unit`, `state_machine`, `convergence`,
   `ordering`, `parking`, `oracle`). Two missions declaring the same six fails the build — and so
   does a PARAPHRASE of them: comparison is stemmed and synonym-expanded, and a pair with no point

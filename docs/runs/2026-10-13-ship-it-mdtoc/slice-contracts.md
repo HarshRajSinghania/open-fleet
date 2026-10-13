@@ -2,6 +2,7 @@
 
 Frozen spec: ravidsrk/mdtoc `SPEC.md` @ 0b9f660d93e64cf57e8245b0f1eb6eb0010ae158
 (maintainer-approved 2026-10-13). Union of slice criteria = AC-1..AC-9 (= spec AC-1..AC-8; AC-9 is spec AC-6 second half, split for extractor-clean ids).
+The per-slice files under contracts/ are the verify contracts; this file is the index.
 
 ## F0 — foundation scaffold
 - FC-1: `mdtoc` package exists (`mdtoc/__init__.py`, CLI module) and

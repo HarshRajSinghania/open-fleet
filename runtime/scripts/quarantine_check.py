@@ -210,20 +210,33 @@ def _composed_playbooks(skill_text, playbook_names):
 
 
 def mission_view(root, mission):
-    skill = Path(root) / "skills" / mission / "SKILL.md"
-    if not skill.is_file():
+    # Two root layouts: the catalog (skills/<mission>/SKILL.md) and a copied
+    # single-mission bundle whose root IS the mission directory (SKILL.md and
+    # references/ at the top). Refusing the second layout outright would make
+    # every normal copied-bundle start fail; reading the wrong place silently
+    # is the opposite error. Support both, refuse only when neither resolves.
+    root = Path(root)
+    candidates = [root / "skills" / mission / "SKILL.md", root / "SKILL.md"]
+    skill = next((c for c in candidates if c.is_file()), None)
+    if skill is None:
         raise QuarantineError(
-            f"{skill} not found — cannot tell what {mission} composes, "
-            "so cannot clear it against the deny-list"
+            f"no SKILL.md for {mission} under {root} (tried "
+            f"skills/{mission}/SKILL.md and ./SKILL.md) — cannot tell what it "
+            "composes, so cannot clear it against the deny-list"
         )
     try:
         text = skill.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as err:
         raise QuarantineError(f"{skill}: unreadable ({err})") from err
+    names = _playbook_names(root, mission)
+    if skill == candidates[1]:  # bundle root: references sit at the top
+        references = root / "references"
+        if references.is_dir():
+            names |= {p.stem for p in references.glob("*.md")}
     pins, pins_error = pins_view(root)
     return {
         "missions": {mission},
-        "composes": {mission: _composed_playbooks(text, _playbook_names(root, mission))},
+        "composes": {mission: _composed_playbooks(text, names)},
         "pins": pins,
         "pins_error": pins_error,
     }

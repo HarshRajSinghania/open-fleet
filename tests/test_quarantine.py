@@ -192,6 +192,26 @@ class Cli(unittest.TestCase):
             result = self.run_cli("--root", tmp, "--mission", "ship-it")
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_copied_bundle_root_layout_is_checked(self):
+        # Root IS the mission directory (copied single-mission bundle):
+        # SKILL.md and references/ at the top. A clean list must start it;
+        # a playbook quarantine must refuse it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "SKILL.md").write_text("Composes `risk-review`.\n")
+            refs = root / "references"
+            refs.mkdir()
+            (refs / "risk-review.md").write_text("# x\n")
+            (root / "runtime").mkdir()
+            (root / "runtime" / "quarantine.json").write_text(
+                json.dumps({"quarantined": []}))
+            clean = self.run_cli("--root", tmp, "--mission", "ship-it")
+            self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+            (root / "runtime" / "quarantine.json").write_text(
+                json.dumps({"quarantined": [entry(component="playbook:risk-review")]}))
+            refused = self.run_cli("--root", tmp, "--mission", "ship-it")
+            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+
     def test_missing_mission_cannot_evaluate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -671,7 +671,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 
 Drift probe against the Orca pin: has upstream moved past `runtime/pins.json`, and —
 when a binary is at hand — how do its surfaces differ from the last re-pin's receipts?
-Source `runtime/scripts/upstream_probe.py:1-50`; behavior pinned by
+Source `runtime/scripts/upstream_probe.py:1-52`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
 (`.github/workflows/upstream-drift.yml`) runs `latest` and opens — or comments on — an
 issue labeled `upstream-drift` when a re-pin is due.
@@ -688,9 +688,10 @@ Flags: `latest` takes `--max-patches` (re-pin threshold, default 10), `--pins` (
 `--json`; `capture` takes `--out` (required), `--timeout`; `diff` takes `--baseline` and
 `--fresh` (both required), `--json`.
 
-`latest` follows `Link: rel="next"` for up to five pages, sends `Authorization: Bearer
-$GITHUB_TOKEN` when that variable is set (the endpoint is public; the token only lifts the
-rate limit), and skips `-rc`, `mobile-*` and every other non-`vX.Y.Z` tag. Drift is
+`latest` follows `Link: rel="next"` for up to five pages — only on the first URL's scheme,
+host and port; a next link elsewhere exits 2 — sends `Authorization: Bearer $GITHUB_TOKEN`
+when that variable is set (the endpoint is public; the token only lifts the rate limit),
+over https or loopback http only and never across a redirect, and skips `-rc`, `mobile-*` and every other non-`vX.Y.Z` tag. Drift is
 `none` (the pin is the highest stable tag, or above it), `patch`, `minor` or `major` by
 the first component that moved; `patches_behind` counts the stable tags strictly newer
 than the pin. `--json` prints exactly `{"pin","latest","drift","patches_behind"}`.

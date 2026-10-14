@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -364,6 +365,21 @@ class PostStatusGate(unittest.TestCase):
         self.assertEqual((code, posted), (2, []))
         self.assertIn("full 40-hex", out)
 
+    def test_resolve_pr_prints_the_number_and_posts_nothing(self):
+        pulls = [{"number": 7, "head": {"sha": HEAD}}]
+        code, posted, out = self._run(["--head-sha", HEAD, "--resolve-pr"], [], pulls=pulls)
+        self.assertEqual((code, posted), (0, []))
+        self.assertEqual(out.strip(), "7")
+
+    def test_resolve_pr_refuses_a_numberless_match_and_needs_head_sha(self):
+        code, _posted, out = self._run(["--head-sha", HEAD, "--resolve-pr"], [],
+                                       pulls=[{"number": None, "head": {"sha": HEAD}}])
+        self.assertEqual(code, 2)
+        self.assertIn("no usable number", out)
+        code, _posted, out = self._run(["--pr", "7", "--resolve-pr"], [])
+        self.assertEqual(code, 2)
+        self.assertIn("needs --head-sha", out)
+
     def test_pr_and_head_sha_are_mutually_exclusive(self):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as ctx:
@@ -373,40 +389,63 @@ class PostStatusGate(unittest.TestCase):
 
 class TheGateRunsOnlyDefaultBranchCode(unittest.TestCase):
     """verdict-gate.yml is the required check: nothing the PR under review can edit may run
-    in it, and its status must come from an identity a fork PR cannot mint."""
+    in it, runs for one PR must post in order, and its status must come from an identity a
+    fork PR or a writer's branch workflow cannot mint."""
 
     TEXT = (_ROOT / ".github" / "workflows" / "verdict-gate.yml").read_text(encoding="utf-8")
     TRIGGER = (_ROOT / ".github" / "workflows" / "verdict-check.yml").read_text(encoding="utf-8")
 
-    def test_it_runs_on_workflow_run_of_verdict_check_never_on_pr_events(self):
-        self.assertRegex(self.TEXT, r"(?m)^  workflow_run:\n    workflows: \[verdict-check\]\n"
-                                    r"    types: \[completed\]\n")
-        for event in ("pull_request:", "pull_request_target:", "pull_request_review:", "push:"):
-            self.assertNotRegex(self.TEXT, rf"(?m)^  {event}", event)
+    def _job(self, name):
+        jobs = "\n" + self.TEXT.split("\njobs:\n", 1)[1]
+        body = jobs.split(f"\n  {name}:\n", 1)[1]
+        return body.split("\n  gate:\n", 1)[0] if name == "resolve" else body
 
-    def test_it_checks_out_only_the_default_branch_checker(self):
-        self.assertEqual(self.TEXT.count("actions/checkout@"), 1)
-        self.assertIn("ref: ${{ github.sha }}", self.TEXT)
-        self.assertIn("sparse-checkout: scripts/verdict_check.py", self.TEXT)
-        self.assertIn("persist-credentials: false", self.TEXT)
-        # the PR's head is an argument to evaluate, never a ref to check out or run
+    def test_it_runs_only_on_workflow_run_of_verdict_check(self):
+        on = self.TEXT.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(on, "  workflow_run:\n    workflows: [verdict-check]\n"
+                             "    types: [completed]")
+        # a dispatch loads the workflow from whichever branch is picked (PR #572 review)
+        self.assertNotIn("workflow_dispatch", self.TEXT.split("\nname:", 1)[1])
+
+    def test_every_checkout_is_the_default_branch_checker_alone(self):
+        checkouts = self.TEXT.split("actions/checkout@")[1:]
+        self.assertEqual(len(checkouts), 2)
+        for block in checkouts:
+            head = block.split("- uses:", 1)[0]
+            self.assertIn("ref: ${{ github.sha }}", head)
+            self.assertIn("sparse-checkout: scripts/verdict_check.py", head)
+            self.assertIn("persist-credentials: false", head)
         self.assertNotRegex(self.TEXT, r"ref:\s*\$\{\{\s*github\.event\.workflow_run\.head")
         self.assertNotIn("pull_request.head", self.TEXT)
 
-    def test_it_posts_the_status_through_the_default_branch_script(self):
-        self.assertIn("python3 scripts/verdict_check.py --post-status --pr", self.TEXT)
-        self.assertIn("python3 scripts/verdict_check.py --post-status --head-sha", self.TEXT)
+    def test_resolve_names_the_pr_through_the_default_branch_script(self):
+        job = self._job("resolve")
+        self.assertIn("--head-sha \"$RUN_HEAD_SHA\" --resolve-pr", job)
+        self.assertIn("*[!0-9]*", job)  # only a number reaches the lock and the gate
+        self.assertNotIn("statuses: write", job)
+
+    def test_gate_serialises_per_pr_and_posts_through_the_default_branch_script(self):
+        job = self._job("gate")
+        self.assertIn("needs: resolve", job)
+        self.assertIn("group: verdict-gate-pr-${{ needs.resolve.outputs.pr }}", job)
+        self.assertIn("cancel-in-progress: false", job)
+        self.assertIn('python3 scripts/verdict_check.py --post-status --pr "$PR_NUMBER"', job)
         self.assertEqual(verdict_check.STATUS_CONTEXT, "verdict-gate")
 
-    def test_permissions_add_only_statuses_write(self):
-        self.assertRegex(self.TEXT, r"(?m)^permissions:\n  contents: read\n"
-                                    r"  pull-requests: read\n  statuses: write\n")
+    def test_permissions_are_per_job_and_only_the_gate_writes_statuses(self):
+        self.assertRegex(self.TEXT, r"(?m)^permissions: \{\}$")
+        self.assertEqual(len(re.findall(r"(?m)^ +statuses: write$", self.TEXT)), 1)
+        self.assertIn("    permissions:\n      contents: read\n      pull-requests: read\n"
+                      "      statuses: write\n", self._job("gate"))
 
-    def test_the_app_identity_is_optional_but_announced_when_absent(self):
-        self.assertIn("if: vars.VERDICT_GATE_CLIENT_ID != ''", self.TEXT)
-        self.assertRegex(self.TEXT, r"actions/create-github-app-token@[0-9a-f]{40} # v")
-        self.assertIn("steps.app.outputs.token || secrets.GITHUB_TOKEN", self.TEXT)
-        self.assertIn("::warning::verdict-gate posts as github-actions", self.TEXT)
+    def test_the_app_key_lives_in_the_branch_restricted_environment(self):
+        job = self._job("gate")
+        self.assertIn("environment: verdict-gate", job)
+        self.assertIn("if: vars.VERDICT_GATE_CLIENT_ID != ''", job)
+        self.assertRegex(job, r"actions/create-github-app-token@[0-9a-f]{40} # v")
+        self.assertIn("steps.app.outputs.token || secrets.GITHUB_TOKEN", job)
+        self.assertIn("::warning::verdict-gate posts as github-actions", job)
+        self.assertNotIn("VERDICT_GATE_PRIVATE_KEY", self._job("resolve"))
 
     def test_the_trigger_always_completes_a_run(self):
         # A `relay` job with no `if:` — every review, GO or not, wakes the gate.

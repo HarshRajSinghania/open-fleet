@@ -55,14 +55,17 @@ Branch protection matches a required check by name, and a fork PR can add a work
 1. Create a GitHub App (Settings → Developer settings → GitHub Apps) with no webhook and two
    repository permissions: Commit statuses (read and write) and Pull requests (read-only).
    Install it on this repository only.
-2. In this repository's Actions settings, add variable `VERDICT_GATE_CLIENT_ID` (the app's
-   client ID) and secret `VERDICT_GATE_PRIVATE_KEY` (a private key generated for the app).
-   Repository secrets never reach a fork PR's workflows.
+2. Create the environment `verdict-gate` (Settings → Environments) with deployment branches
+   limited to `main`. Add variable `VERDICT_GATE_CLIENT_ID` (the app's client ID) and secret
+   `VERDICT_GATE_PRIVATE_KEY` (a private key generated for the app) to that environment, not to
+   the repository. A job on any other branch, whether a fork's or a writer's own branch
+   workflow, never receives the key.
 3. Post a review on any open PR so the gate runs once, then edit the `main` branch rule: require
    `verdict-gate` with the app as its expected source, and stop requiring `verdict`.
 
 Until step 2, the gate posts as `github-actions` and its run log carries a warning saying so. To
-re-evaluate a PR by hand, run `verdict-gate` from the Actions tab with its number.
+re-evaluate a PR, post a review on it or re-run its latest `verdict-gate` run. The gate has no
+manual-dispatch trigger, because a dispatch loads the workflow from whichever branch is picked.
 
 ## Release cut
 

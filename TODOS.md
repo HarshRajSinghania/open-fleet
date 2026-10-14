@@ -35,7 +35,8 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
   commit) — never by editing the number. The `orca` pin (v1.4.224, live, 2026-10-13) is current.
 - **Merge-gate identity is a settings step** (2026-10-14) — `verdict-gate.yml` now evaluates the
   GO verdict from `main` and posts the `verdict-gate` status, but branch protection still has to
-  require it, from a GitHub App only that workflow can mint a token for, in place of `verdict`.
+  require it, from a GitHub App whose key sits in a `main`-only `verdict-gate` environment, in
+  place of `verdict`.
   Steps: [docs/ops.md#merge-gate](docs/ops.md#merge-gate). Until then the old `verdict` check,
   which a PR can rewrite, is what blocks merges.
 - **The 2026-09-11 deep review** —

@@ -196,7 +196,10 @@ def pr_for_head(head_sha, repo):
     if len(matches) != 1:
         raise RuntimeError(f"{len(matches)} open pull requests have head {head_sha}; "
                            "the gate needs exactly one")
-    return str(matches[0].get("number"))
+    number = matches[0].get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        raise RuntimeError(f"open pull request at {head_sha} has no usable number: {number!r}")
+    return str(number)
 
 
 def post_status(repo, sha, state, description, context=STATUS_CONTEXT):
@@ -222,6 +225,8 @@ def main(argv=None):
                        help="evaluate the one open PR whose head is this SHA (fork PRs)")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
                         help="owner/repo (default: $GITHUB_REPOSITORY)")
+    parser.add_argument("--resolve-pr", action="store_true",
+                        help="with --head-sha: print the PR number and exit (no verdict)")
     parser.add_argument("--post-status", metavar="CONTEXT", nargs="?", const=STATUS_CONTEXT,
                         help="post the verdict as a commit status on the PR head "
                              f"(context default: {STATUS_CONTEXT}); exit 0 once posted")
@@ -229,8 +234,14 @@ def main(argv=None):
     if not args.repo or "/" not in args.repo:
         print("verdict_check: need --repo owner/repo (or $GITHUB_REPOSITORY)", file=sys.stderr)
         return 2
+    if args.resolve_pr and not args.head_sha:
+        print("verdict_check: --resolve-pr needs --head-sha", file=sys.stderr)
+        return 2
     try:
         pr_number = args.pr or pr_for_head(args.head_sha, args.repo)
+        if args.resolve_pr:
+            print(pr_number)
+            return 0
         head_sha, reviews, hits, pr_author = check_pr(pr_number, args.repo)
     except RuntimeError as exc:
         print(f"verdict_check: {exc}", file=sys.stderr)

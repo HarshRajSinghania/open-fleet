@@ -447,7 +447,14 @@ def _peel_sudo(ws):
 def _plain_words(args):
     ws = list(args)
     while ws:
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
+        # Group/subshell openers and negation name no command: `{ gh …; }`,
+        # `(gh …)`, `! gh …` run the same command (PR #567 review, P1).
+        # Peel the opener word, or the opener character glued to it.
+        if ws[0] in ("{", "(", "!"):
+            ws = ws[1:]
+        elif ws[0][:1] in ("{", "(", "!") and len(ws[0]) > 1:
+            ws = [ws[0][1:]] + ws[1:]
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
             ws = ws[1:]
         elif ws[0] == "sudo":
             ws = _peel_sudo(ws)
@@ -459,11 +466,19 @@ def _plain_words(args):
 
 
 def _is_receipt(args):
+    # The receipt writer must be the command being run — egress.py as the
+    # executable, or as the script a python invocation runs. Merely
+    # MENTIONING it (`echo egress.py write`) records nothing and arms
+    # nothing (PR #567 review, P1).
     ws = _plain_words(args)
-    for i, word in enumerate(ws):
-        if (word == "egress.py" or word.endswith("/egress.py")) \
-                and i + 1 < len(ws) and ws[i + 1] == "write":
-            return True
+    def is_egress(word):
+        return word == "egress.py" or word.endswith("/egress.py")
+
+    if len(ws) >= 2 and is_egress(ws[0]) and ws[1] == "write":
+        return True
+    if len(ws) >= 3 and ws[0].rsplit("/", 1)[-1] in ("python", "python3") \
+            and is_egress(ws[1]) and ws[2] == "write":
+        return True
     return False
 
 
@@ -487,7 +502,10 @@ def _is_send(args):
             elif word.startswith("-X") and len(word) > 2:
                 method = word[2:].upper()
             elif word in ("-f", "-F", "--field", "--raw-field", "--input") \
-                    or word.startswith(("--field=", "--raw-field=", "--input=")):
+                    or word.startswith(("--field=", "--raw-field=", "--input=")) \
+                    or (len(word) > 2 and word[:2] in ("-f", "-F")):
+                # Attached short forms (-ftitle=x) supply fields too, and so
+                # imply POST with no explicit method (PR #567 review, P1).
                 fields = True
             i += 1
         # An explicit method wins: --method GET with -f filters is a read.

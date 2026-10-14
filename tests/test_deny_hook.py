@@ -1573,6 +1573,15 @@ class TestEgressReceiptRule(HookBase):
             f"{self.RECEIPT}; gh pr create --fill",
             f"{self.RECEIPT} && gh pr create --fill && gh issue close 34",
             f"{self.RECEIPT} && echo ok && gh pr create --fill",
+            # Mentioning the writer records nothing (PR #567 review, P1):
+            "echo egress.py write && gh issue close 34",
+            # Attached field flags still supply fields → POST (P1):
+            "gh api repos/o/r/issues -ftitle=x",
+            "gh api repos/o/r/issues -Ftitle=x",
+            # Groups, subshells, and negation run the same command (P1):
+            "{ gh issue close 34; }",
+            "(gh issue close 34)",
+            "! gh issue close 34",
         ):
             with self.subTest(command=command):
                 block = self.decision(self.fire(event("Bash", command=command)))
@@ -1584,6 +1593,10 @@ class TestEgressReceiptRule(HookBase):
         for command in (
             f"{self.RECEIPT} && gh pr create --fill",
             f"{self.RECEIPT} && gh issue close 34",
+            # A receipted send inside a group/subshell is still receipted:
+            f"{self.RECEIPT} && {{ gh issue close 34; }}",
+            f"{self.RECEIPT} && (gh issue close 34)",
+            f"{self.RECEIPT} && env gh issue close 34",
             "gh pr list --state open",
             "gh pr view 12 --json state",
             "gh api repos/o/r/pulls/12 --jq .state",

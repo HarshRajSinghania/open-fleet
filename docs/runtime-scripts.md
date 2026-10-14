@@ -215,8 +215,10 @@ object per line in `.orca/egress.jsonl` (mode 0600), appended BEFORE the send. S
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
-chain head (`head`, recorded in the loop-log; `verify --expect-head` at the next
-close). Where the hook is not wired, receipts remain coordinator discipline.
+chain head (`head`, recorded in the loop-log; `verify --expect-ancestor` at the next
+close — appends since the anchor are healthy, so `--expect-head` would refuse a
+live ledger; it is for a sealed one). Where the hook is not wired, receipts remain
+coordinator discipline.
 
 Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
@@ -225,7 +227,8 @@ Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
 
 Flags: `--ledger` (default `$ORCA_EGRESS_LEDGER` or `.orca/egress.jsonl`). `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
-`--payload-sha256`, `--ts`; `verify` takes `--expect-head`; `grants` takes `--json`.
+`--payload-sha256`, `--ts`; `verify` takes `--expect-head` (sealed ledger) and
+`--expect-ancestor` (close-to-close, appends tolerated); `grants` takes `--json`.
 
 Record fields: `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
 `consent`, `prev` — never the payload text (sha256 + byte count + kind only). `prev`

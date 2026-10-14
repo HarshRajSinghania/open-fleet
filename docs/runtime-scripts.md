@@ -574,7 +574,8 @@ behavior pinned by `tests/test_spawn_worker.py`.
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 
 Flags: `--mark-ready` (only applies when every declared dep is already completed; the
-script never forces ready); `--spec` (+ `--task-title`/`--deps`/`--parent`) creates
+script never forces ready — and a task already `ready` with an open or unreadable dep
+refuses the same way, since `ready` is a status anyone can set); `--spec` (+ `--task-title`/`--deps`/`--parent`) creates
 the task first, then runs the normal verified path with its id; `--timeout-ms`
 (supervised lane, positive int); `--run`/`--from` (explicit binding — never implicit
 cwd/pane resolution); `--retry-of` + `--retry-request` (retries link the failed

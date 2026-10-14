@@ -6,6 +6,13 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **review-it reads `external-run`** (2026-10-14). The 2026-10-13 Linux witness (#527) —
+  a NO-GO verdict on stablyai/orca PR #28206 at `6dcd957a`, four read-only workers, every
+  artifact retained in its run directory — was filed at `doctrine-only` as substrate evidence;
+  it binds unchanged at `external-run`, so the `RUN:` header's tier was amended and the tier
+  claimed. Run report: `docs/runs/2026-10-13-review-it-linux.md`, envelope:
+  `docs/reports/review-it-external-run/`. run by Ravindra Kumar (@ravidsrk).
+
 Five pull requests merged after the `v0.7.1` tag (first-parent `v0.7.1..878e2245`).
 
 - **Component quarantine switch** (#565, #558). `runtime/quarantine.json` is a human-only

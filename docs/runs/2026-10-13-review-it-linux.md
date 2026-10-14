@@ -11,6 +11,7 @@ RUN: mission=review-it tier=external-run inventory_at=314d63feafff694ffc51df10c2
 | Coordinator / workers | coordinator session driving `orca-ide` in the VM · 4 workers `PROFILE=ro` (Claude Code 2.1.296, plan mode) · TASK packs: matt (3 acceptance axes), addy (security lens) — one pack per worker |
 | Orca | `orca-ide status --json` → `"state": "ready"`, `appVersion 1.4.224`, runtime reachable (retained: `status-linux.json`). Host: Ubuntu 24.04.5 LTS arm64 (OrbStack `orca-linux-witness`); resolved CLI name: `orca-ide` |
 | Human gates | VM Claude auth — maintainer via OAuth consent 2026-10-13 (long-lived token minted by `claude setup-token` in the VM; token file mode 0600 in VM home, never in any repo). Verdict posting: NOT requested — retained only (one-way gate untouched) |
+| Runner | Ravindra Kumar (@ravidsrk) · independent (the maintainer; runner row added 2026-10-14 with the tier claim) |
 
 ## Terminal state
 

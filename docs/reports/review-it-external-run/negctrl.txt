@@ -1,0 +1,37 @@
+quote re-read at head 6dcd957a65daf77fe49f15afbb998b262427224c (coordinator, VM, 2026-10-13T07:55:51Z)
+6dcd957a65daf77fe49f15afbb998b262427224c
+src/renderer/src/i18n/locales/en.json:6169:               "submodules": "Git only removes a workspace with initialized submodules when forced. Force Delete also deletes the submodule checkouts, including commits in them that were never pushed."
+src/renderer/src/components/sidebar/delete-worktree-toast.ts:101:     if (forceDeleteReason === 'submodules') {
+src/renderer/src/components/sidebar/delete-worktree-toast.ts:110:           'Git only removes a workspace with initialized submodules when forced. Force Delete also deletes the submodule checkouts, including commits in them that were never pushed.'
+src/shared/worktree/removal.ts:19:   | 'submodules'
+src/shared/worktree/removal.ts:145:   // Why: Git refuses a non-force remove of any checkout with initialized submodules, clean or not.
+src/shared/worktree/removal.ts:146:   if (error.includes('working trees containing submodules cannot be moved or removed')) {
+src/main/git/worktree-removal-real-git.test.ts:101:   it('offers force for a clean checkout with initialized submodules, which force then removes', async () => {
+src/main/git/worktree-removal-real-git.test.ts:132:     expect(classifyWorktreeForceDeleteReason(refusal ?? '')).toBe('submodules')
+src/shared/worktree/removal-force-classification.test.ts:75:     expect(classifyWorktreeForceDeleteReason(submoduleError)).toBe('submodules')
+src/shared/worktree/removal-force-classification.test.ts:78:   it('does not re-offer force once the removal was already forced', () => {
+src/renderer/src/components/sidebar/delete-worktree-toast.test.ts:149:   it('offers force delete when Git refuses a checkout with initialized submodules', () => {
+src/renderer/src/store/slices/worktrees/teardown/worktree-removal-preference.ts:14:   const alwaysForceDelete = !forgetLocalOnly && settings?.alwaysForceDeleteWorktrees === true
+src/main/git/worktree-removal.ts:79:     args.push('--force')
+src/main/ipc/settings.ts:207:       'alwaysForceDeleteWorktrees' in sanitizedArgs
+== branch order (removal.ts 144-156)
+  }
+  // Why: Git refuses a non-force remove of any checkout with initialized submodules, clean or not.
+  if (error.includes('working trees containing submodules cannot be moved or removed')) {
+    return 'submodules'
+  }
+  if (
+    error.includes('Worktree has uncommitted or untracked changes') ||
+    error.includes('contains modified or untracked files') ||
+    FORMATTED_DIRTY_WORKTREE_REMOVAL_PATTERN.test(error)
+  ) {
+    return 'dirty'
+  }
+  return null
+== empirical git: dirty superproject + initialized submodule
+git version 2.43.0
+/tmp/gt/super  21171bc [master]
+/tmp/gt/wt1    21171bc (detached HEAD)
+== empirical refusal (dirty + submodules)
+fatal: working trees containing submodules cannot be moved or removed
+remove-exit:128

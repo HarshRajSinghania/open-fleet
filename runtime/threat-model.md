@@ -15,7 +15,8 @@ grades the residue honestly. Per-control detail:
 | A worker and anything it runs | Untrusted | It executes arbitrary code under a bypass flag |
 | Everything a worker reads (issues, PRs, logs, scanned code, peer messages) | Untrusted | Any of it can carry injected instructions — data, never instructions (`sandbox-policy.md`) |
 | Destinations a worker may reach | Untrusted | An approved service can itself be compromised |
-| The gate/verify/signing machinery (hooks, `verify.py`, floor guard, dispatch key custody) | Trusted | Workers cannot configure it; it must be hardened like a control plane |
+| Checks run outside the worker with a trusted key (coordinator-run `verify.py`, CI verdict gates, dispatch signing) | Trusted | Their inputs do not originate with the graded worker; it must be hardened like a control plane |
+| The same hooks run inside a worker's session (native Stop/TaskCompleted) | Advisory only | The worker controls their env and local refs there — defense in depth, never the soundness boundary (`verify-gate.sh` says so itself) |
 | This repo's missions, playbooks, runtime policies | Trusted | They change only through reviewed PRs, never during a run |
 
 A coordinator is also an agent: its plans are requests the gates check, never grants of
@@ -79,8 +80,11 @@ platform credential brokering.
 - A worker starts only through `spawn_worker.sh`'s fail-closed opt-ins; a refused
   spawn is recorded, never retried silently weaker.
 - A unit that leaves no evidence manifest does not count, whatever its narration says.
-- Every run's records (ledger, manifests, verdicts) live outside any worker's write
-  reach once committed; verdict envelopes are signed when the dispatch pubkey is pinned.
+- Committed run records (ledger, manifests, verdicts) are checked for changes after the
+  fact — hashes, `reviewed_sha`, and run-report re-derivation detect edits against
+  authoritative state (pushed SHAs, clean-env reruns); committing alone does not put
+  them beyond a host-level writer's reach. Verdict envelopes are signed when the
+  dispatch pubkey is pinned.
 
 ## Response ladder (graded — stop is the last rung, not the first)
 

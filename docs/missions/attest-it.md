@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel evidence workers, one obligation each, re-derived independently; the human/legal owner's disposition of gaps and the conformance verdict are one-way gates, not a lower rung.
-> **Activation load:** ~24,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~24,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at a standard (EU AI Act Art-12/50, SOC 2, NIST SSDF) and a codebase. Come back to an
@@ -143,6 +143,7 @@ Runtime policies:
 [`evidence-manifest`](../../runtime/evidence-manifest.md) ·
 [`gate-classification`](../../runtime/gate-classification.md) ·
 [`sandbox-policy`](../../runtime/sandbox-policy.md) ·
+[`threat-model`](../../runtime/threat-model.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`liveness-resume`](../../runtime/liveness-resume.md)
 

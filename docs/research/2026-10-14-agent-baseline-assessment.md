@@ -26,7 +26,7 @@ with the met part stated. Tracking issue: #557.
 |---|---|---|
 | Discover (DIS) | 0 | 7 |
 | Constrain (CON) | 0 | 4 |
-| Authorize (AUT) | 2 | 7 |
+| Authorize (AUT) | 1 | 8 |
 | Observe (OBS) | 1 | 5 |
 | Validate (VAL) | 2 | 2 |
 | Respond (RES) | 0 | 5 |
@@ -67,8 +67,8 @@ states the four boundaries and grades each; this file is the per-control detail.
 | AUT-02 | Purpose and task-bound authority | GAP | Coordinator signs the unit's contract digest + class (ed25519, `dispatch-sign.py`); the worker cannot shrink its denominator. No time-bounded grants; resource scoping is doctrinal. |
 | AUT-03 | Delegation attenuation | GAP | Attenuation is by profile/lane convention; technically a worker holds the same ambient authority as the coordinator's shell. |
 | AUT-04 | Just-in-time credentialing | GAP | None. Workers inherit host credentials (`gh` auth, token files). This is residual risk #1 — the PocketOS shape. |
-| AUT-05 | Independent approval | VERIFIED | One-way doors (`runtime/one-way-doors.json`) are human-only, never defaulted on timeout; `decisions.py` refuses a one-way line naming no human and refuses reclassification by rewording. |
-| AUT-06 | Fail-closed authorization and circuit breaking | VERIFIED | `verify-gate.sh` exits 2 on a missing manifest (witnessed clean-machine); deny-hook polarity is deny-on-unparseable; spawn refuses without explicit opt-ins; floor guard blocks floor regressions. |
+| AUT-05 | Independent approval | GAP | Met part: one-way doors (`runtime/one-way-doors.json`) are human-only, never defaulted on timeout; `decisions.py` refuses a one-way line naming no human and refuses reclassification by rewording. Unmet: the approval is not authenticated — grant signatures are verified only when `.orca/human-grant-pubkey` is pinned, and this tree pins none, so today a person-shaped `--source human:<name>` is a name check, not proof a human approved. Pinning the key is a maintainer act. |
+| AUT-06 | Fail-closed authorization and circuit breaking | VERIFIED | On the surfaces that grade merges (coordinator-run verify, CI verdict gates): `verify-gate.sh` exits 2 on a missing manifest (witnessed clean-machine); deny-hook polarity is deny-on-unparseable; spawn refuses without explicit opt-ins; floor guard blocks floor regressions. In a worker's own session the native hook is advisory by its own header — soundness there comes from the off-worker lanes, which is where this repo grades. |
 | AUT-07 | Step-up verification | GAP | The human grant is the step-up for one-way doors in effect; there is no session-assurance-based re-verification. |
 | AUT-08 | Just-in-time authority elevation | GAP | Grants are recorded with their human source; there is no expiring elevation object or agent-facing request path. |
 | AUT-09 | Proof-of-possession credential binding | GAP | Nothing to bind: no broker issues credentials (see AUT-04). |

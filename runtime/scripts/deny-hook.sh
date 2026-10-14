@@ -421,9 +421,9 @@ SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
 # their own option runs (`env -i gh …` is the canonical form).
 _WRAPPERS = {"command", "builtin"}
 _WRAPPER_OPERANDS = {
-    # -S/--split-string is deliberately absent: its operand IS the command,
-    # so skipping it would promote the arguments of that command to the head
-    # (`env -S true egress.py write` runs true) (PR #567 review, P1).
+    # -S/--split-string is handled in _peel_wrapper, not here: its operand
+    # IS the command, so treating it as a skippable operand would promote
+    # the arguments of that command to the head (PR #567 review, P1).
     "env": {"-u", "--unset", "-a", "--argv0", "-C", "--chdir"},
     "nice": {"-n", "--adjustment"},
     "time": {"-o", "--output", "-f", "--format"},
@@ -432,7 +432,7 @@ _WRAPPER_OPERANDS = {
 _SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
 
 
-def _peel_wrapper(ws, operand_flags):
+def _peel_wrapper(ws, operand_flags, is_env=False):
     # ws[0] is env/nice/time/nohup: peel it and its options. Help/version
     # means nothing runs — return the words as they stand.
     original = ws
@@ -443,6 +443,14 @@ def _peel_wrapper(ws, operand_flags):
             return original
         if word == "--":
             return ws[1:]
+        if is_env and word in ("-S", "--split-string") and len(ws) > 1:
+            # The operand IS the command line env runs: its words take the
+            # head, the words after it become their arguments. A blank
+            # split approximates env quoting closely enough for head-finding;
+            # a mis-split only loses recognition (the safe direction).
+            return ws[1].split() + ws[2:]
+        if is_env and word.startswith("-S") and len(word) > 2:
+            return [word[2:]] + ws[1:]
         if word in operand_flags and len(ws) > 1:
             ws = ws[2:]
         elif word.startswith("-"):
@@ -501,7 +509,8 @@ def _plain_words(args, peel_bang=True):
                 return ws  # help/version stop: judge the words as they stand
             ws = peeled
         elif ws[0] in _WRAPPER_OPERANDS:
-            peeled = _peel_wrapper(ws, _WRAPPER_OPERANDS[ws[0]])
+            peeled = _peel_wrapper(ws, _WRAPPER_OPERANDS[ws[0]],
+                                   is_env=ws[0] == "env")
             if peeled == ws:
                 return ws
             ws = peeled

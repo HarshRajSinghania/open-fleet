@@ -220,7 +220,10 @@ Subcommands: `write`, `verify`, `grants`.
 
 Flags: `--ledger` (default `$ORCA_EGRESS_LEDGER` or `.orca/egress.jsonl`). `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
-`--payload-sha256`, `--ts`; `verify` takes `--expect-head`; `grants` takes `--json`.
+`--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
+else is a usage error, exit 2); `verify` takes `--expect-head`; `grants` takes `--json`.
+`verify` also fails any record whose field carries a line break: `id` hashes newline-joined
+`key=value` lines, so such a field makes the encoding ambiguous.
 
 Record fields: `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
 `consent`, `prev` — never the payload text (sha256 + byte count + kind only). `prev`

@@ -13,6 +13,7 @@ imagined; the control for them is the worker-obedience drill defined in
 docs/runtime-scripts.md (`guard_text.py`), whose live leg needs an Orca run
 and is owed, not done.
 """
+import importlib.util
 import json
 import subprocess
 import sys
@@ -23,6 +24,10 @@ ROOT = Path(__file__).resolve().parent.parent
 GUARD = ROOT / "runtime" / "scripts" / "guard_text.py"
 CORPUS = ROOT / "tests" / "fixtures" / "injection.json"
 ZWSP = "\u200b"
+
+_spec = importlib.util.spec_from_file_location("guard_text", GUARD)
+guard_text = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guard_text)
 
 
 def labels_in(stdout):
@@ -54,24 +59,32 @@ class InjectionCorpus(unittest.TestCase):
                 # payload must not read as the envelope's own close.
                 self.assertEqual(out.count(f">>> UNTRUSTED {source} DATA"), 1)
                 self.assertEqual(out.count(f"<<< END UNTRUSTED {source} DATA >>>"), 1)
-                # Declared families raised; envelope-only cases raise none.
+                # Declared families raised. A case expecting NO labels —
+                # documented miss or benign control — must raise none: an
+                # empty expectation passing assertLessEqual vacuously would
+                # let a false alarm on ordinary text through.
                 self.assertLessEqual(set(case["expect_labels"]), labels_in(out),
                                      f"{case['name']}: missing labels")
-                if case["fence_expect"] == "envelope-only":
+                if not case["expect_labels"]:
                     self.assertEqual(
                         labels_in(out), set(),
-                        f"{case['name']} is a documented fence miss — if the "
-                        "fence now labels it, upgrade fence_expect and say so")
-                # Payload preserved: every original line survives (label
-                # prefixes and banner defusing aside).
+                        f"{case['name']} expects no labels "
+                        f"({case['fence_expect']}) but the fence raised some — "
+                        "a false alarm to fix, or a miss to upgrade and say so")
+                # Payload preserved EXACTLY: every original line appears
+                # verbatim (label prefix aside), except that a forged-banner
+                # line appears with the fence's own ZWSP splice. No blanket
+                # ZWSP stripping — a fence that normalized su<ZWSP>do to sudo
+                # would be caught here.
+                rendered = {
+                    ln.split("] ", 1)[-1] if ln.startswith("[INJECTION-PATTERN")
+                    else ln for ln in out.splitlines()
+                }
                 for line in case["text"].splitlines():
-                    probe = line.replace(ZWSP, "")
-                    rendered = "\n".join(
-                        ln.split("] ", 1)[-1] if ln.startswith("[INJECTION-PATTERN")
-                        else ln for ln in out.splitlines())
-                    self.assertIn(probe.replace("UNTRUSTED", "UNTRUSTED"),
-                                  rendered.replace(ZWSP, ""),
-                                  f"{case['name']}: payload line lost: {line!r}")
+                    accepted = {line, guard_text.defuse_banners(line)}
+                    self.assertTrue(
+                        accepted & rendered,
+                        f"{case['name']}: payload line lost or altered: {line!r}")
                 if case.get("forged_banner"):
                     self.assertIn(ZWSP, out,
                                   "forged banner must be defused with a ZWSP splice")

@@ -868,8 +868,16 @@ class _Authority:
         repo's own .git/config), and /dev/null + NOSYSTEM drop the global and system files
         (B4: ~/.gitconfig). `safe.directory=*` replaces the one legitimate use of the global
         file (CI ownership belts) so exotic images fail nowhere new. Applied unconditionally,
-        as gh's is: the launch env is the worker's on the native lane."""
+        as gh's is: the launch env is the worker's on the native lane.
+
+        The belt also closes the two OBJECT-REWRITE channels: `git replace <head> <other>` (a
+        refs/replace/* entry in the shared clone) makes every leg that resolves head_sha read
+        another commit's tree, parents and content, and a `.git/info/grafts` file rewrites a
+        commit's parents, so ancestry and range diffs answer for a history that never existed.
+        GIT_NO_REPLACE_OBJECTS=1 makes git ignore replace refs; GIT_GRAFT_FILE=/dev/null points
+        the graft lookup at an empty file, so a planted grafts file is never read."""
         return {**cls.nc_env(), "GIT_TERMINAL_PROMPT": "0",
+                "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_COUNT": "3",
                 "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",

@@ -1303,6 +1303,49 @@ class GitAuthorityChecks(unittest.TestCase):
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", None), [])
 
 
+class GitObjectRewriteChannelsAreClosed(RepoCase):
+    """Review P1: `git replace` in the graded clone rewrites what head_sha RESOLVES to, and a
+    `.git/info/grafts` file rewrites a commit's parents. Both are plain files the worker can
+    write, and both changed every SHA fact verify.py states — the tree a ledger binds to, the
+    ancestry it checks. git_env() now carries GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=
+    /dev/null, so the verifier reads the objects the SHAs actually name."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("app.py", "VALUE = 1\n")
+        self.base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        self.head = self.commit("head")
+        self.real_tree = self.git("rev-parse", "HEAD^{tree}")
+        self.write("app.py", "VALUE = 'what the worker wants graded'\n")
+        self.decoy = self.commit("decoy")
+        self.decoy_tree = self.git("rev-parse", "HEAD^{tree}")
+
+    def test_a_replace_ref_does_not_move_what_head_sha_resolves_to(self):
+        self.git("replace", self.head, self.decoy)
+        # positive control: plain git on this clone now answers with the decoy's tree
+        self.assertEqual(self.git("rev-parse", f"{self.head}^{{tree}}"), self.decoy_tree)
+        self.assertEqual(verify._tree(self.head), self.real_tree)
+        record = {"cmd": "true", "cmd_sha256": hashlib.sha256(b"true").hexdigest(),
+                  "exit": 0, "wtree": self.decoy_tree}
+        errs = verify.check_commands({"head_sha": self.head, "commands": [record]}, True)
+        self.assertTrue(any("STALE" in e for e in errs), errs)
+
+    def test_a_grafts_file_does_not_rewrite_ancestry(self):
+        # origin/main is a commit that does NOT contain head; a graft claims it does.
+        orphan = self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit-tree",
+                          f"{self.base}^{{tree}}", "-m", "unrelated")
+        self.git("update-ref", "refs/remotes/origin/main", orphan)
+        grafts = self.repo / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(parents=True, exist_ok=True)
+        grafts.write_text(f"{orphan} {self.head}\n", encoding="utf-8")
+        positive = subprocess.run(["git", "merge-base", "--is-ancestor", self.head, orphan],
+                                  cwd=self.repo, capture_output=True)
+        self.assertEqual(positive.returncode, 0, "the planted graft is not live on this host")
+        errs = verify.check_ancestry({"head_sha": self.head}, "main")
+        self.assertTrue(any("not an ancestor of origin/main" in e for e in errs), errs)
+
+
 class InferRepoFromOrigin(unittest.TestCase):
     """#172: infer_repo parses `git remote get-url origin` into owner/name across the common
     remote URL spellings; without a parseable origin it must return None (fail-soft)."""
@@ -4863,7 +4906,7 @@ class GitLegsRunUnderAScrubbedEnvironment(MutationFixture):
     def test_git_and_gitleaks_see_the_allowlist_and_nothing_else(self):
         self._green_executed_run()
         belt = {"GIT_TERMINAL_PROMPT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
-                "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2",
+                "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2",
                 "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2"}
         for log in (self.git_seen, self.gitleaks_seen):
             seen = set(log.read_text().split())
@@ -4880,6 +4923,8 @@ class GitLegsRunUnderAScrubbedEnvironment(MutationFixture):
             env = verify._Authority.git_env()
             self.assertEqual(env, {**verify._Authority.nc_env(),
                                    "GIT_TERMINAL_PROMPT": "0",
+                                   "GIT_NO_REPLACE_OBJECTS": "1",
+                                   "GIT_GRAFT_FILE": os.devnull,
                                    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                                    "GIT_CONFIG_COUNT": "3",
                                    "GIT_CONFIG_KEY_0": "core.fsmonitor",

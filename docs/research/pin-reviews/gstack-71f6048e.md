@@ -220,10 +220,12 @@ not a line-by-line audit). Future bumps diff against this surface.
 
 ## Reviewer notes
 
-Instruction surface inventoried: 236 files (skill directories per
-capability plus root SKILL.md/ETHOS/CLAUDE docs).
-Permission surface read: 39 files — the pack's own GitHub workflows
-(inert here), 11 executable hooks under hosts/claude/hooks/ (the part a
-bump must diff line-by-line: these run inside a worker that mounts the
-pack), one hook-extract script, and package manifests.
+Instruction changes read: baseline inventory — 236 files (skill
+directories per capability plus root SKILL.md/ETHOS/CLAUDE docs)
+recorded for future bumps to diff against.
+Permission-surface changes read: baseline inventory — 39 files: the
+pack's own GitHub workflows (inert here), 11 executable hooks under
+hosts/claude/hooks/ (the part a bump must diff line-by-line: these run
+inside a worker that mounts the pack), one hook-extract script, and
+package manifests.
 

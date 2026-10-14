@@ -42,6 +42,43 @@ class Classify(unittest.TestCase):
         # reviewed with the surface, not with prose.
         self.assertEqual(pr.classify("hooks/README.md"), "permission-surface")
 
+    def test_slash_commands_are_instructions(self):
+        # commands/*.toml (and the .gemini/.claude mirrors) are definitions
+        # an agent executes on invocation, per the upstream audit — not code.
+        for path in ("commands/build.toml", ".gemini/commands/build.toml",
+                     ".claude/commands/build.md"):
+            self.assertEqual(pr.classify(path), "instruction", path)
+
+
+class CompletedReview(unittest.TestCase):
+    GOOD = (
+        "Verdict: clean\n\n"
+        "Instruction changes read: two skill files, wording only.\n"
+        "Permission-surface changes read: none.\n"
+    )
+
+    def test_completed_review_passes(self):
+        self.assertEqual(pr.completed_review_problems(self.GOOD), [])
+
+    def test_verdict_only_edit_fails(self):
+        # Swapping UNREVIEWED for a verdict word while the note placeholders
+        # stand is not a review.
+        text = self.GOOD.replace("two skill files, wording only.", "<which>")
+        self.assertTrue(pr.completed_review_problems(text))
+
+    def test_unreviewed_and_unsupported_verdicts_fail(self):
+        self.assertTrue(pr.completed_review_problems(
+            self.GOOD.replace("clean", "UNREVIEWED")))
+        self.assertTrue(pr.completed_review_problems(
+            self.GOOD.replace("Verdict: clean", "Verdict: lgtm")))
+
+    def test_large_bump_lists_every_path(self):
+        grouped = {"instruction": [f"M doc-{i}.md" for i in range(61)],
+                   "permission-surface": [], "code": []}
+        text = pr.render("demo", "u", "a" * 40, "b" * 40, grouped, "2026-10-14")
+        self.assertIn("- `M doc-60.md`", text)
+        self.assertNotIn("by top-level directory", text)
+
 
 def make_pack(tmp: Path):
     repo = tmp / "pack"
@@ -84,6 +121,52 @@ class Cli(unittest.TestCase):
             self.assertIn("### instruction (1)", result.stdout)
             self.assertIn("### permission-surface (1)", result.stdout)
             self.assertIn("Verdict: UNREVIEWED", result.stdout)
+
+    def test_rename_out_of_hooks_lists_both_sides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, first, _ = make_pack(Path(tmp))
+            (repo / "hooks").mkdir(exist_ok=True)
+            (repo / "hooks" / "session-start.sh").write_text("#!/bin/sh\n")
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "commit", "-q",
+                            "-m", "hook"], check=True)
+            hooked = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True,
+                                    check=True).stdout.strip()
+            (repo / "scripts").mkdir()
+            subprocess.run(["git", "-C", str(repo), "mv", "hooks/session-start.sh",
+                            "scripts/session-start.sh"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "commit", "-q",
+                            "-m", "move"], check=True)
+            moved = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                   capture_output=True, text=True,
+                                   check=True).stdout.strip()
+            result = self.run_cli("--repo", str(repo), "--pack", "demo",
+                                  "--from", hooked, "--to", moved)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("D hooks/session-start.sh", result.stdout)
+            self.assertIn("### permission-surface (1)", result.stdout)
+
+    def test_non_ascii_filename_keeps_its_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, first, _ = make_pack(Path(tmp))
+            (repo / "café-guide.md").write_text("# café\n")
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "commit", "-q",
+                            "-m", "café"], check=True)
+            new = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True,
+                                 check=True).stdout.strip()
+            result = self.run_cli("--repo", str(repo), "--pack", "demo",
+                                  "--from", first, "--to", new)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("café-guide.md", result.stdout)
+            self.assertIn("### instruction (2)", result.stdout)
 
     def test_bad_commit_cannot_evaluate(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,6 +11,7 @@ named by at least one mission (no dead pins); dates are real and not in the futu
 
     python3 -m unittest tests.test_pins -v
 """
+import importlib.util
 import json
 import re
 import unittest
@@ -316,12 +317,13 @@ class PackPinsCarryRugPullReviews(unittest.TestCase):
                 "runtime/scripts/pin_review.py and read the surface before landing",
             )
             text = artifact.read_text(encoding="utf-8")
-            self.assertIn(
-                "Verdict:", text, f"{artifact.name} carries no verdict line")
-            self.assertNotIn(
-                "UNREVIEWED", text,
-                f"{artifact.name} was generated but never read — its verdict "
-                "is still the skeleton's placeholder",
+            spec = importlib.util.spec_from_file_location(
+                "_pin_review", ROOT / "runtime" / "scripts" / "pin_review.py")
+            pin_review = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pin_review)
+            self.assertEqual(
+                pin_review.completed_review_problems(text), [],
+                f"{artifact.name} is not a completed review",
             )
             self.assertIn(
                 entry["commit"][:7], text,

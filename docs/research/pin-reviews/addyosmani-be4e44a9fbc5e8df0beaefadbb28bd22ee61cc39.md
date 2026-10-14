@@ -9,16 +9,18 @@ not a line-by-line audit). Future bumps diff against this surface.
 
 ## Changed surface by class
 
-### instruction (95)
+### instruction (113)
 
-- 95 files; by top-level directory:
+- 113 files; by top-level directory:
   - `.claude/`: 10
+  - `.gemini/`: 9
   - `.opencode/`: 1
   - `AGENTS.md/`: 1
   - `CLAUDE.md/`: 1
   - `CONTRIBUTING.md/`: 1
   - `README.md/`: 1
   - `agents/`: 4
+  - `commands/`: 9
   - `docs/`: 16
   - `evals/`: 23
   - `references/`: 7
@@ -45,20 +47,25 @@ not a line-by-line audit). Future bumps diff against this surface.
 - `A hooks/simplify-ignore.sh`
 - `A plugin.json`
 
-### code (84)
+### code (66)
 
-- 84 files; by top-level directory:
-  - `.gemini/`: 9
+- 66 files; by top-level directory:
   - `.gitattributes/`: 1
   - `.gitignore/`: 1
   - `LICENSE/`: 1
-  - `commands/`: 9
   - `evals/`: 50
   - `scripts/`: 13
 
 ## Reviewer notes
 
-Instruction surface inventoried: 95 files.
-Permission surface read: 18 files — plugin/marketplace manifests;
-no hook scripts at this pin.
+Instruction changes read: baseline inventory — 113 files, including
+the slash-command definitions under commands/ (agent-executed on
+invocation), recorded for future bumps to diff against.
+Permission-surface changes read: baseline inventory — 18 files: five
+executable hooks wired by hooks/hooks.json (session-start, sdd-cache
+pre/post, simplify-ignore; simplify-ignore rewrites files mid-session —
+already flagged not-to-copy in the 2026-09-10 upstream audit), two hook
+test scripts and two hook docs (not themselves executable),
+plugin/marketplace manifests for three hosts. A bump must diff hooks/
+exhaustively.
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,11 @@ def classify(path: str) -> str:
     name = parts[-1] if parts else path.lower()
     if name in PERMISSION_NAMES or "hooks" in parts or name.startswith("hook"):
         return "permission-surface"
+    # Slash-command definitions are instructions an agent executes on
+    # invocation (commands/*.toml, .gemini/commands/*, .claude/commands/*) —
+    # the upstream audit catalogues them as such; they are not config.
+    if "commands" in parts:
+        return "instruction"
     if name in ("skill.md", "agents.md", "claude.md") or "skills" in parts:
         return "instruction"
     if name.endswith(INSTRUCTION_SUFFIXES):
@@ -81,19 +87,26 @@ def resolve(repo: Path, ref: str) -> str:
 
 
 def changed_paths(repo: Path, old: str | None, new: str) -> list[tuple[str, str]]:
-    """(status, path) pairs old..new; old=None inventories the whole tree."""
+    """(status, path) pairs old..new; old=None inventories the whole tree.
+
+    NUL-separated output throughout: with Git's default quoting, a non-ASCII
+    filename arrives wrapped in quotes and its real suffix is lost to the
+    classifier. --no-renames so a move lists the deletion and the addition
+    separately — classifying only the destination hides a hook leaving the
+    permission surface (or entering it).
+    """
     if old is None:
-        out = _git(repo, "ls-tree", "-r", "--name-only", new)
-        return [("A", line) for line in out.splitlines() if line]
-    out = _git(repo, "diff", "--name-status", f"{old}..{new}")
+        out = _git(repo, "ls-tree", "-r", "-z", "--name-only", new)
+        return [("A", name) for name in out.split("\0") if name]
+    out = _git(repo, "diff", "--name-status", "-z", "--no-renames", f"{old}..{new}")
+    tokens = [t for t in out.split("\0") if t]
     pairs = []
-    for line in out.splitlines():
-        if not line:
-            continue
-        fields = line.split("\t")
-        status = fields[0][0]
-        path = fields[-1]  # renames: judge the destination path
-        pairs.append((status, path))
+    it = iter(tokens)
+    for status in it:
+        path = next(it, None)
+        if path is None:
+            raise PinReviewError("git diff --name-status -z: truncated token stream")
+        pairs.append((status[0], path))
     return pairs
 
 
@@ -125,13 +138,14 @@ def render(pack, repo_url, old, new, grouped, date):
         lines.append("")
         if not items:
             lines.append("- none")
-        elif len(items) <= 60 or klass == "permission-surface":
-            # The permission surface is always listed in full: it is the part
-            # a reviewer must be able to eyeball entire, baselines included.
+        elif old is not None or len(items) <= 60 or klass == "permission-surface":
+            # Bump artifacts list EVERY changed path, however large the bump:
+            # the reviewer reads paths, not counts. The permission surface is
+            # always listed in full, baselines included.
             lines += [f"- `{item}`" for item in items]
         else:
-            # A baseline inventory of a large pack lists the rollup, not
-            # thousands of paths; bump diffs stay exact because they are small.
+            # Only a baseline inventory rolls up: thousands of paths would
+            # bury the surface the next bump diffs against.
             by_dir = {}
             for item in items:
                 top = item.split(" ", 1)[1].split("/", 1)[0]
@@ -147,6 +161,32 @@ def render(pack, repo_url, old, new, grouped, date):
         "",
     ]
     return "\n".join(lines)
+
+
+VERDICT_LINE = re.compile(
+    r"^Verdict: (baseline recorded|clean|changes-noted)\b.*$", re.MULTILINE
+)
+
+
+def completed_review_problems(text):
+    """Why this artifact is not a completed review, or [] if it is.
+
+    The contract tests/test_pins.py enforces: a supported verdict (not the
+    skeleton's UNREVIEWED) AND both reviewer-note lines actually filled —
+    swapping the verdict word alone is not a review.
+    """
+    problems = []
+    if "UNREVIEWED" in text:
+        problems.append("verdict is still the skeleton's UNREVIEWED placeholder")
+    elif not VERDICT_LINE.search(text):
+        problems.append(
+            "no supported verdict line (baseline recorded | clean | changes-noted)")
+    for label in ("Instruction changes read:", "Permission-surface changes read:"):
+        match = re.search(rf"^{re.escape(label)}[ \t]*(.*)$", text, re.MULTILINE)
+        note = match.group(1).strip() if match else ""
+        if not note or note.startswith("<"):
+            problems.append(f"reviewer note '{label}' is unfilled")
+    return problems
 
 
 def main(argv=None):

@@ -42,7 +42,9 @@ not a line-by-line audit). Future bumps diff against this surface.
 
 ## Reviewer notes
 
-Instruction surface inventoried: 153 files.
-Permission surface read: 4 files — plugin/marketplace manifests and one
-release workflow; no hooks, no settings asks at this pin.
+Instruction changes read: baseline inventory — 153 files recorded for
+future bumps to diff against.
+Permission-surface changes read: baseline inventory — 4 files:
+plugin/marketplace manifests and one release workflow; no hooks, no
+settings asks at this pin.
 

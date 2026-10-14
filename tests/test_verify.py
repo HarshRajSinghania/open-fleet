@@ -830,6 +830,38 @@ class ControlPhasesAreIndistinguishable(RepoCase):
         self._assert_not_a_kill(ok, msgs)
         self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
 
+    def test_a_signed_tag_is_unsigned_in_the_clean_replay_too(self):
+        # A signature covers the object line, so it would verify only on the clean
+        # replay. Stripping it there too means a verify-tag proof fails before the
+        # control and is not graded a kill.
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "raw = subprocess.run(['git', 'cat-file', 'tag', 'v1'],"
+                   " capture_output=True, check=True).stdout\n"
+                   "assert b'BEGIN PGP SIGNATURE' in raw\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        payload = (f"object {head}\n"
+                   "type commit\n"
+                   "tag v1\n"
+                   "tagger t <t@t> 1000000000 +0000\n"
+                   "gpgsig -----BEGIN PGP SIGNATURE-----\n"
+                   " \n"
+                   " -----END PGP SIGNATURE-----\n"
+                   "\n"
+                   "release\n").encode()
+        sha = subprocess.run(["git", "hash-object", "-t", "tag", "-w", "--stdin"],
+                             input=payload, check=True, capture_output=True).stdout.decode().strip()
+        self.git("update-ref", "refs/tags/v1", sha)
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertFalse(ok, msgs)
+        self.assertTrue(any("CLEAN" in x for x in msgs), msgs)
+
     def test_a_proof_that_compares_head_to_its_branch_ref_is_not_killed(self):
         # refs/heads/main points at head_sha in the source. A linked worktree would still
         # see that ref under the sealed control, so HEAD != refs/heads/main only then.

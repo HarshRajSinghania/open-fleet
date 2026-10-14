@@ -37,9 +37,11 @@ Fixes from the 2026-10-14 whole-repo review:
 
 - **Verifier (`verify.py`).** The executed negative control seals the mutant as a throwaway
   commit and runs clean → control → clean, each in its own repository whose refs that named
-  the head name that phase's commit — an annotated tag stays an annotated tag of it — under
-  a fresh HOME and TMPDIR, so a test can no longer tell which phase it is in (git status,
-  marker files, branch refs, tag type). The alternates path uses the filesystem encoding, so
+  the head name that phase's commit — an annotated tag stays an annotated tag of it, and
+  its signature is dropped in the clean phases too, so `git verify-tag` cannot pass on only
+  one of them — under a fresh HOME and TMPDIR, so a test can no longer tell which phase it
+  is in (git status, marker files, branch refs, tag type). The alternates path uses the
+  filesystem encoding, so
   a non-ASCII checkout still runs. Git runs with
   `GIT_NO_REPLACE_OBJECTS=1` and no graft file. An approval counts only from a non-author
   OWNER/MEMBER/COLLABORATOR. The transcript hashes the manifest bytes actually judged. A

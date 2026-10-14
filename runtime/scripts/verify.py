@@ -1865,6 +1865,21 @@ def execute_negative_control(m, nc_command=None):
         if code != 0 or nl < 0 or not raw.startswith(b"object ") \
                 or not raw[nl:].startswith(b"\ntype commit\n"):
             return None, gerr.strip() or "not an annotated tag of a commit"
+        # A signature covers the object line. Left in place it verifies on the clean
+        # replay (same target) and fails under the control, so `git verify-tag` would
+        # be graded a kill. Drop it in every phase; the tag stays annotated.
+        header, sep, body = raw.partition(b"\n\n")
+        kept, skipping = [], False
+        for line in header.split(b"\n"):
+            if line.startswith(b"gpgsig "):
+                skipping = True
+                continue
+            if skipping and line.startswith(b" "):
+                continue
+            skipping = False
+            kept.append(line)
+        raw = b"\n".join(kept) + sep + body
+        nl = raw.find(b"\n")
         rewritten = b"object " + commit.encode("ascii") + raw[nl:]
         code, new, gerr = _run_at(repo, [git, "hash-object", "-t", "tag", "-w", "--stdin"],
                                   stdin_bytes=rewritten, env=env)
@@ -1875,8 +1890,9 @@ def execute_negative_control(m, nc_command=None):
 
     def _stage_phase_repo(top, head, commit, repo, phase):
         """Build `repo` with the source's refs, retargeting any ref that names `head` onto
-        `commit`. An annotated tag stays an annotated tag of that commit; only its object
-        line changes. Returns an error string, or None. Objects come from the source through
+        `commit`. An annotated tag stays an annotated tag of that commit: the object line
+        is rewritten and any signature is dropped, in the clean phases too. Returns an error
+        string, or None. Objects come from the source through
         alternates, so the sealed mutant (written into the source) is visible without a copy."""
         git, env = _Authority.git_bin(), _Authority.git_env()
         code, _, gerr = _run([git, "init", "-q", repo], timeout=60, env=env)
@@ -1909,8 +1925,8 @@ def execute_negative_control(m, nc_command=None):
             code, peeled, _ = _run([git, "-C", top, "rev-parse", "--verify", f"{ref}^{{commit}}"],
                                    timeout=30, env=env)
             peeled = peeled.strip() if code == 0 else ""
-            if direct == commit or peeled == commit:
-                target = direct  # already this phase's commit; keep an annotated tag intact
+            if direct == commit:
+                target = direct  # a lightweight ref already at this phase's commit
             elif peeled == head and direct != head:
                 target, tag_err = _retarget_tag(top, repo, direct, commit)
                 if tag_err:

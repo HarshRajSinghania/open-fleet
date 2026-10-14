@@ -54,13 +54,16 @@ class CountLintSeamNet(unittest.TestCase):
                   "eleven _autonomous_ fleets"):
             self.assertRegex(s, validate.COUNT_LINT_RE, s)
 
-    def test_missing_listed_file_is_skipped(self):
-        # check_doc_counts' `not p.exists()` branch: a listed file that is not
-        # on disk contributes nothing (no test pinned this before RV-C1).
+    def test_missing_listed_file_fails_loudly(self):
+        # Contract changed by the #563 silent-skip audit (was: "is skipped",
+        # RV-C1): a listed surface that vanished used to leave the lint
+        # silently. The list IS the contract — missing now fails.
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(validate, "ROOT", Path(tmp)), \
                  mock.patch.object(validate, "COUNT_LINT_FILES", ("no-such.md",)):
-                self.assertEqual(validate.check_doc_counts(), [])
+                failures = validate.check_doc_counts()
+        self.assertTrue(failures)
+        self.assertIn("missing", failures[0])
 
     def test_failure_message_names_the_count(self):
         with tempfile.TemporaryDirectory() as tmp:

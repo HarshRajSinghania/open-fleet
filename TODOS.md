@@ -33,13 +33,12 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
   were not checked. Pack pins move only through the upstream-adoption audit cadence named in
   `pins.json` (`docs/research/2026-09-10-upstream-audit/`, a full-history clone read at the new
   commit) — never by editing the number. The `orca` pin (v1.4.224, live, 2026-10-13) is current.
-- **The verdict check still trusts the PR's workflow file** (noted 2026-10-14, PR #571 review) —
-  `pull_request_review` runs the workflow definition from the PR's merge ref, so although
-  `verdict-check.yml` now runs `scripts/verdict_check.py` from the base commit, a PR can still
-  rewrite the job's own `run` step to pass. The fix runs the gate from a definition the PR cannot
-  touch: a `workflow_run`-triggered workflow (always loaded from `main`) runs the base checker and
-  posts a `verdict` commit status on the PR head, and branch protection requires that status
-  instead of the current job. Until then, required human approvals are the guard.
+- **Merge-gate identity is a settings step** (2026-10-14) — `verdict-gate.yml` now evaluates the
+  GO verdict from `main` and posts the `verdict-gate` status, but branch protection still has to
+  require it, from a GitHub App whose key sits in a `main`-only `verdict-gate` environment, in
+  place of `verdict`.
+  Steps: [docs/ops.md#merge-gate](docs/ops.md#merge-gate). Until then the old `verdict` check,
+  which a PR can rewrite, is what blocks merges.
 - **The 2026-09-11 deep review** —
   [`docs/reviews/2026-09-11-review.md`](docs/reviews/2026-09-11-review.md) (moved from the root
   `REVIEW.md` on 2026-10-14; a stub there points to it) and issues

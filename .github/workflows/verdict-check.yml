@@ -1,5 +1,12 @@
 # Verdict-derived merge check (#452): a GO verdict must bind the merge tip.
 #
+# AUTHORITY MOVED: a `pull_request_review` run loads THIS file from the PR, so a
+# PR can rewrite the `verdict` job below. The required check is now the
+# `verdict-gate` status posted by verdict-gate.yml, which GitHub loads from the
+# default branch on `workflow_run`. This workflow is its trigger (the `relay`
+# job always runs, so every review completes a run and wakes the gate); the
+# `verdict` job stays as fast feedback in the PR's checks list.
+#
 # GitHub cannot express reviewed_sha == head_sha natively, so this workflow
 # runs scripts/verdict_check.py against the PR: it passes iff a trusted review
 # (APPROVED, or COMMENTED by the PR author / OWNER / MEMBER / COLLABORATOR)
@@ -40,6 +47,14 @@ permissions:
   pull-requests: read
 
 jobs:
+  relay:
+    # Always runs: a completed run of this workflow is what wakes verdict-gate.yml.
+    # It reads nothing and decides nothing — the gate re-derives every verdict.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "review received; verdict-gate.yml evaluates it from the default branch"
+
   verdict:
     # GO-marker reviews from trusted authors only (PR #465 review, P1):
     # evaluating a stranger's GO marker would fail-poison the head.

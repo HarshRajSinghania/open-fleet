@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -275,6 +276,183 @@ class MainInProc(unittest.TestCase):
                     runpy.run_path(str(_ROOT / "scripts" / "verdict_check.py"),
                                    run_name="__main__")
         self.assertEqual(ctx.exception.code, 2)
+
+
+class PostStatusGate(unittest.TestCase):
+    """--post-status is the authoritative gate (verdict-gate.yml): the verdict becomes a
+    commit status on the PR's current head, and the exit code says whether it was posted."""
+
+    OTHER_PR = {"number": 9, "head": {"sha": "c" * 40}}
+
+    def _run(self, argv, reviews, pulls=None, post_rc=0):
+        posted = []
+
+        def fake_api(path, repo, paginate=False):
+            self.assertEqual(repo, "o/r")
+            if path.startswith("pulls?"):
+                return pulls or []
+            if path == "pulls/7":
+                return {"number": 7, "head": {"sha": HEAD}, "user": {"login": "coord"}}
+            return reviews
+
+        def fake_run(cmd, **_kw):
+            posted.append(cmd)
+            return subprocess.CompletedProcess(cmd, post_rc, "", "denied" if post_rc else "")
+
+        out, err = io.StringIO(), io.StringIO()
+        env = {"GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "42"}
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, env), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api), \
+                mock.patch.object(verdict_check.subprocess, "run", side_effect=fake_run):
+            code = verdict_check.main(argv + ["--repo", "o/r"])
+        return code, posted, out.getvalue() + err.getvalue()
+
+    def _fields(self, cmd):
+        return dict(cmd[i + 1].split("=", 1) for i, a in enumerate(cmd) if a == "-f")
+
+    def test_a_go_at_tip_posts_success_on_the_head(self):
+        code, posted, _ = self._run(["--pr", "7", "--post-status"], [review(go_body(HEAD))])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(posted), 1)
+        self.assertIn(f"repos/o/r/statuses/{HEAD}", posted[0])
+        fields = self._fields(posted[0])
+        self.assertEqual((fields["state"], fields["context"]), ("success", "verdict-gate"))
+        self.assertEqual(fields["target_url"], "https://github.com/o/r/actions/runs/42")
+
+    def test_no_go_posts_failure_and_still_exits_zero(self):
+        # The status IS the verdict; a red run on the default branch for every
+        # unverdicted review would be noise, so the exit code reports the post.
+        code, posted, _ = self._run(["--pr", "7", "--post-status"], [review(go_body(OTHER))])
+        self.assertEqual(code, 0)
+        fields = self._fields(posted[0])
+        self.assertEqual(fields["state"], "failure")
+        self.assertIn("none binds the current head", fields["description"])
+        self.assertLessEqual(len(fields["description"]), 140)
+
+    def test_a_custom_context_is_honoured(self):
+        _code, posted, _ = self._run(["--pr", "7", "--post-status", "gate-x"], [])
+        self.assertEqual(self._fields(posted[0])["context"], "gate-x")
+
+    def test_a_failed_post_is_exit_2(self):
+        code, _posted, out = self._run(["--pr", "7", "--post-status"], [], post_rc=1)
+        self.assertEqual(code, 2)
+        self.assertIn("denied", out)
+
+    def test_without_post_status_nothing_is_posted(self):
+        code, posted, _ = self._run(["--pr", "7"], [])
+        self.assertEqual((code, posted), (1, []))
+
+    def test_head_sha_finds_the_one_open_pr_at_that_head(self):
+        pulls = [self.OTHER_PR, {"number": 7, "head": {"sha": HEAD.upper()}}]
+        code, posted, out = self._run(["--head-sha", HEAD, "--post-status"],
+                                      [review(go_body(HEAD))], pulls=pulls)
+        self.assertEqual(code, 0, out)
+        self.assertIn("PR #7", out)
+        self.assertEqual(self._fields(posted[0])["state"], "success")
+
+    def test_head_sha_with_no_or_several_prs_posts_nothing(self):
+        for pulls in ([], [{"number": 7, "head": {"sha": HEAD}},
+                           {"number": 8, "head": {"sha": HEAD}}]):
+            with self.subTest(n=len(pulls)):
+                code, posted, out = self._run(["--head-sha", HEAD, "--post-status"], [],
+                                              pulls=pulls)
+                self.assertEqual((code, posted), (2, []))
+                self.assertIn("exactly one", out)
+
+    def test_a_short_head_sha_is_refused(self):
+        code, posted, out = self._run(["--head-sha", "abc123", "--post-status"], [])
+        self.assertEqual((code, posted), (2, []))
+        self.assertIn("full 40-hex", out)
+
+    def test_resolve_pr_prints_the_number_and_posts_nothing(self):
+        pulls = [{"number": 7, "head": {"sha": HEAD}}]
+        code, posted, out = self._run(["--head-sha", HEAD, "--resolve-pr"], [], pulls=pulls)
+        self.assertEqual((code, posted), (0, []))
+        self.assertEqual(out.strip(), "7")
+
+    def test_resolve_pr_refuses_a_numberless_match_and_needs_head_sha(self):
+        code, _posted, out = self._run(["--head-sha", HEAD, "--resolve-pr"], [],
+                                       pulls=[{"number": None, "head": {"sha": HEAD}}])
+        self.assertEqual(code, 2)
+        self.assertIn("no usable number", out)
+        code, _posted, out = self._run(["--pr", "7", "--resolve-pr"], [])
+        self.assertEqual(code, 2)
+        self.assertIn("needs --head-sha", out)
+
+    def test_pr_and_head_sha_are_mutually_exclusive(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                verdict_check.main(["--pr", "7", "--head-sha", HEAD, "--repo", "o/r"])
+        self.assertEqual(ctx.exception.code, 2)
+
+
+class TheGateRunsOnlyDefaultBranchCode(unittest.TestCase):
+    """verdict-gate.yml is the required check: nothing the PR under review can edit may run
+    in it, runs for one PR must post in order, and its status must come from an identity a
+    fork PR or a writer's branch workflow cannot mint."""
+
+    TEXT = (_ROOT / ".github" / "workflows" / "verdict-gate.yml").read_text(encoding="utf-8")
+    TRIGGER = (_ROOT / ".github" / "workflows" / "verdict-check.yml").read_text(encoding="utf-8")
+
+    def _job(self, name):
+        jobs = "\n" + self.TEXT.split("\njobs:\n", 1)[1]
+        body = jobs.split(f"\n  {name}:\n", 1)[1]
+        return body.split("\n  gate:\n", 1)[0] if name == "resolve" else body
+
+    def test_it_runs_only_on_workflow_run_of_verdict_check(self):
+        on = self.TEXT.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(on, "  workflow_run:\n    workflows: [verdict-check]\n"
+                             "    types: [completed]")
+        # a dispatch loads the workflow from whichever branch is picked (PR #572 review)
+        self.assertNotIn("workflow_dispatch", self.TEXT.split("\nname:", 1)[1])
+
+    def test_every_checkout_is_the_default_branch_checker_alone(self):
+        checkouts = self.TEXT.split("actions/checkout@")[1:]
+        self.assertEqual(len(checkouts), 2)
+        for block in checkouts:
+            head = block.split("- uses:", 1)[0]
+            self.assertIn("ref: ${{ github.sha }}", head)
+            self.assertIn("sparse-checkout: scripts/verdict_check.py", head)
+            self.assertIn("persist-credentials: false", head)
+        self.assertNotRegex(self.TEXT, r"ref:\s*\$\{\{\s*github\.event\.workflow_run\.head")
+        self.assertNotIn("pull_request.head", self.TEXT)
+
+    def test_resolve_names_the_pr_through_the_default_branch_script(self):
+        job = self._job("resolve")
+        self.assertIn("--head-sha \"$RUN_HEAD_SHA\" --resolve-pr", job)
+        self.assertIn("*[!0-9]*", job)  # only a number reaches the lock and the gate
+        self.assertNotIn("statuses: write", job)
+
+    def test_gate_serialises_per_pr_and_posts_through_the_default_branch_script(self):
+        job = self._job("gate")
+        self.assertIn("needs: resolve", job)
+        self.assertIn("group: verdict-gate-pr-${{ needs.resolve.outputs.pr }}", job)
+        self.assertIn("cancel-in-progress: false", job)
+        self.assertIn('python3 scripts/verdict_check.py --post-status --pr "$PR_NUMBER"', job)
+        self.assertEqual(verdict_check.STATUS_CONTEXT, "verdict-gate")
+
+    def test_permissions_are_per_job_and_only_the_gate_writes_statuses(self):
+        self.assertRegex(self.TEXT, r"(?m)^permissions: \{\}$")
+        self.assertEqual(len(re.findall(r"(?m)^ +statuses: write$", self.TEXT)), 1)
+        self.assertIn("    permissions:\n      contents: read\n      pull-requests: read\n"
+                      "      statuses: write\n", self._job("gate"))
+
+    def test_the_app_key_lives_in_the_branch_restricted_environment(self):
+        job = self._job("gate")
+        self.assertIn("environment: verdict-gate", job)
+        self.assertIn("if: vars.VERDICT_GATE_CLIENT_ID != ''", job)
+        self.assertRegex(job, r"actions/create-github-app-token@[0-9a-f]{40} # v")
+        self.assertIn("steps.app.outputs.token || secrets.GITHUB_TOKEN", job)
+        self.assertIn("::warning::verdict-gate posts as github-actions", job)
+        self.assertNotIn("VERDICT_GATE_PRIVATE_KEY", self._job("resolve"))
+
+    def test_the_trigger_always_completes_a_run(self):
+        # A `relay` job with no `if:` — every review, GO or not, wakes the gate.
+        jobs = self.TRIGGER.split("\njobs:\n", 1)[1]
+        relay = jobs.split("\n  verdict:\n", 1)[0]
+        self.assertIn("  relay:\n", relay)
+        self.assertNotIn("if:", relay)
 
 
 class WorkflowRunsTheBaseChecker(unittest.TestCase):

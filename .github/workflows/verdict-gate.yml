@@ -1,0 +1,118 @@
+# The authoritative merge gate for the GO verdict (#452): branch protection
+# requires the `verdict-gate` commit status this workflow posts.
+#
+# Why a second workflow: verdict-check.yml runs on `pull_request_review`, and a
+# review run loads its workflow file from the PR's merge ref — a PR can rewrite
+# that job's run step to pass without checking anything (PR #571 review, P1).
+# This file runs ONLY on `workflow_run`, which GitHub always loads from the
+# DEFAULT branch, and both jobs check out only the default branch's
+# scripts/verdict_check.py. No file the PR touches is executed here, and the
+# PR's code is never checked out. There is deliberately no workflow_dispatch:
+# a dispatch loads the workflow from whichever branch is picked (PR #572
+# review, P1). To re-evaluate, post a review or re-run the latest gate run.
+#
+# verdict-check.yml is the trigger: every review it sees completes a run, and
+# that completion wakes this gate. The gate re-derives the verdict from the
+# GitHub API and posts it on the PR's CURRENT head (statuses are latest-wins per
+# context, so a later GO clears an earlier failure without a re-run). A push
+# leaves the new head with no status, which blocks until a fresh GO.
+#
+# Ordering: `resolve` names the PR first, so `gate` can serialise on that PR.
+# Every run that can write one PR's status shares one lock and posts in order;
+# a stalled older evaluation cannot land after a newer one (PR #572 review, P1).
+#
+# Identity: branch protection matches a required check by name, and a fork PR
+# can add its own workflow with a job named `verdict-gate`. Pin the required
+# check's expected source to a GitHub App whose key lives in the `verdict-gate`
+# ENVIRONMENT, restricted to the default branch: a job on any other branch —
+# a fork's, or a writer's own branch workflow — never receives it. Variable
+# VERDICT_GATE_CLIENT_ID, secret VERDICT_GATE_PRIVATE_KEY (docs/ops.md#merge-gate).
+# Without them the gate posts as github-actions and says so: still a trusted
+# evaluation, but a forgeable name.
+name: verdict-gate
+
+on:
+  workflow_run:
+    workflows: [verdict-check]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  resolve:
+    if: github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+    steps:
+      # github.sha on workflow_run is the default branch's head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as validate.yml)
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/verdict_check.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
+        with:
+          python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - id: pr
+        name: Name the pull request this review belongs to
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -z "$RUN_PR" ]; then
+            # a fork's run lists no pull request; find the one open PR at that head
+            RUN_PR=$(python3 scripts/verdict_check.py --head-sha "$RUN_HEAD_SHA" --resolve-pr)
+          fi
+          case "$RUN_PR" in ''|*[!0-9]*) echo "::error::no usable pull request number resolved"; exit 2 ;; esac
+          printf 'pr=%s\n' "$RUN_PR" >> "$GITHUB_OUTPUT"
+
+  gate:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: verdict-gate
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    concurrency:
+      # One lock per PR for every run that can write its status: they post in order.
+      group: verdict-gate-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as validate.yml)
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/verdict_check.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
+        with:
+          python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - id: app
+        if: vars.VERDICT_GATE_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0 (Node 24)
+        with:
+          client-id: ${{ vars.VERDICT_GATE_CLIENT_ID }}
+          private-key: ${{ secrets.VERDICT_GATE_PRIVATE_KEY }}
+          permission-pull-requests: read
+          permission-statuses: write
+      - name: Post the verdict-gate status on the PR head
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+          GATE_IDENTITY: ${{ steps.app.outcome == 'success' && 'app' || 'github-actions' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr }}
+        run: |
+          if [ "$GATE_IDENTITY" != app ]; then
+            echo "::warning::verdict-gate posts as github-actions: set VERDICT_GATE_CLIENT_ID and VERDICT_GATE_PRIVATE_KEY in the verdict-gate environment so a PR job named verdict-gate cannot stand in for it (docs/ops.md#merge-gate)"
+          fi
+          python3 scripts/verdict_check.py --post-status --pr "$PR_NUMBER"

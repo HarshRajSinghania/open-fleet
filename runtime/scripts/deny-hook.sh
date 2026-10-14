@@ -439,7 +439,16 @@ def _split_env_string(text):
     # `ignore\_--version` as one word, hiding --version inside what read as
     # a -W value, so a version print armed a send (PR #567 review, P1).
     words, cur, quote = [], [], ""
+    started = False  # a quote opens a word even if it adds no characters:
+    # `""` is an empty argument env preserves and python consumes (P1).
     i = 0
+
+    def flush():
+        nonlocal cur, started
+        if started:
+            words.append("".join(cur))
+            cur, started = [], False
+
     while i < len(text):
         ch = text[i]
         if quote:
@@ -451,25 +460,23 @@ def _split_env_string(text):
             continue
         if ch in (SQ, DQ):
             quote = ch
+            started = True
         elif ch == "\\" and i + 1 < len(text):
             nxt = text[i + 1]
             if nxt == "_":
-                if cur:
-                    words.append("".join(cur))
-                    cur = []
+                flush()
             else:
                 cur.append(nxt)
+                started = True
             i += 2
             continue
         elif ch in " \t":
-            if cur:
-                words.append("".join(cur))
-                cur = []
+            flush()
         else:
             cur.append(ch)
+            started = True
         i += 1
-    if cur:
-        words.append("".join(cur))
+    flush()
     return words
 
 

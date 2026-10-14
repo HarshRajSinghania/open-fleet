@@ -1400,5 +1400,31 @@ class TestBundleForCopyInstallers(unittest.TestCase):
                          and (ROOT / "dist" / ".git").exists())
 
 
+class TestGatesDoNotSilentlySkip(unittest.TestCase):
+    """#563 (silent-skip audit): a gate that reports success when it did not
+    run is worse than no gate. The two validator checks that used to pass on
+    a missing input now fail loudly; pinned so they cannot regress."""
+
+    def test_doc_count_lint_fails_on_a_missing_surface(self):
+        original = validate.COUNT_LINT_FILES
+        try:
+            validate.COUNT_LINT_FILES = ("docs/definitely-not-here.md",)
+            failures = validate.check_doc_counts()
+        finally:
+            validate.COUNT_LINT_FILES = original
+        self.assertTrue(failures)
+        self.assertIn("missing", failures[0])
+
+    def test_ledger_rows_fail_when_skills_dir_absent(self):
+        original = validate.SKILLS_DIR
+        try:
+            validate.SKILLS_DIR = ROOT / "no-such-skills-dir"
+            failures = validate.check_ledger_rows()
+        finally:
+            validate.SKILLS_DIR = original
+        self.assertTrue(failures)
+        self.assertIn("did not run", failures[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

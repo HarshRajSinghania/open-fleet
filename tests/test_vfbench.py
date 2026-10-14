@@ -79,7 +79,6 @@ class VFBenchSoundness(unittest.TestCase):
 
     def test_readme_result_table_matches_computed(self):
         # #125: the hand-typed result table must match the computed corpus (was a stale 4/4·0/4).
-        import re
         if self.res["orca-fleet verify.py (sound)"]["skipped"]:
             self.skipTest("traps were skipped on this checkout — the corpus totals the README "
                           "pins are the FULL-clone ones (see test_shallow_skips_are_named)")

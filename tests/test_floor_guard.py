@@ -160,7 +160,7 @@ class TestDiffAcquisition(FloorGuardBase):
         for phase in ("tracked", "untracked-list", "untracked-diff"):
             for failure in (128, subprocess.TimeoutExpired("git", 60), OSError("unavailable")):
                 with self.subTest(phase=phase, failure=failure):
-                    def failing_read(argv, **kwargs):
+                    def failing_read(argv, phase=phase, failure=failure, **kwargs):
                         target = ("untracked-list" if "ls-files" in argv else
                                   "untracked-diff" if "--no-index" in argv else
                                   "tracked" if "diff" in argv else None)

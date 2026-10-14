@@ -152,7 +152,7 @@ class TestDiffAcquisition(ScopeBase):
         for phase in ("committed", "working-tree", "untracked"):
             for failure in (128, subprocess.TimeoutExpired("git", 60), OSError("unavailable")):
                 with self.subTest(phase=phase, failure=failure):
-                    def failing_read(argv, **kwargs):
+                    def failing_read(argv, phase=phase, failure=failure, **kwargs):
                         target = ("untracked" if "ls-files" in argv else
                                   "committed" if "main...HEAD" in argv else
                                   "working-tree" if "diff" in argv and "HEAD" in argv else None)

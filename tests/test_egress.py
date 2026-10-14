@@ -65,7 +65,7 @@ class TestWrite(EgressBase):
                     self.assertEqual(self.write_one(sink="seed").returncode, 0)
                 start = threading.Barrier(12)
 
-                def write(index):
+                def write(index, start=start):
                     start.wait(timeout=10)
                     return self.write_one(sink=f"writer-{index}")
 

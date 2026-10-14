@@ -449,7 +449,7 @@ esac
                 ids.add(data.get("dispatchId") or data["dispatch"]["id"])
                 self.assertEqual(len(list(receipt.parent.glob("tl-*.json"))), 1)
             self.assertEqual(ids, set(attempts))
-            for attempt, result in zip(attempts, results):
+            for attempt, result in zip(attempts, results, strict=True):
                 self.assertIn(f"HANDLE=term_{attempt} ", result.stdout)
                 scratch = next(line.removeprefix("SCRATCH=") for line in result.stdout.splitlines()
                                if line.startswith("SCRATCH="))

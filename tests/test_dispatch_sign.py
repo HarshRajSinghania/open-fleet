@@ -295,6 +295,31 @@ class TranscriptSigning(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(json.loads(target.read_text())["record"], self._RECORD)
 
+    def test_the_lane_flags_are_signed_only_when_given(self):
+        # Review P2: --no-gh / --lane / --execute-nc reach verify.py from argv/env, so the
+        # coordinator can now sign them. Absent, the record is byte-identical to before.
+        with tempfile.TemporaryDirectory() as d:
+            key = Path(d) / "dispatch-key"
+            key.write_text(bytes(range(1, 33)).hex() + "\n")
+            os.chmod(key, 0o600)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = dispatch_sign.main(["sign", "--key", str(key), "--manifest-id", "u",
+                                         "--contract-digest", "sha256:a", "--unit-class", "mutation",
+                                         "--no-gh", "--lane", "B", "--execute-nc"])
+            self.assertEqual(rc, 0, err.getvalue())
+            env = json.loads(out.getvalue())
+            self.assertEqual(env["record"], {"manifest_id": "u", "contract_digest": "sha256:a",
+                                             "unit_class": "mutation", "no_gh": True, "lane": "B",
+                                             "execute_nc": True})
+            ed = self._ed()
+            self.assertTrue(ed.checkvalid(base64.b64decode(env["sig_b64"]),
+                                          dispatch_sign.canonical_record(env["record"]),
+                                          ed.publickey(bytes(range(1, 33)))))
+            self.assertIn("no_gh", dispatch_sign._RECORD_FIELDS)
+            self.assertIn("lane", dispatch_sign._RECORD_FIELDS)
+            self.assertIn("execute_nc", dispatch_sign._RECORD_FIELDS)
+
     def test_the_dispatch_envelope_is_untouched(self):
         # Reusing the envelope must not change what `sign` emits for a dispatch record.
         with tempfile.TemporaryDirectory() as d:

@@ -16,13 +16,17 @@ repo-pinned PUBLIC key, so an in-session substitution is detected.
 
     dispatch-sign.py sign --key ~/.orca-fleet/dispatch-key \\
         --manifest-id <unit-id> --contract-digest sha256:… --unit-class mutation [--lighting lit] \\
-        [--nc-path src/app.py --nc-command "pytest -k AC_1" --nc-artifact-sha256 <hex>]
+        [--nc-path src/app.py --nc-command "pytest -k AC_1" --nc-artifact-sha256 <hex>] \\
+        [--no-gh] [--lane A|B|0] [--execute-nc]
         # prints the signed envelope JSON the gate consumes via --dispatch-record.
         # The --nc-* inputs are OPTIONAL and cover the negative control itself (#311): signing the
         # class and the contract binds the denominator but leaves the worker choosing its own
         # oracle. Sign them when the coordinator knows the control at dispatch time; when it does
         # not — the usual case, since the fix has not been written yet — the gate binds the same
         # inputs to what base_sha..head_sha actually changes instead (#280).
+        # --no-gh / --lane / --execute-nc sign the lane flags the gate takes from argv/env: a
+        # run using --no-gh or --lane the record does not sign is refused, and a signed flag the
+        # run contradicts (dropping a signed --execute-nc included) is a substitution.
 
     dispatch-sign.py sign-transcript --key ~/.orca-fleet/dispatch-key \\
         --transcript <verdict.json> [--out <transcript.json>]
@@ -89,8 +93,14 @@ def _load_ed25519():
 # dispatch time which paths a fix will touch — sign them when it can (a targeted mutation unit, a
 # re-run of a known defect), and the gate treats a flip as substitution. Unsigned, they fall back
 # to being bound against base_sha..head_sha itself (#280), which needs no foreknowledge.
+#
+# Then the LANE flags (review P2): `no_gh` (the review-waiver lane), `lane` (A|B|0) and
+# `execute_nc` (the control must be executed). Each is signed only when set, so a record made
+# without them keeps its exact canonical bytes. Bound on the gate: a run using --no-gh or --lane
+# the record did not sign is refused, and a signed value the run contradicts is a substitution.
 _RECORD_FIELDS = ("manifest_id", "contract_digest", "unit_class", "lighting",
-                  "nc_paths", "nc_command", "nc_artifact_sha256")
+                  "nc_paths", "nc_command", "nc_artifact_sha256",
+                  "no_gh", "lane", "execute_nc")
 
 
 # The verifier-transcript fields (#281/#386): verify.py's verdict object, signed so run_report.py
@@ -339,6 +349,17 @@ def main(argv=None) -> int:
     s.add_argument("--nc-artifact-sha256", default=None, metavar="HEX",
                    help="sha256 of the control's artifact CONTENT, so the evidence itself is "
                         "pinned and not just its path (optional)")
+    # Review P2: the lane flags verify.py takes from argv / ORCA_* — signed, a worker cannot add
+    # the review waiver, move the lane, or drop the executed control underneath the record.
+    s.add_argument("--no-gh", action="store_const", const=True, default=None, dest="no_gh",
+                   help="authorize the offline/no-gh review lane (optional; unsigned, the gate "
+                        "refuses a --no-gh run)")
+    s.add_argument("--lane", default=None, choices=["A", "B", "0"],
+                   help="the unit's lane (gate-classification.md) (optional; unsigned, the gate "
+                        "refuses a --lane run)")
+    s.add_argument("--execute-nc", action="store_const", const=True, default=None,
+                   dest="execute_nc",
+                   help="require the gate to EXECUTE the negative control (optional)")
 
     t = sub.add_parser("sign-transcript",
                        help="sign a verify.py verdict object (#281/#386) — only one YOU produced: "
@@ -365,6 +386,9 @@ def main(argv=None) -> int:
         "nc_paths": args.nc_paths,
         "nc_command": args.nc_command,
         "nc_artifact_sha256": args.nc_artifact_sha256,
+        "no_gh": args.no_gh,
+        "lane": args.lane,
+        "execute_nc": args.execute_nc,
     }
     return sign(Path(args.key), record)
 

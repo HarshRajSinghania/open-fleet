@@ -2264,7 +2264,13 @@ def check_provenance(m):
 
 
 _DISPATCH_FIELDS = ("manifest_id", "contract_digest", "unit_class", "lighting",
-                    "nc_paths", "nc_command", "nc_artifact_sha256")
+                    "nc_paths", "nc_command", "nc_artifact_sha256",
+                    "no_gh", "lane", "execute_nc")
+# The LANE flags (review P2): --no-gh waives the GitHub review, --lane decides Lane-0 refusal and
+# dark-eligibility's Lane-A requirement, and --execute-nc is what turns the control from text into
+# a fact. All three reach verify.py through argv / the worker-settable ORCA_* env, so on a
+# signed-record lane they are bound like lighting is. Signed only when set — an old record without
+# them keeps its exact canonical bytes and still verifies.
 # The negative-control inputs among them (#311) are read from the MANIFEST, not from argv, so they
 # are compared separately from the CLI-supplied fields above.
 _DISPATCH_NC_FIELDS = ("nc_paths", "nc_command", "nc_artifact_sha256")
@@ -2416,9 +2422,11 @@ def _manifest_nc_values(m):
             "nc_artifact_sha256": digest}
 
 
-def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_ref, pubkey_ref):
+def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_ref, pubkey_ref,
+                              no_gh=False, lane=None, execute_nc=False):
     """13. #135: verify a coordinator-signed dispatch record so a run's contract_digest / unit_class /
-    lighting can be checked against what the coordinator actually authorized. This is a SOUNDNESS
+    lighting / lane flags (--lane, --no-gh, --execute-nc) can be checked against what the
+    coordinator actually authorized. This is a SOUNDNESS
     boundary only when the *verifying key* is trusted — i.e. supplied by an OFF-WORKER context
     (CI/MCP/SDK, or an auditor re-running verify.py with the coordinator's real public key). In the
     native in-session hook the worker controls the key source, so there it is defense-in-depth, not a
@@ -2461,7 +2469,7 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     # Every value the run actually used must be signed AND match — an UNSIGNED field is unbound, so a
     # worker could set it freely; treat that as fail-closed, not a pass.
     for field, used in (("contract_digest", contract_digest), ("unit_class", unit_class),
-                        ("lighting", lighting)):
+                        ("lighting", lighting), ("lane", lane)):
         if used is None:
             continue
         signed = record.get(field)
@@ -2471,6 +2479,21 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
         if signed != used:
             return [f"dispatch substitution: the run used {field}={used!r} but the coordinator signed "
                     f"{signed!r} — the value was tampered (#135)"]
+    # The lane flags (review P2). --no-gh WAIVES the GitHub review, so using it unsigned is an
+    # unbound waiver; --execute-nc only makes a run stricter, so its absence is what must be bound:
+    # a record that signs it requires it. A signed value of either that the run contradicts is a
+    # substitution, in whichever direction.
+    for field, used, waiver in (("no_gh", bool(no_gh), True), ("execute_nc", bool(execute_nc), False)):
+        signed = record.get(field)
+        if signed is None:
+            if used and waiver:
+                return [f"dispatch record did not sign {field} but the run uses it — the review "
+                        "waiver is unbound, fail-closed (sign it with dispatch-sign.py --no-gh) "
+                        "(review P2)"]
+            continue
+        if not isinstance(signed, bool) or signed != used:
+            return [f"dispatch substitution: the run used {field}={used!r} but the coordinator signed "
+                    f"{signed!r} — the lane flag was tampered (review P2)"]
     # The negative-control inputs (#311). Optional: a coordinator that could not know them at
     # dispatch time signs none, and they stay bound by base_sha..head_sha alone (#280). Signed,
     # they are the oracle the coordinator chose, and the manifest does not get to swap it.
@@ -2601,7 +2624,8 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
         lambda: check_real_commits(m, is_mut),
         lambda: check_ancestry(m, base),
         lambda: check_dispatch_provenance(m, contract_digest, unit_class, lighting,
-                                          dispatch_record, dispatch_pubkey),
+                                          dispatch_record, dispatch_pubkey,
+                                          no_gh=no_gh, lane=lane, execute_nc=execute_nc),
         lambda: check_class_downgrade(m, unit_class, dispatch_record, dispatch_pubkey),
         lambda: check_freshness(m),
         lambda: check_commands(m, is_mut, nc_command),
@@ -2692,7 +2716,8 @@ def main(argv=None):
                          "requirement — set by the coordinator, not the worker")
     ap.add_argument("--dispatch-record", default=None,
                     help="coordinator-signed dispatch record (path or path@ref) binding "
-                         "contract-digest/unit-class/lighting — makes the native hook path sound (#135)")
+                         "contract-digest/unit-class/lighting and, when signed, lane/no-gh/"
+                         "execute-nc — makes the native hook path sound (#135)")
     ap.add_argument("--dispatch-pubkey", default=None,
                     help="repo-pinned coordinator public key (path or path@ref) that verifies "
                          "--dispatch-record; a committed pubkey is one the worker cannot swap")

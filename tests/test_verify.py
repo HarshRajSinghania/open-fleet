@@ -2480,6 +2480,60 @@ class DispatchProvenance(RepoCase):
         res = verify.check_dispatch_provenance(m, "sha256:a", "mutation", None, rec, pk)
         self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
 
+    _BASE = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation"}
+
+    def _lane_check(self, signed, **used):
+        rec, pk = self._signed({**self._BASE, **signed})
+        return verify.check_dispatch_provenance(self._M, "sha256:a", "mutation", None, rec, pk,
+                                                **used)
+
+    def _fatal(self, res):
+        return [e for e in res if not e.startswith("NOTE:")]
+
+    def test_an_unsigned_no_gh_waiver_is_refused(self):
+        # Review P2: --no-gh waives the GitHub review and arrived from argv/ORCA_NO_GH unbound.
+        res = self._lane_check({}, no_gh=True)
+        self.assertTrue(any("did not sign no_gh" in e for e in self._fatal(res)), res)
+        self.assertFalse(self._fatal(self._lane_check({"no_gh": True}, no_gh=True)))
+
+    def test_a_signed_no_gh_the_run_drops_is_a_substitution(self):
+        res = self._lane_check({"no_gh": True}, no_gh=False)
+        self.assertTrue(any("substitution" in e for e in self._fatal(res)), res)
+
+    def test_an_unsigned_or_flipped_lane_is_refused(self):
+        res = self._lane_check({}, lane="A")
+        self.assertTrue(any("did not sign lane" in e for e in self._fatal(res)), res)
+        res = self._lane_check({"lane": "0"}, lane="A")
+        self.assertTrue(any("substitution" in e for e in self._fatal(res)), res)
+        self.assertFalse(self._fatal(self._lane_check({"lane": "A"}, lane="A")))
+        # an omitted --lane against a signed lane is not a USE; the record's lane is not enforced
+        self.assertFalse(self._fatal(self._lane_check({"lane": "A"})))
+
+    def test_a_signed_execute_nc_cannot_be_dropped(self):
+        res = self._lane_check({"execute_nc": True}, execute_nc=False)
+        self.assertTrue(any("execute_nc" in e and "substitution" in e for e in self._fatal(res)), res)
+        self.assertFalse(self._fatal(self._lane_check({"execute_nc": True}, execute_nc=True)))
+        # executing a control the record did not require only makes the run stricter
+        self.assertFalse(self._fatal(self._lane_check({}, execute_nc=True)))
+
+    def test_the_lane_flags_reach_the_check_from_verify(self):
+        rec, pk = self._signed(dict(self._BASE))
+        self.write("m.json", json.dumps({"unit": "u"}))
+        with mock.patch.object(verify, "check_dispatch_provenance",
+                               wraps=verify.check_dispatch_provenance) as spy:
+            verify.verify("m.json", unit_class="mutation", no_gh=True, lane="B",
+                          execute_nc=True, dispatch_record=rec, dispatch_pubkey=pk)
+        kw = spy.call_args.kwargs
+        self.assertEqual((kw["no_gh"], kw["lane"], kw["execute_nc"]), (True, "B", True))
+
+    def test_canonicalization_matches_signer_on_the_lane_fields(self):
+        record = {**self._BASE, "no_gh": True, "lane": "0", "execute_nc": True}
+        self.assertEqual(verify._canonical_dispatch(record), dispatch_sign.canonical_record(record))
+        self.assertEqual(verify._DISPATCH_FIELDS, dispatch_sign._RECORD_FIELDS)
+        # an old record (no lane flags) canonicalizes exactly as it did before they existed
+        self.assertEqual(verify._canonical_dispatch(dict(self._BASE, no_gh=None, lane=None)),
+                         verify._canonical_dispatch(dict(self._BASE)))
+
     def test_canonicalization_matches_signer(self):
         # cross-tool drift guard: the gate and the signer must canonicalize identically, else every
         # real signature would fail to verify.

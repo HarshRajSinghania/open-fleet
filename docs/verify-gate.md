@@ -288,6 +288,15 @@ could produce would take the whole scheme out of use. So:
   the changed production paths to revert when a unit changed several — a partial control, whose RED
   speaks only for the part it reverted.
 
+**The lane flags.** `--no-gh`, `--lane` and `--execute-nc` reach verify.py from argv and the
+worker-settable `ORCA_NO_GH` / `ORCA_UNIT_LANE` / `ORCA_EXECUTE_NC`, so the tuple also carries
+`no_gh`, `lane` and `execute_nc` (`dispatch-sign.py sign --no-gh --lane A|B|0 --execute-nc`), each
+signed only when set — a record without them keeps its exact canonical bytes. With a record:
+a run using `--no-gh` (the review waiver) or `--lane` the record does not sign is refused as
+unbound, a signed value the run contradicts is a `dispatch substitution`, and a signed
+`execute_nc` cannot be dropped. Executing a control the record did not require is allowed — it
+only makes the run stricter.
+
 **Setup and per-dispatch flow:**
 
 1. **Once:** off the worker, `dispatch-sign.py gen-key --out <secret>` — keep `<secret>` private and

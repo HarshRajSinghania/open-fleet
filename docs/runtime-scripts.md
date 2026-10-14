@@ -414,10 +414,14 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-30`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-38`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
-Usage: `orca_cli.py [--path]`; library `from orca_cli import resolve`.
+Usage: `orca_cli.py [--path]`; library `from orca_cli import resolve, run_json`.
+`run_json(argv, timeout=, error=, nonzero=)` is the one `--json` envelope reader the eight
+operator tools share: it raises the caller's exception class on an unrunnable CLI, unreadable
+or non-object JSON, or an `error` envelope, and returns `result`; `nonzero` keeps each tool's
+exit-status rule (`strict`, `no-receipt` for `check_reply.py`, `ignore` for `hitl_ask.py`).
 
 Order (upstream's own, `skill-stubs/_shared/cli-resolution.md` in stablyai/orca):
 `ORCA_CLI_COMMAND` when set (Orca exports it inside the sessions it manages; the test

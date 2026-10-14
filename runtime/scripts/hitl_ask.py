@@ -24,7 +24,6 @@ Exit: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 try:
@@ -135,23 +134,7 @@ def build_argv(ns, env):
 
 
 def run_orca(argv):
-    try:
-        proc = subprocess.run([orca_cli.resolve(), *argv, "--json"],
-                              capture_output=True, text=True, timeout=1900)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise Failed(f"could not run orca: {exc}")
-    try:
-        doc = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise Failed(f"orca returned unreadable JSON (exit {proc.returncode})")
-    if not isinstance(doc, dict):
-        raise Failed("orca returned a non-object envelope")
-    result = doc.get("result") if isinstance(doc.get("result"), dict) else {}
-    err = doc.get("error") or result.get("error")
-    if err:
-        code = err.get("code") if isinstance(err, dict) else err
-        raise Failed(f"orca refused: {code}")
-    return result
+    return orca_cli.run_json(argv, timeout=1900, error=Failed, nonzero="ignore")
 
 
 def main(argv=None, env=None):

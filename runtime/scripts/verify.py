@@ -2668,6 +2668,25 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
             for line in result:
                 (notes if line.startswith("NOTE:") else fatal).append(line)
 
+    # A flag the caller left off falls back to the value a VERIFIED dispatch record signs:
+    # omitting --lane against a record signing lane "0" skipped the Lane-0 refusal, and an
+    # omitted --lighting skipped the lighting swap check (PR #571 review). Adoption needs a
+    # clean provenance verdict; the provenance check below re-verifies with the adopted values,
+    # so a record swapped between the two reads fails there as a substitution.
+    if dispatch_record and dispatch_pubkey and (lane is None or lighting is None):
+        verdict = check_dispatch_provenance(m, contract_digest, unit_class, lighting,
+                                            dispatch_record, dispatch_pubkey, no_gh=no_gh,
+                                            lane=lane, execute_nc=execute_nc)
+        rec_text, rec_err = read_source(dispatch_record)
+        if all(line.startswith("NOTE:") for line in verdict) and not rec_err:
+            try:
+                signed = json.loads(rec_text.decode("utf-8"))["record"]
+            except (ValueError, KeyError, TypeError):
+                signed = {}
+            if isinstance(signed, dict):
+                lane = signed.get("lane") if lane is None else lane
+                lighting = signed.get("lighting") if lighting is None else lighting
+
     # Admission is read-only. Never construct worktrees, apply patches or run the NC command
     # until the scope, commit identities, signed inputs and evidence snapshot are accepted.
     collect((

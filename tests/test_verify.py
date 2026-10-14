@@ -2572,8 +2572,22 @@ class DispatchProvenance(RepoCase):
         res = self._lane_check({"lane": "0"}, lane="A")
         self.assertTrue(any("substitution" in e for e in self._fatal(res)), res)
         self.assertFalse(self._fatal(self._lane_check({"lane": "A"}, lane="A")))
-        # an omitted --lane against a signed lane is not a USE; the record's lane is not enforced
+        # an omitted --lane against a signed lane is not a USE here; verify() adopts the signed
+        # lane instead (test_an_omitted_lane_adopts_the_signed_one)
         self.assertFalse(self._fatal(self._lane_check({"lane": "A"})))
+
+    def test_an_omitted_lane_adopts_the_signed_one(self):
+        # A record signing lane "0" passed as a landed mutation when --lane was left off: the
+        # provenance check skipped the unused field and check_lighting saw no lane at all
+        # (PR #571 review). verify() now runs the downstream checks on the signed value.
+        rec, pk = self._signed({**self._BASE, "lane": "0", "lighting": "lit"})
+        self.write("m.json", json.dumps({"unit": "u"}))
+        out, err = verify.verify("m.json", unit_class="mutation", contract_digest="sha256:a",
+                                 dispatch_record=rec, dispatch_pubkey=pk)
+        self.assertIsNone(err)
+        fatal, _notes = out
+        self.assertTrue(any("Lane 0" in e for e in fatal), fatal)
+        self.assertFalse(any("did not sign" in e or "substitution" in e for e in fatal), fatal)
 
     def test_a_signed_execute_nc_cannot_be_dropped(self):
         res = self._lane_check({"execute_nc": True}, execute_nc=False)

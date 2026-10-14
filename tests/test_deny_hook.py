@@ -1547,5 +1547,114 @@ class TestScriptShape(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
 
+class TestEgressReceiptRule(HookBase):
+    """#561: an off-repo write must be preceded, in the same command, by its
+    egress receipt. Reads stay free; a receipt AFTER the send does not count
+    (the send may be the last thing the process does)."""
+
+    RECEIPT = ("runtime/scripts/egress.py write --sink pr-open --host github.com "
+               "--payload-class pr-body --consent grant:pr-open-on-base")
+
+    def test_unreceipted_writes_deny(self):
+        for command in (
+            "gh pr create --title x",
+            "gh pr merge 12 --merge",
+            "gh issue close 34",
+            "gh issue comment 1 --body done",
+            "gh pr review 9 --comment --body GO",
+            "gh release create v1.0.0",
+            "gh api -X POST repos/o/r/issues -f title=x",
+            "gh api repos/o/r/issues -f title=x",
+            "gh api -XPOST repos/o/r/issues",
+            "cd repo && gh pr create --fill",
+            f"gh pr create --fill && {self.RECEIPT}",
+            # A receipt arms only the success path, and only one send:
+            f"{self.RECEIPT} || gh issue comment 1 --body unrecorded",
+            f"{self.RECEIPT}; gh pr create --fill",
+            f"{self.RECEIPT} && gh pr create --fill && gh issue close 34",
+            f"{self.RECEIPT} && echo ok && gh pr create --fill",
+            # Mentioning the writer records nothing (PR #567 review, P1):
+            "echo egress.py write && gh issue close 34",
+            # env -S's operand is the command; the rest are its arguments:
+            "env -S true runtime/scripts/egress.py write && gh issue close 34",
+            # A negated writer that fails still satisfies `&&` (P1):
+            "! runtime/scripts/egress.py write --bad && gh issue close 34",
+            # Help/version invocations exit 0 running nothing (P1):
+            "python3 --version runtime/scripts/egress.py write && gh issue close 34",
+            "python3 -h runtime/scripts/egress.py write && gh issue close 34",
+            "sudo --help runtime/scripts/egress.py write && gh issue close 34",
+            # Attached field flags still supply fields → POST (P1):
+            "gh api repos/o/r/issues -ftitle=x",
+            "gh api repos/o/r/issues -Ftitle=x",
+            # Groups, subshells, and negation run the same command (P1):
+            "{ gh issue close 34; }",
+            "(gh issue close 34)",
+            "! gh issue close 34",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+                self.assertIn("egress receipt", block["permissionDecisionReason"])
+
+    def test_receipted_writes_and_reads_allow(self):
+        for command in (
+            f"{self.RECEIPT} && gh pr create --fill",
+            f"{self.RECEIPT} && gh issue close 34",
+            # A receipted send inside a group/subshell is still receipted:
+            f"{self.RECEIPT} && {{ gh issue close 34; }}",
+            f"{self.RECEIPT} && (gh issue close 34)",
+            f"{self.RECEIPT} && env gh issue close 34",
+            # The writer through a real interpreter invocation, options and
+            # versioned names included (PR #567 review, P2):
+            "python3 runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "python3 -u runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "python3.12 runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "python3 -W ignore runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "gh pr list --state open",
+            "gh pr view 12 --json state",
+            "gh api repos/o/r/pulls/12 --jq .state",
+            "gh api repos/o/r/issues --method GET -f state=open",
+            "gh issue list",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(
+                    self.decision(self.fire(event("Bash", command=command))),
+                    command)
+
+    def test_wrapped_sends_still_deny(self):
+        # The shell side peels env/sudo wrappers (strip_prefix); rule 5 moved
+        # into the payload reader, so the peeling must judge there too —
+        # otherwise a wrapper word launders the send past the receipt rule
+        # (PR #567 review, P1).
+        for command in (
+            "env gh issue close 34",
+            "env -i gh issue close 34",
+            "env FOO=bar gh pr create --fill",
+            "command gh release create v1",
+            "sudo gh issue close 34",
+            "sudo -n gh issue close 34",
+            "sudo -u root gh pr create --fill",
+            "sudo -- gh issue close 34",
+            "FOO=bar env gh pr merge 12",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_receipt_join_survives_a_trailing_comment(self):
+        # `receipt && # why` <newline> `send` is the normal formatted shape;
+        # the && must still arm the send (PR #567 review, P2).
+        command = (f"{self.RECEIPT} && # receipt first\n"
+                   "gh pr create --fill")
+        self.assertIsNone(
+            self.decision(self.fire(event("Bash", command=command))), command)
+        unreceipted = "true && # nothing recorded\ngh pr create --fill"
+        block = self.decision(self.fire(event("Bash", command=unreceipted)))
+        self.assertIsNotNone(block, unreceipted)
+        self.assertEqual(block["permissionDecision"], "deny", unreceipted)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

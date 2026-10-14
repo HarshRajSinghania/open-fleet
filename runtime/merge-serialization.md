@@ -51,7 +51,8 @@ Two corrections against v1.4.199, both of which make this rule the FLEET's, not 
    triggers — is preceded by `egress.py write … &&` (#368): the receipt is appended BEFORE the
    send, and its exit 3 stops the send. At run close, `egress.py verify` runs beside the
    integrity inventory; together they answer "what did this run produce, and what left the
-   machine".
+   machine". Where the deny-hook is wired, an unreceipted `gh` write is refused below
+   the model (#561); elsewhere the prefix is coordinator discipline, checked at close.
    A concurrent head change refuses the merge: requeue for fresh review, then repeat FRESH;
    never retry without the expected-head guard. `--admin` only under a recorded once-per-run human
    grant when a merge-trap check hangs (gate-classification.md), never routinely.

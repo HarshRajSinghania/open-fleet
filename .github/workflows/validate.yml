@@ -19,6 +19,7 @@ jobs:
     # `gates` below NEEDS this job (branch protection requires the `gates`
     # context, so suite failures block the merge through it).
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +69,7 @@ jobs:
     # matrix proves the floor and the minor between it and the pin, without coverage. Same
     # shards, same runner, no artifacts; `gates` needs it so a red floor blocks the merge.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +98,7 @@ jobs:
   gates:
     needs: [tests, floor]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
@@ -232,6 +235,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
   vfbench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:

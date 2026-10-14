@@ -63,6 +63,7 @@ WEIGHTS = {
     "test_docs_navigation": 27.5,
     "test_ed25519": 2.5,
     "test_egress": 6.0,
+    "test_escape_probe": 0.6,
     "test_evals": 12.9,
     "test_evidence_run": 7.9,
     "test_external_ci_monitor": 0.1,

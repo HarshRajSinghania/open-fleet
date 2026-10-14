@@ -623,7 +623,11 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
 (`worker-start`: worktree + agent terminal + readiness + dispatch) and custom-argv lane
 (`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-80`;
-behavior pinned by `tests/test_spawn_worker.py`.
+behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also checks
+deny-hook arming (#562): with `ORCA_DENY_HOOK_SETTINGS` naming the operator-wired
+settings file, the file must register `deny-hook.sh` and the hook must answer a deny
+probe, else `SPAWN=REFUSED`; unset, the spawn proceeds with a loud `UNVERIFIED`
+warning — the guard is never claimed unchecked.
 
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 

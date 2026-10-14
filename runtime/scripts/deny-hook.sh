@@ -39,15 +39,16 @@
 #   4. `orca orchestration reset` — one command that discards a whole fleet's
 #      dispatch state
 #   5. an off-repo write (`gh pr|issue|release <write-verb>`, or `gh api` with
-#      a write method/field) NOT preceded in the same command by its egress
-#      receipt (`egress.py write … &&`). The receipt is free and mechanical,
-#      so there is no legitimate unreceipted form to ask about; the denial
-#      names the governed path. Doctrine: merge-serialization.md (#368),
-#      enforced here since #561. Plain `git push` is out of scope (branch
-#      pushes are evidenced by PR head SHAs, and the force rules above
-#      already govern their dangerous forms). The receipt segment is matched
-#      as text: mentioning egress.py in an argument reads as receipted, the
-#      same accepted limit as every rule here.
+#      a write method/field) with no egress receipt immediately &&-preceding
+#      it in the same command (`egress.py write … &&`). Judged in the payload
+#      reader, the only place the joining operators survive: a receipt joined
+#      by || or ; proves nothing (the send runs even when the receipt failed),
+#      and one receipt covers exactly one send. The receipt is free and
+#      mechanical, so there is no legitimate unreceipted form to ask about;
+#      the denial names the governed path. Doctrine:
+#      merge-serialization.md (#368), enforced here since #561. Plain
+#      `git push` is out of scope (branch pushes are evidenced by PR head
+#      SHAs, and the force rules above already govern their dangerous forms).
 # Git global options between `git` and the subcommand (-C, -c, --git-dir and
 # kin) are stripped before any of this is judged — `git -C /x push --force` is
 # the push it names (#297). A deletion that spares the default branch asks
@@ -215,8 +216,24 @@ DQ = chr(34)
 BLANKS = chr(32) + chr(9)
 
 
-def segments(cmd):
-    """Split a shell line into command segments, QUOTE-AWARE.
+def _norm_join(sep_chars):
+    # The join before a segment, reduced to what rule 5 (egress receipts)
+    # needs: "&&" runs the next command only if the previous one succeeded;
+    # every other separator run (||, ;, |, &, newline, mixes) runs it
+    # regardless, so a receipt joined that way proves nothing about the send.
+    core = sep_chars.replace(chr(10), "")
+    if not core:
+        return "start"
+    return "&&" if core == "&&" else "seq"
+
+
+def _split(cmd):
+    """Split a shell line into (join, segment) pairs, QUOTE-AWARE.
+
+    join is the operator run before the segment: "start" for the first,
+    "&&" when the shell runs it only on the previous success, "seq" for
+    every other separator. segments() below is this walk with the joins
+    dropped, byte-identical to what it always returned.
 
     This was a sed pass over the raw text, and a separator inside a quoted string split there
     too. The header called that safe, reasoning that splitting only ever makes MORE segments and
@@ -238,6 +255,7 @@ def segments(cmd):
     write target, which is the one direction this parser must never fail in.
     """
     segs, cur = [], []
+    cur_join, sep_run = "start", ""
     i, n, quote = 0, len(cmd), ""
     word_start = True
     while i < n:
@@ -256,6 +274,7 @@ def segments(cmd):
         if quote:
             # A literal newline inside a quoted word is data, not a boundary. It cannot travel on
             # the one-line record protocol below, so it rides as a space: a value, still one word.
+            sep_run = ""
             cur.append(" " if ch == "\n" else ch)
             if ch == "\\" and quote == DQ and i + 1 < n:
                 cur.append(cmd[i + 1])
@@ -268,11 +287,13 @@ def segments(cmd):
             continue
         if ch == SQ or ch == DQ:
             quote = ch
+            sep_run = ""
             cur.append(ch)
             word_start = False
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
+            sep_run = ""
             cur.append(ch)
             cur.append(cmd[i + 1])
             word_start = False   # an escaped character is a word character
@@ -286,6 +307,7 @@ def segments(cmd):
             j = i + 1
             while j < n and cmd[j] in "<>|&":
                 j += 1
+            sep_run = ""
             cur.append(cmd[i:j])
             word_start = False
             i = j
@@ -295,16 +317,25 @@ def segments(cmd):
         # removing a special case for them changed no decision, so there is no special case.
         # A newline is a separator too, and the one that ends a comment.
         if ch in ";|&\n":
-            segs.append("".join(cur))
-            cur = []
+            if cur:
+                segs.append((cur_join, "".join(cur)))
+                cur = []
+            sep_run += ch
+            cur_join = _norm_join(sep_run)
             word_start = True
             i += 1
             continue
+        sep_run = ""
         cur.append(ch)
         word_start = ch in BLANKS
         i += 1
-    segs.append("".join(cur))
-    return [seg for seg in segs if seg.strip()]
+    if cur:
+        segs.append((cur_join, "".join(cur)))
+    return [(join, seg) for join, seg in segs if seg.strip()]
+
+
+def segments(cmd):
+    return [seg for _join, seg in _split(cmd)]
 
 
 def policy_word(word):
@@ -370,9 +401,65 @@ print(command)
 # file_path left the one write tool that spells the field differently free of
 # the boundary entirely (#297).
 print(s(ti.get("file_path") or ti.get("notebook_path")))
-# Line 4 onward: C = comparison command, W = write target, A = literal argument.
+# Line 4 onward: C = comparison command, W = write target, A = literal argument,
+# E = an off-repo write with no egress receipt arming it (rule 5, judged here
+# because only this side of the protocol still knows the joining operators).
 # Paths stay decoded on their own lines; comparison words cannot split operands.
-for seg in segments(raw_command):
+SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
+              "delete", "upload", "ready", "pin", "unpin", "lock", "unlock", "transfer"}
+
+
+def _plain_words(args):
+    ws = list(args)
+    while ws and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
+        ws = ws[1:]
+    if ws and ws[0] == "sudo":
+        ws = ws[1:]
+    return ws
+
+
+def _is_receipt(args):
+    ws = _plain_words(args)
+    for i, word in enumerate(ws):
+        if (word == "egress.py" or word.endswith("/egress.py")) \
+                and i + 1 < len(ws) and ws[i + 1] == "write":
+            return True
+    return False
+
+
+def _is_send(args):
+    ws = _plain_words(args)
+    if not ws or not (ws[0] == "gh" or ws[0].endswith("/gh")):
+        return False
+    rest = ws[1:]
+    if len(rest) >= 2 and rest[0] in ("pr", "issue", "release"):
+        return rest[1] in SEND_VERBS
+    if rest and rest[0] == "api":
+        method, fields, i = None, False, 1
+        while i < len(rest):
+            word = rest[i]
+            if word in ("-X", "--method") and i + 1 < len(rest):
+                method = rest[i + 1].upper()
+                i += 2
+                continue
+            if word.startswith("--method="):
+                method = word.split("=", 1)[1].upper()
+            elif word.startswith("-X") and len(word) > 2:
+                method = word[2:].upper()
+            elif word in ("-f", "-F", "--field", "--raw-field", "--input") \
+                    or word.startswith(("--field=", "--raw-field=", "--input=")):
+                fields = True
+            i += 1
+        # An explicit method wins: --method GET with -f filters is a read.
+        # Fields imply POST only when no method was supplied (gh semantics).
+        if method is not None:
+            return method in ("POST", "PUT", "PATCH", "DELETE")
+        return fields
+    return False
+
+
+_seg_args = []
+for _join, seg in _split(raw_command):
     args, writes, pending = [], [], None
     for kind, value in shell_tokens(seg):
         if kind == "redirect":
@@ -383,14 +470,37 @@ for seg in segments(raw_command):
             pending = None
         else:
             args.append(value)
+    _seg_args.append((_join, args))
     record("C", " ".join(policy_word(word) for word in args))
     for path in writes:
         record("W", path)
     for word in args:
-        record("A", word)' 2>/dev/null) || {
+        record("A", word)
+
+_armed = False
+for _join, _args in _seg_args:
+    if _is_receipt(_args):
+        _armed = True
+        continue
+    if _is_send(_args):
+        if not (_armed and _join == "&&"):
+            record("E", "unreceipted")
+            break
+        _armed = False  # one receipt covers exactly one send
+        continue
+    _armed = False  # any other segment consumes the arming
+' 2>/dev/null) || {
   decide deny "deny-hook: the tool payload could not be parsed. Fail-closed: an unreadable payload is refused, never allowed."
   exit 0
 }
+
+# Rule 5 verdict, computed in the payload reader (the only place the joining
+# operators survive): an E record means an off-repo write in this command has
+# no egress receipt immediately &&-preceding it.
+if printf '%s\n' "$FIELDS" | grep -q '^E '; then
+  decide deny "deny-hook[HIGH]: off-repo write without its egress receipt. Precede the send in the same command — egress.py write … && <this gh command> — so what left the machine is on the hash-chained record (merge-serialization.md, #368). The receipt comes first: the send may be the last thing this process does. One receipt covers exactly one send, and only on the success path (&&)."
+  exit 0
+fi
 
 # --- path resolution ---------------------------------------------------------
 # The boundary check is a string prefix, so the path it compares has to be a
@@ -828,16 +938,10 @@ set -- $_SEGS
 set +f
 IFS=$_OLDIFS
 
-_EGRESS_SEEN=0
 for _SEG in "$@"; do
   _SEG_N=$(norm_ws "$_SEG")
   CMD=$(strip_git_opts "$(strip_prefix "$_SEG_N")")
   [ -n "$(printf '%s' "$CMD" | tr -d '[:space:]')" ] || continue
-  # Rule 5 bookkeeping: an egress receipt segment arms the sends AFTER it in
-  # the same command (the receipt is appended before the send, #368).
-  if has '(^|[[:space:]/])egress\.py[[:space:]]+write([[:space:]]|$)'; then
-    _EGRESS_SEEN=1
-  fi
   # 1. Recursive delete of a root-class target, or --no-preserve-root anywhere.
   if has '^[[:space:]]*(sudo[[:space:]]+)?rm[[:space:]]' \
     && has '(^|[[:space:]])(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)([[:space:]]|$)'; then
@@ -963,21 +1067,6 @@ for _SEG in "$@"; do
   # 4. Fleet-wide orchestration reset.
   if has '^[[:space:]]*(sudo[[:space:]]+)?orca(-ide)?[[:space:]]+orchestration[[:space:]]+reset([[:space:]]|$)'; then
     decide deny "deny-hook[HIGH]: 'orca orchestration reset' discards the whole fleet's dispatch state. A worker never resets the orchestration it runs inside."
-    exit 0
-  fi
-
-  # 5. Off-repo write without its egress receipt in the same command (#561).
-  _OFFREPO=0
-  if has '^[[:space:]]*(sudo[[:space:]]+)?gh[[:space:]]+(pr|issue|release)[[:space:]]+(create|merge|comment|review|close|reopen|edit|delete|upload|ready|pin|unpin|lock|unlock|transfer)([[:space:]]|$)'; then
-    _OFFREPO=1
-  elif has '^[[:space:]]*(sudo[[:space:]]+)?gh[[:space:]]+api([[:space:]]|$)'; then
-    if has '(^|[[:space:]])(-X|--method)[[:space:]]*=?[[:space:]]*(POST|PUT|PATCH|DELETE)([[:space:]]|$)' \
-      || has '(^|[[:space:]])(-[fF]|--field|--raw-field|--input)([[:space:]]|=|$)'; then
-      _OFFREPO=1
-    fi
-  fi
-  if [ "$_OFFREPO" -eq 1 ] && [ "$_EGRESS_SEEN" -ne 1 ]; then
-    decide deny "deny-hook[HIGH]: off-repo write without its egress receipt. Precede the send in the same command — egress.py write … && <this gh command> — so what left the machine is on the hash-chained record (merge-serialization.md, #368). The receipt comes first: the send may be the last thing this process does."
     exit 0
   fi
 done

@@ -1565,8 +1565,14 @@ class TestEgressReceiptRule(HookBase):
             "gh release create v1.0.0",
             "gh api -X POST repos/o/r/issues -f title=x",
             "gh api repos/o/r/issues -f title=x",
+            "gh api -XPOST repos/o/r/issues",
             "cd repo && gh pr create --fill",
             f"gh pr create --fill && {self.RECEIPT}",
+            # A receipt arms only the success path, and only one send:
+            f"{self.RECEIPT} || gh issue comment 1 --body unrecorded",
+            f"{self.RECEIPT}; gh pr create --fill",
+            f"{self.RECEIPT} && gh pr create --fill && gh issue close 34",
+            f"{self.RECEIPT} && echo ok && gh pr create --fill",
         ):
             with self.subTest(command=command):
                 block = self.decision(self.fire(event("Bash", command=command)))
@@ -1581,6 +1587,7 @@ class TestEgressReceiptRule(HookBase):
             "gh pr list --state open",
             "gh pr view 12 --json state",
             "gh api repos/o/r/pulls/12 --jq .state",
+            "gh api repos/o/r/issues --method GET -f state=open",
             "gh issue list",
         ):
             with self.subTest(command=command):

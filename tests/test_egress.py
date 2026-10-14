@@ -395,6 +395,43 @@ class TestScriptShape(unittest.TestCase):
         self.assertIn('DEFAULT_LEDGER = ".orca/egress.jsonl"', EGRESS.read_text(encoding="utf-8"))
 
 
+class TestExpectAncestor(EgressBase):
+    """#561: close-to-close anchoring tolerates appends, catches rewrites."""
+
+    def test_appends_after_the_anchor_pass(self):
+        self.write_one()
+        anchored = self.run_egress("head").stdout.strip()
+        self.write_one(sink="issue-close")
+        self.write_one(sink="pr-merge")
+        r = self.run_egress("verify", "--expect-ancestor", anchored)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_wholesale_rewrite_loses_the_anchored_line(self):
+        self.write_one()
+        anchored = self.run_egress("head").stdout.strip()
+        self.ledger.unlink()
+        self.write_one(host="evil.example")
+        r = self.run_egress("verify", "--expect-ancestor", anchored)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("TAMPER", r.stderr)
+
+    def test_truncation_loses_the_anchored_line(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        anchored = self.run_egress("head").stdout.strip()
+        self.ledger.write_text(self.lines()[0] + "\n", encoding="utf-8")
+        r = self.run_egress("verify", "--expect-ancestor", anchored)
+        self.assertEqual(r.returncode, 3)
+
+    def test_empty_anchor_round_trips(self):
+        self.assertEqual(self.run_egress("head").stdout.strip(), "(empty)")
+        r = self.run_egress("verify", "--expect-head", "(empty)")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.write_one()
+        r2 = self.run_egress("verify", "--expect-ancestor", "(empty)")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+
+
 class TestHead(EgressBase):
     """#561: `head` prints the anchor value run close records off the writer.
     It verifies first — a head taken from a broken chain anchors tampering."""

@@ -1,7 +1,7 @@
 ---
 name: pin-it
 description: >-
-  Re-witness and re-pin the fleet's runtime-mechanics doctrine against the installed control-plane binary
+  Maintainer-facing (the fleet's own Orca doctrine). Re-witness and re-pin the fleet's runtime-mechanics doctrine against the installed control-plane binary
   after an upgrade or a drift signal: enumerate every mechanics claim in runtime policies, scripts, and
   mission dispatch preambles, load the version-matched guides the binary serves, replay each claim live, and
   patch what lags — kept claims carry receipts, removed claims carry archived refutations. The unit is one

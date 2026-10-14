@@ -66,7 +66,7 @@ binds. A mission's current proof tier lives in its `SKILL.md` and is shown in th
 [README catalog](../README.md#the-mission-catalog). `doctrine-only` describes a protocol;
 `self-run` and `external-run` require binding reports. A tier is separate from your run's result.
 
-[Research](research/README.md), [reviews](../REVIEW.md), [completion records](completion/STATUS.md),
+[Research](research/README.md), [reviews](reviews/), [completion records](completion/STATUS.md),
 [decisions](DECISIONS.md) and the [changelog](../CHANGELOG.md) explain past findings and choices.
 Read them at their recorded date and SHA. Commands quoted in an evidence transcript are a record
 of that execution, rather than the current setup procedure. Use the install and development

@@ -1,7 +1,7 @@
 ---
 name: offload-it
 description: >-
-  Stand up a per-workspace environment recipe end to end: interview the human for connection
+  Orca-environment setup (where the fleet itself runs). Stand up a per-workspace environment recipe end to end: interview the human for connection
   mode, provider, agent, and git auth, scaffold the lifecycle scripts and state file, build the
   base snapshot and the agent-auth snapshot, wire the environmentRecipes entry, and loop the
   recipe doctor dry-run plus live provision self-test until both pass — paid checkpoints gated

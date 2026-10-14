@@ -37,6 +37,9 @@ rides `merge-serialization`, `reviewed-sha-freshness`, `dispatch-lifecycle`, `li
 `evidence-manifest`, `ledger-contract`, `sandbox-policy`, `attention-budget`. Worker TASK pack: one of matt | addy
 — never co-mount.
 
+DEFERRED READS, never at activation: mutation-hunt.md at build-blind REVIEW — the reviewer writes its
+OWN killer mutant per path (`PROFILE=rw`, scratch clones only, commits nothing), so a builder's audit is never self-graded.
+
 ## Two terminal outcomes
 
 - **COVERED** — every path on the confirmed critical surface has a merged, mutation-audited test; every
@@ -59,7 +62,7 @@ MAP critical surface (coverage gaps × call-graph of money/auth/data/external-co
     · test reveals a BUG → SURFACED-BUG sub-loop (remediate-finding). Route small clear fixes in-PR;
       route ambiguous / behavior-changing bugs to PARK needs-human or hand to clean-sweep. Never assert
       the buggy behavior as correct.
-  → build-blind REVIEW (acceptance-review) → RUNTIME-PROVE (characterization asserts behavior the
+  → build-blind REVIEW (acceptance-review + mutation-hunt) → RUNTIME-PROVE (characterization asserts behavior the
     real entry point actually exhibits, not harness-only fiction) → LAND
   → RE-MAP coverage → loop → outcome → REFLECT (`compound-learn`)
 ```

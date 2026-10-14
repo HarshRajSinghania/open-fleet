@@ -16,7 +16,11 @@ Three layers, strictly separated:
 - **Playbooks** — `playbooks/<name>.md`. Callable phase protocols a mission injects into a
   worker's TASK. Not skills. They have no frontmatter and never auto-trigger.
 - **Runtime** — `runtime/*.md` policies + `runtime/scripts/`. Orca dispatch/gate/merge/liveness/
-  sandbox mechanics. Missions call these; users never invoke them.
+  sandbox mechanics. Missions call these; users never invoke them. Runtime control files sit
+  beside them: `runtime/pins.json` (upstream pins), `runtime/one-way-doors.json`, and
+  `runtime/quarantine.json` — the component quarantine deny-list (#558) that `validate.py`,
+  `preflight.py --mission` and `quarantine_check.py` enforce fail-closed. Only a human adds,
+  removes or narrows a quarantine entry; an agent never edits it.
 
 Only `skills/` may contain a `SKILL.md`. `scripts/validate.py` fails the build if that breaks.
 
@@ -72,7 +76,8 @@ evidence manifest** ([`runtime/evidence-manifest.md`](runtime/evidence-manifest.
 - tests pass at that exact SHA in a clean env *(coordinator-run — not verify.py)*,
 - the negative control really fails when the change is reverted/mutated,
 - mutation units carry a non-empty intent packet and a legal `lighting` value,
-- `reviewed_sha == head_sha` (a rebase after review voids it),
+- `reviewed_sha == head_sha` (a rebase after review voids it unless the content tree is unchanged —
+  `runtime/reviewed-sha-freshness.md`),
 - for a ship, the deployed revision equals the reviewed revision *(coordinator-verified)*.
 
 A `worker_done` that says "merged" is a claim to check, not a fact to record.

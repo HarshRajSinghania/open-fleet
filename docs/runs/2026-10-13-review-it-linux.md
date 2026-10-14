@@ -1,16 +1,17 @@
 # Run report — review-it external-run (Linux witness, #527), 2026-10-13
 
-RUN: mission=review-it tier=doctrine-only inventory_at=314d63feafff694ffc51df10c21e15da288fed83 manifest=docs/runs/2026-10-13-review-it-linux/manifest.json verifier=GREEN waves=1
+RUN: mission=review-it tier=external-run inventory_at=314d63feafff694ffc51df10c21e15da288fed83 manifest=docs/runs/2026-10-13-review-it-linux/manifest.json verifier=GREEN waves=1
 
 | Field | Value |
 |---|---|
 | Mission | `review-it` — mission source revision `288ae5b5` (catalog main), installed location `~/orca-fleet/skills/review-it` in the witness VM |
-| Tier claimed | `doctrine-only` (no promotion attempted — #527 is substrate evidence; run kind: `external-run`, target is not this catalog) |
+| Tier claimed | `external-run` (run kind: external — the target, stablyai/orca, is not this catalog). Recorded 2026-10-13 at `doctrine-only` as #527 substrate evidence; tier claim added 2026-10-14 — see *Tier amendment* below |
 | Target | stablyai/orca PR #28206 by @Hotragn (session-external author), originating issue stablyai/orca#28164 |
 | Fixed point | reviewed head `6dcd957a65daf77fe49f15afbb998b262427224c` · merge-base `cbeb53714640288d172e9d59c53c0e0bff85f6ba` · frozen contract `contract.md@d9259acc10b30cd177f67d294a656d12802cedab` sha256:d70a985e…aae4 · spec source `spec-source.md` (originating issue, first hit) |
 | Coordinator / workers | coordinator session driving `orca-ide` in the VM · 4 workers `PROFILE=ro` (Claude Code 2.1.296, plan mode) · TASK packs: matt (3 acceptance axes), addy (security lens) — one pack per worker |
 | Orca | `orca-ide status --json` → `"state": "ready"`, `appVersion 1.4.224`, runtime reachable (retained: `status-linux.json`). Host: Ubuntu 24.04.5 LTS arm64 (OrbStack `orca-linux-witness`); resolved CLI name: `orca-ide` |
 | Human gates | VM Claude auth — maintainer via OAuth consent 2026-10-13 (long-lived token minted by `claude setup-token` in the VM; token file mode 0600 in VM home, never in any repo). Verdict posting: NOT requested — retained only (one-way gate untouched) |
+| Runner | Ravindra Kumar (@ravidsrk) · independent (the maintainer; runner row added 2026-10-14 with the tier claim) |
 
 ## Terminal state
 
@@ -108,6 +109,17 @@ missions have no fix authority).
   (read-only external target); tally recorded in `verdict.md` instead.
 - Worker release returned `retained` for all four dispatches (custom-argv
   lane); panes were closed by the coordinator at teardown.
+
+## Tier amendment (2026-10-14)
+
+This report was filed for #527 (a Linux substrate witness), so it claimed `doctrine-only` and
+no promotion was attempted at landing. Nothing in it failed a binding check: the 2026-10-14
+review re-ran `python3 runtime/scripts/run_report.py docs/runs/2026-10-13-review-it-linux.md
+--mission review-it --tier external-run` with only the `RUN:` header's `tier=` changed and it
+printed `bound review-it (external-run)`, exit 0. The `tier=` field and the *Tier claimed* row
+are the only edits; the run, its verdict, `inventory_at` and every hashed artifact below are
+unchanged. The runner was the maintainer (Ravindra Kumar, @ravidsrk): `external-run` names
+the run's TARGET, not who ran it (`docs/concepts.md`, Proof tier).
 
 ## Run-close integrity inventory (sha256)
 

@@ -6,6 +6,33 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **review-it reads `external-run`** (2026-10-14). The 2026-10-13 Linux witness (#527) —
+  a NO-GO verdict on stablyai/orca PR #28206 at `6dcd957a`, four read-only workers, every
+  artifact retained in its run directory — was filed at `doctrine-only` as substrate evidence;
+  it binds unchanged at `external-run`, so the `RUN:` header's tier was amended and the tier
+  claimed. Run report: `docs/runs/2026-10-13-review-it-linux.md`, envelope:
+  `docs/reports/review-it-external-run/`. run by Ravindra Kumar (@ravidsrk).
+
+Five pull requests merged after the `v0.7.1` tag (first-parent `v0.7.1..878e2245`).
+
+- **Component quarantine switch** (#565, #558). `runtime/quarantine.json` is a human-only
+  deny-list of `mission:`, `playbook:` or `pack:` components. `scripts/validate.py` fails the
+  catalog if a mission routes through a quarantined component, `preflight.py --mission` refuses
+  to start a run on one, and `runtime/scripts/quarantine_check.py` checks ad hoc. A malformed
+  file fails every gate closed; an entry whose `by` names no human is refused. Ships empty.
+- **Agent Baseline adopted as a yardstick** (#564). A frozen-catalog assessment
+  (`docs/research/2026-10-14-agent-baseline-assessment.md`) and a new runtime policy,
+  `runtime/threat-model.md`: trust assumptions, four security boundaries each graded with its
+  residue, and a graded response ladder whose quarantine rung is the switch above. `attest-it`
+  rides it.
+- **Lean plugin install witnessed at the tag** (#554, public-beta draft gate 3). Install and
+  uninstall transcripts retained; the installed copy fingerprint-matches a bundle rebuilt from
+  the tagged commit.
+- **Release rehearsal skips already-tagged versions** (#556, closes the #555 window).
+- **0.7.1 provenance recorded** (#553) in `docs/releases.json`.
+
+<!-- coordinator: entries for the 2026-10-14 doc-review fixes go below this line -->
+
 ## [0.7.1] - 2026-10-13
 
 - **The plugin install is now the lean generated tree.** `scripts/bundle.py` emits the

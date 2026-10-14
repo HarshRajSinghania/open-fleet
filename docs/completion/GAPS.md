@@ -14,7 +14,7 @@ Every standing finding that sits between HEAD and `DEFINITION.md`. Decisions fol
 | G-06 | F-2-04 F-16-03 | 2,16 | — | S3 | FINISH | CLOSED 2026-09-01: 0.6.0; plugin.json = marketplace.json = CHANGELOG heading. |
 | G-07 | F-2-03 F-11-02 F-16-03 R-03 | 16,11 | — | S2 | FINISH | CLOSED #222: index check recorded. Remaining aggregator submits are H-02 only, not this gap. |
 | G-08 | R-01 | 14 | CF-02 | S3 | FINISH | CLOSED #221: skills-ref extras allowlisted; a fourth top-level field fails the catalog. |
-| G-09 | F-1-03 A-08 | 1 | — | S3 | DEFER | 9 doctrine-only missions. Honesty is already gated; field-proof is post-launch mission runs. Follow-up (#212): `docs/runs/TEMPLATE.md` + a per-mission field-proof plan in the archive index; still one mission run per advance. |
+| G-09 | F-1-03 A-08 | 1 | — | S3 | DEFER | 9 doctrine-only missions at filing (2026-09-01); 17 of 22 at 2026-10-14 — the live count is the README's generated proof-status sentence, not this row. Honesty is already gated; field-proof is post-launch mission runs. Follow-up (#212): `docs/runs/TEMPLATE.md` + a per-mission field-proof plan in the archive index; still one mission run per advance. |
 | G-10 | F-9-01 F-9-02 F-9-03 | 9 | — | S3 | FINISH | CLOSED 2026-09-02: T-10 workflow on `main` (#228); T-11 drill run 33626502338 filed and closed `ci-failure` issue #229. Was DEFER. |
 | G-11 | F-3-03 | 3 | — | S3 | FINISH | CLOSED #220: CI ruff 0.16.5 on E9/F63/F7/F82 only. |
 | G-12 | F-17-01 F-17-02 | 17 | — | S3 | FINISH | CLOSED #219: docs/ops.md inventory + incident process. |

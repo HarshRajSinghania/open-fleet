@@ -272,6 +272,17 @@ def probe(command, tool_name, tool_input):
 
 if probe(commands["Bash"], "Bash", {"command": "rm -rf /"}) != "deny":
     sys.exit(refuse("registered command did not deny 'rm -rf /'"))
+bash_outside = str(Path(boundary_for(commands["Bash"])).parent
+                   / "outside-the-boundary.probe")
+if probe(commands["Bash"], "Bash",
+         {"command": f"echo x > {bash_outside}"}) != "deny":
+    # The root-delete rule needs no boundary, so it alone cannot prove the
+    # Bash write guard is live — a registration that strips the boundary
+    # (`env -u ORCA_UNIT_WORKTREE …`) passes rm/ls while shell redirects
+    # escape (PR #569 review).
+    sys.exit(refuse(
+        "registered Bash command did not deny a shell redirect outside "
+        "its configured ORCA_UNIT_WORKTREE — the write boundary is not live"))
 outside = str(Path(boundary_for(commands["Edit"])).parent
               / "outside-the-boundary.probe")
 if probe(commands["Edit"], "Edit", {"file_path": outside}) != "deny":

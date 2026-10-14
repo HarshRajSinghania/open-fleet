@@ -1595,6 +1595,29 @@ class TestScriptShape(unittest.TestCase):
         ]
         self.assertEqual(self._verify(block).returncode, 0)
 
+    def test_verify_settings_refuses_a_bash_entry_with_boundary_stripped(self):
+        # A Bash registration that unsets the boundary still denies
+        # `rm -rf /` (that rule needs no boundary) — the arming probes must
+        # also send a shell redirect outside through the Bash command
+        # itself, or the write guard reads armed while off (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        entry = block["hooks"]["PreToolUse"][0]
+        stripped = json.loads(json.dumps(entry))
+        stripped["hooks"][0]["command"] = (
+            "env -u ORCA_UNIT_WORKTREE sh "
+            + entry["hooks"][0]["command"])
+        block["hooks"]["PreToolUse"] = [
+            {**stripped, "matcher": "Bash"},
+            {**entry, "matcher": "Edit|Write|NotebookEdit|MultiEdit"},
+        ]
+        r = self._verify(block)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shell redirect", r.stderr)
+
     def test_verify_settings_accepts_an_inline_boundary(self):
         # A command that binds the boundary itself
         # (`ORCA_UNIT_WORKTREE=/wt …/deny-hook.sh`) enforces it without the

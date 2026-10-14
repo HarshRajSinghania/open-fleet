@@ -115,14 +115,16 @@ def ledger_path(explicit=None):
 # A ts is ISO-8601 to the second (optional fraction) with an explicit UTC offset, the shape
 # `now` writes. It was the one free-text field never checked, and `record_id` joins `k=v` with
 # newlines: a ts carrying "\nsink=..." could make two different records hash alike.
-TS_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})")
+TS_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")
 
 
 def valid_ts(value):
     """The ts if it is a real ISO-8601 instant in TS_PATTERN's shape, else raise ValueError."""
     if not isinstance(value, str) or not TS_PATTERN.fullmatch(value):
         raise ValueError(f"ts must be ISO-8601 like 2026-01-02T03:04:05Z, got {value!r}")
-    datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")  # a 2026-02-30 is not an instant
+    # The whole value must name an instant: a 2026-02-30 date or a +99:99 offset
+    # matches the shape and is still not one (fromisoformat reads `Z` on 3.11+).
+    datetime.fromisoformat(value)
     return value
 
 

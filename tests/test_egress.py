@@ -234,7 +234,10 @@ class TestWrite(EgressBase):
         # --ts was the one unchecked free-text field, and record_id joins
         # `k=v` lines with "\n": a ts smuggling "\nsink=..." made ids ambiguous.
         for ts in ("2026-01-01T00:00:00Z\nsink=x", "yesterday", "2026-02-30T00:00:00Z",
-                   "2026-01-01 00:00:00Z", "2026-01-01T00:00:00"):
+                   "2026-01-01 00:00:00Z", "2026-01-01T00:00:00",
+                   # the shape matches, the offset names no instant (PR #571 review)
+                   "2026-01-02T03:04:05+99:99", "2026-01-02T03:04:05+05:99",
+                   "2026-01-02T03:04:05-24:00"):
             with self.subTest(ts=ts):
                 r = self.write_one(extra=("--ts", ts))
                 self.assertEqual(r.returncode, 2, r.stderr)

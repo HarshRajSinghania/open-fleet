@@ -29,6 +29,7 @@ boundary rather than assembling a gate command from its flags alone.
 | Write or check an artifact inventory | [`inventory.py`](../runtime/scripts/inventory.py) | [Run submission](run-submission-guide.md#step-by-step); recheck history at the report's named commit |
 | Check whether a run report binds | [`run_report.py`](../runtime/scripts/run_report.py) | [What binding means](run-submission-guide.md#what-binding-means) |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
+| Review a pack pin bump for rug-pulls | [`pin_review.py`](../runtime/scripts/pin_review.py) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), plus the helper's usage header |
 
 The remaining reference sections cover:
 
@@ -483,6 +484,25 @@ $CLAUDE_PLUGIN_ROOT, then its own tree), so a target cannot shadow the deny-list
 > auditable rung of the response ladder, not a remote kill. Entries are human acts
 > only — the shape check refuses a `by` that names no human, the same rule
 > `decisions.py` applies to one-way lines.
+## `pin_review.py`
+
+The rug-pull diff for a worker-pack pin bump (#559): classifies every path changed
+between two commits of a pack clone as instruction (what an agent will obey),
+permission-surface (hooks, manifests, settings — what can widen action), or code,
+and emits the review artifact skeleton whose `UNREVIEWED` verdict the bumper must
+replace. Source `runtime/scripts/pin_review.py`; behavior pinned by
+`tests/test_pin_review.py`; the completed-artifact contract is enforced by
+`tests/test_pins.py`.
+
+Usage: `pin_review.py --repo <clone> --pack <pins.json key> [--from <old>] --to <new>`
+(without `--from`: a baseline inventory of the whole tree; classes over 60 entries
+roll up by top-level directory, the permission surface always in full).
+
+Exits: 0 skeleton on stdout · 2 usage · 3 cannot evaluate (bad repo or commit).
+
+> Why: a pin bump that records only the new commit admits a new instruction set
+> unreviewed — the exact shape of a rug-pull. The skeleton makes the review
+> mechanical to produce; the test makes it impossible to skip.
 
 ## `sandbox_doctor.py`
 

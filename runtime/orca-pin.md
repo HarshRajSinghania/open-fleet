@@ -108,6 +108,23 @@ sighting, whichever first — the successor run inherits this run's park registe
 5. Refresh the park register, file the next dated re-pin issue, regenerate badges
    (`scripts/gen-badges.py`), and land with `scripts/validate.py` + `tests/` green.
 
+## Pack pin bumps carry a rug-pull review (#559)
+
+The worker-pack pins (gstack, addyosmani, mattpocock) are supply-chain admissions:
+their instructions are what a worker obeys. A bump therefore lands with its diff
+review, or not at all — `tests/test_pins.py` enforces it.
+
+1. Clone the pack (blobless is fine); run
+   `runtime/scripts/pin_review.py --repo <clone> --pack <key> --from <pinned> --to <new>`
+   into `docs/research/pin-reviews/<key>-<new-commit-as-pinned>.md`.
+2. Read the instruction and permission-surface changes it lists (hooks line-by-line —
+   they execute inside the worker), replace the `UNREVIEWED` verdict, fill the notes.
+3. Land pin + artifact together. A permission-surface widening you cannot explain is
+   a refusal, not a note: keep the old pin and file the finding.
+
+The orca pin is exempt from this artifact — the re-pin procedure above is its
+(deeper) equivalent.
+
 ## 2026-09-26 correction — `terminal stop` was never witnessed removed (D1/D10)
 
 The "What moved" line above claims `terminal stop` removed at v1.4.209. That overstates what the

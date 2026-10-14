@@ -1575,6 +1575,10 @@ class TestEgressReceiptRule(HookBase):
             f"{self.RECEIPT} && echo ok && gh pr create --fill",
             # Mentioning the writer records nothing (PR #567 review, P1):
             "echo egress.py write && gh issue close 34",
+            # Help/version invocations exit 0 running nothing (P1):
+            "python3 --version runtime/scripts/egress.py write && gh issue close 34",
+            "python3 -h runtime/scripts/egress.py write && gh issue close 34",
+            "sudo --help runtime/scripts/egress.py write && gh issue close 34",
             # Attached field flags still supply fields → POST (P1):
             "gh api repos/o/r/issues -ftitle=x",
             "gh api repos/o/r/issues -Ftitle=x",
@@ -1621,6 +1625,7 @@ class TestEgressReceiptRule(HookBase):
         # (PR #567 review, P1).
         for command in (
             "env gh issue close 34",
+            "env -i gh issue close 34",
             "env FOO=bar gh pr create --fill",
             "command gh release create v1",
             "sudo gh issue close 34",

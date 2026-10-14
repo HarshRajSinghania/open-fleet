@@ -417,18 +417,51 @@ SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
 # Wrapper words strip_prefix peels on the shell side (env/sudo-style
 # laundering). Rule 5 moved into this reader, so the peeling must come with
 # it — `env gh issue close`, `command gh release create`, `sudo -n gh …`
-# are the same sends (PR #567 review, P1).
-_WRAPPERS = {"env", "nohup", "nice", "time", "command", "builtin"}
+# are the same sends (PR #567 review, P1). env/nice/time/nohup also peel
+# their own option runs (`env -i gh …` is the canonical form).
+_WRAPPERS = {"command", "builtin"}
+_WRAPPER_OPERANDS = {
+    "env": {"-u", "--unset", "-a", "--argv0", "-C", "--chdir",
+            "-S", "--split-string"},
+    "nice": {"-n", "--adjustment"},
+    "time": {"-o", "--output", "-f", "--format"},
+    "nohup": set(),
+}
 _SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
+
+
+def _peel_wrapper(ws, operand_flags):
+    # ws[0] is env/nice/time/nohup: peel it and its options. Help/version
+    # means nothing runs — return the words as they stand.
+    original = ws
+    ws = ws[1:]
+    while ws:
+        word = ws[0]
+        if word in ("-V", "--help", "--version"):
+            return original
+        if word == "--":
+            return ws[1:]
+        if word in operand_flags and len(ws) > 1:
+            ws = ws[2:]
+        elif word.startswith("-"):
+            ws = ws[1:]  # a lone "-" is env spelling of -i; no command is "-"
+        else:
+            return ws
+    return ws
 
 
 def _peel_sudo(ws):
     # ws[0] is sudo: peel it, stacked sudos, and the sudo option run —
     # the same shapes strip_prefix handles (`sudo -n`, `sudo --`,
-    # `sudo -u root`, `sudo --user=root`).
+    # `sudo -u root`, `sudo --user=root`). A help/version option stops the
+    # peel cold: sudo prints and exits 0 running nothing, so the words keep
+    # their sudo head and neither arm a receipt nor read as the send.
+    original = ws
     ws = ws[1:]
     while ws:
         word = ws[0]
+        if word in ("-V", "--help", "--version"):
+            return original
         if word == "sudo":
             ws = ws[1:]
         elif word == "--":
@@ -457,7 +490,15 @@ def _plain_words(args):
         elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
             ws = ws[1:]
         elif ws[0] == "sudo":
-            ws = _peel_sudo(ws)
+            peeled = _peel_sudo(ws)
+            if peeled == ws:
+                return ws  # help/version stop: judge the words as they stand
+            ws = peeled
+        elif ws[0] in _WRAPPER_OPERANDS:
+            peeled = _peel_wrapper(ws, _WRAPPER_OPERANDS[ws[0]])
+            if peeled == ws:
+                return ws
+            ws = peeled
         elif ws[0] in _WRAPPERS:
             ws = ws[1:]
         else:
@@ -476,17 +517,28 @@ def _is_receipt(args):
 
     if len(ws) >= 2 and is_egress(ws[0]) and ws[1] == "write":
         return True
-    # python3 [-u | -W <arg> | --] … egress.py write: versioned interpreters
+    # python3 [options] … egress.py write: versioned interpreters
     # (python3.12) and interpreter options before the script still run the
-    # writer (PR #567 review, P2). Unrecognized shapes stay unarmed.
+    # writer (PR #567 review, P2). The options are ALLOWLISTED to ones that
+    # proceed to the script — --version/-h print and exit 0 without running
+    # it, so skipping unknown dash-words would arm a send on a no-op (P1).
     if ws and re.fullmatch(r"python(3(\.\d+)?)?", ws[0].rsplit("/", 1)[-1]):
         i = 1
-        while i < len(ws) and ws[i].startswith("-") and ws[i] != "-":
-            if ws[i] == "--":
+        while i < len(ws):
+            word = ws[i]
+            if word == "--":
                 i += 1
                 break
-            i += 2 if ws[i] in ("-W", "-X") else 1
-        return i + 1 < len(ws) and is_egress(ws[i]) and ws[i + 1] == "write"
+            if word in ("-W", "-X"):
+                i += 2
+            elif re.fullmatch(r"-[WX].+", word, re.DOTALL):
+                i += 1
+            elif re.fullmatch(r"-[uEIsSvqBObdi]+", word):
+                i += 1
+            else:
+                break
+        return i < len(ws) and not ws[i].startswith("-") \
+            and i + 1 < len(ws) and is_egress(ws[i]) and ws[i + 1] == "write"
     return False
 
 

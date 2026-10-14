@@ -1,16 +1,19 @@
-# 2026-10-13 — CF-02c lean plugin install on a clean Ubuntu container (v0.7.1)
-# Re-captured same day after PR review found the first capture defective: its
-# wrapper read $? after an intervening echo (so every recorded exit was the
-# echo's 0, including the fail-closed gate control's) and the fingerprint
-# script body was not retained. This capture fixes the wrapper (exit read
-# immediately) and cats the fingerprint script before running it. The first
-# capture's substantive results are reproduced below, not carried over.
+# 2026-10-13/14 — CF-02c lean plugin install on a clean Ubuntu container (v0.7.1)
+# Re-captured twice after PR review found the earlier captures defective. The first
+# capture's wrapper read $? after an intervening echo (so every recorded exit was
+# the echo's 0, including the fail-closed gate control's) and did not retain the
+# fingerprint script body; the second fixed both but fingerprinted the installed
+# copy against the published dist checkout, which proves faithful copying, not
+# provenance from the announced tag. This capture follows the procedure's lean
+# binding: tag and commit are parsed from the installed DIST-PROVENANCE.txt, the
+# bundle is rebuilt with scripts/bundle.py at that commit (plus the publish
+# workflow's LICENSE / THIRD_PARTY_NOTICES.md / regenerated DIST-PROVENANCE.txt),
+# and that rebuilt tree is fingerprinted against the installed copy; the
+# published-dist comparison is retained as a second check. Earlier captures'
+# substantive results are reproduced below, not carried over.
 # HOME=/home/witness; fresh ubuntu:24.04 container, Python 3.12.3, Claude Code 2.1.296.
 # Prepared from the official Ubuntu image and official claude.ai installer; no host
 # Claude settings, credentials, skills, plugins or repository mounted/copied in.
-# The marketplace now sources the plugin from the published dist branch, so the
-# installed copy is the generated lean tree: fingerprint is against a dist checkout
-# (whose DIST-PROVENANCE.txt names v0.7.1 at 5331b9b), per the adapted procedure.
 # Operator: coordinator session on behalf of ravidsrk; maintainer install witness,
 # not an independent external mission run. Orca is absent. No model credential in
 # the container: discovery and registration only, no authenticated model turn.
@@ -21,12 +24,12 @@
 
 
 $ date -u +%Y-%m-%dT%H:%M:%SZ; uname -a; cat /etc/os-release | head -3; /home/witness/.local/bin/claude --version; python3 --version; ls -la ~/.claude/skills; ls -la ~/.claude/plugins; command -v orca || true
-2026-10-13T18:23:13Z
-Linux 5a0302317f78 7.2.9-orbstack-00391-g2b298d05fbd4 #1 SMP PREEMPT Mon Oct 12 05:39:36 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+2026-10-14T05:32:32Z
+Linux 6b718204147c 7.2.9-orbstack-00391-g2b298d05fbd4 #1 SMP PREEMPT Mon Oct 12 05:39:36 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
 PRETTY_NAME="Ubuntu 24.04.5 LTS"
 NAME="Ubuntu"
 VERSION_ID="24.04"
-2.1.296 (Claude Code)
+2.1.299 (Claude Code)
 Python 3.12.3
 ls: cannot access '/home/witness/.claude/skills': No such file or directory
 ls: cannot access '/home/witness/.claude/plugins': No such file or directory
@@ -57,8 +60,8 @@ $ /home/witness/.local/bin/claude plugin list --json
     "scope": "user",
     "enabled": true,
     "installPath": "/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1",
-    "installedAt": "2026-10-13T18:23:19.774Z",
-    "lastUpdated": "2026-10-13T18:23:19.774Z",
+    "installedAt": "2026-10-14T05:32:39.143Z",
+    "lastUpdated": "2026-10-14T05:32:39.143Z",
     "projectEnabled": false
   }
 ]
@@ -131,18 +134,27 @@ $ ORCA_MANIFEST=/nonexistent.json /home/witness/.claude/plugins/cache/orca-fleet
 verify-gate: evidence manifest named but missing: /nonexistent.json — BLOCKING (fail-closed)
 
 exit=2
+TAG=v0.7.1 COMMIT=5331b9b89655cee25c97cb30fcf6007eaa409a44 (parsed from the installed DIST-PROVENANCE.txt)
 
-$ git clone --quiet --branch dist --single-branch https://github.com/ravidsrk/orca-fleet.git ~/dist-tree && git clone --quiet https://github.com/ravidsrk/orca-fleet.git ~/src && git -C ~/src checkout -q 5331b9b89655cee25c97cb30fcf6007eaa409a44 && git -C ~/src rev-parse HEAD
+$ git clone --quiet https://github.com/ravidsrk/orca-fleet.git ~/src && git -C ~/src checkout -q 5331b9b89655cee25c97cb30fcf6007eaa409a44 && git -C ~/src rev-parse HEAD
 5331b9b89655cee25c97cb30fcf6007eaa409a44
 
 exit=0
 
-$ cat /tmp/plugin-fingerprint.py
+$ cd ~/src && python3 scripts/bundle.py --check && python3 scripts/bundle.py --out ~/src-bundle && cp LICENSE THIRD_PARTY_NOTICES.md ~/src-bundle/ && printf 'Built by scripts/bundle.py from %s at %s.\nEvery mission under skills/ carries its playbooks and runtime docs under references/.\nSource: https://github.com/%s\n' 'v0.7.1' "$(git -C ~/src rev-parse HEAD)" 'ravidsrk/orca-fleet' > ~/src-bundle/DIST-PROVENANCE.txt && cat ~/src-bundle/DIST-PROVENANCE.txt
+bundle: 22 self-contained mission(s) in a temp dir; no reference leaves its directory
+bundle: 22 self-contained mission(s) in /home/witness/src-bundle; no reference leaves its directory
+Built by scripts/bundle.py from v0.7.1 at 5331b9b89655cee25c97cb30fcf6007eaa409a44.
+Every mission under skills/ carries its playbooks and runtime docs under references/.
+Source: https://github.com/ravidsrk/orca-fleet
 
+exit=0
+
+$ cat /tmp/plugin-fingerprint.py
 from pathlib import Path
 import hashlib
-cache = Path("/home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1")
-dist = Path("/home/witness/dist-tree")
+import sys
+reference, installed = Path(sys.argv[1]), Path(sys.argv[2])
 def files(root):
     return sorted(str(p.relative_to(root)) for p in root.rglob("*")
                   if p.is_file() and ".git" not in p.relative_to(root).parts)
@@ -151,25 +163,62 @@ def fingerprint(root, names):
     for name in names:
         h.update(name.encode() + b"\0" + hashlib.sha256((root / name).read_bytes()).hexdigest().encode() + b"\n")
     return h.hexdigest()
-dist_files, cache_files = files(dist), files(cache)
-print("paths only in dist tree:", sorted(set(dist_files) - set(cache_files)))
-print("paths only in installed copy (bookkeeping/generated):", sorted(set(cache_files) - set(dist_files)))
-a, b = fingerprint(cache, dist_files), fingerprint(dist, dist_files)
+ref_files, inst_files = files(reference), files(installed)
+print("reference:", reference)
+print("installed:", installed)
+print("paths only in reference tree:", sorted(set(ref_files) - set(inst_files)))
+print("paths only in installed copy:", sorted(set(inst_files) - set(ref_files)))
+a, b = fingerprint(installed, ref_files), fingerprint(reference, ref_files)
 print("installed tree SHA256:", a)
-print("published dist tree SHA256:", b)
-assert a == b
-print("all", len(dist_files), "dist paths match the installed copy")
+print("reference tree SHA256:", b)
+assert set(ref_files) == set(inst_files) and a == b
+print("all", len(ref_files), "reference paths match the installed copy")
 
-$ python3 /tmp/plugin-fingerprint.py
-paths only in dist tree: []
-paths only in installed copy (bookkeeping/generated): []
+$ python3 /tmp/plugin-fingerprint.py ~/src-bundle /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1
+reference: /home/witness/src-bundle
+installed: /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1
+paths only in reference tree: []
+paths only in installed copy: []
 installed tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
-published dist tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
-all 1652 dist paths match the installed copy
+reference tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
+all 1652 reference paths match the installed copy
 
 exit=0
 
-$ cd ~/src && python3 scripts/validate.py 2>&1 | tail -2
+$ git clone --quiet --branch dist --single-branch https://github.com/ravidsrk/orca-fleet.git ~/dist-tree && python3 /tmp/plugin-fingerprint.py ~/dist-tree /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1
+reference: /home/witness/dist-tree
+installed: /home/witness/.claude/plugins/cache/orca-fleet/orca-fleet/0.7.1
+paths only in reference tree: []
+paths only in installed copy: []
+installed tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
+reference tree SHA256: 12ab7c96b0a10847ec6f5210121ce4f6388925f513c9c86d6066de18ea98f63a
+all 1652 reference paths match the installed copy
+
+exit=0
+
+$ cd ~/src && python3 scripts/validate.py
+ok   absorb-it
+ok   access-it
+ok   attest-it
+ok   clean-sweep
+ok   deflake-it
+ok   document-it
+ok   field-test-it
+ok   floor-it
+ok   harden-it
+ok   map-it
+ok   migrate-it
+ok   modernize-it
+ok   offload-it
+ok   oncall-it
+ok   oss-contribute
+ok   pin-it
+ok   prove-it
+ok   reshape-it
+ok   review-it
+ok   root-cause
+ok   ship-it
+ok   speed-it
 
 All 22 missions valid; three-layer separation holds; evals valid.
 
@@ -180,4 +229,4 @@ Error: When using --print, --output-format=stream-json requires --verbose
 
 exit=0
 
-result: clean-machine install of the lean (dist-sourced) plugin; see above for discovery, size, fingerprint, and the credential boundary.
+result: clean-machine install of the lean (dist-sourced) plugin; installed copy fingerprinted against the bundle rebuilt at the commit its DIST-PROVENANCE.txt names, and against the published dist tree; see above for discovery, size, fingerprints, and the credential boundary.

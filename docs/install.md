@@ -184,7 +184,9 @@ tree carries the plugin manifest, hooks, and gate runtime at its root, and the m
 sources the plugin from the `dist` branch, so a plugin install copies the generated tree
 instead of the whole source tree. The archives stay in the source tree; symlinked source
 checkouts are unchanged. Witnessed clean-machine at the `v0.7.1` tag: the installed copy
-measures 24 MB and all 1,652 published dist paths fingerprint-match it
+measures 24 MB, and all 1,652 paths of a bundle rebuilt with `scripts/bundle.py` at the
+commit its `DIST-PROVENANCE.txt` names fingerprint-match it (the published dist tree
+matches as a second check)
 ([`CF-02c-lean-plugin-install.txt`](completion/evidence/CF-02c-lean-plugin-install.txt),
 per the [witness procedure](completion/PLUGIN-INSTALL-WITNESS.md)); the uninstall half
 records that the host keeps the deregistered cache on disk.

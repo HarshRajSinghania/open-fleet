@@ -40,8 +40,9 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
       gate runtime, and the marketplace sources the plugin from the `dist` branch (#551),
       so a plugin install copies the generated tree, not the source tree. Witnessed at the
       announced tag: `CF-02c-lean-plugin-install.txt` — installed copy 24M (was 66M),
-      22 skills + both hooks discovered, all 1,652 dist paths fingerprint-match the
-      installed copy; uninstall half retained alongside (the host keeps the deregistered
+      22 skills + both hooks discovered, and all 1,652 paths of a bundle rebuilt from the
+      tagged commit fingerprint-match the installed copy (published dist tree matches as
+      a second check); uninstall half retained alongside (the host keeps the deregistered
       cache on disk; recorded, not hidden). First tag carrying the shrink: `v0.7.1`.
 - [x] One recorded `review-it` or `ship-it` run on an Ubuntu host driven by `orca-ide`, so the
       Linux sentence below can drop the word "untested" (review §8, item 6). Done 2026-10-13:

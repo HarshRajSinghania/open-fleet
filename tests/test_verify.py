@@ -1433,6 +1433,21 @@ class GitAuthorityChecks(unittest.TestCase):
             res = verify.check_ancestry({"head_sha": self.main_tip}, "no-such-branch")
             self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
 
+    def test_a_missing_base_ref_is_fatal_on_a_lane_claiming_soundness(self):
+        # Review P2: deleting origin/<base> in the worker's clone turned a requested ancestry
+        # proof into a skipped one on EVERY lane. Only the advisory lane may skip it now.
+        self.addCleanup(verify._Authority.reset)
+        for lane in ("provenance=ci", "enforcement (signed dispatch record + pubkey)"):
+            with self.subTest(lane=lane), self._inside_repo():
+                verify._Authority.lane = lane
+                res = verify.check_ancestry({"head_sha": self.main_tip}, "no-such-branch")
+                self.assertTrue(res and not any(e.startswith("NOTE:") for e in res), res)
+                self.assertIn("origin/no-such-branch not found", res[0])
+                # --base not given stays a NOTE: nothing was asked for
+                res = verify.check_ancestry({"head_sha": self.main_tip}, None)
+                self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
+                self.assertEqual(verify.check_ancestry({"head_sha": self.main_tip}, "main"), [])
+
     def test_symbol_on_base_found(self):
         with self._inside_repo():
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", "main"), [])

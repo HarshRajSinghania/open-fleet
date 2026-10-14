@@ -2151,11 +2151,21 @@ def check_redaction(m, manifest_path):
 
 
 def check_ancestry(m, base):
-    """7. Best-effort: head_sha is an ancestor of origin/<base> (post-merge)."""
+    """7. head_sha is an ancestor of origin/<base> (post-merge).
+
+    A coordinator that NAMES a base asked for this fact. On the advisory native lane a missing
+    origin/<base> is still a NOTE (pre-merge, offline, a clone that never fetched). On a lane
+    claiming soundness (_Authority.lane: --provenance ci|mcp|sdk|dispatch, or a signed dispatch
+    record + pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
+    clone the worker controls, and deleting it must not turn a requested ancestry proof into a
+    skipped one (review P2)."""
     if not base:
         return ["NOTE: --base not given — ancestry check skipped (pre-merge/offline)"]
     ref = f"origin/{base}"
     if _git(["rev-parse", "--verify", ref])[0] != 0:
+        if _Authority.lane:
+            return [f"ancestry: {ref} not found — a lane claiming soundness ({_Authority.lane}) "
+                    "named --base and cannot skip the ancestry proof it asked for; fail-closed"]
         return [f"NOTE: {ref} not found — ancestry check skipped"]
     if _git(["merge-base", "--is-ancestor", m.get("head_sha", ""), ref])[0] != 0:
         return [f"head_sha is not an ancestor of {ref} (not merged / wrong base)"]

@@ -109,6 +109,9 @@ worker-set; anything else in the environment is ignored):
   control runs any worker code; a `gh` under a work tree, the temp dir, or a user-writable dir that
   is not a standard system bin dir is fatal on a sound lane and an advisory `NOTE` elsewhere.
 - `ORCA_BASE` / `ORCA_SYMBOL` — ancestry-check base branch / a unit symbol to grep on it (optional).
+  A named base whose `origin/<base>` is missing is a NOTE on the advisory native lane and FATAL on
+  a lane claiming soundness (`ORCA_PROVENANCE` set, or a signed record + pubkey): the ref lives in
+  the worker's clone, and deleting it must not skip the ancestry proof the coordinator asked for.
 - `ORCA_NC_COMMAND` — the **authoritative** criterion-bound command the negative control must turn
   RED, supplied out of band exactly as the frozen contract is. It is forwarded as `--nc-command`,
   and the manifest's own `negative_control.command` must agree with it or the run is RED — a unit

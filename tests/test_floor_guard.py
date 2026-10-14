@@ -193,6 +193,22 @@ class TestDiffAcquisition(FloorGuardBase):
                 self.assertIn("src/app.py", r.stderr)
                 self.assertIn("new.py", r.stderr)
 
+    def test_a_repo_local_fsmonitor_never_runs(self):
+        # core.fsmonitor in the guarded repo's own .git/config is a command git
+        # runs on an index refresh; the guard reads repos it does not own.
+        marker = Path(self.tmp) / "fsmonitor-ran"
+        hook = Path(self.tmp) / "fsmonitor.sh"
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        git(self.repo, "config", "core.fsmonitor", str(hook))
+        write(self.repo, "src/app.py", "value = 1\n")
+        git(self.repo, "status", "--short")
+        self.assertTrue(marker.exists(), "fixture: plain git must run the fsmonitor hook")
+        marker.unlink()
+        r = run_guard(self.repo, "--base", "main")
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        self.assertFalse(marker.exists(), "floor_guard ran the repo's core.fsmonitor command")
+
     def test_empty_untracked_file_is_clean(self):
         write(self.repo, "empty.py", "")
         r = run_guard(self.repo, "--base", "main")

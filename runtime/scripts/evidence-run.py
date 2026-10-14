@@ -40,6 +40,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -50,6 +51,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+
+def _load_gitexec():
+    """gitexec.py, the sibling holding the one git resolution + hardened-env rule."""
+    spec = importlib.util.spec_from_file_location(
+        "gitexec", Path(__file__).resolve().parent / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gitexec = _load_gitexec()
 CHUNK = 65536
 
 
@@ -60,8 +73,8 @@ def warn(msg):
 
 def git_out(args, cwd):
     try:
-        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
-                           timeout=30, check=False)
+        p = subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, text=True,
+                           timeout=30, check=False, env=gitexec.env())
     except (subprocess.TimeoutExpired, OSError) as err:
         return None, str(err)
     if p.returncode != 0:

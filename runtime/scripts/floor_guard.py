@@ -167,6 +167,7 @@ def _sibling(name):
 
 
 _diffparse = _sibling("diffparse")
+gitexec = _sibling("gitexec")
 
 
 class GuardError(Exception):
@@ -177,8 +178,8 @@ def git(repo, *args):
     """Run git with argv only. Returns stdout, or None when git exits non-zero."""
     try:
         r = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, timeout=60,
+            gitexec.argv("-C", str(repo), *args),
+            capture_output=True, text=True, timeout=60, env=gitexec.env(),
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
@@ -242,8 +243,8 @@ def collect_diff(repo, mb):
         # go through subprocess directly rather than git() (which returns None).
         try:
             r = subprocess.run(
-                ["git", "-C", str(repo), "diff", "--no-index", *diff_options, "--", "/dev/null", name],
-                capture_output=True, text=True, timeout=60,
+                gitexec.argv("-C", str(repo), "diff", "--no-index", *diff_options, "--", "/dev/null", name),
+                capture_output=True, text=True, timeout=60, env=gitexec.env(),
             )
         except (OSError, subprocess.SubprocessError) as err:
             raise GuardError("untracked diff acquisition failed to run") from err

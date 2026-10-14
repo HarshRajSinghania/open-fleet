@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = ROOT / "runtime" / "scripts" / "inventory.py"
@@ -333,6 +334,61 @@ class TestCheckAtRevision(unittest.TestCase):
         r = run_inv("check", self.REPORT, "--at", "deadbeef")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("is not a commit", r.stdout + r.stderr)
+
+
+class TestHardenedGit(InventoryBase):
+    """gitexec.py: one absolute git, run under a hardened env, for every read-side tool."""
+
+    def _inventory(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inventory_hardened", INVENTORY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _git(self, repo, *args):
+        return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c",
+                               "user.email=t@example.invalid", *args],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_a_replace_ref_cannot_swap_the_blob_a_pin_is_hashed_from(self):
+        # refs/replace/ swaps any object for another; the bytes at the revision
+        # are what a pin binds, so replacement objects are off for these reads.
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        (repo / "a.txt").write_text("real\n", encoding="utf-8")
+        self._git(repo, "add", "a.txt")
+        self._git(repo, "commit", "-qm", "base")
+        real = self._git(repo, "rev-parse", "HEAD:a.txt")
+        (repo / "fake.txt").write_text("forged\n", encoding="utf-8")
+        fake = self._git(repo, "hash-object", "-w", "fake.txt")
+        self._git(repo, "replace", real, fake)
+        self.assertEqual(self._git(repo, "cat-file", "blob", "HEAD:a.txt"), "forged",
+                         "fixture: plain git must see the replacement")
+        inv = self._inventory()
+        self.assertEqual(inv.sha256_at("HEAD", "a.txt", repo), sha("real\n"))
+
+    def test_git_is_absolute_and_the_env_closes_config_exec_channels(self):
+        gitexec = self._inventory().gitexec
+        self.assertTrue(os.path.isabs(gitexec.argv("status")[0]))
+        env = gitexec.env({"GIT_EXTERNAL_DIFF": "x", "GIT_CONFIG_KEY_7": "core.pager",
+                           "GIT_CONFIG_VALUE_7": "x", "LANG": "C"})
+        self.assertNotIn("GIT_EXTERNAL_DIFF", env)
+        self.assertNotIn("GIT_CONFIG_KEY_7", env)
+        self.assertEqual(env["LANG"], "C")
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs["core.fsmonitor"], "false")
+
+    def test_no_git_at_startup_is_a_named_file_not_found(self):
+        gitexec = self._inventory().gitexec
+        with mock.patch.object(gitexec, "GIT", None):
+            with self.assertRaises(FileNotFoundError) as caught:
+                gitexec.argv("status")
+        self.assertIn("git is not on PATH", str(caught.exception))
 
 
 class InventorySigningFixture(InventoryBase):

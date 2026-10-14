@@ -76,6 +76,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _load_gitexec():
+    """gitexec.py, the sibling holding the one git resolution + hardened-env rule."""
+    spec = importlib.util.spec_from_file_location(
+        "gitexec", Path(__file__).resolve().parent / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gitexec = _load_gitexec()
+
 EXIT_OK = 0
 EXIT_MISMATCH = 1
 EXIT_CANNOT_RUN = 2
@@ -114,8 +126,8 @@ def sha256_file(path):
 
 def repo_root(start):
     try:
-        r = subprocess.run(["git", "-C", str(start), "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=30)
+        r = subprocess.run(gitexec.argv("-C", str(start), "rev-parse", "--show-toplevel"),
+                           capture_output=True, text=True, timeout=30, env=gitexec.env())
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 or not r.stdout.strip():
@@ -199,8 +211,8 @@ def sha256_at(rev, path_text, cwd):
     the bytes have to have existed at a commit that exists.
     """
     proc = subprocess.run(
-        ["git", "cat-file", "blob", f"{rev}:{path_text}"],
-        cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        gitexec.argv("cat-file", "blob", f"{rev}:{path_text}"),
+        cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=gitexec.env(),
     )
     if proc.returncode != 0:
         return None
@@ -210,8 +222,8 @@ def sha256_at(rev, path_text, cwd):
 def rev_exists(rev, cwd):
     """True iff `rev` names a real commit in the repo at `cwd`."""
     return subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-        cwd=str(cwd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        gitexec.argv("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"),
+        cwd=str(cwd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=gitexec.env(),
     ).returncode == 0
 
 

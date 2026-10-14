@@ -59,6 +59,7 @@ WEIGHTS = {
     "test_docs_navigation": 15.8,
     "test_ed25519": 1.3,
     "test_egress": 2.5,
+    "test_escape_probe": 0.6,
     "test_evals": 3.8,
     "test_evidence_run": 4.5,
     "test_external_ci_monitor": 0.1,  # 2026-09-30: 0.126 s wall, rounded

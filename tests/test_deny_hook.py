@@ -1546,6 +1546,145 @@ class TestScriptShape(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
 
+    def _verify(self, settings) -> subprocess.CompletedProcess:
+        f = self.tmp / "settings.json"
+        f.write_text(json.dumps(settings), encoding="utf-8")
+        return subprocess.run(["sh", str(HOOK), "--verify-settings", str(f)],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_verify_settings_accepts_the_generated_block(self):
+        # The block `--settings` prints IS the definition of armed: the same
+        # matcher, the same command, the same boundary env. If verification
+        # rejected it, the two modes would disagree about what armed means.
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        self.assertEqual(self._verify(block).returncode, 0)
+
+    def test_verify_settings_accepts_match_all_matchers(self):
+        # Matchers are regexes: `.*` (and the documented bare `*`) cover
+        # every tool, so an operator who registered that way is armed —
+        # refusing the spawn would punish a valid wiring (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        for matcher in (".*", "*", "Bash|Edit|Write"):
+            with self.subTest(matcher=matcher):
+                block["hooks"]["PreToolUse"][0]["matcher"] = matcher
+                self.assertEqual(self._verify(block).returncode, 0)
+        with self.subTest(matcher="invalid regex"):
+            block["hooks"]["PreToolUse"][0]["matcher"] = "(["
+            self.assertEqual(self._verify(block).returncode, 2)
+
+    def test_verify_settings_accepts_separate_entries_per_tool(self):
+        # Coverage is per tool across entries: one entry for Bash and
+        # another for the write tools guards both (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        entry = block["hooks"]["PreToolUse"][0]
+        block["hooks"]["PreToolUse"] = [
+            {**entry, "matcher": "Bash"},
+            {**entry, "matcher": "Edit|Write|NotebookEdit|MultiEdit"},
+        ]
+        self.assertEqual(self._verify(block).returncode, 0)
+
+    def test_verify_settings_refuses_a_bash_entry_with_boundary_stripped(self):
+        # A Bash registration that unsets the boundary still denies
+        # `rm -rf /` (that rule needs no boundary) — the arming probes must
+        # also send a shell redirect outside through the Bash command
+        # itself, or the write guard reads armed while off (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        entry = block["hooks"]["PreToolUse"][0]
+        stripped = json.loads(json.dumps(entry))
+        stripped["hooks"][0]["command"] = (
+            "env -u ORCA_UNIT_WORKTREE sh "
+            + entry["hooks"][0]["command"])
+        block["hooks"]["PreToolUse"] = [
+            {**stripped, "matcher": "Bash"},
+            {**entry, "matcher": "Edit|Write|NotebookEdit|MultiEdit"},
+        ]
+        r = self._verify(block)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shell redirect", r.stderr)
+
+    def test_verify_settings_accepts_an_inline_boundary(self):
+        # A command that binds the boundary itself
+        # (`ORCA_UNIT_WORKTREE=/wt …/deny-hook.sh`) enforces it without the
+        # settings env; requiring it in two places refused live spawns
+        # (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        hook = block["hooks"]["PreToolUse"][0]["hooks"][0]
+        hook["command"] = f"ORCA_UNIT_WORKTREE={wt} sh " + hook["command"]
+        del block["env"]
+        r = self._verify(block)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_verify_settings_refuses_a_merely_named_hook(self):
+        # Naming the path is not registering the hook: a settings file that
+        # mentions deny-hook.sh outside hooks.PreToolUse arms nothing, and the
+        # verifier must not accept it (PR #569 review).
+        r = self._verify({"hooks": {}, "description": "deny-hook.sh"})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("NOT ARMED", r.stderr)
+
+    def test_verify_settings_refuses_a_bash_only_matcher(self):
+        # A matcher covering Bash but not the file-write tools leaves the
+        # boundary rule unwired for Edit/Write — armed for shells only is not
+        # armed (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        block["hooks"]["PreToolUse"][0]["matcher"] = "Bash"
+        self.assertEqual(self._verify(block).returncode, 2)
+
+    def test_verify_settings_refuses_missing_boundary_env(self):
+        # Without ORCA_UNIT_WORKTREE the hook fails open at runtime, so a
+        # registration without the env (in settings or the command itself)
+        # must not verify (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        del block["env"]
+        self.assertEqual(self._verify(block).returncode, 2)
+
+    def test_verify_settings_refuses_a_command_that_never_denies(self):
+        # A registered shell-out named deny-hook.sh that allows everything is
+        # not OUR hook. Verification runs the registered command and demands
+        # the rm -rf probe come back deny (PR #569 review).
+        fake = self.tmp / "deny-hook.sh"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        settings = {
+            "env": {"ORCA_UNIT_WORKTREE": str(wt)},
+            "hooks": {"PreToolUse": [
+                {"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+                 "hooks": [{"type": "command",
+                            "command": f"sh {fake}"}]}]},
+        }
+        r = self._verify(settings)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("did not deny", r.stderr)
+
 
 class TestEgressReceiptRule(HookBase):
     """#561: an off-repo write must be preceded, in the same command, by its

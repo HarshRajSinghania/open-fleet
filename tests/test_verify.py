@@ -342,7 +342,7 @@ class FreshnessCheck(unittest.TestCase):
     def test_wtree_equivalence_relaxes_a_content_identical_head_move(self):
         # reviewed-sha-freshness.md: a head move whose tree is identical to the reviewed content
         # does not void the review. Build two commits with the same tree and check.
-        import subprocess, tempfile
+        import subprocess
         from pathlib import Path as P
         # _temp_repo: bare TemporaryDirectory hit the #340 teardown race here (OSError 39 on
         # .git, CI run 35074600535). Throwaway repo.

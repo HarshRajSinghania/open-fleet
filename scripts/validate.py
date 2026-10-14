@@ -63,6 +63,13 @@ _rr_spec.loader.exec_module(_run_report)
 _cl_spec = importlib.util.spec_from_file_location("_countlint", ROOT / "scripts" / "_countlint.py")
 _countlint = importlib.util.module_from_spec(_cl_spec)
 _cl_spec.loader.exec_module(_countlint)
+# The quarantine matcher (#558): one implementation, shared with preflight and
+# its CLI, so the deny-list means the same thing at every gate.
+_qc_spec = importlib.util.spec_from_file_location(
+    "_quarantine_check", ROOT / "runtime" / "scripts" / "quarantine_check.py"
+)
+_quarantine = importlib.util.module_from_spec(_qc_spec)
+_qc_spec.loader.exec_module(_quarantine)
 SKILLS_DIR = ROOT / "skills"
 PLAYBOOKS_DIR = ROOT / "playbooks"
 RUNTIME_DIR = ROOT / "runtime"
@@ -1128,6 +1135,43 @@ def check_ledger_rows():
     return failures
 
 
+def check_quarantine():
+    """The catalog may not route through a quarantined component (#558).
+
+    Returns (failures, warnings). Routing violations fail: a mission composing
+    a quarantined playbook, or pins.json pinning a quarantined pack ref. A
+    quarantined mission still present is the designed state (preflight refuses
+    its dispatch; files stay as evidence) and warns only. A missing or
+    malformed deny-list fails closed in this repo.
+    """
+    if not (ROOT / "runtime" / "quarantine.json").is_file():
+        return ["runtime/quarantine.json is missing — the deny-list is part of "
+                "the catalog, not an operator extra (#558)"], []
+    entries, errors, _ = _quarantine.load_quarantine(ROOT)
+    if errors:
+        return errors, []
+    playbook_stems = {p.stem for p in PLAYBOOKS_DIR.glob("*.md")}
+    missions, composes = set(), {}
+    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+        skill = skill_dir / "SKILL.md"
+        if skill_dir.is_dir() and skill.is_file():
+            missions.add(skill_dir.name)
+            composes[skill_dir.name] = (
+                set(compose_clause_backticks(skill.read_text(encoding="utf-8")))
+                & playbook_stems
+            )
+    pins, pins_error = _quarantine.pins_view(ROOT)
+    view = {"missions": set(), "composes": composes,
+            "pins": pins, "pins_error": pins_error}
+    failures = _quarantine.violations(entries, view)
+    warnings = [
+        f"mission {e['name']} is quarantined ({e['reason']}) but still in the "
+        "catalog — dispatch is refused at preflight; files preserved as evidence"
+        for e in entries if e["kind"] == "mission" and e["name"] in missions
+    ]
+    return failures, warnings
+
+
 def check_badge_freshness():
     """The generated badge JSON (assets/badges/) must match current repo state, so the
     dynamically-read README badges never go stale. Regenerate with scripts/gen-badges.py."""
@@ -1242,6 +1286,15 @@ def main():
         print("\nFAIL badge freshness — run scripts/gen-badges.py and commit:")
         for failure in badge_failures:
             print(f"   - {failure}")
+
+    quarantine_failures, quarantine_warnings = check_quarantine()
+    if quarantine_failures:
+        all_passed = False
+        print("\nFAIL quarantine — the catalog routes through a quarantined component:")
+        for failure in quarantine_failures:
+            print(f"   - {failure}")
+    for warning in quarantine_warnings:
+        print(f"WARN quarantine — {warning}")
 
     print()
     if all_passed:

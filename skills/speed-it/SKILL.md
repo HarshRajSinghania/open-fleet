@@ -59,7 +59,7 @@ HUMAN SCOPE CONFIRM: freeze the critical-journey list + per-journey budgets (an 
   list is an unbounded mission) → declare metric contracts → BASELINE every journey (to contract,
   and `explain-the-number` is not inconclusive) → rank breaches by gap×traffic
   → DIAGNOSE the bottleneck (profile; symptom→cause tree; name the one dominant cause)
-  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
+  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission speed-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → FIX PR-per-hotspot (before→after mandatory — the perf form of evidence-manifest.md's negative
     control; GUARD: add a CI budget at the DECLARED budget, not at today's best run) → build-blind REVIEW

@@ -40,9 +40,12 @@ asserted.
 ### 2. Network — what a worker can reach
 
 Today: no egress proxy and no default-deny; a worker's network is the host's. Off-repo
-writes are meant to be receipted first (`egress.py`, #368) — forensic, content-free,
-hash-chained — but no sink calls it yet (#561), and receipts record sends, they do not
-gate them.
+writes are receipted first (`egress.py`, #368) — forensic, content-free, hash-chained.
+Since #561 the deny-hook refuses an unreceipted `gh` write wherever the hook is wired
+(worker sessions; coordinator sessions whose settings register it), and run close
+anchors the chain head in committed records. Where the hook is not wired, receipting
+remains coordinator discipline checked at close — receipts record sends; only the hook
+gates them, and nobody should mistake the ledger for an exfiltration control.
 
 Residue: exfiltration resistance rests on review of diffs and the deny-hook, not on a
 network boundary. Destination allowlisting is a platform (Orca/host) capability; the
@@ -95,8 +98,9 @@ platform credential brokering.
 3. **Stop.** Kill the worker(s) through Orca; block new dispatches on the affected DAG.
 4. **Revoke.** Rotate whatever credentials the run could have touched — manual today,
    because credentials are ambient (boundary 4).
-5. **Quarantine.** Block the implicated component fleet-wide (#558 — until it lands,
-   this rung is a manual pin rollback plus an issue).
+5. **Quarantine.** Block the implicated component fleet-wide: a human adds it to
+   `runtime/quarantine.json` — validation then refuses any routing through it and
+   preflight refuses its dispatch (#558).
 
 ## Out of scope
 

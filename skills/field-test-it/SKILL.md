@@ -75,7 +75,7 @@ PAIR: load the version-matched guides from the binary (`orca skills get orca-emu
   behaviour on a machine with no prior state). A defect class that only exists a tier up can
   never be proven a tier down; those are parked or paired, never "verified" on the weaker tier,
   and a tier is never upgraded silently.
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission field-test-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md). Fixes land on BASE, never the default branch.
 → BASELINE: capture the pre-change regression snapshot — the target flows driven on-device at the
   BASE head, screenshots/logs ledgered.

@@ -38,6 +38,17 @@
 #      that it disables the --force-with-lease checks
 #   4. `orca orchestration reset` — one command that discards a whole fleet's
 #      dispatch state
+#   5. an off-repo write (`gh pr|issue|release <write-verb>`, or `gh api` with
+#      a write method/field) with no egress receipt immediately &&-preceding
+#      it in the same command (`egress.py write … &&`). Judged in the payload
+#      reader, the only place the joining operators survive: a receipt joined
+#      by || or ; proves nothing (the send runs even when the receipt failed),
+#      and one receipt covers exactly one send. The receipt is free and
+#      mechanical, so there is no legitimate unreceipted form to ask about;
+#      the denial names the governed path. Doctrine:
+#      merge-serialization.md (#368), enforced here since #561. Plain
+#      `git push` is out of scope (branch pushes are evidenced by PR head
+#      SHAs, and the force rules above already govern their dangerous forms).
 # Git global options between `git` and the subcommand (-C, -c, --git-dir and
 # kin) are stripped before any of this is judged — `git -C /x push --force` is
 # the push it names (#297). A deletion that spares the default branch asks
@@ -205,8 +216,24 @@ DQ = chr(34)
 BLANKS = chr(32) + chr(9)
 
 
-def segments(cmd):
-    """Split a shell line into command segments, QUOTE-AWARE.
+def _norm_join(sep_chars):
+    # The join before a segment, reduced to what rule 5 (egress receipts)
+    # needs: "&&" runs the next command only if the previous one succeeded;
+    # every other separator run (||, ;, |, &, newline, mixes) runs it
+    # regardless, so a receipt joined that way proves nothing about the send.
+    core = sep_chars.replace(chr(10), "")
+    if not core:
+        return "start"
+    return "&&" if core == "&&" else "seq"
+
+
+def _split(cmd):
+    """Split a shell line into (join, segment) pairs, QUOTE-AWARE.
+
+    join is the operator run before the segment: "start" for the first,
+    "&&" when the shell runs it only on the previous success, "seq" for
+    every other separator. segments() below is this walk with the joins
+    dropped, byte-identical to what it always returned.
 
     This was a sed pass over the raw text, and a separator inside a quoted string split there
     too. The header called that safe, reasoning that splitting only ever makes MORE segments and
@@ -228,6 +255,7 @@ def segments(cmd):
     write target, which is the one direction this parser must never fail in.
     """
     segs, cur = [], []
+    cur_join, sep_run = "start", ""
     i, n, quote = 0, len(cmd), ""
     word_start = True
     while i < n:
@@ -246,6 +274,7 @@ def segments(cmd):
         if quote:
             # A literal newline inside a quoted word is data, not a boundary. It cannot travel on
             # the one-line record protocol below, so it rides as a space: a value, still one word.
+            sep_run = ""
             cur.append(" " if ch == "\n" else ch)
             if ch == "\\" and quote == DQ and i + 1 < n:
                 cur.append(cmd[i + 1])
@@ -258,11 +287,13 @@ def segments(cmd):
             continue
         if ch == SQ or ch == DQ:
             quote = ch
+            sep_run = ""
             cur.append(ch)
             word_start = False
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
+            sep_run = ""
             cur.append(ch)
             cur.append(cmd[i + 1])
             word_start = False   # an escaped character is a word character
@@ -276,6 +307,7 @@ def segments(cmd):
             j = i + 1
             while j < n and cmd[j] in "<>|&":
                 j += 1
+            sep_run = ""
             cur.append(cmd[i:j])
             word_start = False
             i = j
@@ -285,16 +317,30 @@ def segments(cmd):
         # removing a special case for them changed no decision, so there is no special case.
         # A newline is a separator too, and the one that ends a comment.
         if ch in ";|&\n":
-            segs.append("".join(cur))
-            cur = []
+            if cur:
+                segs.append((cur_join, "".join(cur)))
+                cur = []
+            sep_run += ch
+            cur_join = _norm_join(sep_run)
             word_start = True
             i += 1
             continue
+        # Blanks BETWEEN segments (after an operator, before the next word —
+        # or before the newline that ends a trailing comment) must not erase
+        # the pending join: `receipt && # note` <newline> `send` is still
+        # &&-joined (PR #567 review, P2).
+        if ch not in BLANKS or "".join(cur).strip():
+            sep_run = ""
         cur.append(ch)
         word_start = ch in BLANKS
         i += 1
-    segs.append("".join(cur))
-    return [seg for seg in segs if seg.strip()]
+    if cur:
+        segs.append((cur_join, "".join(cur)))
+    return [(join, seg) for join, seg in segs if seg.strip()]
+
+
+def segments(cmd):
+    return [seg for _join, seg in _split(cmd)]
 
 
 def policy_word(word):
@@ -360,9 +406,239 @@ print(command)
 # file_path left the one write tool that spells the field differently free of
 # the boundary entirely (#297).
 print(s(ti.get("file_path") or ti.get("notebook_path")))
-# Line 4 onward: C = comparison command, W = write target, A = literal argument.
+# Line 4 onward: C = comparison command, W = write target, A = literal argument,
+# E = an off-repo write with no egress receipt arming it (rule 5, judged here
+# because only this side of the protocol still knows the joining operators).
 # Paths stay decoded on their own lines; comparison words cannot split operands.
-for seg in segments(raw_command):
+SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
+              "delete", "upload", "ready", "pin", "unpin", "lock", "unlock", "transfer"}
+
+
+# Wrapper words strip_prefix peels on the shell side (env/sudo-style
+# laundering). Rule 5 moved into this reader, so the peeling must come with
+# it — `env gh issue close`, `command gh release create`, `sudo -n gh …`
+# are the same sends (PR #567 review, P1). env/nice/time/nohup also peel
+# their own option runs (`env -i gh …` is the canonical form).
+_WRAPPERS = {"command", "builtin"}
+_WRAPPER_OPERANDS = {
+    # -S/--split-string is handled in _peel_wrapper, not here: its operand
+    # IS the command, so treating it as a skippable operand would promote
+    # the arguments of that command to the head (PR #567 review, P1).
+    "env": {"-u", "--unset", "-a", "--argv0", "-C", "--chdir"},
+    "nice": {"-n", "--adjustment"},
+    "time": {"-o", "--output", "-f", "--format"},
+    "nohup": set(),
+}
+_SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
+
+
+def _split_env_string(text):
+    # GNU env -S word splitting, to head-finding fidelity: blanks separate,
+    # `\_` is a SEPARATOR (not a literal underscore), other `\x` is a literal
+    # x, single/double quotes group (and vanish). A plain .split() kept
+    # `ignore\_--version` as one word, hiding --version inside what read as
+    # a -W value, so a version print armed a send (PR #567 review, P1).
+    words, cur, quote = [], [], ""
+    started = False  # a quote opens a word even if it adds no characters:
+    # `""` is an empty argument env preserves and python consumes (P1).
+    i = 0
+
+    def flush():
+        nonlocal cur, started
+        if started:
+            words.append("".join(cur))
+            cur, started = [], False
+
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                cur.append(ch)
+            i += 1
+            continue
+        if ch in (SQ, DQ):
+            quote = ch
+            started = True
+        elif ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "_":
+                flush()
+            else:
+                cur.append(nxt)
+                started = True
+            i += 2
+            continue
+        elif ch in " \t":
+            flush()
+        else:
+            cur.append(ch)
+            started = True
+        i += 1
+    flush()
+    return words
+
+
+def _peel_wrapper(ws, operand_flags, is_env=False):
+    # ws[0] is env/nice/time/nohup: peel it and its options. Help/version
+    # means nothing runs — return the words as they stand.
+    original = ws
+    ws = ws[1:]
+    while ws:
+        word = ws[0]
+        if word in ("-V", "--help", "--version"):
+            return original
+        if word == "--":
+            return ws[1:]
+        if is_env and word in ("-S", "--split-string") and len(ws) > 1:
+            # The operand IS the command line env runs: its words take the
+            # head, the words after it become their arguments.
+            return _split_env_string(ws[1]) + ws[2:]
+        if is_env and word.startswith("-S") and len(word) > 2:
+            return _split_env_string(word[2:]) + ws[1:]
+        if word in operand_flags and len(ws) > 1:
+            ws = ws[2:]
+        elif word.startswith("-"):
+            ws = ws[1:]  # a lone "-" is env spelling of -i; no command is "-"
+        else:
+            return ws
+    return ws
+
+
+def _peel_sudo(ws):
+    # ws[0] is sudo: peel it, stacked sudos, and the sudo option run —
+    # the same shapes strip_prefix handles (`sudo -n`, `sudo --`,
+    # `sudo -u root`, `sudo --user=root`). A help/version option stops the
+    # peel cold: sudo prints and exits 0 running nothing, so the words keep
+    # their sudo head and neither arm a receipt nor read as the send.
+    original = ws
+    ws = ws[1:]
+    while ws:
+        word = ws[0]
+        if word in ("-V", "--help", "--version"):
+            return original
+        if word == "sudo":
+            ws = ws[1:]
+        elif word == "--":
+            return ws[1:]
+        elif word.startswith("--") and "=" in word:
+            ws = ws[1:]
+        elif word in _SUDO_OPERAND_FLAGS and len(ws) > 1:
+            ws = ws[2:]
+        elif word.startswith("-") and word != "-":
+            ws = ws[1:]
+        else:
+            return ws
+    return ws
+
+
+def _plain_words(args, peel_bang=True):
+    ws = list(args)
+    while ws:
+        # Group/subshell openers and negation name no command: `{ gh …; }`,
+        # `(gh …)`, `! gh …` run the same command (PR #567 review, P1).
+        # Peel the opener word, or the opener character glued to it. The
+        # receipt check passes peel_bang=False: `!` inverts exit status, so
+        # a negated writer that FAILS reads as success to `&&` — it proves
+        # nothing was recorded and must never arm a send (P1).
+        openers = ("{", "(", "!") if peel_bang else ("{", "(")
+        if ws[0] in openers:
+            ws = ws[1:]
+        elif ws[0][:1] in openers and len(ws[0]) > 1:
+            ws = [ws[0][1:]] + ws[1:]
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
+            ws = ws[1:]
+        elif ws[0] == "sudo":
+            peeled = _peel_sudo(ws)
+            if peeled == ws:
+                return ws  # help/version stop: judge the words as they stand
+            ws = peeled
+        elif ws[0] in _WRAPPER_OPERANDS:
+            peeled = _peel_wrapper(ws, _WRAPPER_OPERANDS[ws[0]],
+                                   is_env=ws[0] == "env")
+            if peeled == ws:
+                return ws
+            ws = peeled
+        elif ws[0] in _WRAPPERS:
+            ws = ws[1:]
+        else:
+            return ws
+    return ws
+
+
+def _is_receipt(args):
+    # The receipt writer must be the command being run — egress.py as the
+    # executable, or as the script a python invocation runs. Merely
+    # MENTIONING it (`echo egress.py write`) records nothing and arms
+    # nothing (PR #567 review, P1).
+    ws = _plain_words(args, peel_bang=False)
+    def is_egress(word):
+        return word == "egress.py" or word.endswith("/egress.py")
+
+    if len(ws) >= 2 and is_egress(ws[0]) and ws[1] == "write":
+        return True
+    # python3 [options] … egress.py write: versioned interpreters
+    # (python3.12) and interpreter options before the script still run the
+    # writer (PR #567 review, P2). The options are ALLOWLISTED to ones that
+    # proceed to the script — --version/-h print and exit 0 without running
+    # it, so skipping unknown dash-words would arm a send on a no-op (P1).
+    if ws and re.fullmatch(r"python(3(\.\d+)?)?", ws[0].rsplit("/", 1)[-1]):
+        i = 1
+        while i < len(ws):
+            word = ws[i]
+            if word == "--":
+                i += 1
+                break
+            if word in ("-W", "-X"):
+                i += 2
+            elif re.fullmatch(r"-[WX].+", word, re.DOTALL):
+                i += 1
+            elif re.fullmatch(r"-[uEIsSvqBObdi]+", word):
+                i += 1
+            else:
+                break
+        return i < len(ws) and not ws[i].startswith("-") \
+            and i + 1 < len(ws) and is_egress(ws[i]) and ws[i + 1] == "write"
+    return False
+
+
+def _is_send(args):
+    ws = _plain_words(args)
+    if not ws or not (ws[0] == "gh" or ws[0].endswith("/gh")):
+        return False
+    rest = ws[1:]
+    if len(rest) >= 2 and rest[0] in ("pr", "issue", "release"):
+        return rest[1] in SEND_VERBS
+    if rest and rest[0] == "api":
+        method, fields, i = None, False, 1
+        while i < len(rest):
+            word = rest[i]
+            if word in ("-X", "--method") and i + 1 < len(rest):
+                method = rest[i + 1].upper()
+                i += 2
+                continue
+            if word.startswith("--method="):
+                method = word.split("=", 1)[1].upper()
+            elif word.startswith("-X") and len(word) > 2:
+                method = word[2:].upper()
+            elif word in ("-f", "-F", "--field", "--raw-field", "--input") \
+                    or word.startswith(("--field=", "--raw-field=", "--input=")) \
+                    or (len(word) > 2 and word[:2] in ("-f", "-F")):
+                # Attached short forms (-ftitle=x) supply fields too, and so
+                # imply POST with no explicit method (PR #567 review, P1).
+                fields = True
+            i += 1
+        # An explicit method wins: --method GET with -f filters is a read.
+        # Fields imply POST only when no method was supplied (gh semantics).
+        if method is not None:
+            return method in ("POST", "PUT", "PATCH", "DELETE")
+        return fields
+    return False
+
+
+_seg_args = []
+for _join, seg in _split(raw_command):
     args, writes, pending = [], [], None
     for kind, value in shell_tokens(seg):
         if kind == "redirect":
@@ -373,14 +649,37 @@ for seg in segments(raw_command):
             pending = None
         else:
             args.append(value)
+    _seg_args.append((_join, args))
     record("C", " ".join(policy_word(word) for word in args))
     for path in writes:
         record("W", path)
     for word in args:
-        record("A", word)' 2>/dev/null) || {
+        record("A", word)
+
+_armed = False
+for _join, _args in _seg_args:
+    if _is_receipt(_args):
+        _armed = True
+        continue
+    if _is_send(_args):
+        if not (_armed and _join == "&&"):
+            record("E", "unreceipted")
+            break
+        _armed = False  # one receipt covers exactly one send
+        continue
+    _armed = False  # any other segment consumes the arming
+' 2>/dev/null) || {
   decide deny "deny-hook: the tool payload could not be parsed. Fail-closed: an unreadable payload is refused, never allowed."
   exit 0
 }
+
+# Rule 5 verdict, computed in the payload reader (the only place the joining
+# operators survive): an E record means an off-repo write in this command has
+# no egress receipt immediately &&-preceding it.
+if printf '%s\n' "$FIELDS" | grep -q '^E '; then
+  decide deny "deny-hook[HIGH]: off-repo write without its egress receipt. Precede the send in the same command — egress.py write … && <this gh command> — so what left the machine is on the hash-chained record (merge-serialization.md, #368). The receipt comes first: the send may be the last thing this process does. One receipt covers exactly one send, and only on the success path (&&)."
+  exit 0
+fi
 
 # --- path resolution ---------------------------------------------------------
 # The boundary check is a string prefix, so the path it compares has to be a

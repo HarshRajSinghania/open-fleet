@@ -74,7 +74,7 @@ SELF-ORIENT → ENUMERATE at T0: every open inbound PR, PAGINATED TO THE END (a 
   closed since T0.
 → CLASSIFY per PR: pin current main for the initial reproduction; APPEND its SHA + receipt as
   entry 1. absorbable · superseded-by-main · duplicate-of · needs-contributor · out-of-scope.
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission absorb-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md).
 → RECLASSIFY at the current BASE tip before each absorption; APPEND that SHA + receipt, never replace.
 → ABSORB (per absorbable PR): apply the diff preserving `Author:`; the fleet's amendment is a

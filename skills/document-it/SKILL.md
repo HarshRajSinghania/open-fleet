@@ -66,7 +66,7 @@ SELF-ORIENT → EXTRACT the public surface at BASE head with a SCRIPT, not a rea
   every scored cell cites a file:line.
 → FREEZE the gap list (human gate): critical = zero coverage anywhere; the human bounds WHICH
   entities merit tutorial or explanation. The frozen list does not grow mid-run.
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission document-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md).
 → PER CELL: WRITE (one cell per unit, from code archaeology — read the implementation and the
   tests, not the old docs) → CLAIM-VERIFY (every factual claim bound to a file:symbol or a pasted

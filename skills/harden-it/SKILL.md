@@ -55,7 +55,7 @@ revocation parks), `compound-learn`; rides `sandbox-policy`, `gate-classificatio
 ```
 THREAT-MODEL (STRIDE per trust boundary; Always/Ask-First/Never boundary per sandbox-policy.md
 → one-way gates; commit artifact to ledger/repo)
-  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
+  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission harden-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → AUDIT waves (risk-review security lens applied TREE-WIDE: the audit's fixed point is the whole
     codebase at the BASE head — valid because BASE was just bootstrapped; the lens's scope-gating

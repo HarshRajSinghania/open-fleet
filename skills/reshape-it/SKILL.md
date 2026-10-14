@@ -71,7 +71,7 @@ SCAN: churn-weighted shallowness inventory over a 90-day window, run PER CANDIDA
   inventory; what is not confirmed is not touched this run. Headless/spawned: publish the
   inventory and PARK at the gate — one-way doors are human-only, never auto-bounded
   (gate-classification; mission-scheduling already parks here).
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission reshape-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md). All deepening lands on BASE, never the default branch.
 → CHARACTERIZE (before ANY restructure): pin the existing behavioural net at each target's current
   seam, per `characterize` — the same protocol prove-it runs, held in one place. A module with no

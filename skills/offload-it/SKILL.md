@@ -53,7 +53,7 @@ Worker TASK pack: one of matt | addy — never co-mount.
 ## Pipeline
 
 ```
-INSPECT the repo for an existing entry, scripts, state, or setup notes — a working recipe goes
+REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission offload-it) → INSPECT the repo for an existing entry, scripts, state, or setup notes — a working recipe goes
   straight to the doctor loop, never a rebuild.
 → INTERVIEW, settled FIRST and confirmed back, never picked by the fleet: connection mode
   (Orca-server vs SSH — it changes the create output and half the templates), provider plus

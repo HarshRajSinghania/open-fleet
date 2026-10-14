@@ -65,7 +65,7 @@ build-blind REVIEW · compound-learn at VERDICT.
 SELF-ORIENT → FREEZE (human gate): the PATH SET (endpoints, jobs, external dependencies) and, per
   path, its 2–4 on-call questions. The questions ARE the denominator — a path whose questions the
   human will not name does not enter the set, and the set does not grow mid-run.
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission oncall-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md).
 → PER PATH (parallel across paths; instrument.md end to end within one):
     INSTRUMENT (structured events, correlation ID, entry-point field, RED/USE with bounded labels,

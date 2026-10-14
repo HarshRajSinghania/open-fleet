@@ -54,7 +54,7 @@ result + a revert-to-violation negative control), `sandbox-policy` (`PROFILE=rw`
 
 ```
 FREEZE the surface: the page/flow/component set × the WCAG 2.2 AA criteria — the denominator, digest-locked.
-  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
+  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission access-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → DETECT: run the deterministic oracle against the surface rendered at the BASE head (`oracle=`,
     frozen at T0: default `axe` — an automated rule engine; alternative `design-rules`, a catalog of

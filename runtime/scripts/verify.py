@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import hashlib
 import importlib.util
 import json
@@ -213,16 +214,28 @@ def _roots_are_split():
     even available; under a split, evidence passes only on its artifacts[] pin, read from the
     evidence root. Two clones of one project are two repositories here: same paths, different
     roots, so the pin still governs. Identity must be PROVEN — if either toplevel cannot be
-    resolved we fail closed and treat the roots as split."""
+    resolved we fail closed and treat the roots as split.
+
+    Answered ONCE per (roots, cwd) and cached (review P3): it used to spawn two git processes
+    per artifact read. The first answer is also the one taken before any executed control ran
+    worker code, so a later filesystem move cannot flip it mid-run."""
     if _ROOTS["git"] is None and _ROOTS["evidence"] is None:
         return False
-    sha_top, ev_top = _toplevel(), _evidence_toplevel()
-    if sha_top is None or ev_top is None:
-        return True
-    try:
-        return Path(sha_top).resolve() != Path(ev_top).resolve()
-    except OSError:
-        return True
+    key = (_ROOTS["git"], _ROOTS["evidence"], os.getcwd())
+    if key not in _roots_are_split.cache:
+        sha_top, ev_top = _toplevel(), _evidence_toplevel()
+        if sha_top is None or ev_top is None:
+            split = True
+        else:
+            try:
+                split = Path(sha_top).resolve() != Path(ev_top).resolve()
+            except OSError:
+                split = True
+        _roots_are_split.cache[key] = split
+    return _roots_are_split.cache[key]
+
+
+_roots_are_split.cache = {}  # (git root, evidence root, cwd) -> split; main() clears it per run
 
 
 def _resolve(path):
@@ -1146,10 +1159,15 @@ def _fresh_command_records(m):
     return [c for c in records if c.get("exit") == 0 and c.get("wtree") == want], None
 
 
+@functools.lru_cache(maxsize=1)
 def _load_diff_scope():
     """diff_scope.py, loaded the way _load_ed25519 loads its sibling. It owns the repo's one
     definition of what a test path is (SCOPE_TESTS), and the control-binding checks below need
-    exactly that definition — a second copy here would drift from the lens gate's copy."""
+    exactly that definition — a second copy here would drift from the lens gate's copy.
+
+    Loaded ONCE per process (review P3): _is_test_path asks per changed path, several times per
+    path across the bind checks, and each ask used to re-read and re-execute the module. A
+    failed load raises and is not cached, so a missing sibling still fails closed every time."""
     spec = importlib.util.spec_from_file_location(
         "diff_scope", Path(__file__).resolve().parent / "diff_scope.py")
     mod = importlib.util.module_from_spec(spec)
@@ -2819,6 +2837,7 @@ def main(argv=None):
             print(f"usage: {err}", file=sys.stderr)
         return 1
     _ROOTS.update(git=roots["--git-dir"], evidence=roots["--evidence-root"])
+    _roots_are_split.cache.clear()  # one answer per run, taken before any control executes
     # h409 F-1: the review authority is pinned HERE, before any check runs and long before the
     # executed negative control runs worker code — never looked up lazily after it.
     repo = _Authority.resolve(args.provenance,

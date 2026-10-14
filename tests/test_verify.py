@@ -3319,6 +3319,49 @@ class ProofOracleProtection(RepoCase):
 
 
 
+class PerRunCaches(RepoCase):
+    """Review P3 (perf): _is_test_path re-loaded and re-executed diff_scope.py for every path it
+    classified, and _roots_are_split spawned two git processes for every artifact read. Both
+    answers are now taken once per run."""
+
+    def test_diff_scope_is_loaded_once_for_many_paths(self):
+        verify._load_diff_scope.cache_clear()
+        self.addCleanup(verify._load_diff_scope.cache_clear)
+        real = importlib.util.spec_from_file_location
+        with mock.patch.object(verify.importlib.util, "spec_from_file_location",
+                               side_effect=real) as spec:
+            verdicts = [verify._is_test_path(p) for p in
+                        ("tests/test_a.py", "src/a.py", "tests/test_b.py", "src/b.py", "x_test.go")]
+        loads = [c for c in spec.call_args_list if c.args and c.args[0] == "diff_scope"]
+        self.assertEqual(len(loads), 1, loads)
+        self.assertEqual(verdicts[:4], [True, False, True, False])
+
+    def test_a_missing_diff_scope_still_fails_closed_every_time(self):
+        verify._load_diff_scope.cache_clear()
+        self.addCleanup(verify._load_diff_scope.cache_clear)
+        with mock.patch.object(verify.importlib.util, "spec_from_file_location",
+                               side_effect=FileNotFoundError("gone")):
+            self.assertIsNone(verify._is_test_path("tests/test_a.py"))
+            self.assertIsNone(verify._is_test_path("tests/test_b.py"))
+
+    def test_the_split_answer_spawns_git_once_per_run(self):
+        td = _temp_repo()
+        self.addCleanup(td.cleanup)
+        other = Path(td.name).resolve()
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        verify._ROOTS.update(git=str(other), evidence=str(self.repo))
+        self.addCleanup(verify._ROOTS.update, git=None, evidence=None)
+        verify._roots_are_split.cache.clear()
+        self.addCleanup(verify._roots_are_split.cache.clear)
+        verify._Authority.git_bin()  # pin first; its own custody probe is not this count
+        with mock.patch.object(verify, "_run", wraps=verify._run) as run:
+            answers = [verify._roots_are_split() for _ in range(5)]
+        self.assertEqual(answers, [True] * 5)
+        toplevels = [c for c in run.call_args_list if "--show-toplevel" in c.args[0]]
+        # the SHA root's toplevel, once for the whole run (the evidence root is argv, no git)
+        self.assertEqual(len(toplevels), 1, toplevels)
+
+
 class ProofInputOptions(unittest.TestCase):
     """PR #323 review, P1.
 

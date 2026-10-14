@@ -204,7 +204,11 @@ def _quarantine_refusal(mission: str) -> str | None:
     entries, errors, _ = module.load_quarantine(root)
     if errors:
         return "runtime/quarantine.json is malformed: " + "; ".join(errors)
-    found = module.violations(entries, module.mission_view(root, mission))
+    try:
+        view = module.mission_view(root, mission)
+    except module.QuarantineError as err:
+        return str(err)
+    found = module.violations(entries, view)
     if found:
         return "; ".join(found)
     return None

@@ -176,6 +176,32 @@ class Cli(unittest.TestCase):
             result = self.run_cli("--root", tmp, "--catalog")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_bundle_layout_playbooks_are_checked(self):
+        # The dist bundle vendors playbooks under skills/<m>/references/ and
+        # has no playbooks/ dir; a playbook quarantine must still refuse there.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime").mkdir()
+            (root / "runtime" / "quarantine.json").write_text(
+                json.dumps({"quarantined": [entry(component="playbook:risk-review")]}))
+            refs = root / "skills" / "ship-it" / "references"
+            refs.mkdir(parents=True)
+            (refs / "risk-review.md").write_text("# x\n")
+            (root / "skills" / "ship-it" / "SKILL.md").write_text(
+                "Composes `risk-review`.\n")
+            result = self.run_cli("--root", tmp, "--mission", "ship-it")
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_missing_mission_cannot_evaluate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime").mkdir()
+            (root / "runtime" / "quarantine.json").write_text(
+                json.dumps({"quarantined": []}))
+            result = self.run_cli("--root", tmp, "--mission", "ghost")
+            self.assertEqual(result.returncode, 3)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_absent_file_says_no_quarantine_in_force(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_cli("--root", tmp, "--catalog")

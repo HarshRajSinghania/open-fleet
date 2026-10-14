@@ -176,11 +176,24 @@ def violations(entries, view):
     return out
 
 
-def _playbook_names(root):
+class QuarantineError(Exception):
+    """The check cannot be evaluated (missing mission, unreadable tree)."""
+
+
+def _playbook_names(root, mission=None):
+    """Playbook stems in either layout: the catalog keeps them under
+    playbooks/, the bundle vendors them under skills/<mission>/references/.
+    Reading only the catalog layout made playbook quarantines silently inert
+    in bundled installs."""
+    names = set()
     playbooks = Path(root) / "playbooks"
-    if not playbooks.is_dir():
-        return set()
-    return {p.stem for p in playbooks.glob("*.md")}
+    if playbooks.is_dir():
+        names |= {p.stem for p in playbooks.glob("*.md")}
+    if mission:
+        references = Path(root) / "skills" / mission / "references"
+        if references.is_dir():
+            names |= {p.stem for p in references.glob("*.md")}
+    return names
 
 
 def _composed_playbooks(skill_text, playbook_names):
@@ -198,11 +211,19 @@ def _composed_playbooks(skill_text, playbook_names):
 
 def mission_view(root, mission):
     skill = Path(root) / "skills" / mission / "SKILL.md"
-    text = skill.read_text(encoding="utf-8") if skill.exists() else ""
+    if not skill.is_file():
+        raise QuarantineError(
+            f"{skill} not found — cannot tell what {mission} composes, "
+            "so cannot clear it against the deny-list"
+        )
+    try:
+        text = skill.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as err:
+        raise QuarantineError(f"{skill}: unreadable ({err})") from err
     pins, pins_error = pins_view(root)
     return {
         "missions": {mission},
-        "composes": {mission: _composed_playbooks(text, _playbook_names(root))},
+        "composes": {mission: _composed_playbooks(text, _playbook_names(root, mission))},
         "pins": pins,
         "pins_error": pins_error,
     }
@@ -235,7 +256,6 @@ def pins_view(root):
 
 def catalog_view(root):
     skills = Path(root) / "skills"
-    playbooks = _playbook_names(root)
     missions, composes = set(), {}
     if skills.is_dir():
         for skill_dir in sorted(skills.iterdir()):
@@ -243,7 +263,8 @@ def catalog_view(root):
             if skill_dir.is_dir() and skill.exists():
                 missions.add(skill_dir.name)
                 composes[skill_dir.name] = _composed_playbooks(
-                    skill.read_text(encoding="utf-8"), playbooks
+                    skill.read_text(encoding="utf-8"),
+                    _playbook_names(root, skill_dir.name),
                 )
     pins, pins_error = pins_view(root)
     return {"missions": missions, "composes": composes,
@@ -287,7 +308,11 @@ def main(argv=None):
             )
         view = {**view, "missions": set()}  # presence is the designed state
     else:
-        view = mission_view(root, args.mission)
+        try:
+            view = mission_view(root, args.mission)
+        except QuarantineError as err:
+            print(f"quarantine_check: {err}", file=sys.stderr)
+            return 3
     found = violations(entries, view)
     for violation in found:
         print(f"QUARANTINED {violation}")

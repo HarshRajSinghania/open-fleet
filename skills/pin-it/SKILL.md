@@ -66,7 +66,7 @@ FREEZE the claim inventory: extract every mechanics claim from runtime/*.md, run
   call" → probe: two workers settle, one consuming check → receipt shows a ≤50-message Delivery →
   STALE (the mechanism lives; its behaviour changed) → doctrine rewritten to Delivery-batch
   semantics. SUPERSEDED is for a mechanism that is GONE (unknown command / retired-alias recovery).
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission pin-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md). Doctrine patches land on BASE, never on the default.
 → LOAD the version-matched guides from the INSTALLED binary; record the CLI version. Per topic run `skills get <topic>
   --references`, then `--reference <name>` for EACH (`--full` fallback): the contract lives there, not in the kernel.

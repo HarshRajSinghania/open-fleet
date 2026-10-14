@@ -49,7 +49,7 @@ adversarial challenge is likely the real cause), not a fan-out of uncoordinated 
 ## Pipeline
 
 ```
-STOP-THE-LINE (preserve evidence) → run the diagnose playbook's DIAGNOSIS phases (red-capable loop
+REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission root-cause) → STOP-THE-LINE (preserve evidence) → run the diagnose playbook's DIAGNOSIS phases (red-capable loop
   BEFORE any theory; elevated reproduction rate for a non-deterministic bug; 3–5 ranked falsifiable
   hypotheses, falsified one variable at a time to a single survivor) and STOP before its fix phase —
   this mission has no fix authority; the fix belongs to the separately authorized handoff below.

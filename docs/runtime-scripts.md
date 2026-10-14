@@ -21,6 +21,7 @@ boundary rather than assembling a gate command from its flags alone.
 | I need to… | Helper | Guide |
 |---|---|---|
 | Check a run's base and dependencies | [`preflight.py`](../runtime/scripts/preflight.py) | [BASE in the glossary](concepts.md#glossary), plus the helper's usage header |
+| Block a compromised component fleet-wide | [`quarantine_check.py`](../runtime/scripts/quarantine_check.py) | [`quarantine.json`](#quarantinejson), plus the helper's usage header |
 | Record a test or verifier command in a manifest | [`evidence-run.py`](../runtime/scripts/evidence-run.py) | [Run submission, step by step](run-submission-guide.md#step-by-step) |
 | Verify a unit's evidence | [`verify.py`](../runtime/scripts/verify.py) | [Gate inputs](verify-gate.md#native-path--plugin-hooks-set-claude_plugin_root) and [manifest policy](../runtime/evidence-manifest.md) |
 | Connect verification to completion events | [`verify-gate.sh`](../runtime/scripts/verify-gate.sh) | [Install paths](verify-gate.md#install-paths-and-which-ones-carry-the-gate) |
@@ -459,6 +460,30 @@ Exits: 0 ok · 1 usage (no input file) · 2 unreadable input.
 > bidi overrides and zero-width joiners that reorder what the reader sees without
 > printing a glyph. Escaped, not stripped, so the reader sees that something was there.
 
+## `quarantine_check.py`
+
+The matcher behind the component quarantine switch (#558): reads
+`runtime/quarantine.json` and reports where the catalog still routes through a
+quarantined component. One implementation, three gates — `scripts/validate.py`
+imports `violations()` with its own catalog view, `preflight.py --mission` refuses
+a run start, and this CLI answers ad hoc. Source `runtime/scripts/quarantine_check.py`;
+behavior pinned by `tests/test_quarantine.py`.
+
+Usage: `quarantine_check.py [--root DIR] <--catalog | --mission NAME>`
+
+Exits: 0 nothing quarantined is in play · 2 violation · 3 cannot evaluate
+(unreadable or malformed deny-list, bad root) — a broken deny-list never reads as an
+empty one. A root with no `runtime/quarantine.json` is not a fleet catalog: exit 0
+with "no quarantine in force" on stderr. Preflight never reads the list from the
+target repo in cwd — it resolves the fleet catalog ($ORCA_FLEET_ROOT, then
+$CLAUDE_PLUGIN_ROOT, then its own tree), so a target cannot shadow the deny-list.
+
+> Why: quarantine is a checked-in file, so it binds checkouts that contain it; it
+> cannot reach a running worker or a stale clone. It is the fast, reversible,
+> auditable rung of the response ladder, not a remote kill. Entries are human acts
+> only — the shape check refuses a `by` that names no human, the same rule
+> `decisions.py` applies to one-way lines.
+
 ## `sandbox_doctor.py`
 
 Reads the transcript of `orca vm recipe doctor` for a recipe and says whether it is
@@ -853,6 +878,23 @@ Keys:
 > can never be auto-decided — and rewording cannot reclassify, because decisions.py
 > refuses any line tripping a net without the class (`runtime/one-way-doors.json:freeze`
 > carries the same shape: title, why, keywords).
+
+## `quarantine.json`
+
+The component deny-list: missions, playbooks, and upstream packs a human has declared
+unusable (compromised, rug-pulled, unsafe). Source `runtime/quarantine.json`; enforced
+by `scripts/validate.py` (catalog routing), `runtime/scripts/preflight.py --mission`
+(run start), and `runtime/scripts/quarantine_check.py`; shape and matching pinned by
+`tests/test_quarantine.py`.
+
+Top-level keys: `_about` (the contract), `quarantined` (the list, empty by default).
+Each entry carries `component` (`mission:<name>`, `playbook:<name>`, or
+`pack:<pins.json key>`), `ref` (`*`, or a pack commit of at least 7 hex chars matched
+by prefix either way), `reason`, `date` (YYYY-MM-DD), and `by` (`human:<who>` —
+anything else is refused at parse). A quarantined mission's files stay in the catalog
+as evidence while dispatch is refused; a quarantined playbook or pack ref still routed
+to by the catalog fails validation until the references are removed or a human lifts
+the entry.
 
 ## `watchdog.json`
 

@@ -52,7 +52,7 @@ ledger), `liveness-resume` (DAG-scoped RESUME). Worker TASK pack: one of matt | 
 ## Pipeline
 
 ```
-FREEZE the denominator: pick standard@version and its SOURCE — the standard's own text or a
+REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission attest-it) → FREEZE the denominator: pick standard@version and its SOURCE — the standard's own text or a
   human-supplied obligation catalog, as a file/URL at a digest; obligations are enumerated FROM that
   document, never from model memory (a recalled SOC 2 / SSDF control list is a hallucinated
   denominator) — then enumerate into a DAG (decompose-dag). The set is frozen at the digest — the run

@@ -65,7 +65,7 @@ DEFERRED READS: liveness-resume.md on a stall or resume.
 SELF-ORIENT → PLAN: freeze the TABLE SET and the phase list per table (one row per phase, with its
   down path), from the surface the code actually reads — a table nobody reads is not in the set,
   and the set never grows mid-run (a new table is the NEXT run).
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission migrate-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md).
 → PER PHASE, strictly serial per table (data-migration.md):
     EXPAND → DUAL-WRITE → BACKFILL (batched, throttled, resumable; parity probe) → SWITCH-READS →

@@ -14,6 +14,13 @@ Verifies the invariants that, if wrong, silently corrupt a whole run:
        this run branched BASE from) to additionally require merge-base == that SHA.
     6. If `--require-gitleaks` is passed (integrator will scan diffs), `gitleaks` must be
        on PATH; otherwise a soft warning is fine.
+    7. If `--mission <name>` is passed, that mission and the playbooks it composes are
+       not quarantined (#558). The deny-list resolves from the FLEET catalog —
+       $ORCA_FLEET_ROOT, then $CLAUDE_PLUGIN_ROOT, then this script's own catalog —
+       never from the target repo in cwd, which must not be able to shadow it. A
+       present-but-malformed deny-list refuses the run; none anywhere means no
+       quarantine is in force. Runs in readonly mode too: report-only fleets
+       dispatch missions all the same.
 
 The BASE/default comparison canonicalizes ref aliases first (D1 remediation):
 `origin/main`, `refs/remotes/origin/main`, and `refs/heads/main` all reduce to `main`,
@@ -44,9 +51,12 @@ first `gh pr create` so a mid-run drift is caught, not tolerated.
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 
 # git commands here are local and fast; gh talks to the network. Read at call
@@ -155,6 +165,55 @@ def _tip_sha(ref: str) -> str | None:
     return None
 
 
+def _catalog_roots() -> list[Path]:
+    """Where the fleet catalog may live, most explicit first. The target repo
+    in cwd is NEVER a candidate: it must not shadow the fleet's deny-list with
+    one of its own (read at call time so tests can patch the environment)."""
+    roots = []
+    for var in ("ORCA_FLEET_ROOT", "CLAUDE_PLUGIN_ROOT"):
+        value = os.environ.get(var)
+        if value:
+            roots.append(Path(value))
+    roots.append(Path(__file__).resolve().parents[2])
+    return roots
+
+
+def _quarantine_refusal(mission: str) -> str | None:
+    """Why this mission may not start under runtime/quarantine.json, or None.
+
+    The matcher lives in quarantine_check.py beside this file (loaded by path,
+    so preflight and the catalog validator enforce one rule). No deny-list in
+    any catalog root = no quarantine in force; present but malformed or
+    unloadable = refusal: the run cannot prove it is allowed.
+    """
+    root = next(
+        (r for r in _catalog_roots()
+         if os.path.lexists(r / "runtime" / "quarantine.json")),
+        None,
+    )
+    if root is None:
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_quarantine_check", Path(__file__).resolve().parent / "quarantine_check.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as err:  # a checker that will not load cannot clear a run
+        return f"quarantine_check.py unloadable ({err}) — refusing rather than assuming clean"
+    entries, errors, _ = module.load_quarantine(root)
+    if errors:
+        return "runtime/quarantine.json is malformed: " + "; ".join(errors)
+    try:
+        view = module.mission_view(root, mission)
+    except module.QuarantineError as err:
+        return str(err)
+    found = module.violations(entries, view)
+    if found:
+        return "; ".join(found)
+    return None
+
+
 def main(argv: list[str]) -> int:
     parser = _UsageExit1Parser(prog="preflight.py")
     parser.add_argument("--base", help="The integration BASE branch name (required unless --mode readonly).")
@@ -180,6 +239,13 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Offline start: skip gh entirely (requires --default); all git-based BASE "
         "invariants still run. See merge-serialization.md 'No-gh fallback'.",
+    )
+    parser.add_argument(
+        "--mission",
+        metavar="NAME",
+        help="Refuse to start if this mission (or a playbook it composes) is quarantined "
+        "in runtime/quarantine.json (#558). No deny-list in the repo = no quarantine in "
+        "force; a malformed one refuses the run.",
     )
     args = parser.parse_args(argv)
 
@@ -217,6 +283,15 @@ def main(argv: list[str]) -> int:
     if rc != 0:
         print("preflight: ERROR: not inside a git repository", file=sys.stderr)
         return 1
+
+    # 2b. Quarantine (#558): a quarantined mission may not start, in either
+    #     mode — readonly fleets dispatch missions too. Before the readonly
+    #     early return on purpose.
+    if args.mission:
+        refusal = _quarantine_refusal(args.mission)
+        if refusal:
+            print(f"preflight: ERROR: QUARANTINED {refusal}", file=sys.stderr)
+            return 2
 
     if args.mode == "readonly":
         print("preflight: OK — mode=readonly (binary + repo checks only; no BASE/PR invariants)")

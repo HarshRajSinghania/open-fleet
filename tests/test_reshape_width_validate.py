@@ -14,7 +14,10 @@ pin-version lint (PIN_LINT_FILES, ORCA_VERSION_RE, PIN_CONTEXT_RE and
 check_pin_version_claims) — a new check, not the engine leaking back. 71 since
 the full-review fixes (PR #544) added the identity concept table
 (_IDENTITY_CONCEPTS) and the catalog proof ratchet (CATALOG_BASE and
-check_proof_ratchet) — new checks again, still under the 73 baseline.
+check_proof_ratchet) — new checks again, still under the 73 baseline. 72 since
+#558 added check_quarantine (the matcher itself lives in
+runtime/scripts/quarantine_check.py; the +1 is the gate function, not the
+engine leaking back).
 """
 import importlib.util
 import re
@@ -24,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WIDTH_RE = re.compile(r"(?:def |class |async def |[A-Z_]+ =)")
 BASELINE_WIDTH = 73
-PINNED_WIDTH = 71  # 64 after RV-D1, +4 for #512, +3 for the full-review fixes
+PINNED_WIDTH = 72  # 64 after RV-D1, +4 for #512, +3 full-review, +1 quarantine (#558)
 
 
 def interface_width(path):

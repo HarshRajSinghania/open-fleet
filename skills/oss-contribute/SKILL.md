@@ -61,7 +61,7 @@ AND, per upstream-contribution.md, the upstream OPEN PR set per issue — an iss
 ## Pipeline
 
 ```
-SELF-ORIENT → FORK + ENUMERATE (open issues AND their open PRs) → SKEPTIC-TRIAGE (reproduce/refute;
+REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission oss-contribute) → SELF-ORIENT → FORK + ENUMERATE (open issues AND their open PRs) → SKEPTIC-TRIAGE (reproduce/refute;
   redundancy = code AND upstream PRs) → FREEZE
   → PER-ISSUE (upstream-contribution): classify {buildable | already-has-PR | needs-human |
       externally-resolved}

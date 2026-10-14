@@ -769,10 +769,10 @@ class ControlPhasesAreIndistinguishable(RepoCase):
             "assert seen, 'first run in this TMPDIR'\n")
         self._assert_not_a_kill(ok, msgs)
 
-    def test_a_marker_in_state_every_phase_shares_is_caught_by_the_bracketing_runs(self):
-        # The common .git is shared by every worktree. A proof that fails exactly while a
-        # marker there says "not my first run" goes RED under the control — and RED again on
-        # the second clean run, which is what refuses it.
+    def test_a_marker_in_the_phase_git_dir_is_not_a_kill(self):
+        # Each phase is its own repository. A marker in that repo's git dir starts absent
+        # every time, so a proof that fails only when the marker is already there stays green
+        # under the control.
         ok, msgs = self._unit(
             "import pathlib, subprocess\n"
             "common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True,"
@@ -782,7 +782,19 @@ class ControlPhasesAreIndistinguishable(RepoCase):
             "marker.write_text('x')\n"
             "assert not seen, 'not the first run'\n")
         self._assert_not_a_kill(ok, msgs)
-        self.assertTrue(any("after the control run" in x for x in msgs), msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_a_proof_that_compares_head_to_its_branch_ref_is_not_killed(self):
+        # refs/heads/main points at head_sha in the source. A linked worktree would still
+        # see that ref under the sealed control, so HEAD != refs/heads/main only then.
+        ok, msgs = self._unit(
+            "import subprocess\n"
+            "def rev(arg):\n"
+            "    return subprocess.run(['git', 'rev-parse', arg], capture_output=True,"
+            " text=True, check=True).stdout.strip()\n"
+            "assert rev('HEAD') == rev('refs/heads/main'), 'branch ref is not this commit'\n")
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
 
     def test_each_phase_runs_under_its_own_empty_home_and_tmpdir(self):
         seen = []

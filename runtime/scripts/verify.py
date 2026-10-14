@@ -1786,16 +1786,17 @@ def execute_negative_control(m, nc_command=None):
     `negative_control.paths` from base_sha — or, only when no paths are given and the range is
     linear, `git revert --no-commit base..head`; `hand`: `git apply` the unified diff quoted in
     the artifact) and SEALED into a throwaway sibling commit of head_sha (_seal_control). Only
-    then does worker code run — three times, each in a fresh worktree under a fresh HOME and
+    then does worker code run — three times, each in its own repository under a fresh HOME and
     TMPDIR (_phase_run): CLEAN at head_sha, CONTROL at the sealed mutant, CLEAN at head_sha again.
 
     The control counts as KILLED only when BOTH clean runs exit 0 and the control run exits
     NON-ZERO with a genuine failure signature. A command that fails under the control but also
     fails clean proves nothing; one that passes under the control is a TAUTOLOGY. The phases are
-    indistinguishable by git status, HOME or TMPDIR, and the bracketing clean runs catch a
-    first-run-only side effect — a marker that makes every LATER run fail (review P1). A counter
-    kept in state every phase shares (the clone's common .git) is not isolated by this; that
-    residual is the coordinator's clean-env re-run to cover.
+    indistinguishable by git status, HOME, TMPDIR, or a branch ref: each repository copies the
+    source's ref layout, and every ref that named head_sha names that phase's commit instead, so
+    `HEAD` equals `refs/heads/<branch>` in the control run too (PR #571 review). The object store
+    is reached through alternates; a proof that opens that file and reads the source repo is the
+    residual a coordinator's clean-env re-run still has to cover.
 
     Fail-closed everywhere: an unknown tool, a missing command/paths, a git error, a worktree that
     cannot be made, or a control that applies no change at all."""
@@ -1851,27 +1852,73 @@ def execute_negative_control(m, nc_command=None):
                  env=_Authority.git_env())
             shutil.rmtree(holder, ignore_errors=True)
 
-    def _phase_run(top, commit, phase, argv):
-        """Run the bound command once in a FRESH worktree detached at `commit`, under a FRESH empty
-        HOME and TMPDIR. Returns (rc, stdout, stderr), or (None, None, err) when no worktree was made.
+    def _stage_phase_repo(top, head, commit, repo, phase):
+        """Build `repo` with the source's refs, retargeting any ref that names `head` onto
+        `commit`. Returns an error string, or None. Objects come from the source through
+        alternates, so the sealed mutant (written into the source) is visible without a copy."""
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, _, gerr = _run([git, "init", "-q", repo], timeout=60, env=env)
+        if code != 0:
+            return f"could not create the {phase} repository: {gerr.strip()}"
+        code, common, gerr = _run([git, "-C", top, "rev-parse", "--git-common-dir"],
+                                  timeout=30, env=env)
+        if code != 0:
+            return f"could not locate the source object store for the {phase} repository: {gerr.strip()}"
+        common_path = Path(common.strip())
+        if not common_path.is_absolute():
+            common_path = Path(top) / common_path
+        objects = (common_path / "objects").resolve()
+        alt = Path(repo) / ".git" / "objects" / "info" / "alternates"
+        alt.parent.mkdir(parents=True, exist_ok=True)
+        alt.write_text(str(objects) + "\n", encoding="ascii")
+        code, listing, gerr = _run([git, "-C", top, "for-each-ref", "--format=%(refname)"],
+                                   timeout=60, env=env)
+        if code != 0:
+            return f"could not read the source refs for the {phase} repository: {gerr.strip()}"
+        for ref in listing.splitlines():
+            code, direct, gerr = _run([git, "-C", top, "rev-parse", "--verify", ref],
+                                      timeout=30, env=env)
+            if code != 0:
+                return f"could not resolve {ref} for the {phase} repository: {gerr.strip()}"
+            direct = direct.strip()
+            code, peeled, _ = _run([git, "-C", top, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                                   timeout=30, env=env)
+            peeled = peeled.strip() if code == 0 else ""
+            target = commit if direct == head or peeled == head else direct
+            code, _, gerr = _run([git, "-C", repo, "update-ref", ref, target], timeout=30, env=env)
+            if code != 0:
+                return f"could not copy {ref} into the {phase} repository: {gerr.strip()}"
+        code, sym, _ = _run([git, "-C", top, "symbolic-ref", "-q", "HEAD"], timeout=30, env=env)
+        if code == 0 and sym.strip():
+            code, _, gerr = _run([git, "-C", repo, "symbolic-ref", "HEAD", sym.strip()],
+                                 timeout=30, env=env)
+            if code != 0:
+                return f"could not set HEAD in the {phase} repository: {gerr.strip()}"
+        code, _, gerr = _run([git, "-C", repo, "reset", "--hard", "--quiet", str(commit)],
+                             timeout=120, env=env)
+        if code != 0:
+            return f"could not check out the {phase} commit: {gerr.strip()}"
+        return None
 
-        Every phase is built identically — same holder layout, same environment keys, a clean tree —
-        and nothing one phase writes under its HOME, TMPDIR or worktree survives into the next: a
-        marker an earlier run left cannot be what makes a later run fail (review P1)."""
+    def _phase_run(top, head, commit, phase, argv):
+        """Run the bound command once in a FRESH repository at `commit`, under a FRESH empty
+        HOME and TMPDIR. Returns (rc, stdout, stderr), or (None, None, err) when no repo was made.
+
+        Every phase is built identically — same holder layout, same environment keys, a clean tree,
+        the same branch names — and nothing one phase writes under its HOME, TMPDIR or repository
+        survives into the next. A branch ref that pointed at head_sha points at this phase's
+        commit, so comparing HEAD to that ref cannot tell the control from a clean run."""
         holder = tempfile.mkdtemp(prefix="orca-nc-")
-        wt, home, tmp = (str(Path(holder) / leaf) for leaf in ("wt", "home", "tmp"))
+        repo, home, tmp = (str(Path(holder) / leaf) for leaf in ("repo", "home", "tmp"))
         os.mkdir(home)
         os.mkdir(tmp)
         env = {**_Authority.nc_env(), "HOME": home, "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp}
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
-                              str(commit)], timeout=120, env=_Authority.git_env())
         try:
-            if code != 0:
-                return None, None, f"could not create the {phase} worktree: {gerr.strip()}"
-            return _run_at(wt, argv, timeout=NC_TIMEOUT_S, env=env)
+            err = _stage_phase_repo(top, head, commit, repo, phase)
+            if err:
+                return None, None, err
+            return _run_at(repo, argv, timeout=NC_TIMEOUT_S, env=env)
         finally:
-            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-                 env=_Authority.git_env())
             shutil.rmtree(holder, ignore_errors=True)
 
     # The three helpers above are nested, not module names: the RV-D2 width pin
@@ -1899,7 +1946,7 @@ def execute_negative_control(m, nc_command=None):
         return False, [f"--execute-nc: {err}"]
     msgs = []
     for phase, commit in (("clean", head), ("control", mutant), ("clean", head)):
-        rc, out, errout = _phase_run(top, commit, phase, argv)
+        rc, out, errout = _phase_run(top, head, commit, phase, argv)
         if rc is None:
             return False, [f"--execute-nc: {errout}"]
         tail = (errout.strip() or out.strip())[-300:]

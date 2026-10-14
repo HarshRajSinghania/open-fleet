@@ -6,7 +6,9 @@ in `code`, or a hook landing outside `permission-surface`, is exactly how a
 rug-pull hides in a bump diff. These tests pin the classifier and the CLI's
 fail-closed exits.
 """
+import contextlib
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -174,6 +176,95 @@ class Cli(unittest.TestCase):
             result = self.run_cli("--repo", str(repo), "--pack", "demo",
                                   "--to", "0" * 40)
             self.assertEqual(result.returncode, 3)
+
+
+class LibraryAndMain(unittest.TestCase):
+    """The same contract through the library door. The subprocess Cli tests
+    prove the argv wiring; these pin the functions tests/test_pins.py and
+    the bumper's own scripting import, so a refactor of main() cannot move
+    behavior without a test noticing."""
+
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = pr.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_changed_paths_diff_and_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, first, second = make_pack(Path(tmp))
+            diff = {path: status
+                    for status, path in pr.changed_paths(repo, first, second)}
+            self.assertEqual(diff, {"SKILL.md": "M", "hooks/hooks.json": "A"})
+            baseline = pr.changed_paths(repo, None, second)
+            self.assertEqual(
+                sorted(baseline),
+                [("A", "SKILL.md"), ("A", "hooks/hooks.json"), ("A", "run.py")])
+
+    def test_resolve_and_git_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, second = make_pack(Path(tmp))
+            self.assertEqual(pr.resolve(repo, "HEAD"), second)
+            with self.assertRaises(pr.PinReviewError):
+                pr.resolve(repo, "0" * 40)
+
+    def test_truncated_diff_stream_refuses(self):
+        # A status token with no path behind it must not silently drop a
+        # change from the review surface.
+        original = pr._git
+        pr._git = lambda repo, *argv: "M\0path.md\0D\0"
+        try:
+            with self.assertRaises(pr.PinReviewError):
+                pr.changed_paths(Path("."), "a", "b")
+        finally:
+            pr._git = original
+
+    def test_classify_changes_groups_and_sorts(self):
+        grouped = pr.classify_changes(
+            [("M", "b.md"), ("A", "hooks/h.json"), ("M", "a.md"),
+             ("M", "src/x.py")])
+        self.assertEqual(grouped["instruction"], ["M a.md", "M b.md"])
+        self.assertEqual(grouped["permission-surface"], ["A hooks/h.json"])
+        self.assertEqual(grouped["code"], ["M src/x.py"])
+
+    def test_baseline_render_rolls_up_but_never_the_surface(self):
+        grouped = {
+            "instruction": [f"A docs-{i % 3}/doc-{i}.md" for i in range(61)],
+            "permission-surface": [f"A hooks/{i}.json" for i in range(61)],
+            "code": [],
+        }
+        text = pr.render("demo", "u", None, "b" * 40, grouped, "2026-10-14")
+        self.assertIn("baseline inventory", text)
+        self.assertIn("by top-level directory", text)
+        self.assertIn("- `A hooks/60.json`", text)
+
+    def test_main_bump_without_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, first, second = make_pack(Path(tmp))
+            rc, out, _ = self.run_main("--repo", str(repo), "--pack", "demo",
+                                       "--from", first, "--to", second)
+            self.assertEqual(rc, 0)
+            self.assertIn("Verdict: UNREVIEWED", out)
+            self.assertIn("no origin remote", out)
+
+    def test_main_baseline_with_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, second = make_pack(Path(tmp))
+            subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                            "https://example.invalid/pack.git"], check=True)
+            rc, out, _ = self.run_main("--repo", str(repo), "--pack", "demo",
+                                       "--to", second)
+            self.assertEqual(rc, 0)
+            self.assertIn("baseline inventory", out)
+            self.assertIn("https://example.invalid/pack.git", out)
+
+    def test_main_bad_commit_cannot_evaluate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, _ = make_pack(Path(tmp))
+            rc, _, err = self.run_main("--repo", str(repo), "--pack", "demo",
+                                       "--to", "0" * 40)
+            self.assertEqual(rc, 3)
+            self.assertIn("pin_review:", err)
 
 
 if __name__ == "__main__":

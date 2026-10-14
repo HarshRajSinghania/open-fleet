@@ -75,7 +75,9 @@ How to wire
 """
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -142,9 +144,29 @@ class ScopeError(Exception):
         self.resolved = resolved  # the base that WAS resolved before acquisition failed (#382)
 
 
+# git is resolved ONCE to an absolute path and run with replacement objects and the
+# config-driven execution channels off. The rule is gitexec.py's, inlined here because
+# verify.py loads this file by path: a sibling import would join the signed verifier
+# toolchain (verify._Transcript.TOOLCHAIN / run_report.TOOLCHAIN_FILES).
+GIT = shutil.which("git") or "git"
+
+
+def _git_env():
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+           and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT")}
+    pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"))
+    env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+                "GIT_CONFIG_COUNT": str(len(pairs))})
+    for i, (k, v) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = k, v
+    return env
+
+
 def git(repo, *args, tolerate=False):
     try:
-        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([GIT, "-C", str(repo), *args], capture_output=True, text=True,
+                           timeout=60, env=_git_env())
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 and not tolerate:

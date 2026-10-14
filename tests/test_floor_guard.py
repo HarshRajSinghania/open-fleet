@@ -123,6 +123,22 @@ class TestCleanAndExitCodes(FloorGuardBase):
 
 
 class TestDiffAcquisition(FloorGuardBase):
+    def test_a_bare_carriage_return_in_content_does_not_break_the_hunk_count(self):
+        # text=True applied universal newlines, so a removed file holding
+        # `a\r-b\nc\n` (two lines to git) arrived as three removal lines and
+        # the hunk-counted parser refused a valid patch (PR #571 review).
+        p = self.repo / "src" / "crlf.txt"
+        p.write_bytes(b"a\r-b\nc\n")
+        self.commit("add")
+        git(self.repo, "branch", "-f", "main", "HEAD")
+        p.unlink()
+        self.commit("remove")
+        r = run_guard(self.repo, "--base", "main")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        p.write_bytes(b"x\ry\n")  # untracked side goes through the same decoder
+        r = run_guard(self.repo, "--base", "main")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+
     def test_disappearing_untracked_file_is_exit_2(self):
         path = write(self.repo, "disappearing.py", "value = 1\n")
         real_run = subprocess.run
@@ -132,7 +148,10 @@ class TestDiffAcquisition(FloorGuardBase):
             if "--no-index" in argv:
                 path.unlink()
                 result = real_run(argv, **kwargs)
-                comparisons.append(result)
+                # the guard reads bytes (no newline translation); record text
+                comparisons.append(subprocess.CompletedProcess(
+                    result.args, result.returncode,
+                    result.stdout.decode(), result.stderr.decode()))
                 return result
             return real_run(argv, **kwargs)
 

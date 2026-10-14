@@ -174,16 +174,23 @@ class GuardError(Exception):
     """Raised for every could-not-run condition; the caller maps it to exit 2."""
 
 
+def _text(raw):
+    # Bytes in, text out with line endings untouched: text=True would apply
+    # universal newlines and turn a bare \r inside file content into an extra
+    # line, which the hunk-counted parser then rejects as a malformed patch.
+    return raw.decode("utf-8", "replace")
+
+
 def git(repo, *args):
     """Run git with argv only. Returns stdout, or None when git exits non-zero."""
     try:
         r = subprocess.run(
             gitexec.argv("-C", str(repo), *args),
-            capture_output=True, text=True, timeout=60, env=gitexec.env(),
+            capture_output=True, timeout=60, env=gitexec.env(),
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
-    return r.stdout if r.returncode == 0 else None
+    return _text(r.stdout) if r.returncode == 0 else None
 
 
 def repo_root(start):
@@ -244,7 +251,7 @@ def collect_diff(repo, mb):
         try:
             r = subprocess.run(
                 gitexec.argv("-C", str(repo), "diff", "--no-index", *diff_options, "--", "/dev/null", name),
-                capture_output=True, text=True, timeout=60, env=gitexec.env(),
+                capture_output=True, timeout=60, env=gitexec.env(),
             )
         except (OSError, subprocess.SubprocessError) as err:
             raise GuardError("untracked diff acquisition failed to run") from err
@@ -252,7 +259,7 @@ def collect_diff(repo, mb):
         # successful difference must have output; exit 0 may legitimately be empty.
         if r.returncode not in (0, 1) or (r.returncode == 1 and not r.stdout):
             raise GuardError(f"untracked diff acquisition failed (exit {r.returncode})")
-        chunks.append(r.stdout)
+        chunks.append(_text(r.stdout))
     return "\n".join(chunks)
 
 

@@ -11,6 +11,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -525,6 +526,79 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         r = self._run_discovered(src, rec)
         self.assertEqual(r.returncode, 2)
         self.assertIn("missing --dispatch-pubkey", r.stderr)
+
+
+class PinDiscoveryReadsTheTargetRepo(GateCase):
+    """Review P2: verify-gate.sh probed `$HERE/../..` — the PLUGIN root — for the pin, while
+    verify.py reads the relative `.orca/dispatch-pubkey[@ref]` it is handed from the TARGET repo
+    (the gate's cwd). Run from an installed plugin, the gate missed the target's own pin and
+    could pick up the plugin's. Here the real gate (hosted in this checkout, which pins no key)
+    runs inside a separate target repo that does."""
+
+    def _target(self, remote_blob):
+        secret, public = _mint_key()
+        pin = self.repo / ".orca" / "dispatch-pubkey"
+        pin.parent.mkdir(exist_ok=True)
+        pin.write_text(public, encoding="utf-8")
+        if remote_blob:
+            _git(self.repo, "add", "-A")
+            _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pin")
+            _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+            os.remove(pin)  # only the remote blob can supply it now
+        return secret, public
+
+    def _run(self, key):
+        self.assertFalse((ROOT / ".orca" / "dispatch-pubkey").exists(),
+                         "this checkout pins a key; the plugin-root probe would mask the bug")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=key)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        # The real GATE (plugin root = this checkout), cwd = the target, the host PATH: what is
+        # asserted is WHICH key reached verify.py, and verify.py prints the signature NOTE on
+        # every lane — whether the authority custody of this host then lets the run go green
+        # is SoundLaneAuthoritiesAreSystemClass's question, not this one.
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": str(m),
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_DISPATCH_RECORD": rec}
+        return subprocess.run([str(GATE), "--event", "task"], capture_output=True, text=True,
+                              cwd=self.repo, env=env)
+
+    def _assert_the_target_key_verified(self, r):
+        out = r.stdout + r.stderr
+        self.assertIn("signature verified", out, out)
+        self.assertNotIn("missing --dispatch-pubkey", out, out)
+
+    def test_the_target_repos_worktree_pin_is_found(self):
+        self._assert_the_target_key_verified(self._run(self._target(remote_blob=False)))
+
+    def test_the_target_repos_remote_blob_pin_is_found(self):
+        self._assert_the_target_key_verified(self._run(self._target(remote_blob=True)))
+
+
+class GateResolvesItsToolsOnce(GateCase):
+    """Review P3: the gate ran bare `git` and `python3`, re-resolved on PATH at each use. It now
+    resolves both ONCE to absolute paths, as verify.py pins its authorities."""
+
+    def test_no_bare_git_or_python3_invocation_remains(self):
+        bare = re.compile(r"(?:^|[;&|(!]|\$\(|\bif|\bthen|\belse|\bdo)\s*(?:git|python3)\s")
+        hits = [line for line in GATE.read_text(encoding="utf-8").splitlines()
+                if not line.lstrip().startswith("#") and bare.search(line)]
+        self.assertEqual(hits, [])
+
+    def test_a_missing_python3_blocks_with_a_named_reason(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        for tool in ("git", "dirname", "sh"):
+            found = shutil.which(tool)
+            if found:
+                os.symlink(found, d / tool)
+        m = self.repo / "m.json"
+        m.write_text("{}", encoding="utf-8")
+        r = subprocess.run([str(GATE)], capture_output=True, text=True, cwd=self.repo,
+                           env={"PATH": str(d), "ORCA_MANIFEST": str(m)})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("python3 not on PATH", r.stderr)
 
 
 class SoundLaneAuthoritiesAreSystemClass(GateCase):

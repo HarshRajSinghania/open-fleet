@@ -47,6 +47,11 @@
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# git and python3 are resolved ONCE, to absolute paths, the way verify.py pins its authorities
+# (h409 R2): every later use runs that path, never a bare name a later PATH entry could shadow.
+_abs() { case "$1" in /*) printf '%s\n' "$1" ;; "") : ;; *) printf '%s/%s\n' "$(pwd)" "$1" ;; esac; }
+GIT_BIN=$(_abs "$(command -v git 2>/dev/null || true)")
+PY_BIN=$(_abs "$(command -v python3 2>/dev/null || true)")
 EVENT=""
 if [ "${1:-}" = "--event" ]; then
   EVENT="${2:-}"
@@ -68,12 +73,18 @@ PUBKEY="${ORCA_DISPATCH_PUBKEY:-}"
 # #135 key SOURCE: an injected ORCA_DISPATCH_PUBKEY (off-worker orchestrator) else the committed
 # opt-in pin .orca/dispatch-pubkey — preferring the reviewed remote blob, falling back to the working
 # tree — so a repo that follows the docs actually gets the check to RUN.
-if [ -z "$PUBKEY" ]; then
-  DEF_REF="$(git -C "$HERE/../.." symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/HEAD)"
-  if git -C "$HERE/../.." cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
-    PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
-  elif [ -f "$HERE/../../.orca/dispatch-pubkey" ]; then
-    PUBKEY=".orca/dispatch-pubkey"
+# Discovered in the TARGET repo — the toplevel of the cwd the gate runs in — because that is where
+# verify.py reads the relative `.orca/dispatch-pubkey[@ref]` it is handed. Probing the plugin root
+# ($HERE/../..) found a pin verify.py then looked for in another repo, and missed the target's own.
+if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
+  TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$TOP" ]; then
+    DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/HEAD)"
+    if "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
+    elif [ -f "$TOP/.orca/dispatch-pubkey" ]; then
+      PUBKEY=".orca/dispatch-pubkey"
+    fi
   fi
 fi
 # This does NOT make the native in-session path sound: the worker controls ORCA_PROVENANCE, any env
@@ -136,7 +147,11 @@ esac
 # Any nonzero from verify.py (2 = invariant failed, 1 = usage/dep) is a BLOCK: an un-runnable or
 # failing verifier is never a green light. Capture the REAL exit in the else branch — `$?` after a
 # bare `fi` is the if-statement's status (0 when the condition fails with no else), not verify.py's.
-if python3 "$HERE/verify.py" "$@"; then
+if [ -z "$PY_BIN" ]; then
+  echo "verify-gate: python3 not on PATH — cannot run the verifier, BLOCKING (fail-closed)" >&2
+  exit 2
+fi
+if "$PY_BIN" "$HERE/verify.py" "$@"; then
   rc=0
 else
   rc=$?

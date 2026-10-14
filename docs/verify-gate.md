@@ -249,7 +249,10 @@ The native hook can't trust `ORCA_CONTRACT_DIGEST` / `ORCA_UNIT_CLASS` / `ORCA_L
 the worker sets them. Bind them to a **coordinator-signed dispatch record**. The whole scheme rests on
 one thing: **the verifying public key must originate off the graded worker.** A worker that could set
 the key would just self-sign. The gate discovers the key from three sources, in this code order
-(precedence pinned by `VerifyGateDispatchPinDiscovery` in `tests/test_verify_gate.py`):
+(precedence pinned by `VerifyGateDispatchPinDiscovery` in `tests/test_verify_gate.py`). Sources 2
+and 3 are read in the **target repo** — the toplevel of the directory the gate runs in — because
+that is where verify.py resolves the relative `.orca/dispatch-pubkey[@ref]` it is handed; the
+plugin's own checkout is never probed (`PinDiscoveryReadsTheTargetRepo`):
 
 1. **`ORCA_DISPATCH_PUBKEY` env.** Honored whenever set — a worker-set value is used, not ignored;
    `ORCA_PROVENANCE` decides only whether the advisory `NOTE` is emitted, never whether the key is

@@ -1023,6 +1023,12 @@ def check_doc_counts():
     for rel in COUNT_LINT_FILES:
         p = ROOT / rel
         if not p.exists():
+            # The list IS the contract: a deleted surface must not silently
+            # leave the lint (#563 — a gate that passes because its input
+            # vanished has not run).
+            failures.append(
+                f"{rel}: listed in COUNT_LINT_FILES but missing — restore the "
+                "surface or remove it from the list deliberately")
             continue
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             m = COUNT_LINT_RE.search(line)
@@ -1104,7 +1110,9 @@ def check_ledger_rows():
     """
     failures = []
     if not SKILLS_DIR.is_dir():
-        return []
+        # main() exits 2 before this on the CLI path; an importer must not
+        # get a silent pass for a catalog that is not there (#563).
+        return [f"skills/ not found at {SKILLS_DIR} — the ledger-row check did not run"]
     for skill_dir in sorted(SKILLS_DIR.iterdir()):
         if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
             continue

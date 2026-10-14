@@ -201,3 +201,7 @@ class AbsorptionReceiptChain(unittest.TestCase):
     def test_overwriting_a_receipt_is_named_an_anti_pattern(self):
         anti = self.flat.split("## Anti-patterns", 1)[1]
         self.assertTrue("Overwriting an earlier receipt" in anti)
+
+
+if __name__ == "__main__":
+    unittest.main()

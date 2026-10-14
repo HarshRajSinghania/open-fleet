@@ -1366,7 +1366,6 @@ class TestBundleForCopyInstallers(unittest.TestCase):
         # repo-root-relative links it was written with — `](runtime/evidence-manifest.md)` — which
         # escape nothing and so matched no outbound pattern, while resolving under `references/`
         # where nothing was copied. 56 shipped dead with --check green.
-        import re
         mod, tempfile = self._bundle()
         with tempfile.TemporaryDirectory() as tmp:
             mod.build(tmp)

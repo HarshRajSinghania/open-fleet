@@ -728,8 +728,10 @@ class TestBehavioralIntegrity(unittest.TestCase):
 
     def _run_case(self, agent="ok", grader="ok", rows=None, raw=None, trace=None):
         if rows is None:
+            # strict=False on purpose: test_ambiguous_or_empty_requested_assertions_cannot_pass
+            # patches ASSERTIONS to [] and needs the rows to truncate with it.
             rows = [{"text": text, "passed": True, "evidence": evidence}
-                    for text, evidence in zip(self.ASSERTIONS, self.EXCERPTS)]
+                    for text, evidence in zip(self.ASSERTIONS, self.EXCERPTS, strict=False)]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mission = root / "fixture-it"
@@ -825,7 +827,7 @@ class TestBehavioralIntegrity(unittest.TestCase):
                     if role == "agent":
                         options.update(grader="fabricate", trace=json.dumps({"assertions": [
                             {"text": text, "passed": True, "evidence": evidence}
-                            for text, evidence in zip(self.ASSERTIONS, self.EXCERPTS)
+                            for text, evidence in zip(self.ASSERTIONS, self.EXCERPTS, strict=True)
                         ]}))
                     code, result = self._run_case(**options)
                     self.assertEqual(code, 1, result)
@@ -907,7 +909,7 @@ class TestBehavioralIntegrity(unittest.TestCase):
     def test_a_distinct_locating_excerpt_still_passes(self):
         # The floor must not reject honest grading: distinct excerpts, each long enough to locate.
         rows = [{"text": text, "passed": True, "evidence": evidence}
-                for text, evidence in zip(self.ASSERTIONS, self.EXCERPTS)]
+                for text, evidence in zip(self.ASSERTIONS, self.EXCERPTS, strict=True)]
         code, result = self._run_case(rows=rows)
         self.assertEqual(code, 0, result)
         self.assertEqual(result["cases"][0]["passed"], 2)
@@ -928,7 +930,7 @@ class TestBehavioralIntegrity(unittest.TestCase):
 
     def test_grading_preserves_reordered_rows_and_failed_assertions(self):
         rows = [{"text": text, "passed": True, "evidence": evidence}
-                for text, evidence in reversed(list(zip(self.ASSERTIONS, self.EXCERPTS)))]
+                for text, evidence in reversed(list(zip(self.ASSERTIONS, self.EXCERPTS, strict=True)))]
         code, result = self._run_case(rows=rows)
         self.assertEqual(code, 0, result)
         self.assertEqual(result["cases"][0]["passed"], 2)
@@ -970,7 +972,7 @@ class TestWorkspaceStateOracle(unittest.TestCase):
         """One fixture-backed case: the agent optionally rewrites src/auth.py and prints the same
         trace either way; the grader passes each assertion per `verdicts`."""
         rows = [{"text": text, "passed": ok, "evidence": evidence if ok else ""}
-                for text, evidence, ok in zip(self.ASSERTIONS, self.EXCERPTS, verdicts)]
+                for text, evidence, ok in zip(self.ASSERTIONS, self.EXCERPTS, verdicts, strict=True)]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mission = root / "fixture-it"

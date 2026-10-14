@@ -476,6 +476,12 @@ build if that breaks: publishing a playbook or a runtime policy as an auto-trigg
 recreate the routing collisions this repo exists to remove. The design rationale, including what
 counts as a new mission versus a new playbook, is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+Runtime controls are data files under `runtime/`: `pins.json` (the Orca and upstream-pack pins),
+`one-way-doors.json` (decisions a fleet may never auto-resolve), and `quarantine.json` — a
+human-only component deny-list (#558). A quarantined mission, playbook or pack fails
+`scripts/validate.py` and refuses `preflight.py --mission` at run start; an empty list means
+nothing is quarantined, and a malformed file fails every gate closed.
+
 ## Install
 
 Two paths work today and a third does not yet; each is walked step by step in

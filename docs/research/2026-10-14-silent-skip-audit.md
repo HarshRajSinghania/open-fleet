@@ -40,8 +40,10 @@ Both pinned by `TestGatesDoNotSilentlySkip` in `tests/test_architecture.py`.
   its denominator, but the per-mission validation in `main()` fails on those same
   files — covered, noted, left as is.
 - **Test suite skips**: every `SkipTest`/`skipIf` carries a reason and unittest
-  reports skip counts in the job output — visible, not silent. All 60 test files
-  carry `unittest.main`; no import-guard suppresses a test module.
+  reports skip counts in the job output — visible, not silent. Every test file
+  carries `unittest.main` (`test_governance_commands.py` lacked it and gained it
+  with this record; CI runs modules directly, so it never went unrun); no
+  import-guard suppresses a test module.
 - **The `verdict` check's SKIPPED state** is the designed "no verdict yet" signal
   and renders as its own check status, not a pass.
 - **negative-control workflow**: checks `PIPESTATUS` explicitly and diffs against

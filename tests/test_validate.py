@@ -1230,6 +1230,77 @@ class MissionIdentity(unittest.TestCase):
         errors, _warnings = validate.identity_collisions()
         self.assertEqual(errors, [], "two missions in the catalog are one mission")
 
+    PADDING = "carefully and rigorously, with thorough attention to quality and correctness throughout"
+
+    def _live_identity(self, mission):
+        text = (ROOT / "skills" / mission / "SKILL.md").read_text(encoding="utf-8")
+        data, err = validate.parse_frontmatter(text)
+        self.assertIsNone(err)
+        return {k: data["metadata"][k] for k in validate.IDENTITY_KEYS}
+
+    def test_a_padded_restatement_of_a_real_mission_is_refused(self):
+        """Jaccard's union denominator let filler dilute a verbatim restatement: the same six
+        points, each with a clause of padding, scored under the NEAR bar on every point."""
+        real = self._live_identity("floor-it")
+        padded = {k: f"{v}, {self.PADDING}" for k, v in real.items()}
+
+        def jaccard(a, b):
+            ta, tb = validate._identity_tokens(a), validate._identity_tokens(b)
+            return len(ta & tb) / len(ta | tb)
+        # The fixture IS the attack: plain Jaccard reads at least one point as divergent...
+        self.assertTrue(any(jaccard(real[k], padded[k]) < 0.4 for k in real),
+                        "padding no longer dilutes Jaccard — the fixture proves nothing")
+        # ...and the padding stays inside the per-point length cap, so it is a legal declaration.
+        self.assertEqual(validate.identity_point_length_errors(padded), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, ("floor-it", real), ("zz-padded-it", padded))
+            errors, _warnings = validate.identity_collisions(root=root)
+        self.assertTrue(any("floor-it and zz-padded-it" in e for e in errors),
+                        f"a padded restatement passed the identity gate: {errors}")
+
+    def test_negation_is_a_divergence_not_a_match(self):
+        self.assertEqual(validate._point_similarity("issue closed", "issue not closed"), 0.0)
+        self.assertEqual(validate._point_similarity("merge allowed", "merge never allowed"), 0.0)
+        self.assertEqual(validate._point_similarity("tests pass", "tests don't pass"), 0.0)
+        # "no" is a quantity, not polarity: it must still MATCH "zero".
+        self.assertEqual(validate._point_similarity("finds no open issues",
+                                                    "finds zero open issues"), 1.0)
+
+    def test_negated_points_are_not_a_false_positive_collision(self):
+        base = dict(FIXTURE_IDENTITY, convergence="every issue closed at the reviewed commit",
+                    parking="merge allowed once a human decision is recorded")
+        negated = dict(base, convergence="every issue not closed at the reviewed commit",
+                       parking="merge never allowed once a human decision is recorded")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, ("alpha-it", base), ("beta-it", negated))
+            errors, warnings = validate.identity_collisions(root=root)
+        # Differs on two points — ARCHITECTURE.md's silent case, not a duplicate.
+        self.assertEqual((errors, warnings), ([], []))
+
+    def test_an_overlong_identity_point_fails(self):
+        words = ("alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
+                 "mike november oscar papa quebec romeo sierra tango uniform victor").split()
+        long_point = " ".join(words[:validate.IDENTITY_POINT_MAX_TOKENS + 1])
+        with tempfile.TemporaryDirectory() as tmp:
+            errs = validate.validate_skill(
+                make_skill(tmp, "Composes `diagnose`.\n",
+                           identity=dict(FIXTURE_IDENTITY, oracle=long_point)), PROTOCOLS)
+        self.assertTrue(any("metadata.oracle" in e and "content words" in e for e in errs), errs)
+
+    def test_every_live_identity_point_fits_the_cap(self):
+        for skill in sorted((ROOT / "skills").glob("*/SKILL.md")):
+            with self.subTest(mission=skill.parent.name):
+                self.assertEqual(
+                    validate.identity_point_length_errors(self._live_identity(skill.parent.name)),
+                    [])
+
+    def test_a_tokenizer_failure_fails_loudly(self):
+        # It used to fall back to unstemmed words, silently loosening the gate.
+        with mock.patch.object(validate._eval_validator, "tokenize",
+                               side_effect=RuntimeError("tokenizer broke")):
+            with self.assertRaises(RuntimeError):
+                validate._identity_tokens("one open issue")
+
 
 class ActivationLoad(unittest.TestCase):
     """Issue #276: the transitive load a mission makes mandatory, bounded."""

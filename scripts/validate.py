@@ -439,6 +439,7 @@ def validate_skill(skill_dir, protocols):
                 f"missing metadata.{key} — all six identity points "
                 f"{list(IDENTITY_KEYS)} are required (ARCHITECTURE.md)"
             )
+    errors.extend(identity_point_length_errors(meta))
 
     if "compatibility" in data:
         c = data["compatibility"]
@@ -800,11 +801,21 @@ def load_report(root=None):
 # Identity-tuple comparison. A point is "the same" when its two declarations
 # carry the same content words; six same points means one mission wearing two
 # names, which is exactly what ARCHITECTURE.md forbids.
+#
+# Negation words are deliberately NOT stopwords here: "issue closed" and "issue not closed" are
+# opposite points, and dropping "not" scored them 1.0. Polarity is read from the raw text
+# (_IDENTITY_NEGATORS) and a mismatch is a divergence outright. "no"/"nothing" are quantities, not
+# polarity ("finds no open item" == "finds zero open items"), so they fold onto the zero concept.
 _IDENTITY_STOPWORDS = {
     "a", "an", "and", "any", "are", "as", "at", "be", "by", "every", "for",
-    "from", "in", "into", "is", "it", "its", "no", "not", "of", "on", "one",
+    "from", "in", "into", "is", "it", "its", "of", "on", "one",
     "or", "per", "that", "the", "their", "then", "this", "to", "with",
 }
+_IDENTITY_NEGATORS = {"not", "never", "without", "cannot", "nor", "neither"}
+_IDENTITY_ZERO_WORDS = {"no", "nothing"}
+# A point is one sentence about one property. A kitchen-sink point would CONTAIN most other
+# missions' points (containment, below, reads the smaller side), so its length is capped.
+IDENTITY_POINT_MAX_TOKENS = 20
 IDENTITY_POINT_SAME = 0.85
 # Six points that are each merely SIMILAR still describe one mission twice. A synonym swap scores
 # ~0.67 a point — under the 0.85 bar on every one of them, and a duplicate all the same (#288).
@@ -814,9 +825,15 @@ IDENTITY_POINT_SAME = 0.85
 # already implies: differing on one point is legal-but-surfaced (a WARN) and differing on two is
 # silent, so a pair with no divergent point at all is one mission twice, however its words are
 # arranged. Neither the mean nor the single weakest point works here — a five-of-six match averages
-# high while being a legitimate distinction, and a paraphraser can rewrite one point heavily. The
-# live catalog's closest pair has ONE near point out of six, so this has wide clearance.
-IDENTITY_POINT_NEAR = 0.4
+# high while being a legitimate distinction, and a paraphraser can rewrite one point heavily.
+#
+# Similarity is CONTAINMENT (shared / size of the smaller set), not Jaccard: Jaccard's union
+# denominator let filler padding ("…, with care and rigour across every relevant consideration")
+# dilute a verbatim restatement below this bar. Padding cannot shrink the smaller side. Measured
+# 2026-10-14 over the live catalog (22 missions, 231 pairs): the closest pair (clean-sweep /
+# oss-contribute) has 2 of 6 points at or above 0.5 and none of the rest above 0.45, so the
+# all-six rule keeps wide clearance.
+IDENTITY_POINT_NEAR = 0.5
 
 # Concept canonicalisation for the identity gate (full-review probe T2b): the
 # routing synonym table is eleven user-word entries, so a paraphrase that
@@ -868,28 +885,63 @@ def _identity_tokens(value):
     eval.py already owns the repository's tokenizer — the same stemming and synonym table the
     router uses — so the two surfaces now agree on what a word is instead of keeping separate
     definitions. Stemming alone closes the inflection paraphrase ("backlogs", "draining"); a true
-    synonym swap is caught by the MEAN gate below, not here.
+    synonym swap is caught by the NEAR rule below, not here.
+
+    No fallback: a tokenizer failure raises. Falling back to unstemmed words used to loosen the
+    gate silently — every inflection paraphrase would pass while the build stayed green.
     """
-    try:
-        _scoring, synonyms = _eval_validator.routing_config()
-        tokens = set(_eval_validator.tokenize(value or "", synonyms))
-    except Exception:  # noqa: BLE001 — a tokenizer failure must not silently widen the gate
-        tokens = {w for w in re.findall(r"[a-z0-9_]+", (value or "").lower())
-                  if w not in _IDENTITY_STOPWORDS}
+    _scoring, synonyms = _eval_validator.routing_config()
+    tokens = set(_eval_validator.tokenize(value or "", synonyms))
+    if _identity_words(value) & _IDENTITY_ZERO_WORDS:
+        tokens.add("zero")  # eval's tokenizer drops "no" as a stopword; it is a quantity here
     folded = {_IDENTITY_CONCEPTS.get(t, t) for t in tokens if t not in _IDENTITY_STOPWORDS}
     return {t for t in folded if t}
 
 
+def _identity_words(value):
+    return set(re.findall(r"[a-z0-9']+", (value or "").lower()))
+
+
+def _identity_negated(value):
+    """Polarity of a point: does it carry a negator ("not", "never", "can't", …)?"""
+    words = _identity_words(value)
+    return bool(words & _IDENTITY_NEGATORS) or any(w.endswith("n't") for w in words)
+
+
 def _point_similarity(a, b):
+    """Containment of the two token sets; 0.0 when their polarity differs.
+
+    Containment (|A∩B| / min(|A|,|B|)) is padding-resistant where Jaccard was not: filler added
+    to one side grows the union but never the smaller set. A negation mismatch is a divergence
+    whatever the overlap — "issue closed" and "issue not closed" share every content word.
+    """
+    if _identity_negated(a) != _identity_negated(b):
+        return 0.0
     ta, tb = _identity_tokens(a), _identity_tokens(b)
     if not ta or not tb:
         return 0.0
-    return len(ta & tb) / len(ta | tb)
+    return len(ta & tb) / min(len(ta), len(tb))
 
 
 def _identity_sims(ta, tb):
     """Per-point similarity across the six identity points."""
-    return [_point_similarity(x, y) for x, y in zip(ta, tb)]
+    return [_point_similarity(x, y) for x, y in zip(ta, tb, strict=True)]
+
+
+def identity_point_length_errors(meta):
+    """Identity points over IDENTITY_POINT_MAX_TOKENS content tokens."""
+    errors = []
+    for key in IDENTITY_KEYS:
+        value = meta.get(key)
+        if isinstance(value, str):
+            n = len(_identity_tokens(value))
+            if n > IDENTITY_POINT_MAX_TOKENS:
+                errors.append(
+                    f"metadata.{key}: {n} content words > {IDENTITY_POINT_MAX_TOKENS} — an "
+                    "identity point is one property in one sentence; a kitchen-sink point "
+                    "reads as containing every other mission's"
+                )
+    return errors
 
 
 def identity_collisions(root=None):
@@ -922,7 +974,7 @@ def identity_collisions(root=None):
         for b in names[i + 1:]:
             same = [
                 key
-                for key, va, vb in zip(IDENTITY_KEYS, tuples[a], tuples[b])
+                for key, va, vb in zip(IDENTITY_KEYS, tuples[a], tuples[b], strict=True)
                 if _point_similarity(va, vb) >= IDENTITY_POINT_SAME
             ]
             sims = _identity_sims(tuples[a], tuples[b])
@@ -935,7 +987,7 @@ def identity_collisions(root=None):
                     "state which point actually differs"
                 )
             elif near == len(IDENTITY_KEYS):
-                restated = [k for k, value in zip(IDENTITY_KEYS, sims)
+                restated = [k for k, value in zip(IDENTITY_KEYS, sims, strict=True)
                             if value < IDENTITY_POINT_SAME]
                 errors.append(
                     f"{a} and {b} restate one identity: all {len(IDENTITY_KEYS)} points are at "

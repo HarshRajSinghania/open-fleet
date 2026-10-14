@@ -79,6 +79,50 @@ def git_target(cwd, env):
     return [Path(line).resolve() for line in out.splitlines()]
 
 
+def rehearsal_version(historical, refs):
+    """First untagged patch after the latest published version.
+
+    A real tag can exist before its provenance row lands (the tag push precedes
+    the record commit), and the rehearsal clone inherits that tag, so deriving
+    the version from the inventory alone collides inside that window (#555).
+    """
+    latest = max(tuple(map(int, r["version"].split("."))) for r in historical)
+    tagged = {line.split(" refs/tags/")[-1].removesuffix("^{}")
+              for line in refs.splitlines()}
+    patch = latest[2] + 1
+    while f"v{latest[0]}.{latest[1]}.{patch}" in tagged:
+        patch += 1
+    return f"{latest[0]}.{latest[1]}.{patch}"
+
+
+class RehearsalVersionDerivation(unittest.TestCase):
+    HISTORICAL = [{"version": "0.7.0"}, {"version": "0.7.1"}]
+
+    @staticmethod
+    def refs(*names):
+        return "\n".join(f"{'0' * 40} refs/tags/{name}" for name in names)
+
+    def test_next_patch_when_free(self):
+        self.assertEqual(rehearsal_version(self.HISTORICAL, self.refs("v0.7.1")), "0.7.2")
+
+    def test_skips_one_occupied_version(self):
+        self.assertEqual(
+            rehearsal_version(self.HISTORICAL, self.refs("v0.7.1", "v0.7.2")), "0.7.3")
+
+    def test_skips_two_consecutive_occupied_versions(self):
+        self.assertEqual(
+            rehearsal_version(self.HISTORICAL, self.refs("v0.7.1", "v0.7.2", "v0.7.3")),
+            "0.7.4")
+
+    def test_first_free_patch_not_above_the_highest_tag(self):
+        self.assertEqual(
+            rehearsal_version(self.HISTORICAL, self.refs("v0.7.1", "v0.7.3")), "0.7.2")
+
+    def test_peeled_annotated_tag_lines_count_as_the_tag(self):
+        self.assertEqual(
+            rehearsal_version(self.HISTORICAL, self.refs("v0.7.2", "v0.7.2^{}")), "0.7.3")
+
+
 class ReleaseRehearsalIsolation(unittest.TestCase):
     def test_inherited_git_selection_cannot_mutate_another_repository(self):
         # A hook or wrapper can export Git's repository selection; cwd does not override it.
@@ -263,8 +307,9 @@ class ReleaseCutWalkthrough(unittest.TestCase):
                 ".claude-plugin/marketplace.json")
             run("git", "commit", "--allow-empty", "-m", "Fixture release tooling")
             refs = run("git", "show-ref", "--tags").stdout
-            latest = max(tuple(map(int, r["version"].split("."))) for r in historical)
-            version = ".".join(map(str, (*latest[:2], latest[2] + 1)))
+            # Skip versions a real tag already owns (#555): the rehearsal proves
+            # the blocks work, not that the next number is free.
+            version = rehearsal_version(historical, refs)
             env.update(RELEASE_VERSION=version, RELEASE_DATE="2026-09-12")
             doc = (repo / "docs/ops.md").read_text()
 

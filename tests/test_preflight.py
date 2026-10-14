@@ -13,6 +13,7 @@ invariant.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -278,6 +279,53 @@ class TestHungGh(unittest.TestCase):
         self.assertLess(elapsed, 10, "a hung gh must fail preflight fast, not block Phase 0")
         self.assertIn("timed out", err.getvalue())
         self.assertIn("--offline", err.getvalue())
+
+
+class TestQuarantineInvariant(unittest.TestCase):
+    """#558: --mission refuses (exit 2) on a quarantined mission, in readonly
+    mode too; no deny-list in the repo means no quarantine in force."""
+
+    def _repo_with_quarantine(self, tmp, quarantined):
+        repo = Path(tmp) / "repo"
+        make_repo(repo)
+        (repo / "runtime").mkdir()
+        (repo / "runtime" / "quarantine.json").write_text(
+            json.dumps({"quarantined": quarantined}))
+        return repo
+
+    def test_quarantined_mission_refused_readonly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo_with_quarantine(tmp, [{
+                "component": "mission:ship-it", "ref": "*",
+                "reason": "compromised", "date": "2026-10-14",
+                "by": "human:maintainer"}])
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=repo)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("QUARANTINED", result.stderr)
+
+    def test_clean_mission_passes_and_absent_list_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo_with_quarantine(tmp, [])
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            make_repo(repo)
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_malformed_deny_list_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            make_repo(repo)
+            (repo / "runtime").mkdir()
+            (repo / "runtime" / "quarantine.json").write_text("{broken")
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=repo)
+            self.assertEqual(result.returncode, 2, result.stderr)
 
 
 if __name__ == "__main__":

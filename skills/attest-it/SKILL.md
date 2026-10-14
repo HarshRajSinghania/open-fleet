@@ -37,7 +37,9 @@ a silent pass. Composes `decompose-dag`, `acceptance-review`, `research-brief` (
 `evidence-manifest` (each control's
 evidence binds to authoritative state via the Art-12/50 provenance block and is re-derived, not
 narrated), `gate-classification` (a GAP that needs a policy/spend/legal decision is a one-way human
-door), `sandbox-policy` (`PROFILE=ro` for evidence gathering), `ledger-contract` (the obligation
+door), `sandbox-policy` (`PROFILE=ro` for evidence gathering), `threat-model` (the fleet's own
+trust assumptions and four boundaries — the scoping input when the system under assessment is a
+software factory), `ledger-contract` (the obligation
 ledger), `liveness-resume` (DAG-scoped RESUME). Worker TASK pack: one of matt | addy | gstack — never co-mount.
 
 ## Terminal outcomes

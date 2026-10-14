@@ -9,6 +9,7 @@ the snapshots stay as they were written.
 | Date | Document |
 |------|----------|
 | standing | [Rejected mission candidates — the ledger of what failed the identity test, with source, shape, and reason](REJECTED.md) |
+| 2026-10-14 | [Agent Baseline self-assessment — orca-fleet vs the 35 controls of Agent Baseline v1.0-draft, VERIFIED/GAP per obligation](2026-10-14-agent-baseline-assessment.md) |
 | 2026-10-12 | [pstack adoption audit — what 0.15.20 adds, what this catalog refuses, what it folded in](2026-10-12-pstack-adoption-audit.md) |
 | 2026-10-09 | [Product review, research, and completion plan — public beta then 1.0](2026-10-09-completion-review-and-plan.md) |
 | 2026-09-10 | [Upstream deep audit — adoption gaps, mechanism gaps, and new-mission proposals (orca, gstack, addyosmani, mattpocock)](2026-09-10-upstream-deep-audit-and-mission-proposals.md) — per-source appendices in [2026-09-10-upstream-audit/](2026-09-10-upstream-audit/) |

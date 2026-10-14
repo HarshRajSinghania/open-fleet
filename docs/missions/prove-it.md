@@ -203,7 +203,8 @@ Playbooks:
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·
 [`runtime-prove`](../../playbooks/runtime-prove.md) ·
 [`compound-learn`](../../playbooks/compound-learn.md) ·
-[`design-twice`](../../playbooks/design-twice.md)
+[`design-twice`](../../playbooks/design-twice.md) ·
+[`mutation-hunt`](../../playbooks/mutation-hunt.md) (deferred: loaded at build-blind review)
 
 Runtime policies:
 [`merge-serialization`](../../runtime/merge-serialization.md) ·

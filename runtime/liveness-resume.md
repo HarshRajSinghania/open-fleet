@@ -133,12 +133,16 @@ Run scope is mandatory: the Run id + task ids from the ledger header. Everything
 counted-but-untouched; no scope → resume ABORTS.
 
 1. FREEZE-check: no other live coordinator.
-2. Bind the run: the new coordinator adopts it with `run-use --id <run>` — and if the run predates an Orca
-   contract update (legacy rows, authority labels on its mail), take it over explicitly with `run-use --id
-   <run> --takeover-legacy` **from the live coordinator terminal** (upstream's adoption protocol preserves
-   live workers' dispatches, processes, and filesystems and routes their later questions to the current
-   coordinator — an Orca upgrade mid-run is no longer a hand-recovery). A dispatch re-attaching under a new
-   coordinator shows `consumer_fenced`; the fenced old coordinator's mutations are rejected. Caveats: never take over while the ORIGINAL coordinator is still active (dual-writer with extra steps); `--from` cannot nominate the taker, so run it from the terminal that will hold the run; `run_legacy_local` is an empty tombstone — find the Run whose objective reads `Recovered orchestration work from a contract update`; when authority is unproven, degrade to read-only inspection rather than adopting (`orchestration/legacy-contract-migration:19-23,69-83` at v1.4.203).
+2. Bind the run: the new coordinator adopts it with `run-use --id <run>` — and if the run predates an Orca contract
+   update (legacy rows, authority labels on its mail), take it over explicitly with `run-use --id <run>
+   --takeover-legacy` **from the live coordinator terminal** (upstream's adoption protocol preserves live workers'
+   dispatches, processes, and filesystems and routes their later questions to the current coordinator — an Orca upgrade
+   mid-run is no longer a hand-recovery). A dispatch re-attaching under a new coordinator shows `consumer_fenced`; the
+   fenced old coordinator's mutations are rejected. Caveats: never take over while the ORIGINAL coordinator is still
+   active (dual-writer with extra steps); `--from` cannot nominate the taker, so run it from the terminal that will hold
+   the run; `run_legacy_local` is an empty tombstone — find the Run whose objective reads `Recovered orchestration work
+   from a contract update`; when authority is unproven, degrade to read-only inspection rather than adopting
+   (`orchestration/legacy-contract-migration:19-23,69-83` at v1.4.203).
 3. REBUILD from provenance; CROSS-VERIFY every "completed" against git (evidence-manifest.md) —
    provenance-says-done + git-disagrees = SUSPECT (treat as failed).
 4. RECONCILE the ledger (git is truth, the ledger is its cache).

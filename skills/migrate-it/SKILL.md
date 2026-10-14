@@ -39,15 +39,15 @@ state (the dumped schema, the parity probe, the deploy record), and keep the led
 memory is compacted; the ledger survives). You never write migrations, review, or merge.
 
 Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `data-migration` (the phase contract), `remediate-finding` (each phase is built and closed as one unit), `acceptance-review`
-(build-blind review per phase), `completion-audit` (bake and zero-reader criteria are classified by
-verification mode, never waved through), `compound-learn`; rides `evidence-manifest` (per phase:
+(build-blind review per phase); rides `evidence-manifest` (per phase:
 base → head SHA, the down round-trip diff, the parity probe, both dual-validity runs),
 `merge-serialization` (the migrations directory is a merge chain), `reviewed-sha-freshness`, `dispatch-lifecycle`, `ledger-contract`, `attention-budget`, `sandbox-policy`,
 `gate-classification` (CONTRACT is one-way). Worker TASK pack: one of matt | addy — never
 co-mount. The release states each phase passes through are release.md's; this mission runs that
 machine once per phase, never once per run.
 
-DEFERRED READS: liveness-resume.md on a stall or resume.
+DEFERRED READS, never at activation: completion-audit.md at the first BAKE (bake and zero-reader
+criteria classified by verification mode) · compound-learn.md at VERDICT · liveness-resume.md on a stall/resume.
 
 ## Three terminal outcomes
 

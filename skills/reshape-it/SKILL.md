@@ -29,23 +29,27 @@ metadata:
 
 # reshape-it — deep modules, same behaviour
 
-You are the **COORDINATOR** of an architectural-erosion repair run. "The confirmed hot modules sit
-behind smaller, testable interfaces, and behaviour is demonstrably unchanged" is a user-facing
-outcome with one failure mode that kills most refactors: restructuring without a pinned behavioural
-oracle, so the diff is reviewed by vibes. This mission never moves code before the characterization
-net exists and is mutation-audited. Composes `characterize` (the net protocol, shared with prove-it), `decide-and-freeze` (CONFIRM-SURFACE bounds the target
-list with the human; headless publishes the inventory and PARKS at the gate), `remediate-finding` (one deepening per unit — its reproduce-or-refute step instantiates as the SCAN probes re-measuring the seam (the shallowness evidence IS the reproducible defect), and its failing-first requirement instantiates as the CHARACTERIZE-pinned mutant RED before the deepening, per the §1 carve-out; build-change's irreversibility gate applies to
-public-API breaks), `design-twice` (DEEPEN's interface fork, drafted not argued), `record-decision` (a one-way API break
-is an ADR), `plan-review` (CONFIRM-SURFACE), `acceptance-review` (build-blind review per unit), `compound-learn` (which
-modules resisted deepening and why); rides `evidence-manifest` (each unit carries the before/after
-interface-surface measurement plus the legal negative control for a behaviour-preserving change —
-the speed-it carve-out: (a) the CHARACTERIZE-pinned mutant still KILLED at `head_sha`, so the net
-is proven live on both sides of the move, and (b) revert the deepening and the interface-surface
-measurement is no longer smaller; a plain revert-must-redden-the-suite NC is a category error for a
-change whose entire contract is that the suite stays green), `merge-serialization`,
-`reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`, `ledger-contract`,
-`sandbox-policy` (`PROFILE=rw` fix workers; `PROFILE=ro` review workers), `gate-classification`, `attention-budget`. Worker TASK pack: one of
-matt | addy | gstack — never co-mount.
+You are the **COORDINATOR** of an architectural-erosion repair run. "The confirmed hot modules sit behind smaller,
+testable interfaces, and behaviour is demonstrably unchanged" is a user-facing outcome with one failure mode that kills
+most refactors: restructuring without a pinned behavioural oracle, so the diff is reviewed by vibes. This mission never
+moves code before the characterization net exists and is mutation-audited. Composes `characterize` (the net protocol,
+shared with prove-it), `decide-and-freeze` (CONFIRM-SURFACE bounds the target list with the human; headless publishes
+the inventory and PARKS at the gate), `remediate-finding` (one deepening per unit — its reproduce-or-refute step
+instantiates as the SCAN probes re-measuring the seam (the shallowness evidence IS the reproducible defect), and its
+failing-first requirement instantiates as the CHARACTERIZE-pinned mutant RED before the deepening, per the §1 carve-out;
+build-change's irreversibility gate applies to public-API breaks), `design-twice` (DEEPEN's interface fork, drafted not
+argued), `record-decision` (a one-way API break is an ADR), `plan-review` (CONFIRM-SURFACE), `acceptance-review`
+(build-blind review per unit); rides `evidence-manifest` (each unit carries the before/after interface-surface
+measurement plus the legal negative control for a behaviour-preserving change — the speed-it carve-out: (a) the
+CHARACTERIZE-pinned mutant still KILLED at `head_sha`, so the net is proven live on both sides of the move, and (b)
+revert the deepening and the interface-surface measurement is no longer smaller; a plain revert-must-redden-the-suite NC
+is a category error for a change whose entire contract is that the suite stays green), `merge-serialization`,
+`reviewed-sha-freshness`, `dispatch-lifecycle`, `ledger-contract`, `sandbox-policy` (`PROFILE=rw` fix workers;
+`PROFILE=ro` review workers), `gate-classification`, `attention-budget`. Worker TASK pack: one of matt | addy | gstack —
+never co-mount.
+
+DEFERRED READS, loaded on entering their phase and never at activation: liveness-resume.md on a
+stall or resume · compound-learn.md at VERDICT (which modules resisted deepening and why).
 
 ## Terminal outcomes
 

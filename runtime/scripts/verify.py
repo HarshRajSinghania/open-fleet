@@ -1710,16 +1710,101 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
             _bind_hunks_to_change(actual, m))
 
 
+def _seal_control(wt, head):
+    """Commit the control applied in `wt` as a SIBLING of head_sha. Returns (mutant_sha, err).
+
+    The mutant commit is head_sha's own commit object with only its `tree` line swapped for the
+    applied control's tree: same parents, author, committer and message. A control phase run from
+    it sees a CLEAN work tree (`git status --porcelain` empty) and the same `HEAD~1`, log and
+    identity a clean phase sees — the phase is not distinguishable by git state, only by the
+    content under test (review P1). Only the index is read, so untracked residue of the apply
+    never reaches the control run.
+
+    The stillborn check lives here and compares TREES: a control whose applied tree equals
+    head_sha's tree changed NOTHING and cannot make any proof go RED (#255)."""
+    git, env = _Authority.git_bin(), _Authority.git_env()
+    code, tree, gerr = _run_at(wt, [git, "write-tree"], env=env)
+    tree = tree.strip()
+    if code != 0 or not HEX40_RE.match(tree):
+        return None, f"cannot record the applied control's tree: {gerr.strip()}"
+    if tree == _tree(head):
+        return None, ("the negative control changed NOTHING at head_sha — a no-op mutant cannot "
+                      "make any proof go RED (#255)")
+    code, raw, gerr = _git_bytes(["cat-file", "commit", str(head)])
+    if code != 0 or not raw.startswith(b"tree ") or b"\n" not in raw:
+        return None, f"cannot read head_sha's commit object to seal the control: {gerr.strip()}"
+    sibling = b"tree " + tree.encode("ascii") + raw[raw.index(b"\n"):]
+    code, mutant, gerr = _run_at(wt, [git, "hash-object", "-t", "commit", "-w", "--stdin"],
+                                 stdin_bytes=sibling, env=env)
+    mutant = mutant.strip()
+    if code != 0 or not HEX40_RE.match(mutant):
+        return None, f"cannot commit the applied control as a throwaway commit: {gerr.strip()}"
+    return mutant, None
+
+
+def _prepare_control(top, head, m, nc, tool, nc_command):
+    """Apply the control in a scratch worktree and seal it (_seal_control) BEFORE any worker code
+    runs. Returns (mutant_sha, err). The scratch worktree is removed before the first phase
+    executes, so no run can reach it, and the sealed commit is content-addressed, so no run can
+    alter what the control phase checks out."""
+    holder = tempfile.mkdtemp(prefix="orca-nc-")
+    wt = str(Path(holder) / "wt")
+    code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
+                          str(head)], timeout=120, env=_Authority.git_env())
+    try:
+        if code != 0:
+            return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
+        apply_err = _apply_control(wt, m, nc, tool, nc_command)
+        if apply_err:
+            return None, apply_err
+        return _seal_control(wt, head)
+    finally:
+        _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
+             env=_Authority.git_env())
+        shutil.rmtree(holder, ignore_errors=True)
+
+
+def _phase_run(top, commit, phase, argv):
+    """Run the bound command once in a FRESH worktree detached at `commit`, under a FRESH empty
+    HOME and TMPDIR. Returns (rc, stdout, stderr), or (None, None, err) when no worktree was made.
+
+    Every phase is built identically — same holder layout, same environment keys, a clean tree —
+    and nothing one phase writes under its HOME, TMPDIR or worktree survives into the next: a
+    marker an earlier run left cannot be what makes a later run fail (review P1)."""
+    holder = tempfile.mkdtemp(prefix="orca-nc-")
+    wt, home, tmp = (str(Path(holder) / leaf) for leaf in ("wt", "home", "tmp"))
+    os.mkdir(home)
+    os.mkdir(tmp)
+    env = {**_Authority.nc_env(), "HOME": home, "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp}
+    code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
+                          str(commit)], timeout=120, env=_Authority.git_env())
+    try:
+        if code != 0:
+            return None, None, f"could not create the {phase} worktree: {gerr.strip()}"
+        return _run_at(wt, argv, timeout=NC_TIMEOUT_S, env=env)
+    finally:
+        _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
+             env=_Authority.git_env())
+        shutil.rmtree(holder, ignore_errors=True)
+
+
 def execute_negative_control(m, nc_command=None):
     """#255 — EXECUTE the negative control. Returns (executed_ok, messages).
 
-    The proof, not the paperwork: in a throwaway worktree detached at `head_sha` the control is
-    APPLIED (`revert`: restore `negative_control.paths` from base_sha — or, only when no paths are
-    given and the range is linear, `git revert --no-commit base..head`; `hand`: `git apply` the
-    unified diff quoted in the artifact) and `negative_control.command` must exit NON-ZERO. Then
-    the SAME command must exit ZERO in a second, clean worktree at `head_sha`. Both halves are
-    required: a command that fails under the control but also fails clean proves nothing, and a
-    command that passes under the control is a TAUTOLOGY — the proof does not go RED.
+    The proof, not the paperwork. The control is APPLIED at `head_sha` (`revert`: restore
+    `negative_control.paths` from base_sha — or, only when no paths are given and the range is
+    linear, `git revert --no-commit base..head`; `hand`: `git apply` the unified diff quoted in
+    the artifact) and SEALED into a throwaway sibling commit of head_sha (_seal_control). Only
+    then does worker code run — three times, each in a fresh worktree under a fresh HOME and
+    TMPDIR (_phase_run): CLEAN at head_sha, CONTROL at the sealed mutant, CLEAN at head_sha again.
+
+    The control counts as KILLED only when BOTH clean runs exit 0 and the control run exits
+    NON-ZERO with a genuine failure signature. A command that fails under the control but also
+    fails clean proves nothing; one that passes under the control is a TAUTOLOGY. The phases are
+    indistinguishable by git status, HOME or TMPDIR, and the bracketing clean runs catch a
+    first-run-only side effect — a marker that makes every LATER run fail (review P1). A counter
+    kept in state every phase shares (the clone's common .git) is not isolated by this; that
+    residual is the coordinator's clean-env re-run to cover.
 
     Fail-closed everywhere: an unknown tool, a missing command/paths, a git error, a worktree that
     cannot be made, or a control that applies no change at all."""
@@ -1741,52 +1826,39 @@ def execute_negative_control(m, nc_command=None):
     argv, err = _nc_command(nc, nc_command)
     if err:
         return False, [f"--execute-nc: {err}"]
+    mutant, err = _prepare_control(top, head, m, nc, tool, nc_command)
+    if err:
+        return False, [f"--execute-nc: {err}"]
     msgs = []
-    for phase in ("control", "clean"):
-        holder = tempfile.mkdtemp(prefix="orca-nc-")
-        wt = str(Path(holder) / "wt")
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt, str(head)],
-                             timeout=120, env=_Authority.git_env())
-        try:
-            if code != 0:
-                return False, [f"--execute-nc: could not create the {phase} worktree at head_sha: "
-                               f"{gerr.strip()}"]
-            if phase == "control":
-                apply_err = _apply_control(wt, m, nc, tool, nc_command)
-                if apply_err:
-                    return False, [f"--execute-nc: {apply_err}"]
-                if not _run_at(wt, [_Authority.git_bin(), "status", "--porcelain"],
-                               env=_Authority.git_env())[1].strip():
-                    return False, ["--execute-nc: the negative control changed NOTHING at head_sha "
-                                   "— a no-op mutant cannot make any proof go RED (#255)"]
-            rc, out, errout = _run_at(wt, argv, timeout=NC_TIMEOUT_S, env=_Authority.nc_env())
-            tail = (errout.strip() or out.strip())[-300:]
-            if phase == "control":
-                sig_ok, sig_err = _verify_sig._failure_signature(out, errout)
-        finally:
-            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-                 env=_Authority.git_env())
-            shutil.rmtree(holder, ignore_errors=True)
-        if phase == "control":
-            if rc == 124:
-                return False, [f"--execute-nc: the bound command did not complete under the control "
-                               f"({NC_TIMEOUT_S}s timeout / exec error): {tail}"]
-            if rc == 0:
-                return False, ["--execute-nc: TAUTOLOGICAL — the proof does NOT go RED. The control "
-                               f"was applied at head_sha and `{shlex.join(argv)}` still exited 0, so "
-                               "the command does not bind to the change it claims to prove (#255)"]
-            if not sig_ok:
-                return False, [f"--execute-nc: {sig_err} Output was: {tail}"]
-            msgs.append(f"NOTE: negative control EXECUTED — with the {tool} control applied at "
-                        f"head_sha the bound command exited {rc} on an assertion failure (RED, as "
-                        "required)")
-        else:
+    for phase, commit in (("clean", head), ("control", mutant), ("clean", head)):
+        rc, out, errout = _phase_run(top, commit, phase, argv)
+        if rc is None:
+            return False, [f"--execute-nc: {errout}"]
+        tail = (errout.strip() or out.strip())[-300:]
+        if phase == "clean":
             if rc != 0:
-                return False, [f"--execute-nc: the bound command exits {rc} at CLEAN head_sha too, "
-                               "so its RED under the control is not evidence of anything: "
-                               f"{tail}"]
-            msgs.append("NOTE: the same command exits 0 at clean head_sha — the RED above is the "
-                        "control's doing, not a broken suite")
+                when = "after" if msgs else "before"
+                return False, [f"--execute-nc: the bound command exits {rc} at CLEAN head_sha "
+                               f"({when} the control run), so a RED under the control is not "
+                               f"evidence of anything: {tail}"]
+            if msgs:
+                msgs.append("NOTE: the same command exits 0 at clean head_sha, before AND after "
+                            "the control run — the RED above is the control's doing, not a "
+                            "broken suite or a first-run side effect")
+            continue
+        if rc == 124:
+            return False, [f"--execute-nc: the bound command did not complete under the control "
+                           f"({NC_TIMEOUT_S}s timeout / exec error): {tail}"]
+        if rc == 0:
+            return False, ["--execute-nc: TAUTOLOGICAL — the proof does NOT go RED. The control "
+                           f"was applied at head_sha and `{shlex.join(argv)}` still exited 0, so "
+                           "the command does not bind to the change it claims to prove (#255)"]
+        sig_ok, sig_err = _verify_sig._failure_signature(out, errout)
+        if not sig_ok:
+            return False, [f"--execute-nc: {sig_err} Output was: {tail}"]
+        msgs.append(f"NOTE: negative control EXECUTED — with the {tool} control applied at "
+                    f"head_sha the bound command exited {rc} on an assertion failure (RED, as "
+                    "required)")
     return True, msgs
 
 

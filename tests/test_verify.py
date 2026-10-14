@@ -620,11 +620,21 @@ class NegativeControlExecutorLegs(RepoCase):
                 "negative_control": {"tool": "revert", "result": "RED — mutant KILLED",
                                      "artifact": rel, "command": self.PROOF, "paths": ["app.py"]}}
 
-    def _run_with(self, run_at_effects):
+    def _run_with(self, proof_effects, apply_control=None):
+        """Real worktrees and a real seal; only the PROOF command's results are scripted, in
+        phase order clean -> control -> clean (review P1)."""
         m = self._manifest()
-        with mock.patch.object(verify, "_apply_control", return_value=None), \
-                mock.patch.object(verify, "_run", return_value=(0, "", "")), \
-                mock.patch.object(verify, "_run_at", side_effect=list(run_at_effects)):
+        effects, original = list(proof_effects), verify._run_at
+
+        def fake(wt, argv, **kw):
+            if argv == shlex.split(self.PROOF):
+                return effects.pop(0)
+            return original(wt, argv, **kw)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verify, "_run_at", side_effect=fake))
+            if apply_control is not None:
+                stack.enter_context(mock.patch.object(verify, "_apply_control",
+                                                      side_effect=apply_control))
             return verify.execute_negative_control(m, self.PROOF)
 
     def test_a_worktree_that_cannot_be_made_fails_closed(self):
@@ -640,25 +650,129 @@ class NegativeControlExecutorLegs(RepoCase):
         self.assertTrue(any("could not create the control worktree" in x for x in msgs), msgs)
 
     def test_a_control_that_changes_nothing_is_no_proof(self):
-        # git status clean after the apply: a no-op mutant cannot make any proof go RED.
-        ok, msgs = self._run_with([(0, "", "")])  # status --porcelain: empty
+        # The applied tree equals head_sha's tree: a no-op mutant cannot make any proof go RED.
+        # Judged by TREES now that the control is sealed into a commit, never by dirty status.
+        ok, msgs = self._run_with([], apply_control=lambda *a, **k: None)
+        self.assertFalse(ok)
+        self.assertTrue(any("changed NOTHING" in x for x in msgs), msgs)
+
+    def test_a_control_that_only_leaves_untracked_residue_changed_nothing(self):
+        # An untracked file is not in the sealed tree, so it is not a control either.
+        def residue(wt, *a, **k):
+            (Path(wt) / "residue.txt").write_text("x\n")
+        ok, msgs = self._run_with([], apply_control=residue)
         self.assertFalse(ok)
         self.assertTrue(any("changed NOTHING" in x for x in msgs), msgs)
 
     def test_a_control_run_that_times_out_is_not_a_kill(self):
-        ok, msgs = self._run_with([(0, " M app.py", ""), (124, "", "timed out")])
+        ok, msgs = self._run_with([(0, "", ""), (124, "", "timed out")])
         self.assertFalse(ok)
         self.assertTrue(any("did not complete under the control" in x for x in msgs), msgs)
 
     def test_a_command_red_at_clean_head_proves_nothing(self):
         effects = [
-            (0, " M app.py", ""),                      # control phase: dirty after apply
-            (1, "", "FAILED (failures=1)\n"),          # control phase: RED with an oracle failing
-            (1, "", "FAILED (failures=1)\n"),          # clean phase: RED too — the suite is broken
+            (1, "", "FAILED (failures=1)\n"),          # clean phase: RED — the suite is broken
         ]
         ok, msgs = self._run_with(effects)
         self.assertFalse(ok)
-        self.assertTrue(any("at CLEAN head_sha too" in x for x in msgs), msgs)
+        self.assertTrue(any("at CLEAN head_sha (before the control run)" in x for x in msgs), msgs)
+
+    def test_a_command_red_only_after_the_control_run_proves_nothing(self):
+        effects = [
+            (0, "", ""),                               # clean phase: green
+            (1, "", "FAILED (failures=1)\n"),          # control phase: RED with an oracle failing
+            (1, "", "FAILED (failures=1)\n"),          # clean again: RED — a side effect, not a kill
+        ]
+        ok, msgs = self._run_with(effects)
+        self.assertFalse(ok)
+        self.assertTrue(any("at CLEAN head_sha (after the control run)" in x for x in msgs), msgs)
+
+
+class ControlPhasesAreIndistinguishable(RepoCase):
+    """Review P1: the executed control was PHASE-DISTINGUISHABLE. The control ran first, every
+    phase shared the verifier's HOME and TMPDIR, and the control worktree was always dirty — so a
+    "proof" that tested the phase instead of the behaviour (`git status` is empty; no marker in
+    ~ or $TMPDIR yet) went RED under the control only, and was graded a kill. Each phase now gets
+    a fresh HOME and TMPDIR, the mutant is sealed into a throwaway commit so every tree is clean,
+    and clean runs bracket the control run. None of these proofs looks at app.py at all."""
+
+    def _unit(self, proof):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py", proof)
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        return verify.execute_negative_control(m, cmd)
+
+    def _assert_not_a_kill(self, ok, msgs):
+        self.assertFalse(ok, msgs)
+        self.assertFalse(any("negative control EXECUTED" in x for x in msgs), msgs)
+
+    def test_a_proof_that_asserts_a_clean_git_status_is_not_killed(self):
+        ok, msgs = self._unit(
+            "import subprocess\n"
+            "out = subprocess.run(['git', 'status', '--porcelain'], capture_output=True,"
+            " text=True).stdout\n"
+            "assert out == '', 'dirty tree: ' + out\n")
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_a_first_run_marker_in_home_is_not_a_kill(self):
+        ok, msgs = self._unit(
+            "import os, pathlib\n"
+            "marker = pathlib.Path(os.environ['HOME']) / '.orca-phase-marker'\n"
+            "seen = marker.exists()\n"
+            "marker.write_text('x')\n"
+            "assert seen, 'first run in this HOME'\n")
+        self._assert_not_a_kill(ok, msgs)
+
+    def test_a_first_run_marker_in_tmpdir_is_not_a_kill(self):
+        ok, msgs = self._unit(
+            "import pathlib, tempfile\n"
+            "marker = pathlib.Path(tempfile.gettempdir()) / 'orca-phase-marker'\n"
+            "seen = marker.exists()\n"
+            "marker.write_text('x')\n"
+            "assert seen, 'first run in this TMPDIR'\n")
+        self._assert_not_a_kill(ok, msgs)
+
+    def test_a_marker_in_state_every_phase_shares_is_caught_by_the_bracketing_runs(self):
+        # The common .git is shared by every worktree. A proof that fails exactly while a
+        # marker there says "not my first run" goes RED under the control — and RED again on
+        # the second clean run, which is what refuses it.
+        ok, msgs = self._unit(
+            "import pathlib, subprocess\n"
+            "common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True,"
+            " text=True).stdout.strip()\n"
+            "marker = pathlib.Path(common) / 'orca-phase-marker'\n"
+            "seen = marker.exists()\n"
+            "marker.write_text('x')\n"
+            "assert not seen, 'not the first run'\n")
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("after the control run" in x for x in msgs), msgs)
+
+    def test_each_phase_runs_under_its_own_empty_home_and_tmpdir(self):
+        seen = []
+        original = verify._run_at
+
+        def spy(wt, argv, **kw):
+            if argv and argv[-1] == "proof.py":
+                env = kw["env"]
+                seen.append({k: env[k] for k in ("HOME", "TMPDIR", "TMP", "TEMP")})
+                self.assertEqual(os.listdir(env["HOME"]), [])
+                self.assertEqual(os.listdir(env["TMPDIR"]), [])
+            return original(wt, argv, **kw)
+        with mock.patch.object(verify, "_run_at", side_effect=spy):
+            ok, msgs = self._unit("import app\nassert app.VALUE == 2\n")
+        self.assertTrue(ok, msgs)
+        self.assertEqual(len(seen), 3, seen)
+        self.assertEqual(len({s["HOME"] for s in seen}), 3, seen)
+        for s in seen:
+            self.assertEqual(s["TMPDIR"], s["TMP"])
+            self.assertEqual(s["TMPDIR"], s["TEMP"])
+            self.assertNotEqual(s["HOME"], os.environ.get("HOME"))
 
 
 class ReadSourceGuard(unittest.TestCase):
@@ -2153,7 +2267,7 @@ class EndToEndMutationGreen(MutationFixture):
                         execute.assert_called_once()
                         apply.assert_called_once()
                         self.assertEqual(sum(c.args[1] == shlex.split(self.proof_cmd)
-                                             for c in run_at.call_args_list), 2)
+                                             for c in run_at.call_args_list), 3)  # clean/control/clean
                     else:
                         execute.assert_not_called()
                         apply.assert_not_called()
@@ -2180,7 +2294,7 @@ class EndToEndMutationGreen(MutationFixture):
                     # Both mutants kill the same proof; final exits alone cannot identify which ran.
                     self.write(self.nc_artifact, 'RED\n' + diff.replace('return 1', 'return 0'))
                 applied, runs = [], []
-                def observe(wt, argv, **kwargs):
+                def observe(wt, argv, applied=applied, runs=runs, **kwargs):
                     if argv == shlex.split(self.proof_cmd):
                         applied.append((Path(wt) / 'app.py').read_text())
                     result = original(wt, argv, **kwargs)
@@ -2193,9 +2307,11 @@ class EndToEndMutationGreen(MutationFixture):
                         nc_command=self.proof_cmd, dispatch_record=rec, dispatch_pubkey=pk)
                 self.assertIsNone(err)
                 self.assertEqual(result[0], [])
-                self.assertEqual(applied, ['def f():\n    return 1\n', 'def f():\n    return 2\n'])
-                self.assertEqual([r[0] for r in runs], [1, 0])
-                self.assertIn('AssertionError', runs[0][2])
+                # clean -> control -> clean (review P1)
+                self.assertEqual(applied, ['def f():\n    return 2\n', 'def f():\n    return 1\n',
+                                           'def f():\n    return 2\n'])
+                self.assertEqual([r[0] for r in runs], [0, 1, 0])
+                self.assertIn('AssertionError', runs[1][2])
                 self.assertTrue(any('signature verified' in n for n in result[1]), result)
 
     def test_rejected_manifest_keeps_static_replay_diagnostics(self):
@@ -2877,7 +2993,7 @@ class AppliedHunkCoordinates(RepoCase):
         with mock.patch.object(verify, '_run_at', wraps=verify._run_at) as run_at:
             result = verify.check_negative_control(m, True, execute=True, nc_command=self.cmd)
         proof_runs = [c for c in run_at.call_args_list if c.args[1] == shlex.split(self.cmd)]
-        self.assertEqual(len(proof_runs), 0 if function == 'unrelated' else 2)
+        self.assertEqual(len(proof_runs), 0 if function == 'unrelated' else 3)  # clean/control/clean
         return result
 
     def test_offset_cannot_mutate_unchanged_behavior(self):
@@ -3148,13 +3264,16 @@ class LiteralControlPaths(RepoCase):
         observed, original_run = [], verify._run_at
         def observe(wt, argv, **kwargs):
             if argv == shlex.split(command):
-                changed = original_run(wt, ['git', 'diff', '--name-only', 'HEAD'])[1].splitlines()
+                # the control is SEALED into a sibling commit (review P1), so compare the
+                # checked-out tree with head_sha rather than with the worktree's own HEAD
+                changed = original_run(wt, ['git', 'diff', '--name-only', head])[1].splitlines()
                 observed.append((changed, (Path(wt) / 'test_probe.py').read_text()))
             return original_run(wt, argv, **kwargs)
         with mock.patch.object(verify, '_run_at', side_effect=observe):
             ok, errors = verify.execute_negative_control(m, command)
         self.assertTrue(ok, errors)
-        self.assertEqual(observed, [(['*'], 'assert int(open("*").read()) == 2\n'),
+        self.assertEqual(observed, [([], 'assert int(open("*").read()) == 2\n'),
+                                    (['*'], 'assert int(open("*").read()) == 2\n'),
                                     ([], 'assert int(open("*").read()) == 2\n')])
 
     def test_explicit_revert_inspects_actual_inventory_before_proof(self):
@@ -3169,7 +3288,7 @@ class LiteralControlPaths(RepoCase):
         original_run = verify._run_at
         for extra in ('runner.py', 'extra.py'):
             with self.subTest(extra=extra):
-                def inject(wt, argv, **kwargs):
+                def inject(wt, argv, extra=extra, **kwargs):
                     result = original_run(wt, argv, **kwargs)
                     if 'checkout' in argv:
                         (Path(wt) / extra).write_text('assert False\n')
@@ -4741,7 +4860,7 @@ class TheExecutedControlRunsUnderAScrubbedEnvironment(MutationFixture):
         self.assertIn("negative control EXECUTED", out)
         self.assertIn("exits 0 at clean head_sha", out)
         runs = [set(line.split()) for line in self.seen.read_text().splitlines()]
-        self.assertEqual(len(runs), 2, runs)  # the control run and the clean run both executed
+        self.assertEqual(len(runs), 3, runs)  # clean, control, clean all executed (review P1)
         return runs
 
     def test_the_coordinators_token_and_orca_values_never_reach_the_control(self):

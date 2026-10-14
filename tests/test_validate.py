@@ -1266,6 +1266,20 @@ class MissionIdentity(unittest.TestCase):
         self.assertEqual(validate._point_similarity("finds no open issues",
                                                     "finds zero open issues"), 1.0)
 
+    def test_a_negated_qualifier_does_not_hide_a_duplicate(self):
+        """Global polarity let one added negator zero a point: floor-it's own identity with
+        "not unrelated work" on unit and "never order unrelated dimensions" on ordering passed
+        as a different mission (PR #571 review). A negated clause about NEW words is padding."""
+        real = self._live_identity("floor-it")
+        qualified = dict(real, unit=f"{real['unit']}, not unrelated work",
+                         ordering=f"{real['ordering']}, never order unrelated dimensions")
+        self.assertEqual(validate.identity_point_length_errors(qualified), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, ("floor-it", real), ("zz-qualified-it", qualified))
+            errors, _warnings = validate.identity_collisions(root=root)
+        self.assertTrue(any("floor-it and zz-qualified-it" in e for e in errors),
+                        f"a negation-qualified restatement passed the identity gate: {errors}")
+
     def test_negated_points_are_not_a_false_positive_collision(self):
         base = dict(FIXTURE_IDENTITY, convergence="every issue closed at the reviewed commit",
                     parking="merge allowed once a human decision is recorded")

@@ -8,10 +8,14 @@ validate.py as ``EVAL`` so the gate and the router agree on what a word is.
 A point is "the same" when its two declarations carry the same content words; six same points
 means one mission wearing two names, which is exactly what ARCHITECTURE.md forbids.
 
-Negation words are deliberately NOT stopwords here: "issue closed" and "issue not closed" are
-opposite points, and dropping "not" scored them 1.0. Polarity is read from the raw text
-(NEGATORS) and a mismatch is a divergence outright. "no"/"nothing" are quantities, not polarity
-("finds no open item" == "finds zero open items"), so they fold onto the zero concept.
+Negation is scoped, not global. A negator ("not", "never", "can't", …) governs its clause, up to
+the next punctuation break, and its words count as negated tokens. Two points diverge outright
+only when a negated clause denies exactly what the other point asserts: "issue closed" and "issue
+not closed" are opposite points, and dropping "not" scored them 1.0. A negated qualifier about
+new words ("…, not unrelated work") is padding like any other clause, so containment still sees
+the restated point underneath it (PR #571 review: global polarity let one added "never" hide a
+duplicate). "no"/"nothing" are quantities, not polarity ("finds no open item" == "finds zero
+open items"), so they fold onto the zero concept.
 """
 import re
 
@@ -95,22 +99,40 @@ def words(value):
     return set(re.findall(r"[a-z0-9']+", (value or "").lower()))
 
 
-def negated(value):
-    """Polarity of a point: does it carry a negator ("not", "never", "can't", …)?"""
-    ws = words(value)
-    return bool(ws & NEGATORS) or any(w.endswith("n't") for w in ws)
+NEGATOR_RE = re.compile(r"\b(?:" + "|".join(sorted(NEGATORS)) + r")\b|\b\w+n't\b", re.I)
+CLAUSE_BREAK = re.compile(r"[,;:.()!?\u2013\u2014]|\s-\s")
+
+
+def polarity_split(value):
+    """(asserted tokens, [negated clause tokens]): each negator governs the rest of its clause."""
+    asserted, denied = [], []
+    for clause in CLAUSE_BREAK.split(value or ""):
+        m = NEGATOR_RE.search(clause)
+        if not m:
+            asserted.append(clause)
+            continue
+        asserted.append(clause[:m.start()])
+        tokens = identity_tokens(clause[m.end():])
+        if tokens:
+            denied.append(tokens)
+    return identity_tokens(" ".join(asserted)), denied
 
 
 def point_similarity(a, b):
-    """Containment of the two token sets; 0.0 when their polarity differs.
+    """Containment of the two token sets; 0.0 when one point denies what the other asserts.
 
     Containment (|A∩B| / min(|A|,|B|)) is padding-resistant where Jaccard was not: filler added
-    to one side grows the union but never the smaller set. A negation mismatch is a divergence
-    whatever the overlap — "issue closed" and "issue not closed" share every content word.
+    to one side grows the union but never the smaller set. Negated words stay distinct tokens
+    ("¬closed" is not "closed"), and a negated clause wholly asserted by the other point — and
+    not by its own — is a contradiction: "issue closed" vs "issue not closed" share every content
+    word and are still opposite points.
     """
-    if negated(a) != negated(b):
+    pa, na = polarity_split(a)
+    pb, nb = polarity_split(b)
+    if any(c <= pb and not c <= pa for c in na) or any(c <= pa and not c <= pb for c in nb):
         return 0.0
-    ta, tb = identity_tokens(a), identity_tokens(b)
+    ta = pa | {"\u00ac" + t for clause in na for t in clause}
+    tb = pb | {"\u00ac" + t for clause in nb for t in clause}
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / min(len(ta), len(tb))

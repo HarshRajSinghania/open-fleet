@@ -95,8 +95,9 @@ platform credential brokering.
 3. **Stop.** Kill the worker(s) through Orca; block new dispatches on the affected DAG.
 4. **Revoke.** Rotate whatever credentials the run could have touched — manual today,
    because credentials are ambient (boundary 4).
-5. **Quarantine.** Block the implicated component fleet-wide (#558 — until it lands,
-   this rung is a manual pin rollback plus an issue).
+5. **Quarantine.** Block the implicated component fleet-wide: a human adds it to
+   `runtime/quarantine.json` — validation then refuses any routing through it and
+   preflight refuses its dispatch (#558).
 
 ## Out of scope
 

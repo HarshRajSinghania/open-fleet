@@ -188,9 +188,9 @@ def _shallow_clone(dest):
     files under test laid over it (the clone carries only what HEAD committed)."""
     subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{ROOT}", str(dest)],
                    check=True, capture_output=True, timeout=300)
-    for rel in ("scripts/install.sh", "scripts/validate.py",
-                "runtime/scripts/run_report.py"):
-        shutil.copy2(ROOT / rel, dest / rel)
+    shutil.copytree(ROOT / "scripts", dest / "scripts", dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(ROOT / "runtime/scripts/run_report.py", dest / "runtime/scripts/run_report.py")
     probe = subprocess.run(["git", "-C", str(dest), "rev-parse", "--is-shallow-repository"],
                            capture_output=True, text=True, check=True)
     if probe.stdout.strip() != "true":

@@ -63,6 +63,10 @@ _rr_spec.loader.exec_module(_run_report)
 _cl_spec = importlib.util.spec_from_file_location("_countlint", ROOT / "scripts" / "_countlint.py")
 _countlint = importlib.util.module_from_spec(_cl_spec)
 _cl_spec.loader.exec_module(_countlint)
+# The identity-point similarity engine (#288), pushed down the same way; the gate policy stays here.
+_id_spec = importlib.util.spec_from_file_location("_identity", ROOT / "scripts" / "_identity.py")
+_identity = importlib.util.module_from_spec(_id_spec)
+_id_spec.loader.exec_module(_identity)
 # The quarantine matcher (#558): one implementation, shared with preflight and
 # its CLI, so the deny-list means the same thing at every gate.
 _qc_spec = importlib.util.spec_from_file_location(
@@ -798,21 +802,15 @@ def load_report(root=None):
     return rows
 
 
-# Identity-tuple comparison. A point is "the same" when its two declarations
-# carry the same content words; six same points means one mission wearing two
-# names, which is exactly what ARCHITECTURE.md forbids.
-#
-# Negation words are deliberately NOT stopwords here: "issue closed" and "issue not closed" are
-# opposite points, and dropping "not" scored them 1.0. Polarity is read from the raw text
-# (_IDENTITY_NEGATORS) and a mismatch is a divergence outright. "no"/"nothing" are quantities, not
-# polarity ("finds no open item" == "finds zero open items"), so they fold onto the zero concept.
-_IDENTITY_STOPWORDS = {
-    "a", "an", "and", "any", "are", "as", "at", "be", "by", "every", "for",
-    "from", "in", "into", "is", "it", "its", "of", "on", "one",
-    "or", "per", "that", "the", "their", "then", "this", "to", "with",
-}
-_IDENTITY_NEGATORS = {"not", "never", "without", "cannot", "nor", "neither"}
-_IDENTITY_ZERO_WORDS = {"no", "nothing"}
+# Identity-tuple comparison (#288). The similarity engine — tokenizer hookup, concept table,
+# negation polarity, containment — lives in scripts/_identity.py (pushed down like the count-lint
+# engine, RV-D1); this module keeps the gate POLICY below and re-exports the three functions it
+# and its tests call.
+_identity.EVAL = _eval_validator
+_identity_tokens = _identity.identity_tokens
+_point_similarity = _identity.point_similarity
+_identity_sims = _identity.identity_sims
+
 # A point is one sentence about one property. A kitchen-sink point would CONTAIN most other
 # missions' points (containment, below, reads the smaller side), so its length is capped.
 IDENTITY_POINT_MAX_TOKENS = 20
@@ -834,98 +832,6 @@ IDENTITY_POINT_SAME = 0.85
 # oss-contribute) has 2 of 6 points at or above 0.5 and none of the rest above 0.45, so the
 # all-six rule keeps wide clearance.
 IDENTITY_POINT_NEAR = 0.5
-
-# Concept canonicalisation for the identity gate (full-review probe T2b): the
-# routing synonym table is eleven user-word entries, so a paraphrase that
-# swaps every content word for an unlisted synonym (issue→ticket,
-# reproduced→replicated, verified→confirmed, worktree→checkout,
-# human→person, commit→revision) shared NO stems with the original and read
-# as divergent on every point. Stemming cannot close that; only folding the
-# mission-identity vocabulary onto shared concepts can. Keys are eval.py
-# stems, values the canonical concept; "" drops a token whose synonym is a
-# stopword ("single" for "one"). This is deliberately a closed, reviewable
-# table — an open-ended thesaurus would make the gate's verdicts unexplainable.
-_IDENTITY_CONCEPTS = {}
-for _concept, _aliases in {
-    "issu": ("ticket", "item", "entr", "finding"),
-    "open": ("unresolv", "outstand", "remain"),
-    "backlog": ("queu",),
-    "fixed": ("frozen", "repair", "remediat"),
-    "reproduc": ("replicat", "recreat"),
-    "verif": ("confirm", "check", "validat"),
-    "independentl": ("separatel", "separat", "independent", "alon", "isolat"),
-    "clos": ("resolv", "complet", "finish", "done"),
-    "recount": ("enumeration", "enumerat", "count"),
-    "zero": ("none", "empt", "drain", "clear"),
-    "worktre": ("checkout", "workspac"),
-    "merg": ("landing", "land"),
-    "serialis": ("sequentiall", "sequenc"),
-    "park": ("held", "asid", "block"),
-    "human": ("person", "maintainer"),
-    "decis": ("decision", "decid"),
-    "requir": ("must", "need"),
-    "repositor": ("project", "repo", "codebas"),
-    "test": ("automat", "suit"),
-    "review": ("sign",),
-    "commit": ("revision", "rev", "sha"),
-    "find": ("show",),
-    "": ("singl", "each"),
-}.items():
-    for _alias in _aliases:
-        _IDENTITY_CONCEPTS[_alias] = _concept
-
-
-def _identity_tokens(value):
-    """Identity-point tokens, STEMMED and synonym-expanded (#288).
-
-    Raw surface tokens made this a duplicate-string detector wearing an identity test's name: one
-    word defeated it. "…backlog drained to zero…" against "…backlog emptied to zero…" scored 0.667
-    against a 0.85 bar, so a second mission could restate the first's identity and pass.
-
-    eval.py already owns the repository's tokenizer — the same stemming and synonym table the
-    router uses — so the two surfaces now agree on what a word is instead of keeping separate
-    definitions. Stemming alone closes the inflection paraphrase ("backlogs", "draining"); a true
-    synonym swap is caught by the NEAR rule below, not here.
-
-    No fallback: a tokenizer failure raises. Falling back to unstemmed words used to loosen the
-    gate silently — every inflection paraphrase would pass while the build stayed green.
-    """
-    _scoring, synonyms = _eval_validator.routing_config()
-    tokens = set(_eval_validator.tokenize(value or "", synonyms))
-    if _identity_words(value) & _IDENTITY_ZERO_WORDS:
-        tokens.add("zero")  # eval's tokenizer drops "no" as a stopword; it is a quantity here
-    folded = {_IDENTITY_CONCEPTS.get(t, t) for t in tokens if t not in _IDENTITY_STOPWORDS}
-    return {t for t in folded if t}
-
-
-def _identity_words(value):
-    return set(re.findall(r"[a-z0-9']+", (value or "").lower()))
-
-
-def _identity_negated(value):
-    """Polarity of a point: does it carry a negator ("not", "never", "can't", …)?"""
-    words = _identity_words(value)
-    return bool(words & _IDENTITY_NEGATORS) or any(w.endswith("n't") for w in words)
-
-
-def _point_similarity(a, b):
-    """Containment of the two token sets; 0.0 when their polarity differs.
-
-    Containment (|A∩B| / min(|A|,|B|)) is padding-resistant where Jaccard was not: filler added
-    to one side grows the union but never the smaller set. A negation mismatch is a divergence
-    whatever the overlap — "issue closed" and "issue not closed" share every content word.
-    """
-    if _identity_negated(a) != _identity_negated(b):
-        return 0.0
-    ta, tb = _identity_tokens(a), _identity_tokens(b)
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / min(len(ta), len(tb))
-
-
-def _identity_sims(ta, tb):
-    """Per-point similarity across the six identity points."""
-    return [_point_similarity(x, y) for x, y in zip(ta, tb, strict=True)]
 
 
 def identity_point_length_errors(meta):

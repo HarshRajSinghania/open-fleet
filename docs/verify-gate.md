@@ -122,7 +122,7 @@ worker-set; anything else in the environment is ignored):
   are the same authority twice, and binding one to the other is circular. A worker that writes both
   can nominate `grep -q FIXED calc.py` as its "criterion-bound proof", record it green at
   `head_sha`'s tree, and clear the executed-control gate without running a test. That is attack A12
-  of [the 2026-09-11 review](../REVIEW.md), and A15 is the same move in the strongest lane the repo documents.
+  of [the 2026-09-11 review](reviews/2026-09-11-review.md), and A15 is the same move in the strongest lane the repo documents.
 - `ORCA_EXECUTE_NC` — set (to anything non-empty) to forward `--execute-nc`, which **executes the
   negative control** instead of reading it. verify.py checks out `head_sha` in a throwaway worktree,
   applies the control from the manifest — `tool: revert` restores `negative_control.paths` from

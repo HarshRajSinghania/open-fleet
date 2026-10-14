@@ -33,6 +33,39 @@ Five pull requests merged after the `v0.7.1` tag (first-parent `v0.7.1..878e2245
 
 <!-- coordinator: entries for the 2026-10-14 doc-review fixes go below this line -->
 
+Fixes from the 2026-10-14 whole-repo review:
+
+- **Verifier (`verify.py`).** The executed negative control seals the mutant as a throwaway
+  commit and runs clean → control → clean, each in a fresh worktree, HOME and TMPDIR, so a test
+  can no longer tell which phase it is in (git status, marker files). Git runs with
+  `GIT_NO_REPLACE_OBJECTS=1` and no graft file. An approval counts only from a non-author
+  OWNER/MEMBER/COLLABORATOR. The transcript hashes the manifest bytes actually judged. A
+  missing `origin/<base>` is fatal on sound lanes. `--no-gh`, `--lane` and `--execute-nc` are
+  bound by the signed dispatch record. Malformed `criteria`/`criterion_ids` get named fatals.
+- **`verify-gate.sh`** reads the dispatch pubkey from the target repo (where `verify.py` reads
+  it), and resolves git and python3 once to absolute paths.
+- **`deny-hook.sh`** reads abbreviated long options the way git does (`--del` is `--delete`)
+  and hard-denies `git push --mirror` and `--prune`.
+- **Runtime scripts.** `floor_guard.py` parses diffs by hunk count (new `diffparse.py`);
+  read-side tools and `diff_scope.py` run one absolute git under a hardened env (new
+  `gitexec.py`); `upstream_probe.py` keeps `GITHUB_TOKEN` on the API origin; `spawn_worker.sh`
+  checks dependencies for `ready` tasks; `hitl-loop` refuses answers with line breaks;
+  `print-settings-snippet.sh` emits JSON with an encoder; `egress.py` validates `--ts`;
+  `watchdog.py` uses the nudge time it parses; `ed25519.py` rejects x = 0 with the sign bit
+  set; one shared `orca_cli.run_json` replaces eight copies of the envelope reader.
+- **Install.** `install.sh` refuses a shallow clone with the `git fetch --unshallow` remedy
+  (and `run_report.py`/`validate.py` name it), works through symlinked paths (`pwd -P`), and
+  refuses to repoint another clone's links without `--force`.
+- **CI.** `verdict-check` runs the checker from the base commit, so a PR cannot rewrite it;
+  an author self-GO still binds the SHA and is documented as not review. Every job has a
+  `timeout-minutes`; `bind-check` passes `base_ref` through env; ruff adds F401, F841, B023,
+  B905 and PLE.
+- **Identity gate.** Point similarity is containment, so padding cannot dilute it; negation
+  is a divergence, not a stopword; points are capped at 20 content words; a tokenizer failure
+  is loud. The engine moved to `scripts/_identity.py`.
+- **Tests.** The layer probes run on a temp copy instead of planting files in the repo;
+  shard weights re-measured.
+
 ## [0.7.1] - 2026-10-13
 
 - **The plugin install is now the lean generated tree.** `scripts/bundle.py` emits the

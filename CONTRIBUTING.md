@@ -15,7 +15,7 @@ belongs to:
 | You are adding…                                        | It belongs in     | It is a…                       |
 |--------------------------------------------------------|-------------------|--------------------------------|
 | a new *outcome* with its own definition of done        | `skills/<name>/`  | mission (discoverable skill)   |
-| reusable *phase logic* two or more missions could run  | `playbooks/`      | callable protocol, not a skill |
+| reusable *phase logic* — a phase protocol, even with one consumer | `playbooks/`      | callable protocol, not a skill |
 | dispatch/merge/liveness/sandbox *mechanics*            | `runtime/`        | policy, invisible to users     |
 | human-facing explanation                                | `docs/`           | documentation                  |
 

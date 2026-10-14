@@ -76,6 +76,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 from datetime import datetime, timezone
@@ -111,8 +112,26 @@ def ledger_path(explicit=None):
     return Path(DEFAULT_LEDGER)
 
 
+# A ts is ISO-8601 to the second (optional fraction) with an explicit UTC offset, the shape
+# `now` writes. It was the one free-text field never checked, and `record_id` joins `k=v` with
+# newlines: a ts carrying "\nsink=..." could make two different records hash alike.
+TS_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})")
+
+
+def valid_ts(value):
+    """The ts if it is a real ISO-8601 instant in TS_PATTERN's shape, else raise ValueError."""
+    if not isinstance(value, str) or not TS_PATTERN.fullmatch(value):
+        raise ValueError(f"ts must be ISO-8601 like 2026-01-02T03:04:05Z, got {value!r}")
+    datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")  # a 2026-02-30 is not an instant
+    return value
+
+
 def record_id(record):
-    """sha256 over the record's fields in fixed order, chain position included."""
+    """sha256 over the record's fields in fixed order, chain position included.
+
+    The `k=v` lines are joined with newlines, so the encoding is unambiguous only while no
+    value carries one: write refuses such fields and verify fails any record that has one.
+    """
     payload = "\n".join(f"{k}={json_scalar(record.get(k))}" for k in FIELDS)
     return sha256_hex(payload)
 
@@ -147,6 +166,11 @@ def require_field(value, name):
 
 def write_receipt(path, sink, host, payload_class, consent, nbytes=0, payload_sha256=None, ts=None):
     """Append one chained receipt. Raises EgressError on any failure (fail closed)."""
+    if ts is not None:
+        try:
+            valid_ts(ts)
+        except ValueError as err:
+            raise EgressError(str(err)) from err
     record = {
         "ts": ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sink": require_field(sink, "sink"),
@@ -229,6 +253,9 @@ def verify_ledger(path):
         expected_prev = "" if previous_raw is None else sha256_hex(previous_raw)
         if record["prev"] != expected_prev:
             return False, len(lines), lineno, "prev does not match the previous raw line"
+        if any(isinstance(record.get(k), str) and ("\n" in record[k] or "\r" in record[k])
+               for k in FIELDS):
+            return False, len(lines), lineno, "a field carries a line break (ambiguous id encoding)"
         if record.get("id") != record_id(record):
             return False, len(lines), lineno, "id does not match the record's own fields"
         previous_raw = raw
@@ -310,6 +337,13 @@ def cmd_grants(args):
     return EXIT_OK
 
 
+def _ts_arg(value):
+    try:
+        return valid_ts(value)
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err)) from err
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="egress.py",
@@ -330,7 +364,8 @@ def build_parser():
     w.add_argument("--payload-file", default=None, help="file whose exact bytes are being sent; hashed, never stored")
     w.add_argument("--payload-sha256", default=None, dest="payload_sha256",
                    help="sha256 of the bytes, when a subprocess owns them")
-    w.add_argument("--ts", default=None, help="ISO timestamp (default: now, UTC)")
+    w.add_argument("--ts", default=None, type=_ts_arg,
+                   help="ISO-8601 instant with offset, e.g. 2026-01-02T03:04:05Z (default: now, UTC)")
 
     v = sub.add_parser("verify", help="recompute the hash chain")
     v.add_argument("--json", action="store_true", help=argparse.SUPPRESS)

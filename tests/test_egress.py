@@ -230,6 +230,22 @@ class TestWrite(EgressBase):
         r = self.write_one(payload_class="pr\nbody")
         self.assertEqual(r.returncode, 3)
 
+    def test_a_malformed_ts_is_a_usage_error_and_writes_nothing(self):
+        # --ts was the one unchecked free-text field, and record_id joins
+        # `k=v` lines with "\n": a ts smuggling "\nsink=..." made ids ambiguous.
+        for ts in ("2026-01-01T00:00:00Z\nsink=x", "yesterday", "2026-02-30T00:00:00Z",
+                   "2026-01-01 00:00:00Z", "2026-01-01T00:00:00"):
+            with self.subTest(ts=ts):
+                r = self.write_one(extra=("--ts", ts))
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertFalse(self.ledger.exists())
+        with self.assertRaises(egress.EgressError):
+            egress.write_receipt(self.ledger, "s", "h", "c", "k", ts="2026-01-01T00:00:00Z\n")
+        for ts in ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00.123+05:30"):
+            with self.subTest(ts=ts):
+                self.assertEqual(self.write_one(extra=("--ts", ts)).returncode, 0)
+        self.assertEqual(self.records()[-1]["ts"], "2026-01-01T00:00:00.123+05:30")
+
     def test_the_ledger_env_var_is_honored(self):
         env = dict(os.environ)
         env["ORCA_EGRESS_LEDGER"] = str(self.ledger)
@@ -274,6 +290,18 @@ class TestVerify(EgressBase):
         r = self.run_egress("verify")
         self.assertEqual(r.returncode, 3)
         self.assertIn("id does not match", r.stderr)
+
+    def test_a_field_with_a_line_break_fails_verify_even_with_a_matching_id(self):
+        # A hand-built line whose id is recomputed over a newline-carrying
+        # field is self-consistent, but its id encoding is ambiguous.
+        record = {"ts": "2026-01-01T00:00:00Z", "sink": "s\nhost=h", "host": "", "payload_class": "c",
+                  "bytes": 0, "payload_sha256": None, "consent": "k", "prev": ""}
+        record["id"] = egress.record_id(record)
+        self.ledger.parent.mkdir(parents=True)
+        self.ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        r = self.run_egress("verify")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("line break", r.stderr)
 
     def test_a_deleted_line_breaks_the_chain(self):
         self.write_one()

@@ -193,6 +193,22 @@ class TestDiffAcquisition(FloorGuardBase):
                 self.assertIn("src/app.py", r.stderr)
                 self.assertIn("new.py", r.stderr)
 
+    def test_a_repo_local_fsmonitor_never_runs(self):
+        # core.fsmonitor in the guarded repo's own .git/config is a command git
+        # runs on an index refresh; the guard reads repos it does not own.
+        marker = Path(self.tmp) / "fsmonitor-ran"
+        hook = Path(self.tmp) / "fsmonitor.sh"
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        git(self.repo, "config", "core.fsmonitor", str(hook))
+        write(self.repo, "src/app.py", "value = 1\n")
+        git(self.repo, "status", "--short")
+        self.assertTrue(marker.exists(), "fixture: plain git must run the fsmonitor hook")
+        marker.unlink()
+        r = run_guard(self.repo, "--base", "main")
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        self.assertFalse(marker.exists(), "floor_guard ran the repo's core.fsmonitor command")
+
     def test_empty_untracked_file_is_clean(self):
         write(self.repo, "empty.py", "")
         r = run_guard(self.repo, "--base", "main")
@@ -628,6 +644,20 @@ class TestGuardSurfaceEndToEnd(FloorGuardBase):
                 self.assertEqual(code, 1, f"{path}: {line.strip()} did not trip")
                 self.assertIn("guard-surface", err)
 
+    def test_header_shaped_content_cannot_move_a_surface_touch_off_its_file(self):
+        # floor_guard review: removing a `-- note` line ahead of fail_under made
+        # the parser attribute the fail_under removal to a file called `note`.
+        for name, base, work in (
+                ("removed", "[report]\n-- note\nfail_under = 80\n", "[report]\n"),
+                ("added", "[report]\n", "[report]\n++ x\nfail_under = 70\n")):
+            with self.subTest(case=name):
+                repo = self._surface_repo(".coveragerc", base, name=f"hdr-{name}")
+                write(repo, ".coveragerc", work)
+                git(repo, "commit", "-qam", "edit beside a header-shaped line")
+                code, _out, err = run_main(repo, "--base", "main")
+                self.assertEqual(code, 1, err)
+                self.assertRegex(err, r"\[guard-surface\] \.coveragerc:\d+")
+
     def test_a_granting_waiver_exempts_a_surface_touch(self):
         repo = self._lowered_floor()
         write(repo, "docs/DECISIONS.md",
@@ -799,6 +829,22 @@ class TestDiffParsingUnits(unittest.TestCase):
             "--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n")
         self.assertEqual(added, [])
         self.assertEqual(removed, [("gone.py", 1, "gone")])
+
+    def test_content_lines_shaped_like_file_headers_stay_content(self):
+        # A removed `-- note` is `--- note` on the wire and an added `++ x` is
+        # `+++ x`; only the hunk's declared counts tell them from headers.
+        added, removed = floor_guard.parse_diff(
+            "--- a/.coveragerc\n+++ b/.coveragerc\n@@ -2,2 +2,2 @@\n"
+            "--- note\n-fail_under = 80\n+++ x\n+fail_under = 70\n")
+        self.assertEqual(removed, [(".coveragerc", 2, "-- note"), (".coveragerc", 3, "fail_under = 80")])
+        self.assertEqual(added, [(".coveragerc", 2, "++ x"), (".coveragerc", 3, "fail_under = 70")])
+
+    def test_a_diff_whose_hunks_do_not_add_up_cannot_run(self):
+        for diff in ("--- a/x\n+++ b/x\n@@ -1,2 +1 @@\n-a\n",
+                     "--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-a\n+b\n",
+                     "--- a/x\n+++ b/x\n@@ bogus @@\n"):
+            with self.subTest(diff=diff), self.assertRaises(floor_guard.GuardError):
+                floor_guard.parse_diff(diff)
 
     def test_strip_prefix_handles_prefixes_dev_null_and_bare_paths(self):
         self.assertEqual(floor_guard.strip_prefix("a/src/x.py"), "src/x.py")

@@ -101,6 +101,10 @@ def _decodepoint(s: bytes):
     if y >= _q:
         raise ValueError("decoding a non-canonical point encoding")
     x = _xrecover(y)
+    if x == 0 and _bit(s, _b - 1):
+        # RFC 8032 §5.1.3 step 4: x = 0 has no negative, so a set sign bit is a decoding
+        # failure — flipping it would yield x = q, a non-canonical second encoding.
+        raise ValueError("decoding x = 0 with the sign bit set")
     if x & 1 != _bit(s, _b - 1):
         x = _q - x
     P = [x, y]

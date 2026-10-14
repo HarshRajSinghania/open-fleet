@@ -414,6 +414,53 @@ class TagsApiOverHttp(unittest.TestCase):
         self.assertNotIn("authorization", headers)
         self.assertIn("upstream_probe", headers.get("user-agent", ""))
 
+    def test_a_next_link_to_another_origin_is_refused_and_gets_no_token(self):
+        # rel=next is the server's text: following it anywhere carried the
+        # Bearer token to whatever host it named. 127.0.0.2 is another origin
+        # on the same loopback; so is the same host on another port or scheme.
+        port = self.server.server_address[1]
+        for target in (f"http://127.0.0.2:{port}/tags?page=2",
+                       f"http://127.0.0.1:{port + 1}/tags?page=2",
+                       f"https://127.0.0.1:{port}/tags?page=2"):
+            with self.subTest(target=target):
+                _TagsHandler.routes = {
+                    "/tags": (200, {"Link": f'<{target}>; rel="next"'},
+                              json.dumps([{"name": PIN}])),
+                    "/tags?page=2": (200, {}, json.dumps([{"name": "v9.9.9"}])),
+                }
+                _TagsHandler.requests = []
+                r = self.probe("/tags", GITHUB_TOKEN="probe-test-token")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("another origin", r.stderr)
+                self.assertEqual([path for path, _ in _TagsHandler.requests], ["/tags"])
+
+    def test_the_token_never_rides_clear_text_to_a_remote_host(self):
+        probe = load_probe()
+        seen = []
+
+        class _Resp:
+            headers = {}
+
+            def read(self):
+                return b"[]"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            seen.append((request.full_url, request.has_header("Authorization")
+                         or "Authorization" in request.unredirected_hdrs))
+            return _Resp()
+
+        with mock.patch.object(probe.urllib.request, "urlopen", fake_urlopen):
+            probe.fetch_tags("http://example.invalid/tags", 5, token="t")
+            probe.fetch_tags("https://example.invalid/tags", 5, token="t")
+        self.assertEqual(seen, [("http://example.invalid/tags", False),
+                                ("https://example.invalid/tags", True)])
+
     def test_http_errors_are_exit_2(self):
         _TagsHandler.routes = {"/forbidden": (403, {}, '{"message": "API rate limit exceeded"}'),
                                "/boom": (500, {}, "oops")}

@@ -100,6 +100,27 @@ class ClassifyStates(unittest.TestCase):
         state, _ = watchdog.classify(rec, T0, CFG)
         self.assertEqual(state, "HUNG")  # still stuck, but not positively wedged
 
+    def test_movement_after_the_nudge_is_not_frozen_through_it(self):
+        # last_nudge_at was parsed and ignored: a worker nudged 90 min ago that
+        # moved 75 min ago (after the nudge) was still called WEDGED.
+        rec = worker(idle_min=75, stop_min=30, reported=False,
+                     last_nudge_at=(T0 - timedelta(minutes=90)).isoformat(),
+                     last_nudge_answered=False)
+        state, ev = watchdog.classify(rec, T0, CFG)
+        self.assertEqual(state, "HUNG")
+        self.assertNotIn("wedge_basis", ev)
+
+    def test_an_unanswered_flag_with_no_nudge_time_is_not_wedge_evidence(self):
+        rec = worker(idle_min=75, stop_min=30, reported=False, last_nudge_answered=False)
+        state, _ = watchdog.classify(rec, T0, CFG)
+        self.assertEqual(state, "HUNG")
+
+    def test_the_nudge_time_is_cited_in_the_evidence(self):
+        at = (T0 - timedelta(minutes=30)).isoformat()
+        _, ev = watchdog.classify(worker(idle_min=75, stop_min=30, last_nudge_at=at,
+                                         last_nudge_answered=False), T0, CFG)
+        self.assertEqual(ev["last_nudge_at"], at)
+
     def test_malformed_timestamp_is_a_heartbeat_error(self):
         rec = worker(last_movement_at="not-a-time")
         with self.assertRaises(watchdog.HeartbeatError):

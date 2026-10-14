@@ -24,9 +24,7 @@ Mutating verbs (close/rename/split/switch/stop/send/wait) are PARKED
 Exit: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 """
 import argparse
-import json
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -221,25 +219,7 @@ def format_show(result):
 
 
 def run_orca(argv):
-    try:
-        proc = subprocess.run([orca_cli.resolve(), *argv, "--json"],
-                              capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise Failed(f"could not run orca: {exc}")
-    try:
-        doc = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise Failed(f"orca returned unreadable JSON (exit {proc.returncode})")
-    if not isinstance(doc, dict):
-        raise Failed("orca returned a non-object envelope")
-    result = doc.get("result") if isinstance(doc.get("result"), dict) else {}
-    err = doc.get("error") or result.get("error")
-    if err:
-        code = err.get("code") if isinstance(err, dict) else err
-        raise Failed(f"orca refused: {code}")
-    if proc.returncode != 0:
-        raise Failed(f"orca exited {proc.returncode} with no error envelope")
-    return result
+    return orca_cli.run_json(argv, timeout=120, error=Failed)
 
 
 def main(argv=None):

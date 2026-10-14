@@ -60,7 +60,7 @@ DETECT: run the suite DETECT_RUNS times (default 30; varied seed/order; parallel
     load, clock skew, shuffled order, shared-state siblings); classify the taxonomy (order-dependence /
     shared mutable state / real time-or-tz / network / unseeded RNG / resource leak / too-tight timeout
     / async race) → the class dictates the fix.
-  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
+  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission deflake-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → FIX root cause + RATCHET red-by-revert (revert only the fix, show the flake returns at its measured
     rate; restore, show it's gone across a mini-streak) — never `retry(3)` a flake into hiding.

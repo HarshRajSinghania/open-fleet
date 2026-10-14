@@ -1152,7 +1152,9 @@ def check_quarantine():
                 set(compose_clause_backticks(skill.read_text(encoding="utf-8")))
                 & playbook_stems
             )
-    view = {"missions": set(), "composes": composes, "pins": _quarantine._pins(ROOT)}
+    pins, pins_error = _quarantine.pins_view(ROOT)
+    view = {"missions": set(), "composes": composes,
+            "pins": pins, "pins_error": pins_error}
     failures = _quarantine.violations(entries, view)
     warnings = [
         f"mission {e['name']} is quarantined ({e['reason']}) but still in the "

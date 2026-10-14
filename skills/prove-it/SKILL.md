@@ -50,7 +50,7 @@ rides `merge-serialization`, `reviewed-sha-freshness`, `dispatch-lifecycle`, `li
 ```
 MAP critical surface (coverage gaps × call-graph of money/auth/data/external-contract entry points;
   uncovered trivial getters are NOT the mission) → HUMAN scope confirm (bounds the mission)
-  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
+  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission prove-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → CHARACTERIZE waves (build-change, characterize): assert REAL expected behavior, and earn each
     net with the mutation `characterize` specifies. Two outcomes:

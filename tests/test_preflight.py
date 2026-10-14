@@ -283,7 +283,8 @@ class TestHungGh(unittest.TestCase):
 
 class TestQuarantineInvariant(unittest.TestCase):
     """#558: --mission refuses (exit 2) on a quarantined mission, in readonly
-    mode too; no deny-list in the repo means no quarantine in force."""
+    mode too. The deny-list resolves from the fleet catalog ($ORCA_FLEET_ROOT
+    here), never from the target repo in cwd."""
 
     def _repo_with_quarantine(self, tmp, quarantined):
         repo = Path(tmp) / "repo"
@@ -293,29 +294,29 @@ class TestQuarantineInvariant(unittest.TestCase):
             json.dumps({"quarantined": quarantined}))
         return repo
 
+    def _run(self, repo, *extra):
+        env = {**os.environ, "ORCA_FLEET_ROOT": str(repo)}
+        return run_preflight("--mode", "readonly", "--mission", "ship-it",
+                             *extra, cwd=repo, env=env)
+
     def test_quarantined_mission_refused_readonly(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo_with_quarantine(tmp, [{
                 "component": "mission:ship-it", "ref": "*",
                 "reason": "compromised", "date": "2026-10-14",
                 "by": "human:maintainer"}])
-            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
-                                   cwd=repo)
+            result = self._run(repo)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("QUARANTINED", result.stderr)
 
     def test_clean_mission_passes_and_absent_list_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo_with_quarantine(tmp, [])
-            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
-                                   cwd=repo)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self._run(repo).returncode, 0)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             make_repo(repo)
-            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
-                                   cwd=repo)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self._run(repo).returncode, 0)
 
     def test_malformed_deny_list_refuses(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -323,8 +324,31 @@ class TestQuarantineInvariant(unittest.TestCase):
             make_repo(repo)
             (repo / "runtime").mkdir()
             (repo / "runtime" / "quarantine.json").write_text("{broken")
+            self.assertEqual(self._run(repo).returncode, 2)
+
+    def test_directory_deny_list_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            make_repo(repo)
+            (repo / "runtime" / "quarantine.json").mkdir(parents=True)
+            self.assertEqual(self._run(repo).returncode, 2)
+
+    def test_target_repo_cannot_shadow_the_fleet_list(self):
+        # cwd holds a (forged empty) deny-list; the fleet root holds the real
+        # one. The fleet list wins: the run is refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet = self._repo_with_quarantine(tmp, [{
+                "component": "mission:ship-it", "ref": "*",
+                "reason": "compromised", "date": "2026-10-14",
+                "by": "human:maintainer"}])
+            target = Path(tmp) / "target"
+            make_repo(target)
+            (target / "runtime").mkdir()
+            (target / "runtime" / "quarantine.json").write_text(
+                json.dumps({"quarantined": []}))
+            env = {**os.environ, "ORCA_FLEET_ROOT": str(fleet)}
             result = run_preflight("--mode", "readonly", "--mission", "ship-it",
-                                   cwd=repo)
+                                   cwd=target, env=env)
             self.assertEqual(result.returncode, 2, result.stderr)
 
 

@@ -62,7 +62,7 @@ evidence manifest. A dep on a still-supported older major is CURRENT.
 ```
 INVENTORY (outdated + advisories; read the CHANGELOG not the version delta; reachability triage —
   dev-only/unreachable transitive is lower priority; never `audit fix --force`)
-  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha
+  → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission modernize-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → order: security-critical-reachable → patch/minor (batch coherent groups) → majors (one per PR)
   → UPGRADE waves (one dep/coherent-group per PR: bump → adapt call sites, adding code-level

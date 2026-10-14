@@ -15,9 +15,11 @@ Verifies the invariants that, if wrong, silently corrupt a whole run:
     6. If `--require-gitleaks` is passed (integrator will scan diffs), `gitleaks` must be
        on PATH; otherwise a soft warning is fine.
     7. If `--mission <name>` is passed, that mission and the playbooks it composes are
-       not quarantined in `runtime/quarantine.json` (#558). A present-but-malformed
-       deny-list refuses the run; no deny-list (a target repo, not the catalog) means
-       no quarantine is in force. Runs in readonly mode too: report-only fleets
+       not quarantined (#558). The deny-list resolves from the FLEET catalog —
+       $ORCA_FLEET_ROOT, then $CLAUDE_PLUGIN_ROOT, then this script's own catalog —
+       never from the target repo in cwd, which must not be able to shadow it. A
+       present-but-malformed deny-list refuses the run; none anywhere means no
+       quarantine is in force. Runs in readonly mode too: report-only fleets
        dispatch missions all the same.
 
 The BASE/default comparison canonicalizes ref aliases first (D1 remediation):
@@ -50,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -162,19 +165,33 @@ def _tip_sha(ref: str) -> str | None:
     return None
 
 
+def _catalog_roots() -> list[Path]:
+    """Where the fleet catalog may live, most explicit first. The target repo
+    in cwd is NEVER a candidate: it must not shadow the fleet's deny-list with
+    one of its own (read at call time so tests can patch the environment)."""
+    roots = []
+    for var in ("ORCA_FLEET_ROOT", "CLAUDE_PLUGIN_ROOT"):
+        value = os.environ.get(var)
+        if value:
+            roots.append(Path(value))
+    roots.append(Path(__file__).resolve().parents[2])
+    return roots
+
+
 def _quarantine_refusal(mission: str) -> str | None:
     """Why this mission may not start under runtime/quarantine.json, or None.
 
     The matcher lives in quarantine_check.py beside this file (loaded by path,
-    so preflight and the catalog validator enforce one rule). Absent deny-list
-    = no quarantine in force (target repos carry none); present but malformed
-    or unloadable = refusal: the run cannot prove it is allowed.
+    so preflight and the catalog validator enforce one rule). No deny-list in
+    any catalog root = no quarantine in force; present but malformed or
+    unloadable = refusal: the run cannot prove it is allowed.
     """
-    rc, top, _ = _run(["git", "rev-parse", "--show-toplevel"])
-    if rc != 0 or not top:
-        return "cannot resolve the repo toplevel to read runtime/quarantine.json"
-    root = Path(top.strip())
-    if not (root / "runtime" / "quarantine.json").is_file():
+    root = next(
+        (r for r in _catalog_roots()
+         if os.path.lexists(r / "runtime" / "quarantine.json")),
+        None,
+    )
+    if root is None:
         return None
     try:
         spec = importlib.util.spec_from_file_location(

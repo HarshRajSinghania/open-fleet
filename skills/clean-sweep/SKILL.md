@@ -77,7 +77,7 @@ claims enter the enumeration FIRST.
 
 ```
 SELF-ORIENT → ENUMERATE (per source) → SKEPTIC-TRIAGE (reproduce-or-refute) → FREEZE
-  → BOOTSTRAP integration BASE (preflight --base <BASE> --fork-point <header sha>; BASE ≠ default)
+  → BOOTSTRAP integration BASE (preflight --mission clean-sweep --base <BASE> --fork-point <header sha>; BASE ≠ default)
   → PER-FINDING (remediate-finding: verify-real → build-change → PR → build-blind review → merge_ready)
   → conductor LAND (merge-serialization) → CLOSE with evidence
   → re-ENUMERATE (loop until dry) → FINAL REPORT + `compound-learn` (run-close commits)

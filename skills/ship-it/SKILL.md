@@ -65,7 +65,7 @@ README/.gitignore commit on default, then a remote (an existing one, or `gh repo
 a human confirm — it is account-visible) so write preflight can run; a local-only host takes the
 offline lane below and stops at BASE.
 
-Then `runtime/scripts/preflight.py --base <BASE> --fork-point <ledger-header sha>` green (BASE ≠
+Then `runtime/scripts/preflight.py --mission ship-it --base <BASE> --fork-point <ledger-header sha>` green (BASE ≠
 default — dispatch-lifecycle.md; requires `gh` + a visible remote, or `--offline --default <branch>`
 for the no-gh lane from unit one). If `gh` later dies mid-run, use merge-serialization no-gh local
 merge (`PR_OPEN=n/a`); either way the run stops at BASE with the promotion PR owed. Ledger: header +

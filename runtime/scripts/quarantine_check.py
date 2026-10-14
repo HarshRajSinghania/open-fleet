@@ -41,12 +41,21 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 KINDS = ("mission", "playbook", "pack")
 _HEX = re.compile(r"^[0-9a-f]{7,40}$")
+# Mirrors decisions.py's human-grant name rule verbatim (same repo, same audit
+# purpose): person-shaped, and never an agent role wearing a human: prefix.
+_HUMAN_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+_RESERVED_HUMAN_NAMES = frozenset({
+    "agent", "ai", "anonymous", "auto", "automatic", "bot", "coordinator",
+    "fleet", "human", "model", "nobody", "none", "orca", "system",
+    "unknown", "worker",
+})
 _CLAUSE = re.compile(
     r"\b(?:Composes|COMPOSES|composes|Rides|RIDES|rides)\b\s+(.+?)(?:\n\n|\Z)", re.DOTALL
 )
@@ -83,10 +92,15 @@ def parse_quarantine(data):
         except ValueError:
             errors.append(f"{where}: date must be YYYY-MM-DD (got {raw.get('date')!r})")
             continue
-        if not str(raw.get("by", "")).startswith("human:"):
+        # Same person-shape rule as decisions.py's human grants: a bare
+        # `human:` or an agent role (human:agent, human:coordinator, …) names
+        # no person, and the audit trail must name one.
+        by_match = re.fullmatch(r"human:(\S+)", str(raw.get("by", "")))
+        by_name = by_match.group(1) if by_match else ""
+        if not _HUMAN_NAME.fullmatch(by_name) or by_name.lower() in _RESERVED_HUMAN_NAMES:
             errors.append(
-                f"{where}: by must name a human ('human:<who>') — entries are human acts, "
-                "never agent-added"
+                f"{where}: by must be 'human:<name>' naming a person — entries are "
+                "human acts, never agent-added"
             )
             continue
         entries.append(
@@ -97,13 +111,21 @@ def parse_quarantine(data):
 
 
 def load_quarantine(root):
-    """(entries, errors, present) for <root>/runtime/quarantine.json."""
+    """(entries, errors, present) for <root>/runtime/quarantine.json.
+
+    Absent (does not lexist) is the only silent state. A directory, a broken
+    symlink, invalid UTF-8, or bad JSON at that path is present-but-unusable:
+    an error, never an empty list.
+    """
     path = Path(root) / "runtime" / "quarantine.json"
-    if not path.exists():
+    if not os.path.lexists(path):
         return [], [], False
+    if not path.is_file():
+        return [], [f"{path}: present but not a regular file — refusing to "
+                    "treat an unusable deny-list as an absent one"], True
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as err:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
         return [], [f"{path}: cannot parse ({err})"], True
     entries, errors = parse_quarantine(data)
     return entries, errors, True
@@ -140,6 +162,12 @@ def violations(entries, view):
                         f"{e['name']} — {label}"
                     )
         elif e["kind"] == "pack":
+            if view.get("pins_error"):
+                out.append(
+                    f"pack {e['name']} cannot be cleared — {view['pins_error']} "
+                    f"— refusing rather than assuming the quarantined pack is unused"
+                )
+                continue
             commit = view.get("pins", {}).get(e["name"])
             if commit is not None and _ref_matches(e["ref"], commit):
                 out.append(
@@ -171,26 +199,38 @@ def _composed_playbooks(skill_text, playbook_names):
 def mission_view(root, mission):
     skill = Path(root) / "skills" / mission / "SKILL.md"
     text = skill.read_text(encoding="utf-8") if skill.exists() else ""
+    pins, pins_error = pins_view(root)
     return {
         "missions": {mission},
         "composes": {mission: _composed_playbooks(text, _playbook_names(root))},
-        "pins": _pins(root),
+        "pins": pins,
+        "pins_error": pins_error,
     }
 
 
-def _pins(root):
+def pins_view(root):
+    """({pack: commit}, error-or-None) for <root>/runtime/pins.json.
+
+    Absent pins (a target repo) is a clean empty map. Present-but-unreadable
+    pins beside a pack quarantine entry must not read as "pack unused":
+    the error rides the view and violations() turns it into a refusal.
+    """
     path = Path(root) / "runtime" / "pins.json"
-    if not path.exists():
-        return {}
+    if not os.path.lexists(path):
+        return {}, None
+    if not path.is_file():
+        return {}, f"{path}: present but not a regular file"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        return {}, f"{path}: cannot parse ({err})"
+    if not isinstance(data, dict):
+        return {}, f"{path}: expected a JSON object"
     return {
         name: str(meta.get("commit", ""))
         for name, meta in data.items()
         if not name.startswith("_") and isinstance(meta, dict)
-    }
+    }, None
 
 
 def catalog_view(root):
@@ -205,7 +245,9 @@ def catalog_view(root):
                 composes[skill_dir.name] = _composed_playbooks(
                     skill.read_text(encoding="utf-8"), playbooks
                 )
-    return {"missions": missions, "composes": composes, "pins": _pins(root)}
+    pins, pins_error = pins_view(root)
+    return {"missions": missions, "composes": composes,
+            "pins": pins, "pins_error": pins_error}
 
 
 def main(argv=None):

@@ -59,7 +59,7 @@ DETECT: read the stack (manifests, CI, existing gates) and DRAFT the dimension s
   current values (run the repo's own counters: its coverage runner, its scanner, its perf harness,
   its linters — record the command + the number per candidate dimension) — never ask what the
   repo already answers.
-→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --base <BASE> --fork-point <sha>;
+→ BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission floor-it --base <BASE> --fork-point <sha>;
   BASE ≠ default — dispatch-lifecycle.md). EVERYTHING the run produces lands on BASE, including
   the freeze product — CONSTRAINTS.md never commits to the default branch.
 → FREEZE (decide-and-freeze, ONE-WAY): the dimension × threshold × tool × gate-job ×

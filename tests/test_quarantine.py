@@ -42,6 +42,11 @@ class Shape(unittest.TestCase):
         _, errors = self.parse([entry(by="coordinator")])
         self.assertTrue(any("human" in e for e in errors))
 
+    def test_bare_human_prefix_and_agent_roles_are_refused(self):
+        for by in ("human:", "human:agent", "human:coordinator", "human:Worker"):
+            _, errors = self.parse([entry(by=by)])
+            self.assertTrue(errors, by)
+
     def test_missing_reason_is_refused(self):
         _, errors = self.parse([entry(reason="  ")])
         self.assertTrue(errors)
@@ -139,6 +144,38 @@ class Cli(unittest.TestCase):
             result = self.run_cli("--root", tmp, "--catalog")
             self.assertEqual(result.returncode, 3)
 
+    def test_directory_at_deny_list_path_cannot_evaluate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "runtime" / "quarantine.json").mkdir(parents=True)
+            result = self.run_cli("--root", tmp, "--catalog")
+            self.assertEqual(result.returncode, 3)
+
+    def test_invalid_utf8_cannot_evaluate_not_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime").mkdir()
+            (root / "runtime" / "quarantine.json").write_bytes(b"\xff\xfe{}")
+            result = self.run_cli("--root", tmp, "--catalog")
+            self.assertEqual(result.returncode, 3)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_broken_pins_beside_pack_entry_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_catalog(root, [entry(component="pack:gstack")])
+            (root / "runtime" / "pins.json").write_text("{broken")
+            result = self.run_cli("--root", tmp, "--catalog")
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("cannot be cleared", result.stdout)
+
+    def test_broken_pins_without_pack_entries_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_catalog(root, [])
+            (root / "runtime" / "pins.json").write_text("{broken")
+            result = self.run_cli("--root", tmp, "--catalog")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_absent_file_says_no_quarantine_in_force(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_cli("--root", tmp, "--catalog")
@@ -154,6 +191,14 @@ class ShippedTree(unittest.TestCase):
         view = qc.catalog_view(ROOT)
         self.assertEqual(
             qc.violations(entries, {**view, "missions": set()}), [])
+
+    def test_every_mission_start_names_itself_to_preflight(self):
+        # The refusal only fires where a mission start passes --mission; a
+        # mission that drops it would silently un-quarantine itself.
+        for skill_dir in sorted((ROOT / "skills").iterdir()):
+            if skill_dir.is_dir():
+                text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+                self.assertIn(f"--mission {skill_dir.name}", text, skill_dir.name)
 
 
 if __name__ == "__main__":

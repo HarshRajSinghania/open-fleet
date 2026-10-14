@@ -163,6 +163,141 @@ if [ "${1:-}" = "--settings" ]; then
   }
   exit 0
 fi
+if [ "${1:-}" = "--verify-settings" ]; then
+  # Is the guard actually armed in the named settings file? Parse the real
+  # registration (PreToolUse entry, tool matcher, command, boundary env),
+  # then run the REGISTERED command — not this copy — under its configured
+  # environment against three probes: a root delete and an
+  # outside-the-boundary write must deny; a plain `ls` must not (a hook that
+  # denies everything is armed like a brick). spawn_worker.sh calls this so
+  # "wired" is verified, not assumed (#562).
+  if [ -z "${2:-}" ]; then
+    echo "deny-hook.sh --verify-settings needs the settings file path" >&2
+    exit 2
+  fi
+  python3 - "$2" <<'PYEOF'
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+
+
+def refuse(reason):
+    print(f"deny-hook: NOT ARMED in {path}: {reason}", file=sys.stderr)
+    return 2
+
+
+try:
+    settings = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, ValueError) as err:
+    sys.exit(refuse(f"settings unreadable ({err})"))
+
+def covers(matcher, tool):
+    # Claude matchers are regexes tested against the tool name; a bare `*`
+    # is the documented match-all spelling. Judge the pattern itself — a
+    # valid `.*` covers every tool and must not refuse a spawn; an invalid
+    # pattern arms nothing (PR #569 review).
+    matcher = str(matcher)
+    if matcher.strip() == "*":
+        return True
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return False
+
+
+# Coverage is per tool across ALL entries: an operator may register the
+# hook under separate Bash and Edit|Write entries, and that guards both
+# just the same (PR #569 review).
+entries = (settings.get("hooks") or {}).get("PreToolUse") or []
+commands = {}
+for entry in entries:
+    if not isinstance(entry, dict):
+        continue
+    for hook in entry.get("hooks") or []:
+        if not (isinstance(hook, dict) and hook.get("type") == "command"
+                and "deny-hook.sh" in str(hook.get("command", ""))):
+            continue
+        for tool in ("Bash", "Edit"):
+            if tool not in commands and covers(entry.get("matcher", ""), tool):
+                commands[tool] = str(hook["command"])
+missing = [tool for tool in ("Bash", "Edit") if tool not in commands]
+if missing:
+    sys.exit(refuse(
+        "no PreToolUse registration of deny-hook.sh covers "
+        + " and ".join(missing)
+        + " (a mention elsewhere in the file is not a registration)"))
+
+env = dict(os.environ)
+registered_env = settings.get("env") or {}
+if not isinstance(registered_env, dict):
+    sys.exit(refuse("settings env is not an object"))
+env.update({str(k): str(v) for k, v in registered_env.items()})
+
+
+def boundary_for(command):
+    # The boundary a registered command actually runs with: an inline
+    # assignment (`ORCA_UNIT_WORKTREE=/path …/deny-hook.sh`, likewise via
+    # env) binds it as surely as the settings env does (PR #569 review).
+    m = re.search(r"ORCA_UNIT_WORKTREE=(\"[^\"]*\"|'[^']*'|\S+)", command)
+    if m:
+        return m.group(1).strip("\"'")
+    return env.get("ORCA_UNIT_WORKTREE", "")
+
+
+for tool, command in sorted(commands.items()):
+    boundary = boundary_for(command)
+    if not boundary or not Path(boundary).is_dir():
+        sys.exit(refuse(
+            f"no usable ORCA_UNIT_WORKTREE for the {tool} registration "
+            "(settings env or an inline assignment) — the worktree boundary "
+            "the registration exists to enforce is off"))
+
+
+def probe(command, tool_name, tool_input):
+    payload = json.dumps({"hook_event_name": "PreToolUse",
+                          "tool_name": tool_name, "tool_input": tool_input})
+    r = subprocess.run(["sh", "-c", command], input=payload,
+                       capture_output=True, text=True, env=env,
+                       cwd=boundary_for(command), timeout=60)
+    if not r.stdout.strip():
+        return "allow"
+    try:
+        return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
+    except (ValueError, KeyError, TypeError):
+        return f"unparsable:{r.stdout[:60]!r}"
+
+
+if probe(commands["Bash"], "Bash", {"command": "rm -rf /"}) != "deny":
+    sys.exit(refuse("registered command did not deny 'rm -rf /'"))
+bash_outside = str(Path(boundary_for(commands["Bash"])).parent
+                   / "outside-the-boundary.probe")
+if probe(commands["Bash"], "Bash",
+         {"command": f"echo x > {bash_outside}"}) != "deny":
+    # The root-delete rule needs no boundary, so it alone cannot prove the
+    # Bash write guard is live — a registration that strips the boundary
+    # (`env -u ORCA_UNIT_WORKTREE …`) passes rm/ls while shell redirects
+    # escape (PR #569 review).
+    sys.exit(refuse(
+        "registered Bash command did not deny a shell redirect outside "
+        "its configured ORCA_UNIT_WORKTREE — the write boundary is not live"))
+outside = str(Path(boundary_for(commands["Edit"])).parent
+              / "outside-the-boundary.probe")
+if probe(commands["Edit"], "Edit", {"file_path": outside}) != "deny":
+    sys.exit(refuse(
+        "registered command did not deny a write outside its configured "
+        "ORCA_UNIT_WORKTREE — registered, but the boundary is not live"))
+if probe(commands["Bash"], "Bash", {"command": "ls"}) == "deny":
+    sys.exit(refuse("registered command denies even a plain 'ls' — armed "
+                    "like a brick, not a guard"))
+print(f"deny-hook: armed in {path} ({commands['Bash']})")
+PYEOF
+  exit $?
+fi
 if [ $# -gt 0 ]; then
   printf 'deny-hook.sh: unexpected argument: %s\n' "$1" >&2
   usage >&2

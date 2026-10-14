@@ -72,6 +72,7 @@ WEIGHTS = {
     "test_guard_text": 3.7,
     "test_hitl_ask": 0.5,
     "test_hitl_loop": 1.0,
+    "test_escape_probe": 0.6,
     "test_injection_corpus": 0.4,
     "test_install_status": 32.2,
     "test_install_workflow_triggers": 0.1,

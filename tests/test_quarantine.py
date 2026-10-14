@@ -6,7 +6,9 @@ entries are human acts (shape refuses anything else), a malformed list never
 reads as an empty one, the matching rule is the same function every gate
 calls, and the shipped (empty) list is clean against the real catalog.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -66,6 +68,10 @@ class Shape(unittest.TestCase):
     def test_top_level_shape_is_refused(self):
         _, errors = qc.parse_quarantine({"nope": []})
         self.assertTrue(errors)
+
+    def test_non_object_entry_is_refused(self):
+        _, errors = self.parse(["pack:gstack"])
+        self.assertTrue(any("not an object" in e for e in errors))
 
 
 class Matching(unittest.TestCase):
@@ -227,6 +233,91 @@ class Cli(unittest.TestCase):
             result = self.run_cli("--root", tmp, "--catalog")
             self.assertEqual(result.returncode, 0)
             self.assertIn("no quarantine in force", result.stderr)
+
+
+class MainInProcess(unittest.TestCase):
+    """main() through the library door, mirroring the Cli cases above.
+
+    validate.py and preflight.py import this module's functions, and the
+    CLI is a thin shell over them; pinning both doors keeps a refactor of
+    one from drifting away from the other."""
+
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = qc.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_mission_mode_refuses_quarantined_playbook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_catalog(Path(tmp), [entry(component="playbook:risk-review")])
+            rc, out, _ = self.run_main("--root", tmp, "--mission", "ship-it")
+            self.assertEqual(rc, 2)
+            self.assertIn("QUARANTINED", out)
+
+    def test_catalog_mode_reports_present_mission_and_stays_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_catalog(Path(tmp), [entry(component="mission:ship-it")])
+            rc, out, _ = self.run_main("--root", tmp, "--catalog")
+            self.assertEqual(rc, 0)
+            self.assertIn("present in the catalog", out)
+
+    def test_malformed_and_unusable_files_cannot_evaluate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime").mkdir()
+            (root / "runtime" / "quarantine.json").write_text("{broken")
+            rc, _, _ = self.run_main("--root", tmp, "--catalog")
+            self.assertEqual(rc, 3)
+            (root / "runtime" / "quarantine.json").write_bytes(b"\xff\xfe{}")
+            rc, _, _ = self.run_main("--root", tmp, "--catalog")
+            self.assertEqual(rc, 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "runtime" / "quarantine.json").mkdir(parents=True)
+            rc, _, _ = self.run_main("--root", tmp, "--catalog")
+            self.assertEqual(rc, 3)
+
+    def test_absent_file_and_bad_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _, err = self.run_main("--root", tmp, "--catalog")
+            self.assertEqual(rc, 0)
+            self.assertIn("no quarantine in force", err)
+            rc, _, _ = self.run_main("--root", str(Path(tmp) / "nope"), "--catalog")
+            self.assertEqual(rc, 3)
+
+    def test_missing_mission_cannot_evaluate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime").mkdir()
+            (root / "runtime" / "quarantine.json").write_text(
+                json.dumps({"quarantined": []}))
+            rc, _, _ = self.run_main("--root", tmp, "--mission", "ghost")
+            self.assertEqual(rc, 3)
+
+    def test_broken_pins_beside_pack_entry_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_catalog(root, [entry(component="pack:gstack")])
+            (root / "runtime" / "pins.json").write_text("{broken")
+            rc, out, _ = self.run_main("--root", tmp, "--catalog")
+            self.assertEqual(rc, 2)
+            self.assertIn("cannot be cleared", out)
+
+    def test_pins_view_unusable_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime").mkdir()
+            pins, error = qc.pins_view(root)
+            self.assertEqual((pins, error), ({}, None))
+            (root / "runtime" / "pins.json").write_text("[1, 2]")
+            pins, error = qc.pins_view(root)
+            self.assertEqual(pins, {})
+            self.assertIn("expected a JSON object", error)
+            (root / "runtime" / "pins.json").unlink()
+            (root / "runtime" / "pins.json").mkdir()
+            pins, error = qc.pins_view(root)
+            self.assertEqual(pins, {})
+            self.assertIn("not a regular file", error)
 
 
 class ShippedTree(unittest.TestCase):

@@ -283,17 +283,42 @@ def cmd_write(args):
     return EXIT_OK
 
 
+def _anchored_value(raw):
+    """The comparable form of an anchored digest: the empty chain's head is
+    the empty string, and `(empty)` (what `head` prints for it) means the
+    same value — the two commands must round-trip."""
+    want = (raw or "").strip().lower()
+    return "" if want == "(empty)" else want
+
+
 def cmd_verify(args):
     path = ledger_path(args.ledger)
     ok, count, broken, reason = verify_ledger(path)
     if not ok:
         print(f"egress: TAMPER at {path}:{broken} — {reason} ({count} line(s) read)", file=sys.stderr)
         return EXIT_FAIL_CLOSED
-    head = head_digest(path)
+    head = head_digest(path) or ""
     shown = head or "(empty)"
+    # Both anchors may be requested together; each requested check runs —
+    # returning after the ancestor leg would silently skip an exact-head
+    # check the caller asked for (PR #567 review, P2).
+    ancestor = getattr(args, "expect_ancestor", None)
+    anchored = False
+    if ancestor is not None:
+        want = _anchored_value(ancestor)
+        if want:
+            digests = {sha256_hex(raw.encode("utf-8"))
+                       for _no, raw, _rec in read_ledger(path)}
+            if want not in digests:
+                print(f"egress: TAMPER at {path} — the anchored head {want} is not in "
+                      "this chain. Appends since the anchor are fine; a rewritten or "
+                      "truncated ledger loses the anchored line, and that is what "
+                      "this caught (#312)", file=sys.stderr)
+                return EXIT_FAIL_CLOSED
+        anchored = True
     expected = getattr(args, "expect_head", None)
     if expected is not None:
-        want = expected.strip().lower()
+        want = _anchored_value(expected)
         if want != head:
             print(f"egress: TAMPER at {path} — the chain is internally intact, but its head is "
                   f"{shown}, not the anchored {want or '(empty)'}. A ledger rewritten from scratch "
@@ -303,9 +328,30 @@ def cmd_verify(args):
             return EXIT_FAIL_CLOSED
         print(f"egress: chain intact and anchored, {count} receipt(s) in {path} — head {shown}")
         return EXIT_OK
+    if anchored:
+        print(f"egress: chain intact, anchored head present, {count} receipt(s) "
+              f"in {path} — head {shown}")
+        return EXIT_OK
     print(f"egress: chain intact, {count} receipt(s) in {path} — head {shown} "
           "(UNANCHORED: edits are caught, a wholesale rewrite is not — anchor this head off the "
-          "writer and pass it back as --expect-head)")
+          "writer and pass it back as --expect-ancestor, or --expect-head for a sealed ledger)")
+    return EXIT_OK
+
+
+def cmd_head(args):
+    """Print the chain head for anchoring off the writer (#561).
+
+    Verifies first: a head taken from a broken chain would anchor the
+    tampering. Run close records this value (conductor-close.md) and the
+    next close passes the previous one to verify --expect-ancestor.
+    """
+    path = ledger_path(args.ledger)
+    ok, count, broken, reason = verify_ledger(path)
+    if not ok:
+        print(f"egress: TAMPER at {path}:{broken} — {reason} ({count} line(s) read)",
+              file=sys.stderr)
+        return EXIT_FAIL_CLOSED
+    print(head_digest(path) or "(empty)")
     return EXIT_OK
 
 
@@ -370,8 +416,15 @@ def build_parser():
     v = sub.add_parser("verify", help="recompute the hash chain")
     v.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     v.add_argument("--expect-head", default=None, dest="expect_head", metavar="SHA256",
-                   help="the head digest last recorded OFF this writer. Without it the chain is "
-                        "only checked against itself, which a wholesale rewrite satisfies (#312)")
+                   help="the head digest last recorded OFF this writer; the ledger must END "
+                        "exactly there. Without any anchor the chain is only checked against "
+                        "itself, which a wholesale rewrite satisfies (#312)")
+    v.add_argument("--expect-ancestor", default=None, dest="expect_ancestor", metavar="SHA256",
+                   help="a head digest recorded OFF this writer at an earlier close; receipts "
+                        "appended since are expected — the anchored line must still be IN "
+                        "the chain. This is the close-to-close form (#561)")
+
+    sub.add_parser("head", help="verify, then print the chain head to anchor off the writer")
 
     g = sub.add_parser("grants", help="list the standing consents the ledger records")
     g.add_argument("--json", action="store_true", help="emit JSON")
@@ -380,7 +433,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    handlers = {"write": cmd_write, "verify": cmd_verify, "grants": cmd_grants}
+    handlers = {"write": cmd_write, "verify": cmd_verify, "head": cmd_head,
+                "grants": cmd_grants}
     try:
         return handlers[args.command](args)
     except EgressError as err:

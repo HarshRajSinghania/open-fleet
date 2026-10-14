@@ -412,7 +412,7 @@ class TestScriptShape(unittest.TestCase):
     def test_help_exits_zero_and_names_the_subcommands(self):
         r = subprocess.run([sys.executable, str(EGRESS), "--help"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0)
-        for sub in ("write", "verify", "grants"):
+        for sub in ("write", "verify", "head", "grants"):
             self.assertIn(sub, r.stdout)
 
     def test_threat_model_is_stated_not_overclaimed(self):
@@ -421,6 +421,88 @@ class TestScriptShape(unittest.TestCase):
 
     def test_default_ledger_is_repo_local(self):
         self.assertIn('DEFAULT_LEDGER = ".orca/egress.jsonl"', EGRESS.read_text(encoding="utf-8"))
+
+
+class TestExpectAncestor(EgressBase):
+    """#561: close-to-close anchoring tolerates appends, catches rewrites."""
+
+    def test_appends_after_the_anchor_pass(self):
+        self.write_one()
+        anchored = self.run_egress("head").stdout.strip()
+        self.write_one(sink="issue-close")
+        self.write_one(sink="pr-merge")
+        r = self.run_egress("verify", "--expect-ancestor", anchored)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_wholesale_rewrite_loses_the_anchored_line(self):
+        self.write_one()
+        anchored = self.run_egress("head").stdout.strip()
+        self.ledger.unlink()
+        self.write_one(host="evil.example")
+        r = self.run_egress("verify", "--expect-ancestor", anchored)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("TAMPER", r.stderr)
+
+    def test_truncation_loses_the_anchored_line(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        anchored = self.run_egress("head").stdout.strip()
+        self.ledger.write_text(self.lines()[0] + "\n", encoding="utf-8")
+        r = self.run_egress("verify", "--expect-ancestor", anchored)
+        self.assertEqual(r.returncode, 3)
+
+    def test_empty_anchor_round_trips(self):
+        self.assertEqual(self.run_egress("head").stdout.strip(), "(empty)")
+        r = self.run_egress("verify", "--expect-head", "(empty)")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.write_one()
+        r2 = self.run_egress("verify", "--expect-ancestor", "(empty)")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+
+    def test_both_anchors_requested_both_checked(self):
+        # Asking for --expect-head beside --expect-ancestor must not return
+        # after the ancestor leg: a stale head fails even when the anchored
+        # line is present (PR #567 review, P2).
+        self.write_one()
+        anchored = self.run_egress("head").stdout.strip()
+        self.write_one(sink="issue-close")
+        current = self.run_egress("head").stdout.strip()
+        stale = self.run_egress("verify", "--expect-ancestor", anchored,
+                                 "--expect-head", anchored)
+        self.assertEqual(stale.returncode, 3, stale.stdout + stale.stderr)
+        both = self.run_egress("verify", "--expect-ancestor", anchored,
+                                "--expect-head", current)
+        self.assertEqual(both.returncode, 0, both.stderr)
+
+
+class TestHead(EgressBase):
+    """#561: `head` prints the anchor value run close records off the writer.
+    It verifies first — a head taken from a broken chain anchors tampering."""
+
+    def test_head_prints_the_chain_head(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        r = self.run_egress("head")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        want = hashlib.sha256(self.lines()[-1].encode("utf-8")).hexdigest()
+        self.assertEqual(r.stdout.strip(), want)
+        # And the printed head is exactly what --expect-head accepts.
+        r2 = self.run_egress("verify", "--expect-head", r.stdout.strip())
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+
+    def test_head_of_empty_ledger(self):
+        r = self.run_egress("head")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "(empty)")
+
+    def test_head_refuses_a_broken_chain(self):
+        self.write_one()
+        lines = self.lines()
+        lines[0] = lines[0].replace("pr-body", "tampered")
+        self.ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        r = self.run_egress("head")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("TAMPER", r.stderr)
 
 
 if __name__ == "__main__":

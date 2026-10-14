@@ -63,6 +63,10 @@ _rr_spec.loader.exec_module(_run_report)
 _cl_spec = importlib.util.spec_from_file_location("_countlint", ROOT / "scripts" / "_countlint.py")
 _countlint = importlib.util.module_from_spec(_cl_spec)
 _cl_spec.loader.exec_module(_countlint)
+# The identity-point similarity engine (#288), pushed down the same way; the gate policy stays here.
+_id_spec = importlib.util.spec_from_file_location("_identity", ROOT / "scripts" / "_identity.py")
+_identity = importlib.util.module_from_spec(_id_spec)
+_id_spec.loader.exec_module(_identity)
 # The quarantine matcher (#558): one implementation, shared with preflight and
 # its CLI, so the deny-list means the same thing at every gate.
 _qc_spec = importlib.util.spec_from_file_location(
@@ -439,6 +443,7 @@ def validate_skill(skill_dir, protocols):
                 f"missing metadata.{key} — all six identity points "
                 f"{list(IDENTITY_KEYS)} are required (ARCHITECTURE.md)"
             )
+    errors.extend(identity_point_length_errors(meta))
 
     if "compatibility" in data:
         c = data["compatibility"]
@@ -797,14 +802,18 @@ def load_report(root=None):
     return rows
 
 
-# Identity-tuple comparison. A point is "the same" when its two declarations
-# carry the same content words; six same points means one mission wearing two
-# names, which is exactly what ARCHITECTURE.md forbids.
-_IDENTITY_STOPWORDS = {
-    "a", "an", "and", "any", "are", "as", "at", "be", "by", "every", "for",
-    "from", "in", "into", "is", "it", "its", "no", "not", "of", "on", "one",
-    "or", "per", "that", "the", "their", "then", "this", "to", "with",
-}
+# Identity-tuple comparison (#288). The similarity engine — tokenizer hookup, concept table,
+# negation polarity, containment — lives in scripts/_identity.py (pushed down like the count-lint
+# engine, RV-D1); this module keeps the gate POLICY below and re-exports the three functions it
+# and its tests call.
+_identity.EVAL = _eval_validator
+_identity_tokens = _identity.identity_tokens
+_point_similarity = _identity.point_similarity
+_identity_sims = _identity.identity_sims
+
+# A point is one sentence about one property. A kitchen-sink point would CONTAIN most other
+# missions' points (containment, below, reads the smaller side), so its length is capped.
+IDENTITY_POINT_MAX_TOKENS = 20
 IDENTITY_POINT_SAME = 0.85
 # Six points that are each merely SIMILAR still describe one mission twice. A synonym swap scores
 # ~0.67 a point — under the 0.85 bar on every one of them, and a duplicate all the same (#288).
@@ -814,82 +823,31 @@ IDENTITY_POINT_SAME = 0.85
 # already implies: differing on one point is legal-but-surfaced (a WARN) and differing on two is
 # silent, so a pair with no divergent point at all is one mission twice, however its words are
 # arranged. Neither the mean nor the single weakest point works here — a five-of-six match averages
-# high while being a legitimate distinction, and a paraphraser can rewrite one point heavily. The
-# live catalog's closest pair has ONE near point out of six, so this has wide clearance.
-IDENTITY_POINT_NEAR = 0.4
-
-# Concept canonicalisation for the identity gate (full-review probe T2b): the
-# routing synonym table is eleven user-word entries, so a paraphrase that
-# swaps every content word for an unlisted synonym (issue→ticket,
-# reproduced→replicated, verified→confirmed, worktree→checkout,
-# human→person, commit→revision) shared NO stems with the original and read
-# as divergent on every point. Stemming cannot close that; only folding the
-# mission-identity vocabulary onto shared concepts can. Keys are eval.py
-# stems, values the canonical concept; "" drops a token whose synonym is a
-# stopword ("single" for "one"). This is deliberately a closed, reviewable
-# table — an open-ended thesaurus would make the gate's verdicts unexplainable.
-_IDENTITY_CONCEPTS = {}
-for _concept, _aliases in {
-    "issu": ("ticket", "item", "entr", "finding"),
-    "open": ("unresolv", "outstand", "remain"),
-    "backlog": ("queu",),
-    "fixed": ("frozen", "repair", "remediat"),
-    "reproduc": ("replicat", "recreat"),
-    "verif": ("confirm", "check", "validat"),
-    "independentl": ("separatel", "separat", "independent", "alon", "isolat"),
-    "clos": ("resolv", "complet", "finish", "done"),
-    "recount": ("enumeration", "enumerat", "count"),
-    "zero": ("none", "empt", "drain", "clear"),
-    "worktre": ("checkout", "workspac"),
-    "merg": ("landing", "land"),
-    "serialis": ("sequentiall", "sequenc"),
-    "park": ("held", "asid", "block"),
-    "human": ("person", "maintainer"),
-    "decis": ("decision", "decid"),
-    "requir": ("must", "need"),
-    "repositor": ("project", "repo", "codebas"),
-    "test": ("automat", "suit"),
-    "review": ("sign",),
-    "commit": ("revision", "rev", "sha"),
-    "find": ("show",),
-    "": ("singl", "each"),
-}.items():
-    for _alias in _aliases:
-        _IDENTITY_CONCEPTS[_alias] = _concept
+# high while being a legitimate distinction, and a paraphraser can rewrite one point heavily.
+#
+# Similarity is CONTAINMENT (shared / size of the smaller set), not Jaccard: Jaccard's union
+# denominator let filler padding ("…, with care and rigour across every relevant consideration")
+# dilute a verbatim restatement below this bar. Padding cannot shrink the smaller side. Measured
+# 2026-10-14 over the live catalog (22 missions, 231 pairs): the closest pair (clean-sweep /
+# oss-contribute) has 2 of 6 points at or above 0.5 and none of the rest above 0.45, so the
+# all-six rule keeps wide clearance.
+IDENTITY_POINT_NEAR = 0.5
 
 
-def _identity_tokens(value):
-    """Identity-point tokens, STEMMED and synonym-expanded (#288).
-
-    Raw surface tokens made this a duplicate-string detector wearing an identity test's name: one
-    word defeated it. "…backlog drained to zero…" against "…backlog emptied to zero…" scored 0.667
-    against a 0.85 bar, so a second mission could restate the first's identity and pass.
-
-    eval.py already owns the repository's tokenizer — the same stemming and synonym table the
-    router uses — so the two surfaces now agree on what a word is instead of keeping separate
-    definitions. Stemming alone closes the inflection paraphrase ("backlogs", "draining"); a true
-    synonym swap is caught by the MEAN gate below, not here.
-    """
-    try:
-        _scoring, synonyms = _eval_validator.routing_config()
-        tokens = set(_eval_validator.tokenize(value or "", synonyms))
-    except Exception:  # noqa: BLE001 — a tokenizer failure must not silently widen the gate
-        tokens = {w for w in re.findall(r"[a-z0-9_]+", (value or "").lower())
-                  if w not in _IDENTITY_STOPWORDS}
-    folded = {_IDENTITY_CONCEPTS.get(t, t) for t in tokens if t not in _IDENTITY_STOPWORDS}
-    return {t for t in folded if t}
-
-
-def _point_similarity(a, b):
-    ta, tb = _identity_tokens(a), _identity_tokens(b)
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
-
-
-def _identity_sims(ta, tb):
-    """Per-point similarity across the six identity points."""
-    return [_point_similarity(x, y) for x, y in zip(ta, tb)]
+def identity_point_length_errors(meta):
+    """Identity points over IDENTITY_POINT_MAX_TOKENS content tokens."""
+    errors = []
+    for key in IDENTITY_KEYS:
+        value = meta.get(key)
+        if isinstance(value, str):
+            n = len(_identity_tokens(value))
+            if n > IDENTITY_POINT_MAX_TOKENS:
+                errors.append(
+                    f"metadata.{key}: {n} content words > {IDENTITY_POINT_MAX_TOKENS} — an "
+                    "identity point is one property in one sentence; a kitchen-sink point "
+                    "reads as containing every other mission's"
+                )
+    return errors
 
 
 def identity_collisions(root=None):
@@ -922,7 +880,7 @@ def identity_collisions(root=None):
         for b in names[i + 1:]:
             same = [
                 key
-                for key, va, vb in zip(IDENTITY_KEYS, tuples[a], tuples[b])
+                for key, va, vb in zip(IDENTITY_KEYS, tuples[a], tuples[b], strict=True)
                 if _point_similarity(va, vb) >= IDENTITY_POINT_SAME
             ]
             sims = _identity_sims(tuples[a], tuples[b])
@@ -935,7 +893,7 @@ def identity_collisions(root=None):
                     "state which point actually differs"
                 )
             elif near == len(IDENTITY_KEYS):
-                restated = [k for k, value in zip(IDENTITY_KEYS, sims)
+                restated = [k for k, value in zip(IDENTITY_KEYS, sims, strict=True)
                             if value < IDENTITY_POINT_SAME]
                 errors.append(
                     f"{a} and {b} restate one identity: all {len(IDENTITY_KEYS)} points are at "
@@ -1293,6 +1251,12 @@ def main():
         print(f"All {total} missions valid; three-layer separation holds; evals valid.")
         return 0
     print("Validation failed.")
+    if _run_report.is_shallow(ROOT):
+        # A shallow clone cannot resolve the commits run reports pin, so proven missions fail
+        # here through no fault of the catalog. Fail closed, but name the fix (install.sh
+        # refuses shallow clones up front with the same remedy).
+        print(f"NOTE: {ROOT} is a shallow clone (git clone --depth …); run-report pins need "
+              f"full history. Run `{_run_report.SHALLOW_REMEDY}` and re-run this check.")
     return 1
 
 

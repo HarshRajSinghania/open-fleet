@@ -23,7 +23,7 @@ HEAD = "a" * 40
 OTHER = "b" * 40
 
 
-def review(body, state="APPROVED", login="coord", association="MEMBER"):
+def review(body, state="APPROVED", login="reviewer", association="MEMBER"):
     return {"state": state, "body": body, "submitted_at": "2026-09-16T00:00:00Z",
             "user": {"login": login}, "author_association": association}
 
@@ -69,12 +69,22 @@ class VerdictAtTip(unittest.TestCase):
         self.assertFalse(verdict_at_tip(
             [review(go_body(HEAD), state="PENDING")], HEAD))
 
-    def test_commented_go_counts_from_pr_author(self):
-        # The coordinator binding its own verdict — the normal fleet flow, since
-        # GitHub forbids approving your own PR.
-        mine = review(go_body(HEAD), state="COMMENTED", login="coord",
-                      association="CONTRIBUTOR")
-        self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="coord"))
+    def test_the_pr_authors_own_go_never_counts(self):
+        # A self-GO binds a SHA but is not review: counting it let any
+        # collaborator satisfy the required check on their own PR. No
+        # association rescues it — not even OWNER — and no state either.
+        for association in ("CONTRIBUTOR", "OWNER", "MEMBER", "COLLABORATOR"):
+            for state in ("COMMENTED", "APPROVED"):
+                with self.subTest(association=association, state=state):
+                    mine = review(go_body(HEAD), state=state, login="coord",
+                                  association=association)
+                    self.assertFalse(verdict_at_tip([mine], HEAD, pr_author="coord"))
+
+    def test_an_independent_go_still_counts_beside_a_self_go(self):
+        mine = review(go_body(HEAD), state="COMMENTED", login="coord", association="OWNER")
+        peer = review(go_body(HEAD), state="COMMENTED", login="peer", association="MEMBER")
+        hits = go_reviews_at_tip([mine, peer], HEAD, pr_author="coord")
+        self.assertEqual([h["user"]["login"] for h in hits], ["peer"])
 
     def test_commented_go_counts_from_trusted_tiers(self):
         for association in ("OWNER", "MEMBER", "COLLABORATOR"):
@@ -107,23 +117,47 @@ class GhApiUnits(unittest.TestCase):
     def _proc(self, stdout="", stderr="", code=0):
         return subprocess.CompletedProcess(["gh", "api"], code, stdout, stderr)
 
-    def _call(self, proc):
+    def _call(self, proc, paginate=False):
         with mock.patch.object(verdict_check.subprocess, "run", return_value=proc) as m:
-            result = verdict_check._gh_api("pulls/1", "o/r")
+            result = verdict_check._gh_api("pulls/1", "o/r", paginate=paginate)
         argv = m.call_args[0][0]
-        self.assertEqual(argv[:3], ["gh", "api", "--paginate"])
+        if paginate:
+            self.assertEqual(argv[:4], ["gh", "api", "--paginate", "--slurp"])
+        else:
+            self.assertEqual(argv[:2], ["gh", "api"])
+            self.assertNotIn("--paginate", argv)
         self.assertIn("repos/o/r/pulls/1", argv)
         return result
 
     def test_a_json_object_comes_back_parsed(self):
         self.assertEqual(self._call(self._proc('{"sha": "abc"}')), {"sha": "abc"})
 
-    def test_empty_output_is_an_empty_list(self):
-        self.assertEqual(self._call(self._proc("")), [])
+    def test_empty_output_is_empty(self):
+        self.assertEqual(self._call(self._proc("")), {})
+        self.assertEqual(self._call(self._proc(""), paginate=True), [])
 
-    def test_paginated_arrays_are_merged_and_blank_lines_skipped(self):
-        proc = self._proc('[{"a": 1}]\n\n[{"b": 2}]\n')
-        self.assertEqual(self._call(proc), [{"a": 1}, {"b": 2}])
+    def test_slurped_pages_are_merged(self):
+        proc = self._proc('[[{"a": 1}], [{"b": 2}, {"c": 3}]]\n')
+        self.assertEqual(self._call(proc, paginate=True), [{"a": 1}, {"b": 2}, {"c": 3}])
+
+    def test_concatenated_pages_without_separators_are_merged(self):
+        # Plain --paginate prints `][` with no newline between pages; a line
+        # splitter read that as one malformed document.
+        for text in ('[{"a": 1}][{"b": 2}]', '[{"a": 1}]\n\n[{"b": 2}]\n',
+                     '[{"a": 1}, {"x": "]["}]  [{"b": 2}]'):
+            with self.subTest(text=text):
+                got = self._call(self._proc(text), paginate=True)
+                self.assertEqual(got[0], {"a": 1})
+                self.assertEqual(got[-1], {"b": 2})
+
+    def test_garbage_raises_instead_of_reading_as_no_reviews(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self._call(self._proc('[{"a": 1}] trailing'), paginate=True)
+        self.assertIn("unparseable", str(ctx.exception))
+        with self.assertRaises(RuntimeError):
+            self._call(self._proc('{"a": 1}{"b": 2}'))
+        with self.assertRaises(RuntimeError):
+            self._call(self._proc('{"a": 1}'), paginate=True)
 
     def test_a_nonzero_exit_raises_with_the_stderr(self):
         with mock.patch.object(verdict_check.subprocess, "run",
@@ -137,8 +171,10 @@ class CheckPrUnits(unittest.TestCase):
     PR = {"head": {"sha": HEAD}, "user": {"login": "coord"}}
 
     def _check(self, pr_payload, reviews_payload):
-        def fake(path, repo):
+        def fake(path, repo, paginate=False):
             self.assertEqual(repo, "o/r")
+            # Only the LIST endpoint paginates; the PR object is one document.
+            self.assertEqual(paginate, path != "pulls/7")
             return pr_payload if path == "pulls/7" else reviews_payload
         with mock.patch.object(verdict_check, "_gh_api", side_effect=fake):
             return verdict_check.check_pr("7", "o/r")
@@ -190,7 +226,7 @@ class MainInProc(unittest.TestCase):
                                     self._payload([review(go_body(HEAD))]))
         self.assertEqual(code, 0, err)
         self.assertIn("1 trusted at tip", out)
-        self.assertIn("@coord [APPROVED]", out)
+        self.assertIn("@reviewer [APPROVED]", out)
         self.assertIn("PASS", out)
 
     def test_a_stale_go_fails_asking_for_a_fresh_verdict(self):
@@ -206,6 +242,13 @@ class MainInProc(unittest.TestCase):
                                      self._payload([stranger]))
         self.assertEqual(code, 1)
         self.assertIn("drive-by", err)
+
+    def test_an_author_only_go_fails_naming_the_self_go(self):
+        mine = review(go_body(HEAD), state="COMMENTED", login="coord", association="OWNER")
+        code, _out, err = self._main(["--pr", "7", "--repo", "o/r"], self._payload([mine]))
+        self.assertEqual(code, 1)
+        self.assertIn("by the PR author", err)
+        self.assertIn("not review", err)
 
     def test_no_go_at_all_fails_plainly(self):
         code, _out, err = self._main(["--pr", "7", "--repo", "o/r"], self._payload([]))
@@ -248,6 +291,33 @@ class MainInProc(unittest.TestCase):
                     runpy.run_path(str(_ROOT / "scripts" / "verdict_check.py"),
                                    run_name="__main__")
         self.assertEqual(ctx.exception.code, 2)
+
+
+class WorkflowRunsTheBaseChecker(unittest.TestCase):
+    """verdict-check.yml must never run a checker the PR under review could rewrite."""
+
+    TEXT = (_ROOT / ".github" / "workflows" / "verdict-check.yml").read_text(encoding="utf-8")
+
+    def test_the_checker_is_checked_out_from_the_base_sha_into_its_own_path(self):
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", self.TEXT)
+        self.assertIn("path: base-checker", self.TEXT)
+        self.assertIn("python3 base-checker/scripts/verdict_check.py", self.TEXT)
+        # exactly one checkout, and it is the base one — no PR tree on disk at all
+        self.assertEqual(self.TEXT.count("actions/checkout@"), 1)
+        self.assertNotRegex(self.TEXT, r"(?m)^\s+run: python3 scripts/verdict_check\.py")
+
+    def test_permissions_are_read_only_and_explicit(self):
+        self.assertRegex(self.TEXT,
+                         r"(?m)^permissions:\n  contents: read\n  pull-requests: read\n")
+
+    def test_an_author_self_go_does_not_trigger_evaluation(self):
+        # The script never counts it, so evaluating it would only fail-poison the head.
+        self.assertIn(
+            "github.event.review.user.login != github.event.pull_request.user.login",
+            self.TEXT)
+        self.assertNotIn(
+            "github.event.review.user.login == github.event.pull_request.user.login",
+            self.TEXT)
 
 
 if __name__ == "__main__":

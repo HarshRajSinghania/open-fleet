@@ -155,7 +155,7 @@ def write_guides() -> None:
         text = guide.read_text(encoding="utf-8")
         want = load_callout(mission, tokens)
         if LOAD_CALLOUT_RE.search(text):
-            new_text = LOAD_CALLOUT_RE.sub(lambda _m: want, text, count=1)
+            new_text = LOAD_CALLOUT_RE.sub(lambda _m, w=want: w, text, count=1)
         else:
             m = AUTONOMY_CALLOUT_RE.search(text)
             if not m:

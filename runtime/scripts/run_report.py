@@ -177,6 +177,22 @@ def parse_run_header(text):
     return fields, None
 
 
+SHALLOW_REMEDY = "git fetch --unshallow"
+
+
+def is_shallow(root):
+    """True when ``root`` is a shallow clone: its history is truncated, so a run report's
+    ``inventory_at=`` pin can be a real commit this clone simply does not have."""
+    try:
+        proc = subprocess.run(
+            _git_cmd("rev-parse", "--is-shallow-repository"),
+            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
 def path_exists_at(rev, path_text, root):
     return subprocess.run(
         _git_cmd("cat-file", "-e", f"{rev}:{path_text}"),
@@ -1027,10 +1043,20 @@ def check_report(report_path, mission, tier, root=None, base=None):
 
     rev = fields["inventory_at"]
     if not inventory.rev_exists(rev, root):
-        errors.append(
-            f"{report_path}: RUN: inventory_at={rev} is not a commit in this repository "
-            "— an unresolvable pin verifies nothing"
-        )
+        if is_shallow(root):
+            # Still fatal: a pin this clone cannot resolve verifies nothing, and a tier claim
+            # must not pass unchecked just because history was truncated. But the cause is the
+            # clone, not the report — say so, and name the one command that fixes it.
+            errors.append(
+                f"{report_path}: RUN: inventory_at={rev} cannot be resolved because this is a "
+                f"SHALLOW clone (git clone --depth …) — run `{SHALLOW_REMEDY}` in {root} and "
+                "re-run; the pin is checked against full history, never skipped"
+            )
+        else:
+            errors.append(
+                f"{report_path}: RUN: inventory_at={rev} is not a commit in this repository "
+                "— an unresolvable pin verifies nothing"
+            )
         return errors
 
     manifest = fields["manifest"]

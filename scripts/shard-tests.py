@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Split the unittest suite into N file-level shards for CI matrix fan-out.
 
-The catalog-gates journey (validate + full suite + proof_status) runs ~260 s
-sequentially, ~9x over its 30 s budget, and the cost is diffuse per-test
+The catalog-gates journey (validate + full suite + proof_status) ran ~260 s
+sequentially when this was written and ~670 s by the 2026-10-14 re-measure, ~9x over its 30 s budget, and the cost is diffuse per-test
 process fan-out no single hotspot fix can remove (see the speed-it self-test
 report, docs/runs/campaign-2026-09-16-speed-it/REPORT.md). This script is the
 reversible half of that run's parked infra gate: it partitions tests/test_*.py
@@ -12,12 +12,16 @@ and no test dependency is added (the suite is stdlib-only by design).
 Shards are FILE-level on purpose: splitting a module across processes would
 re-run setUpClass fixtures per shard (test_deny_hook shares read-only repos
 that way) for no balance gain — LPT over files already lands within ~2% of
-the mean at N=4. Weights below are single-pass wall seconds measured on
-2026-09-17 (ravindra-mbp, python 3.13, main @ 496815ba); they steer balance
-only, never correctness — the partition always covers every discovered module
-exactly once, which tests/test_shard_tests.py proves against live discovery.
-The reshape_* rows below were measured separately (0.03–0.04 s each) on
-speed/j1-sharding and recorded at the 0.1 floor the table uses for fast files.
+the mean at N=4. Weights below are single-pass wall seconds re-measured on
+2026-10-14 (Linux container, python 3.13.16, 878e2245 plus the review-fix
+branch; one `python3 -m unittest tests.<mod>` per module, sequential, 0.1 s
+floor). The first table (2026-09-17) summed ~260 s and had drifted to ~3x
+that with hot spots moved (test_deny_hook, test_run_report, test_bundle,
+test_architecture), leaving the shards imbalanced. The container was shared
+with other jobs, so absolute values are inflated; only the ratios steer the
+partition. They steer balance only, never correctness — the partition always
+covers every discovered module exactly once, which tests/test_shard_tests.py
+proves against live discovery.
 
 Usage:
   python3 scripts/shard-tests.py --list [--of N]      print the partition
@@ -44,70 +48,70 @@ TESTS_DIR = ROOT / "tests"
 DEFAULT_SHARDS = 4
 
 # Module -> seconds. Single-pass `python3 -m unittest tests.<mod>` walls,
-# repo root cwd, 2026-09-17. Balance-only: correctness never reads this.
+# repo root cwd, 2026-10-14. Balance-only: correctness never reads this.
 WEIGHTS = {
-    "test_architecture": 6.1,
-    "test_bind_check": 2.2,
-    "test_bundle": 23.0,
+    "test_architecture": 37.5,
+    "test_bind_check": 5.7,
+    "test_bundle": 61.8,
     "test_call_for_runs": 0.1,
-    "test_chain_check": 0.1,  # 2026-10-13: 0.07 s wall, rounded
-    "test_check_reply": 2.4,
-    "test_decisions": 1.4,
-    "test_deny_hook": 48.9,
-    "test_diff_scope": 5.2,
-    "test_dispatch_sign": 0.5,
-    "test_docs_navigation": 15.8,
-    "test_ed25519": 1.3,
-    "test_egress": 2.5,
-    "test_evals": 3.8,
-    "test_evidence_run": 4.5,
-    "test_external_ci_monitor": 0.1,  # 2026-09-30: 0.126 s wall, rounded
-    "test_floor_guard": 7.3,
-    "test_gate_batch": 0.1,
-    "test_governance_commands": 2.7,
-    "test_guard_text": 1.1,
-    "test_hitl_ask": 3.0,
-    "test_hitl_loop": 0.1,
-    "test_install_status": 9.9,
+    "test_chain_check": 0.2,
+    "test_check_reply": 0.7,
+    "test_decisions": 11.9,
+    "test_deny_hook": 134.4,
+    "test_diff_scope": 10.3,
+    "test_dispatch_sign": 8.1,
+    "test_docs_navigation": 27.5,
+    "test_ed25519": 2.5,
+    "test_egress": 6.0,
+    "test_evals": 12.9,
+    "test_evidence_run": 7.9,
+    "test_external_ci_monitor": 0.1,
+    "test_floor_guard": 9.7,
+    "test_gate_batch": 0.5,
+    "test_governance_commands": 1.6,
+    "test_guard_text": 3.7,
+    "test_hitl_ask": 0.5,
+    "test_hitl_loop": 1.0,
+    "test_install_status": 32.2,
     "test_install_workflow_triggers": 0.1,
-    "test_inventory": 0.9,
+    "test_inventory": 27.5,
     "test_migration_walkthrough": 0.1,
-    "test_negative_control": 1.1,
-    "test_one_way_doors": 2.2,
-    "test_orca_cli": 0.2,
-    "test_orphan_wiring": 0.1,
+    "test_negative_control": 0.9,
+    "test_one_way_doors": 9.5,
+    "test_orca_cli": 0.3,
+    "test_orphan_wiring": 0.3,
     "test_pins": 0.1,
     "test_pm": 0.1,
-    "test_preflight": 7.1,
-    "test_proof_status": 0.1,
-    "test_quarantine": 0.2,
-    "test_release_check": 12.5,
-    "test_release_status_docs": 0.1,
-    "test_repo_hygiene": 0.4,
-    "test_reshape_net_validate": 0.1,
-    "test_reshape_net_verify": 0.1,
-    "test_reshape_width_validate": 0.1,
-    "test_reshape_width_verify": 0.1,
-    "test_run_report": 7.5,
+    "test_preflight": 5.4,
+    "test_proof_status": 0.4,
+    "test_quarantine": 1.6,
+    "test_release_check": 11.7,
+    "test_release_status_docs": 0.3,
+    "test_repo_hygiene": 1.8,
+    "test_reshape_net_validate": 0.3,
+    "test_reshape_net_verify": 0.3,
+    "test_reshape_width_validate": 0.2,
+    "test_reshape_width_verify": 0.3,
+    "test_run_report": 70.1,
     "test_sandbox_doctor": 0.1,
-    "test_search_sessions": 3.1,
-    "test_send_msg": 1.2,
-    "test_shard_tests": 1.0,
-    "test_spawn_worker": 48.4,
-    "test_spawn_upstream": 19.9,
-    "test_task_ops": 2.5,
-    "test_terminal_ops": 3.1,
-    "test_upstream_probe": 7.9,
-    "test_validate": 1.6,
+    "test_search_sessions": 1.0,
+    "test_send_msg": 0.5,
+    "test_shard_tests": 1.4,
+    "test_spawn_upstream": 15.2,
+    "test_spawn_worker": 42.2,
+    "test_task_ops": 0.8,
+    "test_terminal_ops": 0.8,
+    "test_upstream_probe": 4.1,
+    "test_validate": 9.6,
     "test_verdict_check": 0.1,
-    "test_verify_gate": 10.1,
-    "test_verify": 38.7,
+    "test_verify": 64.4,
+    "test_verify_gate": 7.6,
+    "test_vfbench": 11.8,
     "test_vfbench_gate": 0.1,
-    "test_vfbench": 22.5,
-    "test_watchdog": 0.4,
-    "test_wire_docs": 0.2,
-    "test_worker_ops": 3.0,
-    "test_worktree_ops": 1.9,
+    "test_watchdog": 1.1,
+    "test_wire_docs": 0.6,
+    "test_worker_ops": 0.9,
+    "test_worktree_ops": 0.5,
 }
 
 

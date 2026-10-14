@@ -11,7 +11,7 @@ permissions:
 jobs:
   tests:
     # The contract suite, sharded across four parallel jobs (speed-it J1
-    # sharding: the ~260 s sequential suite is diffuse process fan-out no
+    # sharding: the ~670 s sequential suite (2026-10-14) is diffuse fan-out no
     # hotspot fix removes, so CI fans out instead). scripts/shard-tests.py owns
     # the partition — file-level LPT, unittest stays the runner, stdlib only —
     # and tests/test_shard_tests.py proves the union of the shards equals live
@@ -19,6 +19,7 @@ jobs:
     # `gates` below NEEDS this job (branch protection requires the `gates`
     # context, so suite failures block the merge through it).
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +41,15 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           coverage --version
+      - name: Suite runs as a non-root user
+        # test_verify / test_verify_gate SKIP their ownership-boundary tests under euid 0
+        # (root owns every path by definition). GitHub-hosted runners run as `runner`, so CI
+        # exercises them; this step keeps it that way if the runner image ever changes.
+        run: |
+          if [ "$(id -u)" -eq 0 ]; then
+            echo "::error::the suite is running as root: ownership-boundary tests would skip silently"
+            exit 1
+          fi
       - name: Run suite shard without Gitleaks
         run: |
           if command -v gitleaks >/dev/null; then
@@ -68,6 +78,7 @@ jobs:
     # matrix proves the floor and the minor between it and the pin, without coverage. Same
     # shards, same runner, no artifacts; `gates` needs it so a red floor blocks the merge.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +107,7 @@ jobs:
   gates:
     needs: [tests, floor]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
@@ -232,6 +244,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
   vfbench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:

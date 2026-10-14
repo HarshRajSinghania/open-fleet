@@ -364,5 +364,78 @@ class TheAlertWorkflowCannotBeTrippedByAFork(unittest.TestCase):
                       "the manual drill path is gone, so the alert can no longer be proven")
 
 
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+# Contexts a PR author controls: interpolated into a `run:` script they become shell source.
+_TAINTED_EXPR_RE = re.compile(r"\$\{\{\s*github\.(base_ref|head_ref|event\.)")
+
+
+def _jobs(text):
+    """{job: [lines]} for the top-level `jobs:` map — stdlib only (no pyyaml on the runner)."""
+    jobs, current, in_jobs = {}, None, False
+    for line in text.splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if in_jobs and line and not line[0].isspace() and not line.startswith("#"):
+            in_jobs = False
+        if not in_jobs:
+            continue
+        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if m:
+            current = m.group(1)
+            jobs[current] = []
+        elif current:
+            jobs[current].append(line)
+    return jobs
+
+
+def _run_scripts(text):
+    """Every `run:` script body, inline or block scalar."""
+    scripts, lines = [], text.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)(?:- )?run:\s*(.*)$", line)
+        if not m:
+            continue
+        indent, rest = len(m.group(1)), m.group(2)
+        body = [] if rest in ("|", "|-", ">", ">-") else [rest]
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            body.append(nxt)
+        scripts.append((i + 1, "\n".join(body)))
+    return scripts
+
+
+class WorkflowsAreBoundedAndInjectionFree(unittest.TestCase):
+    def test_the_scan_sees_every_workflow(self):
+        self.assertGreaterEqual(len(WORKFLOWS), 10)
+        self.assertGreaterEqual(sum(len(_jobs(p.read_text(encoding="utf-8")))
+                                    for p in WORKFLOWS), 15)
+
+    def test_every_job_declares_a_timeout(self):
+        # Without one a hung job holds a runner for GitHub's 6-hour default.
+        for path in WORKFLOWS:
+            for job, body in _jobs(path.read_text(encoding="utf-8")).items():
+                with self.subTest(workflow=path.name, job=job):
+                    self.assertTrue(
+                        any(re.match(r"^    timeout-minutes:\s*\d+\s*$", ln) for ln in body),
+                        f"{path.name}:{job} has no job-level timeout-minutes")
+
+    def test_no_run_script_interpolates_a_pr_controlled_context(self):
+        for path in WORKFLOWS:
+            for lineno, script in _run_scripts(path.read_text(encoding="utf-8")):
+                with self.subTest(workflow=path.name, line=lineno):
+                    self.assertIsNone(
+                        _TAINTED_EXPR_RE.search(script),
+                        f"{path.name}:{lineno} interpolates a PR-controlled context into "
+                        "shell — pass it through env: and quote the variable")
+
+    def test_the_injection_scan_can_actually_see_one(self):
+        planted = ("jobs:\n  x:\n    steps:\n      - run: |\n"
+                   "          echo ${{ github.base_ref }}\n")
+        self.assertTrue(any(_TAINTED_EXPR_RE.search(s) for _, s in _run_scripts(planted)))
+        self.assertEqual(list(_jobs(planted)), ["x"])
+
+
 if __name__ == "__main__":
     unittest.main()

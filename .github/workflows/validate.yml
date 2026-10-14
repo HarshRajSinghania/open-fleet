@@ -41,6 +41,15 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           coverage --version
+      - name: Suite runs as a non-root user
+        # test_verify / test_verify_gate SKIP their ownership-boundary tests under euid 0
+        # (root owns every path by definition). GitHub-hosted runners run as `runner`, so CI
+        # exercises them; this step keeps it that way if the runner image ever changes.
+        run: |
+          if [ "$(id -u)" -eq 0 ]; then
+            echo "::error::the suite is running as root: ownership-boundary tests would skip silently"
+            exit 1
+          fi
       - name: Run suite shard without Gitleaks
         run: |
           if command -v gitleaks >/dev/null; then

@@ -1293,6 +1293,12 @@ def main():
         print(f"All {total} missions valid; three-layer separation holds; evals valid.")
         return 0
     print("Validation failed.")
+    if _run_report.is_shallow(ROOT):
+        # A shallow clone cannot resolve the commits run reports pin, so proven missions fail
+        # here through no fault of the catalog. Fail closed, but name the fix (install.sh
+        # refuses shallow clones up front with the same remedy).
+        print(f"NOTE: {ROOT} is a shallow clone (git clone --depth …); run-report pins need "
+              f"full history. Run `{_run_report.SHALLOW_REMEDY}` and re-run this check.")
     return 1
 
 

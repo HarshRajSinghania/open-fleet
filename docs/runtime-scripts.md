@@ -474,7 +474,9 @@ Usage: `quarantine_check.py [--root DIR] <--catalog | --mission NAME>`
 Exits: 0 nothing quarantined is in play · 2 violation · 3 cannot evaluate
 (unreadable or malformed deny-list, bad root) — a broken deny-list never reads as an
 empty one. A root with no `runtime/quarantine.json` is not a fleet catalog: exit 0
-with "no quarantine in force" on stderr (preflight runs in target repos).
+with "no quarantine in force" on stderr. Preflight never reads the list from the
+target repo in cwd — it resolves the fleet catalog ($ORCA_FLEET_ROOT, then
+$CLAUDE_PLUGIN_ROOT, then its own tree), so a target cannot shadow the deny-list.
 
 > Why: quarantine is a checked-in file, so it binds checkouts that contain it; it
 > cannot reach a running worker or a stale clone. It is the fast, reversible,

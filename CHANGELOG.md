@@ -6,6 +6,20 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Pack pins re-witnessed** (2026-10-14). gstack `v1.84.1.0` → `v1.91.101.0` (`47d639ab`),
+  addyosmani/agent-skills `0.6.9` → `0.6.13` (`aeac41d4`), mattpocock/skills `v1.2.3+9` →
+  `v1.3.1` (`24fe0ef7`), each read from a full-history clone and landed with its rug-pull review
+  under `docs/research/pin-reviews/`. All three are `changes-noted`; none widens a permission
+  past what the fleet already gates. Doctrine follows the upstream moves: matt dropped
+  `resolving-merge-conflicts` and renamed `CONTEXT.md` to `GLOSSARY.md`; a pack's "stop your
+  turn for approval" is a worker `ask` (`gate-classification`); a gstack `/ship` worker turns off
+  its early Greptile draft PR (`release`); `/cso` v3 needs its compiled launcher (harden-it);
+  `triage-findings` keeps the confidence gate and exclusions cso v3 dropped; review-it's addy
+  worker reports a mutation suspicion instead of running it. `pin_review.py` now puts hook
+  executables named by a `hook` token, setup/install scripts, and SKILL.md frontmatter
+  `hooks:`/`allowed-tools:` changes on the permission surface, and `.md.tmpl` sources in
+  instruction. Before this, those landed in `code` or `instruction` only.
+
 - **Trusted merge gate.** `verdict-gate.yml` runs on `workflow_run`, so GitHub loads it from
   `main`; it runs `main`'s `scripts/verdict_check.py --post-status` and posts the GO verdict as
   the `verdict-gate` commit status on the PR's current head. A `pull_request_review` run loads

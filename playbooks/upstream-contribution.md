@@ -38,7 +38,8 @@ alternative PR is maintainer-gated — offered first, opened on invitation, neve
 ## Etiquette (conformance is part of done)
 
 - Read `CONTRIBUTING`, the PR template, and the DCO/CLA requirement FIRST; conform (sign-off, commit
-  style, scope). A contribution that ignores house rules wastes a maintainer's time.
+  style, scope). A contribution that ignores house rules wastes a maintainer's time. The target's
+  PR template beats any pack's PR-body format (matt `pr` auto-triggers on a PR body).
 - Reference the issue; use a closing keyword ONLY on a concrete issue, NEVER on an RFC/meta/tracking
   issue (auto-closing a tracker the maintainers still use is presumptuous) — reference it instead.
 - The maintainer is the sole merge authority. Never self-merge, never `--admin`, never assume a merge.

@@ -15,9 +15,9 @@
   },
   "gstack": {
     "repo": "garrytan/gstack",
-    "commit": "71f6048e",
-    "version": "v1.84.1.0",
-    "witnessed": "2026-09-10",
+    "commit": "47d639abffa882b8cbb641d7d1dedf08ecada9ec",
+    "version": "v1.91.101.0",
+    "witnessed": "2026-10-14",
     "witness": "source",
     "aliases": [
       "gstack",
@@ -26,9 +26,9 @@
   },
   "addyosmani": {
     "repo": "addyosmani/agent-skills",
-    "commit": "be4e44a9fbc5e8df0beaefadbb28bd22ee61cc39",
-    "version": "0.6.9",
-    "witnessed": "2026-09-14",
+    "commit": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+    "version": "0.6.13",
+    "witnessed": "2026-10-14",
     "witness": "source",
     "aliases": [
       "addyosmani",
@@ -38,9 +38,9 @@
   },
   "mattpocock": {
     "repo": "mattpocock/skills",
-    "commit": "3cca18b",
-    "version": "v1.2.3+9",
-    "witnessed": "2026-09-10",
+    "commit": "24fe0ef7737efae15c87225755e9f6f5965e4888",
+    "version": "v1.3.1",
+    "witnessed": "2026-10-14",
     "witness": "source",
     "aliases": [
       "mattpocock",

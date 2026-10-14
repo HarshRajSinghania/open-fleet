@@ -25,14 +25,6 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
 - **Field-proof plan** — [`docs/runs/README.md`](docs/runs/README.md#field-proof-plan-212):
   per-mission targets, tiers, terminals, and blockers for advancing `doctrine-only` missions.
   A tier moves only through a recorded mission run, never a relabel.
-- **Upstream pack pins are stale** (noted 2026-10-14) — [`runtime/pins.json`](runtime/pins.json)
-  pins gstack `v1.84.1.0` (witnessed 2026-09-10), addyosmani/agent-skills `0.6.9` (2026-09-14) and
-  mattpocock/skills `v1.2.3+9` (2026-09-10), all `witness: source`. The 2026-10-14 doc review
-  reported gstack upstream at about `v1.91.x`; that figure was not re-read in-session (the
-  upstream repositories were not reachable from it), and the other two packs' upstream heads
-  were not checked. Pack pins move only through the upstream-adoption audit cadence named in
-  `pins.json` (`docs/research/2026-09-10-upstream-audit/`, a full-history clone read at the new
-  commit) — never by editing the number. The `orca` pin (v1.4.224, live, 2026-10-13) is current.
 - **Merge-gate identity is a settings step** (2026-10-14) — `verdict-gate.yml` now evaluates the
   GO verdict from `main` and posts the `verdict-gate` status, but branch protection still has to
   require it, from a GitHub App whose key sits in a `main`-only `verdict-gate` environment, in

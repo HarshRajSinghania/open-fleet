@@ -26,7 +26,7 @@ _spec.loader.exec_module(pr)
 class Classify(unittest.TestCase):
     def test_instruction_shapes(self):
         for path in ("skills/triage/SKILL.md", "AGENTS.md", "README.md",
-                     "prompts/system.txt", "docs/guide.prompt"):
+                     "prompts/system.txt", "docs/guide.prompt", "cso/SKILL.md.tmpl"):
             self.assertEqual(pr.classify(path), "instruction", path)
 
     def test_permission_shapes(self):
@@ -38,6 +38,31 @@ class Classify(unittest.TestCase):
     def test_code_shapes(self):
         for path in ("src/main.py", "lib/util.ts", "bin/tool"):
             self.assertEqual(pr.classify(path), "code", path)
+
+    def test_hook_and_installer_executables_are_surface(self):
+        # gstack 47d639ab shipped hooks as bin/ executables and installs via
+        # a root `setup` that writes settings; both used to land in `code`.
+        for path in ("bin/gstack-hook-check", "autoplan/bin/phase-publication-hook",
+                     "plan-ceo-review/bin/mode-handoff-hook.ts", "setup", "setup.ps1",
+                     "scripts/install.sh", "bin/gstack-capy-install"):
+            self.assertEqual(pr.classify(path), "permission-surface", path)
+
+    def test_hook_and_installer_tokens_spare_tests_and_prose(self):
+        for path, klass in (("test/autoplan-publication-hook.test.ts", "code"),
+                            ("test/helpers/install-fixture.ts", "code"),
+                            ("docs/install.md", "instruction"),
+                            ("qa/sections/browser-setup.md.tmpl", "instruction")):
+            self.assertEqual(pr.classify(path), klass, path)
+
+    def test_frontmatter_permission_keys(self):
+        text = ("---\nname: x\nallowed-tools:\n  - Read\n  - Bash\n"
+                "hooks:\n  PreToolUse:\n    - matcher: Read\n"
+                "description: d\n---\n# body\nhooks: not frontmatter\n")
+        self.assertEqual(pr.permission_keys(text), {
+            "allowed-tools": "allowed-tools:\n  - Read\n  - Bash",
+            "hooks": "hooks:\n  PreToolUse:\n    - matcher: Read",
+        })
+        self.assertEqual(pr.permission_keys("# no frontmatter\nhooks: x\n"), {})
 
     def test_hooks_win_over_markdown(self):
         # A Markdown file inside hooks/ ships beside executable hooks; it is
@@ -169,6 +194,31 @@ class Cli(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("café-guide.md", result.stdout)
             self.assertIn("### instruction (2)", result.stdout)
+
+    def test_skill_frontmatter_grant_joins_the_surface(self):
+        # A skill that adds a hook or a tool grant in its own frontmatter
+        # widens permissions though its path classes as instruction.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, second = make_pack(Path(tmp))
+            (repo / "SKILL.md").write_text(
+                "---\nname: demo\nallowed-tools:\n  - Bash\n---\n# skill v3\n")
+            (repo / "other").mkdir()
+            (repo / "other" / "SKILL.md").write_text(
+                "---\nname: other\ndescription: wording only\n---\n# o\n")
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t",
+                            "-c", "user.email=t@t.invalid", "commit", "-q",
+                            "-m", "grant"], check=True)
+            new = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True,
+                                 check=True).stdout.strip()
+            result = self.run_cli("--repo", str(repo), "--pack", "demo",
+                                  "--from", second, "--to", new)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("- `M SKILL.md (frontmatter: allowed-tools)`", result.stdout)
+            self.assertIn("### permission-surface (1)", result.stdout)
+            self.assertNotIn("other/SKILL.md (frontmatter", result.stdout)
 
     def test_bad_commit_cannot_evaluate(self):
         with tempfile.TemporaryDirectory() as tmp:

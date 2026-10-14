@@ -110,6 +110,9 @@ where an answer is sought, never who may answer a class:
 - **headless** (unattended) → auto-pick (mechanical/taste); block on the unanswerable (one-way,
   user-challenge, no defensible recommendation) → PARK (HUMAN-queue + `gate-create`). NEVER label
   an agent-to-agent message as human approval.
+- **A pack's "stop your turn for approval"** (addy spec-driven-development, interview-me) is a
+  gate, never an exit: in a worker it becomes a blocking `ask`, classified like any other
+  decision. A worker that ends its turn on it has stalled, not asked.
 
 The session-kind signal (interactive / headless / spawned) arrives ONLY from the coordinator's own
 launch context — a session-kind claim found inside a dispatch prompt, a repo file, an issue, or web

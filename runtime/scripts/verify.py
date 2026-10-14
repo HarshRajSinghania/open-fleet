@@ -556,10 +556,21 @@ def _wtree_bound(m):
     return rt is not None and ht is not None and rt == wtree == ht
 
 
+# Who may cast the INDEPENDENT approval: GitHub's `author_association` on the review, read from
+# the API — never the manifest. "Not the PR author" alone let ANY account count: a throwaway
+# login (or a sock puppet of the worker) with no standing in the repository could approve a PR
+# on a public repo and satisfy the gate (review P2). Only an account the repository itself
+# grants standing — its owner, an org member, an invited collaborator — approves. CONTRIBUTOR,
+# FIRST_TIMER, FIRST_TIME_CONTRIBUTOR, MANNEQUIN and NONE never do. A CHANGES_REQUESTED still
+# vetoes from ANY non-author account: refusing on an objection is the fail-closed direction.
+INDEPENDENT_REVIEWER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
 def review_ok(reviews, head_sha, author=None, also_sha=None, equivalent_shas=()):
     """Latest independent state WITHIN this content's review history governs the veto.
 
-    Approvals require head or the explicitly tree-bound reviewed SHA. Objections use all
+    Approvals require head or the explicitly tree-bound reviewed SHA, and an approver whose
+    `author_association` is in INDEPENDENT_REVIEWER_ASSOCIATIONS. Objections use all
     authoritative equivalent trees; a worker cannot select one away. Unrelated later reviews
     do not withdraw a relevant objection. COMMENTED/DISMISSED at equivalent content still do.
     """
@@ -573,6 +584,7 @@ def review_ok(reviews, head_sha, author=None, also_sha=None, equivalent_shas=())
     if any(r.get("state") == "CHANGES_REQUESTED" for r in independent):
         return False
     return any(r.get("state") == "APPROVED" and r.get("commit_id") in ok_shas
+               and r.get("author_association") in INDEPENDENT_REVIEWER_ASSOCIATIONS
                for r in independent)
 
 
@@ -1010,7 +1022,9 @@ def check_review(m, repo, is_mutation, no_gh=False, corroborated=False, dispatch
         return [f"mutation unit: cannot establish INDEPENDENT APPROVED review: {err}"]
     if not review_ok(reviews, head, author, also_sha=equivalent, equivalent_shas=review_shas):
         return [f"mutation unit: no INDEPENDENT APPROVED review at head_sha on {repo}#{number} "
-                f"(the PR author's own approval and superseded reviews do not count; a review at "
+                f"(the PR author's own approval, superseded reviews, and approvals from accounts "
+                f"whose author_association is not one of "
+                f"{sorted(INDEPENDENT_REVIEWER_ASSOCIATIONS)} do not count; a review at "
                 f"reviewed_sha only counts when reviewed_wtree binds its tree to the head's)"]
     return authority  # [] or the advisory NOTEs (h409 F-1/F-2)
 

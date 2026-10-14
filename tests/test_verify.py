@@ -455,27 +455,58 @@ class ReviewCheck(unittest.TestCase):
         # definition-of-done oracle that is the wrong default: a reviewer saying "not done" about
         # this exact content is evidence, and a second opinion does not erase it.
         reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "H", "user": {"login": "bob"}},
-                   {"state": "APPROVED", "commit_id": "H", "user": {"login": "carol"}}]
+                   {"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "carol"}}]
         self.assertFalse(verify.review_ok(reviews, "H", author="alice"))
 
     def test_a_superseded_changes_requested_does_not_block(self):
         # The same reviewer came back and approved — latest-per-reviewer already handles it, and
         # the block must not resurrect a state its author withdrew.
         reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "H", "user": {"login": "bob"}},
-                   {"state": "APPROVED", "commit_id": "H", "user": {"login": "bob"}}]
+                   {"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "bob"}}]
         self.assertTrue(verify.review_ok(reviews, "H", author="alice"))
 
     def test_a_changes_requested_at_an_older_head_does_not_block(self):
         # The block is about THIS content. A request against a head the author has since moved
         # past is not a standing objection to what is being graded.
         reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "OLD", "user": {"login": "bob"}},
-                   {"state": "APPROVED", "commit_id": "H", "user": {"login": "carol"}}]
+                   {"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "carol"}}]
         self.assertTrue(verify.review_ok(reviews, "H", author="alice"))
 
     def test_review_ok_pure(self):
-        self.assertTrue(verify.review_ok([{"state": "APPROVED", "commit_id": "H"}], "H"))
+        self.assertTrue(verify.review_ok([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H"}], "H"))
         self.assertFalse(verify.review_ok([{"state": "COMMENTED", "commit_id": "H"}], "H"))
-        self.assertFalse(verify.review_ok([{"state": "APPROVED", "commit_id": "OLD"}], "H"))
+        self.assertFalse(verify.review_ok([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "OLD"}], "H"))
+
+    def test_an_approval_needs_standing_in_the_repository(self):
+        # Review P2: "any login that is not the PR author" let a throwaway account approve.
+        # Only OWNER/MEMBER/COLLABORATOR approvals count; a missing association is no standing.
+        self.assertEqual(verify.INDEPENDENT_REVIEWER_ASSOCIATIONS,
+                         frozenset({"OWNER", "MEMBER", "COLLABORATOR"}))
+        for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+            with self.subTest(assoc=assoc):
+                self.assertTrue(verify.review_ok([{"state": "APPROVED", "commit_id": "H",
+                                                   "author_association": assoc,
+                                                   "user": {"login": "carol"}}], "H", author="alice"))
+        for assoc in ("CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN",
+                      "NONE", None, "member"):
+            with self.subTest(assoc=assoc):
+                review = {"state": "APPROVED", "commit_id": "H", "user": {"login": "mallory"}}
+                if assoc is not None:
+                    review["author_association"] = assoc
+                self.assertFalse(verify.review_ok([review], "H", author="alice"))
+
+    def test_the_author_is_excluded_whatever_their_association(self):
+        self.assertFalse(verify.review_ok([{"state": "APPROVED", "commit_id": "H",
+                                            "author_association": "OWNER",
+                                            "user": {"login": "alice"}}], "H", author="alice"))
+
+    def test_an_objection_from_an_account_without_standing_still_vetoes(self):
+        # Refusing on an objection is the fail-closed direction; standing gates approvals only.
+        reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "H", "author_association": "NONE",
+                    "user": {"login": "mallory"}},
+                   {"state": "APPROVED", "commit_id": "H", "author_association": "MEMBER",
+                    "user": {"login": "carol"}}]
+        self.assertFalse(verify.review_ok(reviews, "H", author="alice"))
 
     def test_mutation_without_pr_number_fails_closed(self):
         m = {"unit": "ship-it", "head_sha": "H"}
@@ -867,7 +898,7 @@ class ReviewLookupBinding(unittest.TestCase):
         return {"unit": "ship-it", "head_sha": "H", "pr": {"number": 7}}
 
     def test_approved_at_head_passes(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "carol"}}], None)
         self.assertEqual(verify.check_review(self._m(), "o/r", True), [])
 
@@ -877,7 +908,7 @@ class ReviewLookupBinding(unittest.TestCase):
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_approval_at_wrong_sha_fails(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "OLD",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "OLD",
                                                   "user": {"login": "carol"}}], None)
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
@@ -886,19 +917,19 @@ class ReviewLookupBinding(unittest.TestCase):
         self.assertTrue(any("cannot fetch" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_author_self_approval_rejected(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "alice"}}], None)
         verify.fetch_pr_author = lambda repo, n: "alice"
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_superseded_approval_not_counted(self):
         verify.fetch_reviews = lambda repo, n: (
-            [{"state": "APPROVED", "commit_id": "H", "user": {"login": "bob"}},
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "bob"}},
              {"state": "COMMENTED", "commit_id": "H", "user": {"login": "bob"}}], None)
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_independent_approval_passes_when_author_differs(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "carol"}}], None)
         verify.fetch_pr_author = lambda repo, n: "alice"
         self.assertEqual(verify.check_review(self._m(), "o/r", True), [])
@@ -906,7 +937,7 @@ class ReviewLookupBinding(unittest.TestCase):
     def test_unresolved_author_fails_closed(self):
         # #142: if the PR-author lookup fails, we cannot exclude a self-approval — fail closed,
         # never let the author's own approval satisfy the independent-review gate.
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "alice"}}], None)
         verify.fetch_pr_author = lambda repo, n: None
         res = verify.check_review(self._m(), "o/r", True)
@@ -990,12 +1021,12 @@ class ReviewPagination(unittest.TestCase):
     def test_fetches_all_pages_31_review_fixture(self):
         # 31 reviews over two pages; the only APPROVED is review #31 — invisible on page 1 alone.
         res = self._verdict_with_pages(self._filler(30),
-                                       [{"state": "APPROVED", "commit_id": "H",
+                                       [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                          "user": {"login": "carol"}}])
         self.assertEqual([e for e in res if not e.startswith("NOTE:")], [])
 
     def test_page2_changes_requested_supersedes_page1_approval(self):
-        page1 = self._filler(29) + [{"state": "APPROVED", "commit_id": "H",
+        page1 = self._filler(29) + [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                      "user": {"login": "carol"}}]
         page2 = [{"state": "CHANGES_REQUESTED", "commit_id": "H",
                   "user": {"login": "carol"}}]
@@ -1004,7 +1035,7 @@ class ReviewPagination(unittest.TestCase):
 
     def test_approval_only_on_page2_passes(self):
         res = self._verdict_with_pages(self._filler(30),
-                                       [{"state": "APPROVED", "commit_id": "H",
+                                       [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                          "user": {"login": "carol"}}])
         self.assertEqual([e for e in res if not e.startswith("NOTE:")], [])
 
@@ -1529,7 +1560,7 @@ class MutationFixture(RepoCase):
         self._orig_r = verify.fetch_reviews
         self._orig_a = verify.fetch_pr_author
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": self.head_sha,
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": self.head_sha,
               "user": {"login": "carol"}}], None)
         verify.fetch_pr_author = lambda repo_, n: "alice"  # the PR author != the reviewer
 
@@ -1679,7 +1710,7 @@ class EndToEndMutationGreen(MutationFixture):
         manifest["pr"]["reviewed_sha"] = head
         Path(path).write_text(json.dumps(manifest), encoding="utf-8")
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": head, "user": {"login": "carol"}}], None)
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": head, "user": {"login": "carol"}}], None)
         rc, _out, err = self._run_main(path, "--lighting", "dark-eligible", "--execute-nc",
                                        "--nc-command", self.proof_cmd)
         self.assertEqual(rc, 2)
@@ -1974,7 +2005,7 @@ class EndToEndMutationGreen(MutationFixture):
         manifest["pr"]["reviewed_sha"] = head
         Path(path).write_text(json.dumps(manifest), encoding="utf-8")
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": head, "user": {"login": "carol"}}], None)
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": head, "user": {"login": "carol"}}], None)
         rc, out, err = self._run_main(path, "--lighting", "dark-eligible", "--execute-nc",
                                       "--nc-command", self.proof_cmd)
         self.assertEqual(rc, 0, err)
@@ -2719,7 +2750,7 @@ class EquivalentReviewVeto(unittest.TestCase):
     def test_equivalent_heads_share_objections_and_withdrawals(self):
         m = {'head_sha': 'H', 'pr': {'number': 7, 'reviewed_sha': 'R'}}
         def review(who, state, sha):
-            return {'user': {'login': who}, 'state': state, 'commit_id': sha}
+            return {'user': {'login': who}, 'state': state, 'commit_id': sha, 'author_association': 'MEMBER'}
         for approval, objection in (('H', 'R'), ('R', 'H')):
             reviews = [review('carol', 'APPROVED', approval),
                        review('bob', 'CHANGES_REQUESTED', objection)]
@@ -2856,7 +2887,7 @@ class CoordinatorOracleScope(RepoCase):
         path = self.write('manifest.json', json.dumps(m))
         with mock.patch.object(verify, 'fetch_pr_author', return_value='author'), \
                 mock.patch.object(verify, 'fetch_reviews', return_value=([
-                    {'user': {'login': 'reviewer'}, 'state': 'APPROVED', 'commit_id': self.head}], None)):
+                    {'user': {'login': 'reviewer'}, 'state': 'APPROVED', 'author_association': 'MEMBER', 'commit_id': self.head}], None)):
             result, err = verify.verify(path, source, digest, repo='o/r', unit_class='mutation',
                                         lighting='lit', execute_nc=True, nc_command=self.cmd)
         self.assertIsNone(err)
@@ -3313,7 +3344,7 @@ class AuthoritativeReviewHistory(RepoCase):
         self.unrelated = self.commit()
 
     def review(self, who, state, sha):
-        return {'user': {'login': who}, 'state': state, 'commit_id': sha}
+        return {'user': {'login': who}, 'state': state, 'commit_id': sha, 'author_association': 'MEMBER'}
 
     def check(self, reviews, selected=None):
         m = {'head_sha': self.head, 'pr': {'number': 7, 'reviewed_sha': selected or self.head}}
@@ -3512,7 +3543,7 @@ class CrossRepoRoots(RepoCase):
 
         self._orig_r, self._orig_a = verify.fetch_reviews, verify.fetch_pr_author
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": self.head_sha, "user": {"login": "carol"}}], None)
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": self.head_sha, "user": {"login": "carol"}}], None)
         verify.fetch_pr_author = lambda repo_, n: "alice"
         self.addCleanup(self._restore_gh)
         self.addCleanup(self._reset_roots)
@@ -4200,7 +4231,7 @@ class ReviewAuthorityPinnedBeforeTheControl(MutationFixture):
         head_file = root / "head"
         stub = ("#!/bin/sh\n"
                 f"echo \"DROPPED-GH ARGV: $*\" >> {shlex.quote(str(self.dropped_log))}\n"
-                "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"'\"$HEAD\"'\","
+                "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"'\"$HEAD\"'\","
                 "\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         self.write("check.py",
                    "import os, pathlib, stat\n"
@@ -4273,7 +4304,7 @@ class ReviewAuthorityPinnedBeforeTheControl(MutationFixture):
         # A gh already sitting in the writable dir before the run answers (through its pinned
         # absolute path) — but the verdict RECORDS that the authority was worker-writable.
         (self.droppable / "gh").write_text(  # the sha is baked in: gh's env is scrubbed (h409 R3)
-            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\""
+            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\""
             + self.head_sha + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         (self.droppable / "gh").chmod(0o755)
         rc, out, err = self._attack()
@@ -4411,7 +4442,7 @@ class AuthorityCustodyIsAProbeNotAName(MutationFixture):
     def _plant(self, where):
         where.write_text(
             "#!/bin/sh\n" f"echo \"PLANTED-GH ARGV: $*\" >> {shlex.quote(str(self.consulted))}\n"
-            "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"" + self.head_sha
+            "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"" + self.head_sha
             + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         where.chmod(0o755)
 
@@ -4526,7 +4557,7 @@ class EveryHopAndEveryOwnerIsProbed(MutationFixture):
         shutil.rmtree(d, ignore_errors=True)
 
     def _forged_review(self):
-        return ("case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"" + self.head_sha
+        return ("case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"" + self.head_sha
                 + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
 
     def _plant_stub(self, where):
@@ -4697,7 +4728,7 @@ class EveryPostControlAuthorityIsPinned(MutationFixture):
         realgh = root / "realgh"        # a gh that approves head (the sha baked in: R3 scrubs env)
         realgh.mkdir()
         (realgh / "gh").write_text(
-            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"" + self.head_sha
+            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"" + self.head_sha
             + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         (realgh / "gh").chmod(0o755)
         self._env = {"PATH": f"{self.droppable}{os.pathsep}{realgh}{os.pathsep}{self.tools}"}

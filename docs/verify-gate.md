@@ -96,7 +96,11 @@ worker-set; anything else in the environment is ignored):
   are the same worker's, so a determined unit can name some other docs-only range. That is the
   [trust boundary](#trust-boundary) result, not a gap this check can close. What it buys is
   that the cheap downgrade fails and the expensive one is labelled.
-- `ORCA_REPO` — `owner/name` for the independent GitHub review lookup. **Required on the sound
+- `ORCA_REPO` — `owner/name` for the independent GitHub review lookup. An approval counts only
+  from a non-author account whose review `author_association` is `OWNER`, `MEMBER` or
+  `COLLABORATOR` (`INDEPENDENT_REVIEWER_ASSOCIATIONS` in verify.py) — a throwaway account with no
+  standing in the repository cannot approve; a `CHANGES_REQUESTED` from any non-author account
+  still blocks. **Required on the sound
   surfaces** (`ORCA_PROVENANCE` set, or an enforcement-mode run): without it verify.py fails the
   review leg closed rather than infer the repository from `origin` — a remote the worker, and every
   sibling worktree sharing `.git`, can rewrite. On the native lane the inference stands and the

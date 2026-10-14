@@ -828,7 +828,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage.
 
 Prints a working-tree CONTENT fingerprint (a git tree hash). Builds a temp index, stages
 the full tree into it, prints `git write-tree` of that index — the real index is never
-touched. Source `runtime/scripts/wtree.sh:1-30`; exercised by `tests/test_evidence_run.py`.
+touched. Source `runtime/scripts/wtree.sh:1-39`; exercised by `tests/test_evidence_run.py`.
 
 Usage: `wtree.sh [repo-dir]` (default: current directory).
 
@@ -840,6 +840,13 @@ valid once committed; content-preserving rebase/amend/squash does not change it 
 The temp index seeds from a copy of the real one (stat cache preserved, mtime restored
 against racy-index reads), falling back to `read-tree HEAD` when the restore fails.
 Staged blobs enter the object store as unreachable objects until gc, like `git stash -u`.
+
+Ignored files are out by contract: the value is compared to `<head_sha>^{tree}`, and no commit
+tree can hold an ignored file, so including them would make every record stale. A run that
+leaned on ignored content (`.env`, a stale build artifact, a file hidden by
+`.git/info/exclude` or a global `core.excludesFile`) still fingerprints as the committed
+tree — the fingerprint binds committable content only, and the coordinator's clean-env re-run
+at `head_sha` is what catches such a pass.
 
 Exits: 0 prints the hash · 1 outside a git repo, or no commits and no usable index
 (callers fail closed on nonzero — never treat it as an empty fingerprint).

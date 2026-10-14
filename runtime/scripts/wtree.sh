@@ -25,6 +25,15 @@
 # CONTENT of untracked, non-ignored files enters .git/objects until gc — the same property
 # `git stash -u` has).
 #
+# IGNORED FILES ARE OUT BY CONTRACT, and that is a stated limit, not an oversight. The consumer
+# (verify.py check_commands, evidence-manifest.md) compares this value to `<head_sha>^{tree}`, a
+# commit's tree, and an ignored file can never be in one: hashing ignored files in would make every
+# record STALE, and would re-hash node_modules/ and build output on every run. The cost: a run whose
+# outcome depended on ignored content (.env, a stale build artifact, a file hidden by a local
+# .git/info/exclude or global core.excludesFile) still fingerprints as the committed tree. This
+# value binds a run to COMMITTABLE content only; the coordinator's clean-env re-run at head_sha is
+# what catches a pass that leaned on anything else.
+#
 # Usage: wtree.sh [repo-dir]        # default: the current directory
 # Exit 1 outside a git repo, or in a repo with no commits and no usable index — callers MUST treat
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.

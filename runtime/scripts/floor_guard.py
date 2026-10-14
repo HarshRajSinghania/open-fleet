@@ -125,7 +125,6 @@ TEST_PATH = re.compile(r"(^|/)(tests?|spec|__tests__)/|\.(test|spec)\.|_test\.|(
 EXCEPTION_ROW = re.compile(r"^\s*\|\s*[WE]\d+\s*\|")
 EXCEPTIONS_HEADING = re.compile(r"^\s*#{1,6}\s+.*\bexceptions?\b", re.IGNORECASE)
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
-HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 # Frozen guard surface (CONSTRAINTS.md "Guard surface", Q4-confirmed, plus the
 # D9-flagged .coveragerc fail_under): the tool-config the bar stands on. A diff
@@ -157,6 +156,17 @@ GUARD_SURFACE_KEYS = (
 )
 
 DEFAULT_BASES = ("origin/main", "origin/master", "main", "master")
+
+
+def _sibling(name):
+    """Load a runtime/scripts sibling by path (no sys.path edits)."""
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_diffparse = _sibling("diffparse")
 
 
 class GuardError(Exception):
@@ -246,31 +256,37 @@ def collect_diff(repo, mb):
 
 
 def parse_diff(diff_text):
-    """Split a unified diff into (added, removed) lists of (path, lineno, text)."""
+    """Split a unified diff into (added, removed) lists of (path, lineno, text).
+
+    Hunk-counted (diffparse.records): a removed content line whose text starts
+    `-- ` is `--- ...` on the wire, and reading it as a file header used to move
+    every later finding in the hunk onto a file named by that content. A diff
+    whose hunks do not add up is a could-not-run, never a partial read.
+    """
     added, removed = [], []
     new_path = old_path = ""
     new_no = old_no = 0
-    for line in diff_text.split("\n"):
-        if line.startswith("--- "):
-            old_path = strip_prefix(line[4:])
-            continue
-        if line.startswith("+++ "):
-            new_path = strip_prefix(line[4:])
-            continue
-        m = HUNK.match(line)
-        if m:
-            old_no = int(m.group(1))
-            new_no = int(m.group(3))
-            continue
-        if line.startswith("+"):
-            added.append((new_path or old_path, new_no, line[1:]))
-            new_no += 1
-        elif line.startswith("-"):
-            removed.append((old_path or new_path, old_no, line[1:]))
-            old_no += 1
-        elif line.startswith(" "):
-            new_no += 1
-            old_no += 1
+    try:
+        for kind, line, match in _diffparse.records(diff_text):
+            if kind == "header":
+                if line.startswith("--- "):
+                    old_path = strip_prefix(line[4:])
+                elif line.startswith("+++ "):
+                    new_path = strip_prefix(line[4:])
+            elif kind == "hunk":
+                old_no = int(match.group(1))
+                new_no = int(match.group(3))
+            elif kind == "+":
+                added.append((new_path or old_path, new_no, line[1:]))
+                new_no += 1
+            elif kind == "-":
+                removed.append((old_path or new_path, old_no, line[1:]))
+                old_no += 1
+            elif kind == " ":
+                new_no += 1
+                old_no += 1
+    except ValueError as err:
+        raise GuardError(f"diff is not a well-formed unified diff: {err}") from err
     return added, removed
 
 

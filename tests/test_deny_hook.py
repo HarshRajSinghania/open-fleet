@@ -1563,6 +1563,23 @@ class TestScriptShape(unittest.TestCase):
             capture_output=True, text=True).stdout)
         self.assertEqual(self._verify(block).returncode, 0)
 
+    def test_verify_settings_accepts_match_all_matchers(self):
+        # Matchers are regexes: `.*` (and the documented bare `*`) cover
+        # every tool, so an operator who registered that way is armed —
+        # refusing the spawn would punish a valid wiring (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        for matcher in (".*", "*", "Bash|Edit|Write"):
+            with self.subTest(matcher=matcher):
+                block["hooks"]["PreToolUse"][0]["matcher"] = matcher
+                self.assertEqual(self._verify(block).returncode, 0)
+        with self.subTest(matcher="invalid regex"):
+            block["hooks"]["PreToolUse"][0]["matcher"] = "(["
+            self.assertEqual(self._verify(block).returncode, 2)
+
     def test_verify_settings_refuses_a_merely_named_hook(self):
         # Naming the path is not registering the hook: a settings file that
         # mentions deny-hook.sh outside hooks.PreToolUse arms nothing, and the

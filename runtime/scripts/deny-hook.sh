@@ -176,6 +176,7 @@ if [ "${1:-}" = "--verify-settings" ]; then
   python3 - "$2" <<'PYEOF'
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -194,13 +195,17 @@ except (OSError, UnicodeDecodeError, ValueError) as err:
     sys.exit(refuse(f"settings unreadable ({err})"))
 
 def covers(matcher, tool):
-    # Claude matchers are regexes; the fleet registration is a |-union of
-    # tool names. Accept exact alternatives (anchors/parens stripped) or *.
-    for alt in str(matcher).split("|"):
-        token = alt.strip().strip("^$()")
-        if token in (tool, "*"):
-            return True
-    return False
+    # Claude matchers are regexes tested against the tool name; a bare `*`
+    # is the documented match-all spelling. Judge the pattern itself — a
+    # valid `.*` covers every tool and must not refuse a spawn; an invalid
+    # pattern arms nothing (PR #569 review).
+    matcher = str(matcher)
+    if matcher.strip() == "*":
+        return True
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return False
 
 
 entries = (settings.get("hooks") or {}).get("PreToolUse") or []

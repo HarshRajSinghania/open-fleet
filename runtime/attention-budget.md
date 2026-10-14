@@ -62,10 +62,10 @@ the wave to the recorded WIP cap, not to a quota check — the quota check does 
 
 Every mutating fleet run from 2026-08-28 forward records one row per dispatch wave in its `docs/runs/` report, checked
 by `run_report.py` (#365, #389): its waves are `1`…`<n>` of the `RUN:` header's `waves=<n>`, each with exactly one table
-row carrying every Row cell below (metric values digit-led). The rows are read only under an ATX heading whose text
-begins `WIP-curve protocol row` as whole words (docs/runs/TEMPLATE.md), up to the next heading and outside fenced code;
-a row anywhere else — a fenced example, a deviations table, a look-alike heading — is not read (#387). Anything less
-does not bind.
+row carrying every Row cell below (metric values digit-led). The rows are read only
+under an ATX heading whose text begins `WIP-curve protocol row` as whole words (docs/runs/TEMPLATE.md), up to the next
+heading and outside fenced code; a row anywhere else — a fenced example, a deviations table, a look-alike heading — is
+not read (#387). Anything less does not bind.
 
 | Metric | Row cell | Definition |
 |---|---|---|

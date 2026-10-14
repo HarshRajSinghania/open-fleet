@@ -38,6 +38,16 @@
 #      that it disables the --force-with-lease checks
 #   4. `orca orchestration reset` — one command that discards a whole fleet's
 #      dispatch state
+#   5. an off-repo write (`gh pr|issue|release <write-verb>`, or `gh api` with
+#      a write method/field) NOT preceded in the same command by its egress
+#      receipt (`egress.py write … &&`). The receipt is free and mechanical,
+#      so there is no legitimate unreceipted form to ask about; the denial
+#      names the governed path. Doctrine: merge-serialization.md (#368),
+#      enforced here since #561. Plain `git push` is out of scope (branch
+#      pushes are evidenced by PR head SHAs, and the force rules above
+#      already govern their dangerous forms). The receipt segment is matched
+#      as text: mentioning egress.py in an argument reads as receipted, the
+#      same accepted limit as every rule here.
 # Git global options between `git` and the subcommand (-C, -c, --git-dir and
 # kin) are stripped before any of this is judged — `git -C /x push --force` is
 # the push it names (#297). A deletion that spares the default branch asks
@@ -818,10 +828,16 @@ set -- $_SEGS
 set +f
 IFS=$_OLDIFS
 
+_EGRESS_SEEN=0
 for _SEG in "$@"; do
   _SEG_N=$(norm_ws "$_SEG")
   CMD=$(strip_git_opts "$(strip_prefix "$_SEG_N")")
   [ -n "$(printf '%s' "$CMD" | tr -d '[:space:]')" ] || continue
+  # Rule 5 bookkeeping: an egress receipt segment arms the sends AFTER it in
+  # the same command (the receipt is appended before the send, #368).
+  if has '(^|[[:space:]/])egress\.py[[:space:]]+write([[:space:]]|$)'; then
+    _EGRESS_SEEN=1
+  fi
   # 1. Recursive delete of a root-class target, or --no-preserve-root anywhere.
   if has '^[[:space:]]*(sudo[[:space:]]+)?rm[[:space:]]' \
     && has '(^|[[:space:]])(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)([[:space:]]|$)'; then
@@ -947,6 +963,21 @@ for _SEG in "$@"; do
   # 4. Fleet-wide orchestration reset.
   if has '^[[:space:]]*(sudo[[:space:]]+)?orca(-ide)?[[:space:]]+orchestration[[:space:]]+reset([[:space:]]|$)'; then
     decide deny "deny-hook[HIGH]: 'orca orchestration reset' discards the whole fleet's dispatch state. A worker never resets the orchestration it runs inside."
+    exit 0
+  fi
+
+  # 5. Off-repo write without its egress receipt in the same command (#561).
+  _OFFREPO=0
+  if has '^[[:space:]]*(sudo[[:space:]]+)?gh[[:space:]]+(pr|issue|release)[[:space:]]+(create|merge|comment|review|close|reopen|edit|delete|upload|ready|pin|unpin|lock|unlock|transfer)([[:space:]]|$)'; then
+    _OFFREPO=1
+  elif has '^[[:space:]]*(sudo[[:space:]]+)?gh[[:space:]]+api([[:space:]]|$)'; then
+    if has '(^|[[:space:]])(-X|--method)[[:space:]]*=?[[:space:]]*(POST|PUT|PATCH|DELETE)([[:space:]]|$)' \
+      || has '(^|[[:space:]])(-[fF]|--field|--raw-field|--input)([[:space:]]|=|$)'; then
+      _OFFREPO=1
+    fi
+  fi
+  if [ "$_OFFREPO" -eq 1 ] && [ "$_EGRESS_SEEN" -ne 1 ]; then
+    decide deny "deny-hook[HIGH]: off-repo write without its egress receipt. Precede the send in the same command — egress.py write … && <this gh command> — so what left the machine is on the hash-chained record (merge-serialization.md, #368). The receipt comes first: the send may be the last thing this process does."
     exit 0
   fi
 done

@@ -117,7 +117,7 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-80`;
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-108`;
 behavior pinned by `tests/test_deny_hook.py`.
 
 Usage: hook mode reads stdin (no arguments); `deny-hook.sh --settings <worktree>` prints
@@ -128,7 +128,10 @@ Flags: `--help`, `--settings`.
 HIGH tier denies (never asks) for Bash: recursive delete rooted at `/`, `~`, `$HOME`, or
 `/*` (or carrying `--no-preserve-root`); force-push to the default branch (including the
 `+main` refspec and outright deletion forms); `git push --force` without an effective
-`--force-with-lease`; `orca orchestration reset`. An effective `--force-with-lease` exempts
+`--force-with-lease`; `orca orchestration reset`; and an off-repo write (`gh pr|issue|release`
+write verbs, or `gh api` with a write method/field) not preceded in the same command by
+its `egress.py write` receipt (#561 — reads stay free; a receipt after the send does
+not count). An effective `--force-with-lease` exempts
 a force-push but never a deletion. The Never list asks instead: live-prod mutation,
 credential provisioning, destructive teardown, unpinned remote execution, publishing,
 history-discarding local git. When `ORCA_UNIT_WORKTREE` is set, writes outside it deny —
@@ -210,12 +213,15 @@ Content-free, hash-chained receipts for everything the fleet sends off-repo. One
 object per line in `.orca/egress.jsonl` (mode 0600), appended BEFORE the send. Source
 `runtime/scripts/egress.py:1-73`; behavior pinned by `tests/test_egress.py`.
 
-Status: doctrine names it (`egress.py write ... && <send>`), but no automated sink calls
-it yet — receipts are written only by a coordinator following the policy by hand.
+Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
+refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
+chain head (`head`, recorded in the loop-log; `verify --expect-head` at the next
+close). Where the hook is not wired, receipts remain coordinator discipline.
 
-Usage: `egress.py [--ledger PATH] <write|verify|grants> ...`
+Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
-Subcommands: `write`, `verify`, `grants`.
+Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
+`grants`.
 
 Flags: `--ledger` (default `$ORCA_EGRESS_LEDGER` or `.orca/egress.jsonl`). `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,

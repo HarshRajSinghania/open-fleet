@@ -1547,5 +1547,47 @@ class TestScriptShape(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
 
+class TestEgressReceiptRule(HookBase):
+    """#561: an off-repo write must be preceded, in the same command, by its
+    egress receipt. Reads stay free; a receipt AFTER the send does not count
+    (the send may be the last thing the process does)."""
+
+    RECEIPT = ("runtime/scripts/egress.py write --sink pr-open --host github.com "
+               "--payload-class pr-body --consent grant:pr-open-on-base")
+
+    def test_unreceipted_writes_deny(self):
+        for command in (
+            "gh pr create --title x",
+            "gh pr merge 12 --merge",
+            "gh issue close 34",
+            "gh issue comment 1 --body done",
+            "gh pr review 9 --comment --body GO",
+            "gh release create v1.0.0",
+            "gh api -X POST repos/o/r/issues -f title=x",
+            "gh api repos/o/r/issues -f title=x",
+            "cd repo && gh pr create --fill",
+            f"gh pr create --fill && {self.RECEIPT}",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+                self.assertIn("egress receipt", block["permissionDecisionReason"])
+
+    def test_receipted_writes_and_reads_allow(self):
+        for command in (
+            f"{self.RECEIPT} && gh pr create --fill",
+            f"{self.RECEIPT} && gh issue close 34",
+            "gh pr list --state open",
+            "gh pr view 12 --json state",
+            "gh api repos/o/r/pulls/12 --jq .state",
+            "gh issue list",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(
+                    self.decision(self.fire(event("Bash", command=command))),
+                    command)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -40,9 +40,12 @@ asserted.
 ### 2. Network — what a worker can reach
 
 Today: no egress proxy and no default-deny; a worker's network is the host's. Off-repo
-writes are meant to be receipted first (`egress.py`, #368) — forensic, content-free,
-hash-chained — but no sink calls it yet (#561), and receipts record sends, they do not
-gate them.
+writes are receipted first (`egress.py`, #368) — forensic, content-free, hash-chained.
+Since #561 the deny-hook refuses an unreceipted `gh` write wherever the hook is wired
+(worker sessions; coordinator sessions whose settings register it), and run close
+anchors the chain head in committed records. Where the hook is not wired, receipting
+remains coordinator discipline checked at close — receipts record sends; only the hook
+gates them, and nobody should mistake the ledger for an exfiltration control.
 
 Residue: exfiltration resistance rests on review of diffs and the deny-hook, not on a
 network boundary. Destination allowlisting is a platform (Orca/host) capability; the

@@ -282,6 +282,23 @@ def cmd_verify(args):
     return EXIT_OK
 
 
+def cmd_head(args):
+    """Print the chain head for anchoring off the writer (#561).
+
+    Verifies first: a head taken from a broken chain would anchor the
+    tampering. Run close records this value (conductor-close.md) and the
+    next close passes the previous one to verify --expect-head.
+    """
+    path = ledger_path(args.ledger)
+    ok, count, broken, reason = verify_ledger(path)
+    if not ok:
+        print(f"egress: TAMPER at {path}:{broken} — {reason} ({count} line(s) read)",
+              file=sys.stderr)
+        return EXIT_FAIL_CLOSED
+    print(head_digest(path) or "(empty)")
+    return EXIT_OK
+
+
 def cmd_grants(args):
     path = ledger_path(args.ledger)
     grants = {}
@@ -338,6 +355,8 @@ def build_parser():
                    help="the head digest last recorded OFF this writer. Without it the chain is "
                         "only checked against itself, which a wholesale rewrite satisfies (#312)")
 
+    sub.add_parser("head", help="verify, then print the chain head to anchor off the writer")
+
     g = sub.add_parser("grants", help="list the standing consents the ledger records")
     g.add_argument("--json", action="store_true", help="emit JSON")
     return p
@@ -345,7 +364,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    handlers = {"write": cmd_write, "verify": cmd_verify, "grants": cmd_grants}
+    handlers = {"write": cmd_write, "verify": cmd_verify, "head": cmd_head,
+                "grants": cmd_grants}
     try:
         return handlers[args.command](args)
     except EgressError as err:

@@ -148,6 +148,14 @@ Use <issue URL or spec path> as the acceptance criteria.
 Return a SHA-bound GO/NO-GO verdict with findings grouped by review axis.
 ```
 
+**How proven is it?** `review-it` reads `external-run`. Its binding run
+([2026-10-13](runs/2026-10-13-review-it-linux.md)) reviewed a real PR on a repository other
+than this catalog (stablyai/orca #28206) from Ubuntu via `orca-ide`: four read-only workers, a
+NO-GO verdict bound to the reviewed SHA, every quote re-read, `verify.py` OK, every artifact
+retained and re-hashable here. That proves the protocol ran end to end once, maintainer-driven,
+on one PR. It does not prove the verdict is right for your PR, and it was run by the
+maintainer, not an independent party (see [proof status](concepts.md#proof-status)).
+
 What happens, in order:
 
 1. The coordinator pins the fixed point — a SHA or PR with a non-empty diff — and identifies

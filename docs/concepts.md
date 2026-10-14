@@ -83,7 +83,8 @@ define them. Each is one line here and explained in full in its own section or r
   (mattpocock/skills, garrytan/gstack, addyosmani/agent-skills) a worker draws its method from —
   exactly one pack per worker.
 - **Proof tier** — `doctrine-only`, `self-run` or `external-run`; advancing needs a run report that
-  binds at a named commit.
+  binds at a named commit. `self-run` / `external-run` name the run's *target* (this catalog / any
+  other repo), not who ran it — [Proof status](#proof-status) defines them.
 
 ## Read a run result
 
@@ -456,6 +457,19 @@ validator-enforced frontmatter, and cannot advance without a linked run report o
 the inherited lesson from this catalog's failed predecessor, which shipped twelve missions with
 two proven: doctrine is allowed to encode hard-won lessons, but it is never allowed to dress up
 as evidence.
+
+The three tiers, defined once here (other pages link this section):
+
+| Tier | Means | Does NOT mean |
+|---|---|---|
+| `doctrine-only` | the protocol is written and validated; no run report binds to it | the mission never ran — some ran without retaining artifacts here |
+| `self-run` | a run report binds, and the run's **target** was this catalog (orca-fleet itself) | an outside party ran it |
+| `external-run` | a run report binds, and the run's **target** was a repository other than this catalog | an outside party ran it — the tier names the target, not the runner |
+
+Who ran it is a separate fact, recorded in the report's runner row: both of today's
+`external-run` tiers (`ship-it` on ravidsrk/mdtoc, `review-it` on stablyai/orca) were
+maintainer-run. No tier yet rests on a run by someone outside the project; the
+[call for runs](call-for-runs.md) asks for exactly that.
 
 Be precise about what the gate buys, because it is weaker than "re-derives" would imply and
 [`run_report.py`](../runtime/scripts/run_report.py) says so in its own docstring: **it hashes, it

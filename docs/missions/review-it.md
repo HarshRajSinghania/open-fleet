@@ -4,9 +4,12 @@
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel axis reviewers on the same pinned SHA; the GO/NO-GO verdict is yours to act on — a gate class, not a lower rung.
 > **Activation load:** ~23,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — it ran ([external-run report](../runs/2026-07-13-review-it-external-run.md)), but that run's
-> artifacts were retained outside this repository, so the tier is not re-derivable here
-> (`runtime/scripts/run_report.py`, issue #259)
+> **Proof:** external-run — the 2026-10-13 Linux witness reviewed stablyai/orca PR #28206 at
+> `6dcd957a` to a NO-GO verdict (4 read-only workers, 14/14 quotes re-read, `verify.py` OK) with
+> every artifact retained in its own run directory; binding report
+> [`docs/runs/2026-10-13-review-it-linux.md`](../runs/2026-10-13-review-it-linux.md). The earlier
+> [2026-07-13 gstack run](../runs/2026-07-13-review-it-external-run.md) kept its artifacts
+> outside this repository, so it binds nothing (issue #259).
 
 > Point it at a PR or a branch. Come back to a verdict you can act on: every axis reviewed by a
 > fresh session that never wrote the code, every finding quoting the exact line that motivated it,
@@ -183,7 +186,7 @@ window — severity **Required**), and two retry tests assert the mock rather th
 Critical / Required / Nit / Optional / FYI, and Critical or Required is what flips the gate),
 each attached with file:line and a named check. No fix authority: the mission ends at the verdict. Acting on it — dispatching a fix, or
 merging anyway — is your one-way door, not the fleet's. (This mission's proof status comes from
-exactly such a run: the NO-GO on a live gstack PR linked from the frontmatter.)
+exactly such a run: the 2026-10-13 NO-GO on a live stablyai/orca PR linked from the frontmatter.)
 
 ## Failure modes this mission is built to prevent
 

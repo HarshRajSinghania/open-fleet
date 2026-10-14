@@ -219,7 +219,7 @@ evidence-based definition of done. Click through for the full guide to each.
 | 📦 **[modernize-it](docs/missions/modernize-it.md)** | `doctrine-only` | Dependency currency via expand/migrate/contract at the code level: `CURRENT` or `CURRENT-WITH-PINNED`, every pin justified | "update the dependencies", "framework migration" |
 | 🧪 **[prove-it](docs/missions/prove-it.md)** | `self-run` | A mutation-audited critical surface: `COVERED` or `COVERED-WITH-PARKED`, tests that die when the code is mutated | "close the test gap", "cover the critical paths" |
 | 🎯 **[deflake-it](docs/missions/deflake-it.md)** | `doctrine-only` | Flake eradication to a statistical streak, local **and** CI: `STABLE` or `STABLE-WITH-QUARANTINE` | "kill the flaky tests", "deflake the suite" |
-| 🔍 **[review-it](docs/missions/review-it.md)** | `doctrine-only` | A trusted, read-only, SHA-bound GO/NO-GO verdict — acceptance always, risk lenses when the diff triggers them. **No fix authority.** | "review this PR", "is this ready to merge" |
+| 🔍 **[review-it](docs/missions/review-it.md)** | `external-run` | A trusted, read-only, SHA-bound GO/NO-GO verdict — acceptance always, risk lenses when the diff triggers them. **No fix authority.** | "review this PR", "is this ready to merge" |
 | 🗺️ **[map-it](docs/missions/map-it.md)** | `doctrine-only` | A foggy multi-session goal resolved into a frozen execution map `ship-it` can consume — decisions, not deliverables | "chart this", "plan this epic", "I don't know the shape yet" |
 | 🔬 **[root-cause](docs/missions/root-cause.md)** | `doctrine-only` | A reproduced symptom and a demonstrated cause: repro-first → falsify rival hypotheses → one survivor, with evidence; optional fix handoff | "diagnose this", "why is this happening" |
 | 🤝 **[oss-contribute](docs/missions/oss-contribute.md)** | `doctrine-only` | Upstream issues on a repo you do NOT control, each landed as an open, reviewed, etiquette-correct PR (or a quoted review-assist on an existing PR): `CONTRIBUTED` or `CONTRIBUTED-WITH-PARKED`, merge left to maintainers | "contribute to this project", "open PRs upstream", "we only have a fork" |
@@ -261,7 +261,7 @@ Every mission's `metadata:` block carries a validator-enforced `proof:` field: `
 named commit: a run report with a `RUN:` header, an evidence manifest inside the run's own
 `docs/runs/` directory, and an integrity inventory that re-hashes at the commit the header names.
 <!-- BEGIN GENERATED: proof-status — scripts/gen-badges.py -->
-**Today `ship-it` reads `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
+**Today `review-it` and `ship-it` read `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
 <!-- END GENERATED: proof-status -->
 The [run archive](docs/runs/) records every run
 that really happened and says, per run, whether and why it binds. Be precise about what the gate

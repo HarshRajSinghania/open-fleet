@@ -141,7 +141,10 @@ instruction surface. Two structural guards inherit that lesson:
 - **Proof status.** Every mission's `metadata:` block carries `proof:` — `doctrine-only`,
   `self-run`, or `external-run`. Advancing past doctrine-only requires `proof_evidence:` at a run
   report that exists on disk; `scripts/validate.py` enforces both. A mission is never presented
-  as more proven than its evidence.
+  as more proven than its evidence. `self-run` and `external-run` name the run's TARGET (this
+  catalog vs. any other repository), never the runner: `ship-it`'s `external-run` was
+  maintainer-run on mdtoc. The one definition lives in
+  [docs/concepts.md#proof-status](docs/concepts.md#proof-status).
 - **Runtime evidence level.** Runtime policies are doctrine (mechanism) by default; a policy that
   makes an EMPIRICAL claim carries an explicit `Evidence level:` (ASSERTED / measured) —
   `attention-budget.md` is the exemplar of the Evidence-level rule (its own level is ASSERTED
@@ -186,8 +189,8 @@ change in what a coordinator reads at activation, not a relabelling. Where they 
 | Mission | Activation load | Headroom to the cap |
 |---|---|---|
 | `reshape-it` | ~33,900 | ~100 |
-| `oncall-it` | ~33,700 | ~300 |
-| `migrate-it` | ~33,700 | ~300 |
+| `oncall-it` | ~33,800 | ~200 |
+| `migrate-it` | ~33,800 | ~200 |
 
 The cap is **34,000**. The lightest mission, `offload-it`, is ~14,900, so the whole catalog sits in a ~19,000-token band.
 <!-- END GENERATED: activation-load -->

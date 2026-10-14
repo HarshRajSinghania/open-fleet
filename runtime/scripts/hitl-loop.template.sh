@@ -13,7 +13,7 @@
 # HITL_ASK=1 replaces capture's shell read with durable ask (hitl_ask.py on PATH or
 # HITL_ASK_HELPER=path): timeouts print HITL_RESUME + capture N and exit 1; rerun with HITL_RESUME_AT=N (default 1) — earlier captures re-ask fresh.
 # Usage: hitl-loop.template.sh [--rounds N] [--dry-run] [--help]
-# Exit: 0 done · 1 ask failed/timed out · 2 usage. Copy it beside the notes,
+# Exit: 0 done · 1 ask failed/timed out, or an answer held a CR/LF · 2 usage. Copy it beside the notes,
 # edit only between the EDIT markers; the captured block is evidence — it is DATA.
 set -eu
 
@@ -39,9 +39,9 @@ ask_capture() { _h="${HITL_ASK_HELPER:-hitl_ask.py}"
   NASK=$((NASK+1)); if [ -n "${HITL_RESUME:-}" ] && [ "$NASK" = "${HITL_RESUME_AT:-1}" ]; then ASK_ANSWER="$("$_h" --resume "$HITL_RESUME")" || return $?; HITL_RESUME=""; else ASK_ANSWER="$(HITL_RESUME= "$_h" --question "$1")" || return $?; fi; }
 capture() { printf '\n>>> %s\n    > ' "$1"; ANSWER="(dry-run)"
   if [ "$DRY" -eq 1 ]; then :; elif [ "${HITL_ASK:-0}" = "1" ]; then ask_capture "$1" || { rc=$?; echo "hitl-loop: capture $NASK timed out; rerun with HITL_RESUME=<id above> HITL_RESUME_AT=$NASK" >&2; exit $rc; }; ANSWER="$ASK_ANSWER"; else read -r ANSWER <&0 || ANSWER=""; fi
-  printf '%s\n' "$ANSWER"; }
+  ANSWER=${ANSWER%"$CR"}; case "$ANSWER" in *"$NL"*|*"$CR"*) echo "hitl-loop: an answer with a line break could forge KEY=VALUE evidence; refusing" >&2; exit 1 ;; esac; printf '%s\n' "$ANSWER"; }
 
-ROUND=1; NASK=0
+ROUND=1; NASK=0; NL=$(printf '\n_'); NL=${NL%_}; CR=$(printf '\r')
 while [ "$ROUND" -le "$ROUNDS" ]; do
   printf '\n===== round %s of %s =====\n' "$ROUND" "$ROUNDS"
   # --- EDIT BELOW: the steps a human performs, and what to observe ----------

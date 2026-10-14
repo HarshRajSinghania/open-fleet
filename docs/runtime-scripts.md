@@ -369,9 +369,11 @@ answers, so the steps parse before a human sits through them), `--help`.
 Helpers: `step "<instruction>"` (show, wait for Enter), `capture VAR "<question>"` (ask,
 read the answer). Capture OBSERVATIONS, never actions. The verdict is the `REPRODUCED=`
 line (`REPRODUCED=yes` stops at once; otherwise `REPRODUCED=no` plus `ROUNDS_USED=` after
-N rounds) — never the exit code. A checkpoint step ends each unreproduced round.
+N rounds) — never the exit code. A checkpoint step ends each unreproduced round. An
+answer carrying a line break (CR or LF; one trailing CR from a CRLF terminal is dropped)
+is refused before it is printed: it could forge a `REPRODUCED=yes` line in the evidence.
 
-Exits: 0 done · 2 usage.
+Exits: 0 done · 1 durable ask failed or timed out, or an answer held a line break · 2 usage.
 
 > Why: the agent cannot see the screen and the human cannot paste a transcript nobody
 > asked for — so the agent writes the steps, the human runs them, and observations come

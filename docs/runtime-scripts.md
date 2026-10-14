@@ -761,7 +761,7 @@ Classes: `OK` (movement within slow_after_s), `SLOW` (idle past slow_after_s but
 hung_after_s and STOP — no action), `HUNG` (idle past hung_after_s, or past STOP with no
 report — one auto-nudge, then a stop-redispatch recommendation), `WEDGED` (explicit wedge
 markers, or transcript frozen past wedge_frozen_s beyond STOP with an unanswered nudge —
-immediate recommendation, never nudged). Live mode execs `nudge_command` with argv
+`last_nudge_at` set and no movement after it — immediate recommendation, never nudged). Live mode execs `nudge_command` with argv
 placeholders and refuses to run without one configured. Rate limits cap nudges per
 dispatch, spacing per worker, and nudges per worker per hour; history persists in the
 state file across invocations.

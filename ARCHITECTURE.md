@@ -128,6 +128,9 @@ them. These are preserved as runtime policies, not abstracted away:
   work harvested via git push before teardown) — `runtime/sandbox-policy.md`
 - the Orca pin record (which upstream build the doctrine was witnessed against, re-pin
   cadence, owner, next trigger) — `runtime/orca-pin.md`
+- trust assumptions and the four security boundaries (sandbox, network, supply chain,
+  identity/access), each graded with its residue, plus the graded response ladder —
+  `runtime/threat-model.md`
 
 ## Proof over doctrine
 
@@ -183,8 +186,8 @@ change in what a coordinator reads at activation, not a relabelling. Where they 
 | Mission | Activation load | Headroom to the cap |
 |---|---|---|
 | `reshape-it` | ~33,900 | ~100 |
-| `oncall-it` | ~33,600 | ~400 |
-| `migrate-it` | ~33,600 | ~400 |
+| `oncall-it` | ~33,700 | ~300 |
+| `migrate-it` | ~33,700 | ~300 |
 
 The cap is **34,000**. The lightest mission, `offload-it`, is ~14,900, so the whole catalog sits in a ~19,000-token band.
 <!-- END GENERATED: activation-load -->

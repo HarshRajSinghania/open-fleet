@@ -225,7 +225,7 @@ evidence-based definition of done. Click through for the full guide to each.
 | 🤝 **[oss-contribute](docs/missions/oss-contribute.md)** | `doctrine-only` | Upstream issues on a repo you do NOT control, each landed as an open, reviewed, etiquette-correct PR (or a quoted review-assist on an existing PR): `CONTRIBUTED` or `CONTRIBUTED-WITH-PARKED`, merge left to maintainers | "contribute to this project", "open PRs upstream", "we only have a fork" |
 | 📋 **[attest-it](docs/missions/attest-it.md)** | `doctrine-only` | Conformance to a frozen standard (EU AI Act Art-12/50, SOC 2, NIST SSDF) proven with independently re-derived, auditor-grade evidence: `CONFORMANT` or `CONFORMANT-WITH-GAPS` (gaps parked to a human/legal owner) | "prove compliance", "conformance", "audit-ready evidence", "SOC 2 / EU AI Act / SSDF" |
 | ♿ **[access-it](docs/missions/access-it.md)** | `doctrine-only` | A frozen page/flow set driven to WCAG 2.2 AA (EAA/ADA/508): a deterministic axe-core oracle clean + a revert-to-violation negative control, the ~30–40% automation ceiling parked to a human-AT reviewer: `CONFORMANT` or `CONFORMANT-WITH-MANUAL-PARKED` | "accessibility", "a11y", "WCAG", "screen reader / keyboard" |
-| 📌 **[pin-it](docs/missions/pin-it.md)** | `doctrine-only` | Runtime doctrine re-witnessed against the installed binary: every mechanics claim receipted CURRENT, patched with receipts, or removed with an archived refutation — `PINNED` or `PINNED-WITH-PARKED` | "Orca updated", "re-pin the runtime contract", "policy lags practice" |
+| 📌 **[pin-it](docs/missions/pin-it.md)** | `doctrine-only` | *Maintainer-facing — audits the fleet's own Orca doctrine, not your code.* Runtime doctrine re-witnessed against the installed binary: every mechanics claim receipted CURRENT, patched with receipts, or removed with an archived refutation — `PINNED` or `PINNED-WITH-PARKED` | "Orca updated", "re-pin the runtime contract", "policy lags practice" |
 | 🧱 **[floor-it](docs/missions/floor-it.md)** | `doctrine-only` | A written, numbered quality bar: one tool per frozen dimension, every gate proven RED on an injected violation before it blocks CI, and a guard against bar-lowering diffs — `FLOORED` or `FLOORED-WITH-PARKED` | "set the quality bar", "make CI enforce", "define our standards" |
 | 🧬 **[reshape-it](docs/missions/reshape-it.md)** | `doctrine-only` | Confirmed hot modules deepened behind smaller, testable interfaces with behaviour demonstrably unchanged — characterization net pinned before any restructure: `RESHAPED` or `RESHAPED-WITH-PARKED` | "god file", "architecture erosion", "refactor the hot path safely" |
 | 📱 **[field-test-it](docs/missions/field-test-it.md)** | `doctrine-only` | On-device reproduce → fix → re-verify at the head SHA with a revert negative control — the ledgered device session is the oracle, never a desktop pass: `FIELD-PROVEN` or `FIELD-PROVEN-WITH-PARKED` | "test on a real device", "works on desktop, breaks on mobile", "emulator QA" |
@@ -233,7 +233,7 @@ evidence-based definition of done. Click through for the full guide to each.
 | 📟 **[oncall-it](docs/missions/oncall-it.md)** | `doctrine-only` | A frozen path set made operable: every on-call question answered by a quoted signal, symptom alerts test-fired with runbooks, and an induced staging failure named by a source-blind worker: `OPERABLE` or `OPERABLE-WITH-PARKED` | "make this operable", "we were blind during the incident", "add observability" |
 | 📥 **[absorb-it](docs/missions/absorb-it.md)** | `doctrine-only` | An inbound PR queue drained: each contribution absorbed with authorship preserved and a RED-on-base / GREEN-on-head receipt, refuted with a reproduction, or parked with a named ask: `ABSORBED` or `ABSORBED-WITH-PARKED` | "drain the PR queue", "absorb these community contributions", "close out the contributor backlog" |
 | 📚 **[document-it](docs/missions/document-it.md)** | `doctrine-only` | A public surface covered by quadrant with zero critical gaps, every claim bound to a `file:symbol` or a run and proven by a rename-to-RED control: `DOCUMENTED` or `DOCUMENTED-WITH-PARKED` | "document this project", "the API is undocumented", "docs coverage" |
-| ☁️ **[offload-it](docs/missions/offload-it.md)** | `doctrine-only` | A per-workspace environment recipe stood up end to end — doctor-clear (no fail, no warn) plus a live provision enacting create→validate→destroy: `OFFLOADED` or `OFFLOADED-WITH-PARKED` | "run this in the cloud", "sandbox recipe", "per-workspace environment" |
+| ☁️ **[offload-it](docs/missions/offload-it.md)** | `doctrine-only` | *Orca-environment setup — builds where the fleet runs, not your code.* A per-workspace environment recipe stood up end to end — doctor-clear (no fail, no warn) plus a live provision enacting create→validate→destroy: `OFFLOADED` or `OFFLOADED-WITH-PARKED` | "run this in the cloud", "sandbox recipe", "per-workspace environment" |
 
 The **Proof** column is each mission's `metadata.proof` tier, bound to its `SKILL.md` by a contract
 test; what a tier means and how one is earned is under [Proof status](#proof-status).
@@ -316,6 +316,18 @@ flowchart TD
 ```
 
 </details>
+
+**Easily confused — if your input is X, use Y:**
+
+| Your input | Use | Not |
+|---|---|---|
+| A list of known defects: open issues, audit findings, docs that lie about the code | `clean-sweep` | `modernize-it` (no defect, just old versions) · `absorb-it` (the fixes already exist as PRs) |
+| Outdated dependencies, a lockfile, a framework major to cross | `modernize-it` | `clean-sweep` (a backlog of defects) · `migrate-it` (a stateful schema/data change) |
+| Other people's open pull requests waiting on you | `absorb-it` | `clean-sweep` (you write the fixes) · `review-it` (one verdict, no landing) |
+| A symptom you cannot explain yet, wherever it shows | `root-cause` | `field-test-it` (cause known or irrelevant; it must be fixed and proven on the device) |
+| A bug that only reproduces on a real device, emulator or fresh box | `field-test-it` | `root-cause` (diagnosis only, no fix) |
+| Orca was upgraded and the fleet's own runtime docs may lag | `pin-it` (maintainer-facing) | `clean-sweep` (docs that drifted from *your* code) |
+| You need a cloud/sandbox workspace for the fleet to run in | `offload-it` (Orca-environment setup) | `field-test-it` `CLEAN-ENV` (proving your app on a fresh box) |
 
 Missions also hand work to one another, each handoff a separately authorized run:
 

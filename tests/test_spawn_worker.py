@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPAWN = ROOT / "runtime" / "scripts" / "spawn_worker.sh"
+HOOK = ROOT / "runtime" / "scripts" / "deny-hook.sh"
 
 
 def run(title, agent="claude", effort="high", task="task_test"):
@@ -263,12 +264,42 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
             settings.write_text("{}")
             rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
                 **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
-            self.assert_refused(rc, err, "does not register deny-hook.sh")
+            self.assert_refused(rc, err, "not armed")
 
     def test_missing_hook_settings_file_refused(self):
         rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
             **self.RW, "ORCA_DENY_HOOK_SETTINGS": "/nonexistent/settings.json"})
-        self.assert_refused(rc, err, "does not register deny-hook.sh")
+        self.assert_refused(rc, err, "not armed")
+
+    def _armed_settings(self, tmp):
+        wt = Path(tmp) / "wt"
+        wt.mkdir()
+        block = subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True, check=True).stdout
+        settings = Path(tmp) / "settings.json"
+        settings.write_text(block)
+        return settings
+
+    def test_valid_registration_passes_the_arming_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assertNotIn("not armed", err)
+            self.assertNotIn("UNVERIFIED", err)
+
+    def test_registered_command_that_never_denies_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            data = json.loads(settings.read_text())
+            for entry in data["hooks"]["PreToolUse"]:
+                for hook in entry["hooks"]:
+                    hook["command"] = "true # deny-hook.sh"
+            settings.write_text(json.dumps(data))
+            rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not armed")
 
     def test_unverified_arming_warns_but_proceeds_past_the_gate(self):
         # Unset: the spawn must SAY the guard is unverified (then go on to

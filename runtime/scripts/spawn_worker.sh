@@ -661,17 +661,13 @@ fi
 if [ "$PROFILE" != "ro" ]; then
   step=deny-hook-arming
   if [ -n "${ORCA_DENY_HOOK_SETTINGS:-}" ]; then
-    if ! grep -q "deny-hook.sh" "$ORCA_DENY_HOOK_SETTINGS" 2>/dev/null; then
-      echo "SPAWN=REFUSED task=${task} ORCA_DENY_HOOK_SETTINGS='${ORCA_DENY_HOOK_SETTINGS}' does not register deny-hook.sh — wire it (deny-hook.sh --settings <worktree>) or unset the variable to proceed UNVERIFIED" >&2
+    # The hook verifies its own registration: parses the settings, then runs
+    # the REGISTERED command (not this repo's copy) under its configured env
+    # against deny/allow probes. A mention of the filename is not arming.
+    if ! _arming=$(sh "$HERE/deny-hook.sh" --verify-settings "$ORCA_DENY_HOOK_SETTINGS" 2>&1); then
+      echo "SPAWN=REFUSED task=${task} deny-hook not armed: ${_arming} — wire it (deny-hook.sh --settings <worktree>) or unset ORCA_DENY_HOOK_SETTINGS to proceed UNVERIFIED" >&2
       exit 2
     fi
-    _hook_probe=$(printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | sh "$HERE/deny-hook.sh" 2>/dev/null || true)
-    case "$_hook_probe" in
-      *'"permissionDecision": "deny"'*|*'"permissionDecision":"deny"'*) : ;;
-      *)
-        echo "SPAWN=REFUSED task=${task} deny-hook probe did not deny 'rm -rf /' — the guard is registered but not answering; refusing rather than assuming it is armed" >&2
-        exit 2 ;;
-    esac
   else
     echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset) — worktree + review are the safety layer for this spawn" >&2
   fi

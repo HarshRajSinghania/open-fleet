@@ -33,9 +33,11 @@ shapes (`sandbox-policy.md`). The `danger` ephemeral-VM lane exists but is **ref
 until a prelaunch placement binding proves the worker lands in the validated sandbox.
 
 Residue: `rw` containment is a string-matched hook inside the worker's own harness, not
-an OS boundary. It is now probed as one (`tests/test_escape_probe.py`: writes are
-bounded; credential reads, network egress, and nested agent spawns are measured
-open and pinned as known gaps). *Invariant we owe:* worker code runs
+an OS boundary. It is now probed as one (`tests/test_escape_probe.py`): tool
+writes and absolute-path redirect writes outside the worktree are denied;
+relative redirects, `cp`/`mv`/`dd`/`tee` and interpreter writes, credential
+reads, network egress, and nested agent spawns are measured open and pinned
+as known gaps. *Invariant we owe:* worker code runs
 only where it cannot reach the host or another task, and that isolation is probed, not
 asserted.
 

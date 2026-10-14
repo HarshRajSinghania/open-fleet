@@ -161,6 +161,108 @@ if [ "${1:-}" = "--settings" ]; then
   }
   exit 0
 fi
+if [ "${1:-}" = "--verify-settings" ]; then
+  # Is the guard actually armed in the named settings file? Parse the real
+  # registration (PreToolUse entry, tool matcher, command, boundary env),
+  # then run the REGISTERED command — not this copy — under its configured
+  # environment against three probes: a root delete and an
+  # outside-the-boundary write must deny; a plain `ls` must not (a hook that
+  # denies everything is armed like a brick). spawn_worker.sh calls this so
+  # "wired" is verified, not assumed (#562).
+  if [ -z "${2:-}" ]; then
+    echo "deny-hook.sh --verify-settings needs the settings file path" >&2
+    exit 2
+  fi
+  python3 - "$2" <<'PYEOF'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+
+
+def refuse(reason):
+    print(f"deny-hook: NOT ARMED in {path}: {reason}", file=sys.stderr)
+    return 2
+
+
+try:
+    settings = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, ValueError) as err:
+    sys.exit(refuse(f"settings unreadable ({err})"))
+
+def covers(matcher, tool):
+    # Claude matchers are regexes; the fleet registration is a |-union of
+    # tool names. Accept exact alternatives (anchors/parens stripped) or *.
+    for alt in str(matcher).split("|"):
+        token = alt.strip().strip("^$()")
+        if token in (tool, "*"):
+            return True
+    return False
+
+
+entries = (settings.get("hooks") or {}).get("PreToolUse") or []
+command = None
+for entry in entries:
+    if not isinstance(entry, dict):
+        continue
+    if not (covers(entry.get("matcher", ""), "Bash")
+            and covers(entry.get("matcher", ""), "Edit")):
+        continue
+    for hook in entry.get("hooks") or []:
+        if isinstance(hook, dict) and hook.get("type") == "command" \
+                and "deny-hook.sh" in str(hook.get("command", "")):
+            command = str(hook["command"])
+            break
+    if command:
+        break
+if not command:
+    sys.exit(refuse(
+        "no PreToolUse entry covering Bash and Edit registers deny-hook.sh "
+        "(a mention elsewhere in the file is not a registration)"))
+
+env = dict(os.environ)
+registered_env = settings.get("env") or {}
+if not isinstance(registered_env, dict):
+    sys.exit(refuse("settings env is not an object"))
+env.update({str(k): str(v) for k, v in registered_env.items()})
+boundary = env.get("ORCA_UNIT_WORKTREE", "")
+if not boundary or not Path(boundary).is_dir():
+    sys.exit(refuse(
+        "no usable ORCA_UNIT_WORKTREE in the settings env — the worktree "
+        "boundary the registration exists to enforce is off"))
+
+
+def probe(tool_name, tool_input):
+    payload = json.dumps({"hook_event_name": "PreToolUse",
+                          "tool_name": tool_name, "tool_input": tool_input})
+    r = subprocess.run(["sh", "-c", command], input=payload,
+                       capture_output=True, text=True, env=env,
+                       cwd=boundary, timeout=60)
+    if not r.stdout.strip():
+        return "allow"
+    try:
+        return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
+    except (ValueError, KeyError, TypeError):
+        return f"unparsable:{r.stdout[:60]!r}"
+
+
+outside = str(Path(boundary).parent / "outside-the-boundary.probe")
+if probe("Bash", {"command": "rm -rf /"}) != "deny":
+    sys.exit(refuse("registered command did not deny 'rm -rf /'"))
+if probe("Edit", {"file_path": outside}) != "deny":
+    sys.exit(refuse(
+        "registered command did not deny a write outside its configured "
+        "ORCA_UNIT_WORKTREE — registered, but the boundary is not live"))
+if probe("Bash", {"command": "ls"}) == "deny":
+    sys.exit(refuse("registered command denies even a plain 'ls' — armed "
+                    "like a brick, not a guard"))
+print(f"deny-hook: armed in {path} ({command})")
+PYEOF
+  exit $?
+fi
 if [ $# -gt 0 ]; then
   printf 'deny-hook.sh: unexpected argument: %s\n' "$1" >&2
   usage >&2

@@ -13,6 +13,7 @@ import contextlib
 import importlib.util
 import io
 import re
+import shutil
 import tempfile
 import subprocess
 import sys
@@ -122,40 +123,84 @@ class LayerSeparationHoldsForUntrackedFilesToo(unittest.TestCase):
         self.assertEqual(validate.check_layer_separation(), [])
         self.assertEqual(validate.check_lower_layer_frontmatter(), [])
 
-    def test_validate_py_itself_reports_a_frontmattered_playbook(self):
-        """Calling the function proves the function works, NOT that validate.py runs it.
 
-        A mutant dropping the call from main() left this suite green — the same trap #303 hit one
-        issue ago. This drives the real entry point against a real tree: the repo, plus one
-        offending file, with the run reverted afterwards whatever happens.
-        """
-        planted = ROOT / "playbooks" / "_frontmatter_probe.md"
-        planted.write_text("---\nname: probe\ndescription: auto-trigger me\n---\n# body\n",
-                           encoding="utf-8")
+class ValidatePyRunsTheLayerChecks(unittest.TestCase):
+    """Calling the function proves the function works, NOT that validate.py runs it.
+
+    A mutant dropping the call from main() left the suite green — the same trap #303 hit one issue
+    ago. So these drive the real entry point against a real tree plus one offending file.
+
+    The tree is a COPY in a tempdir, committed to its own throwaway git repo so a planted file is
+    genuinely untracked. These used to plant into the live checkout, which raced every other test
+    reading the catalog under `pytest -n` (an orphan-playbook or validator test would see the
+    probe) and left debris behind on a hard kill. validate.py resolves ROOT from its own location,
+    so a copied scripts/ validates the copied tree. The copy omits docs/ and assets/ (tens of MB),
+    so the copy's run fails for unrelated reasons; each test therefore asserts its message is
+    ABSENT before the plant and PRESENT after — the plant, and nothing else, produced it.
+    """
+
+    COPIED = ("scripts", "skills", "playbooks", "runtime", "evals", "hooks", ".claude-plugin")
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name) / "catalog"
+        cls.root.mkdir()
+        for rel in cls.COPIED:
+            if (ROOT / rel).exists():
+                shutil.copytree(ROOT / rel, cls.root / rel,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for doc in ROOT.glob("*.md"):
+            shutil.copy2(doc, cls.root / doc.name)
+        git = ["git", "-C", str(cls.root), "-c", "user.name=probe", "-c", "user.email=p@x",
+               "-c", "commit.gpgsign=false"]
+        for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "copy"]):
+            subprocess.run(git + argv, check=True, capture_output=True, timeout=120)
+        cls.baseline = cls._validate().stdout
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    @classmethod
+    def _validate(cls):
+        return subprocess.run([sys.executable, str(cls.root / "scripts" / "validate.py")],
+                              capture_output=True, text=True, timeout=120)
+
+    def _assert_plant_is_reported(self, planted, body, message):
+        self.assertNotIn(message, self.baseline,
+                         "the copied tree already reports this — the probe would prove nothing")
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        planted.write_text(body, encoding="utf-8")
         try:
-            r = subprocess.run([sys.executable, str(ROOT / "scripts" / "validate.py")],
-                               capture_output=True, text=True)
+            r = self._validate()
         finally:
-            planted.unlink(missing_ok=True)
-        self.assertNotEqual(r.returncode, 0,
-                            "validate.py passed a playbook carrying frontmatter")
-        self.assertIn("frontmatter under playbooks/ or runtime/", r.stdout,
-                      f"validate.py failed, but not for this reason:\n{r.stdout}")
+            planted.unlink()
+        self.assertNotEqual(r.returncode, 0, f"validate.py passed with {planted.name} planted")
+        self.assertIn(message, r.stdout, f"the plant was not reported:\n{r.stdout}")
+        self.assertIn(planted.relative_to(self.root).as_posix(), r.stdout)
+
+    def test_the_copy_is_a_work_tree_and_the_plant_is_untracked(self):
+        top = subprocess.run(["git", "-C", str(self.root), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(Path(top.stdout.strip()).resolve(), self.root.resolve())
+        # Live repo untouched: the plants below go into the copy only.
+        self.assertFalse((ROOT / "playbooks" / "_layer_probe").exists())
+
+    def test_validate_py_itself_reports_a_frontmattered_playbook(self):
+        self._assert_plant_is_reported(
+            self.root / "playbooks" / "_frontmatter_probe.md",
+            "---\nname: probe\ndescription: auto-trigger me\n---\n# body\n",
+            "frontmatter under playbooks/ or runtime/")
 
     def test_validate_py_itself_reports_an_untracked_skill_md(self):
-        planted = ROOT / "playbooks" / "_layer_probe" / "SKILL.md"
-        planted.parent.mkdir(parents=True, exist_ok=True)
-        planted.write_text("---\nname: probe\n---\n", encoding="utf-8")
+        planted = self.root / "playbooks" / "_layer_probe" / "SKILL.md"
         try:
-            r = subprocess.run([sys.executable, str(ROOT / "scripts" / "validate.py")],
-                               capture_output=True, text=True)
+            self._assert_plant_is_reported(planted, "---\nname: probe\n---\n",
+                                           "SKILL.md found outside skills/")
         finally:
-            planted.unlink(missing_ok=True)
-            planted.parent.rmdir()
-        self.assertNotEqual(r.returncode, 0,
-                            "validate.py passed an untracked SKILL.md under playbooks/")
-        self.assertIn("SKILL.md found outside skills/", r.stdout,
-                      f"validate.py failed, but not for this reason:\n{r.stdout}")
+            if planted.parent.exists():
+                planted.parent.rmdir()
 
 
 class TheActivationLoadTableIsGenerated(unittest.TestCase):

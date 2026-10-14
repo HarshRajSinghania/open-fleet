@@ -11,7 +11,7 @@ permissions:
 jobs:
   tests:
     # The contract suite, sharded across four parallel jobs (speed-it J1
-    # sharding: the ~260 s sequential suite is diffuse process fan-out no
+    # sharding: the ~670 s sequential suite (2026-10-14) is diffuse fan-out no
     # hotspot fix removes, so CI fans out instead). scripts/shard-tests.py owns
     # the partition — file-level LPT, unittest stays the runner, stdlib only —
     # and tests/test_shard_tests.py proves the union of the shards equals live

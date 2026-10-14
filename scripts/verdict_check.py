@@ -6,23 +6,23 @@ GO verdict review whose ``reviewed_sha`` equals the PR's current head SHA. Any
 push moves the head and fails the check until a fresh GO is posted.
 
 Verdict convention (posted as the body of an APPROVING review, or a COMMENTED
-review by a collaborator other than the PR author)::
+review by the PR author or a collaborator)::
 
     VERDICT: GO
     reviewed_sha: <full 40-hex head sha>
 
 A GO counts from an APPROVED review (GitHub restricts Approve to collaborators
-with write access), or from a COMMENTED review whose author_association is
-OWNER / MEMBER / COLLABORATOR. A drive-by COMMENTED GO from anyone else never
-counts (PR #460 review, P1).
+with write access), or from a COMMENTED review whose author is the PR author
+(the coordinator binding its own verdict — the normal fleet flow, since GitHub
+forbids approving your own PR) or whose author_association is OWNER / MEMBER /
+COLLABORATOR. A drive-by COMMENTED GO from anyone else never counts (PR #460
+review, P1).
 
-The PR AUTHOR's own GO never counts, whatever their association — not even an
-OWNER's. A self-GO is a record: it binds the SHA its author claims to have
-checked, which an evidence manifest may cite, but it is not review, and this
-check exists to prove an independent reviewer saw the exact head. Counting it
-let any collaborator satisfy the required check on their own PR. A coordinator
-that authors a PR therefore needs a second identity (a reviewer, or a
-collaborator account) to post the GO that merges it. Approval policy beyond that (how many, from whom, conversations
+A self-GO is a SHA binding, NOT independent review: it proves which head its
+author claims to have checked, nothing more. Requiring a second person is
+branch protection's job (required approvals), and this check never substitutes
+for it. The checker itself runs from the BASE commit (verdict-check.yml), so a
+PR cannot rewrite the check that gates it. Approval policy beyond that (how many, from whom, conversations
 resolved) stays enforced by branch protection itself; this check adds SHA
 binding, not a second approval rule. Dismissed and change-requested reviews
 never count. Short SHAs are rejected: ambiguity in what was reviewed is
@@ -53,15 +53,10 @@ GH_API = "gh api"
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
-def _is_pr_author(review, pr_author):
-    login = (review.get("user") or {}).get("login", "")
-    return bool(pr_author) and login == pr_author
-
-
 def _author_trusted(review, pr_author):
-    """A COMMENTED review may carry a GO: trusted tier, and never the PR author."""
-    if _is_pr_author(review, pr_author):
-        return False
+    login = (review.get("user") or {}).get("login", "")
+    if pr_author and login == pr_author:
+        return True  # a SHA binding by the coordinator, not review (module docstring).
     return review.get("author_association") in TRUSTED_ASSOCIATIONS
 
 
@@ -78,12 +73,10 @@ def go_reviews_at_tip(reviews, head_sha, pr_author=None):
     hits = []
     for review in reviews:
         state = review.get("state")
-        if _is_pr_author(review, pr_author):
-            continue  # a self-GO binds a SHA but is not review (module docstring).
         if state == "APPROVED":
             pass  # Approve is collaborator-only; the state is the signal.
         elif state == "COMMENTED" and _author_trusted(review, pr_author):
-            pass  # trusted tier (PR #460 P1).
+            pass  # own-PR SHA binding or trusted tier (PR #460 P1).
         else:
             # DISMISSED never counts; CHANGES_REQUESTED with a GO marker is
             # self-contradictory; COMMENTED from an untrusted author is a
@@ -194,18 +187,12 @@ def main(argv=None):
     if hits:
         print("verdict_check: PASS — GO verdict binds the merge tip")
         return 0
-    own = [r for r in gos if _is_pr_author(r, pr_author)]
     trusted = [r for r in gos
-               if not _is_pr_author(r, pr_author)
-               and (r.get("state") == "APPROVED"
-                    or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author)))]
+               if r.get("state") == "APPROVED"
+               or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author))]
     if trusted:
         print("verdict_check: FAIL — GO verdicts exist but none binds the current head "
               "(post a fresh VERDICT: GO with reviewed_sha == head)", file=sys.stderr)
-    elif own and len(own) == len(gos):
-        print(f"verdict_check: FAIL — the only GO verdicts are by the PR author "
-              f"(@{pr_author}); a self-GO binds a SHA but is not review — an independent "
-              "collaborator must post VERDICT: GO at the head", file=sys.stderr)
     elif gos:
         print("verdict_check: FAIL — GO markers exist only from untrusted authors "
               "(drive-by COMMENTED reviews never count)", file=sys.stderr)

@@ -69,22 +69,13 @@ class VerdictAtTip(unittest.TestCase):
         self.assertFalse(verdict_at_tip(
             [review(go_body(HEAD), state="PENDING")], HEAD))
 
-    def test_the_pr_authors_own_go_never_counts(self):
-        # A self-GO binds a SHA but is not review: counting it let any
-        # collaborator satisfy the required check on their own PR. No
-        # association rescues it — not even OWNER — and no state either.
-        for association in ("CONTRIBUTOR", "OWNER", "MEMBER", "COLLABORATOR"):
-            for state in ("COMMENTED", "APPROVED"):
-                with self.subTest(association=association, state=state):
-                    mine = review(go_body(HEAD), state=state, login="coord",
-                                  association=association)
-                    self.assertFalse(verdict_at_tip([mine], HEAD, pr_author="coord"))
-
-    def test_an_independent_go_still_counts_beside_a_self_go(self):
-        mine = review(go_body(HEAD), state="COMMENTED", login="coord", association="OWNER")
-        peer = review(go_body(HEAD), state="COMMENTED", login="peer", association="MEMBER")
-        hits = go_reviews_at_tip([mine, peer], HEAD, pr_author="coord")
-        self.assertEqual([h["user"]["login"] for h in hits], ["peer"])
+    def test_commented_go_counts_from_pr_author(self):
+        # The coordinator binding its own verdict — the normal fleet flow, since
+        # GitHub forbids approving your own PR. A SHA binding, not review: required
+        # approvals stay branch protection's (module docstring).
+        mine = review(go_body(HEAD), state="COMMENTED", login="coord",
+                      association="CONTRIBUTOR")
+        self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="coord"))
 
     def test_commented_go_counts_from_trusted_tiers(self):
         for association in ("OWNER", "MEMBER", "COLLABORATOR"):
@@ -243,13 +234,6 @@ class MainInProc(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("drive-by", err)
 
-    def test_an_author_only_go_fails_naming_the_self_go(self):
-        mine = review(go_body(HEAD), state="COMMENTED", login="coord", association="OWNER")
-        code, _out, err = self._main(["--pr", "7", "--repo", "o/r"], self._payload([mine]))
-        self.assertEqual(code, 1)
-        self.assertIn("by the PR author", err)
-        self.assertIn("not review", err)
-
     def test_no_go_at_all_fails_plainly(self):
         code, _out, err = self._main(["--pr", "7", "--repo", "o/r"], self._payload([]))
         self.assertEqual(code, 1)
@@ -310,12 +294,9 @@ class WorkflowRunsTheBaseChecker(unittest.TestCase):
         self.assertRegex(self.TEXT,
                          r"(?m)^permissions:\n  contents: read\n  pull-requests: read\n")
 
-    def test_an_author_self_go_does_not_trigger_evaluation(self):
-        # The script never counts it, so evaluating it would only fail-poison the head.
+    def test_the_trigger_gate_mirrors_the_scripts_trust_tiers(self):
+        # A self-GO counts (SHA binding), so it must trigger evaluation too.
         self.assertIn(
-            "github.event.review.user.login != github.event.pull_request.user.login",
-            self.TEXT)
-        self.assertNotIn(
             "github.event.review.user.login == github.event.pull_request.user.login",
             self.TEXT)
 

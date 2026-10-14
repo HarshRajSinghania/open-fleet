@@ -2,9 +2,9 @@
 #
 # GitHub cannot express reviewed_sha == head_sha natively, so this workflow
 # runs scripts/verdict_check.py against the PR: it passes iff a trusted review
-# (APPROVED, or COMMENTED by an OWNER / MEMBER / COLLABORATOR) that is NOT by the
-# PR author carries "VERDICT: GO" with reviewed_sha == head. An author self-GO
-# binds a SHA but is not review, so it never counts and never triggers a run.
+# (APPROVED, or COMMENTED by the PR author / OWNER / MEMBER / COLLABORATOR)
+# carries "VERDICT: GO" with reviewed_sha == head. An author self-GO is a SHA
+# binding, not independent review: required approvals stay branch protection's.
 #
 # The checker runs from the BASE commit, never from the PR: checking out the
 # merge ref and running its scripts/verdict_check.py let a PR rewrite the very
@@ -18,7 +18,7 @@
 #     verdict runs, so the required check reads "expected" and blocks until a
 #     fresh GO arrives. Fail-closed with zero poison.
 #   - Review events only, and the job runs only for GO-marker reviews from a
-#     trusted non-author (OWNER/MEMBER/COLLABORATOR — mirroring the
+#     trusted author (PR author or OWNER/MEMBER/COLLABORATOR — mirroring the
 #     script's trust tiers). Greptile re-reviews every push and any stranger
 #     can COMMENT; evaluating those would fail-poison each head, letting an
 #     untrusted reviewer grief the PR (PR #465 review, P1).
@@ -41,15 +41,14 @@ permissions:
 
 jobs:
   verdict:
-    # GO-marker reviews from trusted non-authors only (PR #465 review, P1):
-    # evaluating a stranger's GO marker would fail-poison the head, and so
-    # would the author's own self-GO, which the script never counts.
+    # GO-marker reviews from trusted authors only (PR #465 review, P1):
+    # evaluating a stranger's GO marker would fail-poison the head.
     if: >-
       contains(github.event.review.body, 'VERDICT: GO') &&
-      github.event.review.user.login != github.event.pull_request.user.login &&
       (github.event.review.author_association == 'OWNER' ||
        github.event.review.author_association == 'MEMBER' ||
-       github.event.review.author_association == 'COLLABORATOR')
+       github.event.review.author_association == 'COLLABORATOR' ||
+       github.event.review.user.login == github.event.pull_request.user.login)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

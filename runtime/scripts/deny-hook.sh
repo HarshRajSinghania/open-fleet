@@ -476,9 +476,17 @@ def _is_receipt(args):
 
     if len(ws) >= 2 and is_egress(ws[0]) and ws[1] == "write":
         return True
-    if len(ws) >= 3 and ws[0].rsplit("/", 1)[-1] in ("python", "python3") \
-            and is_egress(ws[1]) and ws[2] == "write":
-        return True
+    # python3 [-u | -W <arg> | --] … egress.py write: versioned interpreters
+    # (python3.12) and interpreter options before the script still run the
+    # writer (PR #567 review, P2). Unrecognized shapes stay unarmed.
+    if ws and re.fullmatch(r"python(3(\.\d+)?)?", ws[0].rsplit("/", 1)[-1]):
+        i = 1
+        while i < len(ws) and ws[i].startswith("-") and ws[i] != "-":
+            if ws[i] == "--":
+                i += 1
+                break
+            i += 2 if ws[i] in ("-W", "-X") else 1
+        return i + 1 < len(ws) and is_egress(ws[i]) and ws[i + 1] == "write"
     return False
 
 

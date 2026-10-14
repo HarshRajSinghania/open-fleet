@@ -1597,6 +1597,12 @@ class TestEgressReceiptRule(HookBase):
             f"{self.RECEIPT} && {{ gh issue close 34; }}",
             f"{self.RECEIPT} && (gh issue close 34)",
             f"{self.RECEIPT} && env gh issue close 34",
+            # The writer through a real interpreter invocation, options and
+            # versioned names included (PR #567 review, P2):
+            "python3 runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "python3 -u runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "python3.12 runtime/scripts/egress.py write --sink x && gh issue close 34",
+            "python3 -W ignore runtime/scripts/egress.py write --sink x && gh issue close 34",
             "gh pr list --state open",
             "gh pr view 12 --json state",
             "gh api repos/o/r/pulls/12 --jq .state",

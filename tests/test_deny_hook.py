@@ -8,6 +8,7 @@ event and the decision is parsed as JSON — the shape is asserted, not assumed.
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1581,6 +1582,36 @@ class TestScriptShape(unittest.TestCase):
         r = subprocess.run(["sh", str(HOOK), "--settings", str(self.tmp / "nope")],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
+
+
+class TestSymlinkSnippetPrinter(unittest.TestCase):
+    """hooks/print-settings-snippet.sh — the other settings-block printer beside
+    `deny-hook.sh --settings`; it has no test module of its own to live in.
+
+    sed escaping covered `&|` only, so a clone path carrying `\\` or `"` emitted
+    invalid JSON, and an unquoted path in the command string split on a space.
+    """
+
+    def test_a_hostile_clone_path_still_emits_valid_json_and_one_argv_word(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / 'we"ird \\ & | $HOME clone'
+            (clone / "hooks").mkdir(parents=True)
+            (clone / "runtime" / "scripts").mkdir(parents=True)
+            for name in ("print-settings-snippet.sh", "settings-snippet.json"):
+                shutil.copy2(ROOT / "hooks" / name, clone / "hooks" / name)
+            gate = clone / "runtime" / "scripts" / "verify-gate.sh"
+            gate.write_text("#!/bin/sh\n", encoding="utf-8")
+            r = subprocess.run(["sh", str(clone / "hooks" / "print-settings-snippet.sh")],
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            emitted = json.loads(r.stdout)
+            commands = [h["command"] for event in emitted["hooks"].values()
+                        for matcher in event for h in matcher["hooks"]]
+            self.assertEqual(len(commands), 2)
+            for command in commands:
+                argv = shlex.split(command)
+                self.assertEqual(os.path.realpath(argv[0]), os.path.realpath(gate), command)
+                self.assertEqual(argv[1], "--event")
 
 
 if __name__ == "__main__":

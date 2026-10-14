@@ -9,7 +9,7 @@
 #   sh hooks/print-settings-snippet.sh              # to stdout
 #   sh hooks/print-settings-snippet.sh --check      # verify the wired script exists
 #
-# Exit: 0 ok · 1 the template or the gate script is missing.
+# Exit: 0 ok · 1 the template or the gate script is missing, or python3 is absent.
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -25,7 +25,29 @@ if [ "${1:-}" = "--check" ]; then
   exit 0
 fi
 
-# The substitution delimiter is | and & is sed-special in the replacement: escape both in the
-# path, or a clone at a path containing either corrupts the emitted settings block (#382).
-ESCAPED=$(printf '%s' "$ROOT" | sed 's/[&|]/\\&/g')
-sed "s|__ORCA_FLEET_ROOT__|$ESCAPED|g" "$TEMPLATE"
+# The path is substituted by python3 into the PARSED template, never by sed into its text:
+# sed escaping covered `&` and `|` (#382) but not `\` or `"`, and a clone path carrying
+# either emitted invalid JSON. Each placeholder-led path is shell-quoted inside the command
+# string (the host runs it through a shell, so a space or `$` in the path would split or
+# expand), then json.dumps encodes the string — both layers escaped by their own encoder.
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required to emit the snippet" >&2; exit 1; }
+python3 - "$TEMPLATE" "$ROOT" <<'PY'
+import json, re, shlex, sys
+
+template, root = sys.argv[1], sys.argv[2]
+with open(template, encoding="utf-8") as fh:
+    data = json.load(fh)
+
+
+def resolve(value):
+    if isinstance(value, dict):
+        return {k: resolve(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve(v) for v in value]
+    if isinstance(value, str):
+        return re.sub(r"__ORCA_FLEET_ROOT__(\S*)", lambda m: shlex.quote(root + m.group(1)), value)
+    return value
+
+
+print(json.dumps(resolve(data), indent=2, ensure_ascii=False))
+PY

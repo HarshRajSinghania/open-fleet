@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""pin_review.py — the rug-pull diff for an upstream pack pin bump (#559).
+
+runtime/pins.json pins the worker packs by commit, but a bump used to record
+only the new commit: nothing said what changed in the pack's instruction
+files or the permissions its skills ask for (Agent Baseline RES-05 — block
+unapproved changes to a component's instructions, tool definitions,
+requested permissions, or integrity references).
+
+This helper makes the bump review mechanical. Given a clone of the pack and
+two commits, it classifies every changed path and emits the review artifact
+skeleton the bumper completes:
+
+    pin_review.py --repo <clone> --pack gstack --from <old> --to <new>
+    pin_review.py --repo <clone> --pack gstack --to <new>   # baseline inventory
+
+Classes:
+    instruction          what an agent will obey: Markdown/prompts anywhere,
+                         SKILL.md / AGENTS.md, skills/ trees
+    permission-surface   what can grant or widen action: hooks, plugin and
+                         package manifests, settings, MCP/tool config
+    code                 everything else
+
+The skeleton's verdict line starts UNREVIEWED; a human or coordinator reads
+the classified lists (and the instruction diffs behind them) and replaces it.
+tests/test_pins.py refuses a pack pin whose current commit has no completed
+artifact under docs/research/pin-reviews/, so a bump without the review does
+not land. The orca pin is out of scope here — pin-it owns its mechanism drift.
+
+Exits: 0 skeleton written to stdout · 2 usage · 3 cannot evaluate (bad repo
+or unresolvable commit). Stdlib-only; git via argv, never a shell line.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import subprocess
+import sys
+from pathlib import Path
+
+INSTRUCTION_SUFFIXES = (".md", ".prompt", ".txt")
+PERMISSION_NAMES = {
+    "plugin.json", "marketplace.json", "package.json", "settings.json",
+    "settings.local.json", "hooks.json", ".mcp.json", "mcp.json",
+}
+PERMISSION_SUFFIXES = (".toml", ".yaml", ".yml")
+CLASSES = ("instruction", "permission-surface", "code")
+
+
+def classify(path: str) -> str:
+    parts = [p.lower() for p in Path(path).parts]
+    name = parts[-1] if parts else path.lower()
+    if name in PERMISSION_NAMES or "hooks" in parts or name.startswith("hook"):
+        return "permission-surface"
+    if name in ("skill.md", "agents.md", "claude.md") or "skills" in parts:
+        return "instruction"
+    if name.endswith(INSTRUCTION_SUFFIXES):
+        return "instruction"
+    if name.endswith(PERMISSION_SUFFIXES) and (
+        "config" in name or ".claude-plugin" in parts or ".github" in parts
+    ):
+        return "permission-surface"
+    return "code"
+
+
+def _git(repo: Path, *argv: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *argv], capture_output=True, text=True, timeout=120
+    )
+    if result.returncode != 0:
+        raise PinReviewError(f"git {' '.join(argv[:2])} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+class PinReviewError(Exception):
+    pass
+
+
+def resolve(repo: Path, ref: str) -> str:
+    return _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+
+
+def changed_paths(repo: Path, old: str | None, new: str) -> list[tuple[str, str]]:
+    """(status, path) pairs old..new; old=None inventories the whole tree."""
+    if old is None:
+        out = _git(repo, "ls-tree", "-r", "--name-only", new)
+        return [("A", line) for line in out.splitlines() if line]
+    out = _git(repo, "diff", "--name-status", f"{old}..{new}")
+    pairs = []
+    for line in out.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        status = fields[0][0]
+        path = fields[-1]  # renames: judge the destination path
+        pairs.append((status, path))
+    return pairs
+
+
+def classify_changes(pairs):
+    grouped = {klass: [] for klass in CLASSES}
+    for status, path in pairs:
+        grouped[classify(path)].append(f"{status} {path}")
+    return {klass: sorted(items) for klass, items in grouped.items()}
+
+
+def render(pack, repo_url, old, new, grouped, date):
+    span = f"`{old}` → `{new}`" if old else f"baseline inventory at `{new}`"
+    lines = [
+        f"# Pin review — {pack} {new[:12]}",
+        "",
+        f"Dated snapshot: {date}. Rug-pull review (RES-05) for the `{pack}` pin in",
+        f"`runtime/pins.json`: {span}.",
+        f"Upstream: {repo_url}",
+        "",
+        f"Verdict: UNREVIEWED — replace after reading the instruction and",
+        "permission-surface changes below (clean | changes-noted: <what>).",
+        "",
+        "## Changed surface by class",
+        "",
+    ]
+    for klass in CLASSES:
+        items = grouped[klass]
+        lines.append(f"### {klass} ({len(items)})")
+        lines.append("")
+        if not items:
+            lines.append("- none")
+        elif len(items) <= 60 or klass == "permission-surface":
+            # The permission surface is always listed in full: it is the part
+            # a reviewer must be able to eyeball entire, baselines included.
+            lines += [f"- `{item}`" for item in items]
+        else:
+            # A baseline inventory of a large pack lists the rollup, not
+            # thousands of paths; bump diffs stay exact because they are small.
+            by_dir = {}
+            for item in items:
+                top = item.split(" ", 1)[1].split("/", 1)[0]
+                by_dir[top] = by_dir.get(top, 0) + 1
+            lines.append(f"- {len(items)} files; by top-level directory:")
+            lines += [f"  - `{d}/`: {n}" for d, n in sorted(by_dir.items())]
+        lines.append("")
+    lines += [
+        "## Reviewer notes",
+        "",
+        "Instruction changes read: <which, and what they now ask the agent to do>",
+        "Permission-surface changes read: <new tools/hooks/scopes, or none>",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--repo", required=True, help="a clone of the pack")
+    parser.add_argument("--pack", required=True, help="the pins.json key (gstack, …)")
+    parser.add_argument("--from", dest="old", help="previous pinned commit (omit: baseline)")
+    parser.add_argument("--to", required=True, help="new pinned commit")
+    args = parser.parse_args(argv)
+
+    repo = Path(args.repo)
+    try:
+        new = resolve(repo, args.to)
+        old = resolve(repo, args.old) if args.old else None
+        pairs = changed_paths(repo, old, new)
+    except (PinReviewError, OSError) as err:
+        print(f"pin_review: {err}", file=sys.stderr)
+        return 3
+    try:
+        origin = _git(repo, "remote", "get-url", "origin").strip()
+    except PinReviewError:
+        # The URL is display provenance, not a safety input: a clone without
+        # an origin still yields a reviewable diff, and the artifact says so.
+        origin = "(no origin remote on the reviewed clone)"
+    grouped = classify_changes(pairs)
+    print(render(args.pack, origin, old, new, grouped,
+                 datetime.date.today().isoformat()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

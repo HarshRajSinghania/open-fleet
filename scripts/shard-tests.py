@@ -76,6 +76,7 @@ WEIGHTS = {
     "test_one_way_doors": 2.2,
     "test_orca_cli": 0.2,
     "test_orphan_wiring": 0.1,
+    "test_pin_review": 0.6,
     "test_pins": 0.1,
     "test_pm": 0.1,
     "test_preflight": 7.1,

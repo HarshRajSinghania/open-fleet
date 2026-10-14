@@ -432,6 +432,47 @@ _WRAPPER_OPERANDS = {
 _SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
 
 
+def _split_env_string(text):
+    # GNU env -S word splitting, to head-finding fidelity: blanks separate,
+    # `\_` is a SEPARATOR (not a literal underscore), other `\x` is a literal
+    # x, single/double quotes group (and vanish). A plain .split() kept
+    # `ignore\_--version` as one word, hiding --version inside what read as
+    # a -W value, so a version print armed a send (PR #567 review, P1).
+    words, cur, quote = [], [], ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                cur.append(ch)
+            i += 1
+            continue
+        if ch in (SQ, DQ):
+            quote = ch
+        elif ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "_":
+                if cur:
+                    words.append("".join(cur))
+                    cur = []
+            else:
+                cur.append(nxt)
+            i += 2
+            continue
+        elif ch in " \t":
+            if cur:
+                words.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    if cur:
+        words.append("".join(cur))
+    return words
+
+
 def _peel_wrapper(ws, operand_flags, is_env=False):
     # ws[0] is env/nice/time/nohup: peel it and its options. Help/version
     # means nothing runs — return the words as they stand.
@@ -445,12 +486,10 @@ def _peel_wrapper(ws, operand_flags, is_env=False):
             return ws[1:]
         if is_env and word in ("-S", "--split-string") and len(ws) > 1:
             # The operand IS the command line env runs: its words take the
-            # head, the words after it become their arguments. A blank
-            # split approximates env quoting closely enough for head-finding;
-            # a mis-split only loses recognition (the safe direction).
-            return ws[1].split() + ws[2:]
+            # head, the words after it become their arguments.
+            return _split_env_string(ws[1]) + ws[2:]
         if is_env and word.startswith("-S") and len(word) > 2:
-            return [word[2:]] + ws[1:]
+            return _split_env_string(word[2:]) + ws[1:]
         if word in operand_flags and len(ws) > 1:
             ws = ws[2:]
         elif word.startswith("-"):

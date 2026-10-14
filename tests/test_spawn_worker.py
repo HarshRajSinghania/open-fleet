@@ -254,6 +254,28 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
         rc, _, err = run_spawn(self.BASE_ARGS)
         self.assert_refused(rc, err, "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1")
 
+    RW = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
+
+    def test_named_hook_settings_without_registration_refused(self):
+        # #562: claiming an armed guard that is not registered refuses.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / "settings.json"
+            settings.write_text("{}")
+            rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "does not register deny-hook.sh")
+
+    def test_missing_hook_settings_file_refused(self):
+        rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            **self.RW, "ORCA_DENY_HOOK_SETTINGS": "/nonexistent/settings.json"})
+        self.assert_refused(rc, err, "does not register deny-hook.sh")
+
+    def test_unverified_arming_warns_but_proceeds_past_the_gate(self):
+        # Unset: the spawn must SAY the guard is unverified (then go on to
+        # fail later for want of a real orca — the warning is what we pin).
+        _rc, _, err = run_spawn(self.BASE_ARGS, env_extra=dict(self.RW))
+        self.assertIn("deny-hook arming UNVERIFIED", err)
+
     def test_danger_without_optin_refused(self):
         rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"PROFILE": "danger"})
         self.assert_refused(rc, err, "ORCA_COORD_ALLOW_DANGER=1")

@@ -133,6 +133,9 @@
 #   SP                        parent dir for retained per-attempt JSON artifacts (default: cwd)
 #   PROFILE                   ro | rw (default) | danger — worker permission profile
 #   ORCA_COORD_ALLOW_AUTONOMOUS_WRITE  must be 1 for PROFILE=rw (accept autonomous bypass workers)
+#   ORCA_DENY_HOOK_SETTINGS   settings file registering deny-hook.sh for workers; named →
+#                             verified armed (registration + live deny probe) or the spawn
+#                             refuses; unset → spawn proceeds with an UNVERIFIED warning
 #   ORCA_COORD_ALLOW_DANGER   must be 1 for PROFILE=danger (implies the above + ephemeral sandbox)
 #   ORCA_SANDBOX_RECIPE       PROFILE=danger only: the orca-per-workspace-env recipe id the lane
 #                             runs in. Required — the opt-in above is intent, this is evidence.
@@ -645,6 +648,32 @@ if [ -n "$override" ] || [ "$PROFILE" = "ro" ]; then
   if [ "$RETRY_REQ_GIVEN" = "1" ]; then
     echo "SPAWN=REFUSED task=${tname} --retry-request is a worker-start flag, and this spawn takes the custom-argv lane (override or PROFILE=ro) where no worker-start runs" >&2
     exit 2
+  fi
+fi
+
+# Deny-hook arming (#562): the rw safety story names the PreToolUse guard, but
+# nothing checked it was actually wired into the worker's settings — the claim
+# was doctrinal. When the operator names the wired settings file, verify
+# fail-closed: it must register deny-hook.sh AND the hook must answer a deny
+# probe. Unnamed, proceed but say UNVERIFIED out loud; never claim a guard
+# nobody checked. ro needs no guard (no write surface to bound); a ro-profile
+# WORKER_CMD override keeps its own semantics behind its own opt-in.
+if [ "$PROFILE" != "ro" ]; then
+  step=deny-hook-arming
+  if [ -n "${ORCA_DENY_HOOK_SETTINGS:-}" ]; then
+    if ! grep -q "deny-hook.sh" "$ORCA_DENY_HOOK_SETTINGS" 2>/dev/null; then
+      echo "SPAWN=REFUSED task=${task} ORCA_DENY_HOOK_SETTINGS='${ORCA_DENY_HOOK_SETTINGS}' does not register deny-hook.sh — wire it (deny-hook.sh --settings <worktree>) or unset the variable to proceed UNVERIFIED" >&2
+      exit 2
+    fi
+    _hook_probe=$(printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | sh "$HERE/deny-hook.sh" 2>/dev/null || true)
+    case "$_hook_probe" in
+      *'"permissionDecision": "deny"'*|*'"permissionDecision":"deny"'*) : ;;
+      *)
+        echo "SPAWN=REFUSED task=${task} deny-hook probe did not deny 'rm -rf /' — the guard is registered but not answering; refusing rather than assuming it is armed" >&2
+        exit 2 ;;
+    esac
+  else
+    echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset) — worktree + review are the safety layer for this spawn" >&2
   fi
 fi
 

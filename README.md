@@ -254,7 +254,7 @@ verified terminal state — see [`runtime/mission-chaining.md`](runtime/mission-
   </picture>
 </p>
 
-*Diagram note (2026-09-16): the callout baked into the image predates the first promotion — it still reads the old state. Regen tracked in #434.*
+*Diagram note (2026-10-14): the image's `external-run` captions ("someone else's repository", "a repository you do not control") predate the tier definition — the tier names a target other than this catalog, whoever owns or runs it ([Proof status](docs/concepts.md#proof-status)). The prompt in `assets/diagrams/generator/specs_new.py` is corrected; the render needs a paid regeneration (#434).*
 
 Every mission's `metadata:` block carries a validator-enforced `proof:` field: `doctrine-only`,
 `self-run`, or `external-run`. A tier cannot be claimed without artifacts that hash true at a
@@ -510,6 +510,9 @@ Two paths work today and a third does not yet; each is walked step by step in
   resolves its playbooks against. It needs a published `dist/` bundle; publication and
   install-witness status are covered in [Install](docs/install.md#copy-installers-and-bundles).
   `python3 scripts/bundle.py --check` validates a temporary bundle without publishing it.
+  A single `skills/<name>/` copied out of this repository is not self-contained (its playbooks,
+  runtime policies and ARCHITECTURE.md live elsewhere); the bundle vendors them per mission —
+  limits in [distribution](docs/distribution.md#self-containment-what-a-single-copied-mission-loses).
 
 ## Repository layout
 

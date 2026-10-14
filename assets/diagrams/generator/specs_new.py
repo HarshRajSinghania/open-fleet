@@ -69,8 +69,8 @@ n("proof-ladder", """Content: a ladder of three rungs drawn as wide boxes, botto
 Bottom rung: doctrine-only, caption: the protocol is written; no recorded run
 Arrow 1 label: a run report that BINDS — a RUN: header, a manifest in the run's own docs/runs/ directory, an inventory that re-hashes at the commit it names
 Middle rung: self-run, caption: run against this repository
-Arrow 2 label: the same binding, on a repository you do not control
-Top rung: external-run, caption: run against someone else's repository
+Arrow 2 label: the same binding, on a repository other than this catalog
+Top rung: external-run, caption: run against any other repository (the tier names the target, not the runner)
 Right side, a note with an amber marker: the live state is the archive — docs/runs/README.md names each mission's tier as its evidence lands; the ladder climbs only through the binding gate
 Footer, small, centred: a mission is never presented as more proven than its evidence — validate.py enforces the field
 Render ONLY the text listed above — no extra captions, no repeated or paraphrased lines, no link hints under the note"""),

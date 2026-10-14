@@ -43,6 +43,27 @@ these specific guarantees and their limits, alongside the available run evidence
 | Symlink the catalog | fork/adapt, or evaluate | `git clone https://github.com/ravidsrk/orca-fleet.git && cd orca-fleet && sh scripts/install.sh` (validates + links every mission; preserves the relative `playbooks/`/`runtime/` refs) |
 | Skill bundle link | a subset on this or a paired host | open the maintainer's unlisted Skills → Share skills link: inspect the exact version, pick all or a subset of its skills, choose global or workspace scope (this computer, a paired runtime, WSL, an SSH host); update, roll back, or remove via Skills → Manage installs |
 
+## Self-containment: what a single copied mission loses
+
+A mission in this repository is **not** self-contained. `skills/<name>/SKILL.md` names its
+playbooks and runtime policies by bare name and links `../../ARCHITECTURE.md`; those files live
+in `playbooks/`, `runtime/` and the repository root. Copy one `skills/<name>/` directory alone
+into a registry or a skills folder and every one of those references dangles — the mission still
+loads, and runs half-blind with nothing saying so. The symlink install and the plugin keep the
+tree intact, which is why they are the supported paths.
+
+`scripts/bundle.py` is the fix for copy installers, and it does vendor per mission: each
+`dist/skills/<name>/` carries `references/` (every playbook and runtime policy the mission
+composes or rides, their transitive references, and `ARCHITECTURE.md` when the mission links
+it), a generated `references/README.md` index that resolves the bare names, `runtime/scripts/`
+plus the runtime JSON (`pins.json`, `one-way-doors.json`, `quarantine.json`, …), and
+`docs/runs/TEMPLATE.md`; outbound links in SKILL.md are rewritten to those copies. Limits that
+remain: the vendored commands expect `ORCA_FLEET_ROOT` exported to the installed mission
+directory; the completion-gate hooks ship at the bundle root (the plugin), not inside each
+mission; and every mission carries its own copy, so a copied mission does not pick up a later
+doctrine fix until it is re-bundled. A registry listing should point at the `dist` branch, never
+at `skills/<name>/` in the source tree.
+
 ## Prerequisites, pinned
 
 Two classes. *Install* prerequisites must hold or `scripts/install.sh` exits 1;

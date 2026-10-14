@@ -450,7 +450,7 @@ N+1's enumeration as findings to triage. A chain that stops early is a correct o
   </picture>
 </p>
 
-*Diagram note (2026-09-16): the callout baked into the image predates the first promotion — it still reads the old state. Regen tracked in #434.*
+*Diagram note (2026-10-14): the image's `external-run` captions ("someone else's repository", "a repository you do not control") predate the tier definition — the tier names a target other than this catalog, whoever owns or runs it (defined below). The prompt in `assets/diagrams/generator/specs_new.py` is corrected; the render needs a paid regeneration (#434).*
 
 Every mission declares how proven it is — `doctrine-only`, `self-run`, or `external-run` — in
 validator-enforced frontmatter, and cannot advance without a linked run report on disk. This is

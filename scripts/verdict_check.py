@@ -34,6 +34,20 @@ CI trigger contract (see verdict-check.yml): the workflow evaluates GO-marker
 reviews and dismissals only — never pushes, so a transient no-GO state cannot
 fail-poison the head (a FAILED conclusion on the head SHA sticks past a newer
 SUCCESS; only a re-run clears it). Post a new review per verdict.
+
+The authoritative gate is ``--post-status`` (verdict-gate.yml). A
+``pull_request_review`` run loads the workflow file from the PR, so its job can
+be rewritten by the PR it gates; verdict-gate.yml is a ``workflow_run`` workflow,
+always loaded from the default branch, and runs THIS file from the default
+branch too. It re-derives the verdict from the GitHub API and posts it as the
+``verdict-gate`` commit status on the PR's current head. A status is
+latest-wins per context, so a later GO clears an earlier failure without a
+re-run; a push leaves the new head with no status, which blocks until a fresh
+GO. With ``--post-status`` the exit code reports whether the status was posted
+(0), not the verdict: the status is the verdict, and a red run on the default
+branch for every unverdicted review would only be noise. Fork PRs carry no PR
+number on the ``workflow_run`` event; ``--head-sha`` finds the one open PR at
+that head.
 """
 
 import argparse
@@ -51,6 +65,10 @@ GH_API = "gh api"
 
 # GitHub-computed review author trust tiers that may carry a COMMENTED GO.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+# The commit-status context verdict-gate.yml posts; branch protection requires it.
+STATUS_CONTEXT = "verdict-gate"
+FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def _author_trusted(review, pr_author):
@@ -163,42 +181,97 @@ def check_pr(pr_number, repo):
     return head_sha, reviews, hits, pr_author
 
 
+def pr_for_head(head_sha, repo):
+    """The number of the one OPEN pull request whose head is ``head_sha``.
+
+    A ``workflow_run`` event lists no pull request for a fork's branch, so the gate
+    finds it by head. None or several is an error, never a guess: a status posted
+    for the wrong PR would gate the right one with someone else's verdict.
+    """
+    if not FULL_SHA_RE.match(head_sha or ""):
+        raise RuntimeError(f"--head-sha must be a full 40-hex SHA, got {head_sha!r}")
+    pulls = _gh_api("pulls?state=open&per_page=100", repo, paginate=True)
+    matches = [p for p in pulls if isinstance(p, dict)
+               and ((p.get("head") or {}).get("sha") or "").lower() == head_sha.lower()]
+    if len(matches) != 1:
+        raise RuntimeError(f"{len(matches)} open pull requests have head {head_sha}; "
+                           "the gate needs exactly one")
+    return str(matches[0].get("number"))
+
+
+def post_status(repo, sha, state, description, context=STATUS_CONTEXT):
+    """POST one commit status. GitHub keeps the latest status per context."""
+    if not FULL_SHA_RE.match(sha or ""):
+        raise RuntimeError(f"cannot post a status on {sha!r}: not a full head SHA")
+    cmd = ["gh", "api", "-X", "POST", "-H", "Accept: application/vnd.github+json",
+           f"repos/{repo}/statuses/{sha}", "-f", f"state={state}",
+           "-f", f"context={context}", "-f", f"description={description[:140]}"]
+    server, run_id = os.environ.get("GITHUB_SERVER_URL"), os.environ.get("GITHUB_RUN_ID")
+    if server and run_id:
+        cmd += ["-f", f"target_url={server}/{repo}/actions/runs/{run_id}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{GH_API} statuses/{sha} failed: {proc.stderr.strip()}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pr", required=True, help="pull request number")
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--pr", help="pull request number")
+    which.add_argument("--head-sha",
+                       help="evaluate the one open PR whose head is this SHA (fork PRs)")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
                         help="owner/repo (default: $GITHUB_REPOSITORY)")
+    parser.add_argument("--post-status", metavar="CONTEXT", nargs="?", const=STATUS_CONTEXT,
+                        help="post the verdict as a commit status on the PR head "
+                             f"(context default: {STATUS_CONTEXT}); exit 0 once posted")
     args = parser.parse_args(argv)
     if not args.repo or "/" not in args.repo:
         print("verdict_check: need --repo owner/repo (or $GITHUB_REPOSITORY)", file=sys.stderr)
         return 2
     try:
-        head_sha, reviews, hits, pr_author = check_pr(args.pr, args.repo)
+        pr_number = args.pr or pr_for_head(args.head_sha, args.repo)
+        head_sha, reviews, hits, pr_author = check_pr(pr_number, args.repo)
     except RuntimeError as exc:
         print(f"verdict_check: {exc}", file=sys.stderr)
         return 2
     gos = [r for r in reviews if VERDICT_RE.search(r.get("body") or "")]
-    print(f"head: {head_sha} (PR author: @{pr_author})")
+    print(f"PR #{pr_number} head: {head_sha} (PR author: @{pr_author})")
     print(f"GO verdict reviews: {len(gos)} submitted, {len(hits)} trusted at tip")
     for hit in hits:
         author = (hit.get("user") or {}).get("login", "?")
         print(f"  GO at tip by @{author} [{hit.get('state')}] "
               f"submitted_at={hit.get('submitted_at')}")
     if hits:
-        print("verdict_check: PASS — GO verdict binds the merge tip")
-        return 0
-    trusted = [r for r in gos
-               if r.get("state") == "APPROVED"
-               or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author))]
-    if trusted:
-        print("verdict_check: FAIL — GO verdicts exist but none binds the current head "
-              "(post a fresh VERDICT: GO with reviewed_sha == head)", file=sys.stderr)
-    elif gos:
-        print("verdict_check: FAIL — GO markers exist only from untrusted authors "
-              "(drive-by COMMENTED reviews never count)", file=sys.stderr)
+        passed, reason = True, "GO verdict binds the merge tip"
     else:
-        print("verdict_check: FAIL — no GO verdict review on this PR", file=sys.stderr)
-    return 1
+        passed = False
+        trusted = [r for r in gos
+                   if r.get("state") == "APPROVED"
+                   or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author))]
+        if trusted:
+            reason = ("GO verdicts exist but none binds the current head "
+                      "(post a fresh VERDICT: GO with reviewed_sha == head)")
+        elif gos:
+            reason = ("GO markers exist only from untrusted authors "
+                      "(drive-by COMMENTED reviews never count)")
+        else:
+            reason = "no GO verdict review on this PR"
+    if passed:
+        print(f"verdict_check: PASS — {reason}")
+    else:
+        print(f"verdict_check: FAIL — {reason}", file=sys.stderr)
+    if args.post_status:
+        try:
+            post_status(args.repo, head_sha, "success" if passed else "failure", reason,
+                        args.post_status)
+        except RuntimeError as exc:
+            print(f"verdict_check: {exc}", file=sys.stderr)
+            return 2
+        print(f"verdict_check: posted {args.post_status}="
+              f"{'success' if passed else 'failure'} on {head_sha}")
+        return 0
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

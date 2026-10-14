@@ -6,6 +6,15 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Trusted merge gate.** `verdict-gate.yml` runs on `workflow_run`, so GitHub loads it from
+  `main`; it runs `main`'s `scripts/verdict_check.py --post-status` and posts the GO verdict as
+  the `verdict-gate` commit status on the PR's current head. A `pull_request_review` run loads
+  its workflow from the PR, so the old `verdict` job could be rewritten by the PR it gated (PR
+  #571 review). Statuses are latest-wins, so a later GO clears a failure without a re-run.
+  The status can be posted by a dedicated GitHub App (`VERDICT_GATE_CLIENT_ID` /
+  `VERDICT_GATE_PRIVATE_KEY`) so a fork's job named `verdict-gate` cannot stand in for it; the
+  branch-protection switch is in [docs/ops.md](docs/ops.md#merge-gate).
+
 - **review-it reads `external-run`** (2026-10-14). The 2026-10-13 Linux witness (#527) —
   a NO-GO verdict on stablyai/orca PR #28206 at `6dcd957a`, four read-only workers, every
   artifact retained in its run directory — was filed at `doctrine-only` as substrate evidence;

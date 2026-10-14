@@ -39,6 +39,31 @@ checks, changing an immutable tag, or treating a review from the author as an in
 review. #530 closes only after a PR actually merges with the second maintainer's approving
 review, recorded in HUMAN_ACTIONS.
 
+## Merge gate
+
+The required check for a GO verdict is the `verdict-gate` commit status, posted by
+[`verdict-gate.yml`](../.github/workflows/verdict-gate.yml). GitHub loads that workflow from
+`main` on `workflow_run`, after every review that
+[`verdict-check.yml`](../.github/workflows/verdict-check.yml) sees, and it runs `main`'s
+`scripts/verdict_check.py`, so nothing a PR edits takes part in gating it. The `verdict` job in
+`verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR, so
+it is not a gate.
+
+Branch protection matches a required check by name, and a fork PR can add a workflow job named
+`verdict-gate`. The status must therefore come from an identity only `main`'s gate can use:
+
+1. Create a GitHub App (Settings → Developer settings → GitHub Apps) with no webhook and two
+   repository permissions: Commit statuses (read and write) and Pull requests (read-only).
+   Install it on this repository only.
+2. In this repository's Actions settings, add variable `VERDICT_GATE_CLIENT_ID` (the app's
+   client ID) and secret `VERDICT_GATE_PRIVATE_KEY` (a private key generated for the app).
+   Repository secrets never reach a fork PR's workflows.
+3. Post a review on any open PR so the gate runs once, then edit the `main` branch rule: require
+   `verdict-gate` with the app as its expected source, and stop requiring `verdict`.
+
+Until step 2, the gate posts as `github-actions` and its run log carries a warning saying so. To
+re-evaluate a PR by hand, run `verdict-gate` from the Actions tab with its number.
+
 ## Release cut
 
 A release has two commits: the **cut** contains its version, dated changelog and a

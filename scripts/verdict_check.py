@@ -6,17 +6,23 @@ GO verdict review whose ``reviewed_sha`` equals the PR's current head SHA. Any
 push moves the head and fails the check until a fresh GO is posted.
 
 Verdict convention (posted as the body of an APPROVING review, or a COMMENTED
-review by the PR author or a collaborator)::
+review by a collaborator other than the PR author)::
 
     VERDICT: GO
     reviewed_sha: <full 40-hex head sha>
 
 A GO counts from an APPROVED review (GitHub restricts Approve to collaborators
-with write access), or from a COMMENTED review whose author is the PR author
-(the coordinator binding its own verdict — the normal fleet flow, since GitHub
-forbids approving your own PR) or whose author_association is OWNER / MEMBER /
-COLLABORATOR. A drive-by COMMENTED GO from anyone else never counts (PR #460
-review, P1). Approval policy beyond that (how many, from whom, conversations
+with write access), or from a COMMENTED review whose author_association is
+OWNER / MEMBER / COLLABORATOR. A drive-by COMMENTED GO from anyone else never
+counts (PR #460 review, P1).
+
+The PR AUTHOR's own GO never counts, whatever their association — not even an
+OWNER's. A self-GO is a record: it binds the SHA its author claims to have
+checked, which an evidence manifest may cite, but it is not review, and this
+check exists to prove an independent reviewer saw the exact head. Counting it
+let any collaborator satisfy the required check on their own PR. A coordinator
+that authors a PR therefore needs a second identity (a reviewer, or a
+collaborator account) to post the GO that merges it. Approval policy beyond that (how many, from whom, conversations
 resolved) stays enforced by branch protection itself; this check adds SHA
 binding, not a second approval rule. Dismissed and change-requested reviews
 never count. Short SHAs are rejected: ambiguity in what was reviewed is
@@ -47,10 +53,15 @@ GH_API = "gh api"
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
-def _author_trusted(review, pr_author):
+def _is_pr_author(review, pr_author):
     login = (review.get("user") or {}).get("login", "")
-    if pr_author and login == pr_author:
-        return True
+    return bool(pr_author) and login == pr_author
+
+
+def _author_trusted(review, pr_author):
+    """A COMMENTED review may carry a GO: trusted tier, and never the PR author."""
+    if _is_pr_author(review, pr_author):
+        return False
     return review.get("author_association") in TRUSTED_ASSOCIATIONS
 
 
@@ -67,10 +78,12 @@ def go_reviews_at_tip(reviews, head_sha, pr_author=None):
     hits = []
     for review in reviews:
         state = review.get("state")
+        if _is_pr_author(review, pr_author):
+            continue  # a self-GO binds a SHA but is not review (module docstring).
         if state == "APPROVED":
             pass  # Approve is collaborator-only; the state is the signal.
         elif state == "COMMENTED" and _author_trusted(review, pr_author):
-            pass  # own-PR verdict or trusted tier (PR #460 P1 + self-approval).
+            pass  # trusted tier (PR #460 P1).
         else:
             # DISMISSED never counts; CHANGES_REQUESTED with a GO marker is
             # self-contradictory; COMMENTED from an untrusted author is a
@@ -90,35 +103,67 @@ def verdict_at_tip(reviews, head_sha, pr_author=None):
     return bool(go_reviews_at_tip(reviews, head_sha, pr_author))
 
 
-def _gh_api(path, repo):
-    cmd = ["gh", "api", "--paginate", "-H", "Accept: application/vnd.github+json",
-           f"repos/{repo}/{path.lstrip('/')}"]
+def _json_values(text):
+    """Every top-level JSON value in ``text``, in order.
+
+    Robust to however the pages arrive: one document, documents on separate
+    lines, or arrays concatenated with no separator at all (``][``) — which
+    is what plain ``--paginate`` emits, and which a line splitter misreads.
+    """
+    decoder = json.JSONDecoder()
+    values, i, n = [], 0, len(text)
+    while True:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            return values
+        value, i = decoder.raw_decode(text, i)
+        values.append(value)
+
+
+def _gh_api(path, repo, paginate=False):
+    """GET ``repos/<repo>/<path>``. ``paginate=True`` is for LIST endpoints: every page is
+    fetched (``--paginate --slurp`` wraps them in one outer array) and merged into one list.
+    A single-object endpoint is fetched unpaginated and returned as the object."""
+    cmd = ["gh", "api"]
+    if paginate:
+        cmd += ["--paginate", "--slurp"]
+    cmd += ["-H", "Accept: application/vnd.github+json", f"repos/{repo}/{path.lstrip('/')}"]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"{GH_API} {path} failed: {proc.stderr.strip()}")
-    out = proc.stdout.strip()
-    if not out:
-        return []
     try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        # --paginate concatenates one JSON array per page; merge them.
-        merged = []
-        for line in out.splitlines():
-            line = line.strip()
-            if line:
-                merged.extend(json.loads(line))
-        return merged
+        values = _json_values(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{GH_API} {path} returned unparseable JSON: {exc}") from exc
+    if not paginate:
+        if len(values) > 1:
+            raise RuntimeError(f"{GH_API} {path} returned {len(values)} JSON documents, want 1")
+        return values[0] if values else {}
+    merged = []
+    for value in values:
+        if not isinstance(value, list):
+            raise RuntimeError(f"{GH_API} {path}: expected a list of pages, got "
+                               f"{type(value).__name__}")
+        # --slurp: [[page1…], [page2…]]; a gh without --slurp: [page1…][page2…].
+        for item in value:
+            if isinstance(item, list):
+                merged.extend(item)
+            else:
+                merged.append(item)
+    return merged
 
 
 def check_pr(pr_number, repo):
     """Fetch the PR head SHA + reviews and evaluate the verdict rule."""
     pr = _gh_api(f"pulls/{pr_number}", repo)
-    if isinstance(pr, list):  # paginated single-object response
+    if isinstance(pr, list):  # tolerate a wrapped single-object response
         pr = pr[0] if pr else {}
+    if not isinstance(pr, dict):
+        pr = {}
     head_sha = (pr.get("head") or {}).get("sha", "")
     pr_author = (pr.get("user") or {}).get("login", "")
-    reviews = _gh_api(f"pulls/{pr_number}/reviews", repo)
+    reviews = _gh_api(f"pulls/{pr_number}/reviews", repo, paginate=True)
     if not isinstance(reviews, list):
         reviews = []
     hits = go_reviews_at_tip(reviews, head_sha, pr_author)
@@ -149,12 +194,18 @@ def main(argv=None):
     if hits:
         print("verdict_check: PASS — GO verdict binds the merge tip")
         return 0
+    own = [r for r in gos if _is_pr_author(r, pr_author)]
     trusted = [r for r in gos
-               if r.get("state") == "APPROVED"
-               or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author))]
+               if not _is_pr_author(r, pr_author)
+               and (r.get("state") == "APPROVED"
+                    or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author)))]
     if trusted:
         print("verdict_check: FAIL — GO verdicts exist but none binds the current head "
               "(post a fresh VERDICT: GO with reviewed_sha == head)", file=sys.stderr)
+    elif own and len(own) == len(gos):
+        print(f"verdict_check: FAIL — the only GO verdicts are by the PR author "
+              f"(@{pr_author}); a self-GO binds a SHA but is not review — an independent "
+              "collaborator must post VERDICT: GO at the head", file=sys.stderr)
     elif gos:
         print("verdict_check: FAIL — GO markers exist only from untrusted authors "
               "(drive-by COMMENTED reviews never count)", file=sys.stderr)

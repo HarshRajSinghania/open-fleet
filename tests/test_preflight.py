@@ -292,6 +292,9 @@ class TestQuarantineInvariant(unittest.TestCase):
         (repo / "runtime").mkdir()
         (repo / "runtime" / "quarantine.json").write_text(
             json.dumps({"quarantined": quarantined}))
+        skill = repo / "skills" / "ship-it"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# ship-it fixture\n")
         return repo
 
     def _run(self, repo, *extra):

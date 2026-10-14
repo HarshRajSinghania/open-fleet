@@ -473,7 +473,7 @@ maintainer-run. No tier yet rests on a run by someone outside the project; the
 
 Be precise about what the gate buys, because it is weaker than "re-derives" would imply and
 [`run_report.py`](../runtime/scripts/run_report.py) says so in its own docstring: **it hashes, it
-does not re-run the verifier.** The [2026-09-11 review](../REVIEW.md) fabricated a `map-it`
+does not re-run the verifier.** The [2026-09-11 review](reviews/2026-09-11-review.md) fabricated a `map-it`
 self-run — seven files, one commit, under fifteen minutes — that reported "bound" and passed
 `validate.py`, `proof_status.py --check` and the whole suite, because files a worker writes and
 commits hash true at the commit that contains them. What the gate really refuses is a tier claimed

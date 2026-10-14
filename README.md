@@ -265,7 +265,7 @@ named commit: a run report with a `RUN:` header, an evidence manifest inside the
 <!-- END GENERATED: proof-status -->
 The [run archive](docs/runs/) records every run
 that really happened and says, per run, whether and why it binds. Be precise about what the gate
-buys: it hashes, it does not re-run the verifier, and [the 2026-09-11 review](REVIEW.md) showed
+buys: it hashes, it does not re-run the verifier, and [the 2026-09-11 review](docs/reviews/2026-09-11-review.md) showed
 that a fabricated run can pass it; closing that is
 [#281](https://github.com/ravidsrk/orca-fleet/issues/281) and
 [#286](https://github.com/ravidsrk/orca-fleet/issues/286). Why the number went *down* as the
@@ -613,7 +613,7 @@ If a fleet touches your default branch, that is a bug — file it. The full trus
   against the EU AI Act's logging obligations.
 - [docs/research/](docs/research/README.md) — dated research snapshots and the ledger of rejected
   mission candidates.
-- [REVIEW.md](REVIEW.md) — the 2026-09-11 review; the earlier one is
+- [docs/reviews/2026-09-11-review.md](docs/reviews/2026-09-11-review.md) — the 2026-09-11 review; the earlier one is
   [docs/reviews/2026-09-10-review.md](docs/reviews/2026-09-10-review.md), the later one
   [docs/reviews/2026-09-14-holistic-review.md](docs/reviews/2026-09-14-holistic-review.md)
   (filed as #349–#386).

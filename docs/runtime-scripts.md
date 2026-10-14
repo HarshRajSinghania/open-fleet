@@ -127,7 +127,9 @@ Flags: `--help`, `--settings`.
 HIGH tier denies (never asks) for Bash: recursive delete rooted at `/`, `~`, `$HOME`, or
 `/*` (or carrying `--no-preserve-root`); force-push to the default branch (including the
 `+main` refspec and outright deletion forms); `git push --force` without an effective
-`--force-with-lease`; `orca orchestration reset`. An effective `--force-with-lease` exempts
+`--force-with-lease`; `git push --mirror` and `--prune` (each deletes remote refs it never
+names); `orca orchestration reset`. Push long options are read the way git reads them, so an
+unambiguous abbreviation (`--del`, `--mi`, `--no-force-w`) is the option it expands to. An effective `--force-with-lease` exempts
 a force-push but never a deletion. The Never list asks instead: live-prod mutation,
 credential provisioning, destructive teardown, unpinned remote execution, publishing,
 history-discarding local git. When `ORCA_UNIT_WORKTREE` is set, writes outside it deny —

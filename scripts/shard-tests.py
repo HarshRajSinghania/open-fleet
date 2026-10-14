@@ -80,6 +80,7 @@ WEIGHTS = {
     "test_pm": 0.1,
     "test_preflight": 7.1,
     "test_proof_status": 0.1,
+    "test_quarantine": 0.2,
     "test_release_check": 12.5,
     "test_release_status_docs": 0.1,
     "test_repo_hygiene": 0.4,

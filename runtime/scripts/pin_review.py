@@ -70,9 +70,16 @@ def classify(path: str) -> str:
 
 
 def _git(repo: Path, *argv: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *argv], capture_output=True, text=True, timeout=120
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *argv], capture_output=True, text=True,
+            timeout=120
+        )
+    except subprocess.TimeoutExpired as err:
+        # A slow on-demand fetch (blobless clone) is a cannot-evaluate like
+        # any other git failure — never a traceback with the wrong exit code.
+        raise PinReviewError(
+            f"git {' '.join(argv[:2])} timed out after {err.timeout}s") from err
     if result.returncode != 0:
         raise PinReviewError(f"git {' '.join(argv[:2])} failed: {result.stderr.strip()}")
     return result.stdout
@@ -166,6 +173,52 @@ def render(pack, repo_url, old, new, grouped, date):
 VERDICT_LINE = re.compile(
     r"^Verdict: (baseline recorded|clean|changes-noted)\b.*$", re.MULTILINE
 )
+
+# The only artifacts allowed to carry the `baseline recorded` verdict: the
+# inventories of the initially pinned commits, taken when the review was
+# introduced (#559). Every later pin is a BUMP and must review the diff —
+# without this fence, running the helper without --from and filling the
+# notes would pass a bump with no diff read at all (PR #566 review, P1).
+BASELINE_ARTIFACTS = frozenset({
+    "addyosmani-be4e44a9fbc5e8df0beaefadbb28bd22ee61cc39.md",
+    "gstack-71f6048e.md",
+    "mattpocock-3cca18b.md",
+})
+
+SPAN = re.compile(r"`([0-9a-f]{7,40})` → `([0-9a-f]{7,40})`")
+
+
+def artifact_kind_problems(text, filename, pinned_commit):
+    """Baseline-vs-bump shape problems for one artifact, or [].
+
+    A baseline artifact (in BASELINE_ARTIFACTS) must be an inventory; any
+    other artifact must carry a diff span `old → new` whose new side is
+    the pinned commit (prefix-related either way: the pin may abbreviate
+    what render resolved, or the reverse). A `baseline recorded` verdict
+    outside the baseline set is a bump trying to skip its diff.
+    """
+    problems = []
+    verdict = VERDICT_LINE.search(text)
+    is_baseline_verdict = bool(verdict and verdict.group(1) == "baseline recorded")
+    span = SPAN.search(text)
+    if filename in BASELINE_ARTIFACTS:
+        if not is_baseline_verdict:
+            problems.append(
+                "a baseline artifact must carry the `baseline recorded` verdict")
+        return problems
+    if is_baseline_verdict:
+        problems.append(
+            "only the initial inventory artifacts may record a baseline — "
+            "a pin bump must review the diff old → new")
+    if span is None:
+        problems.append(
+            "no diff span `old` → `new` — generate with --from <old pin>")
+    else:
+        new = span.group(2)
+        if not (new.startswith(pinned_commit) or pinned_commit.startswith(new)):
+            problems.append(
+                f"diff span ends at {new}, not the pinned commit {pinned_commit}")
+    return problems
 
 
 def completed_review_problems(text):

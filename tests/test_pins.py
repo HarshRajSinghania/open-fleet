@@ -325,6 +325,14 @@ class PackPinsCarryRugPullReviews(unittest.TestCase):
                 pin_review.completed_review_problems(text), [],
                 f"{artifact.name} is not a completed review",
             )
+            # A baseline verdict is only for the initial inventories; a bump
+            # must carry a diff span ending at the pinned commit (PR #566
+            # review, P1: otherwise --from-less generation skips the diff).
+            self.assertEqual(
+                pin_review.artifact_kind_problems(
+                    text, artifact.name, entry["commit"]), [],
+                f"{artifact.name} has the wrong artifact shape for its pin",
+            )
             self.assertIn(
                 entry["commit"][:7], text,
                 f"{artifact.name} does not name the pinned commit it reviews",

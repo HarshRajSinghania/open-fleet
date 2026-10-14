@@ -266,6 +266,62 @@ class LibraryAndMain(unittest.TestCase):
             self.assertEqual(rc, 3)
             self.assertIn("pin_review:", err)
 
+    def test_git_timeout_is_cannot_evaluate_not_traceback(self):
+        # A slow on-demand fetch (blobless clone) must surface as the
+        # documented cannot-evaluate, not a raw TimeoutExpired (PR #566 P2).
+        def slow(*argv, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=120)
+
+        original = pr.subprocess.run
+        pr.subprocess.run = slow
+        try:
+            with self.assertRaises(pr.PinReviewError):
+                pr._git(Path("."), "rev-parse", "HEAD")
+        finally:
+            pr.subprocess.run = original
+
+
+class ArtifactKind(unittest.TestCase):
+    """Baseline verdicts belong to the initial inventories only; every
+    later pin is a bump and must carry a diff span to the pinned commit
+    (PR #566 review, P1)."""
+
+    BUMP = "a" * 40
+    OLD = "b" * 40
+
+    def bump_text(self, verdict="clean", span=True, new=None):
+        span_line = f"`{self.OLD}` → `{new or self.BUMP}`" if span else "x"
+        return f"Verdict: {verdict}\n{span_line}\n"
+
+    def test_shipped_baselines_pass(self):
+        for name in pr.BASELINE_ARTIFACTS:
+            self.assertEqual(
+                pr.artifact_kind_problems(
+                    "Verdict: baseline recorded\n", name, "c" * 40), [], name)
+
+    def test_baseline_artifact_needs_baseline_verdict(self):
+        name = sorted(pr.BASELINE_ARTIFACTS)[0]
+        self.assertTrue(pr.artifact_kind_problems(
+            self.bump_text(), name, "c" * 40))
+
+    def test_bump_with_span_to_the_pin_passes(self):
+        self.assertEqual(pr.artifact_kind_problems(
+            self.bump_text(), "demo-x.md", self.BUMP), [])
+        # Abbreviated pin against a full span, and the reverse.
+        self.assertEqual(pr.artifact_kind_problems(
+            self.bump_text(), "demo-x.md", self.BUMP[:8]), [])
+
+    def test_bump_cannot_wear_a_baseline_verdict(self):
+        problems = pr.artifact_kind_problems(
+            self.bump_text(verdict="baseline recorded"), "demo-x.md", self.BUMP)
+        self.assertTrue(any("bump must review the diff" in p for p in problems))
+
+    def test_bump_without_span_or_to_wrong_commit_fails(self):
+        self.assertTrue(pr.artifact_kind_problems(
+            self.bump_text(span=False), "demo-x.md", self.BUMP))
+        self.assertTrue(pr.artifact_kind_problems(
+            self.bump_text(new="d" * 40), "demo-x.md", self.BUMP))
+
 
 if __name__ == "__main__":
     unittest.main()

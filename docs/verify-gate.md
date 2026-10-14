@@ -131,8 +131,9 @@ worker-set; anything else in the environment is ignored):
   the result into a throwaway sibling commit of `head_sha`, and runs `negative_control.command`
   three times: **zero** at clean `head_sha`, **non-zero** at the sealed control, **zero** at clean
   `head_sha` again. Each run gets its own repository, with every ref that named `head_sha`
-  pointing at that phase's commit and an annotated tag staying an annotated tag of it, with
-  any signature removed in every phase (a clean `git status`, `HEAD` equal to the branch ref,
+  pointing at that phase's commit and an annotated tag staying an annotated tag of it — a tag
+  of a tag stays a chain — with any signature removed in every phase, including one appended
+  after the message (a clean `git status`, `HEAD` equal to the branch ref,
   and `git cat-file -t` unchanged, in every phase) and a fresh empty HOME and TMPDIR, so a
   proof that detects the phase — a
   dirty tree, a first-run marker, a branch ref left on `head_sha`, a tag flattened to a

@@ -862,6 +862,82 @@ class ControlPhasesAreIndistinguishable(RepoCase):
         self.assertFalse(ok, msgs)
         self.assertTrue(any("CLEAN" in x for x in msgs), msgs)
 
+    def test_a_message_signature_is_not_a_kill(self):
+        # v0.7.1's layout: the SSH signature is appended after the message, not a
+        # gpgsig header. It verifies on an unchanged object line and would fail only
+        # under the control. Stripping it on the clean replay too makes that proof
+        # fail before the control.
+        keydir = tempfile.mkdtemp(prefix="orca-nc-key-")
+        self.addCleanup(lambda: shutil.rmtree(keydir, ignore_errors=True))
+        key = str(Path(keydir) / "id_ed25519")
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-q", "-N", "", "-f", key], check=True)
+        pub = Path(key + ".pub").read_text(encoding="utf-8").strip()
+        self.write("signers", f't@t namespaces="git" {pub}\n')
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "r = subprocess.run(['git', '-c', 'gpg.format=ssh', '-c',"
+                   " 'gpg.ssh.allowedSignersFile=signers', 'verify-tag', 'v1'],"
+                   " capture_output=True)\n"
+                   "assert r.returncode == 0, r.stderr\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+             "-c", "gpg.format=ssh", "-c", f"user.signingkey={key}",
+             "tag", "-s", "v1", "-m", "orca-fleet 0.7.1"],
+            cwd=self.repo, check=True, capture_output=True)
+        pre = subprocess.run(
+            ["git", "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile=signers",
+             "verify-tag", "v1"],
+            cwd=self.repo, capture_output=True, timeout=30)
+        self.assertEqual(pre.returncode, 0, pre.stderr.decode())
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertFalse(ok, msgs)
+        self.assertTrue(any("CLEAN" in x for x in msgs), msgs)
+
+    def test_a_nested_tag_of_head_does_not_block_a_real_kill(self):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py", "import app\nassert app.VALUE == 2\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "inner", "-m", "inner")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "outer", "-m", "outer", "inner")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertTrue(ok, msgs)
+
+    def test_a_nested_tag_stays_a_chain_in_every_phase(self):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "def git(*args):\n"
+                   "    return subprocess.run(['git', *args], capture_output=True,"
+                   " text=True, check=True).stdout.strip()\n"
+                   "assert git('cat-file', '-t', 'outer') == 'tag'\n"
+                   "assert git('cat-file', '-t', 'inner') == 'tag'\n"
+                   "kind = git('cat-file', '-p', 'outer').splitlines()[1]\n"
+                   "assert kind == 'type tag', kind\n"
+                   "assert git('rev-parse', 'outer^{commit}') == git('rev-parse', 'HEAD')\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "inner", "-m", "inner")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "outer", "-m", "outer", "inner")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
     def test_a_proof_that_compares_head_to_its_branch_ref_is_not_killed(self):
         # refs/heads/main points at head_sha in the source. A linked worktree would still
         # see that ref under the sealed control, so HEAD != refs/heads/main only then.

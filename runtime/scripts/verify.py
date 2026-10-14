@@ -1794,8 +1794,9 @@ def execute_negative_control(m, nc_command=None):
     fails clean proves nothing; one that passes under the control is a TAUTOLOGY. The phases are
     indistinguishable by git status, HOME, TMPDIR, a branch ref, or tag type: each repository
     copies the source's ref layout, and every ref that named head_sha names that phase's commit
-    instead. An annotated tag stays an annotated tag of that commit, so `git cat-file -t` agrees
-    with the clean checkout and `HEAD` equals `refs/heads/<branch>` in the control run too
+    instead. An annotated tag stays an annotated tag of that commit, and a tag of a tag stays a
+    chain, so `git cat-file -t` agrees with the clean checkout and `HEAD` equals
+    `refs/heads/<branch>` in the control run too
     (PR #571 review). The object store is reached through alternates, named in the filesystem
     encoding; a proof that opens that file and reads the source repo is the residual a
     coordinator's clean-env re-run still has to cover.
@@ -1854,20 +1855,26 @@ def execute_negative_control(m, nc_command=None):
                  env=_Authority.git_env())
             shutil.rmtree(holder, ignore_errors=True)
 
-    def _retarget_tag(top, repo, tag_sha, commit):
-        """A new annotated tag object with the same body and `commit` as its target.
-        Returns (new_sha, err). Replacing the tag with the bare commit would make
-        `git cat-file -t` and `git describe` disagree with the clean checkout."""
-        git, env = _Authority.git_bin(), _Authority.git_env()
-        code, raw, gerr = _run_bytes([git, "-C", top, "cat-file", "tag", tag_sha],
-                                    timeout=30, env=env)
+    def _tag_kind(raw):
+        """('commit'|'tag', object sha) for an annotated tag, else (None, None)."""
         nl = raw.find(b"\n")
-        if code != 0 or nl < 0 or not raw.startswith(b"object ") \
-                or not raw[nl:].startswith(b"\ntype commit\n"):
-            return None, gerr.strip() or "not an annotated tag of a commit"
-        # A signature covers the object line. Left in place it verifies on the clean
-        # replay (same target) and fails under the control, so `git verify-tag` would
-        # be graded a kill. Drop it in every phase; the tag stays annotated.
+        if nl < 0 or not raw.startswith(b"object "):
+            return None, None
+        obj = raw[len(b"object "):nl]
+        if not HEX40_RE.fullmatch(obj.decode("ascii", "replace")):
+            return None, None
+        line = raw[nl + 1:].split(b"\n", 1)[0]
+        if line == b"type commit":
+            return "commit", obj.decode("ascii")
+        if line == b"type tag":
+            return "tag", obj.decode("ascii")
+        return None, None
+
+    def _unsigned_tag(raw):
+        """Drop every signature. A `gpgsig` header and a signature appended after the
+        message (the v0.7.1 SSH layout, which git's parse_signature cuts at the first
+        BEGIN line) both cover the object line, so either one verifies on the clean
+        replay and fails only under the control."""
         header, sep, body = raw.partition(b"\n\n")
         kept, skipping = [], False
         for line in header.split(b"\n"):
@@ -1878,9 +1885,42 @@ def execute_negative_control(m, nc_command=None):
                 continue
             skipping = False
             kept.append(line)
-        raw = b"\n".join(kept) + sep + body
+        marks = (b"-----BEGIN PGP SIGNATURE-----", b"-----BEGIN SSH SIGNATURE-----")
+        lines = body.split(b"\n")
+        for i, line in enumerate(lines):
+            if line.startswith(marks):
+                lines = lines[:i]
+                break
+        body = b"\n".join(lines)
+        return b"\n".join(kept) + sep + body
+
+    def _retarget_tag(top, repo, tag_sha, commit, seen=None):
+        """A new annotated tag whose target is this phase's commit. A tag of a tag is
+        rewritten as a chain, each layer still a tag. Returns (new_sha, err). Replacing
+        the tag with the bare commit would make `git cat-file -t` disagree with the
+        clean checkout."""
+        if seen is None:
+            seen = set()
+        if tag_sha in seen or len(seen) >= 8:
+            return None, "annotated tag chain is cyclic or too deep"
+        seen.add(tag_sha)
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, raw, gerr = _run_bytes([git, "-C", top, "cat-file", "tag", tag_sha],
+                                    timeout=30, env=env)
+        kind, obj = _tag_kind(raw) if code == 0 else (None, None)
+        if kind is None:
+            return None, gerr.strip() or "not an annotated tag of a commit or a tag"
+        raw = _unsigned_tag(raw)
+        if kind == "tag":
+            obj, err = _retarget_tag(top, repo, obj, commit, seen)
+            if err:
+                return None, err
+        else:
+            obj = commit
         nl = raw.find(b"\n")
-        rewritten = b"object " + commit.encode("ascii") + raw[nl:]
+        if nl < 0 or not raw.startswith(b"object "):
+            return None, "annotated tag lost its object line"
+        rewritten = b"object " + obj.encode("ascii") + raw[nl:]
         code, new, gerr = _run_at(repo, [git, "hash-object", "-t", "tag", "-w", "--stdin"],
                                   stdin_bytes=rewritten, env=env)
         new = new.strip()
@@ -1890,9 +1930,10 @@ def execute_negative_control(m, nc_command=None):
 
     def _stage_phase_repo(top, head, commit, repo, phase):
         """Build `repo` with the source's refs, retargeting any ref that names `head` onto
-        `commit`. An annotated tag stays an annotated tag of that commit: the object line
-        is rewritten and any signature is dropped, in the clean phases too. Returns an error
-        string, or None. Objects come from the source through
+        `commit`. An annotated tag stays an annotated tag of that commit, and a tag of a tag
+        stays a chain of tags. Signatures, including one appended after the message, are
+        dropped in the clean phases too. Returns an error string, or None. Objects come
+        from the source through
         alternates, so the sealed mutant (written into the source) is visible without a copy."""
         git, env = _Authority.git_bin(), _Authority.git_env()
         code, _, gerr = _run([git, "init", "-q", repo], timeout=60, env=env)

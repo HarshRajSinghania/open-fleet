@@ -219,13 +219,13 @@ evidence-based definition of done. Click through for the full guide to each.
 | 📦 **[modernize-it](docs/missions/modernize-it.md)** | `doctrine-only` | Dependency currency via expand/migrate/contract at the code level: `CURRENT` or `CURRENT-WITH-PINNED`, every pin justified | "update the dependencies", "framework migration" |
 | 🧪 **[prove-it](docs/missions/prove-it.md)** | `self-run` | A mutation-audited critical surface: `COVERED` or `COVERED-WITH-PARKED`, tests that die when the code is mutated | "close the test gap", "cover the critical paths" |
 | 🎯 **[deflake-it](docs/missions/deflake-it.md)** | `doctrine-only` | Flake eradication to a statistical streak, local **and** CI: `STABLE` or `STABLE-WITH-QUARANTINE` | "kill the flaky tests", "deflake the suite" |
-| 🔍 **[review-it](docs/missions/review-it.md)** | `doctrine-only` | A trusted, read-only, SHA-bound GO/NO-GO verdict — acceptance always, risk lenses when the diff triggers them. **No fix authority.** | "review this PR", "is this ready to merge" |
+| 🔍 **[review-it](docs/missions/review-it.md)** | `external-run` | A trusted, read-only, SHA-bound GO/NO-GO verdict — acceptance always, risk lenses when the diff triggers them. **No fix authority.** | "review this PR", "is this ready to merge" |
 | 🗺️ **[map-it](docs/missions/map-it.md)** | `doctrine-only` | A foggy multi-session goal resolved into a frozen execution map `ship-it` can consume — decisions, not deliverables | "chart this", "plan this epic", "I don't know the shape yet" |
 | 🔬 **[root-cause](docs/missions/root-cause.md)** | `doctrine-only` | A reproduced symptom and a demonstrated cause: repro-first → falsify rival hypotheses → one survivor, with evidence; optional fix handoff | "diagnose this", "why is this happening" |
 | 🤝 **[oss-contribute](docs/missions/oss-contribute.md)** | `doctrine-only` | Upstream issues on a repo you do NOT control, each landed as an open, reviewed, etiquette-correct PR (or a quoted review-assist on an existing PR): `CONTRIBUTED` or `CONTRIBUTED-WITH-PARKED`, merge left to maintainers | "contribute to this project", "open PRs upstream", "we only have a fork" |
 | 📋 **[attest-it](docs/missions/attest-it.md)** | `doctrine-only` | Conformance to a frozen standard (EU AI Act Art-12/50, SOC 2, NIST SSDF) proven with independently re-derived, auditor-grade evidence: `CONFORMANT` or `CONFORMANT-WITH-GAPS` (gaps parked to a human/legal owner) | "prove compliance", "conformance", "audit-ready evidence", "SOC 2 / EU AI Act / SSDF" |
 | ♿ **[access-it](docs/missions/access-it.md)** | `doctrine-only` | A frozen page/flow set driven to WCAG 2.2 AA (EAA/ADA/508): a deterministic axe-core oracle clean + a revert-to-violation negative control, the ~30–40% automation ceiling parked to a human-AT reviewer: `CONFORMANT` or `CONFORMANT-WITH-MANUAL-PARKED` | "accessibility", "a11y", "WCAG", "screen reader / keyboard" |
-| 📌 **[pin-it](docs/missions/pin-it.md)** | `doctrine-only` | Runtime doctrine re-witnessed against the installed binary: every mechanics claim receipted CURRENT, patched with receipts, or removed with an archived refutation — `PINNED` or `PINNED-WITH-PARKED` | "Orca updated", "re-pin the runtime contract", "policy lags practice" |
+| 📌 **[pin-it](docs/missions/pin-it.md)** | `doctrine-only` | *Maintainer-facing — audits the fleet's own Orca doctrine, not your code.* Runtime doctrine re-witnessed against the installed binary: every mechanics claim receipted CURRENT, patched with receipts, or removed with an archived refutation — `PINNED` or `PINNED-WITH-PARKED` | "Orca updated", "re-pin the runtime contract", "policy lags practice" |
 | 🧱 **[floor-it](docs/missions/floor-it.md)** | `doctrine-only` | A written, numbered quality bar: one tool per frozen dimension, every gate proven RED on an injected violation before it blocks CI, and a guard against bar-lowering diffs — `FLOORED` or `FLOORED-WITH-PARKED` | "set the quality bar", "make CI enforce", "define our standards" |
 | 🧬 **[reshape-it](docs/missions/reshape-it.md)** | `doctrine-only` | Confirmed hot modules deepened behind smaller, testable interfaces with behaviour demonstrably unchanged — characterization net pinned before any restructure: `RESHAPED` or `RESHAPED-WITH-PARKED` | "god file", "architecture erosion", "refactor the hot path safely" |
 | 📱 **[field-test-it](docs/missions/field-test-it.md)** | `doctrine-only` | On-device reproduce → fix → re-verify at the head SHA with a revert negative control — the ledgered device session is the oracle, never a desktop pass: `FIELD-PROVEN` or `FIELD-PROVEN-WITH-PARKED` | "test on a real device", "works on desktop, breaks on mobile", "emulator QA" |
@@ -233,7 +233,7 @@ evidence-based definition of done. Click through for the full guide to each.
 | 📟 **[oncall-it](docs/missions/oncall-it.md)** | `doctrine-only` | A frozen path set made operable: every on-call question answered by a quoted signal, symptom alerts test-fired with runbooks, and an induced staging failure named by a source-blind worker: `OPERABLE` or `OPERABLE-WITH-PARKED` | "make this operable", "we were blind during the incident", "add observability" |
 | 📥 **[absorb-it](docs/missions/absorb-it.md)** | `doctrine-only` | An inbound PR queue drained: each contribution absorbed with authorship preserved and a RED-on-base / GREEN-on-head receipt, refuted with a reproduction, or parked with a named ask: `ABSORBED` or `ABSORBED-WITH-PARKED` | "drain the PR queue", "absorb these community contributions", "close out the contributor backlog" |
 | 📚 **[document-it](docs/missions/document-it.md)** | `doctrine-only` | A public surface covered by quadrant with zero critical gaps, every claim bound to a `file:symbol` or a run and proven by a rename-to-RED control: `DOCUMENTED` or `DOCUMENTED-WITH-PARKED` | "document this project", "the API is undocumented", "docs coverage" |
-| ☁️ **[offload-it](docs/missions/offload-it.md)** | `doctrine-only` | A per-workspace environment recipe stood up end to end — doctor-clear (no fail, no warn) plus a live provision enacting create→validate→destroy: `OFFLOADED` or `OFFLOADED-WITH-PARKED` | "run this in the cloud", "sandbox recipe", "per-workspace environment" |
+| ☁️ **[offload-it](docs/missions/offload-it.md)** | `doctrine-only` | *Orca-environment setup — builds where the fleet runs, not your code.* A per-workspace environment recipe stood up end to end — doctor-clear (no fail, no warn) plus a live provision enacting create→validate→destroy: `OFFLOADED` or `OFFLOADED-WITH-PARKED` | "run this in the cloud", "sandbox recipe", "per-workspace environment" |
 
 The **Proof** column is each mission's `metadata.proof` tier, bound to its `SKILL.md` by a contract
 test; what a tier means and how one is earned is under [Proof status](#proof-status).
@@ -254,18 +254,18 @@ verified terminal state — see [`runtime/mission-chaining.md`](runtime/mission-
   </picture>
 </p>
 
-*Diagram note (2026-09-16): the callout baked into the image predates the first promotion — it still reads the old state. Regen tracked in #434.*
+*Diagram note (2026-10-14): the image's `external-run` captions ("someone else's repository", "a repository you do not control") predate the tier definition — the tier names a target other than this catalog, whoever owns or runs it ([Proof status](docs/concepts.md#proof-status)). The prompt in `assets/diagrams/generator/specs_new.py` is corrected; the render needs a paid regeneration (#434).*
 
 Every mission's `metadata:` block carries a validator-enforced `proof:` field: `doctrine-only`,
 `self-run`, or `external-run`. A tier cannot be claimed without artifacts that hash true at a
 named commit: a run report with a `RUN:` header, an evidence manifest inside the run's own
 `docs/runs/` directory, and an integrity inventory that re-hashes at the commit the header names.
 <!-- BEGIN GENERATED: proof-status — scripts/gen-badges.py -->
-**Today `ship-it` reads `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
+**Today `review-it` and `ship-it` read `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
 <!-- END GENERATED: proof-status -->
 The [run archive](docs/runs/) records every run
 that really happened and says, per run, whether and why it binds. Be precise about what the gate
-buys: it hashes, it does not re-run the verifier, and [the 2026-09-11 review](REVIEW.md) showed
+buys: it hashes, it does not re-run the verifier, and [the 2026-09-11 review](docs/reviews/2026-09-11-review.md) showed
 that a fabricated run can pass it; closing that is
 [#281](https://github.com/ravidsrk/orca-fleet/issues/281) and
 [#286](https://github.com/ravidsrk/orca-fleet/issues/286). Why the number went *down* as the
@@ -316,6 +316,18 @@ flowchart TD
 ```
 
 </details>
+
+**Easily confused — if your input is X, use Y:**
+
+| Your input | Use | Not |
+|---|---|---|
+| A list of known defects: open issues, audit findings, docs that lie about the code | `clean-sweep` | `modernize-it` (no defect, just old versions) · `absorb-it` (the fixes already exist as PRs) |
+| Outdated dependencies, a lockfile, a framework major to cross | `modernize-it` | `clean-sweep` (a backlog of defects) · `migrate-it` (a stateful schema/data change) |
+| Other people's open pull requests waiting on you | `absorb-it` | `clean-sweep` (you write the fixes) · `review-it` (one verdict, no landing) |
+| A symptom you cannot explain yet, wherever it shows | `root-cause` | `field-test-it` (cause known or irrelevant; it must be fixed and proven on the device) |
+| A bug that only reproduces on a real device, emulator or fresh box | `field-test-it` | `root-cause` (diagnosis only, no fix) |
+| Orca was upgraded and the fleet's own runtime docs may lag | `pin-it` (maintainer-facing) | `clean-sweep` (docs that drifted from *your* code) |
+| You need a cloud/sandbox workspace for the fleet to run in | `offload-it` (Orca-environment setup) | `field-test-it` `CLEAN-ENV` (proving your app on a fresh box) |
 
 Missions also hand work to one another, each handoff a separately authorized run:
 
@@ -476,6 +488,12 @@ build if that breaks: publishing a playbook or a runtime policy as an auto-trigg
 recreate the routing collisions this repo exists to remove. The design rationale, including what
 counts as a new mission versus a new playbook, is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+Runtime controls are data files under `runtime/`: `pins.json` (the Orca and upstream-pack pins),
+`one-way-doors.json` (decisions a fleet may never auto-resolve), and `quarantine.json` — a
+human-only component deny-list (#558). A quarantined mission, playbook or pack fails
+`scripts/validate.py` and refuses `preflight.py --mission` at run start; an empty list means
+nothing is quarantined, and a malformed file fails every gate closed.
+
 ## Install
 
 Two paths work today and a third does not yet; each is walked step by step in
@@ -492,6 +510,9 @@ Two paths work today and a third does not yet; each is walked step by step in
   resolves its playbooks against. It needs a published `dist/` bundle; publication and
   install-witness status are covered in [Install](docs/install.md#copy-installers-and-bundles).
   `python3 scripts/bundle.py --check` validates a temporary bundle without publishing it.
+  A single `skills/<name>/` copied out of this repository is not self-contained (its playbooks,
+  runtime policies and ARCHITECTURE.md live elsewhere); the bundle vendors them per mission —
+  limits in [distribution](docs/distribution.md#self-containment-what-a-single-copied-mission-loses).
 
 ## Repository layout
 
@@ -613,7 +634,7 @@ If a fleet touches your default branch, that is a bug — file it. The full trus
   against the EU AI Act's logging obligations.
 - [docs/research/](docs/research/README.md) — dated research snapshots and the ledger of rejected
   mission candidates.
-- [REVIEW.md](REVIEW.md) — the 2026-09-11 review; the earlier one is
+- [docs/reviews/2026-09-11-review.md](docs/reviews/2026-09-11-review.md) — the 2026-09-11 review; the earlier one is
   [docs/reviews/2026-09-10-review.md](docs/reviews/2026-09-10-review.md), the later one
   [docs/reviews/2026-09-14-holistic-review.md](docs/reviews/2026-09-14-holistic-review.md)
   (filed as #349–#386).

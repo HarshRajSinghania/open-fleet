@@ -33,7 +33,9 @@ Usage
   upstream_probe.py diff --baseline DIR --fresh DIR [--json]
 
 Environment (no secret is ever read from a file)
-  GITHUB_TOKEN        optional; sent as `Authorization: Bearer` to lift the API rate limit.
+  GITHUB_TOKEN        optional; sent as `Authorization: Bearer` to lift the API rate limit —
+                      over https (or http to loopback) only, never to a rel=next on another
+                      origin (that refuses, exit 2) and never across a redirect.
   ORCA_CLI_COMMAND    the CLI executable `capture` runs (one executable, no arguments).
   ORCA_DEV_REPO_ROOT  when set and `orca-dev` is on PATH, `capture` runs `orca-dev`.
                       Otherwise `orca-ide` on Linux, else `orca` — upstream's own resolution
@@ -60,6 +62,7 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -159,20 +162,42 @@ def next_link(link_header):
     return None
 
 
+def _origin(url):
+    try:
+        parts = urllib.parse.urlsplit(url)
+        return parts.scheme.lower(), (parts.hostname or "").lower(), parts.port
+    except ValueError as exc:
+        raise ProbeError(f"unusable URL {url!r}: {exc}")
+
+
+def _token_may_ride(url):
+    """GITHUB_TOKEN goes over https, or plain http to a loopback host (a local mirror or
+    test server) — never in clear text across a network."""
+    scheme, host, _port = _origin(url)
+    return scheme == "https" or (scheme == "http" and host in ("127.0.0.1", "::1", "localhost"))
+
+
 def fetch_tags(url, timeout, token=None, max_pages=MAX_PAGES):
-    """Tag names from `url`, following rel="next" for at most `max_pages` pages."""
+    """Tag names from `url`, following rel="next" for at most `max_pages` pages.
+
+    A next link is followed only on the scheme, host and port of the first URL: the
+    Link header is the server's text, and following it anywhere carried the Bearer
+    token to whatever host it named. The token is also an unredirected header, so an
+    HTTP redirect does not forward it either.
+    """
     names, seen = [], set()
+    origin = _origin(url)
     for _page in range(max_pages):
         headers = {
             "User-Agent": USER_AGENT,
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, headers=headers)
+        if token and _token_may_ride(url):
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
-                                        timeout=timeout) as resp:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
                 body = resp.read()
                 link = resp.headers.get("Link")
         except urllib.error.HTTPError as exc:
@@ -191,6 +216,8 @@ def fetch_tags(url, timeout, token=None, max_pages=MAX_PAGES):
         url = next_link(link)
         if not url or url in seen:
             break
+        if _origin(url) != origin:
+            raise ProbeError(f"refusing rel=next to another origin: {url}")
     return names
 
 

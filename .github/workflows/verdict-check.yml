@@ -3,7 +3,12 @@
 # GitHub cannot express reviewed_sha == head_sha natively, so this workflow
 # runs scripts/verdict_check.py against the PR: it passes iff a trusted review
 # (APPROVED, or COMMENTED by the PR author / OWNER / MEMBER / COLLABORATOR)
-# carries "VERDICT: GO" with reviewed_sha == head.
+# carries "VERDICT: GO" with reviewed_sha == head. An author self-GO is a SHA
+# binding, not independent review: required approvals stay branch protection's.
+#
+# The checker runs from the BASE commit, never from the PR: checking out the
+# merge ref and running its scripts/verdict_check.py let a PR rewrite the very
+# check that gates it. Only the base's copy of the script is fetched.
 #
 # Trigger design (measured, not assumed — PR #454/#455 post-mortem):
 # GitHub branch protection treats a FAILED conclusion on the head SHA as
@@ -31,6 +36,7 @@ on:
     types: [submitted, dismissed]
 
 permissions:
+  contents: read
   pull-requests: read
 
 jobs:
@@ -44,8 +50,17 @@ jobs:
        github.event.review.author_association == 'COLLABORATOR' ||
        github.event.review.user.login == github.event.pull_request.user.login)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
+      # The checker comes from the BASE sha, into its own path: the PR's tree is
+      # never checked out, so a PR cannot rewrite the check that gates it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-checker
+          sparse-checkout: scripts/verdict_check.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
@@ -53,4 +68,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 scripts/verdict_check.py --pr ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 base-checker/scripts/verdict_check.py --pr "$PR_NUMBER"

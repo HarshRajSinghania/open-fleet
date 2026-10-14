@@ -22,16 +22,27 @@ Usage:
   python3 orca_cli.py            # print the resolved command name
   python3 orca_cli.py --path     # print the resolved absolute path; exit 1 when not on PATH
 Library:
-  from orca_cli import resolve
+  from orca_cli import resolve, run_json
   argv = [resolve(), "orchestration", "check", "--json"]
+  result = run_json(["orchestration", "check"], timeout=120, error=Failed)
+
+`run_json` is the one envelope reader the *_ops.py / send_msg / hitl_ask / check_reply /
+search_sessions wrappers share (it was copy-pasted into each): run `<cli> ARGV --json`,
+parse the envelope, raise the caller's own exception class on an unrunnable CLI,
+unreadable or non-object JSON, or an `error` (top level or inside `result`), and return
+the `result` object (`{}` when absent). `nonzero` keeps each caller's exit-status rule:
+"strict" (a nonzero exit with no error envelope fails), "no-receipt" (fails only when
+there is no result either), "ignore" (the envelope alone decides).
 
 Exit: 0 printed · 1 (`--path`) the resolved command is not on PATH · 2 usage.
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 
 LINUX_COMMAND = "orca-ide"
@@ -54,6 +65,31 @@ def resolve(env=None, system=None) -> str:
     if system == "Linux":
         return LINUX_COMMAND
     return DEFAULT_COMMAND
+
+
+def run_json(argv, *, timeout, error, nonzero="strict"):
+    """Run `<resolved cli> *argv --json`; return the envelope's result object or raise `error`."""
+    try:
+        proc = subprocess.run([resolve(), *argv, "--json"],
+                              capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise error(f"could not run orca: {exc}")
+    try:
+        doc = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise error(f"orca returned unreadable JSON (exit {proc.returncode})")
+    if not isinstance(doc, dict):
+        raise error("orca returned a non-object envelope")
+    result = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+    err = doc.get("error") or result.get("error")
+    if err:
+        code = err.get("code") if isinstance(err, dict) else err
+        raise error(f"orca refused: {code}")
+    if nonzero == "strict" and proc.returncode != 0:
+        raise error(f"orca exited {proc.returncode} with no error envelope")
+    if nonzero == "no-receipt" and not result and proc.returncode != 0:
+        raise error(f"orca exited {proc.returncode} with no receipt")
+    return result
 
 
 def main(argv=None) -> int:

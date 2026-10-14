@@ -755,8 +755,19 @@ PY
 unmet=$(printf '%s\n' "$tl_out" | sed -n '1p')
 status=$(printf '%s\n' "$tl_out" | sed -n '2p')
 
+# The DAG check runs for `ready` too: `ready` is a status anyone can set with task-update, and
+# a ready task whose deps are still open dispatched straight past the gate pending had to clear.
 case "$status" in
-  ready) : ;;
+  ready)
+    if [ "$unmet" = "-1" ]; then
+      echo "SPAWN=REFUSED task=${task} deps metadata unreadable — failing closed rather than assuming no deps" >&2
+      exit 2
+    fi
+    if [ "$unmet" != "0" ]; then
+      echo "SPAWN=REFUSED task=${task} status=ready unmet_deps=${unmet} — dispatching would bypass the DAG" >&2
+      exit 2
+    fi
+    ;;
   pending)
     if [ "$MARK_READY" != "1" ]; then
       echo "SPAWN=REFUSED task=${task} status=pending — pass --mark-ready only for tasks whose deps are complete" >&2

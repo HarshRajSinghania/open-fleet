@@ -79,7 +79,6 @@ class VFBenchSoundness(unittest.TestCase):
 
     def test_readme_result_table_matches_computed(self):
         # #125: the hand-typed result table must match the computed corpus (was a stale 4/4·0/4).
-        import re
         if self.res["orca-fleet verify.py (sound)"]["skipped"]:
             self.skipTest("traps were skipped on this checkout — the corpus totals the README "
                           "pins are the FULL-clone ones (see test_shallow_skips_are_named)")
@@ -307,8 +306,10 @@ class VFBenchReviewLeg(unittest.TestCase):
             p.chmod(0o755)
             return {**os.environ, "PATH": f"{d}{os.pathsep}{os.environ['PATH']}"}
 
-        commented = [{"user": {"login": "vf-reviewer"}, "state": "COMMENTED", "commit_id": head}]
-        approved = [{"user": {"login": "vf-reviewer"}, "state": "APPROVED", "commit_id": head}]
+        commented = [{"user": {"login": "vf-reviewer"}, "state": "COMMENTED", "commit_id": head,
+                      "author_association": "MEMBER"}]
+        approved = [{"user": {"login": "vf-reviewer"}, "state": "APPROVED", "commit_id": head,
+                     "author_association": "MEMBER"}]
         r = self._run_verify(env=env_with_stub(commented))
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("no INDEPENDENT APPROVED review at head_sha", r.stderr)

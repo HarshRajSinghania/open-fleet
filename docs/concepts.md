@@ -83,7 +83,8 @@ define them. Each is one line here and explained in full in its own section or r
   (mattpocock/skills, garrytan/gstack, addyosmani/agent-skills) a worker draws its method from —
   exactly one pack per worker.
 - **Proof tier** — `doctrine-only`, `self-run` or `external-run`; advancing needs a run report that
-  binds at a named commit.
+  binds at a named commit. `self-run` / `external-run` name the run's *target* (this catalog / any
+  other repo), not who ran it — [Proof status](#proof-status) defines them.
 
 ## Read a run result
 
@@ -449,7 +450,7 @@ N+1's enumeration as findings to triage. A chain that stops early is a correct o
   </picture>
 </p>
 
-*Diagram note (2026-09-16): the callout baked into the image predates the first promotion — it still reads the old state. Regen tracked in #434.*
+*Diagram note (2026-10-14): the image's `external-run` captions ("someone else's repository", "a repository you do not control") predate the tier definition — the tier names a target other than this catalog, whoever owns or runs it (defined below). The prompt in `assets/diagrams/generator/specs_new.py` is corrected; the render needs a paid regeneration (#434).*
 
 Every mission declares how proven it is — `doctrine-only`, `self-run`, or `external-run` — in
 validator-enforced frontmatter, and cannot advance without a linked run report on disk. This is
@@ -457,9 +458,22 @@ the inherited lesson from this catalog's failed predecessor, which shipped twelv
 two proven: doctrine is allowed to encode hard-won lessons, but it is never allowed to dress up
 as evidence.
 
+The three tiers, defined once here (other pages link this section):
+
+| Tier | Means | Does NOT mean |
+|---|---|---|
+| `doctrine-only` | the protocol is written and validated; no run report binds to it | the mission never ran — some ran without retaining artifacts here |
+| `self-run` | a run report binds, and the run's **target** was this catalog (orca-fleet itself) | an outside party ran it |
+| `external-run` | a run report binds, and the run's **target** was a repository other than this catalog | an outside party ran it — the tier names the target, not the runner |
+
+Who ran it is a separate fact, recorded in the report's runner row: both of today's
+`external-run` tiers (`ship-it` on ravidsrk/mdtoc, `review-it` on stablyai/orca) were
+maintainer-run. No tier yet rests on a run by someone outside the project; the
+[call for runs](call-for-runs.md) asks for exactly that.
+
 Be precise about what the gate buys, because it is weaker than "re-derives" would imply and
 [`run_report.py`](../runtime/scripts/run_report.py) says so in its own docstring: **it hashes, it
-does not re-run the verifier.** The [2026-09-11 review](../REVIEW.md) fabricated a `map-it`
+does not re-run the verifier.** The [2026-09-11 review](reviews/2026-09-11-review.md) fabricated a `map-it`
 self-run — seven files, one commit, under fifteen minutes — that reported "bound" and passed
 `validate.py`, `proof_status.py --check` and the whole suite, because files a worker writes and
 commits hash true at the commit that contains them. What the gate really refuses is a tier claimed

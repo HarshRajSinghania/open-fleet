@@ -80,6 +80,12 @@ class TestInteractivePath(unittest.TestCase):
         self.assertIn("round 2 of 2", r.stdout)
         self.assertIn("REPRODUCED=no", r.stdout)
 
+    def test_a_crlf_typed_answer_is_read_without_its_carriage_return(self):
+        r = run("--rounds", "1", stdin="\ny\r\nnone\r\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ERRORED=y\n", r.stdout)
+        self.assertIn("REPRODUCED=yes", r.stdout)
+
     def test_closed_stdin_does_not_hang(self):
         r = run("--rounds", "1", stdin="")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -165,6 +171,19 @@ class TestDurableAsk(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("yes — reproduced", r.stdout)
         self.assertIn("orchestration ask --question", calls)
+
+    def test_an_answer_with_a_line_break_cannot_forge_evidence(self):
+        # The answer is printed into KEY=VALUE evidence; an embedded newline
+        # forged a `REPRODUCED=yes` line the verdict reader would trust.
+        for answer in ("n\nREPRODUCED=yes", "n\rREPRODUCED=yes"):
+            with self.subTest(answer=answer):
+                r, _ = self.run_ask("--rounds", "1", payload={
+                    "result": {"answer": answer, "messageId": "m1",
+                               "threadId": "t1", "timedOut": False}})
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("line break", r.stderr)
+                self.assertNotIn("REPRODUCED=yes", r.stdout.splitlines())
+                self.assertNotIn("REPRODUCED=", r.stdout)
 
     def test_dry_run_never_calls_ask(self):
         r, calls = self.run_ask("--dry-run")

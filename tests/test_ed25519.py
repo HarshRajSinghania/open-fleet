@@ -101,6 +101,17 @@ class Ed25519SmallOrderKeys(unittest.TestCase):
         with self.assertRaises(ValueError):
             ed._decodepoint((ed._q + 1).to_bytes(32, "little"))
 
+    def test_decodepoint_rejects_x_zero_with_the_sign_bit_set(self):
+        # RFC 8032 §5.1.3 step 4: x = 0 with x_0 = 1 is a decoding failure. Without it
+        # the point decodes to x = q — a second byte string for the identity (y = 1)
+        # and for the order-2 point (y = q - 1), i.e. a non-canonical R or A.
+        for y in (1, ed._q - 1):
+            with self.subTest(y=y):
+                ed._decodepoint(y.to_bytes(32, "little"))  # the canonical form decodes
+                with self.assertRaises(ValueError):
+                    ed._decodepoint((y | (1 << 255)).to_bytes(32, "little"))
+        self.assertFalse(ed.checkvalid(bytes(64), b"m", (1 | (1 << 255)).to_bytes(32, "little")))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

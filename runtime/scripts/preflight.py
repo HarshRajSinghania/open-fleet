@@ -59,6 +59,18 @@ import sys
 from pathlib import Path
 
 
+def _load_gitexec():
+    """gitexec.py, the sibling holding the one git resolution + hardened-env rule."""
+    spec = importlib.util.spec_from_file_location(
+        "gitexec", Path(__file__).resolve().parent / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gitexec = _load_gitexec()
+
+
 # git commands here are local and fast; gh talks to the network. Read at call
 # time (not bound as defaults) so tests can patch them.
 _GIT_TIMEOUT = 10
@@ -80,8 +92,12 @@ def _run(cmd: list[str], timeout: float | None = None) -> tuple[int | None, str,
     produce (real rcs are 0-255, or negative for a signal death), so a genuine
     `exit 124` is never mistaken for a timeout."""
     limit = _GIT_TIMEOUT if timeout is None else timeout
+    env = None
+    if cmd[:1] == ["git"]:
+        # Every git leg reads the target repo: the absolute git, under the hardened env.
+        cmd, env = gitexec.argv(*cmd[1:]), gitexec.env()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit, env=env)
     except subprocess.TimeoutExpired:
         return None, "", f"`{' '.join(cmd)}` timed out after {limit}s"
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()

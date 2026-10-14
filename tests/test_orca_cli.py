@@ -111,6 +111,54 @@ class CommandLine(unittest.TestCase):
         self.assertEqual((p.returncode, p.stdout.strip()), (0, "orca-stub"))
 
 
+class SharedEnvelopeReader(unittest.TestCase):
+    """run_json is the one copy of the reader eight tools used to paste; each keeps its own
+    exit-status rule through `nonzero`."""
+
+    class Boom(Exception):
+        pass
+
+    def setUp(self):
+        self.m = _load()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_stub(self, stdout, rc, **kw):
+        tmp = Path(self.tmp.name)
+        (tmp / "out.json").write_text(stdout, encoding="utf-8")
+        stub = tmp / "orca-stub"
+        stub.write_text(f'#!/bin/sh\necho "$*" > "{tmp}/argv"\ncat "{tmp}/out.json"\nexit {rc}\n',
+                        encoding="utf-8")
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        with mock.patch.dict(os.environ, {"ORCA_CLI_COMMAND": str(stub)}):
+            result = self.m.run_json(["orchestration", "check"], timeout=30, error=self.Boom, **kw)
+        self.assertEqual((tmp / "argv").read_text().strip(), "orchestration check --json")
+        return result
+
+    def test_the_result_object_is_returned(self):
+        self.assertEqual(self.run_stub('{"result": {"a": 1}}', 0), {"a": 1})
+        self.assertEqual(self.run_stub('{"ok": true}', 0), {})
+
+    def test_every_failure_raises_the_callers_class(self):
+        for stdout in ("not json", "[1]", '{"error": {"code": "nope"}}',
+                       '{"result": {"error": "inner"}}'):
+            with self.subTest(stdout=stdout), self.assertRaises(self.Boom):
+                self.run_stub(stdout, 0)
+
+    def test_nonzero_modes_keep_each_tools_rule(self):
+        with self.assertRaisesRegex(self.Boom, "no error envelope"):
+            self.run_stub('{"result": {"a": 1}}', 3)
+        self.assertEqual(self.run_stub('{"result": {"a": 1}}', 3, nonzero="no-receipt"), {"a": 1})
+        with self.assertRaisesRegex(self.Boom, "no receipt"):
+            self.run_stub('{"result": {}}', 3, nonzero="no-receipt")
+        self.assertEqual(self.run_stub('{"result": {}}', 3, nonzero="ignore"), {})
+
+    def test_an_unrunnable_cli_raises_the_callers_class(self):
+        with mock.patch.dict(os.environ, {"ORCA_CLI_COMMAND": "/nonexistent/orca"}):
+            with self.assertRaisesRegex(self.Boom, "could not run orca"):
+                self.m.run_json(["x"], timeout=5, error=self.Boom)
+
+
 class NoScriptNamesTheExecutable(unittest.TestCase):
     """The contract: the executable is a policy decision made once, in orca_cli.py."""
 
@@ -122,7 +170,11 @@ class NoScriptNamesTheExecutable(unittest.TestCase):
             text = (SCRIPTS / name).read_text(encoding="utf-8")
             with self.subTest(tool=name):
                 self.assertIn("import orca_cli", text)
-                self.assertIn("orca_cli.resolve()", text)
+                # The shared envelope reader runs `orca_cli.resolve()` itself, so a tool
+                # reaches the CLI through run_json and never parses the envelope again.
+                self.assertIn("orca_cli.run_json(", text)
+                self.assertNotIn("json.loads(proc.stdout)", text,
+                                 f"{name} parses the orca envelope itself again")
                 self.assertIsNone(self.LITERAL_ARGV.search(text),
                                   f"{name} still spells the executable `orca` in an argv")
 

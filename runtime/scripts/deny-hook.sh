@@ -49,6 +49,8 @@
 #      merge-serialization.md (#368), enforced here since #561. Plain
 #      `git push` is out of scope (branch pushes are evidenced by PR head
 #      SHAs, and the force rules above already govern their dangerous forms).
+#   6. `git push --mirror` / `--prune` — they delete remote refs they never name.
+#      Push long options are matched by git's unambiguous-prefix rule (--del).
 # Git global options between `git` and the subcommand (-C, -c, --git-dir and
 # kin) are stripped before any of this is judged — `git -C /x push --force` is
 # the push it names (#297). A deletion that spares the default branch asks
@@ -1174,54 +1176,86 @@ git_redirected() {
 # Operand-taking options consume the rest of a short cluster or the next word;
 # `-vof` carries push-option `f`, whereas `-vf` forces. Operand text must never
 # supply a force flag, a lease, or a deleted ref to the HIGH tier.
+#
+# Long options are canonicalized first. Git accepts any unambiguous prefix of a
+# long option (parse-options): `--del`, `--mi`, `--pru`, `--force-w` and
+# `--no-force-w` are --delete, --mirror, --prune, --force-with-lease and
+# --no-force-with-lease, so `git push origin --del main` used to pass because
+# only full spellings were matched. LONG is git-push 2.43's long-option table;
+# an exact name wins, a unique prefix expands, and an AMBIGUOUS prefix (which
+# git itself rejects) keeps every destructive meaning it could carry but never
+# grants a lease — a newer git that adds an option can only make it ambiguous.
 push_policy() {
   python3 -c 'import sys
+LONG = {"verbose": 0, "quiet": 0, "repo": 1, "all": 0, "branches": 0,
+        "mirror": 0, "delete": 0, "tags": 0, "dry-run": 0, "porcelain": 0,
+        "force": 0, "force-with-lease": 0, "force-if-includes": 0,
+        "recurse-submodules": 1, "thin": 0, "receive-pack": 1, "exec": 1,
+        "set-upstream": 0, "progress": 0, "prune": 0, "no-verify": -1,
+        "verify": -1, "follow-tags": 0, "signed": 0, "atomic": 0,
+        "push-option": 1, "ipv4": -1, "ipv6": -1}
+NAMES = set(LONG) | {"no-" + n for n, kind in LONG.items() if kind >= 0}
+OPERAND = ("-o", "--push-option", "--receive-pack", "--exec", "--repo",
+           "--recurse-submodules")
+DANGER = ("delete", "mirror", "prune", "force", "no-force-with-lease")
+def canon(word):
+    name, eq, value = word[2:].partition("=")
+    if name in NAMES:
+        return [word]
+    hits = [n for n in NAMES if n.startswith(name)] if name else []
+    if len(hits) == 1:
+        return ["--" + hits[0] + eq + value]
+    return [word] + ["--" + n for n in DANGER if n in hits]
 words = sys.argv[1].split()
 out, skip, options = [], False, True
 lease, force = False, False
-for word in words:
+for raw in words:
     if skip:
         skip = False
         continue
-    if word == "--":
+    if raw == "--":
         options = False
-    elif options and word in ("-o", "--push-option", "--receive-pack", "--exec", "--repo"):
-        skip = True
+        out.append(raw)
         continue
-    elif word in ("--force", "--no-force", "-f"):
-        # The literal word still reaches the HIGH-tier text below; the ordered
-        # bit only decides whether a lease may still exempt the push.
-        if options:
-            force = word != "--no-force"
-    elif word == "--no-force-with-lease":
-        if options:
-            lease = False
-        else:
-            out.append("--lease-operand")
-        continue
-    elif word == "--force-with-lease" or word.startswith("--force-with-lease="):
-        if options:
-            lease = True
-        else:
-            # An operand grants no lease but keeps its position: after --, the
-            # deletion loops skip the word after -o/--repo, and dropping this
-            # one would hand them the deleted ref instead.
-            out.append("--lease-operand")
-        continue
-    elif options and word.startswith("-") and not word.startswith("--"):
-        cluster = word[1:]
-        for i, flag in enumerate(cluster):
-            if flag == "o":
-                skip = i == len(cluster) - 1
-                break
-            if flag not in "vqnfdu46":
-                out.append(word)
-                break
-            if flag == "f":
-                force = True
-            out.append("-" + flag)
-        continue
-    out.append(word)
+    expanded = canon(raw) if options and raw.startswith("--") else [raw]
+    for word in expanded:
+        if options and word in OPERAND:
+            skip = True
+            continue
+        elif word in ("--force", "--no-force", "-f"):
+            # The literal word still reaches the HIGH-tier text below; the ordered
+            # bit only decides whether a lease may still exempt the push.
+            if options:
+                force = word != "--no-force"
+        elif word == "--no-force-with-lease":
+            if options:
+                lease = False
+            else:
+                out.append("--lease-operand")
+            continue
+        elif word == "--force-with-lease" or word.startswith("--force-with-lease="):
+            if options:
+                lease = True
+            else:
+                # An operand grants no lease but keeps its position: after --, the
+                # deletion loops skip the word after -o/--repo, and dropping this
+                # one would hand them the deleted ref instead.
+                out.append("--lease-operand")
+            continue
+        elif options and word.startswith("-") and not word.startswith("--"):
+            cluster = word[1:]
+            for i, flag in enumerate(cluster):
+                if flag == "o":
+                    skip = i == len(cluster) - 1
+                    break
+                if flag not in "vqnfdu46":
+                    out.append(word)
+                    break
+                if flag == "f":
+                    force = True
+                out.append("-" + flag)
+            continue
+        out.append(word)
 # Emit only the effective lease; canceled leases and operands after -- cannot
 # grant the HIGH-tier exemption. Explicit global force disables lease checks
 # (git-push 2.55), so an effective one replaces the lease marker. --no-force
@@ -1286,6 +1320,14 @@ for _SEG in "$@"; do
   # sailed under both force rules (#297).
   if has '^[[:space:]]*(sudo[[:space:]]+)?git[[:space:]]+push([[:space:]]|$)'; then
     CMD=$(push_policy "$CMD")
+    # --mirror force-updates AND deletes every remote ref the local repo lacks;
+    # --prune deletes every remote ref its refspecs no longer map — either can
+    # remove the default branch without naming it, so no text here can show
+    # which refs go. Neither had any rule, so `git push --mirror` passed.
+    if has '(^|[[:space:]])--(mirror|prune)($|[[:space:]])'; then
+      decide deny "deny-hook[HIGH]: git push --mirror/--prune is refused. It deletes or rewrites remote refs it never names, the default branch among them; push named refs instead."
+      exit 0
+    fi
     DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||' || true)
     if [ -z "$DEFAULT_BRANCH" ]; then
       if git show-ref --verify -q refs/remotes/origin/main 2>/dev/null; then DEFAULT_BRANCH="main"

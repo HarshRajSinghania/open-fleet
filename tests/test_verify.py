@@ -342,7 +342,7 @@ class FreshnessCheck(unittest.TestCase):
     def test_wtree_equivalence_relaxes_a_content_identical_head_move(self):
         # reviewed-sha-freshness.md: a head move whose tree is identical to the reviewed content
         # does not void the review. Build two commits with the same tree and check.
-        import subprocess, tempfile
+        import subprocess
         from pathlib import Path as P
         # _temp_repo: bare TemporaryDirectory hit the #340 teardown race here (OSError 39 on
         # .git, CI run 35074600535). Throwaway repo.
@@ -455,27 +455,58 @@ class ReviewCheck(unittest.TestCase):
         # definition-of-done oracle that is the wrong default: a reviewer saying "not done" about
         # this exact content is evidence, and a second opinion does not erase it.
         reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "H", "user": {"login": "bob"}},
-                   {"state": "APPROVED", "commit_id": "H", "user": {"login": "carol"}}]
+                   {"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "carol"}}]
         self.assertFalse(verify.review_ok(reviews, "H", author="alice"))
 
     def test_a_superseded_changes_requested_does_not_block(self):
         # The same reviewer came back and approved — latest-per-reviewer already handles it, and
         # the block must not resurrect a state its author withdrew.
         reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "H", "user": {"login": "bob"}},
-                   {"state": "APPROVED", "commit_id": "H", "user": {"login": "bob"}}]
+                   {"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "bob"}}]
         self.assertTrue(verify.review_ok(reviews, "H", author="alice"))
 
     def test_a_changes_requested_at_an_older_head_does_not_block(self):
         # The block is about THIS content. A request against a head the author has since moved
         # past is not a standing objection to what is being graded.
         reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "OLD", "user": {"login": "bob"}},
-                   {"state": "APPROVED", "commit_id": "H", "user": {"login": "carol"}}]
+                   {"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "carol"}}]
         self.assertTrue(verify.review_ok(reviews, "H", author="alice"))
 
     def test_review_ok_pure(self):
-        self.assertTrue(verify.review_ok([{"state": "APPROVED", "commit_id": "H"}], "H"))
+        self.assertTrue(verify.review_ok([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H"}], "H"))
         self.assertFalse(verify.review_ok([{"state": "COMMENTED", "commit_id": "H"}], "H"))
-        self.assertFalse(verify.review_ok([{"state": "APPROVED", "commit_id": "OLD"}], "H"))
+        self.assertFalse(verify.review_ok([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "OLD"}], "H"))
+
+    def test_an_approval_needs_standing_in_the_repository(self):
+        # Review P2: "any login that is not the PR author" let a throwaway account approve.
+        # Only OWNER/MEMBER/COLLABORATOR approvals count; a missing association is no standing.
+        self.assertEqual(verify._Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS,
+                         frozenset({"OWNER", "MEMBER", "COLLABORATOR"}))
+        for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+            with self.subTest(assoc=assoc):
+                self.assertTrue(verify.review_ok([{"state": "APPROVED", "commit_id": "H",
+                                                   "author_association": assoc,
+                                                   "user": {"login": "carol"}}], "H", author="alice"))
+        for assoc in ("CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN",
+                      "NONE", None, "member"):
+            with self.subTest(assoc=assoc):
+                review = {"state": "APPROVED", "commit_id": "H", "user": {"login": "mallory"}}
+                if assoc is not None:
+                    review["author_association"] = assoc
+                self.assertFalse(verify.review_ok([review], "H", author="alice"))
+
+    def test_the_author_is_excluded_whatever_their_association(self):
+        self.assertFalse(verify.review_ok([{"state": "APPROVED", "commit_id": "H",
+                                            "author_association": "OWNER",
+                                            "user": {"login": "alice"}}], "H", author="alice"))
+
+    def test_an_objection_from_an_account_without_standing_still_vetoes(self):
+        # Refusing on an objection is the fail-closed direction; standing gates approvals only.
+        reviews = [{"state": "CHANGES_REQUESTED", "commit_id": "H", "author_association": "NONE",
+                    "user": {"login": "mallory"}},
+                   {"state": "APPROVED", "commit_id": "H", "author_association": "MEMBER",
+                    "user": {"login": "carol"}}]
+        self.assertFalse(verify.review_ok(reviews, "H", author="alice"))
 
     def test_mutation_without_pr_number_fails_closed(self):
         m = {"unit": "ship-it", "head_sha": "H"}
@@ -620,11 +651,21 @@ class NegativeControlExecutorLegs(RepoCase):
                 "negative_control": {"tool": "revert", "result": "RED — mutant KILLED",
                                      "artifact": rel, "command": self.PROOF, "paths": ["app.py"]}}
 
-    def _run_with(self, run_at_effects):
+    def _run_with(self, proof_effects, apply_control=None):
+        """Real worktrees and a real seal; only the PROOF command's results are scripted, in
+        phase order clean -> control -> clean (review P1)."""
         m = self._manifest()
-        with mock.patch.object(verify, "_apply_control", return_value=None), \
-                mock.patch.object(verify, "_run", return_value=(0, "", "")), \
-                mock.patch.object(verify, "_run_at", side_effect=list(run_at_effects)):
+        effects, original = list(proof_effects), verify._run_at
+
+        def fake(wt, argv, **kw):
+            if argv == shlex.split(self.PROOF):
+                return effects.pop(0)
+            return original(wt, argv, **kw)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verify, "_run_at", side_effect=fake))
+            if apply_control is not None:
+                stack.enter_context(mock.patch.object(verify, "_apply_control",
+                                                      side_effect=apply_control))
             return verify.execute_negative_control(m, self.PROOF)
 
     def test_a_worktree_that_cannot_be_made_fails_closed(self):
@@ -640,25 +681,295 @@ class NegativeControlExecutorLegs(RepoCase):
         self.assertTrue(any("could not create the control worktree" in x for x in msgs), msgs)
 
     def test_a_control_that_changes_nothing_is_no_proof(self):
-        # git status clean after the apply: a no-op mutant cannot make any proof go RED.
-        ok, msgs = self._run_with([(0, "", "")])  # status --porcelain: empty
+        # The applied tree equals head_sha's tree: a no-op mutant cannot make any proof go RED.
+        # Judged by TREES now that the control is sealed into a commit, never by dirty status.
+        ok, msgs = self._run_with([], apply_control=lambda *a, **k: None)
+        self.assertFalse(ok)
+        self.assertTrue(any("changed NOTHING" in x for x in msgs), msgs)
+
+    def test_a_control_that_only_leaves_untracked_residue_changed_nothing(self):
+        # An untracked file is not in the sealed tree, so it is not a control either.
+        def residue(wt, *a, **k):
+            (Path(wt) / "residue.txt").write_text("x\n")
+        ok, msgs = self._run_with([], apply_control=residue)
         self.assertFalse(ok)
         self.assertTrue(any("changed NOTHING" in x for x in msgs), msgs)
 
     def test_a_control_run_that_times_out_is_not_a_kill(self):
-        ok, msgs = self._run_with([(0, " M app.py", ""), (124, "", "timed out")])
+        ok, msgs = self._run_with([(0, "", ""), (124, "", "timed out")])
         self.assertFalse(ok)
         self.assertTrue(any("did not complete under the control" in x for x in msgs), msgs)
 
     def test_a_command_red_at_clean_head_proves_nothing(self):
         effects = [
-            (0, " M app.py", ""),                      # control phase: dirty after apply
-            (1, "", "FAILED (failures=1)\n"),          # control phase: RED with an oracle failing
-            (1, "", "FAILED (failures=1)\n"),          # clean phase: RED too — the suite is broken
+            (1, "", "FAILED (failures=1)\n"),          # clean phase: RED — the suite is broken
         ]
         ok, msgs = self._run_with(effects)
         self.assertFalse(ok)
-        self.assertTrue(any("at CLEAN head_sha too" in x for x in msgs), msgs)
+        self.assertTrue(any("at CLEAN head_sha (before the control run)" in x for x in msgs), msgs)
+
+    def test_a_command_red_only_after_the_control_run_proves_nothing(self):
+        effects = [
+            (0, "", ""),                               # clean phase: green
+            (1, "", "FAILED (failures=1)\n"),          # control phase: RED with an oracle failing
+            (1, "", "FAILED (failures=1)\n"),          # clean again: RED — a side effect, not a kill
+        ]
+        ok, msgs = self._run_with(effects)
+        self.assertFalse(ok)
+        self.assertTrue(any("at CLEAN head_sha (after the control run)" in x for x in msgs), msgs)
+
+
+class ControlPhasesAreIndistinguishable(RepoCase):
+    """Review P1: the executed control was PHASE-DISTINGUISHABLE. The control ran first, every
+    phase shared the verifier's HOME and TMPDIR, and the control worktree was always dirty — so a
+    "proof" that tested the phase instead of the behaviour (`git status` is empty; no marker in
+    ~ or $TMPDIR yet) went RED under the control only, and was graded a kill. Each phase now gets
+    a fresh HOME and TMPDIR, the mutant is sealed into a throwaway commit so every tree is clean,
+    and clean runs bracket the control run. None of these proofs looks at app.py at all."""
+
+    def _unit(self, proof):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py", proof)
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        return verify.execute_negative_control(m, cmd)
+
+    def _assert_not_a_kill(self, ok, msgs):
+        self.assertFalse(ok, msgs)
+        self.assertFalse(any("negative control EXECUTED" in x for x in msgs), msgs)
+
+    def test_a_proof_that_asserts_a_clean_git_status_is_not_killed(self):
+        ok, msgs = self._unit(
+            "import subprocess\n"
+            "out = subprocess.run(['git', 'status', '--porcelain'], capture_output=True,"
+            " text=True).stdout\n"
+            "assert out == '', 'dirty tree: ' + out\n")
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_a_first_run_marker_in_home_is_not_a_kill(self):
+        ok, msgs = self._unit(
+            "import os, pathlib\n"
+            "marker = pathlib.Path(os.environ['HOME']) / '.orca-phase-marker'\n"
+            "seen = marker.exists()\n"
+            "marker.write_text('x')\n"
+            "assert seen, 'first run in this HOME'\n")
+        self._assert_not_a_kill(ok, msgs)
+
+    def test_a_first_run_marker_in_tmpdir_is_not_a_kill(self):
+        ok, msgs = self._unit(
+            "import pathlib, tempfile\n"
+            "marker = pathlib.Path(tempfile.gettempdir()) / 'orca-phase-marker'\n"
+            "seen = marker.exists()\n"
+            "marker.write_text('x')\n"
+            "assert seen, 'first run in this TMPDIR'\n")
+        self._assert_not_a_kill(ok, msgs)
+
+    def test_a_marker_in_the_phase_git_dir_is_not_a_kill(self):
+        # Each phase is its own repository. A marker in that repo's git dir starts absent
+        # every time, so a proof that fails only when the marker is already there stays green
+        # under the control.
+        ok, msgs = self._unit(
+            "import pathlib, subprocess\n"
+            "common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True,"
+            " text=True).stdout.strip()\n"
+            "marker = pathlib.Path(common) / 'orca-phase-marker'\n"
+            "seen = marker.exists()\n"
+            "marker.write_text('x')\n"
+            "assert not seen, 'not the first run'\n")
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_a_non_ascii_checkout_path_still_runs_the_proof(self):
+        parent = Path(tempfile.mkdtemp(prefix="orca-nc-")) / "répo"
+        parent.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(parent.parent, ignore_errors=True))
+        os.chdir(parent)
+        self.addCleanup(lambda: os.chdir(self.repo))
+        subprocess.run(["git", "init", "-q", "-b", "main"], check=True, cwd=parent)
+        (parent / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (parent / "proof.py").write_text("import app\nassert app.VALUE == 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], check=True, cwd=parent)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
+                       check=True, cwd=parent)
+        base = subprocess.run(["git", "rev-parse", "HEAD"], check=True, cwd=parent,
+                              capture_output=True, text=True).stdout.strip()
+        (parent / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], check=True, cwd=parent)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "head"],
+                       check=True, cwd=parent)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, cwd=parent,
+                             capture_output=True, text=True).stdout.strip()
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertTrue(ok, msgs)
+
+    def test_an_annotated_tag_of_head_stays_a_tag_in_every_phase(self):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "def git(*args):\n"
+                   "    return subprocess.run(['git', *args], capture_output=True,"
+                   " text=True, check=True).stdout.strip()\n"
+                   "assert git('cat-file', '-t', 'v1') == 'tag', git('cat-file', '-t', 'v1')\n"
+                   "assert git('rev-parse', 'v1^{commit}') == git('rev-parse', 'HEAD')\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "v1", "-m", "release")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_a_signed_tag_is_unsigned_in_the_clean_replay_too(self):
+        # A signature covers the object line, so it would verify only on the clean
+        # replay. Stripping it there too means a verify-tag proof fails before the
+        # control and is not graded a kill.
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "raw = subprocess.run(['git', 'cat-file', 'tag', 'v1'],"
+                   " capture_output=True, check=True).stdout\n"
+                   "assert b'BEGIN PGP SIGNATURE' in raw\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        payload = (f"object {head}\n"
+                   "type commit\n"
+                   "tag v1\n"
+                   "tagger t <t@t> 1000000000 +0000\n"
+                   "gpgsig -----BEGIN PGP SIGNATURE-----\n"
+                   " \n"
+                   " -----END PGP SIGNATURE-----\n"
+                   "\n"
+                   "release\n").encode()
+        sha = subprocess.run(["git", "hash-object", "-t", "tag", "-w", "--stdin"],
+                             input=payload, check=True, capture_output=True).stdout.decode().strip()
+        self.git("update-ref", "refs/tags/v1", sha)
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertFalse(ok, msgs)
+        self.assertTrue(any("CLEAN" in x for x in msgs), msgs)
+
+    def test_a_message_signature_is_not_a_kill(self):
+        # v0.7.1's layout: the SSH signature is appended after the message, not a
+        # gpgsig header. It verifies on an unchanged object line and would fail only
+        # under the control. Stripping it on the clean replay too makes that proof
+        # fail before the control.
+        keydir = tempfile.mkdtemp(prefix="orca-nc-key-")
+        self.addCleanup(lambda: shutil.rmtree(keydir, ignore_errors=True))
+        key = str(Path(keydir) / "id_ed25519")
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-q", "-N", "", "-f", key], check=True)
+        pub = Path(key + ".pub").read_text(encoding="utf-8").strip()
+        self.write("signers", f't@t namespaces="git" {pub}\n')
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "r = subprocess.run(['git', '-c', 'gpg.format=ssh', '-c',"
+                   " 'gpg.ssh.allowedSignersFile=signers', 'verify-tag', 'v1'],"
+                   " capture_output=True)\n"
+                   "assert r.returncode == 0, r.stderr\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+             "-c", "gpg.format=ssh", "-c", f"user.signingkey={key}",
+             "tag", "-s", "v1", "-m", "orca-fleet 0.7.1"],
+            cwd=self.repo, check=True, capture_output=True)
+        pre = subprocess.run(
+            ["git", "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile=signers",
+             "verify-tag", "v1"],
+            cwd=self.repo, capture_output=True, timeout=30)
+        self.assertEqual(pre.returncode, 0, pre.stderr.decode())
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertFalse(ok, msgs)
+        self.assertTrue(any("CLEAN" in x for x in msgs), msgs)
+
+    def test_a_nested_tag_of_head_does_not_block_a_real_kill(self):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py", "import app\nassert app.VALUE == 2\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "inner", "-m", "inner")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "outer", "-m", "outer", "inner")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertTrue(ok, msgs)
+
+    def test_a_nested_tag_stays_a_chain_in_every_phase(self):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "def git(*args):\n"
+                   "    return subprocess.run(['git', *args], capture_output=True,"
+                   " text=True, check=True).stdout.strip()\n"
+                   "assert git('cat-file', '-t', 'outer') == 'tag'\n"
+                   "assert git('cat-file', '-t', 'inner') == 'tag'\n"
+                   "kind = git('cat-file', '-p', 'outer').splitlines()[1]\n"
+                   "assert kind == 'type tag', kind\n"
+                   "assert git('rev-parse', 'outer^{commit}') == git('rev-parse', 'HEAD')\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "inner", "-m", "inner")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "outer", "-m", "outer", "inner")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_a_proof_that_compares_head_to_its_branch_ref_is_not_killed(self):
+        # refs/heads/main points at head_sha in the source. A linked worktree would still
+        # see that ref under the sealed control, so HEAD != refs/heads/main only then.
+        ok, msgs = self._unit(
+            "import subprocess\n"
+            "def rev(arg):\n"
+            "    return subprocess.run(['git', 'rev-parse', arg], capture_output=True,"
+            " text=True, check=True).stdout.strip()\n"
+            "assert rev('HEAD') == rev('refs/heads/main'), 'branch ref is not this commit'\n")
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
+    def test_each_phase_runs_under_its_own_empty_home_and_tmpdir(self):
+        seen = []
+        original = verify._run_at
+
+        def spy(wt, argv, **kw):
+            if argv and argv[-1] == "proof.py":
+                env = kw["env"]
+                seen.append({k: env[k] for k in ("HOME", "TMPDIR", "TMP", "TEMP")})
+                self.assertEqual(os.listdir(env["HOME"]), [])
+                self.assertEqual(os.listdir(env["TMPDIR"]), [])
+            return original(wt, argv, **kw)
+        with mock.patch.object(verify, "_run_at", side_effect=spy):
+            ok, msgs = self._unit("import app\nassert app.VALUE == 2\n")
+        self.assertTrue(ok, msgs)
+        self.assertEqual(len(seen), 3, seen)
+        self.assertEqual(len({s["HOME"] for s in seen}), 3, seen)
+        for s in seen:
+            self.assertEqual(s["TMPDIR"], s["TMP"])
+            self.assertEqual(s["TMPDIR"], s["TEMP"])
+            self.assertNotEqual(s["HOME"], os.environ.get("HOME"))
 
 
 class ReadSourceGuard(unittest.TestCase):
@@ -753,7 +1064,7 @@ class ReviewLookupBinding(unittest.TestCase):
         return {"unit": "ship-it", "head_sha": "H", "pr": {"number": 7}}
 
     def test_approved_at_head_passes(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "carol"}}], None)
         self.assertEqual(verify.check_review(self._m(), "o/r", True), [])
 
@@ -763,7 +1074,7 @@ class ReviewLookupBinding(unittest.TestCase):
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_approval_at_wrong_sha_fails(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "OLD",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "OLD",
                                                   "user": {"login": "carol"}}], None)
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
@@ -772,19 +1083,19 @@ class ReviewLookupBinding(unittest.TestCase):
         self.assertTrue(any("cannot fetch" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_author_self_approval_rejected(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "alice"}}], None)
         verify.fetch_pr_author = lambda repo, n: "alice"
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_superseded_approval_not_counted(self):
         verify.fetch_reviews = lambda repo, n: (
-            [{"state": "APPROVED", "commit_id": "H", "user": {"login": "bob"}},
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H", "user": {"login": "bob"}},
              {"state": "COMMENTED", "commit_id": "H", "user": {"login": "bob"}}], None)
         self.assertTrue(any("APPROVED" in e for e in verify.check_review(self._m(), "o/r", True)))
 
     def test_independent_approval_passes_when_author_differs(self):
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "carol"}}], None)
         verify.fetch_pr_author = lambda repo, n: "alice"
         self.assertEqual(verify.check_review(self._m(), "o/r", True), [])
@@ -792,7 +1103,7 @@ class ReviewLookupBinding(unittest.TestCase):
     def test_unresolved_author_fails_closed(self):
         # #142: if the PR-author lookup fails, we cannot exclude a self-approval — fail closed,
         # never let the author's own approval satisfy the independent-review gate.
-        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "commit_id": "H",
+        verify.fetch_reviews = lambda repo, n: ([{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                                   "user": {"login": "alice"}}], None)
         verify.fetch_pr_author = lambda repo, n: None
         res = verify.check_review(self._m(), "o/r", True)
@@ -876,12 +1187,12 @@ class ReviewPagination(unittest.TestCase):
     def test_fetches_all_pages_31_review_fixture(self):
         # 31 reviews over two pages; the only APPROVED is review #31 — invisible on page 1 alone.
         res = self._verdict_with_pages(self._filler(30),
-                                       [{"state": "APPROVED", "commit_id": "H",
+                                       [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                          "user": {"login": "carol"}}])
         self.assertEqual([e for e in res if not e.startswith("NOTE:")], [])
 
     def test_page2_changes_requested_supersedes_page1_approval(self):
-        page1 = self._filler(29) + [{"state": "APPROVED", "commit_id": "H",
+        page1 = self._filler(29) + [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                      "user": {"login": "carol"}}]
         page2 = [{"state": "CHANGES_REQUESTED", "commit_id": "H",
                   "user": {"login": "carol"}}]
@@ -890,7 +1201,7 @@ class ReviewPagination(unittest.TestCase):
 
     def test_approval_only_on_page2_passes(self):
         res = self._verdict_with_pages(self._filler(30),
-                                       [{"state": "APPROVED", "commit_id": "H",
+                                       [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": "H",
                                          "user": {"login": "carol"}}])
         self.assertEqual([e for e in res if not e.startswith("NOTE:")], [])
 
@@ -1182,6 +1493,72 @@ class MalformedManifest(unittest.TestCase):
         self.assertEqual(verify.main(["--manifest", self._tmp("[1, 2, 3]")]), 2)
 
 
+class MalformedScopeShapesAreNamed(RepoCase):
+    """Review P3: a non-object criteria[] item and a list-valued criterion id raised AttributeError
+    / TypeError inside check_scope and extract_criterion_ids. The gate failed closed, but only as an
+    anonymous `malformed manifest: <Exception>`. Each wrong shape is now a fatal that names the
+    field, from check_scope itself, never an exception."""
+
+    def setUp(self):
+        super().setUp()
+        self.contract = self.src(["AC-1"])
+        self.dig = self.digest(self.contract)
+
+    def _scope(self, m, source=None, digest=None):
+        errs = verify.check_scope(m, source or self.contract, digest or self.dig)
+        self.assertTrue(errs, "a malformed shape passed the scope check")
+        return errs
+
+    def _assert_named(self, errs, *needles):
+        self.assertTrue(any(all(n in e for n in needles) for e in errs), errs)
+        self.assertFalse(any("Error" in e for e in errs), errs)
+
+    def test_a_non_object_criteria_item_is_named(self):
+        for item in ("AC-1", ["AC-1"], 7, None):
+            with self.subTest(item=item):
+                errs = self._scope({"contract": {"criterion_ids": ["AC-1"]},
+                                    "criteria": [{"id": "AC-1", "addressed": True}, item]})
+                self._assert_named(errs, "criteria[1]", "object")
+
+    def test_a_non_string_criterion_id_is_named(self):
+        errs = self._scope({"contract": {"criterion_ids": ["AC-1"]},
+                            "criteria": [{"id": ["AC-1"], "addressed": True}]})
+        self._assert_named(errs, "criteria[0].id")
+
+    def test_list_valued_manifest_criterion_ids_are_named(self):
+        for ids in ([["AC-1"]], "AC-1", {"AC-1": True}):
+            with self.subTest(ids=ids):
+                errs = self._scope({"contract": {"criterion_ids": ids},
+                                    "criteria": [{"id": "AC-1", "addressed": True}]})
+                self._assert_named(errs, "contract.criterion_ids")
+
+    def test_non_object_contract_and_criteria_are_named(self):
+        self._assert_named(self._scope({"contract": ["x"], "criteria": []}), "`contract`")
+        self._assert_named(self._scope({"contract": {"criterion_ids": ["AC-1"]},
+                                        "criteria": "AC-1"}), "`criteria`")
+        self._assert_named(self._scope({"contract": {"digest": ["sha256:x"]}}), "contract.digest")
+
+    def test_list_valued_ids_in_a_json_contract_are_named(self):
+        rel = self.write("contract.json", json.dumps({"criterion_ids": [["AC-1"], "AC-2"]}))
+        errs = self._scope({"contract": {"criterion_ids": ["AC-2"]}}, rel, self.digest(rel))
+        self._assert_named(errs, "authoritative contract's criterion_ids")
+        with self.assertRaises(ValueError):
+            verify.extract_criterion_ids((self.repo / rel).read_text())
+
+    def test_through_verify_the_message_is_the_named_one(self):
+        path = self.write("m.json", json.dumps({"unit": "u", "contract": {"criterion_ids": ["AC-1"]},
+                                                "criteria": ["AC-1"]}))
+        (fatal, _notes), err = verify.verify(path, self.contract, self.dig, unit_class="report-only")
+        self.assertIsNone(err)
+        self.assertTrue(any("criteria[0]" in f for f in fatal), fatal)
+        self.assertFalse(any("malformed manifest: " in f for f in fatal), fatal)
+
+    def test_a_well_shaped_manifest_still_passes_scope(self):
+        self.assertEqual(verify.check_scope({"contract": {"criterion_ids": ["AC-1"]},
+                                             "criteria": _crit("AC-1")},
+                                            self.contract, self.dig), [])
+
+
 class NegativeControlSurvivor(RepoCase):
     """#137: survivor summaries (plural / percentage / count) must be rejected, not accepted."""
 
@@ -1288,6 +1665,21 @@ class GitAuthorityChecks(unittest.TestCase):
             res = verify.check_ancestry({"head_sha": self.main_tip}, "no-such-branch")
             self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
 
+    def test_a_missing_base_ref_is_fatal_on_a_lane_claiming_soundness(self):
+        # Review P2: deleting origin/<base> in the worker's clone turned a requested ancestry
+        # proof into a skipped one on EVERY lane. Only the advisory lane may skip it now.
+        self.addCleanup(verify._Authority.reset)
+        for lane in ("provenance=ci", "enforcement (signed dispatch record + pubkey)"):
+            with self.subTest(lane=lane), self._inside_repo():
+                verify._Authority.lane = lane
+                res = verify.check_ancestry({"head_sha": self.main_tip}, "no-such-branch")
+                self.assertTrue(res and not any(e.startswith("NOTE:") for e in res), res)
+                self.assertIn("origin/no-such-branch not found", res[0])
+                # --base not given stays a NOTE: nothing was asked for
+                res = verify.check_ancestry({"head_sha": self.main_tip}, None)
+                self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
+                self.assertEqual(verify.check_ancestry({"head_sha": self.main_tip}, "main"), [])
+
     def test_symbol_on_base_found(self):
         with self._inside_repo():
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", "main"), [])
@@ -1301,6 +1693,49 @@ class GitAuthorityChecks(unittest.TestCase):
         with self._inside_repo():
             self.assertEqual(verify.check_symbol_on_base(None, "main"), [])
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", None), [])
+
+
+class GitObjectRewriteChannelsAreClosed(RepoCase):
+    """Review P1: `git replace` in the graded clone rewrites what head_sha RESOLVES to, and a
+    `.git/info/grafts` file rewrites a commit's parents. Both are plain files the worker can
+    write, and both changed every SHA fact verify.py states — the tree a ledger binds to, the
+    ancestry it checks. git_env() now carries GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=
+    /dev/null, so the verifier reads the objects the SHAs actually name."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("app.py", "VALUE = 1\n")
+        self.base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        self.head = self.commit("head")
+        self.real_tree = self.git("rev-parse", "HEAD^{tree}")
+        self.write("app.py", "VALUE = 'what the worker wants graded'\n")
+        self.decoy = self.commit("decoy")
+        self.decoy_tree = self.git("rev-parse", "HEAD^{tree}")
+
+    def test_a_replace_ref_does_not_move_what_head_sha_resolves_to(self):
+        self.git("replace", self.head, self.decoy)
+        # positive control: plain git on this clone now answers with the decoy's tree
+        self.assertEqual(self.git("rev-parse", f"{self.head}^{{tree}}"), self.decoy_tree)
+        self.assertEqual(verify._tree(self.head), self.real_tree)
+        record = {"cmd": "true", "cmd_sha256": hashlib.sha256(b"true").hexdigest(),
+                  "exit": 0, "wtree": self.decoy_tree}
+        errs = verify.check_commands({"head_sha": self.head, "commands": [record]}, True)
+        self.assertTrue(any("STALE" in e for e in errs), errs)
+
+    def test_a_grafts_file_does_not_rewrite_ancestry(self):
+        # origin/main is a commit that does NOT contain head; a graft claims it does.
+        orphan = self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit-tree",
+                          f"{self.base}^{{tree}}", "-m", "unrelated")
+        self.git("update-ref", "refs/remotes/origin/main", orphan)
+        grafts = self.repo / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(parents=True, exist_ok=True)
+        grafts.write_text(f"{orphan} {self.head}\n", encoding="utf-8")
+        positive = subprocess.run(["git", "merge-base", "--is-ancestor", self.head, orphan],
+                                  cwd=self.repo, capture_output=True)
+        self.assertEqual(positive.returncode, 0, "the planted graft is not live on this host")
+        errs = verify.check_ancestry({"head_sha": self.head}, "main")
+        self.assertTrue(any("not an ancestor of origin/main" in e for e in errs), errs)
 
 
 class InferRepoFromOrigin(unittest.TestCase):
@@ -1372,7 +1807,7 @@ class MutationFixture(RepoCase):
         self._orig_r = verify.fetch_reviews
         self._orig_a = verify.fetch_pr_author
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": self.head_sha,
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": self.head_sha,
               "user": {"login": "carol"}}], None)
         verify.fetch_pr_author = lambda repo_, n: "alice"  # the PR author != the reviewer
 
@@ -1522,7 +1957,7 @@ class EndToEndMutationGreen(MutationFixture):
         manifest["pr"]["reviewed_sha"] = head
         Path(path).write_text(json.dumps(manifest), encoding="utf-8")
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": head, "user": {"login": "carol"}}], None)
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": head, "user": {"login": "carol"}}], None)
         rc, _out, err = self._run_main(path, "--lighting", "dark-eligible", "--execute-nc",
                                        "--nc-command", self.proof_cmd)
         self.assertEqual(rc, 2)
@@ -1817,7 +2252,7 @@ class EndToEndMutationGreen(MutationFixture):
         manifest["pr"]["reviewed_sha"] = head
         Path(path).write_text(json.dumps(manifest), encoding="utf-8")
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": head, "user": {"login": "carol"}}], None)
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": head, "user": {"login": "carol"}}], None)
         rc, out, err = self._run_main(path, "--lighting", "dark-eligible", "--execute-nc",
                                       "--nc-command", self.proof_cmd)
         self.assertEqual(rc, 0, err)
@@ -2110,7 +2545,7 @@ class EndToEndMutationGreen(MutationFixture):
                         execute.assert_called_once()
                         apply.assert_called_once()
                         self.assertEqual(sum(c.args[1] == shlex.split(self.proof_cmd)
-                                             for c in run_at.call_args_list), 2)
+                                             for c in run_at.call_args_list), 3)  # clean/control/clean
                     else:
                         execute.assert_not_called()
                         apply.assert_not_called()
@@ -2137,7 +2572,7 @@ class EndToEndMutationGreen(MutationFixture):
                     # Both mutants kill the same proof; final exits alone cannot identify which ran.
                     self.write(self.nc_artifact, 'RED\n' + diff.replace('return 1', 'return 0'))
                 applied, runs = [], []
-                def observe(wt, argv, **kwargs):
+                def observe(wt, argv, applied=applied, runs=runs, **kwargs):
                     if argv == shlex.split(self.proof_cmd):
                         applied.append((Path(wt) / 'app.py').read_text())
                     result = original(wt, argv, **kwargs)
@@ -2150,9 +2585,11 @@ class EndToEndMutationGreen(MutationFixture):
                         nc_command=self.proof_cmd, dispatch_record=rec, dispatch_pubkey=pk)
                 self.assertIsNone(err)
                 self.assertEqual(result[0], [])
-                self.assertEqual(applied, ['def f():\n    return 1\n', 'def f():\n    return 2\n'])
-                self.assertEqual([r[0] for r in runs], [1, 0])
-                self.assertIn('AssertionError', runs[0][2])
+                # clean -> control -> clean (review P1)
+                self.assertEqual(applied, ['def f():\n    return 2\n', 'def f():\n    return 1\n',
+                                           'def f():\n    return 2\n'])
+                self.assertEqual([r[0] for r in runs], [0, 1, 0])
+                self.assertIn('AssertionError', runs[1][2])
                 self.assertTrue(any('signature verified' in n for n in result[1]), result)
 
     def test_rejected_manifest_keeps_static_replay_diagnostics(self):
@@ -2275,6 +2712,74 @@ class DispatchProvenance(RepoCase):
         res = verify.check_dispatch_provenance(m, "sha256:a", "mutation", None, rec, pk)
         self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
 
+    _BASE = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation"}
+
+    def _lane_check(self, signed, **used):
+        rec, pk = self._signed({**self._BASE, **signed})
+        return verify.check_dispatch_provenance(self._M, "sha256:a", "mutation", None, rec, pk,
+                                                **used)
+
+    def _fatal(self, res):
+        return [e for e in res if not e.startswith("NOTE:")]
+
+    def test_an_unsigned_no_gh_waiver_is_refused(self):
+        # Review P2: --no-gh waives the GitHub review and arrived from argv/ORCA_NO_GH unbound.
+        res = self._lane_check({}, no_gh=True)
+        self.assertTrue(any("did not sign no_gh" in e for e in self._fatal(res)), res)
+        self.assertFalse(self._fatal(self._lane_check({"no_gh": True}, no_gh=True)))
+
+    def test_a_signed_no_gh_the_run_drops_is_a_substitution(self):
+        res = self._lane_check({"no_gh": True}, no_gh=False)
+        self.assertTrue(any("substitution" in e for e in self._fatal(res)), res)
+
+    def test_an_unsigned_or_flipped_lane_is_refused(self):
+        res = self._lane_check({}, lane="A")
+        self.assertTrue(any("did not sign lane" in e for e in self._fatal(res)), res)
+        res = self._lane_check({"lane": "0"}, lane="A")
+        self.assertTrue(any("substitution" in e for e in self._fatal(res)), res)
+        self.assertFalse(self._fatal(self._lane_check({"lane": "A"}, lane="A")))
+        # an omitted --lane against a signed lane is not a USE here; verify() adopts the signed
+        # lane instead (test_an_omitted_lane_adopts_the_signed_one)
+        self.assertFalse(self._fatal(self._lane_check({"lane": "A"})))
+
+    def test_an_omitted_lane_adopts_the_signed_one(self):
+        # A record signing lane "0" passed as a landed mutation when --lane was left off: the
+        # provenance check skipped the unused field and check_lighting saw no lane at all
+        # (PR #571 review). verify() now runs the downstream checks on the signed value.
+        rec, pk = self._signed({**self._BASE, "lane": "0", "lighting": "lit"})
+        self.write("m.json", json.dumps({"unit": "u"}))
+        out, err = verify.verify("m.json", unit_class="mutation", contract_digest="sha256:a",
+                                 dispatch_record=rec, dispatch_pubkey=pk)
+        self.assertIsNone(err)
+        fatal, _notes = out
+        self.assertTrue(any("Lane 0" in e for e in fatal), fatal)
+        self.assertFalse(any("did not sign" in e or "substitution" in e for e in fatal), fatal)
+
+    def test_a_signed_execute_nc_cannot_be_dropped(self):
+        res = self._lane_check({"execute_nc": True}, execute_nc=False)
+        self.assertTrue(any("execute_nc" in e and "substitution" in e for e in self._fatal(res)), res)
+        self.assertFalse(self._fatal(self._lane_check({"execute_nc": True}, execute_nc=True)))
+        # executing a control the record did not require only makes the run stricter
+        self.assertFalse(self._fatal(self._lane_check({}, execute_nc=True)))
+
+    def test_the_lane_flags_reach_the_check_from_verify(self):
+        rec, pk = self._signed(dict(self._BASE))
+        self.write("m.json", json.dumps({"unit": "u"}))
+        with mock.patch.object(verify, "check_dispatch_provenance",
+                               wraps=verify.check_dispatch_provenance) as spy:
+            verify.verify("m.json", unit_class="mutation", no_gh=True, lane="B",
+                          execute_nc=True, dispatch_record=rec, dispatch_pubkey=pk)
+        kw = spy.call_args.kwargs
+        self.assertEqual((kw["no_gh"], kw["lane"], kw["execute_nc"]), (True, "B", True))
+
+    def test_canonicalization_matches_signer_on_the_lane_fields(self):
+        record = {**self._BASE, "no_gh": True, "lane": "0", "execute_nc": True}
+        self.assertEqual(verify._canonical_dispatch(record), dispatch_sign.canonical_record(record))
+        self.assertEqual(verify._DISPATCH_FIELDS, dispatch_sign._RECORD_FIELDS)
+        # an old record (no lane flags) canonicalizes exactly as it did before they existed
+        self.assertEqual(verify._canonical_dispatch(dict(self._BASE, no_gh=None, lane=None)),
+                         verify._canonical_dispatch(dict(self._BASE)))
+
     def test_canonicalization_matches_signer(self):
         # cross-tool drift guard: the gate and the signer must canonicalize identically, else every
         # real signature would fail to verify.
@@ -2341,6 +2846,29 @@ class TranscriptFixture(RepoCase):
 
 class SignedTranscript(TranscriptFixture):
     """#281/#386: the --transcript-out / --transcript-key pair (fixture above; tests here)."""
+
+    def test_the_transcript_binds_the_bytes_that_were_judged_not_a_reread(self):
+        # Review P2: build() re-read args.manifest from disk AFTER worker code had run (the
+        # executed control), so a manifest rewritten mid-run was what the verdict bound to.
+        judged = (self.repo / self.manifest).read_bytes()
+        original = verify.check_scope
+
+        def rewrite_mid_run(*a, **k):
+            (self.repo / self.manifest).write_text(json.dumps({"unit": "forged"}), encoding="utf-8")
+            return original(*a, **k)
+        with mock.patch.object(verify, "check_scope", side_effect=rewrite_mid_run):
+            self._main("--transcript-out", "docs/reports/u/transcript.json")
+        rec = self._envelope()
+        self.assertEqual(rec["manifest_sha256"], hashlib.sha256(judged).hexdigest())
+        self.assertEqual(rec["unit"], "u")
+
+    def test_a_manifest_that_never_loaded_binds_no_digest(self):
+        (self.repo / self.manifest).write_text("{not json", encoding="utf-8")
+        rc, _out, _err = self._main("--transcript-out", "docs/reports/u/transcript.json")
+        self.assertEqual(rc, 2)
+        rec = self._envelope()
+        self.assertIsNone(rec["manifest_sha256"])
+        self.assertIsNone(rec["unit"])
 
     def test_no_flags_writes_nothing_and_says_nothing_new(self):
         # The unsigned default path is byte-identical to today's: the terminal lines are the
@@ -2560,7 +3088,7 @@ class EquivalentReviewVeto(unittest.TestCase):
     def test_equivalent_heads_share_objections_and_withdrawals(self):
         m = {'head_sha': 'H', 'pr': {'number': 7, 'reviewed_sha': 'R'}}
         def review(who, state, sha):
-            return {'user': {'login': who}, 'state': state, 'commit_id': sha}
+            return {'user': {'login': who}, 'state': state, 'commit_id': sha, 'author_association': 'MEMBER'}
         for approval, objection in (('H', 'R'), ('R', 'H')):
             reviews = [review('carol', 'APPROVED', approval),
                        review('bob', 'CHANGES_REQUESTED', objection)]
@@ -2697,7 +3225,7 @@ class CoordinatorOracleScope(RepoCase):
         path = self.write('manifest.json', json.dumps(m))
         with mock.patch.object(verify, 'fetch_pr_author', return_value='author'), \
                 mock.patch.object(verify, 'fetch_reviews', return_value=([
-                    {'user': {'login': 'reviewer'}, 'state': 'APPROVED', 'commit_id': self.head}], None)):
+                    {'user': {'login': 'reviewer'}, 'state': 'APPROVED', 'author_association': 'MEMBER', 'commit_id': self.head}], None)):
             result, err = verify.verify(path, source, digest, repo='o/r', unit_class='mutation',
                                         lighting='lit', execute_nc=True, nc_command=self.cmd)
         self.assertIsNone(err)
@@ -2834,7 +3362,7 @@ class AppliedHunkCoordinates(RepoCase):
         with mock.patch.object(verify, '_run_at', wraps=verify._run_at) as run_at:
             result = verify.check_negative_control(m, True, execute=True, nc_command=self.cmd)
         proof_runs = [c for c in run_at.call_args_list if c.args[1] == shlex.split(self.cmd)]
-        self.assertEqual(len(proof_runs), 0 if function == 'unrelated' else 2)
+        self.assertEqual(len(proof_runs), 0 if function == 'unrelated' else 3)  # clean/control/clean
         return result
 
     def test_offset_cannot_mutate_unchanged_behavior(self):
@@ -2971,6 +3499,49 @@ class ProofOracleProtection(RepoCase):
 
 
 
+class PerRunCaches(RepoCase):
+    """Review P3 (perf): _is_test_path re-loaded and re-executed diff_scope.py for every path it
+    classified, and _roots_are_split spawned two git processes for every artifact read. Both
+    answers are now taken once per run."""
+
+    def test_diff_scope_is_loaded_once_for_many_paths(self):
+        verify._load_diff_scope.cache_clear()
+        self.addCleanup(verify._load_diff_scope.cache_clear)
+        real = importlib.util.spec_from_file_location
+        with mock.patch.object(verify.importlib.util, "spec_from_file_location",
+                               side_effect=real) as spec:
+            verdicts = [verify._is_test_path(p) for p in
+                        ("tests/test_a.py", "src/a.py", "tests/test_b.py", "src/b.py", "x_test.go")]
+        loads = [c for c in spec.call_args_list if c.args and c.args[0] == "diff_scope"]
+        self.assertEqual(len(loads), 1, loads)
+        self.assertEqual(verdicts[:4], [True, False, True, False])
+
+    def test_a_missing_diff_scope_still_fails_closed_every_time(self):
+        verify._load_diff_scope.cache_clear()
+        self.addCleanup(verify._load_diff_scope.cache_clear)
+        with mock.patch.object(verify.importlib.util, "spec_from_file_location",
+                               side_effect=FileNotFoundError("gone")):
+            self.assertIsNone(verify._is_test_path("tests/test_a.py"))
+            self.assertIsNone(verify._is_test_path("tests/test_b.py"))
+
+    def test_the_split_answer_spawns_git_once_per_run(self):
+        td = _temp_repo()
+        self.addCleanup(td.cleanup)
+        other = Path(td.name).resolve()
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        verify._ROOTS.update(git=str(other), evidence=str(self.repo))
+        self.addCleanup(verify._ROOTS.update, git=None, evidence=None)
+        verify._roots_are_split.cache.clear()
+        self.addCleanup(verify._roots_are_split.cache.clear)
+        verify._Authority.git_bin()  # pin first; its own custody probe is not this count
+        with mock.patch.object(verify, "_run", wraps=verify._run) as run:
+            answers = [verify._roots_are_split() for _ in range(5)]
+        self.assertEqual(answers, [True] * 5)
+        toplevels = [c for c in run.call_args_list if "--show-toplevel" in c.args[0]]
+        # the SHA root's toplevel, once for the whole run (the evidence root is argv, no git)
+        self.assertEqual(len(toplevels), 1, toplevels)
+
+
 class ProofInputOptions(unittest.TestCase):
     """PR #323 review, P1.
 
@@ -3105,13 +3676,16 @@ class LiteralControlPaths(RepoCase):
         observed, original_run = [], verify._run_at
         def observe(wt, argv, **kwargs):
             if argv == shlex.split(command):
-                changed = original_run(wt, ['git', 'diff', '--name-only', 'HEAD'])[1].splitlines()
+                # the control is SEALED into a sibling commit (review P1), so compare the
+                # checked-out tree with head_sha rather than with the worktree's own HEAD
+                changed = original_run(wt, ['git', 'diff', '--name-only', head])[1].splitlines()
                 observed.append((changed, (Path(wt) / 'test_probe.py').read_text()))
             return original_run(wt, argv, **kwargs)
         with mock.patch.object(verify, '_run_at', side_effect=observe):
             ok, errors = verify.execute_negative_control(m, command)
         self.assertTrue(ok, errors)
-        self.assertEqual(observed, [(['*'], 'assert int(open("*").read()) == 2\n'),
+        self.assertEqual(observed, [([], 'assert int(open("*").read()) == 2\n'),
+                                    (['*'], 'assert int(open("*").read()) == 2\n'),
                                     ([], 'assert int(open("*").read()) == 2\n')])
 
     def test_explicit_revert_inspects_actual_inventory_before_proof(self):
@@ -3126,7 +3700,7 @@ class LiteralControlPaths(RepoCase):
         original_run = verify._run_at
         for extra in ('runner.py', 'extra.py'):
             with self.subTest(extra=extra):
-                def inject(wt, argv, **kwargs):
+                def inject(wt, argv, extra=extra, **kwargs):
                     result = original_run(wt, argv, **kwargs)
                     if 'checkout' in argv:
                         (Path(wt) / extra).write_text('assert False\n')
@@ -3151,7 +3725,7 @@ class AuthoritativeReviewHistory(RepoCase):
         self.unrelated = self.commit()
 
     def review(self, who, state, sha):
-        return {'user': {'login': who}, 'state': state, 'commit_id': sha}
+        return {'user': {'login': who}, 'state': state, 'commit_id': sha, 'author_association': 'MEMBER'}
 
     def check(self, reviews, selected=None):
         m = {'head_sha': self.head, 'pr': {'number': 7, 'reviewed_sha': selected or self.head}}
@@ -3350,7 +3924,7 @@ class CrossRepoRoots(RepoCase):
 
         self._orig_r, self._orig_a = verify.fetch_reviews, verify.fetch_pr_author
         verify.fetch_reviews = lambda repo_, n: (
-            [{"state": "APPROVED", "commit_id": self.head_sha, "user": {"login": "carol"}}], None)
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": self.head_sha, "user": {"login": "carol"}}], None)
         verify.fetch_pr_author = lambda repo_, n: "alice"
         self.addCleanup(self._restore_gh)
         self.addCleanup(self._reset_roots)
@@ -4038,7 +4612,7 @@ class ReviewAuthorityPinnedBeforeTheControl(MutationFixture):
         head_file = root / "head"
         stub = ("#!/bin/sh\n"
                 f"echo \"DROPPED-GH ARGV: $*\" >> {shlex.quote(str(self.dropped_log))}\n"
-                "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"'\"$HEAD\"'\","
+                "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"'\"$HEAD\"'\","
                 "\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         self.write("check.py",
                    "import os, pathlib, stat\n"
@@ -4111,7 +4685,7 @@ class ReviewAuthorityPinnedBeforeTheControl(MutationFixture):
         # A gh already sitting in the writable dir before the run answers (through its pinned
         # absolute path) — but the verdict RECORDS that the authority was worker-writable.
         (self.droppable / "gh").write_text(  # the sha is baked in: gh's env is scrubbed (h409 R3)
-            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\""
+            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\""
             + self.head_sha + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         (self.droppable / "gh").chmod(0o755)
         rc, out, err = self._attack()
@@ -4249,7 +4823,7 @@ class AuthorityCustodyIsAProbeNotAName(MutationFixture):
     def _plant(self, where):
         where.write_text(
             "#!/bin/sh\n" f"echo \"PLANTED-GH ARGV: $*\" >> {shlex.quote(str(self.consulted))}\n"
-            "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"" + self.head_sha
+            "case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"" + self.head_sha
             + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         where.chmod(0o755)
 
@@ -4364,7 +4938,7 @@ class EveryHopAndEveryOwnerIsProbed(MutationFixture):
         shutil.rmtree(d, ignore_errors=True)
 
     def _forged_review(self):
-        return ("case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"" + self.head_sha
+        return ("case \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"" + self.head_sha
                 + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
 
     def _plant_stub(self, where):
@@ -4535,7 +5109,7 @@ class EveryPostControlAuthorityIsPinned(MutationFixture):
         realgh = root / "realgh"        # a gh that approves head (the sha baked in: R3 scrubs env)
         realgh.mkdir()
         (realgh / "gh").write_text(
-            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"commit_id\":\"" + self.head_sha
+            "#!/bin/sh\ncase \"$*\" in *reviews*) echo '[{\"state\":\"APPROVED\",\"author_association\":\"MEMBER\",\"commit_id\":\"" + self.head_sha
             + "\",\"user\":{\"login\":\"carol\"}}]';; *) echo '{\"user\":{\"login\":\"alice\"}}';; esac\n")
         (realgh / "gh").chmod(0o755)
         self._env = {"PATH": f"{self.droppable}{os.pathsep}{realgh}{os.pathsep}{self.tools}"}
@@ -4698,7 +5272,7 @@ class TheExecutedControlRunsUnderAScrubbedEnvironment(MutationFixture):
         self.assertIn("negative control EXECUTED", out)
         self.assertIn("exits 0 at clean head_sha", out)
         runs = [set(line.split()) for line in self.seen.read_text().splitlines()]
-        self.assertEqual(len(runs), 2, runs)  # the control run and the clean run both executed
+        self.assertEqual(len(runs), 3, runs)  # clean, control, clean all executed (review P1)
         return runs
 
     def test_the_coordinators_token_and_orca_values_never_reach_the_control(self):
@@ -4863,7 +5437,7 @@ class GitLegsRunUnderAScrubbedEnvironment(MutationFixture):
     def test_git_and_gitleaks_see_the_allowlist_and_nothing_else(self):
         self._green_executed_run()
         belt = {"GIT_TERMINAL_PROMPT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
-                "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2",
+                "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2",
                 "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2"}
         for log in (self.git_seen, self.gitleaks_seen):
             seen = set(log.read_text().split())
@@ -4880,6 +5454,8 @@ class GitLegsRunUnderAScrubbedEnvironment(MutationFixture):
             env = verify._Authority.git_env()
             self.assertEqual(env, {**verify._Authority.nc_env(),
                                    "GIT_TERMINAL_PROMPT": "0",
+                                   "GIT_NO_REPLACE_OBJECTS": "1",
+                                   "GIT_GRAFT_FILE": os.devnull,
                                    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                                    "GIT_CONFIG_COUNT": "3",
                                    "GIT_CONFIG_KEY_0": "core.fsmonitor",

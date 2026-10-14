@@ -31,7 +31,7 @@ def _section(text, name):
     if text.count(start) != 1 or text.count(end) != 1:
         raise AssertionError(f"want exactly one {start} ... {end} pair")
     body = text.split(start)[1].split(end)[0]
-    rows, lineno = [], None
+    rows = []
     for i, line in enumerate(body.splitlines()):
         if not line.strip():
             continue

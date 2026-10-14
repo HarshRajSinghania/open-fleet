@@ -17,7 +17,10 @@ the full-review fixes (PR #544) added the identity concept table
 check_proof_ratchet) — new checks again, still under the 73 baseline. 72 since
 #558 added check_quarantine (the matcher itself lives in
 runtime/scripts/quarantine_check.py; the +1 is the gate function, not the
-engine leaking back).
+engine leaking back). 69 since the identity-gate hardening moved the similarity engine
+(stopwords, concept table, negation polarity, containment) into scripts/_identity.py behind
+three re-exports; validate.py keeps the gate policy (IDENTITY_POINT_MAX_TOKENS/_SAME/_NEAR,
+identity_point_length_errors, identity_collisions).
 """
 import importlib.util
 import re
@@ -27,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WIDTH_RE = re.compile(r"(?:def |class |async def |[A-Z_]+ =)")
 BASELINE_WIDTH = 73
-PINNED_WIDTH = 72  # 64 after RV-D1, +4 for #512, +3 full-review, +1 quarantine (#558)
+PINNED_WIDTH = 69  # 64 after RV-D1, +4 #512, +3 full-review, +1 #558, -3 identity engine to _identity.py
 
 
 def interface_width(path):

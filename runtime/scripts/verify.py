@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import hashlib
 import importlib.util
 import json
@@ -213,16 +214,28 @@ def _roots_are_split():
     even available; under a split, evidence passes only on its artifacts[] pin, read from the
     evidence root. Two clones of one project are two repositories here: same paths, different
     roots, so the pin still governs. Identity must be PROVEN — if either toplevel cannot be
-    resolved we fail closed and treat the roots as split."""
+    resolved we fail closed and treat the roots as split.
+
+    Answered ONCE per (roots, cwd) and cached (review P3): it used to spawn two git processes
+    per artifact read. The first answer is also the one taken before any executed control ran
+    worker code, so a later filesystem move cannot flip it mid-run."""
     if _ROOTS["git"] is None and _ROOTS["evidence"] is None:
         return False
-    sha_top, ev_top = _toplevel(), _evidence_toplevel()
-    if sha_top is None or ev_top is None:
-        return True
-    try:
-        return Path(sha_top).resolve() != Path(ev_top).resolve()
-    except OSError:
-        return True
+    key = (_ROOTS["git"], _ROOTS["evidence"], os.getcwd())
+    if key not in _roots_are_split.cache:
+        sha_top, ev_top = _toplevel(), _evidence_toplevel()
+        if sha_top is None or ev_top is None:
+            split = True
+        else:
+            try:
+                split = Path(sha_top).resolve() != Path(ev_top).resolve()
+            except OSError:
+                split = True
+        _roots_are_split.cache[key] = split
+    return _roots_are_split.cache[key]
+
+
+_roots_are_split.cache = {}  # (git root, evidence root, cwd) -> split; main() clears it per run
 
 
 def _resolve(path):
@@ -407,12 +420,20 @@ def json_contract(content):
     not run on it (PR #308 review, P1): a valid contract whose descriptive fields mention an old
     `AC-9` beside an explicit `["AC-1"]` was refused, and the refusal told the author to use the
     very JSON array they had used.
+
+    An array holding anything but strings raises ValueError naming the field: a list or object
+    where a criterion id belongs made set() raise TypeError deep inside a check, reported only as
+    an anonymous `malformed manifest: TypeError` (review P3).
     """
     try:
         data = json.loads(content)
     except (json.JSONDecodeError, ValueError):
         return None
     if isinstance(data, dict) and isinstance(data.get("criterion_ids"), list):
+        bad = [x for x in data["criterion_ids"] if not isinstance(x, str)]
+        if bad:
+            raise ValueError("the authoritative contract's criterion_ids must hold only "
+                             f"criterion-id strings, got {bad[0]!r:.60} ({type(bad[0]).__name__})")
         return data
     return None
 
@@ -422,7 +443,7 @@ def extract_criterion_ids(content):
     `criterion_ids` — unambiguous, and PREFERRED. Otherwise the ids are the tokens that BEGIN a list
     item or line in the text (CRIT_ID_RE): `- AC-1: …` is a criterion, `see RFC-7519` is prose
     (#268)."""
-    doc = json_contract(content)
+    doc = json_contract(content)  # ValueError on a non-string id, named (review P3)
     if doc is not None:
         return set(doc["criterion_ids"])
     return set(CRIT_ID_RE.findall(content))
@@ -450,7 +471,10 @@ def check_scope(m, auth_source, auth_digest):
     if got != want:
         return [f"scope: authoritative source does not match --contract-digest ({got} != {want})"]
     text = content.decode("utf-8")
-    authoritative = extract_criterion_ids(text)
+    try:
+        authoritative = extract_criterion_ids(text)
+    except ValueError as exc:
+        return [f"scope: {exc}"]
     if not authoritative:
         return ["scope: no criterion ids in the authoritative contract"]
     doc = json_contract(text)
@@ -476,13 +500,36 @@ def check_scope(m, auth_source, auth_digest):
                     "the whole scope guarantee. Write every criterion as a list item "
                     "(`- AC-2: …`), or use a JSON contract with an explicit criterion_ids array "
                     "(#296)"]
-    contract = m.get("contract") or {}
+    # The manifest SHAPE this check reads, validated before it is read (review P3): `contract` an
+    # object, `contract.digest` a string, `contract.criterion_ids` a list of strings, `criteria` a
+    # list of {id: str, addressed} objects. Absent stays absent — coverage then names what is
+    # missing; present and the wrong shape is a named fatal, never an exception.
+    contract, criteria = m.get("contract") or {}, m.get("criteria") or []
+    if not isinstance(contract, dict):
+        return [f"scope: manifest `contract` must be an object, got {type(contract).__name__}"]
+    if not isinstance(contract.get("digest") or "", str):
+        return ["scope: manifest contract.digest must be a string, got "
+                f"{type(contract['digest']).__name__}"]
+    declared = contract.get("criterion_ids") or []
+    if not (isinstance(declared, list) and all(isinstance(x, str) for x in declared)):
+        return [f"scope: manifest contract.criterion_ids must be a list of criterion-id strings, "
+                f"got {declared!r:.60}"]
+    declared = set(declared)
+    if not isinstance(criteria, list):
+        return [f"scope: manifest `criteria` must be a list of {{id, addressed}} objects, got "
+                f"{type(criteria).__name__}"]
+    for i, item in enumerate(criteria):
+        if not isinstance(item, dict):
+            return [f"scope: manifest criteria[{i}] must be an {{id, addressed}} object, got "
+                    f"{item!r:.60} ({type(item).__name__})"]
+        if not isinstance(item.get("id"), str):
+            return [f"scope: manifest criteria[{i}].id must be a criterion-id string, got "
+                    f"{item.get('id')!r:.60}"]
     errs = []
     mdigest = contract.get("digest")
     if mdigest and _norm_digest(mdigest) != want:
         errs.append("scope: manifest contract.digest != authoritative digest (denominator swap)")
-    addressed = {c.get("id") for c in (m.get("criteria") or []) if c.get("addressed") is True}
-    declared = set(contract.get("criterion_ids") or [])
+    addressed = {c["id"] for c in criteria if c.get("addressed") is True}
     unaddressed = sorted(authoritative - addressed)
     if unaddressed:
         errs.append(f"scope: authoritative criteria not addressed in criteria[] "
@@ -559,7 +606,8 @@ def _wtree_bound(m):
 def review_ok(reviews, head_sha, author=None, also_sha=None, equivalent_shas=()):
     """Latest independent state WITHIN this content's review history governs the veto.
 
-    Approvals require head or the explicitly tree-bound reviewed SHA. Objections use all
+    Approvals require head or the explicitly tree-bound reviewed SHA, and an approver whose
+    `author_association` is in _Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS. Objections use all
     authoritative equivalent trees; a worker cannot select one away. Unrelated later reviews
     do not withdraw a relevant objection. COMMENTED/DISMISSED at equivalent content still do.
     """
@@ -573,6 +621,7 @@ def review_ok(reviews, head_sha, author=None, also_sha=None, equivalent_shas=())
     if any(r.get("state") == "CHANGES_REQUESTED" for r in independent):
         return False
     return any(r.get("state") == "APPROVED" and r.get("commit_id") in ok_shas
+               and r.get("author_association") in _Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS
                for r in independent)
 
 
@@ -671,6 +720,15 @@ class _Authority:
     finding the stub the control had just planted (G-1: the C5 false GREEN on both lanes)."""
 
     SOUND_PROVENANCE = ("ci", "mcp", "sdk", "dispatch")
+    # Who may cast the INDEPENDENT approval: GitHub's `author_association` on the review, read
+    # from the API — never the manifest. "Not the PR author" alone let ANY account count: a
+    # throwaway login (or a sock puppet of the worker) with no standing in the repository could
+    # approve a PR on a public repo and satisfy the gate (review P2). Only an account the
+    # repository itself grants standing — its owner, an org member, an invited collaborator —
+    # approves. CONTRIBUTOR, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR, MANNEQUIN and NONE never do. A
+    # CHANGES_REQUESTED still vetoes from ANY non-author account (the fail-closed direction).
+    # A class constant, not a module one: the RV-D2 width pin holds verify.py's top level fixed.
+    INDEPENDENT_REVIEWER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
     ABSENT = ("gh absent at startup (the review authority is pinned once, before the control, "
               "and never re-resolved — h409 F-1)")
     ABSENT_GIT = "git absent at startup (pinned once, before the control, never re-resolved — h409 R2)"
@@ -868,8 +926,16 @@ class _Authority:
         repo's own .git/config), and /dev/null + NOSYSTEM drop the global and system files
         (B4: ~/.gitconfig). `safe.directory=*` replaces the one legitimate use of the global
         file (CI ownership belts) so exotic images fail nowhere new. Applied unconditionally,
-        as gh's is: the launch env is the worker's on the native lane."""
+        as gh's is: the launch env is the worker's on the native lane.
+
+        The belt also closes the two OBJECT-REWRITE channels: `git replace <head> <other>` (a
+        refs/replace/* entry in the shared clone) makes every leg that resolves head_sha read
+        another commit's tree, parents and content, and a `.git/info/grafts` file rewrites a
+        commit's parents, so ancestry and range diffs answer for a history that never existed.
+        GIT_NO_REPLACE_OBJECTS=1 makes git ignore replace refs; GIT_GRAFT_FILE=/dev/null points
+        the graft lookup at an empty file, so a planted grafts file is never read."""
         return {**cls.nc_env(), "GIT_TERMINAL_PROMPT": "0",
+                "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_COUNT": "3",
                 "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
@@ -1002,7 +1068,9 @@ def check_review(m, repo, is_mutation, no_gh=False, corroborated=False, dispatch
         return [f"mutation unit: cannot establish INDEPENDENT APPROVED review: {err}"]
     if not review_ok(reviews, head, author, also_sha=equivalent, equivalent_shas=review_shas):
         return [f"mutation unit: no INDEPENDENT APPROVED review at head_sha on {repo}#{number} "
-                f"(the PR author's own approval and superseded reviews do not count; a review at "
+                f"(the PR author's own approval, superseded reviews, and approvals from accounts "
+                f"whose author_association is not one of "
+                f"{sorted(_Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS)} do not count; a review at "
                 f"reviewed_sha only counts when reviewed_wtree binds its tree to the head's)"]
     return authority  # [] or the advisory NOTEs (h409 F-1/F-2)
 
@@ -1091,10 +1159,15 @@ def _fresh_command_records(m):
     return [c for c in records if c.get("exit") == 0 and c.get("wtree") == want], None
 
 
+@functools.lru_cache(maxsize=1)
 def _load_diff_scope():
     """diff_scope.py, loaded the way _load_ed25519 loads its sibling. It owns the repo's one
     definition of what a test path is (SCOPE_TESTS), and the control-binding checks below need
-    exactly that definition — a second copy here would drift from the lens gate's copy."""
+    exactly that definition — a second copy here would drift from the lens gate's copy.
+
+    Loaded ONCE per process (review P3): _is_test_path asks per changed path, several times per
+    path across the bind checks, and each ask used to re-read and re-execute the module. A
+    failed load raises and is not cached, so a missing sibling still fails closed every time."""
     spec = importlib.util.spec_from_file_location(
         "diff_scope", Path(__file__).resolve().parent / "diff_scope.py")
     mod = importlib.util.module_from_spec(spec)
@@ -1353,7 +1426,10 @@ def check_oracle_scope(m, source, digest):
     raw, err = read_source(source)
     if err or sha256_of(raw) != _norm_digest(digest):
         return ["oracle scope: authoritative contract unreadable or digest mismatch"]
-    doc = json_contract(raw.decode("utf-8"))
+    try:
+        doc = json_contract(raw.decode("utf-8"))
+    except ValueError as exc:  # check_scope names the same defect; never an exception (review P3)
+        return [f"oracle scope: {exc}"]
     scope = doc.get("oracle_scope") if doc else None
     if scope is None:
         return []
@@ -1362,7 +1438,8 @@ def check_oracle_scope(m, source, digest):
     if any(scope.get(k) != m.get(k) for k in ("base_sha", "head_sha")):
         return ["oracle scope: authorized commit pair differs from the manifest"]
     ids = scope.get("criterion_ids")
-    if not isinstance(ids, list) or not ids or set(ids) != set(doc["criterion_ids"]):
+    if not (isinstance(ids, list) and ids and all(isinstance(x, str) for x in ids)) \
+            or set(ids) != set(doc["criterion_ids"]):  # strings only: no TypeError (review P3)
         return ["oracle scope: must bind every criterion in this unit's contract"]
     paths = scope.get("paths")
     if not isinstance(paths, dict) or not paths:
@@ -1705,16 +1782,238 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
 def execute_negative_control(m, nc_command=None):
     """#255 — EXECUTE the negative control. Returns (executed_ok, messages).
 
-    The proof, not the paperwork: in a throwaway worktree detached at `head_sha` the control is
-    APPLIED (`revert`: restore `negative_control.paths` from base_sha — or, only when no paths are
-    given and the range is linear, `git revert --no-commit base..head`; `hand`: `git apply` the
-    unified diff quoted in the artifact) and `negative_control.command` must exit NON-ZERO. Then
-    the SAME command must exit ZERO in a second, clean worktree at `head_sha`. Both halves are
-    required: a command that fails under the control but also fails clean proves nothing, and a
-    command that passes under the control is a TAUTOLOGY — the proof does not go RED.
+    The proof, not the paperwork. The control is APPLIED at `head_sha` (`revert`: restore
+    `negative_control.paths` from base_sha — or, only when no paths are given and the range is
+    linear, `git revert --no-commit base..head`; `hand`: `git apply` the unified diff quoted in
+    the artifact) and SEALED into a throwaway sibling commit of head_sha (_seal_control). Only
+    then does worker code run — three times, each in its own repository under a fresh HOME and
+    TMPDIR (_phase_run): CLEAN at head_sha, CONTROL at the sealed mutant, CLEAN at head_sha again.
+
+    The control counts as KILLED only when BOTH clean runs exit 0 and the control run exits
+    NON-ZERO with a genuine failure signature. A command that fails under the control but also
+    fails clean proves nothing; one that passes under the control is a TAUTOLOGY. The phases are
+    indistinguishable by git status, HOME, TMPDIR, a branch ref, or tag type: each repository
+    copies the source's ref layout, and every ref that named head_sha names that phase's commit
+    instead. An annotated tag stays an annotated tag of that commit, and a tag of a tag stays a
+    chain, so `git cat-file -t` agrees with the clean checkout and `HEAD` equals
+    `refs/heads/<branch>` in the control run too
+    (PR #571 review). The object store is reached through alternates, named in the filesystem
+    encoding; a proof that opens that file and reads the source repo is the residual a
+    coordinator's clean-env re-run still has to cover.
 
     Fail-closed everywhere: an unknown tool, a missing command/paths, a git error, a worktree that
     cannot be made, or a control that applies no change at all."""
+    def _seal_control(wt, head):
+        """Commit the control applied in `wt` as a SIBLING of head_sha. Returns (mutant_sha, err).
+
+        The mutant commit is head_sha's own commit object with only its `tree` line swapped for the
+        applied control's tree: same parents, author, committer and message. A control phase run from
+        it sees a CLEAN work tree (`git status --porcelain` empty) and the same `HEAD~1`, log and
+        identity a clean phase sees — the phase is not distinguishable by git state, only by the
+        content under test (review P1). Only the index is read, so untracked residue of the apply
+        never reaches the control run.
+
+        The stillborn check lives here and compares TREES: a control whose applied tree equals
+        head_sha's tree changed NOTHING and cannot make any proof go RED (#255)."""
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, tree, gerr = _run_at(wt, [git, "write-tree"], env=env)
+        tree = tree.strip()
+        if code != 0 or not HEX40_RE.match(tree):
+            return None, f"cannot record the applied control's tree: {gerr.strip()}"
+        if tree == _tree(head):
+            return None, ("the negative control changed NOTHING at head_sha — a no-op mutant cannot "
+                          "make any proof go RED (#255)")
+        code, raw, gerr = _git_bytes(["cat-file", "commit", str(head)])
+        if code != 0 or not raw.startswith(b"tree ") or b"\n" not in raw:
+            return None, f"cannot read head_sha's commit object to seal the control: {gerr.strip()}"
+        sibling = b"tree " + tree.encode("ascii") + raw[raw.index(b"\n"):]
+        code, mutant, gerr = _run_at(wt, [git, "hash-object", "-t", "commit", "-w", "--stdin"],
+                                     stdin_bytes=sibling, env=env)
+        mutant = mutant.strip()
+        if code != 0 or not HEX40_RE.match(mutant):
+            return None, f"cannot commit the applied control as a throwaway commit: {gerr.strip()}"
+        return mutant, None
+
+    def _prepare_control(top, head, m, nc, tool, nc_command):
+        """Apply the control in a scratch worktree and seal it (_seal_control) BEFORE any worker code
+        runs. Returns (mutant_sha, err). The scratch worktree is removed before the first phase
+        executes, so no run can reach it, and the sealed commit is content-addressed, so no run can
+        alter what the control phase checks out."""
+        holder = tempfile.mkdtemp(prefix="orca-nc-")
+        wt = str(Path(holder) / "wt")
+        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
+                              str(head)], timeout=120, env=_Authority.git_env())
+        try:
+            if code != 0:
+                return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
+            apply_err = _apply_control(wt, m, nc, tool, nc_command)
+            if apply_err:
+                return None, apply_err
+            return _seal_control(wt, head)
+        finally:
+            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
+                 env=_Authority.git_env())
+            shutil.rmtree(holder, ignore_errors=True)
+
+    def _tag_kind(raw):
+        """('commit'|'tag', object sha) for an annotated tag, else (None, None)."""
+        nl = raw.find(b"\n")
+        if nl < 0 or not raw.startswith(b"object "):
+            return None, None
+        obj = raw[len(b"object "):nl]
+        if not HEX40_RE.fullmatch(obj.decode("ascii", "replace")):
+            return None, None
+        line = raw[nl + 1:].split(b"\n", 1)[0]
+        if line == b"type commit":
+            return "commit", obj.decode("ascii")
+        if line == b"type tag":
+            return "tag", obj.decode("ascii")
+        return None, None
+
+    def _unsigned_tag(raw):
+        """Drop every signature. A `gpgsig` header and a signature appended after the
+        message (the v0.7.1 SSH layout, which git's parse_signature cuts at the first
+        BEGIN line) both cover the object line, so either one verifies on the clean
+        replay and fails only under the control."""
+        header, sep, body = raw.partition(b"\n\n")
+        kept, skipping = [], False
+        for line in header.split(b"\n"):
+            if line.startswith(b"gpgsig "):
+                skipping = True
+                continue
+            if skipping and line.startswith(b" "):
+                continue
+            skipping = False
+            kept.append(line)
+        marks = (b"-----BEGIN PGP SIGNATURE-----", b"-----BEGIN SSH SIGNATURE-----")
+        lines = body.split(b"\n")
+        for i, line in enumerate(lines):
+            if line.startswith(marks):
+                lines = lines[:i]
+                break
+        body = b"\n".join(lines)
+        return b"\n".join(kept) + sep + body
+
+    def _retarget_tag(top, repo, tag_sha, commit, seen=None):
+        """A new annotated tag whose target is this phase's commit. A tag of a tag is
+        rewritten as a chain, each layer still a tag. Returns (new_sha, err). Replacing
+        the tag with the bare commit would make `git cat-file -t` disagree with the
+        clean checkout."""
+        if seen is None:
+            seen = set()
+        if tag_sha in seen or len(seen) >= 8:
+            return None, "annotated tag chain is cyclic or too deep"
+        seen.add(tag_sha)
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, raw, gerr = _run_bytes([git, "-C", top, "cat-file", "tag", tag_sha],
+                                    timeout=30, env=env)
+        kind, obj = _tag_kind(raw) if code == 0 else (None, None)
+        if kind is None:
+            return None, gerr.strip() or "not an annotated tag of a commit or a tag"
+        raw = _unsigned_tag(raw)
+        if kind == "tag":
+            obj, err = _retarget_tag(top, repo, obj, commit, seen)
+            if err:
+                return None, err
+        else:
+            obj = commit
+        nl = raw.find(b"\n")
+        if nl < 0 or not raw.startswith(b"object "):
+            return None, "annotated tag lost its object line"
+        rewritten = b"object " + obj.encode("ascii") + raw[nl:]
+        code, new, gerr = _run_at(repo, [git, "hash-object", "-t", "tag", "-w", "--stdin"],
+                                  stdin_bytes=rewritten, env=env)
+        new = new.strip()
+        if code != 0 or not HEX40_RE.match(new):
+            return None, gerr.strip() or "could not write the retargeted tag"
+        return new, None
+
+    def _stage_phase_repo(top, head, commit, repo, phase):
+        """Build `repo` with the source's refs, retargeting any ref that names `head` onto
+        `commit`. An annotated tag stays an annotated tag of that commit, and a tag of a tag
+        stays a chain of tags. Signatures, including one appended after the message, are
+        dropped in the clean phases too. Returns an error string, or None. Objects come
+        from the source through
+        alternates, so the sealed mutant (written into the source) is visible without a copy."""
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, _, gerr = _run([git, "init", "-q", repo], timeout=60, env=env)
+        if code != 0:
+            return f"could not create the {phase} repository: {gerr.strip()}"
+        code, common, gerr = _run([git, "-C", top, "rev-parse", "--git-common-dir"],
+                                  timeout=30, env=env)
+        if code != 0:
+            return f"could not locate the source object store for the {phase} repository: {gerr.strip()}"
+        common_path = Path(common.strip())
+        if not common_path.is_absolute():
+            common_path = Path(top) / common_path
+        objects = (common_path / "objects").resolve()
+        alt = Path(repo) / ".git" / "objects" / "info" / "alternates"
+        alt.parent.mkdir(parents=True, exist_ok=True)
+        # The checkout path is a filesystem path. ascii fails when it contains
+        # a non-ASCII directory (PR #571 review); the bytes git will open are
+        # the filesystem encoding.
+        alt.write_bytes(os.fsencode(str(objects)) + b"\n")
+        code, listing, gerr = _run([git, "-C", top, "for-each-ref", "--format=%(refname)"],
+                                   timeout=60, env=env)
+        if code != 0:
+            return f"could not read the source refs for the {phase} repository: {gerr.strip()}"
+        for ref in listing.splitlines():
+            code, direct, gerr = _run([git, "-C", top, "rev-parse", "--verify", ref],
+                                      timeout=30, env=env)
+            if code != 0:
+                return f"could not resolve {ref} for the {phase} repository: {gerr.strip()}"
+            direct = direct.strip()
+            code, peeled, _ = _run([git, "-C", top, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                                   timeout=30, env=env)
+            peeled = peeled.strip() if code == 0 else ""
+            if direct == commit:
+                target = direct  # a lightweight ref already at this phase's commit
+            elif peeled == head and direct != head:
+                target, tag_err = _retarget_tag(top, repo, direct, commit)
+                if tag_err:
+                    return f"could not retarget {ref} in the {phase} repository: {tag_err}"
+            elif direct == head or peeled == head:
+                target = commit
+            else:
+                target = direct
+            code, _, gerr = _run([git, "-C", repo, "update-ref", ref, target], timeout=30, env=env)
+            if code != 0:
+                return f"could not copy {ref} into the {phase} repository: {gerr.strip()}"
+        code, sym, _ = _run([git, "-C", top, "symbolic-ref", "-q", "HEAD"], timeout=30, env=env)
+        if code == 0 and sym.strip():
+            code, _, gerr = _run([git, "-C", repo, "symbolic-ref", "HEAD", sym.strip()],
+                                 timeout=30, env=env)
+            if code != 0:
+                return f"could not set HEAD in the {phase} repository: {gerr.strip()}"
+        code, _, gerr = _run([git, "-C", repo, "reset", "--hard", "--quiet", str(commit)],
+                             timeout=120, env=env)
+        if code != 0:
+            return f"could not check out the {phase} commit: {gerr.strip()}"
+        return None
+
+    def _phase_run(top, head, commit, phase, argv):
+        """Run the bound command once in a FRESH repository at `commit`, under a FRESH empty
+        HOME and TMPDIR. Returns (rc, stdout, stderr), or (None, None, err) when no repo was made.
+
+        Every phase is built identically — same holder layout, same environment keys, a clean tree,
+        the same branch names — and nothing one phase writes under its HOME, TMPDIR or repository
+        survives into the next. A branch ref that pointed at head_sha points at this phase's
+        commit, so comparing HEAD to that ref cannot tell the control from a clean run."""
+        holder = tempfile.mkdtemp(prefix="orca-nc-")
+        repo, home, tmp = (str(Path(holder) / leaf) for leaf in ("repo", "home", "tmp"))
+        os.mkdir(home)
+        os.mkdir(tmp)
+        env = {**_Authority.nc_env(), "HOME": home, "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp}
+        try:
+            err = _stage_phase_repo(top, head, commit, repo, phase)
+            if err:
+                return None, None, err
+            return _run_at(repo, argv, timeout=NC_TIMEOUT_S, env=env)
+        finally:
+            shutil.rmtree(holder, ignore_errors=True)
+
+    # The three helpers above are nested, not module names: the RV-D2 width pin
+    # (tests/test_reshape_width_verify.py) holds verify.py's top-level surface fixed.
     nc = m.get("negative_control") or {}
     tool = nc.get("tool")
     if tool not in EXECUTABLE_NC_TOOLS:
@@ -1733,52 +2032,39 @@ def execute_negative_control(m, nc_command=None):
     argv, err = _nc_command(nc, nc_command)
     if err:
         return False, [f"--execute-nc: {err}"]
+    mutant, err = _prepare_control(top, head, m, nc, tool, nc_command)
+    if err:
+        return False, [f"--execute-nc: {err}"]
     msgs = []
-    for phase in ("control", "clean"):
-        holder = tempfile.mkdtemp(prefix="orca-nc-")
-        wt = str(Path(holder) / "wt")
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt, str(head)],
-                             timeout=120, env=_Authority.git_env())
-        try:
-            if code != 0:
-                return False, [f"--execute-nc: could not create the {phase} worktree at head_sha: "
-                               f"{gerr.strip()}"]
-            if phase == "control":
-                apply_err = _apply_control(wt, m, nc, tool, nc_command)
-                if apply_err:
-                    return False, [f"--execute-nc: {apply_err}"]
-                if not _run_at(wt, [_Authority.git_bin(), "status", "--porcelain"],
-                               env=_Authority.git_env())[1].strip():
-                    return False, ["--execute-nc: the negative control changed NOTHING at head_sha "
-                                   "— a no-op mutant cannot make any proof go RED (#255)"]
-            rc, out, errout = _run_at(wt, argv, timeout=NC_TIMEOUT_S, env=_Authority.nc_env())
-            tail = (errout.strip() or out.strip())[-300:]
-            if phase == "control":
-                sig_ok, sig_err = _verify_sig._failure_signature(out, errout)
-        finally:
-            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-                 env=_Authority.git_env())
-            shutil.rmtree(holder, ignore_errors=True)
-        if phase == "control":
-            if rc == 124:
-                return False, [f"--execute-nc: the bound command did not complete under the control "
-                               f"({NC_TIMEOUT_S}s timeout / exec error): {tail}"]
-            if rc == 0:
-                return False, ["--execute-nc: TAUTOLOGICAL — the proof does NOT go RED. The control "
-                               f"was applied at head_sha and `{shlex.join(argv)}` still exited 0, so "
-                               "the command does not bind to the change it claims to prove (#255)"]
-            if not sig_ok:
-                return False, [f"--execute-nc: {sig_err} Output was: {tail}"]
-            msgs.append(f"NOTE: negative control EXECUTED — with the {tool} control applied at "
-                        f"head_sha the bound command exited {rc} on an assertion failure (RED, as "
-                        "required)")
-        else:
+    for phase, commit in (("clean", head), ("control", mutant), ("clean", head)):
+        rc, out, errout = _phase_run(top, head, commit, phase, argv)
+        if rc is None:
+            return False, [f"--execute-nc: {errout}"]
+        tail = (errout.strip() or out.strip())[-300:]
+        if phase == "clean":
             if rc != 0:
-                return False, [f"--execute-nc: the bound command exits {rc} at CLEAN head_sha too, "
-                               "so its RED under the control is not evidence of anything: "
-                               f"{tail}"]
-            msgs.append("NOTE: the same command exits 0 at clean head_sha — the RED above is the "
-                        "control's doing, not a broken suite")
+                when = "after" if msgs else "before"
+                return False, [f"--execute-nc: the bound command exits {rc} at CLEAN head_sha "
+                               f"({when} the control run), so a RED under the control is not "
+                               f"evidence of anything: {tail}"]
+            if msgs:
+                msgs.append("NOTE: the same command exits 0 at clean head_sha, before AND after "
+                            "the control run — the RED above is the control's doing, not a "
+                            "broken suite or a first-run side effect")
+            continue
+        if rc == 124:
+            return False, [f"--execute-nc: the bound command did not complete under the control "
+                           f"({NC_TIMEOUT_S}s timeout / exec error): {tail}"]
+        if rc == 0:
+            return False, ["--execute-nc: TAUTOLOGICAL — the proof does NOT go RED. The control "
+                           f"was applied at head_sha and `{shlex.join(argv)}` still exited 0, so "
+                           "the command does not bind to the change it claims to prove (#255)"]
+        sig_ok, sig_err = _verify_sig._failure_signature(out, errout)
+        if not sig_ok:
+            return False, [f"--execute-nc: {sig_err} Output was: {tail}"]
+        msgs.append(f"NOTE: negative control EXECUTED — with the {tool} control applied at "
+                    f"head_sha the bound command exited {rc} on an assertion failure (RED, as "
+                    "required)")
     return True, msgs
 
 
@@ -2057,11 +2343,21 @@ def check_redaction(m, manifest_path):
 
 
 def check_ancestry(m, base):
-    """7. Best-effort: head_sha is an ancestor of origin/<base> (post-merge)."""
+    """7. head_sha is an ancestor of origin/<base> (post-merge).
+
+    A coordinator that NAMES a base asked for this fact. On the advisory native lane a missing
+    origin/<base> is still a NOTE (pre-merge, offline, a clone that never fetched). On a lane
+    claiming soundness (_Authority.lane: --provenance ci|mcp|sdk|dispatch, or a signed dispatch
+    record + pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
+    clone the worker controls, and deleting it must not turn a requested ancestry proof into a
+    skipped one (review P2)."""
     if not base:
         return ["NOTE: --base not given — ancestry check skipped (pre-merge/offline)"]
     ref = f"origin/{base}"
     if _git(["rev-parse", "--verify", ref])[0] != 0:
+        if _Authority.lane:
+            return [f"ancestry: {ref} not found — a lane claiming soundness ({_Authority.lane}) "
+                    "named --base and cannot skip the ancestry proof it asked for; fail-closed"]
         return [f"NOTE: {ref} not found — ancestry check skipped"]
     if _git(["merge-base", "--is-ancestor", m.get("head_sha", ""), ref])[0] != 0:
         return [f"head_sha is not an ancestor of {ref} (not merged / wrong base)"]
@@ -2160,7 +2456,13 @@ def check_provenance(m):
 
 
 _DISPATCH_FIELDS = ("manifest_id", "contract_digest", "unit_class", "lighting",
-                    "nc_paths", "nc_command", "nc_artifact_sha256")
+                    "nc_paths", "nc_command", "nc_artifact_sha256",
+                    "no_gh", "lane", "execute_nc")
+# The LANE flags (review P2): --no-gh waives the GitHub review, --lane decides Lane-0 refusal and
+# dark-eligibility's Lane-A requirement, and --execute-nc is what turns the control from text into
+# a fact. All three reach verify.py through argv / the worker-settable ORCA_* env, so on a
+# signed-record lane they are bound like lighting is. Signed only when set — an old record without
+# them keeps its exact canonical bytes and still verifies.
 # The negative-control inputs among them (#311) are read from the MANIFEST, not from argv, so they
 # are compared separately from the CLI-supplied fields above.
 _DISPATCH_NC_FIELDS = ("nc_paths", "nc_command", "nc_artifact_sha256")
@@ -2205,16 +2507,23 @@ class _Transcript:
         return json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     @classmethod
-    def build(cls, args, exit_code, fatal, notes):
+    def build(cls, args, exit_code, fatal, notes, raw=None):
         """The verdict object: what was judged (manifest path AND bytes, the unit it names), with
         what (the full argument tuple — unset flags included, so an omitted authority is visibly
-        omitted), what was found (the printed lists, verbatim), the exit code, the toolchain, when."""
-        try:
-            raw = Path(args.manifest).read_bytes()
+        omitted), what was found (the printed lists, verbatim), the exit code, the toolchain, when.
+
+        `raw` is the manifest bytes verify() actually LOADED and judged (_EvidenceManifest.raw),
+        never a second read of args.manifest: by the time the transcript is built the executed
+        control has run worker code, which can rewrite the manifest file, and a re-read would
+        bind a verdict to bytes nobody judged (review P2). None — a manifest that never loaded —
+        records no digest and no unit, and a signed transcript then refuses to sign the absence."""
+        manifest_sha, unit = None, None
+        if raw is not None:
             manifest_sha = hashlib.sha256(raw).hexdigest()
-            unit = json.loads(raw.decode("utf-8")).get("unit")
-        except (OSError, ValueError, AttributeError):
-            manifest_sha, unit = None, None
+            try:
+                unit = json.loads(raw.decode("utf-8")).get("unit")
+            except (ValueError, AttributeError):
+                unit = None
         _, git_version, _ = _run([_Authority.git_bin(), "--version"], env=_Authority.git_env())
         here = Path(__file__).resolve().parent
         files = {}
@@ -2305,9 +2614,11 @@ def _manifest_nc_values(m):
             "nc_artifact_sha256": digest}
 
 
-def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_ref, pubkey_ref):
+def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_ref, pubkey_ref,
+                              no_gh=False, lane=None, execute_nc=False):
     """13. #135: verify a coordinator-signed dispatch record so a run's contract_digest / unit_class /
-    lighting can be checked against what the coordinator actually authorized. This is a SOUNDNESS
+    lighting / lane flags (--lane, --no-gh, --execute-nc) can be checked against what the
+    coordinator actually authorized. This is a SOUNDNESS
     boundary only when the *verifying key* is trusted — i.e. supplied by an OFF-WORKER context
     (CI/MCP/SDK, or an auditor re-running verify.py with the coordinator's real public key). In the
     native in-session hook the worker controls the key source, so there it is defense-in-depth, not a
@@ -2350,7 +2661,7 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     # Every value the run actually used must be signed AND match — an UNSIGNED field is unbound, so a
     # worker could set it freely; treat that as fail-closed, not a pass.
     for field, used in (("contract_digest", contract_digest), ("unit_class", unit_class),
-                        ("lighting", lighting)):
+                        ("lighting", lighting), ("lane", lane)):
         if used is None:
             continue
         signed = record.get(field)
@@ -2360,6 +2671,21 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
         if signed != used:
             return [f"dispatch substitution: the run used {field}={used!r} but the coordinator signed "
                     f"{signed!r} — the value was tampered (#135)"]
+    # The lane flags (review P2). --no-gh WAIVES the GitHub review, so using it unsigned is an
+    # unbound waiver; --execute-nc only makes a run stricter, so its absence is what must be bound:
+    # a record that signs it requires it. A signed value of either that the run contradicts is a
+    # substitution, in whichever direction.
+    for field, used, waiver in (("no_gh", bool(no_gh), True), ("execute_nc", bool(execute_nc), False)):
+        signed = record.get(field)
+        if signed is None:
+            if used and waiver:
+                return [f"dispatch record did not sign {field} but the run uses it — the review "
+                        "waiver is unbound, fail-closed (sign it with dispatch-sign.py --no-gh) "
+                        "(review P2)"]
+            continue
+        if not isinstance(signed, bool) or signed != used:
+            return [f"dispatch substitution: the run used {field}={used!r} but the coordinator signed "
+                    f"{signed!r} — the lane flag was tampered (review P2)"]
     # The negative-control inputs (#311). Optional: a coordinator that could not know them at
     # dispatch time signs none, and they stay bound by base_sha..head_sha alone (#280). Signed,
     # they are the oracle the coordinator chose, and the manifest does not get to swap it.
@@ -2454,11 +2780,14 @@ def check_replay_request(m, is_mutation, execute_nc, nc_command):
 
 def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
            base=None, symbol=None, execute_nc=False, unit_class=None, no_gh=False, lighting=None,
-           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None):
-    """Return (fatal_errors, notes). fatal_errors non-empty => exit 2."""
+           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None, judged=None):
+    """Return (fatal_errors, notes). fatal_errors non-empty => exit 2. A `judged` dict receives
+    the manifest bytes this run loaded (`judged["raw"]`), for the transcript to bind to."""
     m, err = load_manifest(manifest_path)
     if err:
         return None, err
+    if judged is not None:
+        judged["raw"] = m.raw
     _Authority.ensure(repo)  # a library caller that never ran main(): pin BEFORE the control (F-1)
     is_mut = _is_mutation(unit_class)
     corroborated = bool(contract_source and contract_digest)
@@ -2477,6 +2806,25 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
             for line in result:
                 (notes if line.startswith("NOTE:") else fatal).append(line)
 
+    # A flag the caller left off falls back to the value a VERIFIED dispatch record signs:
+    # omitting --lane against a record signing lane "0" skipped the Lane-0 refusal, and an
+    # omitted --lighting skipped the lighting swap check (PR #571 review). Adoption needs a
+    # clean provenance verdict; the provenance check below re-verifies with the adopted values,
+    # so a record swapped between the two reads fails there as a substitution.
+    if dispatch_record and dispatch_pubkey and (lane is None or lighting is None):
+        verdict = check_dispatch_provenance(m, contract_digest, unit_class, lighting,
+                                            dispatch_record, dispatch_pubkey, no_gh=no_gh,
+                                            lane=lane, execute_nc=execute_nc)
+        rec_text, rec_err = read_source(dispatch_record)
+        if all(line.startswith("NOTE:") for line in verdict) and not rec_err:
+            try:
+                signed = json.loads(rec_text.decode("utf-8"))["record"]
+            except (ValueError, KeyError, TypeError):
+                signed = {}
+            if isinstance(signed, dict):
+                lane = signed.get("lane") if lane is None else lane
+                lighting = signed.get("lighting") if lighting is None else lighting
+
     # Admission is read-only. Never construct worktrees, apply patches or run the NC command
     # until the scope, commit identities, signed inputs and evidence snapshot are accepted.
     collect((
@@ -2487,7 +2835,8 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
         lambda: check_real_commits(m, is_mut),
         lambda: check_ancestry(m, base),
         lambda: check_dispatch_provenance(m, contract_digest, unit_class, lighting,
-                                          dispatch_record, dispatch_pubkey),
+                                          dispatch_record, dispatch_pubkey,
+                                          no_gh=no_gh, lane=lane, execute_nc=execute_nc),
         lambda: check_class_downgrade(m, unit_class, dispatch_record, dispatch_pubkey),
         lambda: check_freshness(m),
         lambda: check_commands(m, is_mut, nc_command),
@@ -2578,7 +2927,8 @@ def main(argv=None):
                          "requirement — set by the coordinator, not the worker")
     ap.add_argument("--dispatch-record", default=None,
                     help="coordinator-signed dispatch record (path or path@ref) binding "
-                         "contract-digest/unit-class/lighting — makes the native hook path sound (#135)")
+                         "contract-digest/unit-class/lighting and, when signed, lane/no-gh/"
+                         "execute-nc — makes the native hook path sound (#135)")
     ap.add_argument("--dispatch-pubkey", default=None,
                     help="repo-pinned coordinator public key (path or path@ref) that verifies "
                          "--dispatch-record; a committed pubkey is one the worker cannot swap")
@@ -2644,15 +2994,17 @@ def main(argv=None):
             print(f"usage: {err}", file=sys.stderr)
         return 1
     _ROOTS.update(git=roots["--git-dir"], evidence=roots["--evidence-root"])
+    _roots_are_split.cache.clear()  # one answer per run, taken before any control executes
     # h409 F-1: the review authority is pinned HERE, before any check runs and long before the
     # executed negative control runs worker code — never looked up lazily after it.
     repo = _Authority.resolve(args.provenance,
                               bool(args.dispatch_record and args.dispatch_pubkey), args.repo)
+    judged = {}
     out, load_err = verify(args.manifest, args.contract_source, args.contract_digest,
                            repo, args.base, args.symbol, args.execute_nc,
                            args.unit_class, args.no_gh, args.lighting,
                            args.dispatch_record, args.dispatch_pubkey, args.nc_command,
-                           lane=args.lane)
+                           lane=args.lane, judged=judged)
     if load_err:
         print(f"FAIL: {load_err}", file=sys.stderr)
         print("verify: evidence manifest malformed/unreadable — unit is NOT done", file=sys.stderr)
@@ -2670,7 +3022,8 @@ def main(argv=None):
             print("verify: OK — all required checks passed")
             code = 0
     if args.transcript_out is not None:
-        written = _Transcript.write(args.transcript_out, _Transcript.build(args, code, fatal, notes), seed)
+        record = _Transcript.build(args, code, fatal, notes, raw=judged.get("raw"))
+        written = _Transcript.write(args.transcript_out, record, seed)
         if not written and code == 0:
             # A requested-and-missing artifact is fail-closed (#281/#386, round-1 R-3): the verdict
             # stands on stdout, but `--transcript-out X && use X` must never see exit 0 and no X.

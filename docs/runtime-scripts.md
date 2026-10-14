@@ -128,10 +128,12 @@ Flags: `--help`, `--settings`.
 HIGH tier denies (never asks) for Bash: recursive delete rooted at `/`, `~`, `$HOME`, or
 `/*` (or carrying `--no-preserve-root`); force-push to the default branch (including the
 `+main` refspec and outright deletion forms); `git push --force` without an effective
-`--force-with-lease`; `orca orchestration reset`; and an off-repo write (`gh pr|issue|release`
+`--force-with-lease`; `git push --mirror` and `--prune` (each deletes remote refs it never
+names); `orca orchestration reset`; and an off-repo write (`gh pr|issue|release`
 write verbs, or `gh api` with a write method/field) not preceded in the same command by
 its `egress.py write` receipt (#561 — reads stay free; a receipt after the send does
-not count). An effective `--force-with-lease` exempts
+not count). Push long options are read the way git reads them, so an unambiguous
+abbreviation (`--del`, `--mi`, `--no-force-w`) is the option it expands to. An effective `--force-with-lease` exempts
 a force-push but never a deletion. The Never list asks instead: live-prod mutation,
 credential provisioning, destructive teardown, unpinned remote execution, publishing,
 history-discarding local git. When `ORCA_UNIT_WORKTREE` is set, writes outside it deny —
@@ -227,8 +229,11 @@ Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
 
 Flags: `--ledger` (default `$ORCA_EGRESS_LEDGER` or `.orca/egress.jsonl`). `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
-`--payload-sha256`, `--ts`; `verify` takes `--expect-head` (sealed ledger) and
+`--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
+else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
 `--expect-ancestor` (close-to-close, appends tolerated); `grants` takes `--json`.
+`verify` also fails any record whose field carries a line break: `id` hashes newline-joined
+`key=value` lines, so such a field makes the encoding ambiguous.
 
 Record fields: `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
 `consent`, `prev` — never the payload text (sha256 + byte count + kind only). `prev`
@@ -393,9 +398,11 @@ answers, so the steps parse before a human sits through them), `--help`.
 Helpers: `step "<instruction>"` (show, wait for Enter), `capture VAR "<question>"` (ask,
 read the answer). Capture OBSERVATIONS, never actions. The verdict is the `REPRODUCED=`
 line (`REPRODUCED=yes` stops at once; otherwise `REPRODUCED=no` plus `ROUNDS_USED=` after
-N rounds) — never the exit code. A checkpoint step ends each unreproduced round.
+N rounds) — never the exit code. A checkpoint step ends each unreproduced round. An
+answer carrying a line break (CR or LF; one trailing CR from a CRLF terminal is dropped)
+is refused before it is printed: it could forge a `REPRODUCED=yes` line in the evidence.
 
-Exits: 0 done · 2 usage.
+Exits: 0 done · 1 durable ask failed or timed out, or an answer held a line break · 2 usage.
 
 > Why: the agent cannot see the screen and the human cannot paste a transcript nobody
 > asked for — so the agent writes the steps, the human runs them, and observations come
@@ -433,10 +440,14 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-30`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-38`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
-Usage: `orca_cli.py [--path]`; library `from orca_cli import resolve`.
+Usage: `orca_cli.py [--path]`; library `from orca_cli import resolve, run_json`.
+`run_json(argv, timeout=, error=, nonzero=)` is the one `--json` envelope reader the eight
+operator tools share: it raises the caller's exception class on an unrunnable CLI, unreadable
+or non-object JSON, or an `error` envelope, and returns `result`; `nonzero` keeps each tool's
+exit-status rule (`strict`, `no-receipt` for `check_reply.py`, `ignore` for `hitl_ask.py`).
 
 Order (upstream's own, `skill-stubs/_shared/cli-resolution.md` in stablyai/orca):
 `ORCA_CLI_COMMAND` when set (Orca exports it inside the sessions it manages; the test
@@ -621,7 +632,8 @@ warning — the guard is never claimed unchecked.
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 
 Flags: `--mark-ready` (only applies when every declared dep is already completed; the
-script never forces ready); `--spec` (+ `--task-title`/`--deps`/`--parent`) creates
+script never forces ready — and a task already `ready` with an open or unreadable dep
+refuses the same way, since `ready` is a status anyone can set); `--spec` (+ `--task-title`/`--deps`/`--parent`) creates
 the task first, then runs the normal verified path with its id; `--timeout-ms`
 (supervised lane, positive int); `--run`/`--from` (explicit binding — never implicit
 cwd/pane resolution); `--retry-of` + `--retry-request` (retries link the failed
@@ -718,7 +730,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 
 Drift probe against the Orca pin: has upstream moved past `runtime/pins.json`, and —
 when a binary is at hand — how do its surfaces differ from the last re-pin's receipts?
-Source `runtime/scripts/upstream_probe.py:1-50`; behavior pinned by
+Source `runtime/scripts/upstream_probe.py:1-52`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
 (`.github/workflows/upstream-drift.yml`) runs `latest` and opens — or comments on — an
 issue labeled `upstream-drift` when a re-pin is due.
@@ -735,9 +747,10 @@ Flags: `latest` takes `--max-patches` (re-pin threshold, default 10), `--pins` (
 `--json`; `capture` takes `--out` (required), `--timeout`; `diff` takes `--baseline` and
 `--fresh` (both required), `--json`.
 
-`latest` follows `Link: rel="next"` for up to five pages, sends `Authorization: Bearer
-$GITHUB_TOKEN` when that variable is set (the endpoint is public; the token only lifts the
-rate limit), and skips `-rc`, `mobile-*` and every other non-`vX.Y.Z` tag. Drift is
+`latest` follows `Link: rel="next"` for up to five pages — only on the first URL's scheme,
+host and port; a next link elsewhere exits 2 — sends `Authorization: Bearer $GITHUB_TOKEN`
+when that variable is set (the endpoint is public; the token only lifts the rate limit),
+over https or loopback http only and never across a redirect, and skips `-rc`, `mobile-*` and every other non-`vX.Y.Z` tag. Drift is
 `none` (the pin is the highest stable tag, or above it), `patch`, `minor` or `major` by
 the first component that moved; `patches_behind` counts the stable tags strictly newer
 than the pin. `--json` prints exactly `{"pin","latest","drift","patches_behind"}`.
@@ -797,7 +810,7 @@ Classes: `OK` (movement within slow_after_s), `SLOW` (idle past slow_after_s but
 hung_after_s and STOP — no action), `HUNG` (idle past hung_after_s, or past STOP with no
 report — one auto-nudge, then a stop-redispatch recommendation), `WEDGED` (explicit wedge
 markers, or transcript frozen past wedge_frozen_s beyond STOP with an unanswered nudge —
-immediate recommendation, never nudged). Live mode execs `nudge_command` with argv
+`last_nudge_at` set and no movement after it — immediate recommendation, never nudged). Live mode execs `nudge_command` with argv
 placeholders and refuses to run without one configured. Rate limits cap nudges per
 dispatch, spacing per worker, and nudges per worker per hour; history persists in the
 state file across invocations.
@@ -868,7 +881,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage.
 
 Prints a working-tree CONTENT fingerprint (a git tree hash). Builds a temp index, stages
 the full tree into it, prints `git write-tree` of that index — the real index is never
-touched. Source `runtime/scripts/wtree.sh:1-30`; exercised by `tests/test_evidence_run.py`.
+touched. Source `runtime/scripts/wtree.sh:1-39`; exercised by `tests/test_evidence_run.py`.
 
 Usage: `wtree.sh [repo-dir]` (default: current directory).
 
@@ -880,6 +893,13 @@ valid once committed; content-preserving rebase/amend/squash does not change it 
 The temp index seeds from a copy of the real one (stat cache preserved, mtime restored
 against racy-index reads), falling back to `read-tree HEAD` when the restore fails.
 Staged blobs enter the object store as unreachable objects until gc, like `git stash -u`.
+
+Ignored files are out by contract: the value is compared to `<head_sha>^{tree}`, and no commit
+tree can hold an ignored file, so including them would make every record stale. A run that
+leaned on ignored content (`.env`, a stale build artifact, a file hidden by
+`.git/info/exclude` or a global `core.excludesFile`) still fingerprints as the committed
+tree — the fingerprint binds committable content only, and the coordinator's clean-env re-run
+at `head_sha` is what catches such a pass.
 
 Exits: 0 prints the hash · 1 outside a git repo, or no commits and no usable index
 (callers fail closed on nonzero — never treat it as an empty fingerprint).

@@ -8,9 +8,9 @@ event and the decision is parsed as JSON — the shape is asserted, not assumed.
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,6 +165,42 @@ class TestHighTierDenies(HookBase):
                 block = self.decision(self.fire(event("Bash", command=command)))
                 self.assertIsNotNone(block, command)
                 self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_mirror_prune_and_abbreviated_long_options_are_denied(self):
+        # git parse-options accepts any unambiguous long-option prefix (checked
+        # against git 2.43: --de/--del → --delete, --mi → --mirror, --pru →
+        # --prune, --no-force-w → --no-force-with-lease). JSON fixtures only.
+        for command in (
+            "git push --mirror", "git push --mirror origin",
+            "git push --mi origin", "git push '--mirr' origin",
+            "git push --prune origin 'refs/heads/*:refs/heads/*'",
+            "git push --pru origin",
+            "git push origin --del main", "git push origin --dele main",
+            "git push --de origin refs/heads/main",
+            "git push --force-with-lease --no-force-w origin +main",
+            "git push --force-w --no-force-with-l -f origin topic",
+            "git push --forc origin topic",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_abbreviated_options_keep_their_benign_meaning(self):
+        for command, want in (
+            ("git push --force-w origin +main", None),
+            ("git push --no-mirror origin topic", None),
+            ("git push -o --mirror origin topic", None),
+            ("git push --push-o --del origin topic", None),
+            ("git push --push-o=--prune origin topic", None),
+            ("git push --delet origin topic", "ask"),
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                if want is None:
+                    self.assertIsNone(block, command)
+                else:
+                    self.assertEqual(block["permissionDecision"], want, command)
 
     def test_benign_quoted_words_and_push_option_operands_stay_allowed(self):
         for command in (
@@ -1684,6 +1720,36 @@ class TestScriptShape(unittest.TestCase):
         r = self._verify(settings)
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("did not deny", r.stderr)
+
+
+class TestSymlinkSnippetPrinter(unittest.TestCase):
+    """hooks/print-settings-snippet.sh — the other settings-block printer beside
+    `deny-hook.sh --settings`; it has no test module of its own to live in.
+
+    sed escaping covered `&|` only, so a clone path carrying `\\` or `"` emitted
+    invalid JSON, and an unquoted path in the command string split on a space.
+    """
+
+    def test_a_hostile_clone_path_still_emits_valid_json_and_one_argv_word(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / 'we"ird \\ & | $HOME clone'
+            (clone / "hooks").mkdir(parents=True)
+            (clone / "runtime" / "scripts").mkdir(parents=True)
+            for name in ("print-settings-snippet.sh", "settings-snippet.json"):
+                shutil.copy2(ROOT / "hooks" / name, clone / "hooks" / name)
+            gate = clone / "runtime" / "scripts" / "verify-gate.sh"
+            gate.write_text("#!/bin/sh\n", encoding="utf-8")
+            r = subprocess.run(["sh", str(clone / "hooks" / "print-settings-snippet.sh")],
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            emitted = json.loads(r.stdout)
+            commands = [h["command"] for event in emitted["hooks"].values()
+                        for matcher in event for h in matcher["hooks"]]
+            self.assertEqual(len(commands), 2)
+            for command in commands:
+                argv = shlex.split(command)
+                self.assertEqual(os.path.realpath(argv[0]), os.path.realpath(gate), command)
+                self.assertEqual(argv[1], "--event")
 
 
 class TestEgressReceiptRule(HookBase):

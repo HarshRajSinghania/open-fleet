@@ -152,7 +152,7 @@ class TestDiffAcquisition(ScopeBase):
         for phase in ("committed", "working-tree", "untracked"):
             for failure in (128, subprocess.TimeoutExpired("git", 60), OSError("unavailable")):
                 with self.subTest(phase=phase, failure=failure):
-                    def failing_read(argv, **kwargs):
+                    def failing_read(argv, phase=phase, failure=failure, **kwargs):
                         target = ("untracked" if "ls-files" in argv else
                                   "committed" if "main...HEAD" in argv else
                                   "working-tree" if "diff" in argv and "HEAD" in argv else None)
@@ -192,6 +192,31 @@ class TestDiffAcquisition(ScopeBase):
             r = self.run_scope("--base", "snapshot", "--strict", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(json.loads(r.stdout)["flags"]["BACKEND"])
+
+
+class TestHardenedGit(ScopeBase):
+    def test_git_is_resolved_to_an_absolute_path(self):
+        self.assertTrue(Path(diff_scope.GIT).is_absolute(), diff_scope.GIT)
+
+    def test_replace_refs_do_not_swap_the_compared_base(self):
+        # A `refs/replace/` ref pointing main's commit at one carrying tests/ would make the
+        # diff against main hide a test change; GIT_NO_REPLACE_OBJECTS reads the real commit.
+        write(self.repo, "tests/test_thing.py", "def test_x():\n    assert True\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "work")
+        fake = git(self.repo, "commit-tree", "HEAD^{tree}", "-m", "fake").stdout.strip()
+        git(self.repo, "replace", "main", fake)
+        data, r = self.flags()
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["TESTS"], data["flags"])
+
+    def test_repo_fsmonitor_command_does_not_run(self):
+        marker = Path(self.tmp) / "fsmonitor-ran"
+        hook = write(self.repo, "hook.sh", f"#!/bin/sh\ntouch '{marker}'\n")
+        hook.chmod(0o755)
+        git(self.repo, "config", "core.fsmonitor", str(hook))
+        self.flags()
+        self.assertFalse(marker.exists())
 
 
 class TestPathClassification(ScopeBase):

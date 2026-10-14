@@ -28,6 +28,21 @@ sh scripts/install.sh
 sh scripts/install.sh --check
 ```
 
+Clone with full history — **do not use `git clone --depth 1`**. Proven missions' run reports
+pin the commit their evidence was hashed at, and validation re-checks those pins; a shallow
+clone cannot resolve them. The installer detects a shallow clone and stops before linking
+anything, printing the fix, which it never runs for you:
+
+```bash
+git fetch --unshallow
+sh scripts/install.sh
+```
+
+If a mission name is already linked into a *different* orca-fleet clone, the installer refuses
+rather than silently repointing it. Re-run with `--force` to move every mission link to this
+clone, or install into another directory with `--skills-dir=DIR`. A dangling link (its clone was
+deleted) is repointed with a warning.
+
 The final command rechecks the symlink install without changing it. Expect a line beginning
 `verified` confirming links, skills and the protocol directories are in reach. It does not
 confirm your completion-hook settings. The installer also warns (never fails) when `orca status` shows the app down,
@@ -59,7 +74,8 @@ blocks a unit from being marked done on an unverified manifest. See
 [docs/verify-gate.md](verify-gate.md#install-paths-and-which-ones-carry-the-gate).
 
 Keep the clone at this path. Moving or deleting it breaks both the links and any hook command
-that points to it. The installer replaces symlinks but refuses to overwrite real mission
+that points to it. The installer replaces its own and dangling symlinks (a link into another
+clone needs `--force`) but refuses to overwrite real mission
 directories; [troubleshooting](troubleshooting.md#installation-refuses-an-existing-mission-directory)
 covers that case.
 

@@ -96,7 +96,11 @@ worker-set; anything else in the environment is ignored):
   are the same worker's, so a determined unit can name some other docs-only range. That is the
   [trust boundary](#trust-boundary) result, not a gap this check can close. What it buys is
   that the cheap downgrade fails and the expensive one is labelled.
-- `ORCA_REPO` — `owner/name` for the independent GitHub review lookup. **Required on the sound
+- `ORCA_REPO` — `owner/name` for the independent GitHub review lookup. An approval counts only
+  from a non-author account whose review `author_association` is `OWNER`, `MEMBER` or
+  `COLLABORATOR` (`_Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS` in verify.py) — a throwaway
+  account with no standing in the repository cannot approve; a `CHANGES_REQUESTED` from any
+  non-author account still blocks. **Required on the sound
   surfaces** (`ORCA_PROVENANCE` set, or an enforcement-mode run): without it verify.py fails the
   review leg closed rather than infer the repository from `origin` — a remote the worker, and every
   sibling worktree sharing `.git`, can rewrite. On the native lane the inference stands and the
@@ -105,6 +109,9 @@ worker-set; anything else in the environment is ignored):
   control runs any worker code; a `gh` under a work tree, the temp dir, or a user-writable dir that
   is not a standard system bin dir is fatal on a sound lane and an advisory `NOTE` elsewhere.
 - `ORCA_BASE` / `ORCA_SYMBOL` — ancestry-check base branch / a unit symbol to grep on it (optional).
+  A named base whose `origin/<base>` is missing is a NOTE on the advisory native lane and FATAL on
+  a lane claiming soundness (`ORCA_PROVENANCE` set, or a signed record + pubkey): the ref lives in
+  the worker's clone, and deleting it must not skip the ancestry proof the coordinator asked for.
 - `ORCA_NC_COMMAND` — the **authoritative** criterion-bound command the negative control must turn
   RED, supplied out of band exactly as the frozen contract is. It is forwarded as `--nc-command`,
   and the manifest's own `negative_control.command` must agree with it or the run is RED — a unit
@@ -115,14 +122,23 @@ worker-set; anything else in the environment is ignored):
   are the same authority twice, and binding one to the other is circular. A worker that writes both
   can nominate `grep -q FIXED calc.py` as its "criterion-bound proof", record it green at
   `head_sha`'s tree, and clear the executed-control gate without running a test. That is attack A12
-  of [the 2026-09-11 review](../REVIEW.md), and A15 is the same move in the strongest lane the repo documents.
+  of [the 2026-09-11 review](reviews/2026-09-11-review.md), and A15 is the same move in the strongest lane the repo documents.
 - `ORCA_EXECUTE_NC` — set (to anything non-empty) to forward `--execute-nc`, which **executes the
   negative control** instead of reading it. verify.py checks out `head_sha` in a throwaway worktree,
   applies the control from the manifest — `tool: revert` restores `negative_control.paths` from
   `base_sha` (falling back to `git revert --no-commit base..head` only when no paths are given and
-  the range is linear); `tool: hand` applies the unified diff quoted in the NC artifact — and
-  requires `negative_control.command` to exit **non-zero** there, then **zero** in a second clean
-  worktree at `head_sha`. Requires `ORCA_NC_COMMAND` — without it the run is RED before any
+  the range is linear); `tool: hand` applies the unified diff quoted in the NC artifact — seals
+  the result into a throwaway sibling commit of `head_sha`, and runs `negative_control.command`
+  three times: **zero** at clean `head_sha`, **non-zero** at the sealed control, **zero** at clean
+  `head_sha` again. Each run gets its own repository, with every ref that named `head_sha`
+  pointing at that phase's commit and an annotated tag staying an annotated tag of it — a tag
+  of a tag stays a chain — with any signature removed in every phase, including one appended
+  after the message (a clean `git status`, `HEAD` equal to the branch ref,
+  and `git cat-file -t` unchanged, in every phase) and a fresh empty HOME and TMPDIR, so a
+  proof that detects the phase — a
+  dirty tree, a first-run marker, a branch ref left on `head_sha`, a tag flattened to a
+  commit — instead of the behaviour cannot fake a kill. Objects are shared through
+  alternates, and that path is written in the filesystem encoding. Requires `ORCA_NC_COMMAND` — without it the run is RED before any
   worktree is built, so a command the worker nominated is never executed. The control runs under a six-name environment floor (PATH, HOME, TMPDIR/TMP/TEMP, LANG/LC_* — h409 F-6): credentials and `ORCA_*`/`GIT_*` never reach it, and a toolchain that genuinely needs another variable fails CLOSED (a false RED to name, never a silent pass). The control must bind to
   the change (#280): the paths it restores, and the `+++` targets of a `hand` diff, must be
   production paths `base_sha..head_sha` really changes — not a decoy, and not a test file; the
@@ -239,7 +255,10 @@ The native hook can't trust `ORCA_CONTRACT_DIGEST` / `ORCA_UNIT_CLASS` / `ORCA_L
 the worker sets them. Bind them to a **coordinator-signed dispatch record**. The whole scheme rests on
 one thing: **the verifying public key must originate off the graded worker.** A worker that could set
 the key would just self-sign. The gate discovers the key from three sources, in this code order
-(precedence pinned by `VerifyGateDispatchPinDiscovery` in `tests/test_verify_gate.py`):
+(precedence pinned by `VerifyGateDispatchPinDiscovery` in `tests/test_verify_gate.py`). Sources 2
+and 3 are read in the **target repo** — the toplevel of the directory the gate runs in — because
+that is where verify.py resolves the relative `.orca/dispatch-pubkey[@ref]` it is handed; the
+plugin's own checkout is never probed (`PinDiscoveryReadsTheTargetRepo`):
 
 1. **`ORCA_DISPATCH_PUBKEY` env.** Honored whenever set — a worker-set value is used, not ignored;
    `ORCA_PROVENANCE` decides only whether the advisory `NOTE` is emitted, never whether the key is
@@ -277,6 +296,15 @@ could produce would take the whole scheme out of use. So:
   of band and refuses the manifest's own (#279). What genuinely remains worker-chosen is *which* of
   the changed production paths to revert when a unit changed several — a partial control, whose RED
   speaks only for the part it reverted.
+
+**The lane flags.** `--no-gh`, `--lane` and `--execute-nc` reach verify.py from argv and the
+worker-settable `ORCA_NO_GH` / `ORCA_UNIT_LANE` / `ORCA_EXECUTE_NC`, so the tuple also carries
+`no_gh`, `lane` and `execute_nc` (`dispatch-sign.py sign --no-gh --lane A|B|0 --execute-nc`), each
+signed only when set — a record without them keeps its exact canonical bytes. With a record:
+a run using `--no-gh` (the review waiver) or `--lane` the record does not sign is refused as
+unbound, a signed value the run contradicts is a `dispatch substitution`, and a signed
+`execute_nc` cannot be dropped. Executing a control the record did not require is allowed — it
+only makes the run stricter.
 
 **Setup and per-dispatch flow:**
 

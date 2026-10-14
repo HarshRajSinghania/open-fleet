@@ -20,7 +20,9 @@ python3 scripts/validate.py
 
 Keep the full Git history and tags: some tests verify recorded releases and evidence against
 older commits. If your clone was shallow or omitted tags, fetch the missing history and tags
-before running those checks.
+before running those checks (`git fetch --unshallow --tags`). In a shallow clone
+`scripts/validate.py` fails closed on every proven mission's run-report pin and prints that
+remedy; it never skips the pin.
 
 You can contribute without installing the catalog into your agent, starting Orca, or logging
 into GitHub CLI. Tests exercise runtime operations through fixtures. To test the installed

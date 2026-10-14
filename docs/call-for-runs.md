@@ -6,7 +6,10 @@ Every mission listed below stands at `doctrine-only`: its doctrine is
 written, and no run has yet been bound to evidence the checker can
 re-derive (the missions that have earned a tier are absent from the list,
 which a test holds equal to the doctrine-only set). Maintainer-run missions do not scale to the whole catalog, so
-proof is open to anyone who can run a mission and submit the bundle. This
+proof is open to anyone who can run a mission and submit the bundle. The tier your run earns
+depends on its **target**, not on you: a run against this catalog earns `self-run`, a run
+against any other repository earns `external-run` — the same tiers the maintainer's own runs
+earn ([definitions](concepts.md#proof-status)); your name goes in the report's runner row. This
 page lists every mission still waiting for its run; the
 [run submission guide](run-submission-guide.md) turns your run into a
 promotion PR.
@@ -52,7 +55,6 @@ it is still listed, the promotion has not landed yet.
 - [ ] `oss-contribute` — the next upstream tracker, with artifacts retained in the run directory this time.
 - [ ] `pin-it` — this catalog's runtime doctrine against the installed Orca CLI.
 - [ ] `reshape-it` — this catalog's churn-hot modules, characterization net pinned first.
-- [ ] `review-it` — the next real PR here or upstream, with artifacts retained in the run directory.
 - [ ] `root-cause` — the next real defect filed here, or an open bug in a small OSS repo.
 
 - [ ] `speed-it` — the catalog-gates journey against a declared wall-clock budget, guarded in CI.

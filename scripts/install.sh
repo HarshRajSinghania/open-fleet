@@ -15,22 +15,32 @@
 #      install the catalog): the orca CLI at or above the runtime/pins.json
 #      pin, gh present and authenticated, Claude Code present.
 #   3. --check re-verifies an existing install without changing anything.
+#   4. A shallow clone (git clone --depth 1) is refused up front with the exact
+#      remedy (`git fetch --unshallow`): proven missions' run reports pin older
+#      commits that a truncated history cannot resolve. Nothing is fetched for you.
+#   5. An existing mission link that points into a DIFFERENT live clone is not
+#      silently repointed: the install refuses unless --force is given.
 #
 # Exit: 0 installed (warnings allowed) · 1 a hard prerequisite failed.
 set -eu
 
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
+# Physical paths (pwd -P): the verify step compares against realpath, so a logical
+# path through a symlinked directory (macOS /tmp -> /private/tmp) would never match.
+HERE=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd -P)
+ROOT=$(CDPATH= cd -P -- "$HERE/.." && pwd -P)
 SKILLS_DIR="${HOME}/.claude/skills"
 MODE="install"
+FORCE=0
 WARN=0
 
 for arg in "$@"; do
   case "$arg" in
     --check) MODE="check" ;;
+    --force) FORCE=1 ;;
     --skills-dir=*) SKILLS_DIR="${arg#--skills-dir=}" ;;
     -h|--help)
-      echo "usage: sh scripts/install.sh [--check] [--skills-dir=DIR]"
+      echo "usage: sh scripts/install.sh [--check] [--force] [--skills-dir=DIR]"
+      echo "  --force  repoint mission links that currently belong to another orca-fleet clone"
       exit 0
       ;;
     *) echo "install.sh: unknown argument $arg" >&2; exit 1 ;;
@@ -113,6 +123,14 @@ command -v claude >/dev/null 2>&1 || warn "claude CLI not found (needed for the 
 
 # --- install ------------------------------------------------------------------
 if [ "$MODE" = "install" ]; then
+  # A shallow clone cannot resolve the commits that proven missions' run reports
+  # pin, so validate.py would fail on them. Say so before validating, with the
+  # exact command — never fetch behind the user's back.
+  if [ "$(git -C "$ROOT" rev-parse --is-shallow-repository 2>/dev/null || true)" = "true" ]; then
+    die "$ROOT is a shallow clone (git clone --depth …) — run-report pins need full history. Run:
+  git -C \"$ROOT\" fetch --unshallow
+then re-run: sh scripts/install.sh"
+  fi
   say "validating the catalog..."
   python3 "$ROOT/scripts/validate.py" || die "scripts/validate.py failed — refusing to install a broken catalog"
   mkdir -p "$SKILLS_DIR"
@@ -124,6 +142,18 @@ if [ "$MODE" = "install" ]; then
     case "$m" in .*|_*) continue ;; esac
     if [ -e "$SKILLS_DIR/$m" ] && [ ! -L "$SKILLS_DIR/$m" ]; then
       die "$SKILLS_DIR/$m exists and is not a symlink (a copy install severs playbook resolution — remove it and re-run)"
+    fi
+    if [ -L "$SKILLS_DIR/$m" ]; then
+      cur="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SKILLS_DIR/$m")"
+      if [ "$cur" != "$ROOT/skills/$m" ]; then
+        if [ ! -e "$SKILLS_DIR/$m" ]; then
+          warn "$SKILLS_DIR/$m is a dangling link (to $cur) — repointing it at this clone"
+        elif [ "$FORCE" -eq 1 ]; then
+          warn "$SKILLS_DIR/$m points into another clone ($cur) — repointing it at this clone (--force)"
+        else
+          die "$SKILLS_DIR/$m already points into another clone ($cur), not $ROOT/skills/$m — re-run with --force to repoint every mission at this clone, or use --skills-dir=DIR"
+        fi
+      fi
     fi
   done
   n=0

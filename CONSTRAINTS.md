@@ -22,7 +22,17 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
 
 ## Frozen table (dimension x threshold x tool x gate job x measured)
 
-| ID | Dimension | Threshold (frozen) | Tool (exact command) | CI gate job (WIRE target) | Measured at base | Status |
+> **The "Measured at base" column is a dated snapshot (2026-09-16, base `10e45f72`), not the
+> current state, and is never refreshed** — rewriting a number in this file trips the floor
+> guard by design. D2's threshold cell ("21/21 missions") means *every
+> mission in the catalog*, which has grown since. Read the live values from their generators:
+> mission count — `python3 scripts/validate.py` and `assets/badges/missions.json`; test count —
+> `assets/badges/tests.json`; proof mix — the generated proof-status sentence in
+> [README.md](README.md#proof-status) and `python3 runtime/scripts/proof_status.py`; bound
+> reports — `python3 runtime/scripts/run_report.py`; coverage — the `coverage report` step of
+> [validate CI](.github/workflows/validate.yml) (D9 status: see its row note).
+
+| ID | Dimension | Threshold (frozen) | Tool (exact command) | CI gate job (WIRE target) | Measured at base (snapshot) | Status |
 |---|---|---|---|---|--- |---|
 | D1 | suite-green | `unittest` exit 0 (0 failures, 0 errors) | `python3 -m unittest discover -s tests` | validate.yml `gates`: "Run the contract test suite without Gitleaks" | 1490 pass, OK | FROZEN+PROVEN |
 | D2 | catalog-valid | `validate.py` exit 0 (21/21 missions, separation holds) | `python3 scripts/validate.py` | validate.yml `gates`: "Validate missions, playbooks, and evals" | 21/21 ok | FROZEN+PROVEN |

@@ -350,6 +350,25 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
         )
         self.assert_refused(rc, err, "unmet_deps=1")
 
+    def test_ready_with_unmet_deps_refused(self):
+        # `ready` is settable by anyone with task-update; it used to dispatch
+        # without the DAG check that `pending` had to clear.
+        rc, _, err = run_spawn(
+            self.BASE_ARGS, env_extra={"PROFILE": "ro"},
+            task_list=task_list_payload(
+                {"id": "task_test", "status": "ready", "deps": ["dep1"]},
+                {"id": "dep1", "status": "in_progress"}),
+        )
+        self.assert_refused(rc, err, "status=ready unmet_deps=1")
+
+    def test_ready_with_unreadable_deps_refused(self):
+        rc, _, err = run_spawn(
+            self.BASE_ARGS, env_extra={"PROFILE": "ro"},
+            task_list=task_list_payload(
+                {"id": "task_test", "status": "ready", "deps": {"dep1": 1}}),
+        )
+        self.assert_refused(rc, err, "deps metadata unreadable")
+
     def test_task_not_found_refused(self):
         rc, _, err = run_spawn(
             self.BASE_ARGS, env_extra={"PROFILE": "ro"},
@@ -483,7 +502,7 @@ esac
                 ids.add(data.get("dispatchId") or data["dispatch"]["id"])
                 self.assertEqual(len(list(receipt.parent.glob("tl-*.json"))), 1)
             self.assertEqual(ids, set(attempts))
-            for attempt, result in zip(attempts, results):
+            for attempt, result in zip(attempts, results, strict=True):
                 self.assertIn(f"HANDLE=term_{attempt} ", result.stdout)
                 scratch = next(line.removeprefix("SCRATCH=") for line in result.stdout.splitlines()
                                if line.startswith("SCRATCH="))

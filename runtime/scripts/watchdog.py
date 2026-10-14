@@ -23,7 +23,8 @@ code edits; --help prints the effective values):
 * WEDGED: positive wedge evidence — an explicit wedge marker (wedge_markers:
   e.g. send_blocked, provider_stream_dead, dialog_block, provider_exhausted),
   OR a transcript frozen past wedge_frozen_s beyond STOP plus an unanswered
-  nudge (the policy's presence-not-absence test). Nudging a wedged worker is
+  nudge (the policy's presence-not-absence test): last_nudge_at is set and
+  nothing moved after it. Nudging a wedged worker is
   futile, so WEDGED recommends stop-redispatch immediately and never nudges.
 
 Rate limits (anti-flap: a worker oscillating HUNG/OK must not cause a nudge
@@ -213,16 +214,24 @@ def classify(worker, now, cfg):
     if not isinstance(markers, list) or not all(isinstance(m, str) for m in markers):
         raise HeartbeatError(f"worker {wid}: wedge_markers must be a list of strings")
     nudge_answered = worker.get("last_nudge_answered")
+    # worker-supervision.md's wedge test is a transcript frozen THROUGH an unanswered nudge:
+    # the nudge must exist (last_nudge_at) and the last movement must not postdate it. A
+    # worker that moved after its nudge was not frozen through it, whatever the answered flag
+    # says, and a bare `answered: false` with no nudge time is absence, not presence.
+    # (last_nudge_at used to be parsed and then ignored.)
+    frozen_through_nudge = (nudge_answered is False and last_nudge is not None
+                            and last_move <= last_nudge)
     evidence = {
         "idle_s": round(idle_s),
         "past_stop": past_stop,
         "reported": reported,
         "wedge_markers": markers,
         "last_nudge_answered": nudge_answered,
+        "last_nudge_at": last_nudge.isoformat() if last_nudge else None,
     }
     if markers:
         return "WEDGED", evidence
-    if past_stop and idle_s >= cfg["wedge_frozen_s"] and nudge_answered is False:
+    if past_stop and idle_s >= cfg["wedge_frozen_s"] and frozen_through_nudge:
         evidence["wedge_basis"] = "frozen past STOP with an unanswered nudge"
         return "WEDGED", evidence
     if (past_stop and not reported) or idle_s >= cfg["hung_after_s"]:

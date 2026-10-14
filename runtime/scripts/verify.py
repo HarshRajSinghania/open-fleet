@@ -2299,16 +2299,23 @@ class _Transcript:
         return json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     @classmethod
-    def build(cls, args, exit_code, fatal, notes):
+    def build(cls, args, exit_code, fatal, notes, raw=None):
         """The verdict object: what was judged (manifest path AND bytes, the unit it names), with
         what (the full argument tuple — unset flags included, so an omitted authority is visibly
-        omitted), what was found (the printed lists, verbatim), the exit code, the toolchain, when."""
-        try:
-            raw = Path(args.manifest).read_bytes()
+        omitted), what was found (the printed lists, verbatim), the exit code, the toolchain, when.
+
+        `raw` is the manifest bytes verify() actually LOADED and judged (_EvidenceManifest.raw),
+        never a second read of args.manifest: by the time the transcript is built the executed
+        control has run worker code, which can rewrite the manifest file, and a re-read would
+        bind a verdict to bytes nobody judged (review P2). None — a manifest that never loaded —
+        records no digest and no unit, and a signed transcript then refuses to sign the absence."""
+        manifest_sha, unit = None, None
+        if raw is not None:
             manifest_sha = hashlib.sha256(raw).hexdigest()
-            unit = json.loads(raw.decode("utf-8")).get("unit")
-        except (OSError, ValueError, AttributeError):
-            manifest_sha, unit = None, None
+            try:
+                unit = json.loads(raw.decode("utf-8")).get("unit")
+            except (ValueError, AttributeError):
+                unit = None
         _, git_version, _ = _run([_Authority.git_bin(), "--version"], env=_Authority.git_env())
         here = Path(__file__).resolve().parent
         files = {}
@@ -2548,11 +2555,14 @@ def check_replay_request(m, is_mutation, execute_nc, nc_command):
 
 def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
            base=None, symbol=None, execute_nc=False, unit_class=None, no_gh=False, lighting=None,
-           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None):
-    """Return (fatal_errors, notes). fatal_errors non-empty => exit 2."""
+           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None, judged=None):
+    """Return (fatal_errors, notes). fatal_errors non-empty => exit 2. A `judged` dict receives
+    the manifest bytes this run loaded (`judged["raw"]`), for the transcript to bind to."""
     m, err = load_manifest(manifest_path)
     if err:
         return None, err
+    if judged is not None:
+        judged["raw"] = m.raw
     _Authority.ensure(repo)  # a library caller that never ran main(): pin BEFORE the control (F-1)
     is_mut = _is_mutation(unit_class)
     corroborated = bool(contract_source and contract_digest)
@@ -2742,11 +2752,12 @@ def main(argv=None):
     # executed negative control runs worker code — never looked up lazily after it.
     repo = _Authority.resolve(args.provenance,
                               bool(args.dispatch_record and args.dispatch_pubkey), args.repo)
+    judged = {}
     out, load_err = verify(args.manifest, args.contract_source, args.contract_digest,
                            repo, args.base, args.symbol, args.execute_nc,
                            args.unit_class, args.no_gh, args.lighting,
                            args.dispatch_record, args.dispatch_pubkey, args.nc_command,
-                           lane=args.lane)
+                           lane=args.lane, judged=judged)
     if load_err:
         print(f"FAIL: {load_err}", file=sys.stderr)
         print("verify: evidence manifest malformed/unreadable — unit is NOT done", file=sys.stderr)
@@ -2764,7 +2775,8 @@ def main(argv=None):
             print("verify: OK — all required checks passed")
             code = 0
     if args.transcript_out is not None:
-        written = _Transcript.write(args.transcript_out, _Transcript.build(args, code, fatal, notes), seed)
+        record = _Transcript.build(args, code, fatal, notes, raw=judged.get("raw"))
+        written = _Transcript.write(args.transcript_out, record, seed)
         if not written and code == 0:
             # A requested-and-missing artifact is fail-closed (#281/#386, round-1 R-3): the verdict
             # stands on stdout, but `--transcript-out X && use X` must never see exit 0 and no X.

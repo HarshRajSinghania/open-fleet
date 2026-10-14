@@ -2532,6 +2532,29 @@ class TranscriptFixture(RepoCase):
 class SignedTranscript(TranscriptFixture):
     """#281/#386: the --transcript-out / --transcript-key pair (fixture above; tests here)."""
 
+    def test_the_transcript_binds_the_bytes_that_were_judged_not_a_reread(self):
+        # Review P2: build() re-read args.manifest from disk AFTER worker code had run (the
+        # executed control), so a manifest rewritten mid-run was what the verdict bound to.
+        judged = (self.repo / self.manifest).read_bytes()
+        original = verify.check_scope
+
+        def rewrite_mid_run(*a, **k):
+            (self.repo / self.manifest).write_text(json.dumps({"unit": "forged"}), encoding="utf-8")
+            return original(*a, **k)
+        with mock.patch.object(verify, "check_scope", side_effect=rewrite_mid_run):
+            self._main("--transcript-out", "docs/reports/u/transcript.json")
+        rec = self._envelope()
+        self.assertEqual(rec["manifest_sha256"], hashlib.sha256(judged).hexdigest())
+        self.assertEqual(rec["unit"], "u")
+
+    def test_a_manifest_that_never_loaded_binds_no_digest(self):
+        (self.repo / self.manifest).write_text("{not json", encoding="utf-8")
+        rc, _out, _err = self._main("--transcript-out", "docs/reports/u/transcript.json")
+        self.assertEqual(rc, 2)
+        rec = self._envelope()
+        self.assertIsNone(rec["manifest_sha256"])
+        self.assertIsNone(rec["unit"])
+
     def test_no_flags_writes_nothing_and_says_nothing_new(self):
         # The unsigned default path is byte-identical to today's: the terminal lines are the
         # verdict, nothing about transcripts is printed, and no file appears.

@@ -784,6 +784,52 @@ class ControlPhasesAreIndistinguishable(RepoCase):
         self._assert_not_a_kill(ok, msgs)
         self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
 
+    def test_a_non_ascii_checkout_path_still_runs_the_proof(self):
+        parent = Path(tempfile.mkdtemp(prefix="orca-nc-")) / "répo"
+        parent.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(parent.parent, ignore_errors=True))
+        os.chdir(parent)
+        self.addCleanup(lambda: os.chdir(self.repo))
+        subprocess.run(["git", "init", "-q", "-b", "main"], check=True, cwd=parent)
+        (parent / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (parent / "proof.py").write_text("import app\nassert app.VALUE == 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], check=True, cwd=parent)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
+                       check=True, cwd=parent)
+        base = subprocess.run(["git", "rev-parse", "HEAD"], check=True, cwd=parent,
+                              capture_output=True, text=True).stdout.strip()
+        (parent / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], check=True, cwd=parent)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "head"],
+                       check=True, cwd=parent)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, cwd=parent,
+                             capture_output=True, text=True).stdout.strip()
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self.assertTrue(ok, msgs)
+
+    def test_an_annotated_tag_of_head_stays_a_tag_in_every_phase(self):
+        self.write("app.py", "VALUE = 1\n")
+        self.write("proof.py",
+                   "import subprocess\n"
+                   "def git(*args):\n"
+                   "    return subprocess.run(['git', *args], capture_output=True,"
+                   " text=True, check=True).stdout.strip()\n"
+                   "assert git('cat-file', '-t', 'v1') == 'tag', git('cat-file', '-t', 'v1')\n"
+                   "assert git('rev-parse', 'v1^{commit}') == git('rev-parse', 'HEAD')\n")
+        base = self.commit("base")
+        self.write("app.py", "VALUE = 2\n")
+        head = self.commit("head")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "v1", "-m", "release")
+        cmd = f"{shlex.quote(sys.executable)} proof.py"
+        m = {"base_sha": base, "head_sha": head, "negative_control": {
+            "tool": "revert", "paths": ["app.py"], "command": cmd}}
+        ok, msgs = verify.execute_negative_control(m, cmd)
+        self._assert_not_a_kill(ok, msgs)
+        self.assertTrue(any("TAUTOLOGICAL" in x for x in msgs), msgs)
+
     def test_a_proof_that_compares_head_to_its_branch_ref_is_not_killed(self):
         # refs/heads/main points at head_sha in the source. A linked worktree would still
         # see that ref under the sealed control, so HEAD != refs/heads/main only then.

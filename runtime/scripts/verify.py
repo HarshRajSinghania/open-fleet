@@ -1792,11 +1792,13 @@ def execute_negative_control(m, nc_command=None):
     The control counts as KILLED only when BOTH clean runs exit 0 and the control run exits
     NON-ZERO with a genuine failure signature. A command that fails under the control but also
     fails clean proves nothing; one that passes under the control is a TAUTOLOGY. The phases are
-    indistinguishable by git status, HOME, TMPDIR, or a branch ref: each repository copies the
-    source's ref layout, and every ref that named head_sha names that phase's commit instead, so
-    `HEAD` equals `refs/heads/<branch>` in the control run too (PR #571 review). The object store
-    is reached through alternates; a proof that opens that file and reads the source repo is the
-    residual a coordinator's clean-env re-run still has to cover.
+    indistinguishable by git status, HOME, TMPDIR, a branch ref, or tag type: each repository
+    copies the source's ref layout, and every ref that named head_sha names that phase's commit
+    instead. An annotated tag stays an annotated tag of that commit, so `git cat-file -t` agrees
+    with the clean checkout and `HEAD` equals `refs/heads/<branch>` in the control run too
+    (PR #571 review). The object store is reached through alternates, named in the filesystem
+    encoding; a proof that opens that file and reads the source repo is the residual a
+    coordinator's clean-env re-run still has to cover.
 
     Fail-closed everywhere: an unknown tool, a missing command/paths, a git error, a worktree that
     cannot be made, or a control that applies no change at all."""
@@ -1852,9 +1854,29 @@ def execute_negative_control(m, nc_command=None):
                  env=_Authority.git_env())
             shutil.rmtree(holder, ignore_errors=True)
 
+    def _retarget_tag(top, repo, tag_sha, commit):
+        """A new annotated tag object with the same body and `commit` as its target.
+        Returns (new_sha, err). Replacing the tag with the bare commit would make
+        `git cat-file -t` and `git describe` disagree with the clean checkout."""
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, raw, gerr = _run_bytes([git, "-C", top, "cat-file", "tag", tag_sha],
+                                    timeout=30, env=env)
+        nl = raw.find(b"\n")
+        if code != 0 or nl < 0 or not raw.startswith(b"object ") \
+                or not raw[nl:].startswith(b"\ntype commit\n"):
+            return None, gerr.strip() or "not an annotated tag of a commit"
+        rewritten = b"object " + commit.encode("ascii") + raw[nl:]
+        code, new, gerr = _run_at(repo, [git, "hash-object", "-t", "tag", "-w", "--stdin"],
+                                  stdin_bytes=rewritten, env=env)
+        new = new.strip()
+        if code != 0 or not HEX40_RE.match(new):
+            return None, gerr.strip() or "could not write the retargeted tag"
+        return new, None
+
     def _stage_phase_repo(top, head, commit, repo, phase):
         """Build `repo` with the source's refs, retargeting any ref that names `head` onto
-        `commit`. Returns an error string, or None. Objects come from the source through
+        `commit`. An annotated tag stays an annotated tag of that commit; only its object
+        line changes. Returns an error string, or None. Objects come from the source through
         alternates, so the sealed mutant (written into the source) is visible without a copy."""
         git, env = _Authority.git_bin(), _Authority.git_env()
         code, _, gerr = _run([git, "init", "-q", repo], timeout=60, env=env)
@@ -1870,7 +1892,10 @@ def execute_negative_control(m, nc_command=None):
         objects = (common_path / "objects").resolve()
         alt = Path(repo) / ".git" / "objects" / "info" / "alternates"
         alt.parent.mkdir(parents=True, exist_ok=True)
-        alt.write_text(str(objects) + "\n", encoding="ascii")
+        # The checkout path is a filesystem path. ascii fails when it contains
+        # a non-ASCII directory (PR #571 review); the bytes git will open are
+        # the filesystem encoding.
+        alt.write_bytes(os.fsencode(str(objects)) + b"\n")
         code, listing, gerr = _run([git, "-C", top, "for-each-ref", "--format=%(refname)"],
                                    timeout=60, env=env)
         if code != 0:
@@ -1884,7 +1909,16 @@ def execute_negative_control(m, nc_command=None):
             code, peeled, _ = _run([git, "-C", top, "rev-parse", "--verify", f"{ref}^{{commit}}"],
                                    timeout=30, env=env)
             peeled = peeled.strip() if code == 0 else ""
-            target = commit if direct == head or peeled == head else direct
+            if direct == commit or peeled == commit:
+                target = direct  # already this phase's commit; keep an annotated tag intact
+            elif peeled == head and direct != head:
+                target, tag_err = _retarget_tag(top, repo, direct, commit)
+                if tag_err:
+                    return f"could not retarget {ref} in the {phase} repository: {tag_err}"
+            elif direct == head or peeled == head:
+                target = commit
+            else:
+                target = direct
             code, _, gerr = _run([git, "-C", repo, "update-ref", ref, target], timeout=30, env=env)
             if code != 0:
                 return f"could not copy {ref} into the {phase} repository: {gerr.strip()}"

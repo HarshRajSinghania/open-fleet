@@ -131,10 +131,12 @@ worker-set; anything else in the environment is ignored):
   the result into a throwaway sibling commit of `head_sha`, and runs `negative_control.command`
   three times: **zero** at clean `head_sha`, **non-zero** at the sealed control, **zero** at clean
   `head_sha` again. Each run gets its own repository, with every ref that named `head_sha`
-  pointing at that phase's commit (a clean `git status`, and `HEAD` equal to the branch ref,
-  in every phase) and a fresh empty HOME and TMPDIR, so a proof that detects the phase — a
-  dirty tree, a first-run marker, a branch ref left on `head_sha` — instead of the behaviour
-  cannot fake a kill. Objects are shared through alternates. Requires `ORCA_NC_COMMAND` — without it the run is RED before any
+  pointing at that phase's commit and an annotated tag staying an annotated tag of it (a clean
+  `git status`, `HEAD` equal to the branch ref, and `git cat-file -t` unchanged, in every
+  phase) and a fresh empty HOME and TMPDIR, so a proof that detects the phase — a
+  dirty tree, a first-run marker, a branch ref left on `head_sha`, a tag flattened to a
+  commit — instead of the behaviour cannot fake a kill. Objects are shared through
+  alternates, and that path is written in the filesystem encoding. Requires `ORCA_NC_COMMAND` — without it the run is RED before any
   worktree is built, so a command the worker nominated is never executed. The control runs under a six-name environment floor (PATH, HOME, TMPDIR/TMP/TEMP, LANG/LC_* — h409 F-6): credentials and `ORCA_*`/`GIT_*` never reach it, and a toolchain that genuinely needs another variable fails CLOSED (a false RED to name, never a silent pass). The control must bind to
   the change (#280): the paths it restores, and the `+++` targets of a `hand` diff, must be
   production paths `base_sha..head_sha` really changes — not a decoy, and not a test file; the

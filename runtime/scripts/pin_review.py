@@ -154,9 +154,11 @@ def permission_keys(text):
         return {}
     blocks, current = {}, None
     for line in m.group(1).splitlines():
-        top = re.match(r"^([A-Za-z0-9_-]+)[ \t]*:", line)
+        # A quoted key ("hooks":) is the same YAML key — and the easy way to
+        # slip a grant past an unquoted-only match (PR #573 review).
+        top = re.match(r"^([\"']?)([A-Za-z0-9_-]+)\1[ \t]*:", line)
         if top:
-            current = top.group(1) if top.group(1) in PERMISSION_KEYS else None
+            current = top.group(2) if top.group(2) in PERMISSION_KEYS else None
             if current:
                 blocks[current] = [line.rstrip()]
         elif current:

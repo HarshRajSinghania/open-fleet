@@ -64,6 +64,14 @@ class Classify(unittest.TestCase):
         })
         self.assertEqual(pr.permission_keys("# no frontmatter\nhooks: x\n"), {})
 
+    def test_quoted_frontmatter_keys_are_the_same_keys(self):
+        text = ("---\n\"name\": x\n\"allowed-tools\":\n- Bash\n"
+                "'hooks': {}\n\"description\": d\n---\n")
+        self.assertEqual(pr.permission_keys(text), {
+            "allowed-tools": '"allowed-tools":\n- Bash',
+            "hooks": "'hooks': {}",
+        })
+
     def test_hooks_win_over_markdown(self):
         # A Markdown file inside hooks/ ships beside executable hooks; it is
         # reviewed with the surface, not with prose.

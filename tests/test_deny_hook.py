@@ -1575,6 +1575,10 @@ class TestEgressReceiptRule(HookBase):
             f"{self.RECEIPT} && echo ok && gh pr create --fill",
             # Mentioning the writer records nothing (PR #567 review, P1):
             "echo egress.py write && gh issue close 34",
+            # env -S's operand is the command; the rest are its arguments:
+            "env -S true runtime/scripts/egress.py write && gh issue close 34",
+            # A negated writer that fails still satisfies `&&` (P1):
+            "! runtime/scripts/egress.py write --bad && gh issue close 34",
             # Help/version invocations exit 0 running nothing (P1):
             "python3 --version runtime/scripts/egress.py write && gh issue close 34",
             "python3 -h runtime/scripts/egress.py write && gh issue close 34",

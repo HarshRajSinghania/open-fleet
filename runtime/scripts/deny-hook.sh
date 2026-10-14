@@ -421,8 +421,10 @@ SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
 # their own option runs (`env -i gh …` is the canonical form).
 _WRAPPERS = {"command", "builtin"}
 _WRAPPER_OPERANDS = {
-    "env": {"-u", "--unset", "-a", "--argv0", "-C", "--chdir",
-            "-S", "--split-string"},
+    # -S/--split-string is deliberately absent: its operand IS the command,
+    # so skipping it would promote the arguments of that command to the head
+    # (`env -S true egress.py write` runs true) (PR #567 review, P1).
+    "env": {"-u", "--unset", "-a", "--argv0", "-C", "--chdir"},
     "nice": {"-n", "--adjustment"},
     "time": {"-o", "--output", "-f", "--format"},
     "nohup": set(),
@@ -477,15 +479,19 @@ def _peel_sudo(ws):
     return ws
 
 
-def _plain_words(args):
+def _plain_words(args, peel_bang=True):
     ws = list(args)
     while ws:
         # Group/subshell openers and negation name no command: `{ gh …; }`,
         # `(gh …)`, `! gh …` run the same command (PR #567 review, P1).
-        # Peel the opener word, or the opener character glued to it.
-        if ws[0] in ("{", "(", "!"):
+        # Peel the opener word, or the opener character glued to it. The
+        # receipt check passes peel_bang=False: `!` inverts exit status, so
+        # a negated writer that FAILS reads as success to `&&` — it proves
+        # nothing was recorded and must never arm a send (P1).
+        openers = ("{", "(", "!") if peel_bang else ("{", "(")
+        if ws[0] in openers:
             ws = ws[1:]
-        elif ws[0][:1] in ("{", "(", "!") and len(ws[0]) > 1:
+        elif ws[0][:1] in openers and len(ws[0]) > 1:
             ws = [ws[0][1:]] + ws[1:]
         elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
             ws = ws[1:]
@@ -511,7 +517,7 @@ def _is_receipt(args):
     # executable, or as the script a python invocation runs. Merely
     # MENTIONING it (`echo egress.py write`) records nothing and arms
     # nothing (PR #567 review, P1).
-    ws = _plain_words(args)
+    ws = _plain_words(args, peel_bang=False)
     def is_egress(word):
         return word == "egress.py" or word.endswith("/egress.py")
 

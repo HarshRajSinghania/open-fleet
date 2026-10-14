@@ -307,8 +307,10 @@ class VFBenchReviewLeg(unittest.TestCase):
             p.chmod(0o755)
             return {**os.environ, "PATH": f"{d}{os.pathsep}{os.environ['PATH']}"}
 
-        commented = [{"user": {"login": "vf-reviewer"}, "state": "COMMENTED", "commit_id": head}]
-        approved = [{"user": {"login": "vf-reviewer"}, "state": "APPROVED", "commit_id": head}]
+        commented = [{"user": {"login": "vf-reviewer"}, "state": "COMMENTED", "commit_id": head,
+                      "author_association": "MEMBER"}]
+        approved = [{"user": {"login": "vf-reviewer"}, "state": "APPROVED", "commit_id": head,
+                     "author_association": "MEMBER"}]
         r = self._run_verify(env=env_with_stub(commented))
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("no INDEPENDENT APPROVED review at head_sha", r.stderr)

@@ -424,8 +424,60 @@ def extract_criterion_ids(content):
     (#268)."""
     doc = json_contract(content)
     if doc is not None:
-        return set(doc["criterion_ids"])
+        ids, err = _str_ids(doc["criterion_ids"], "the authoritative contract's criterion_ids")
+        if err:
+            raise ValueError(err)
+        return ids
     return set(CRIT_ID_RE.findall(content))
+
+
+def _str_ids(value, where):
+    """(set, None) when `value` is a list of strings, else (None, a message naming `where`).
+
+    A criterion id is a string. A list or object in its place made set() raise TypeError deep in
+    a check, which the aggregation reported as an anonymous `malformed manifest: TypeError` — the
+    gate failed closed, but told nobody which field was wrong (review P3)."""
+    if not isinstance(value, list):
+        return None, f"{where} must be a list of criterion-id strings, got {type(value).__name__}"
+    for item in value:
+        if not isinstance(item, str):
+            return None, (f"{where} must hold only criterion-id strings, got {item!r:.60} "
+                          f"({type(item).__name__})")
+    return set(value), None
+
+
+def _manifest_scope_shape(m):
+    """(contract, criteria, declared, None) from a well-shaped manifest, else (…, error).
+
+    The SHAPE check_scope reads, validated before it reads it: `contract` an object,
+    `contract.criterion_ids` a list of strings, `contract.digest` a string, and `criteria` a
+    list of `{id: str, addressed: bool}` objects. Absent (or empty) stays absent — coverage then
+    reports what is missing. Present and the wrong shape is a named fatal (review P3)."""
+    contract = m.get("contract") or {}
+    if not isinstance(contract, dict):
+        return None, None, None, (f"scope: manifest `contract` must be an object, got "
+                                  f"{type(contract).__name__}")
+    digest = contract.get("digest")
+    if digest is not None and not isinstance(digest, str):
+        return None, None, None, (f"scope: manifest contract.digest must be a string, got "
+                                  f"{type(digest).__name__}")
+    raw_ids = contract.get("criterion_ids")
+    declared, err = (set(), None) if raw_ids is None else _str_ids(
+        raw_ids, "scope: manifest contract.criterion_ids")
+    if err:
+        return None, None, None, err
+    criteria = m.get("criteria") or []
+    if not isinstance(criteria, list):
+        return None, None, None, (f"scope: manifest `criteria` must be a list of "
+                                  f"{{id, addressed}} objects, got {type(criteria).__name__}")
+    for i, item in enumerate(criteria):
+        if not isinstance(item, dict):
+            return None, None, None, (f"scope: manifest criteria[{i}] must be an {{id, addressed}} "
+                                      f"object, got {item!r:.60} ({type(item).__name__})")
+        if not isinstance(item.get("id"), str):
+            return None, None, None, (f"scope: manifest criteria[{i}].id must be a criterion-id "
+                                      f"string, got {item.get('id')!r:.60}")
+    return contract, criteria, declared, None
 
 
 def _is_mutation(unit_class):
@@ -450,7 +502,10 @@ def check_scope(m, auth_source, auth_digest):
     if got != want:
         return [f"scope: authoritative source does not match --contract-digest ({got} != {want})"]
     text = content.decode("utf-8")
-    authoritative = extract_criterion_ids(text)
+    try:
+        authoritative = extract_criterion_ids(text)
+    except ValueError as exc:
+        return [f"scope: {exc}"]
     if not authoritative:
         return ["scope: no criterion ids in the authoritative contract"]
     doc = json_contract(text)
@@ -476,13 +531,14 @@ def check_scope(m, auth_source, auth_digest):
                     "the whole scope guarantee. Write every criterion as a list item "
                     "(`- AC-2: …`), or use a JSON contract with an explicit criterion_ids array "
                     "(#296)"]
-    contract = m.get("contract") or {}
+    contract, criteria, declared, err = _manifest_scope_shape(m)
+    if err:
+        return [err]
     errs = []
     mdigest = contract.get("digest")
     if mdigest and _norm_digest(mdigest) != want:
         errs.append("scope: manifest contract.digest != authoritative digest (denominator swap)")
-    addressed = {c.get("id") for c in (m.get("criteria") or []) if c.get("addressed") is True}
-    declared = set(contract.get("criterion_ids") or [])
+    addressed = {c["id"] for c in criteria if c.get("addressed") is True}
     unaddressed = sorted(authoritative - addressed)
     if unaddressed:
         errs.append(f"scope: authoritative criteria not addressed in criteria[] "
@@ -1383,8 +1439,11 @@ def check_oracle_scope(m, source, digest):
         return ["oracle scope: kind must be characterization or documentation"]
     if any(scope.get(k) != m.get(k) for k in ("base_sha", "head_sha")):
         return ["oracle scope: authorized commit pair differs from the manifest"]
-    ids = scope.get("criterion_ids")
-    if not isinstance(ids, list) or not ids or set(ids) != set(doc["criterion_ids"]):
+    ids, ids_err = _str_ids(scope.get("criterion_ids"), "oracle scope: criterion_ids")
+    want_ids, want_err = _str_ids(doc["criterion_ids"], "the contract's criterion_ids")
+    if ids_err or want_err:
+        return [ids_err or f"oracle scope: {want_err}"]
+    if not ids or ids != want_ids:
         return ["oracle scope: must bind every criterion in this unit's contract"]
     paths = scope.get("paths")
     if not isinstance(paths, dict) or not paths:

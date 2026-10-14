@@ -1327,6 +1327,72 @@ class MalformedManifest(unittest.TestCase):
         self.assertEqual(verify.main(["--manifest", self._tmp("[1, 2, 3]")]), 2)
 
 
+class MalformedScopeShapesAreNamed(RepoCase):
+    """Review P3: a non-object criteria[] item and a list-valued criterion id raised AttributeError
+    / TypeError inside check_scope and extract_criterion_ids. The gate failed closed, but only as an
+    anonymous `malformed manifest: <Exception>`. Each wrong shape is now a fatal that names the
+    field, from check_scope itself, never an exception."""
+
+    def setUp(self):
+        super().setUp()
+        self.contract = self.src(["AC-1"])
+        self.dig = self.digest(self.contract)
+
+    def _scope(self, m, source=None, digest=None):
+        errs = verify.check_scope(m, source or self.contract, digest or self.dig)
+        self.assertTrue(errs, "a malformed shape passed the scope check")
+        return errs
+
+    def _assert_named(self, errs, *needles):
+        self.assertTrue(any(all(n in e for n in needles) for e in errs), errs)
+        self.assertFalse(any("Error" in e for e in errs), errs)
+
+    def test_a_non_object_criteria_item_is_named(self):
+        for item in ("AC-1", ["AC-1"], 7, None):
+            with self.subTest(item=item):
+                errs = self._scope({"contract": {"criterion_ids": ["AC-1"]},
+                                    "criteria": [{"id": "AC-1", "addressed": True}, item]})
+                self._assert_named(errs, "criteria[1]", "object")
+
+    def test_a_non_string_criterion_id_is_named(self):
+        errs = self._scope({"contract": {"criterion_ids": ["AC-1"]},
+                            "criteria": [{"id": ["AC-1"], "addressed": True}]})
+        self._assert_named(errs, "criteria[0].id")
+
+    def test_list_valued_manifest_criterion_ids_are_named(self):
+        for ids in ([["AC-1"]], "AC-1", {"AC-1": True}):
+            with self.subTest(ids=ids):
+                errs = self._scope({"contract": {"criterion_ids": ids},
+                                    "criteria": [{"id": "AC-1", "addressed": True}]})
+                self._assert_named(errs, "contract.criterion_ids")
+
+    def test_non_object_contract_and_criteria_are_named(self):
+        self._assert_named(self._scope({"contract": ["x"], "criteria": []}), "`contract`")
+        self._assert_named(self._scope({"contract": {"criterion_ids": ["AC-1"]},
+                                        "criteria": "AC-1"}), "`criteria`")
+        self._assert_named(self._scope({"contract": {"digest": ["sha256:x"]}}), "contract.digest")
+
+    def test_list_valued_ids_in_a_json_contract_are_named(self):
+        rel = self.write("contract.json", json.dumps({"criterion_ids": [["AC-1"], "AC-2"]}))
+        errs = self._scope({"contract": {"criterion_ids": ["AC-2"]}}, rel, self.digest(rel))
+        self._assert_named(errs, "authoritative contract's criterion_ids")
+        with self.assertRaises(ValueError):
+            verify.extract_criterion_ids((self.repo / rel).read_text())
+
+    def test_through_verify_the_message_is_the_named_one(self):
+        path = self.write("m.json", json.dumps({"unit": "u", "contract": {"criterion_ids": ["AC-1"]},
+                                                "criteria": ["AC-1"]}))
+        (fatal, _notes), err = verify.verify(path, self.contract, self.dig, unit_class="report-only")
+        self.assertIsNone(err)
+        self.assertTrue(any("criteria[0]" in f for f in fatal), fatal)
+        self.assertFalse(any("malformed manifest: " in f for f in fatal), fatal)
+
+    def test_a_well_shaped_manifest_still_passes_scope(self):
+        self.assertEqual(verify.check_scope({"contract": {"criterion_ids": ["AC-1"]},
+                                             "criteria": _crit("AC-1")},
+                                            self.contract, self.dig), [])
+
+
 class NegativeControlSurvivor(RepoCase):
     """#137: survivor summaries (plural / percentage / count) must be rejected, not accepted."""
 

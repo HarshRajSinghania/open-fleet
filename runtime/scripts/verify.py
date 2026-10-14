@@ -407,12 +407,20 @@ def json_contract(content):
     not run on it (PR #308 review, P1): a valid contract whose descriptive fields mention an old
     `AC-9` beside an explicit `["AC-1"]` was refused, and the refusal told the author to use the
     very JSON array they had used.
+
+    An array holding anything but strings raises ValueError naming the field: a list or object
+    where a criterion id belongs made set() raise TypeError deep inside a check, reported only as
+    an anonymous `malformed manifest: TypeError` (review P3).
     """
     try:
         data = json.loads(content)
     except (json.JSONDecodeError, ValueError):
         return None
     if isinstance(data, dict) and isinstance(data.get("criterion_ids"), list):
+        bad = [x for x in data["criterion_ids"] if not isinstance(x, str)]
+        if bad:
+            raise ValueError("the authoritative contract's criterion_ids must hold only "
+                             f"criterion-id strings, got {bad[0]!r:.60} ({type(bad[0]).__name__})")
         return data
     return None
 
@@ -422,62 +430,10 @@ def extract_criterion_ids(content):
     `criterion_ids` — unambiguous, and PREFERRED. Otherwise the ids are the tokens that BEGIN a list
     item or line in the text (CRIT_ID_RE): `- AC-1: …` is a criterion, `see RFC-7519` is prose
     (#268)."""
-    doc = json_contract(content)
+    doc = json_contract(content)  # ValueError on a non-string id, named (review P3)
     if doc is not None:
-        ids, err = _str_ids(doc["criterion_ids"], "the authoritative contract's criterion_ids")
-        if err:
-            raise ValueError(err)
-        return ids
+        return set(doc["criterion_ids"])
     return set(CRIT_ID_RE.findall(content))
-
-
-def _str_ids(value, where):
-    """(set, None) when `value` is a list of strings, else (None, a message naming `where`).
-
-    A criterion id is a string. A list or object in its place made set() raise TypeError deep in
-    a check, which the aggregation reported as an anonymous `malformed manifest: TypeError` — the
-    gate failed closed, but told nobody which field was wrong (review P3)."""
-    if not isinstance(value, list):
-        return None, f"{where} must be a list of criterion-id strings, got {type(value).__name__}"
-    for item in value:
-        if not isinstance(item, str):
-            return None, (f"{where} must hold only criterion-id strings, got {item!r:.60} "
-                          f"({type(item).__name__})")
-    return set(value), None
-
-
-def _manifest_scope_shape(m):
-    """(contract, criteria, declared, None) from a well-shaped manifest, else (…, error).
-
-    The SHAPE check_scope reads, validated before it reads it: `contract` an object,
-    `contract.criterion_ids` a list of strings, `contract.digest` a string, and `criteria` a
-    list of `{id: str, addressed: bool}` objects. Absent (or empty) stays absent — coverage then
-    reports what is missing. Present and the wrong shape is a named fatal (review P3)."""
-    contract = m.get("contract") or {}
-    if not isinstance(contract, dict):
-        return None, None, None, (f"scope: manifest `contract` must be an object, got "
-                                  f"{type(contract).__name__}")
-    digest = contract.get("digest")
-    if digest is not None and not isinstance(digest, str):
-        return None, None, None, (f"scope: manifest contract.digest must be a string, got "
-                                  f"{type(digest).__name__}")
-    raw_ids = contract.get("criterion_ids")
-    declared, err = (set(), None) if raw_ids is None else _str_ids(
-        raw_ids, "scope: manifest contract.criterion_ids")
-    if err:
-        return None, None, None, err
-    criteria = m.get("criteria") or []
-    if not isinstance(criteria, list):
-        return None, None, None, (f"scope: manifest `criteria` must be a list of "
-                                  f"{{id, addressed}} objects, got {type(criteria).__name__}")
-    for i, item in enumerate(criteria):
-        if not isinstance(item, dict):
-            return None, None, None, (f"scope: manifest criteria[{i}] must be an {{id, addressed}} "
-                                      f"object, got {item!r:.60} ({type(item).__name__})")
-        if not isinstance(item.get("id"), str):
-            return None, None, None, (f"scope: manifest criteria[{i}].id must be a criterion-id "
-                                      f"string, got {item.get('id')!r:.60}")
-    return contract, criteria, declared, None
 
 
 def _is_mutation(unit_class):
@@ -531,9 +487,31 @@ def check_scope(m, auth_source, auth_digest):
                     "the whole scope guarantee. Write every criterion as a list item "
                     "(`- AC-2: …`), or use a JSON contract with an explicit criterion_ids array "
                     "(#296)"]
-    contract, criteria, declared, err = _manifest_scope_shape(m)
-    if err:
-        return [err]
+    # The manifest SHAPE this check reads, validated before it is read (review P3): `contract` an
+    # object, `contract.digest` a string, `contract.criterion_ids` a list of strings, `criteria` a
+    # list of {id: str, addressed} objects. Absent stays absent — coverage then names what is
+    # missing; present and the wrong shape is a named fatal, never an exception.
+    contract, criteria = m.get("contract") or {}, m.get("criteria") or []
+    if not isinstance(contract, dict):
+        return [f"scope: manifest `contract` must be an object, got {type(contract).__name__}"]
+    if not isinstance(contract.get("digest") or "", str):
+        return ["scope: manifest contract.digest must be a string, got "
+                f"{type(contract['digest']).__name__}"]
+    declared = contract.get("criterion_ids") or []
+    if not (isinstance(declared, list) and all(isinstance(x, str) for x in declared)):
+        return [f"scope: manifest contract.criterion_ids must be a list of criterion-id strings, "
+                f"got {declared!r:.60}"]
+    declared = set(declared)
+    if not isinstance(criteria, list):
+        return [f"scope: manifest `criteria` must be a list of {{id, addressed}} objects, got "
+                f"{type(criteria).__name__}"]
+    for i, item in enumerate(criteria):
+        if not isinstance(item, dict):
+            return [f"scope: manifest criteria[{i}] must be an {{id, addressed}} object, got "
+                    f"{item!r:.60} ({type(item).__name__})"]
+        if not isinstance(item.get("id"), str):
+            return [f"scope: manifest criteria[{i}].id must be a criterion-id string, got "
+                    f"{item.get('id')!r:.60}"]
     errs = []
     mdigest = contract.get("digest")
     if mdigest and _norm_digest(mdigest) != want:
@@ -612,21 +590,11 @@ def _wtree_bound(m):
     return rt is not None and ht is not None and rt == wtree == ht
 
 
-# Who may cast the INDEPENDENT approval: GitHub's `author_association` on the review, read from
-# the API — never the manifest. "Not the PR author" alone let ANY account count: a throwaway
-# login (or a sock puppet of the worker) with no standing in the repository could approve a PR
-# on a public repo and satisfy the gate (review P2). Only an account the repository itself
-# grants standing — its owner, an org member, an invited collaborator — approves. CONTRIBUTOR,
-# FIRST_TIMER, FIRST_TIME_CONTRIBUTOR, MANNEQUIN and NONE never do. A CHANGES_REQUESTED still
-# vetoes from ANY non-author account: refusing on an objection is the fail-closed direction.
-INDEPENDENT_REVIEWER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
-
-
 def review_ok(reviews, head_sha, author=None, also_sha=None, equivalent_shas=()):
     """Latest independent state WITHIN this content's review history governs the veto.
 
     Approvals require head or the explicitly tree-bound reviewed SHA, and an approver whose
-    `author_association` is in INDEPENDENT_REVIEWER_ASSOCIATIONS. Objections use all
+    `author_association` is in _Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS. Objections use all
     authoritative equivalent trees; a worker cannot select one away. Unrelated later reviews
     do not withdraw a relevant objection. COMMENTED/DISMISSED at equivalent content still do.
     """
@@ -640,7 +608,7 @@ def review_ok(reviews, head_sha, author=None, also_sha=None, equivalent_shas=())
     if any(r.get("state") == "CHANGES_REQUESTED" for r in independent):
         return False
     return any(r.get("state") == "APPROVED" and r.get("commit_id") in ok_shas
-               and r.get("author_association") in INDEPENDENT_REVIEWER_ASSOCIATIONS
+               and r.get("author_association") in _Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS
                for r in independent)
 
 
@@ -739,6 +707,15 @@ class _Authority:
     finding the stub the control had just planted (G-1: the C5 false GREEN on both lanes)."""
 
     SOUND_PROVENANCE = ("ci", "mcp", "sdk", "dispatch")
+    # Who may cast the INDEPENDENT approval: GitHub's `author_association` on the review, read
+    # from the API — never the manifest. "Not the PR author" alone let ANY account count: a
+    # throwaway login (or a sock puppet of the worker) with no standing in the repository could
+    # approve a PR on a public repo and satisfy the gate (review P2). Only an account the
+    # repository itself grants standing — its owner, an org member, an invited collaborator —
+    # approves. CONTRIBUTOR, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR, MANNEQUIN and NONE never do. A
+    # CHANGES_REQUESTED still vetoes from ANY non-author account (the fail-closed direction).
+    # A class constant, not a module one: the RV-D2 width pin holds verify.py's top level fixed.
+    INDEPENDENT_REVIEWER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
     ABSENT = ("gh absent at startup (the review authority is pinned once, before the control, "
               "and never re-resolved — h409 F-1)")
     ABSENT_GIT = "git absent at startup (pinned once, before the control, never re-resolved — h409 R2)"
@@ -1080,7 +1057,7 @@ def check_review(m, repo, is_mutation, no_gh=False, corroborated=False, dispatch
         return [f"mutation unit: no INDEPENDENT APPROVED review at head_sha on {repo}#{number} "
                 f"(the PR author's own approval, superseded reviews, and approvals from accounts "
                 f"whose author_association is not one of "
-                f"{sorted(INDEPENDENT_REVIEWER_ASSOCIATIONS)} do not count; a review at "
+                f"{sorted(_Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS)} do not count; a review at "
                 f"reviewed_sha only counts when reviewed_wtree binds its tree to the head's)"]
     return authority  # [] or the advisory NOTEs (h409 F-1/F-2)
 
@@ -1431,7 +1408,10 @@ def check_oracle_scope(m, source, digest):
     raw, err = read_source(source)
     if err or sha256_of(raw) != _norm_digest(digest):
         return ["oracle scope: authoritative contract unreadable or digest mismatch"]
-    doc = json_contract(raw.decode("utf-8"))
+    try:
+        doc = json_contract(raw.decode("utf-8"))
+    except ValueError as exc:  # check_scope names the same defect; never an exception (review P3)
+        return [f"oracle scope: {exc}"]
     scope = doc.get("oracle_scope") if doc else None
     if scope is None:
         return []
@@ -1439,11 +1419,9 @@ def check_oracle_scope(m, source, digest):
         return ["oracle scope: kind must be characterization or documentation"]
     if any(scope.get(k) != m.get(k) for k in ("base_sha", "head_sha")):
         return ["oracle scope: authorized commit pair differs from the manifest"]
-    ids, ids_err = _str_ids(scope.get("criterion_ids"), "oracle scope: criterion_ids")
-    want_ids, want_err = _str_ids(doc["criterion_ids"], "the contract's criterion_ids")
-    if ids_err or want_err:
-        return [ids_err or f"oracle scope: {want_err}"]
-    if not ids or ids != want_ids:
+    ids = scope.get("criterion_ids")
+    if not (isinstance(ids, list) and ids and all(isinstance(x, str) for x in ids)) \
+            or set(ids) != set(doc["criterion_ids"]):  # strings only: no TypeError (review P3)
         return ["oracle scope: must bind every criterion in this unit's contract"]
     paths = scope.get("paths")
     if not isinstance(paths, dict) or not paths:
@@ -1783,84 +1761,6 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
             _bind_hunks_to_change(actual, m))
 
 
-def _seal_control(wt, head):
-    """Commit the control applied in `wt` as a SIBLING of head_sha. Returns (mutant_sha, err).
-
-    The mutant commit is head_sha's own commit object with only its `tree` line swapped for the
-    applied control's tree: same parents, author, committer and message. A control phase run from
-    it sees a CLEAN work tree (`git status --porcelain` empty) and the same `HEAD~1`, log and
-    identity a clean phase sees — the phase is not distinguishable by git state, only by the
-    content under test (review P1). Only the index is read, so untracked residue of the apply
-    never reaches the control run.
-
-    The stillborn check lives here and compares TREES: a control whose applied tree equals
-    head_sha's tree changed NOTHING and cannot make any proof go RED (#255)."""
-    git, env = _Authority.git_bin(), _Authority.git_env()
-    code, tree, gerr = _run_at(wt, [git, "write-tree"], env=env)
-    tree = tree.strip()
-    if code != 0 or not HEX40_RE.match(tree):
-        return None, f"cannot record the applied control's tree: {gerr.strip()}"
-    if tree == _tree(head):
-        return None, ("the negative control changed NOTHING at head_sha — a no-op mutant cannot "
-                      "make any proof go RED (#255)")
-    code, raw, gerr = _git_bytes(["cat-file", "commit", str(head)])
-    if code != 0 or not raw.startswith(b"tree ") or b"\n" not in raw:
-        return None, f"cannot read head_sha's commit object to seal the control: {gerr.strip()}"
-    sibling = b"tree " + tree.encode("ascii") + raw[raw.index(b"\n"):]
-    code, mutant, gerr = _run_at(wt, [git, "hash-object", "-t", "commit", "-w", "--stdin"],
-                                 stdin_bytes=sibling, env=env)
-    mutant = mutant.strip()
-    if code != 0 or not HEX40_RE.match(mutant):
-        return None, f"cannot commit the applied control as a throwaway commit: {gerr.strip()}"
-    return mutant, None
-
-
-def _prepare_control(top, head, m, nc, tool, nc_command):
-    """Apply the control in a scratch worktree and seal it (_seal_control) BEFORE any worker code
-    runs. Returns (mutant_sha, err). The scratch worktree is removed before the first phase
-    executes, so no run can reach it, and the sealed commit is content-addressed, so no run can
-    alter what the control phase checks out."""
-    holder = tempfile.mkdtemp(prefix="orca-nc-")
-    wt = str(Path(holder) / "wt")
-    code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
-                          str(head)], timeout=120, env=_Authority.git_env())
-    try:
-        if code != 0:
-            return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
-        apply_err = _apply_control(wt, m, nc, tool, nc_command)
-        if apply_err:
-            return None, apply_err
-        return _seal_control(wt, head)
-    finally:
-        _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-             env=_Authority.git_env())
-        shutil.rmtree(holder, ignore_errors=True)
-
-
-def _phase_run(top, commit, phase, argv):
-    """Run the bound command once in a FRESH worktree detached at `commit`, under a FRESH empty
-    HOME and TMPDIR. Returns (rc, stdout, stderr), or (None, None, err) when no worktree was made.
-
-    Every phase is built identically — same holder layout, same environment keys, a clean tree —
-    and nothing one phase writes under its HOME, TMPDIR or worktree survives into the next: a
-    marker an earlier run left cannot be what makes a later run fail (review P1)."""
-    holder = tempfile.mkdtemp(prefix="orca-nc-")
-    wt, home, tmp = (str(Path(holder) / leaf) for leaf in ("wt", "home", "tmp"))
-    os.mkdir(home)
-    os.mkdir(tmp)
-    env = {**_Authority.nc_env(), "HOME": home, "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp}
-    code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
-                          str(commit)], timeout=120, env=_Authority.git_env())
-    try:
-        if code != 0:
-            return None, None, f"could not create the {phase} worktree: {gerr.strip()}"
-        return _run_at(wt, argv, timeout=NC_TIMEOUT_S, env=env)
-    finally:
-        _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-             env=_Authority.git_env())
-        shutil.rmtree(holder, ignore_errors=True)
-
-
 def execute_negative_control(m, nc_command=None):
     """#255 — EXECUTE the negative control. Returns (executed_ok, messages).
 
@@ -1881,6 +1781,83 @@ def execute_negative_control(m, nc_command=None):
 
     Fail-closed everywhere: an unknown tool, a missing command/paths, a git error, a worktree that
     cannot be made, or a control that applies no change at all."""
+    def _seal_control(wt, head):
+        """Commit the control applied in `wt` as a SIBLING of head_sha. Returns (mutant_sha, err).
+
+        The mutant commit is head_sha's own commit object with only its `tree` line swapped for the
+        applied control's tree: same parents, author, committer and message. A control phase run from
+        it sees a CLEAN work tree (`git status --porcelain` empty) and the same `HEAD~1`, log and
+        identity a clean phase sees — the phase is not distinguishable by git state, only by the
+        content under test (review P1). Only the index is read, so untracked residue of the apply
+        never reaches the control run.
+
+        The stillborn check lives here and compares TREES: a control whose applied tree equals
+        head_sha's tree changed NOTHING and cannot make any proof go RED (#255)."""
+        git, env = _Authority.git_bin(), _Authority.git_env()
+        code, tree, gerr = _run_at(wt, [git, "write-tree"], env=env)
+        tree = tree.strip()
+        if code != 0 or not HEX40_RE.match(tree):
+            return None, f"cannot record the applied control's tree: {gerr.strip()}"
+        if tree == _tree(head):
+            return None, ("the negative control changed NOTHING at head_sha — a no-op mutant cannot "
+                          "make any proof go RED (#255)")
+        code, raw, gerr = _git_bytes(["cat-file", "commit", str(head)])
+        if code != 0 or not raw.startswith(b"tree ") or b"\n" not in raw:
+            return None, f"cannot read head_sha's commit object to seal the control: {gerr.strip()}"
+        sibling = b"tree " + tree.encode("ascii") + raw[raw.index(b"\n"):]
+        code, mutant, gerr = _run_at(wt, [git, "hash-object", "-t", "commit", "-w", "--stdin"],
+                                     stdin_bytes=sibling, env=env)
+        mutant = mutant.strip()
+        if code != 0 or not HEX40_RE.match(mutant):
+            return None, f"cannot commit the applied control as a throwaway commit: {gerr.strip()}"
+        return mutant, None
+
+    def _prepare_control(top, head, m, nc, tool, nc_command):
+        """Apply the control in a scratch worktree and seal it (_seal_control) BEFORE any worker code
+        runs. Returns (mutant_sha, err). The scratch worktree is removed before the first phase
+        executes, so no run can reach it, and the sealed commit is content-addressed, so no run can
+        alter what the control phase checks out."""
+        holder = tempfile.mkdtemp(prefix="orca-nc-")
+        wt = str(Path(holder) / "wt")
+        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
+                              str(head)], timeout=120, env=_Authority.git_env())
+        try:
+            if code != 0:
+                return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
+            apply_err = _apply_control(wt, m, nc, tool, nc_command)
+            if apply_err:
+                return None, apply_err
+            return _seal_control(wt, head)
+        finally:
+            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
+                 env=_Authority.git_env())
+            shutil.rmtree(holder, ignore_errors=True)
+
+    def _phase_run(top, commit, phase, argv):
+        """Run the bound command once in a FRESH worktree detached at `commit`, under a FRESH empty
+        HOME and TMPDIR. Returns (rc, stdout, stderr), or (None, None, err) when no worktree was made.
+
+        Every phase is built identically — same holder layout, same environment keys, a clean tree —
+        and nothing one phase writes under its HOME, TMPDIR or worktree survives into the next: a
+        marker an earlier run left cannot be what makes a later run fail (review P1)."""
+        holder = tempfile.mkdtemp(prefix="orca-nc-")
+        wt, home, tmp = (str(Path(holder) / leaf) for leaf in ("wt", "home", "tmp"))
+        os.mkdir(home)
+        os.mkdir(tmp)
+        env = {**_Authority.nc_env(), "HOME": home, "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp}
+        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--detach", wt,
+                              str(commit)], timeout=120, env=_Authority.git_env())
+        try:
+            if code != 0:
+                return None, None, f"could not create the {phase} worktree: {gerr.strip()}"
+            return _run_at(wt, argv, timeout=NC_TIMEOUT_S, env=env)
+        finally:
+            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
+                 env=_Authority.git_env())
+            shutil.rmtree(holder, ignore_errors=True)
+
+    # The three helpers above are nested, not module names: the RV-D2 width pin
+    # (tests/test_reshape_width_verify.py) holds verify.py's top-level surface fixed.
     nc = m.get("negative_control") or {}
     tool = nc.get("tool")
     if tool not in EXECUTABLE_NC_TOOLS:

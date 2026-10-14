@@ -480,7 +480,7 @@ class ReviewCheck(unittest.TestCase):
     def test_an_approval_needs_standing_in_the_repository(self):
         # Review P2: "any login that is not the PR author" let a throwaway account approve.
         # Only OWNER/MEMBER/COLLABORATOR approvals count; a missing association is no standing.
-        self.assertEqual(verify.INDEPENDENT_REVIEWER_ASSOCIATIONS,
+        self.assertEqual(verify._Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS,
                          frozenset({"OWNER", "MEMBER", "COLLABORATOR"}))
         for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
             with self.subTest(assoc=assoc):

@@ -325,7 +325,12 @@ def _split(cmd):
             word_start = True
             i += 1
             continue
-        sep_run = ""
+        # Blanks BETWEEN segments (after an operator, before the next word —
+        # or before the newline that ends a trailing comment) must not erase
+        # the pending join: `receipt && # note` <newline> `send` is still
+        # &&-joined (PR #567 review, P2).
+        if ch not in BLANKS or "".join(cur).strip():
+            sep_run = ""
         cur.append(ch)
         word_start = ch in BLANKS
         i += 1
@@ -409,12 +414,47 @@ SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
               "delete", "upload", "ready", "pin", "unpin", "lock", "unlock", "transfer"}
 
 
+# Wrapper words strip_prefix peels on the shell side (env/sudo-style
+# laundering). Rule 5 moved into this reader, so the peeling must come with
+# it — `env gh issue close`, `command gh release create`, `sudo -n gh …`
+# are the same sends (PR #567 review, P1).
+_WRAPPERS = {"env", "nohup", "nice", "time", "command", "builtin"}
+_SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
+
+
+def _peel_sudo(ws):
+    # ws[0] is sudo: peel it, stacked sudos, and the sudo option run —
+    # the same shapes strip_prefix handles (`sudo -n`, `sudo --`,
+    # `sudo -u root`, `sudo --user=root`).
+    ws = ws[1:]
+    while ws:
+        word = ws[0]
+        if word == "sudo":
+            ws = ws[1:]
+        elif word == "--":
+            return ws[1:]
+        elif word.startswith("--") and "=" in word:
+            ws = ws[1:]
+        elif word in _SUDO_OPERAND_FLAGS and len(ws) > 1:
+            ws = ws[2:]
+        elif word.startswith("-") and word != "-":
+            ws = ws[1:]
+        else:
+            return ws
+    return ws
+
+
 def _plain_words(args):
     ws = list(args)
-    while ws and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
-        ws = ws[1:]
-    if ws and ws[0] == "sudo":
-        ws = ws[1:]
+    while ws:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
+            ws = ws[1:]
+        elif ws[0] == "sudo":
+            ws = _peel_sudo(ws)
+        elif ws[0] in _WRAPPERS:
+            ws = ws[1:]
+        else:
+            return ws
     return ws
 
 

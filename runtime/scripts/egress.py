@@ -272,7 +272,11 @@ def cmd_verify(args):
         return EXIT_FAIL_CLOSED
     head = head_digest(path) or ""
     shown = head or "(empty)"
+    # Both anchors may be requested together; each requested check runs —
+    # returning after the ancestor leg would silently skip an exact-head
+    # check the caller asked for (PR #567 review, P2).
     ancestor = getattr(args, "expect_ancestor", None)
+    anchored = False
     if ancestor is not None:
         want = _anchored_value(ancestor)
         if want:
@@ -284,9 +288,7 @@ def cmd_verify(args):
                       "truncated ledger loses the anchored line, and that is what "
                       "this caught (#312)", file=sys.stderr)
                 return EXIT_FAIL_CLOSED
-        print(f"egress: chain intact, anchored head present, {count} receipt(s) "
-              f"in {path} — head {shown}")
-        return EXIT_OK
+        anchored = True
     expected = getattr(args, "expect_head", None)
     if expected is not None:
         want = _anchored_value(expected)
@@ -298,6 +300,10 @@ def cmd_verify(args):
                   file=sys.stderr)
             return EXIT_FAIL_CLOSED
         print(f"egress: chain intact and anchored, {count} receipt(s) in {path} — head {shown}")
+        return EXIT_OK
+    if anchored:
+        print(f"egress: chain intact, anchored head present, {count} receipt(s) "
+              f"in {path} — head {shown}")
         return EXIT_OK
     print(f"egress: chain intact, {count} receipt(s) in {path} — head {shown} "
           "(UNANCHORED: edits are caught, a wholesale rewrite is not — anchor this head off the "

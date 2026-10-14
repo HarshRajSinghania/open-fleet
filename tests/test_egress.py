@@ -431,6 +431,21 @@ class TestExpectAncestor(EgressBase):
         r2 = self.run_egress("verify", "--expect-ancestor", "(empty)")
         self.assertEqual(r2.returncode, 0, r2.stderr)
 
+    def test_both_anchors_requested_both_checked(self):
+        # Asking for --expect-head beside --expect-ancestor must not return
+        # after the ancestor leg: a stale head fails even when the anchored
+        # line is present (PR #567 review, P2).
+        self.write_one()
+        anchored = self.run_egress("head").stdout.strip()
+        self.write_one(sink="issue-close")
+        current = self.run_egress("head").stdout.strip()
+        stale = self.run_egress("verify", "--expect-ancestor", anchored,
+                                 "--expect-head", anchored)
+        self.assertEqual(stale.returncode, 3, stale.stdout + stale.stderr)
+        both = self.run_egress("verify", "--expect-ancestor", anchored,
+                                "--expect-head", current)
+        self.assertEqual(both.returncode, 0, both.stderr)
+
 
 class TestHead(EgressBase):
     """#561: `head` prints the anchor value run close records off the writer.

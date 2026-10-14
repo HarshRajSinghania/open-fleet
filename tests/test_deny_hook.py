@@ -1595,6 +1595,38 @@ class TestEgressReceiptRule(HookBase):
                     self.decision(self.fire(event("Bash", command=command))),
                     command)
 
+    def test_wrapped_sends_still_deny(self):
+        # The shell side peels env/sudo wrappers (strip_prefix); rule 5 moved
+        # into the payload reader, so the peeling must judge there too —
+        # otherwise a wrapper word launders the send past the receipt rule
+        # (PR #567 review, P1).
+        for command in (
+            "env gh issue close 34",
+            "env FOO=bar gh pr create --fill",
+            "command gh release create v1",
+            "sudo gh issue close 34",
+            "sudo -n gh issue close 34",
+            "sudo -u root gh pr create --fill",
+            "sudo -- gh issue close 34",
+            "FOO=bar env gh pr merge 12",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_receipt_join_survives_a_trailing_comment(self):
+        # `receipt && # why` <newline> `send` is the normal formatted shape;
+        # the && must still arm the send (PR #567 review, P2).
+        command = (f"{self.RECEIPT} && # receipt first\n"
+                   "gh pr create --fill")
+        self.assertIsNone(
+            self.decision(self.fire(event("Bash", command=command))), command)
+        unreceipted = "true && # nothing recorded\ngh pr create --fill"
+        block = self.decision(self.fire(event("Bash", command=unreceipted)))
+        self.assertIsNotNone(block, unreceipted)
+        self.assertEqual(block["permissionDecision"], "deny", unreceipted)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -208,44 +208,60 @@ def covers(matcher, tool):
         return False
 
 
+# Coverage is per tool across ALL entries: an operator may register the
+# hook under separate Bash and Edit|Write entries, and that guards both
+# just the same (PR #569 review).
 entries = (settings.get("hooks") or {}).get("PreToolUse") or []
-command = None
+commands = {}
 for entry in entries:
     if not isinstance(entry, dict):
         continue
-    if not (covers(entry.get("matcher", ""), "Bash")
-            and covers(entry.get("matcher", ""), "Edit")):
-        continue
     for hook in entry.get("hooks") or []:
-        if isinstance(hook, dict) and hook.get("type") == "command" \
-                and "deny-hook.sh" in str(hook.get("command", "")):
-            command = str(hook["command"])
-            break
-    if command:
-        break
-if not command:
+        if not (isinstance(hook, dict) and hook.get("type") == "command"
+                and "deny-hook.sh" in str(hook.get("command", ""))):
+            continue
+        for tool in ("Bash", "Edit"):
+            if tool not in commands and covers(entry.get("matcher", ""), tool):
+                commands[tool] = str(hook["command"])
+missing = [tool for tool in ("Bash", "Edit") if tool not in commands]
+if missing:
     sys.exit(refuse(
-        "no PreToolUse entry covering Bash and Edit registers deny-hook.sh "
-        "(a mention elsewhere in the file is not a registration)"))
+        "no PreToolUse registration of deny-hook.sh covers "
+        + " and ".join(missing)
+        + " (a mention elsewhere in the file is not a registration)"))
 
 env = dict(os.environ)
 registered_env = settings.get("env") or {}
 if not isinstance(registered_env, dict):
     sys.exit(refuse("settings env is not an object"))
 env.update({str(k): str(v) for k, v in registered_env.items()})
-boundary = env.get("ORCA_UNIT_WORKTREE", "")
-if not boundary or not Path(boundary).is_dir():
-    sys.exit(refuse(
-        "no usable ORCA_UNIT_WORKTREE in the settings env — the worktree "
-        "boundary the registration exists to enforce is off"))
 
 
-def probe(tool_name, tool_input):
+def boundary_for(command):
+    # The boundary a registered command actually runs with: an inline
+    # assignment (`ORCA_UNIT_WORKTREE=/path …/deny-hook.sh`, likewise via
+    # env) binds it as surely as the settings env does (PR #569 review).
+    m = re.search(r"ORCA_UNIT_WORKTREE=(\"[^\"]*\"|'[^']*'|\S+)", command)
+    if m:
+        return m.group(1).strip("\"'")
+    return env.get("ORCA_UNIT_WORKTREE", "")
+
+
+for tool, command in sorted(commands.items()):
+    boundary = boundary_for(command)
+    if not boundary or not Path(boundary).is_dir():
+        sys.exit(refuse(
+            f"no usable ORCA_UNIT_WORKTREE for the {tool} registration "
+            "(settings env or an inline assignment) — the worktree boundary "
+            "the registration exists to enforce is off"))
+
+
+def probe(command, tool_name, tool_input):
     payload = json.dumps({"hook_event_name": "PreToolUse",
                           "tool_name": tool_name, "tool_input": tool_input})
     r = subprocess.run(["sh", "-c", command], input=payload,
                        capture_output=True, text=True, env=env,
-                       cwd=boundary, timeout=60)
+                       cwd=boundary_for(command), timeout=60)
     if not r.stdout.strip():
         return "allow"
     try:
@@ -254,17 +270,18 @@ def probe(tool_name, tool_input):
         return f"unparsable:{r.stdout[:60]!r}"
 
 
-outside = str(Path(boundary).parent / "outside-the-boundary.probe")
-if probe("Bash", {"command": "rm -rf /"}) != "deny":
+if probe(commands["Bash"], "Bash", {"command": "rm -rf /"}) != "deny":
     sys.exit(refuse("registered command did not deny 'rm -rf /'"))
-if probe("Edit", {"file_path": outside}) != "deny":
+outside = str(Path(boundary_for(commands["Edit"])).parent
+              / "outside-the-boundary.probe")
+if probe(commands["Edit"], "Edit", {"file_path": outside}) != "deny":
     sys.exit(refuse(
         "registered command did not deny a write outside its configured "
         "ORCA_UNIT_WORKTREE — registered, but the boundary is not live"))
-if probe("Bash", {"command": "ls"}) == "deny":
+if probe(commands["Bash"], "Bash", {"command": "ls"}) == "deny":
     sys.exit(refuse("registered command denies even a plain 'ls' — armed "
                     "like a brick, not a guard"))
-print(f"deny-hook: armed in {path} ({command})")
+print(f"deny-hook: armed in {path} ({commands['Bash']})")
 PYEOF
   exit $?
 fi

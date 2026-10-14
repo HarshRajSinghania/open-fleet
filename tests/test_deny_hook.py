@@ -1580,6 +1580,37 @@ class TestScriptShape(unittest.TestCase):
             block["hooks"]["PreToolUse"][0]["matcher"] = "(["
             self.assertEqual(self._verify(block).returncode, 2)
 
+    def test_verify_settings_accepts_separate_entries_per_tool(self):
+        # Coverage is per tool across entries: one entry for Bash and
+        # another for the write tools guards both (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        entry = block["hooks"]["PreToolUse"][0]
+        block["hooks"]["PreToolUse"] = [
+            {**entry, "matcher": "Bash"},
+            {**entry, "matcher": "Edit|Write|NotebookEdit|MultiEdit"},
+        ]
+        self.assertEqual(self._verify(block).returncode, 0)
+
+    def test_verify_settings_accepts_an_inline_boundary(self):
+        # A command that binds the boundary itself
+        # (`ORCA_UNIT_WORKTREE=/wt …/deny-hook.sh`) enforces it without the
+        # settings env; requiring it in two places refused live spawns
+        # (PR #569 review).
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        block = json.loads(subprocess.run(
+            ["sh", str(HOOK), "--settings", str(wt)],
+            capture_output=True, text=True).stdout)
+        hook = block["hooks"]["PreToolUse"][0]["hooks"][0]
+        hook["command"] = f"ORCA_UNIT_WORKTREE={wt} sh " + hook["command"]
+        del block["env"]
+        r = self._verify(block)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_verify_settings_refuses_a_merely_named_hook(self):
         # Naming the path is not registering the hook: a settings file that
         # mentions deny-hook.sh outside hooks.PreToolUse arms nothing, and the

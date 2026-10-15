@@ -13,6 +13,7 @@ finished still goes stale.
 """
 import argparse
 import datetime as dt
+import http.client
 import json
 import os
 import re
@@ -70,8 +71,14 @@ def rest_json(path):
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=45) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            body = response.read()
+    except http.client.HTTPException as err:
+        # A dropped or truncated response (IncompleteRead) is not an OSError; it must
+        # still reach main() as a monitor error, never a traceback with the wrong exit.
+        raise RuntimeError("GitHub response was cut off") from err
+    return json.loads(body.decode("utf-8"))
 
 
 def _from_rest(run):

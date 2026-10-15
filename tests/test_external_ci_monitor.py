@@ -190,6 +190,24 @@ class RestTransport(unittest.TestCase):
         self.assertEqual(seen[1].get_header('Authorization'), 'Bearer t0k')
         self.assertTrue(seen[0].full_url.startswith('https://api.github.com/repos/x/y'))
 
+    def test_a_cut_off_response_is_a_monitor_error(self):
+        # IncompleteRead is an http.client.HTTPException, not an OSError (PR #574 review).
+        class Truncated(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, *args):
+                raise monitor.http.client.IncompleteRead(b'{"workflow', 100)
+
+        with patch.object(monitor.urllib.request, 'urlopen', return_value=Truncated()), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(monitor.main(['--transport', 'rest']), 2)
+        self.assertEqual(json.loads(output.getvalue())['status'], 'monitor-error')
+        self.assertNotIn('workflow', output.getvalue())
+
     def test_api_outage_is_a_monitor_error_not_green(self):
         for error in (monitor.urllib.error.URLError('down'), ValueError('bad json')):
             with self.subTest(error=type(error)), \

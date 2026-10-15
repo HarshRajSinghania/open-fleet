@@ -283,7 +283,22 @@ force-pushes it to the `dist` branch, the target copy installers point at
    real no-runner outage from the local host and filed/closed
    [#537](https://github.com/ravidsrk/orca-fleet/issues/537). That receipt proves the poller
    and durable-issue alert path; it does not claim email delivery or a scheduled heartbeat
-   firing. #528 remains open until the configured watch is activated.
+   firing. The Codex heartbeat is the backup: it runs only while the Mac is awake.
+
+   The always-on watch is a **Claude Code scheduled task**, "orca-fleet main CI monitor"
+   (claude.ai → Code → Scheduled tasks, on the maintainer's account), firing daily at
+   13:17 UTC in a fresh cloud session. Nothing in it runs on a GitHub runner, so a
+   no-runner outage cannot silence it. Each run clones `main` and runs the same poller with
+   no CLI login: `python3 scripts/external-ci-monitor.py --transport rest --quiet-when-current`.
+   `--transport rest` reads the public API (a `GITHUB_TOKEN`, when the host has one, is
+   sent; the repository going private would need one). `--quiet-when-current` keeps a green
+   run on `main`'s current head healthy past 24 hours, so a week with no merges does not
+   page you, while a head that CI never finished still goes `stale`. A healthy run ends
+   quietly. A `red`, `stale` or `missing` result, or a `monitor-error` (API down, or rate
+   limited), ends the session with an `ALERT:` summary that reaches you by push
+   notification and email. To drill it without touching `main`, fire the task with the
+   text `DRILL: add --drill-run 36146072394` (the archived no-runner run the T-13 receipt
+   uses).
 2. If a clone or plugin load is broken: `plugin.json` `version` must equal
    the latest **dated** [CHANGELOG](../CHANGELOG.md) heading
    (`## [x.y.z] - YYYY-MM-DD`), not `[Unreleased]`. Do not half-cut a

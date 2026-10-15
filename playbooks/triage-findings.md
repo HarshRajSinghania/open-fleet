@@ -1,7 +1,8 @@
 # Playbook — triage-findings  (candidate findings → VERIFIED, with the noise removed)
 
-Recipe: gstack `cso` false-positive filtering + active verification + parallel independent
-verifiers, and the review-army dispatch shape. A scanner emits candidates; this playbook decides
+Recipe: gstack `cso` (v2) false-positive filtering + active verification + parallel independent
+verifiers, and the review-army dispatch shape. cso v3 dropped its confidence gate and exclusions
+upstream: §1–§2 are fleet rules, applied to a v3 worker's output as to any scanner's. A scanner emits candidates; this playbook decides
 which of them are findings. It sits between a lens or audit wave and `remediate-finding`, and it
 has no fix authority.
 

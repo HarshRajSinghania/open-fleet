@@ -1,6 +1,7 @@
 # Playbook — resolve-conflict  (finish a conflicted merge or rebase, with the intent evidence)
 
-Recipe: Matt `resolving-merge-conflicts`. A conflict is two intents meeting, not a text problem.
+Recipe: Matt `resolving-merge-conflicts` (removed upstream in v1.3.0, no successor; kept here).
+A conflict is two intents meeting, not a text problem.
 The conductor's union rebase (merge-serialization.md), a lockfile chain, and a fix round after the
 upstream moved all land here. The output is a finished merge AND the record a re-reviewer needs,
 because a resolution that changes content voids the review that preceded it.

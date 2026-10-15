@@ -17,8 +17,11 @@ skeleton the bumper completes:
 Classes:
     instruction          what an agent will obey: Markdown/prompts anywhere,
                          SKILL.md / AGENTS.md, skills/ trees
-    permission-surface   what can grant or widen action: hooks, plugin and
-                         package manifests, settings, MCP/tool config
+    permission-surface   what can grant or widen action: hooks (by directory
+                         or by a `hook` name token, e.g. bin/x-hook-check),
+                         setup/install scripts, plugin and package manifests,
+                         settings, MCP/tool config — and every SKILL.md whose
+                         frontmatter `hooks:` or `allowed-tools:` changed
     code                 everything else
 
 The skeleton's verdict line starts UNREVIEWED; a human or coordinator reads
@@ -39,19 +42,39 @@ import subprocess
 import sys
 from pathlib import Path
 
-INSTRUCTION_SUFFIXES = (".md", ".prompt", ".txt")
+# `.md.tmpl` is the source a pack renders SKILL.md and its sections from.
+INSTRUCTION_SUFFIXES = (".md", ".prompt", ".txt", ".md.tmpl")
 PERMISSION_NAMES = {
     "plugin.json", "marketplace.json", "package.json", "settings.json",
     "settings.local.json", "hooks.json", ".mcp.json", "mcp.json",
 }
 PERMISSION_SUFFIXES = (".toml", ".yaml", ".yml")
+# Filename tokens that mark an executable which registers or runs as a hook,
+# or an installer that writes settings — a hook script under bin/ or a root
+# `setup` is reviewed with the surface, not as code (gstack 47d639ab review).
+HOOK_TOKENS = {"hook", "hooks"}
+INSTALL_TOKENS = {"setup", "install", "preinstall", "postinstall"}
+TEST_DIRS = {"test", "tests", "__tests__", "spec", "fixtures"}
+# A SKILL.md frontmatter key that registers a hook or grants a tool.
+PERMISSION_KEYS = ("hooks", "allowed-tools")
 CLASSES = ("instruction", "permission-surface", "code")
+
+
+def _is_test(parts, name):
+    return bool(TEST_DIRS.intersection(parts[:-1])) or bool(
+        re.search(r"\.(test|spec)\.", name))
 
 
 def classify(path: str) -> str:
     parts = [p.lower() for p in Path(path).parts]
     name = parts[-1] if parts else path.lower()
+    tokens = set(re.split(r"[-_.]", name))
     if name in PERMISSION_NAMES or "hooks" in parts or name.startswith("hook"):
+        return "permission-surface"
+    if tokens & HOOK_TOKENS and not _is_test(parts, name):
+        return "permission-surface"
+    if (tokens & INSTALL_TOKENS and not _is_test(parts, name)
+            and not re.search(r"\.(md|txt|prompt)(\.tmpl)?$", name)):
         return "permission-surface"
     # Slash-command definitions are instructions an agent executes on
     # invocation (commands/*.toml, .gemini/commands/*, .claude/commands/*) —
@@ -122,6 +145,61 @@ def classify_changes(pairs):
     for status, path in pairs:
         grouped[classify(path)].append(f"{status} {path}")
     return {klass: sorted(items) for klass, items in grouped.items()}
+
+
+def permission_keys(text):
+    """Each PERMISSION_KEYS block of a SKILL.md's YAML frontmatter, raw."""
+    m = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|$)", text, re.DOTALL)
+    if not m:
+        return {}
+    blocks, current = {}, None
+    for line in m.group(1).splitlines():
+        # A quoted key ("hooks":) is the same YAML key — and the easy way to
+        # slip a grant past an unquoted-only match (PR #573 review).
+        top = re.match(r"^([\"']?)([A-Za-z0-9_-]+)\1[ \t]*:", line)
+        if top:
+            current = top.group(2) if top.group(2) in PERMISSION_KEYS else None
+            if current:
+                blocks[current] = [line.rstrip()]
+        elif current:
+            blocks[current].append(line.rstrip())
+    return {key: "\n".join(lines) for key, lines in blocks.items()}
+
+
+def _show(repo: Path, commit: str, path: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{commit}:{path}"],
+            capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired as err:
+        raise PinReviewError(f"git show timed out after {err.timeout}s") from err
+    if result.returncode != 0:
+        raise PinReviewError(f"git show {path} failed: "
+                             f"{result.stderr.decode('utf-8', 'replace').strip()}")
+    return result.stdout.decode("utf-8", "replace")
+
+
+def frontmatter_permission_changes(repo: Path, old: str | None, new: str, pairs):
+    """SKILL.md files whose frontmatter `hooks:` / `allowed-tools:` changed.
+
+    A skill registers hooks and grants tools in its own frontmatter, so the
+    path classifier alone files that widening under `instruction` (gstack
+    47d639ab: autoplan's Read auto-approve hook). Each such file is listed on
+    the permission surface too, naming the keys that moved. A deletion only
+    narrows and is already listed by path.
+    """
+    out = []
+    for status, path in pairs:
+        if Path(path).name.lower() != "skill.md" or status == "D":
+            continue
+        after = permission_keys(_show(repo, new, path))
+        before = (permission_keys(_show(repo, old, path))
+                  if old is not None and status != "A" else {})
+        moved = sorted(k for k in set(before) | set(after)
+                       if before.get(k) != after.get(k))
+        if moved:
+            out.append(f"{status} {path} (frontmatter: {', '.join(moved)})")
+    return out
 
 
 def render(pack, repo_url, old, new, grouped, date):
@@ -255,6 +333,7 @@ def main(argv=None):
         new = resolve(repo, args.to)
         old = resolve(repo, args.old) if args.old else None
         pairs = changed_paths(repo, old, new)
+        frontmatter = frontmatter_permission_changes(repo, old, new, pairs)
     except (PinReviewError, OSError) as err:
         print(f"pin_review: {err}", file=sys.stderr)
         return 3
@@ -265,6 +344,7 @@ def main(argv=None):
         # an origin still yields a reviewable diff, and the artifact says so.
         origin = "(no origin remote on the reviewed clone)"
     grouped = classify_changes(pairs)
+    grouped["permission-surface"] = sorted(grouped["permission-surface"] + frontmatter)
     print(render(args.pack, origin, old, new, grouped,
                  datetime.date.today().isoformat()))
     return 0

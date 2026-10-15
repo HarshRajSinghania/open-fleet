@@ -31,7 +31,8 @@ dispatched to a non-blocking fact-finder between rounds — never asked, never b
 **The join rule:** a question whose answer depends on an outstanding fact-finder stays OPEN until
 that dispatch returns, and the freeze never happens with fact dispatches outstanding — independent
 facts run concurrently, dependent decisions join on them.
-- Sharpen overloaded terms against a `CONTEXT.md` glossary (account = Customer or User?); an ADR only
+- Sharpen overloaded terms against a `GLOSSARY.md` glossary (`CONTEXT.md` before matt v1.3.0 — matt
+  skills read only the new name); account = Customer or User? An ADR only
   when hard-to-reverse ∧ surprising ∧ a real trade-off.
 - Every DECISION goes to the human. Never answer the human's side.
 

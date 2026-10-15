@@ -1,7 +1,9 @@
 # Playbook — release  (the release state machine; version → promote → deploy)
 
 Recipe: gstack `ship` (version state machine, verification gate, bisectable commits) + `land-and-deploy`
-(staged rollout, revert-at-every-failure). Release is a STATE MACHINE, not one phase. Named states:
+(staged rollout, revert-at-every-failure). A gstack `/ship` worker runs with `gstack-config set
+ship_greptile_early false`: its early draft PR would publish the branch ahead of this machine's
+review and gates. Release is a STATE MACHINE, not one phase. Named states:
 
 `BUILT → PROMOTION_READY → RELEASED → DEPLOYED_AND_VERIFIED`
 
@@ -21,8 +23,8 @@ whole train, never a unit gate — the per-unit ledger flag is `BUILD_DONE` (led
 
 ## PROMOTION_READY
 
-Version bump: a deterministic classifier reads state (FRESH / ALREADY_BUMPED / DRIFT_STALE / **DRIFT_
-UNEXPECTED → STOP**); the bump LEVEL stays agent judgment; workspace-queue-aware slot pick avoids
+Version bump: a deterministic classifier reads state (FRESH / ALREADY_BUMPED / DRIFT_STALE_PKG /
+**DRIFT_UNEXPECTED → STOP**); the bump LEVEL stays agent judgment; workspace-queue-aware slot pick avoids
 version collisions. Changelog + bisectable dependency-ordered commits. **Fresh-evidence verification
 gate:** if ANY code changed since the last test run, re-run — "should work now → RUN IT".
 **Doc-sync unit (before the promotion PR):** a named subagent pass syncs the docs to what the wave

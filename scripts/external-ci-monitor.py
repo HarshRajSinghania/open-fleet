@@ -3,17 +3,27 @@
 
 Use --drill-run with an existing failed run to exercise the same classifier without
 changing main. This tool only reads GitHub and emits JSON; the host routes alerts.
+
+--transport gh (default) reads through an authenticated `gh` CLI. --transport rest
+reads the public REST API with no CLI and no token (GITHUB_TOKEN is sent when set),
+for a host like a scheduled cloud session where `gh` is not logged in (#528).
+--quiet-when-current keeps a green run on main's CURRENT head healthy past 24 hours:
+a quiet repository with no new commits is not an outage, while a head that CI never
+finished still goes stale.
 """
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import subprocess
+import urllib.request
 
 REPO = "ravidsrk/orca-fleet"
+API = "https://api.github.com"
 
 
-def assess(run, now, max_age_hours=24):
+def assess(run, now, max_age_hours=24, main_sha=None):
     if run is None:
         return {"status": "missing", "detail": "no completed validate run on main"}
     if not isinstance(run, dict):
@@ -38,7 +48,8 @@ def assess(run, now, max_age_hours=24):
     if conclusion != "success":
         status = "red"
     elif now - stamp >= dt.timedelta(hours=max_age_hours):
-        status = "stale"
+        # Old but green on the commit main still points at: nothing new went unchecked.
+        status = "healthy" if main_sha == run["headSha"] else "stale"
     return {"status": status, "conclusion": conclusion, "updatedAt": run["updatedAt"],
             "sha": run["headSha"], "url": run["url"], "runId": run["databaseId"]}
 
@@ -51,16 +62,50 @@ def gh_json(args):
     return json.loads(proc.stdout)
 
 
-def fetch_run(repo, drill_run=None):
+def rest_json(path):
+    """GET one public REST endpoint. Never echoes the response on failure."""
+    request = urllib.request.Request(f"{API}/{path}", headers={
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "orca-fleet-external-ci-monitor"})
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=45) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _from_rest(run):
+    return {"databaseId": run["id"], "conclusion": run["conclusion"],
+            "headSha": run["head_sha"], "url": run["html_url"],
+            "updatedAt": run["updated_at"]}
+
+
+def main_head(repo, transport="gh"):
+    """The commit main points at now."""
+    path = f"repos/{repo}/commits/main"
+    commit = rest_json(path) if transport == "rest" else gh_json(["api", path])
+    sha = commit.get("sha") if isinstance(commit, dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("main has no valid head SHA")
+    return sha
+
+
+def fetch_run(repo, drill_run=None, transport="gh"):
     if drill_run is not None:
-        run = gh_json(["api", f"repos/{repo}/actions/runs/{drill_run}"])
+        path = f"repos/{repo}/actions/runs/{drill_run}"
+        run = rest_json(path) if transport == "rest" else gh_json(["api", path])
         # A drill uses a real failed validate run, never a synthetic success/failure.
         if (run["name"] != "validate" or run["status"] != "completed"
                 or run["conclusion"] == "success"):
             raise ValueError("drill target must be a completed unsuccessful validate run")
-        return {"databaseId": run["id"], "conclusion": run["conclusion"],
-                "headSha": run["head_sha"], "url": run["html_url"],
-                "updatedAt": run["updated_at"]}
+        return _from_rest(run)
+    if transport == "rest":
+        page = rest_json(f"repos/{repo}/actions/workflows/validate.yml/runs"
+                         "?branch=main&event=push&status=completed&per_page=1")
+        runs = page.get("workflow_runs") if isinstance(page, dict) else None
+        if not isinstance(runs, list) or len(runs) > 1:
+            raise ValueError("unexpected latest-run response")
+        return _from_rest(runs[0]) if runs else None
     runs = gh_json(["run", "list", "--repo", repo, "--workflow", "validate.yml",
                     "--branch", "main", "--event", "push", "--status", "completed",
                     "--limit", "1", "--json", "databaseId,conclusion,headSha,url,updatedAt"])
@@ -73,9 +118,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--drill-run", type=int, help="read a real failed validate run instead of main")
+    parser.add_argument("--transport", choices=("gh", "rest"), default="gh",
+                        help="gh CLI (default) or the public REST API with no CLI")
+    parser.add_argument("--quiet-when-current", action="store_true",
+                        help="a green run on main's current head never goes stale")
     args = parser.parse_args(argv)
     try:
-        result = assess(fetch_run(args.repo, args.drill_run), dt.datetime.now(dt.timezone.utc))
+        run = fetch_run(args.repo, args.drill_run, transport=args.transport)
+        current = (main_head(args.repo, args.transport)
+                   if args.quiet_when_current and args.drill_run is None else None)
+        result = assess(run, dt.datetime.now(dt.timezone.utc), main_sha=current)
         result["drill"] = args.drill_run is not None
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
         # Never turn an absent tool, malformed response or API outage into a green result.

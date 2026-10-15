@@ -6,6 +6,14 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **External CI monitor runs without a logged-in CLI** (#528). `scripts/external-ci-monitor.py`
+  gains `--transport rest`, which reads the public Actions API with no `gh` login (a
+  `GITHUB_TOKEN` is sent when set), so a scheduled cloud session can run it. The default `gh`
+  path and the Codex heartbeat are unchanged. `--quiet-when-current` keeps a green run on
+  `main`'s current head healthy past 24 hours: a quiet week no longer pages, and a head that CI
+  never finished still goes `stale`. [docs/ops.md](docs/ops.md#incident-2-am) names the hosted
+  daily check that runs it.
+
 - **Pack pins re-witnessed** (2026-10-14). gstack `v1.84.1.0` → `v1.91.101.0` (`47d639ab`),
   addyosmani/agent-skills `0.6.9` → `0.6.13` (`aeac41d4`), mattpocock/skills `v1.2.3+9` →
   `v1.3.1` (`24fe0ef7`), each read from a full-history clone and landed with its rug-pull review

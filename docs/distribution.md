@@ -74,7 +74,7 @@ but no mission will dispatch until they clear.
 |---|---|---|---|
 | `git` | install | present (hard) | 2.47.3 (clean container), 2.55.0 (macOS host) |
 | `python3` | install | ≥ 3.11 (hard; CI runs the suite on 3.11, 3.12 and 3.13, #514) | 3.13.15 |
-| Orca app + CLI | run | ≥ the `runtime/pins.json` pin, currently v1.4.224 (warn; `scripts/validate.py` fails when this number and the pin disagree, #512) | installed app + CLI v1.4.224 at the 2026-10-13 re-pin, live-witnessed on macOS + Linux serve (`pins.json` `witness_binary`) |
+| Orca app + CLI | run | ≥ the `runtime/pins.json` pin, currently v1.4.229 (warn; `scripts/validate.py` fails when this number and the pin disagree, #512) | v1.4.229 source-delta re-witness (2026-10-17) + installed app + CLI live-witnessed on macOS + Linux serve (`pins.json` `witness_binary`) |
 | `gh`, authenticated | run | present + `gh auth status` green (warn) | 2.100.0 |
 | Claude Code | run | present (warn; the symlinked skills load under it) | 2.1.272 |
 
@@ -205,13 +205,14 @@ These still need an account with rights to submit. Do not flip them from a clone
 
 ## Submission kit (paste-ready, maintainer's round)
 
-Shared lead for every listing (the `proof:` framing):
+Shared lead for every listing (the `proof:` framing; live index re-checked 2026-10-17):
 
 > Orca-fleet is 22 outcome-named autonomous fleets for the Orca runtime. Each mission is one
 > outcome with its own state machine and an evidence-backed definition of done: every unit of
 > work closes with a SHA-bound evidence manifest an independent verifier re-derives, never a
-> worker's narration. Its own catalog holds three binding self-run proof reports (clean-sweep,
-> prove-it, harden-it) — the same standard it asks of your repo. One router per worker; MIT.
+> worker's narration. Its own catalog holds five binding proof reports — two external-run
+> (`ship-it`, `review-it`) and three self-run (`clean-sweep`, `prove-it`, `harden-it`) — the
+> same standard it asks of your repo. One router per worker; MIT.
 > Install: `/plugin marketplace add ravidsrk/orca-fleet`
 > Proof: https://github.com/ravidsrk/orca-fleet/tree/main/docs/runs
 
@@ -226,7 +227,7 @@ security scan and human review before a listing goes live; submission is not app
 ```json
 {
   "name": "orca-fleet",
-  "description": "Outcome-named autonomous fleets for the Orca runtime — each mission is one outcome with a SHA-bound, independently re-derived definition of done. Three missions carry binding self-run proof reports.",
+  "description": "Outcome-named autonomous fleets for the Orca runtime — each mission is one outcome with a SHA-bound, independently re-derived definition of done. Five missions carry binding proof reports (two external-run, three self-run).",
   "author": { "name": "Ravindra Kumar", "email": "ravidsrk@gmail.com", "url": "https://github.com/ravidsrk" },
   "category": "development",
   "source": { "source": "github", "repo": "ravidsrk/orca-fleet" },

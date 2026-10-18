@@ -219,5 +219,124 @@ class TestCli(unittest.TestCase):
         self.assertEqual(calls, "")
 
 
+class TestEpisodicHint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load()
+
+    def test_episodic_hint_matches_run_manifests_and_caps_at_15_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = Path(tmp) / "runs"
+            r1 = runs_dir / "2026-10-01-clean-sweep-550"
+            r1.mkdir(parents=True)
+            (r1 / "manifest.json").write_text(json.dumps({
+                "units": [
+                    {
+                        "id": f"U{i}",
+                        "status": "verified" if i % 2 == 0 else "parked",
+                        "files_touched": ["runtime/scripts/watchdog.py"],
+                        "parking_reason": "needs-human: env gate" if i % 2 == 1 else "",
+                        "intent": {"invariant": f"invariant {i}"},
+                    }
+                    for i in range(1, 20)
+                ]
+            }))
+            lines = self.m.build_episodic_hint(
+                ["runtime/scripts/*"], runs_dir=str(runs_dir))
+            self.assertLessEqual(len(lines), 15)
+            joined = "\n".join(lines)
+            self.assertIn("EPISODIC_HINT:", joined)
+            self.assertIn("PRIOR_RUNS=19 SESSION_HITS=0", joined)
+            self.assertIn("2026-10-01-clean-sweep-550 / U1 (parked)", joined)
+
+    def test_episodic_hint_cli_without_query_runs_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = Path(tmp) / "runs"
+            r1 = runs_dir / "2026-10-02-ship-it-100"
+            r1.mkdir(parents=True)
+            (r1 / "manifest.json").write_text(json.dumps({
+                "units": [{
+                    "id": "U-auth",
+                    "status": "verified",
+                    "files_touched": ["src/auth/token.py"],
+                    "intent": {"invariant": "refresh token rotates once"},
+                }]
+            }))
+            rc, out, err, calls = run_cli([
+                "--episodic-hint",
+                "--path", "src/auth/*",
+                "--runs-dir", str(runs_dir),
+            ])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(calls, "")
+            self.assertIn("EPISODIC_HINT:", out)
+            self.assertIn("U-auth (verified)", out)
+            self.assertIn("refresh token rotates once", out)
+
+    def test_episodic_hint_refuses_when_neither_path_nor_query_given(self):
+        rc, _out, err, calls = run_cli(["--episodic-hint"])
+        self.assertEqual(rc, 2, err)
+        self.assertIn("REFUSED", err)
+        self.assertEqual(calls, "")
+
+    def test_episodic_hint_matches_real_archived_manifest(self):
+        lines = self.m.build_episodic_hint(
+            ["runtime/scripts/verify.py"],
+            runs_dir=str(ROOT / "docs" / "runs"),
+        )
+        joined = "\n".join(lines)
+        self.assertLessEqual(len(joined.splitlines()), 15)
+        self.assertIn("prove-it-2026-09-16-PF-2", joined)
+
+    def test_episodic_hint_folds_embedded_newlines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = Path(tmp) / "runs"
+            r1 = runs_dir / "2026-10-05-run"
+            r1.mkdir(parents=True)
+            (r1 / "manifest.json").write_text(json.dumps({
+                "unit": "U-multi\nline",
+                "files_touched": ["src/app.py"],
+                "parking_reason": "line1\nline2\nline3",
+            }))
+            lines = self.m.build_episodic_hint(
+                ["src/app.py"],
+                runs_dir=str(runs_dir),
+                session_hits=[{
+                    "sessionId": "s1\ns2",
+                    "title": "title1\ntitle2",
+                    "evidence": {"snippet": "snip1\nsnip2"},
+                }],
+            )
+            joined = "\n".join(lines)
+            self.assertEqual(len(joined.splitlines()), len(lines))
+            self.assertLessEqual(len(joined.splitlines()), 15)
+
+    def test_episodic_hint_malformed_hits_fails(self):
+        rc, _out, err, _calls = run_cli(
+            ["--episodic-hint", "flaky", "--path", "src/app.py"],
+            results={"kind": "results", "hits": "not-a-list"},
+        )
+        self.assertEqual(rc, 1, err)
+        self.assertIn("search results answer names no hits", err)
+
+    def test_disjoint_directories_with_same_basename_do_not_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = Path(tmp) / "runs"
+            r1 = runs_dir / "2026-10-06-run"
+            r1.mkdir(parents=True)
+            (r1 / "manifest.json").write_text(json.dumps({
+                "unit": "U-billing",
+                "head_sha": "a" * 40,
+                "files_touched": ["services/billing/index.ts"],
+            }))
+            no_match = "\n".join(self.m.build_episodic_hint(
+                ["services/auth/index.ts"], runs_dir=str(runs_dir)))
+            self.assertIn("PRIOR_RUNS=0", no_match)
+            match = "\n".join(self.m.build_episodic_hint(
+                ["services/billing/index.ts"], runs_dir=str(runs_dir)))
+            self.assertIn("U-billing (recorded)", match)
+            self.assertNotIn("(verified)", match)
+
+
 if __name__ == "__main__":
     unittest.main()

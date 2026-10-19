@@ -53,6 +53,7 @@ Exit codes
        live mode without nudge_command, or a nudge transport failure
 """
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -288,13 +289,18 @@ def nudge_allowed(worker_id, dispatch_id, worker, state, now, cfg):
     return True, "within budget"
 
 
-def record_nudge(state, worker_id, dispatch_id, at):
+def record_nudge(state, worker_id, dispatch_id, at, ci_signature=None):
     workers = state.setdefault("workers", {})
     entry = workers.setdefault(worker_id, {"dispatch_id": dispatch_id, "nudges": []})
     if entry.get("dispatch_id") != dispatch_id:
         entry["dispatch_id"] = dispatch_id
         entry["nudges"] = []
+        entry["ci_signatures"] = []
     entry["nudges"].append(at.isoformat())
+    if ci_signature:
+        sigs = entry.setdefault("ci_signatures", [])
+        if ci_signature not in sigs:
+            sigs.append(ci_signature)
 
 
 def build_nudge_argv(cfg, run_id, worker_id, dispatch_id):
@@ -316,7 +322,24 @@ def decide(worker, now, cfg, state):
     """
     wid = worker.get("worker_id", "?")
     dispatch_id = worker.get("dispatch_id", "?")
+    waiting_input = bool(worker.get("waiting_input"))
+    if waiting_input:
+        return "OK", "none", {"waiting_input": True}, "waiting on human gate (nudge suppressed)"
     classification, evidence = classify(worker, now, cfg)
+    ci_checks = worker.get("ci_checks")
+    if isinstance(ci_checks, list) and ci_checks and classification in ("OK", "SLOW"):
+        entry = state.get("workers", {}).get(wid, {})
+        if isinstance(entry, dict) and entry.get("dispatch_id") == dispatch_id:
+            prior_sigs = set(entry.get("ci_signatures") or [])
+        else:
+            prior_sigs = set()
+        seen_map = {wid: prior_sigs}
+        ok_ci, sig = should_nudge_ci(wid, ci_checks, seen_map, waiting_input=waiting_input)
+        if sig:
+            evidence = {**evidence, "ci_signature": sig}
+            if ok_ci:
+                return classification, "nudge", evidence, f"new CI failure signature {sig[:12]}"
+            return classification, "none", evidence, f"duplicate CI failure signature {sig[:12]} suppressed"
     if classification in ("OK", "SLOW", "SETTLED"):
         return classification, "none", evidence, "slow-but-alive is not stuck"
     if classification == "WEDGED":
@@ -400,7 +423,13 @@ def run_tick(args, cfg, data, state, now):
             if not ok:
                 print(f"{res['worker_id']} HUNG NUDGE-FAILED :: {detail}", file=sys.stderr)
                 return 2
-            record_nudge(state, res["worker_id"], res["dispatch_id"], now)
+            record_nudge(
+                state,
+                res["worker_id"],
+                res["dispatch_id"],
+                now,
+                ci_signature=(res.get("evidence") or {}).get("ci_signature"),
+            )
             # Durable at send time, before any fallible follow-up: a later log
             # or transport failure must never make a retry resend this nudge.
             save_state(args.state, state)
@@ -499,6 +528,44 @@ def build_failure_handover(record, max_lines=40):
     out = header + ["STDERR_DELTA:"] + (stderr_lines or ["  (none)"])
     flat = [" ".join(str(line).splitlines()) for line in out]
     return action, flat[:max_lines]
+
+
+def ci_failure_signature(checks: list[dict]) -> str:
+    """Deterministic SHA-256 signature of failing CI checks (ignoring timestamps, run IDs, and log URLs)."""
+    items = []
+    for chk in (checks or []):
+        if not isinstance(chk, dict):
+            continue
+        conclusion = str(chk.get("conclusion") or chk.get("status") or "")
+        if conclusion.lower() in ("success", "neutral", "skipped", "passed"):
+            continue
+        name = str(chk.get("name") or chk.get("check_name") or chk.get("job") or "")
+        step = str(chk.get("step") or chk.get("step_name") or chk.get("failing_step") or "")
+        exit_code = chk.get("exit_code")
+        if exit_code is None:
+            exit_code = chk.get("returncode")
+        items.append((name, step, conclusion, "" if exit_code is None else str(exit_code)))
+    items.sort()
+    payload = json.dumps(items, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def should_nudge_ci(
+    worker_id: str,
+    checks: list[dict],
+    seen_signatures: dict[str, set[str]],
+    waiting_input: bool = False,
+) -> tuple[bool, str]:
+    """Deduplicate CI failure nudges per worker and suppress when waiting for human input."""
+    sig = ci_failure_signature(checks)
+    empty_sig = hashlib.sha256(b"[]").hexdigest()
+    if waiting_input or sig == empty_sig:
+        return False, sig
+    seen = seen_signatures.setdefault(worker_id, set())
+    if sig in seen:
+        return False, sig
+    seen.add(sig)
+    return True, sig
 
 
 def build_parser():

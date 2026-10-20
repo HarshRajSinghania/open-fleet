@@ -265,6 +265,21 @@ class TestSelfGuard(HookCase):
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual(r.stdout.strip(), "")
 
+    def test_path_limited_git_clean_is_judged_on_its_paths(self):
+        # #592 review: `git clean -fdx -- build/` cannot reach the root hook configs.
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt)}
+        for command in ("git clean -fdx -- build/", "git clean -fdx build dist", "git clean -fX -- src/gen",
+                        "git clean -fdx -e keep -- build/"):
+            with self.subTest(allowed=command):
+                r = self.fire(wrapped("bash", command=command), env)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for command in ("git clean -fdx -- .claude", "git clean -fdx -- .", "git clean -fdx -- \"*.json\"",
+                        "git clean -fdx -- :/", "git clean -fdx build .codex", f"git clean -fdx -- {self.wt}"):
+            with self.subTest(denied=command):
+                r = self.fire(wrapped("bash", command=command), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("own guard", r.stderr)
+
     def test_the_hook_file_itself_is_guarded_wherever_it_is(self):
         r = self.fire(wrapped("Edit", file_path=str(HOOK), old_string="a", new_string="b"))
         self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -329,6 +344,33 @@ class TestApplyPatchHeredoc(HookCase):
         r = self.fire(wrapped("exec_command", cmd=cmd))
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("recursive delete", r.stderr)
+
+
+class TestCommandSubstitution(HookCase):
+    """#592 review: a substitution body runs as a command before the outer word is used."""
+
+    def test_substitution_bodies_are_judged_as_commands(self):
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"}
+        for cmd in ("echo $(rm -rf /)", "echo `rm -rf /`", "diff <(rm -rf /) f",
+                    "echo \"$(echo $(rm -rf /))\"", "cat <<EOF\n$(rm -rf /)\nEOF",
+                    "apply_patch <<EOF\n*** Begin Patch\n*** Add File: src/a.txt\n+$(rm -rf /)\n*** End Patch\nEOF"):
+            with self.subTest(cmd=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_inert_text_and_ordinary_substitutions_stay_allowed(self):
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"}
+        for cmd in ("echo '$(rm -rf /)'", "echo $((1+2))", "echo $(git status)",
+                    "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: src/a.txt\n+$(rm -rf /)\n*** End Patch\nEOF",
+                    "apply_patch <<EOF\n*** Begin Patch\n*** Add File: src/a.txt\n+plain text\n*** End Patch\nEOF"):
+            with self.subTest(cmd=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_unquoted_patch_body_still_has_its_headers_bounded(self):
+        cmd = f"apply_patch <<EOF\n*** Begin Patch\n*** Add File: {self.outside / 'x.py'}\n+$HOME\n*** End Patch\nEOF"
+        r = self.fire(wrapped("exec_command", cmd=cmd), {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"})
+        self.assertEqual(r.returncode, 2, r.stdout)
 
 
 class TestFileTouchConflicts(HookCase):

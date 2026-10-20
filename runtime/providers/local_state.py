@@ -742,14 +742,10 @@ class LocalStateStore:
             gate_id = gate["gate_id"] if gate else attrs.get("gateId")
             replier = sender or self._resolve_terminal(None) or COORDINATOR_ALIAS
             if gate_id:
-                gate_row = gate or conn.execute("SELECT sender FROM gates WHERE gate_id = ?", (gate_id,)).fetchone()
-                asker = gate_row["sender"] if gate_row else None
-                if self._own_worker_identity() or replier == asker or replier in self._worker_handles(conn):
-                    # A worker can never answer a human gate — its own or another worker's.
-                    raise ProviderError(
-                        "gate_answer_refused",
-                        f"{replier!r} cannot answer gate {gate_id!r}: only the coordinator/human may",
-                    )
+                gate_row = gate or conn.execute("SELECT * FROM gates WHERE gate_id = ?", (gate_id,)).fetchone()
+                if gate_row:
+                    # Refuse BEFORE the reply message is sent, not only at resolution.
+                    self._check_gate_answerer(conn, gate_row, replier)
             recipient = orig["sender"]
             subject = f"Re: {orig['subject']}"
             run_id = run or orig["run_id"]
@@ -767,7 +763,7 @@ class LocalStateStore:
         if gate_id:
             # Answering a worker's `ask` question by message id resolves its durable gate, so
             # `ask --resume <id>` returns the human's answer (#591 review: gates never completed).
-            resolved = self.resolve_gate(gate_id, body, status="answered")
+            resolved = self.resolve_gate(gate_id, body, status="answered", resolver=replier)
         res = {
             "replied": True,
             "messageId": sent["messageId"],
@@ -938,10 +934,17 @@ class LocalStateStore:
         self.save_request(retry_request, "gate-create", "completed", res)
         return res
 
-    def gate_resolve(self, *, gate_id: str, resolution: str, retry_request: str | None = None) -> dict[str, Any]:
+    def gate_resolve(
+        self,
+        *,
+        gate_id: str,
+        resolution: str,
+        sender: str | None = None,
+        retry_request: str | None = None,
+    ) -> dict[str, Any]:
         if not gate_id or resolution is None:
             raise ProviderError("invalid_argument", "gate-resolve needs --id and --resolution")
-        res = self.resolve_gate(gate_id, resolution, status="resolved")
+        res = self.resolve_gate(gate_id, resolution, status="resolved", resolver=sender)
         return {"gate": {"id": gate_id, "status": res["status"], "resolution": resolution, "taskId": res.get("taskId")}}
 
     def gate_list(self, *, run: str | None = None, task_id: str | None = None, status: str | None = None) -> dict[str, Any]:
@@ -968,13 +971,37 @@ class LocalStateStore:
             ]
         }
 
-    def resolve_gate(self, gate_id: str, answer: str, status: str = "answered") -> dict[str, Any]:
+    def _check_gate_answerer(self, conn: sqlite3.Connection, gate_row: sqlite3.Row, resolver: str) -> None:
+        """Only the coordinator/human answers a gate: never a launched worker, never the asker."""
+        # The asker test applies to a worker's `ask`; a DAG gate's sender is the coordinator
+        # that created it, and resolving its own hold is exactly its job.
+        is_ask = (gate_row["kind"] or "ask") != "dag"
+        if self._own_worker_identity() or (is_ask and resolver == gate_row["sender"]) or resolver in self._worker_handles(conn):
+            raise ProviderError(
+                "gate_answer_refused",
+                f"{resolver!r} cannot answer gate {gate_row['gate_id']!r}: only the coordinator/human may",
+            )
+
+    def resolve_gate(
+        self,
+        gate_id: str,
+        answer: str,
+        status: str = "answered",
+        resolver: str | None = None,
+    ) -> dict[str, Any]:
+        """The ONE boundary every answer path (reply, gate-resolve, ask) crosses (#592 review)."""
+        who = resolver or self._resolve_terminal(None) or COORDINATOR_ALIAS
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = self._find_gate(conn, gate_id)
             if not row:
                 conn.execute("ROLLBACK")
                 raise ProviderError("gate_not_found", f"gate {gate_id!r} not found")
+            try:
+                self._check_gate_answerer(conn, row, who)
+            except ProviderError:
+                conn.execute("ROLLBACK")
+                raise
             if row["status"] != "pending":
                 conn.execute("COMMIT")
                 return {"gateId": row["gate_id"], "status": row["status"], "answer": row["answer"], "taskId": row["task_id"], "alreadyResolved": True}
@@ -982,6 +1009,13 @@ class LocalStateStore:
                 "UPDATE gates SET status = ?, answer = ?, resolved_at = ? WHERE gate_id = ?",
                 (status, answer, time.time(), row["gate_id"]),
             )
+            if row["message_id"]:
+                # The question is handled: it must stop reading as unread inbox work (and as
+                # `waiting_input` to the watchdog) once its gate is answered (#592 review).
+                conn.execute(
+                    "UPDATE deliveries SET acked = 1, acked_at = ? WHERE message_id = ? AND acked = 0",
+                    (time.time(), row["message_id"]),
+                )
             if row["task_id"]:
                 # Release the DAG hold: re-derive the task's status from its deps.
                 t = conn.execute("SELECT status FROM tasks WHERE id = ?", (row["task_id"],)).fetchone()
@@ -996,8 +1030,10 @@ class LocalStateStore:
                     if any(st in ("failed", "blocked") for st in deps):
                         new_status = "blocked"
                     elif not deps or all(st == "completed" for st in deps):
+                        # Deps are done NOW: runnable, whatever it was when gated. Restoring a
+                        # stale `pending` left it undispatchable forever (#592 review).
                         prev = row["prev_status"]
-                        new_status = prev if prev in ("ready", "pending", "completed", "failed") else "ready"
+                        new_status = prev if prev in ("completed", "failed") else "ready"
                     else:
                         new_status = "pending"
                     conn.execute(

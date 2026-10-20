@@ -771,9 +771,21 @@ if [ "$ACTIVE_RUNTIME" != "orca" ]; then
     *) _launch_wt="$sel" ;;
   esac
   _bl=$(base_launch "$_launch_wt")
+  # Only a runtime with a standalone `worktree create` can pre-create one; overstory, gastown,
+  # t3code and the daemon adapters create the worktree inside worker-start and inherit the
+  # base class's unsupported method, so they keep the original new-* selector (#592 review).
+  _standalone_wc=$(python3 -I - "$HERE/../.." "$ACTIVE_RUNTIME" <<'PY' || echo 0
+import importlib, sys
+sys.path.insert(0, sys.argv[1])
+prov = importlib.import_module("runtime.providers")
+mod_name, cls_name = prov._PROVIDER_MODULES[sys.argv[2]]
+cls = getattr(importlib.import_module(mod_name, package="runtime.providers"), cls_name)
+print(1 if cls.worktree_create is not prov.RuntimeProvider.worktree_create else 0)
+PY
+)
   case "$sel" in
     new-*)
-      if [ -n "$_bl" ] && [ "$PROFILE" = "ro" ] && [ "$custom_lane" = "0" ]; then
+      if [ -n "$_bl" ] && [ "$PROFILE" = "ro" ] && [ "$custom_lane" = "0" ] && [ "$_standalone_wc" = "1" ]; then
         step=worktree-create
         _wc=$(mktemp)
         orca_json "$_wc" worktree create --name "$safe_title" --repo "$_repo_top" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}

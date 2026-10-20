@@ -818,6 +818,7 @@ class RuntimeProvider:
                 return self.gate_resolve(
                     gate_id=flags.get("id", ""),
                     resolution=flags.get("resolution"),
+                    sender=flags.get("from"),
                     retry_request=flags.get("retry-request"),
                 )
             if sub == "gate-list":

@@ -920,12 +920,22 @@ def strip_patch_heredocs(cmd):
         while i < len(lines):
             term = lines[i].lstrip(chr(9)) if m.group(1) else lines[i]
             if term.rstrip() == m.group(3):
-                out.append(lines[i])
-                i += 1
                 break
             body.append(lines[i])
             i += 1
-        bodies.append(chr(10).join(body))
+        text = chr(10).join(body)
+        bodies.append(text)
+        # An UNQUOTED delimiter (<<EOF) lets the shell expand $(...), `...` and $VAR in the
+        # body before apply_patch reads it, so such a body is live shell, not data: keep it
+        # in the judged command (#592 review). Only a quoted delimiter, or a body with
+        # nothing the shell would expand, is pure data and may be stripped.
+        quoted = bool(m.group(2))
+        inert = not any(ch in text for ch in ("$", chr(96), chr(92)))
+        if not (quoted or inert):
+            out.extend(body)
+        if i < len(lines):
+            out.append(lines[i])
+            i += 1
     return chr(10).join(out), bodies
 
 
@@ -1208,9 +1218,51 @@ def _is_send(args):
     return False
 
 
+def substitution_bodies(text, depth=0):
+    # Command substitution runs its body as a command BEFORE the outer word is used:
+    # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
+    # unquoted heredoc all execute, yet no segment of the outer line names them (#592
+    # review). Return every such body (nested ones too) so each is judged as a command.
+    # Single-quoted text expands nothing; arithmetic $((...)) is not a command.
+    out, i, n, in_sq, in_dq = [], 0, len(text), False, False
+    while i < n:
+        ch = text[i]
+        if ch == chr(92) and not in_sq:
+            i += 2
+            continue
+        if ch == SQ and not in_dq:
+            in_sq = not in_sq
+        elif ch == DQ and not in_sq:
+            in_dq = not in_dq
+        elif not in_sq and ch == chr(96):
+            j = i + 1
+            while j < n and text[j] != chr(96):
+                j += 2 if text[j] == chr(92) else 1
+            out.append(text[i + 1:j])
+            i = j
+        elif not in_sq and ch in "$<>" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
+            j, level = i + 2, 1
+            while j < n and level:
+                if text[j] == chr(92):
+                    j += 2
+                    continue
+                level += {"(": 1, ")": -1}.get(text[j], 0)
+                j += 1
+            out.append(text[i + 2:j - 1] if level == 0 else text[i + 2:])
+            i = j - 1
+        i += 1
+    if depth < 4:
+        for body in list(out):
+            out += substitution_bodies(body, depth + 1)
+    return [b for b in out if b.strip()]
+
+
 _seg_args = []
 _guard_segs = []
-for _join, seg in _split(raw_command):
+_judged = raw_command
+for _sub in substitution_bodies(raw_command):
+    _judged += chr(10) + _sub
+for _join, seg in _split(_judged):
     args, writes, pending = [], [], None
     for kind, value in shell_tokens(seg):
         if kind == "redirect":
@@ -1381,6 +1433,28 @@ def _git_clean_takes_ignored(rest):
     return ignored and not dry
 
 
+def _git_clean_pathspecs(rest):
+    """Pathspecs a `git clean` is limited to ([] = the whole tree from cwd)."""
+    specs, i, end = [], 0, False
+    while i < len(rest):
+        w = rest[i]
+        if not end and w == "--":
+            end = True
+        elif not end and w.startswith("--"):
+            if w == "--exclude":
+                i += 1
+        elif not end and w.startswith("-") and len(w) > 1:
+            for j, ch in enumerate(w[1:]):
+                if ch == "e":
+                    if j == len(w) - 2:
+                        i += 1
+                    break
+        else:
+            specs.append(w)
+        i += 1
+    return specs
+
+
 def _git_stash_takes_untracked(rest):
     ws = list(rest)
     if ws and ws[0] in ("push", "save"):
@@ -1435,7 +1509,13 @@ def guard_targets(words, depth=0):
         if sub and sub[0] in ("rm", "mv"):
             head, rest = sub[0], sub[1:]
         elif sub and sub[0] == "clean" and _git_clean_takes_ignored(sub[1:]):
-            # The hook configs are listed in info/exclude, so -x/-X deletes them (#592).
+            # The hook configs are listed in info/exclude, so -x/-X deletes them (#592) --
+            # unless pathspecs keep the clean away from them (`git clean -fdx -- build/`).
+            # Git pathspec globs cross "/" and ":(magic)" changes matching, so either one
+            # is judged as the whole tree.
+            specs = _git_clean_pathspecs(sub[1:])
+            if specs and not any(any(ch in sp for ch in "*?[") or sp.startswith(":") for sp in specs):
+                return [(sp, True) for sp in specs]
             return [(g, True) for g in GUARD_SAMPLES]
         elif sub and sub[0] == "stash" and _GW and _git_stash_takes_untracked(sub[1:]):
             # -u/-a stash and then REMOVE untracked (and, with -a, ignored) files.

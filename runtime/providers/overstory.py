@@ -64,7 +64,23 @@ OV_MAIL_TYPES = (
     "merge_failed", "escalation", "health_check", "dispatch", "assign", "decision_gate",
 )
 # Files Overstory itself deploys into a worktree (overlay + guards) — not the worker's work.
-OV_ARTIFACTS = (".claude/", ".overstory/", "AGENTS.md", ".pi/", ".sapling/", "CONVENTIONS.md", ".goosehints", "GEMINI.md")
+# Exactly what Overstory writes into a worktree (src/runtimes/*.ts instructionPath, hooks
+# deployer, pi/sapling guards) — never the user-owned .claude/ or .pi/ directories as a whole.
+OV_ARTIFACTS = (
+    ".overstory/",
+    ".claude/CLAUDE.md",
+    ".claude/settings.local.json",
+    "AGENTS.md",
+    ".pi/extensions/overstory-guard.ts",
+    ".sapling/guards.json",
+    "SAPLING.md",
+    "CONVENTIONS.md",
+    ".goosehints",
+    "GEMINI.md",
+    ".amp/AGENT.md",
+    ".cursor/rules/overstory.md",
+    ".github/copilot-instructions.md",
+)
 
 
 class OverstoryProvider(RuntimeProvider):

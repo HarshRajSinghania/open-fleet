@@ -1429,6 +1429,17 @@ esac
                 self.assertIn(f"--repo {repo}", wc)
                 self.assertIn("--name t-", wc)
 
+    def test_runtimes_without_standalone_worktree_create_keep_the_selector(self):
+        # overstory / gastown / t3code create the worktree inside worker-start (#592 review).
+        for runtime in ("overstory", "gastown", "t3code"):
+            with self.subTest(runtime=runtime):
+                p, _launch, calls, _repo, _created = self.run_spawn(
+                    "new-child", print_launch=False, extra={"OPEN_FLEET_RUNTIME": runtime})
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertNotIn("worktree create", calls)
+                ws = next(ln for ln in calls.splitlines() if "worker-start" in ln)
+                self.assertIn("--worktree new-child", ws)
+
     def test_the_ro_lane_rides_worker_start_with_the_resolved_path(self):
         p, _launch, calls, _repo, created = self.run_spawn("new-child", print_launch=False)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)

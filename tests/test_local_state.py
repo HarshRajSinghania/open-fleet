@@ -87,6 +87,14 @@ class TestDag(Base):
         self.assertEqual(st[a], "ready")
         self.assertEqual(self.store.gate_list(task_id=a)["gates"][0]["status"], "resolved")
 
+    def test_gate_resolved_after_deps_finish_makes_task_ready(self):
+        a = self._t()
+        b = self._t([a])
+        g = self.store.gate_create(task_id=b, question="ok?")["gate"]  # gated while pending
+        self.store.task_update(task_id=a, status="completed")
+        self.store.gate_resolve(gate_id=g["id"], resolution="ok", sender="coordinator")
+        self.assertEqual({t["id"]: t["status"] for t in self.store.task_list()["tasks"]}[b], "ready")
+
     def test_gate_create_needs_json_options(self):
         a = self._t()
         with self.assertRaises(self.mod.ProviderError):
@@ -199,6 +207,24 @@ class TestHitlGates(Base):
         with self.assertRaises(self.mod.ProviderError):
             worker.reply_message(msg_id=res["messageId"], body="yes", sender="coordinator")
         self.assertTrue(self.store.ask_human(resume=res["messageId"])["timedOut"], "still unanswered")
+
+    def test_gate_resolve_route_refuses_workers_too(self):
+        res = self.store.ask_human(question="deploy?", sender="term_w", run="r1")
+        worker = self.mod.LocalStateStore(self.db, env={"OPEN_FLEET_DISPATCH_ID": "disp_w", "OPEN_FLEET_TERMINAL_HANDLE": "term_w"})
+        with self.assertRaises(self.mod.ProviderError) as ctx:
+            worker.gate_resolve(gate_id=res["gateId"], resolution="yes")
+        self.assertEqual(ctx.exception.code, "gate_answer_refused")
+        with self.assertRaises(self.mod.ProviderError):
+            self.store.gate_resolve(gate_id=res["gateId"], resolution="yes", sender="term_w")
+        self.assertTrue(self.store.ask_human(resume=res["gateId"])["timedOut"], "still unanswered")
+        self.store.gate_resolve(gate_id=res["gateId"], resolution="yes", sender="coordinator")
+        self.assertEqual(self.store.ask_human(resume=res["gateId"])["answer"], "yes")
+
+    def test_answering_acks_the_question_so_it_stops_reading_as_waiting(self):
+        res = self.store.ask_human(question="go?", sender="term_w", run="r1")
+        self.assertTrue(self.store.has_pending_question("term_w", run_id="r1"))
+        self.store.reply_message(msg_id=res["messageId"], body="go")
+        self.assertFalse(self.store.has_pending_question("term_w", run_id="r1"))
 
     def test_no_preset_answer_env_is_honoured(self):
         store = self.mod.LocalStateStore(self.db, env={"OPEN_FLEET_ASK_ANSWER": "yes"})

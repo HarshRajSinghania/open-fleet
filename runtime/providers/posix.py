@@ -133,16 +133,19 @@ CANONICAL_DENY_HOOK = RUNTIME_DIR / "scripts" / "deny-hook.sh"
 SANDBOX_GIT_MOUNT = "/open-fleet/sandbox.git"
 # Per-worktree guard artifacts install_worktree_hooks writes. They are excluded from git (never
 # land in a PR) and deny-hook.sh refuses edits to them (a worker cannot disarm its own guard).
+# Entries ending in "/" are directories open-fleet owns outright; every other entry is one
+# exact generated FILE. A user directory (.codex/, .crush/, .claude/) is never exempted
+# wholesale: excluded files are silently deleted by `git worktree remove` (#592 review).
 HOOK_ARTIFACTS = (
-    ".claude/settings.local.json",
-    ".codex/",
-    ".openhands/",
-    ".agents/plugins/orca-deny-hook/",
-    ".opencode/plugin/orca-deny-hook.ts",
     ".open-fleet/",
-    ".crush/",
     ".crush-orca-ro/",
     ".hermes-open-fleet/",
+    ".claude/settings.local.json",
+    ".codex/hooks.json",
+    ".openhands/hooks.json",
+    ".agents/plugins/orca-deny-hook/hooks/hooks.json",
+    ".opencode/plugin/orca-deny-hook.ts",
+    ".crush/crush.json",
 )
 
 
@@ -780,13 +783,17 @@ log_path = {repr(str(log_file))}
 store = LocalStateStore(db_path={repr(str(self.state.db_path))})
 with open({repr(str(env_file))}, encoding="utf-8") as ef:
     worker_env = {{**os.environ, **json.load(ef)}}
+# A tmux/cmux server started with fleet custody secrets hands them to this monitor's
+# environment: strip them from the FINAL worker env too, not only the client's (#592).
+for _secret in {sorted(WORKER_ENV_DENYLIST)!r}:
+    worker_env.pop(_secret, None)
 
 def _log(obj):
     with open(log_path, "a", encoding="utf-8") as lf:
         lf.write(json.dumps(obj) + "\\n")
 
 # Launch gate: a dispatch fenced while it was starting never runs its agent (#591 review).
-if SUPERVISED and store.dispatch_state(DISPATCH) not in ("ready", "running"):
+if SUPERVISED and store.dispatch_state(DISPATCH) not in ("ready", "running", "retained"):
     _log({{"type": "launch_refused", "dispatchId": DISPATCH, "reason": "dispatch fenced or withdrawn before launch"}})
     sys.exit(0)
 
@@ -805,6 +812,11 @@ with open(log_path, "a", encoding="utf-8") as lf:
 
 head = ""
 if SANDBOX_META:
+    # The worker's commits live only in the sandbox git dir until this sync copies them
+    # back: a stop (tmux SIGHUP, killpg SIGTERM) must not cut it short (#592 review).
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
         from providers.posix import sync_sandbox_git
         synced = sync_sandbox_git(json.loads(SANDBOX_META), DISPATCH)
@@ -1222,13 +1234,38 @@ if {repr(self.backend)} == "cmux":
         *,
         backend_ref: str | None = None,
         container: str | None = None,
+        lane_dir: str | None = None,
         grace_s: float = 3.0,
     ) -> dict[str, Any]:
-        """Stop a worker for real: container, process group (SIGTERM → SIGKILL), mux session."""
+        """Stop a worker for real: container, process group (SIGTERM → SIGKILL), mux session.
+
+        A sandboxed worker's commits exist only in its private git dir until the host-side
+        monitor runs `sync_sandbox_git` after `docker run` returns. So the agent (container)
+        is stopped FIRST, the monitor is given time to finish that sync (it ignores
+        SIGTERM/SIGHUP while syncing), and only then is the monitor's group killed (#592).
+        """
         report: dict[str, Any] = {"backend": backend}
         if container:
-            proc = subprocess.run(["docker", "rm", "-f", container], capture_output=True, text=True)
+            proc = subprocess.run(["docker", "rm", "-f", container], capture_output=True, text=True, env=self.env)
             report["container"] = {"name": container, "rc": proc.returncode}
+            if lane_dir:
+                exit_file = Path(lane_dir) / "exit.json"
+                try:
+                    sync_grace = float(self.env.get("OPEN_FLEET_SANDBOX_SYNC_GRACE_S") or 120)
+                except ValueError:
+                    sync_grace = 120.0
+                deadline = time.time() + sync_grace
+                while time.time() < deadline and not exit_file.is_file():
+                    if pid and pid > 0:
+                        try:
+                            os.killpg(int(pid), 0)
+                        except OSError:
+                            break
+                    time.sleep(0.1)
+                try:
+                    report["sandboxSync"] = json.loads(exit_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    report["sandboxSync"] = {"error": "monitor did not report a finished sync"}
         if pid and pid > 0:
             try:
                 os.killpg(int(pid), signal.SIGTERM)
@@ -1290,7 +1327,7 @@ if {repr(self.backend)} == "cmux":
     def _sweep_liveness(self, rows: list[Any]) -> None:
         """A dispatch whose monitor was killed (-9) never reports; detect it and emit worker_died."""
         for r in rows:
-            if r["state"] not in ("ready", "running") or r["task_id"] is None:
+            if r["state"] not in ("ready", "running", "retained") or r["task_id"] is None:
                 continue
             if self._backend_alive(r) is False and not (Path(r["lane_dir"] or "/nonexistent") / "exit.json").is_file():
                 head = _git(["rev-parse", "HEAD"], cwd=r["worktree"]).stdout.strip() if r["worktree"] else ""
@@ -1405,6 +1442,7 @@ if {repr(self.backend)} == "cmux":
                 int(r["pid"] or 0),
                 backend_ref=r["backend_ref"],
                 container=container,
+                lane_dir=r["lane_dir"],
             )
         return out
 
@@ -1417,7 +1455,7 @@ if {repr(self.backend)} == "cmux":
         if not docker:
             failures.append("docker CLI not on PATH")
         else:
-            proc = subprocess.run(["docker", "image", "inspect", recipe_id], capture_output=True, text=True)
+            proc = subprocess.run(["docker", "image", "inspect", recipe_id], capture_output=True, text=True, env=self.env)
             ok = proc.returncode == 0
             checks.append({"id": "image-present", "status": "pass" if ok else "fail"})
             if not ok:

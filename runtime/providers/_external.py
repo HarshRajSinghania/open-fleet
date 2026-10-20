@@ -318,6 +318,17 @@ def preserve_worker_head(run: Callable[[list[str]], str], worktree: str, dispatc
     return {"ref": ref, "sha": head, "commonDir": common}
 
 
+def _artifact_match(path: str, entry: str) -> bool:
+    """`entry` ending in "/" covers that directory's contents; otherwise an EXACT file match.
+
+    A prefix test let `AGENTS.md` hide `AGENTS.md.backup` and `.claude/` hide a user's own
+    commands, so an unforced removal discarded them (#592 review).
+    """
+    if entry.endswith("/"):
+        return path == entry.rstrip("/") or path.startswith(entry)
+    return path == entry
+
+
 def foreign_dirty_paths(
     run: Callable[[list[str]], str],
     worktree: str,
@@ -333,7 +344,7 @@ def foreign_dirty_paths(
         path = line[3:].strip().strip('"')
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
-        if not any(path == p.rstrip("/") or path.startswith(p) for p in ignored):
+        if not any(_artifact_match(path, p) for p in ignored):
             dirty.append(path)
     return dirty
 

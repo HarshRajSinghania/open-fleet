@@ -275,6 +275,45 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         self.assertTrue(_wait_for(out.is_file))
         self.assertEqual(out.read_text().strip(), "[][]")
 
+    def test_retain_during_startup_does_not_cancel_the_launch(self):
+        ran = Path(self.tmp.name) / "retained-ran"
+        self.fake_agent("claude", f'touch "{ran}"')
+        task = self.prov.dispatch(["orchestration", "task-create", "--spec", "x"])["task"]
+        real = self.prov._spawn_process
+
+        def retain_then_spawn(**kw):
+            self.prov.worker_fence("retain", kw["dispatch_id"])
+            return real(**kw)
+
+        self.prov._spawn_process = retain_then_spawn
+        res = self.prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="rw")
+        self.assertEqual(res["state"], "ready")
+        self.assertTrue(_wait_for(ran.exists), "retaining a dispatch must not cancel its work")
+
+    def test_monitor_strips_secrets_inherited_from_its_own_environment(self):
+        """A tmux server started with a seed hands it to the monitor's os.environ."""
+        out = Path(self.tmp.name) / "inherited.txt"
+        self.fake_agent("claude", f'echo "[$OPEN_FLEET_SIGNING_SEED][$ORCA_DISPATCH_SIGNING_SEED]" > "{out}"')
+        captured = {}
+        task = self.prov.dispatch(["orchestration", "task-create", "--spec", "x"])["task"]
+        real = self.prov._spawn_process
+        self.prov._spawn_process = lambda **kw: (captured.update(kw), {"pid": 0, "backend": "dry-run"})[1]
+        self.prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="rw")
+        self.prov._spawn_process = real
+        self.prov.backend = "setsid"
+        real(**captured)  # writes run_worker.py (then launches a first copy without secrets)
+        _wait_for(out.is_file)
+        out.unlink(missing_ok=True)
+        script = Path(captured["lane_dir"]) / "run_worker.py"
+        # The first run finished (and was recorded); re-arm the dispatch for the inherited-env run.
+        self.prov.state._connect().execute(
+            "UPDATE dispatches SET state = 'ready' WHERE lane_dir = ?", (str(captured["lane_dir"]),))
+        env = {**os.environ, "PATH": self.env["PATH"], "OPEN_FLEET_SIGNING_SEED": "aa" * 32,
+               "ORCA_DISPATCH_SIGNING_SEED": "bb" * 32}
+        subprocess.run([sys.executable, "-I", str(script)], env=env, cwd=captured["wt_path"], timeout=60)
+        self.assertTrue(_wait_for(out.is_file))
+        self.assertEqual(out.read_text().strip(), "[][]")
+
     def test_vanished_monitor_is_detected_by_liveness_sweep(self):
         self.fake_agent("claude", "sleep 30")
         _, res = self.start()
@@ -400,6 +439,26 @@ class TestWorktreeSafety(PosixRealProcessBase):
         (wt / "unsaved.txt").unlink()
         self.assertTrue(self.prov.worktree_rm(f"path:{wt}")["removed"], "hook artifacts alone must not count as dirty")
 
+    def test_only_exact_generated_files_count_as_disposable(self):
+        ext = importlib.import_module("runtime.providers._external")
+        ov = importlib.import_module("runtime.providers.overstory")
+        wt = Path(self.prov.worktree_create("exact")["worktree"]["path"])
+        self.posix.install_worktree_hooks(wt, "claude", "rw")
+        for rel in ("AGENTS.md", ".claude/CLAUDE.md", "AGENTS.md.backup", ".claude/commands/mine.md", ".codex/config.toml"):
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text("x", encoding="utf-8")
+
+        def run(argv):
+            return subprocess.run(argv, capture_output=True, text=True).stdout
+
+        dirty = ext.foreign_dirty_paths(run, str(wt), ov.OV_ARTIFACTS)
+        self.assertIn("AGENTS.md.backup", dirty)
+        self.assertIn(".claude/commands/mine.md", dirty)
+        self.assertIn(".codex/config.toml", dirty, "a user file in .codex/ is never exempted (nor git-excluded)")
+        self.assertNotIn("AGENTS.md", dirty)
+        self.assertNotIn(".claude/CLAUDE.md", dirty)
+        self.assertNotIn(".claude/settings.local.json", dirty)
+
     def test_rm_refuses_paths_outside_provider_base(self):
         stray = Path(self.tmp.name) / "stray"
         stray.mkdir()
@@ -508,6 +567,35 @@ class TestSandboxGitRoundTrip(PosixRealProcessBase):
         res = self.posix.sync_sandbox_git(meta, "disp_d")
         self.assertEqual(res["head"], real)
         self.assertEqual(_git("rev-parse", "refs/open-fleet/sandbox/disp_d", cwd=self.repo).stdout.strip(), real)
+
+    def test_stopping_a_sandboxed_worker_still_syncs_its_commits(self):
+        """Stop = remove the container, let the host monitor finish the sync, THEN kill it."""
+        wt, meta, cenv = self._sandbox()
+        (wt / "work.txt").write_text("done\n", encoding="utf-8")
+        subprocess.run(["git", "add", "work.txt"], cwd=wt, env=cenv, check=True)
+        subprocess.run(["git", "commit", "-qm", "work"], cwd=wt, env=cenv, check=True)
+        new = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt, env=cenv, check=True, capture_output=True, text=True).stdout.strip()
+        docker_log = Path(self.tmp.name) / "docker.log"
+        self.fake_agent("docker", f'echo "$*" >> "{docker_log}"')
+        lane = Path(meta["sandbox_git"]).parent
+        with self.prov.state._connect() as conn:
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, terminal_handle, state, created_at, updated_at) "
+                "VALUES ('disp_sbx', 't', 'default', ?, 'claude', 'term_sbx', 'ready', 0, 0)",
+                (str(wt),),
+            )
+        # The "agent" stands in for `docker run`: it returns once the container is removed.
+        spawn = self.prov._spawn_process(
+            dispatch_id="disp_sbx", term_handle="term_sbx", wt_path=str(wt), command="sleep 1",
+            env_vars={}, lane_dir=lane, run_id="default", sandbox_meta=meta,
+        )
+        time.sleep(0.4)  # monitor is waiting on the agent
+        report = self.prov._terminate_backend(
+            "setsid", "term_sbx", spawn["pid"], container="openfleet-disp_sbx", lane_dir=str(lane), grace_s=0.5,
+        )
+        self.assertIn("rm -f openfleet-disp_sbx", docker_log.read_text())
+        self.assertEqual(report["sandboxSync"].get("headSha"), new, report)
+        self.assertEqual(_git("rev-parse", "refs/heads/fleet/sbx", cwd=self.repo).stdout.strip(), new)
 
     def test_history_rewrite_does_not_move_host_branch(self):
         wt, meta, cenv = self._sandbox()

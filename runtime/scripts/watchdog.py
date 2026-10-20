@@ -277,6 +277,12 @@ class StateDBReader:
             return True
         mq = (f"SELECT COUNT(*) AS c FROM deliveries d JOIN messages m ON m.id = d.message_id "
               f"WHERE m.sender IN ({marks}) AND m.msg_type = 'question' AND d.acked = 0")
+        gate_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(gates)").fetchall()}
+        if "message_id" in gate_cols:
+            # A question whose gate a human already answered is not waiting on input, even
+            # if nobody acked its delivery (#592 review: it suppressed later hang nudges).
+            mq += (" AND NOT EXISTS (SELECT 1 FROM gates g WHERE g.message_id = m.id "
+                   "AND g.status != 'pending')")
         mparams = list(senders)
         if run_id:
             mq += " AND d.run_id = ?"

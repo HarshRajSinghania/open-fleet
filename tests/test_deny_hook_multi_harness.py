@@ -427,6 +427,27 @@ class TestCommandSubstitution(HookCase):
                 r = self.fire(wrapped("exec_command", cmd=cmd), env)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_continuations_respect_escaped_backslashes(self):
+        # #592 review: `\\` before a newline is a literal backslash + a REAL newline, so the
+        # next line's substitution runs; `$\<newline>(cmd)` joins into `$(cmd)`.
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"}
+        bs, nl = chr(92), chr(10)
+        live = (f"cat <<EOF{nl}x{bs}{bs}{nl}$(git push --force origin topic){nl}EOF",
+                f"echo ${bs}{nl}(git push --force origin topic)",
+                f"echo ${bs}{nl}{bs}{nl}(git push --force origin topic)",
+                f"cat <<EOF{nl}x${bs}{nl}(git push --force origin topic){nl}EOF")
+        for cmd in live:
+            with self.subTest(live=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        inert = (f"cat <<EOF{nl}x{bs}$(git push --force origin topic){nl}EOF",
+                 f"cat <<EOF{nl}x{bs}{bs}{bs}$(git push --force origin topic){nl}EOF",
+                 f"echo {bs}{bs}{nl}# $(git push --force origin topic)")
+        for cmd in inert:
+            with self.subTest(inert=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_unquoted_patch_body_still_has_its_headers_bounded(self):
         cmd = f"apply_patch <<EOF\n*** Begin Patch\n*** Add File: {self.outside / 'x.py'}\n+$HOME\n*** End Patch\nEOF"
         r = self.fire(wrapped("exec_command", cmd=cmd), {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"})

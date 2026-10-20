@@ -1230,10 +1230,26 @@ def _balanced_paren_end(text, j):
     return j, level == 0
 
 
+def _join_continuations(text):
+    # Delete line continuations the way the shell does: each backslash pairs with the next
+    # character, so an ESCAPED backslash (two before a newline) leaves a literal backslash
+    # and a real newline -- a blanket replace joined those lines and hid what followed.
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] == chr(92):
+            if text[i + 1:i + 2] != chr(10):
+                out.append(text[i:i + 2])
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def _heredoc_body_subs(body):
     # An UNQUOTED heredoc body expands $(...) and `...` with quotes LITERAL: a single-quoted
     # "$(cmd)" there still runs cmd. Process substitution <(...) is plain text in a body.
-    body = body.replace(chr(92) + chr(10), "")  # line continuation applies in an unquoted body
+    body = _join_continuations(body)  # line continuation applies in an unquoted body
     out, i, n = [], 0, len(body)
     while i < n:
         ch = body[i]
@@ -1356,6 +1372,10 @@ def substitution_bodies(text, depth=0):
             # pair from the stream (bodies of heredocs are consumed separately, untouched).
             text = text[:i] + text[i + 2:]
             n = len(text)
+            # `$\<newline>(cmd)` joins into `$(cmd)`: re-read a substitution opener that sat
+            # just before the continuation (no quote char is re-read, so state is unchanged).
+            if i > 0 and text[i - 1] in "$<>":
+                i -= 1
             continue
         if ch == chr(92) and not in_sq:
             i += 2

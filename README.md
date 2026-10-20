@@ -26,6 +26,7 @@
   <a href="docs/runtimes.md">Runtimes &amp; Harnesses</a> ·
   <a href="docs/recipes.md">Examples</a> ·
   <a href="docs/development.md">Local development</a> ·
+  <a href="docs/roadmap.md">Roadmap</a> ·
   <a href="docs/ops.md">Ops</a>
 </p>
 

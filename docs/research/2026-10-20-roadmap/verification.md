@@ -1,0 +1,95 @@
+# Independent research citation verification — 2026-10-20
+
+Verifier: a separate read-only research worker, following `playbooks/research-brief.md`, which did not write the input briefs. All checks were read on 2026-10-20. This report is a planning citation check, never runtime proof or a release authorization. No repository files or external state were modified.
+
+## Social/release brief
+
+Input: `social.md`.
+
+Sample: **15 references/state observations checked; 14 supported within the scope below, 1 unverifiable**. Sources were independently reopened using the web tool, authenticated read-only `gh` API calls, and `git show` at the exact cited commit. The live GitHub main ref was independently read as `42d28e4c7413fc369ebe79ae909fce613ca216b7`, committed 2026-10-19T13:24:06Z.
+
+| # | Owning reference | Finding |
+|---|---|---|
+| S1 | https://addyosmani.com/blog/orchestration-tax/ | PASS. Resolves, page date 2026-05-24. Author-owned opinion supports review/integration bottlenecks and sizing concurrency to review capacity. It is not a controlled performance measurement. |
+| S2 | https://addyosmani.com/blog/loop-engineering/ | PASS. Resolves, page date 2026-06-07. Author's proposed loop includes discovery/triage, worktrees, skills, connectors, subagents and durable state, with token-cost caution. His platform comparison and attributed quotations are not owning sources for product facts or other people's exact words. |
+| S3 | https://x.com/tinkerersanky/status/2063904707345563648 | UNVERIFIABLE. Independent direct retrieval returned 403. Strike its text/date as verified evidence; retain only an explicitly unverified discovery pointer if useful. The other X posts were not independently sampled and must remain unverified, never load-bearing. |
+| S4 | https://api.github.com/repos/ravidsrk/orca-fleet/issues?state=open | PASS. `gh issue list --state open --limit 100` independently returned exactly #235, #508, #526 and #528. Snapshot of issue state, not completeness of all product gaps. |
+| S5 | https://github.com/ravidsrk/orca-fleet/issues/526 | PASS WITH SCOPE. Current body/comments record landed Linux and external-run work and remaining monitor activation; issue stays OPEN. This owns maintainer/tracker statements, not an independent re-execution of those runs. |
+| S6 | https://github.com/ravidsrk/orca-fleet/issues/528 | PASS WITH SCOPE. OPEN; latest comment explicitly leaves H-09 unpause plus observing a scheduled heartbeat. Manual REST replay does not prove scheduled execution. |
+| S7 | https://api.github.com/repos/ravidsrk/orca-fleet/branches/main/protection | PASS. Live API: strict=true; contexts gates, verdict, guard, Greptile Review; verdict app_id=15368; required_pull_request_reviews=null. No verdict-gate context appears in this response. This does not establish absence of separate rulesets or other authorization controls. |
+| S8 | https://github.com/ravidsrk/orca-fleet/blob/42d28e4c7413fc369ebe79ae909fce613ca216b7/TODOS.md | PASS. Cited commit exists. Text explicitly records verdict-gate requiring a settings step replacing old verdict and pins source identity to a main-only environment. This is a known documented gap, not a newly discovered implementation absence. |
+| S9 | https://github.com/ravidsrk/orca-fleet/blob/42d28e4c7413fc369ebe79ae909fce613ca216b7/.github/workflows/verdict-gate.yml | PASS. Actual source has workflow_run-only default-branch evaluation, per-PR serialization, verdict-gate environment, optional GitHub App token and github-actions fallback warning. Presence does not prove secrets/environment/required-source activation. |
+| S10 | https://github.com/ravidsrk/orca-fleet/blob/42d28e4c7413fc369ebe79ae909fce613ca216b7/docs/completion/HUMAN_ACTIONS.md | PASS. H-10 is explicitly pending acceptance and peer review, with write permission plus actual APPROVED head review and merge still owed. |
+| S11 | https://github.com/ravidsrk/orca-fleet/blob/42d28e4c7413fc369ebe79ae909fce613ca216b7/runtime/attention-budget.md | PASS. WIP caps explicitly ASSERTED; no protocol-compliant measurement; threshold is >=3 runs at differing WIP settings measuring verified-CLOSED/hour. Existing solo self-run is excluded from that measurement. |
+| S12 | https://github.com/ravidsrk/orca-fleet/issues/51 | PASS WITH SCOPE. CLOSED; body requests a protocol, annotated evidence level and first datapoint. Closure does not override current authoritative policy's explicit ASSERTED status or establish >=3 compliant runs. |
+| S13 | https://github.com/ravidsrk/orca-fleet/pull/548 | PASS. Live API confirms merged=true, merge commit caf67c2df0904832c7768ac1bad101d59aa966b3. This supports that the cited Linux report change landed, not the correctness of the recorded run. |
+| S14 | https://github.com/ravidsrk/orca-fleet/pull/575 | PASS. Live API confirms merged=true, merge commit 00a7219f908507bbee3adc751c044f43eac4dcf2. Supports landed report/pin updates, not fresh runtime execution. |
+| S15 | https://api.github.com/repos/ravidsrk/orca-fleet/commits/main | PASS. Live main SHA matches the brief's pinned tree SHA exactly. Mutable main is only a dated snapshot. |
+
+Required correction before freezing: replace the social brief's DRAFT verification paragraph with these sample results (or link this report), demote the S3 exact-content/date claim to `unverifiable`, and explicitly keep all remaining X text/date outside the evidence supporting decisions. Surviving author opinions, live settings observations and pinned repository facts support planning. No source sampled establishes market demand, controlled throughput gains, independent runner identity, mission completion or safe release by itself.
+
+## Parent-requested additional checks
+
+Sample: **6 references/state observations; 4 supported, 2 limited to indexed official text because live retrieval failed**.
+
+| # | Owning reference | Finding |
+|---|---|---|
+| A1 | https://api.github.com/repos/ravidsrk/orca-fleet/collaborators/agentsalpha/permission | PASS. Independent authenticated API read returned permission=read and role_name=read. Current write access is not established; H-10 remains owed. |
+| A2 | https://api.github.com/search/issues?q=repo%3Aravidsrk%2Forca-fleet+type%3Apr+reviewed-by%3Aagentsalpha | PASS WITH LIMIT. Search independently returned total_count=0. This supports no indexed review hits, not a universal proof of no review; specific review objects remain the authoritative approval check. |
+| A3 | https://github.com/ravidsrk/orca-fleet/blob/42d28e4c7413fc369ebe79ae909fce613ca216b7/docs/compliance-provenance.md | PASS. Actual pinned text explicitly says retention is presently only a required nonempty string and receipt field/digest binding is specified but not implemented. It also distinguishes offline binding from live log existence/trust and legal compliance. This is a legitimate implementation gap; avoid presenting a signature alone as proof of trust or compliance. |
+| A4 | https://slsa.dev/spec/v1.2/verifying-artifacts | PASS. Versioned official specification resolves (Approved). Verification checks a provenance envelope signature against configured roots of trust, matches statement subject to artifact digest, checks predicate type and expectations including builder/source/build parameters. Supports a provenance verification roadmap, not a claim that this repository already implements SLSA or that a Rekor-looking receipt necessarily satisfies SLSA. |
+| A5 | https://www.gnu.org/s/bash/manual/html_node/Redirections.html | LIMITED. Both /s/ and /software/ live opens timed out. Search returned owner-hosted manual text (crawl age five months): redirections apply left-to-right and their target words undergo expansion. Supports bounded semantics only, with current live/precise-version retrieval unverifiable. It cannot certify the repository parser. |
+| A6 | https://www.gnu.org/s/bash/manual/html_node/Escape-Character.html | LIMITED. Both path variants timed out live. Indexed owner-hosted manual text (crawl age four months) says unquoted backslash-newline is removed as continuation. Current live/precise-version retrieval unverifiable; differential parser evaluation remains proposed work, not a checked behavior of this tree. |
+
+## Access and open residue
+
+`treg --version` succeeded (0.26.0); `treg balance` reported unauthenticated. No paid calls, platform batch, local scraper, browser/cookie bypass or login flow was used. Accessible web and `gh` reads succeeded normally. GNU current-version full-text retrieval and direct X content remain unresolved. GitHub issue/report narratives were deliberately not upgraded to runtime proof.
+
+## GitHub implementation brief
+
+Input: `github.md` and its source register. **Six exact-commit owning source files independently reopened through GitHub's contents API; six supported with the limitations below; zero nonresolving sources.** Prior researchers' downloaded copies were not used as substitutes for re-fetching. All checks read 2026-10-20. No upstream code was executed.
+
+| # | Exact owning reference | Finding |
+|---|---|---|
+| G1 | https://github.com/langchain-ai/langgraph/blob/1400d25b7b88cfa055c55b8a82bd95b7c25caef1/libs/checkpoint-conformance/langgraph/checkpoint/conformance/validate.py | PASS. Source implements a capability-aware checkpointer conformance runner, creates a saver for each suite and reports detected/passed/failed/skipped capability results. It supports the qualification-pattern analogy, not certification of an orca-fleet provider. |
+| G2 | https://github.com/langchain-ai/langgraph/blob/1400d25b7b88cfa055c55b8a82bd95b7c25caef1/libs/checkpoint-conformance/langgraph/checkpoint/conformance/spec/test_put_writes.py | PASS WITH LIMIT. Real tests call aput/aput_writes then aget_tuple and assert pending-write values, identity, namespace isolation and idempotence. Narrow wording: stored round-trip behavior rather than a returned success flag. This file alone does not establish process-crash/restart or filesystem durability; do not imply that it does. |
+| G3 | https://github.com/garrytan/gstack/blob/c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5/lib/ship-queue-train-verify.ts | PASS WITH LIMIT. Actual source fetches base/PR refs, checks a successful configured train-head gate, compares expected prefix/current trees, emits MERGE_CONDITION with the accepted SHA and freezes interrupted partial publication. It deliberately compares modulo stamps and can be called with noFetch; do not turn these conditional mechanisms into a universal independent-verification guarantee or import the stamp exception. |
+| G4 | https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/specification/a2a.proto | PASS. Official proto owns AgentInterface/AgentCard/AgentSkill contracts. Required annotations cover interface URL/binding/protocol version, agent version/capabilities, default modes and skills. Supports the mismatch with a custom offline descriptor. Important implementation limit: proto annotations must be enforced by the chosen validator; generating proto3 types alone does not necessarily reject empty required strings/repeated fields. This main-commit snapshot is not a claim about every released A2A version. |
+| G5 | https://github.com/obra/superpowers/blob/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/verification-before-completion/SKILL.md | PASS. Recipe explicitly requires fresh command/output evidence before claims, VCS checking instead of trusting worker reports, and revert-fix -> failure -> restore -> pass for regression evidence. Therefore blanket competitor-self-grading/no-negative-control claims must be rejected. This is instruction doctrine; reading it does not establish below-model enforcement or successful field execution. |
+| G6 | https://github.com/ruvnet/ruflo/blob/f5f2e40c318c3c390b057333bd971a6d5a9d5e28/plugins/ruflo-core/scripts/witness/verify.mjs | PASS WITH LIMIT. Entry point checks manifest hash, Ed25519 signature, per-fix marker/file-hash state, strict drift handling and source-only versus build-needed conditions. It does not execute task acceptance tests or mutation controls. Its signing key is reproducibly derived from public gitCommit plus the witness-format string, so this must not be described as independently trusted signer identity. No conclusion about all Ruflo code paths follows from this entry point. |
+
+Local code spot-checks also support the bounded hypotheses: POSIX task claim occurs before dispatch/terminal registration and final request-result persistence; `_sweep_liveness` operates over dispatch rows. The existing `check_provenance` really checks nonempty strings only. The inspected local-state schema has coordinator/run fencing but no merge queue table. These are source-derived planning findings, not reproduced crash failures or proof that no other branch has an implementation. Preserve the brief's `hypothesis to reproduce` language.
+
+Required pre-freeze edits: record this six-file verification subset in the GitHub brief, preserve the G2/G3/G4/G6 limits, and retain correction of the old generic competitor claims. No checked source needs deletion for nonresolution. Other register entries remain outside this sample.
+
+## Academic brief
+
+Input: `papers.md`. **Six version-pinned full HTML papers independently reopened and relevant body/limitation sections checked; six supported; zero nonresolving sources.** These are authors' primary reports, not independently reproduced experiments. All read 2026-10-20. Abstract-only spot checking was not substituted for the sampled body claims.
+
+| Brief ID | Owning full-paper reference | Finding |
+|---|---|---|
+| P2 | https://arxiv.org/html/2512.08296v3 | PASS. Current body says 260 configurations, cross-validated R²=0.373 for Intelligence Index and 0.413 for the task-grounded metric. Its error multipliers are explicitly trace-level and its limitations constrain cross-domain/larger-team claims. The brief's distinction from older-revision figures and refusal to use these as local fleet thresholds is correct. |
+| P3 | https://arxiv.org/html/2602.11988v3 | PASS. Body supports no significant general task-resolution gain, increased cost, developer-written over generated context, and no simple length-performance dependency. Limitations explicitly restrict evaluation to Python and leave efficiency/security effects open. This motivates a local paired ablation, not removing governance or assuming shorter instructions are safer. |
+| P4 | https://arxiv.org/html/2602.07150v3 | PASS. Body studies repeated runs and recommends repetition/power analysis. Both scaffolds explicitly preserve append-only contexts without truncation/compaction; compaction randomness is left for future work. The brief does not import its numerical power table as a universal minimum pilot size. |
+| P5 | https://arxiv.org/html/2506.09289v1 | PASS. Authors report accepted patches invalidated by stronger tests/parser correction. Limitations explicitly require an existing originally passing candidate and use one generator model. This supports counterexample evaluation; generated tests are not automatically an independent correctness oracle. |
+| P8 | https://arxiv.org/html/2610.04838v3 | PASS. Section 3 binds immutable traces to repository state and explicit supersession; section 3.3 checks source conditions before restoration. Unchanged target code alone is explicitly insufficient for test-result reuse because tests and recorded dependencies matter. This supports bounded freshness metadata, without requiring adoption of the paper's full graph system or asserting its local performance gains. |
+| P9 | https://arxiv.org/html/2610.12822v2 | PASS. Body includes propagation through code, feedback, shared memory and planner instructions. It defines three pytest bypass mechanisms and checks them against a separate strict evaluator; appendix limitations constrain training/setup/task scope. The brief correctly treats this as a recent controlled preprint rather than product prevalence or proof that this repository's guards succeed. |
+
+Required pre-freeze edit: replace the academic brief's DRAFT status with this exact checked sample, exclusions and limits (or link this record). P1, P6, P7 and P10–P12 plus the supporting benchmark abstracts were not independently sampled here. No title/version/body claim in the checked subset requires striking. Local product priorities and pilot attempt counts remain recommendations rather than paper results.
+
+## Optional roadmap scope review
+
+Before reading the plan, the verifier stated this expectation to the coordinator: a strong package names an observed gap after shipped-code inspection, bounds scope, distinguishes proposed validation from execution, and supplies measurable acceptance with independent/negative-control oracles where applicable. Reviewed `../../roadmap-backlog.json` (15 packages) and `../../roadmap.md` against that expectation; suggested ordering is not a human-frozen plan.
+
+The plan largely meets that bar and avoids refiling the delivered adapters, hooks, memory hints, protocol accounting and initial benchmarks. Scope corrections sent to the coordinator before finalization:
+
+- R07: distinguish accepted out-of-scope/unsupported cases from unexpected skipped required tests. Allowing unsupported cases while demanding every skip make CI non-green creates a contradictory permanent gate.
+- R11: permit an early WIP baseline with the existing bound report protocol. Requiring the entire R04 -> R06 -> R10 new-state chain before any empirical datapoint needlessly postpones the already specified experiment; exporter automation can follow.
+- R04: keep hard-crash defects labeled source-derived hypotheses until kill-point reproduction. A finite declared boundary matrix is the measurable claim; avoid suggesting exhaustive proof over every possible crash.
+- R06: database lease fencing alone is not proof that a stale process cannot perform a remote merge. Add the pause-after-lease-check/takeover/resume control and specify how the actual off-repo write is fenced; preserve expected-head and human promotion rules.
+- R12: include unchanged target code with changed test/dependency state among freshness fixtures, consistent with P8; missing dependency provenance means unknown applicability.
+- R14: enforce required-field annotations/cardinality with explicit validation and invalid fixtures. Merely constructing generated proto3 types may accept incomplete cards.
+
+Overall independent sample: **33 references/state observations** — 30 supported within explicit bounds, two limited to indexed owning GNU text, one direct X source unverifiable. This is not an exhaustive source audit, runtime certification, mission proof-tier promotion, release approval or customer-demand finding.
+
+Coordinator disposition: all six scope corrections above were incorporated. Direct X content/date claims were removed from the social brief; its URLs remain unverified discovery pointers. No formal implementation freeze or runtime proof is claimed.

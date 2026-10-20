@@ -2,6 +2,13 @@
 
 > **Dated snapshot (2026-10-18).** Counts, tool surfaces, and external landscape comparisons below reflect the repository and ecosystem state on 2026-10-18; live doctrine lives in `ARCHITECTURE.md`, `playbooks/`, and `runtime/`.
 
+> **October 20 correction:** [the follow-up source inspection](2026-10-20-product-roadmap-research.md)
+> narrows the broad competitor claims below; the inspected Superpowers recipe does
+> include a revert-based regression check. The A2A exporter emits a custom offline
+> descriptor, not a validated transport AgentCard. Episodic hints read matching
+> manifests, not the `docs/runs/*.md` scan described here. These mechanisms exist;
+> their stronger interoperability/currentness claims remain roadmap work.
+
 **Date:** 2026-10-18
 **Scope:** Multi-agent coding orchestration harnesses, protocols (`MCP`, `A2A`, `ACP`, `agentskills.io`), worktree swarms, execution-backed review engines, and verification architectures — and what `orca-fleet` implements from the findings.
 

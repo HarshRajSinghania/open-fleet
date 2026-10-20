@@ -3,6 +3,10 @@
 This file is a pointer, not a backlog. Open work lives where it is machine-checked or
 issue-tracked, so this surface cannot drift into "nothing open" while gaps stand:
 
+- **Current product roadmap** — [the October 20 roadmap](docs/roadmap.md) reconciles
+  the live release epic with the runtime expansion and new GitHub/paper research.
+  It links the detailed work packages and distinguishes proposed experiments from
+  existing release gates; dated reviews below remain historical evidence.
 - **The 2026-09-28 release-readiness review** —
   [`docs/reviews/2026-09-28-release-readiness-review.md`](docs/reviews/2026-09-28-release-readiness-review.md):
   four P0 findings (the runtime scripts hardcode `orca` where Linux ships `orca-ide`; the published

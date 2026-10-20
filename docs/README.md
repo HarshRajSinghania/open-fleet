@@ -58,6 +58,7 @@ local tests requires Git and Python; see [local setup](development.md#local-setu
 - [Security](../SECURITY.md) — private vulnerability reporting and secret handling.
 - [Maintainer ops](ops.md) — account inventory, release commands and incident response.
 - [Release checklist](release-1.0-checklist.md) — evidence needed before a 1.0 release.
+- [Product roadmap](roadmap.md) — current priorities, dependencies and research-backed issues.
 - [Repository description](about.md) — the canonical text for the GitHub About setting.
 
 ## Evidence and history

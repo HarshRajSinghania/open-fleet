@@ -1,0 +1,136 @@
+[
+  {
+    "repo": "a2aproject/A2A",
+    "path": "specification/a2a.proto",
+    "sha": "1205f45951ca97c209634ce6046180e38c5dfb30",
+    "url": "https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/specification/a2a.proto",
+    "read_date": "2026-10-20",
+    "bytes": 35942,
+    "sha256": "945df6e34001b2bfd0fd62d9484b63094dfad9d78705e41e2873441c419ae2d1"
+  },
+  {
+    "repo": "a2aproject/A2A",
+    "path": "docs/specification.md",
+    "sha": "1205f45951ca97c209634ce6046180e38c5dfb30",
+    "url": "https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/docs/specification.md",
+    "read_date": "2026-10-20",
+    "bytes": 157901,
+    "sha256": "8af843abb347083d175945c9c3e340a68288fdf3a5eee8b38514fa1a158d7e88"
+  },
+  {
+    "repo": "garrytan/gstack",
+    "path": "lib/ship-queue-train-verify.ts",
+    "sha": "c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5",
+    "url": "https://github.com/garrytan/gstack/blob/c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5/lib/ship-queue-train-verify.ts",
+    "read_date": "2026-10-20",
+    "bytes": 9378,
+    "sha256": "95495b1679e5a3089199b97103b38ba918d827b77be55527d37f24b7bb3ebac7"
+  },
+  {
+    "repo": "garrytan/gstack",
+    "path": "lib/ship-queue-train.ts",
+    "sha": "c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5",
+    "url": "https://github.com/garrytan/gstack/blob/c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5/lib/ship-queue-train.ts",
+    "read_date": "2026-10-20",
+    "bytes": 34458,
+    "sha256": "1d77e66dc4bb797aabc9ceae5e54cb5dfb20ee68879309f5480ac93285fe5315"
+  },
+  {
+    "repo": "garrytan/gstack",
+    "path": "docs/ship-policy.md",
+    "sha": "c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5",
+    "url": "https://github.com/garrytan/gstack/blob/c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5/docs/ship-policy.md",
+    "read_date": "2026-10-20",
+    "bytes": 46407,
+    "sha256": "ed43206de2425ed9969a1455bbe9499be901674c1785cd128998a88e9b7ee9e1"
+  },
+  {
+    "repo": "mattpocock/skills",
+    "path": "skills/in-progress/chief-of-staff/SKILL.md",
+    "sha": "5beb35b040e3de97e54fa9e386d7e42d15c295c2",
+    "url": "https://github.com/mattpocock/skills/blob/5beb35b040e3de97e54fa9e386d7e42d15c295c2/skills/in-progress/chief-of-staff/SKILL.md",
+    "read_date": "2026-10-20",
+    "bytes": 3816,
+    "sha256": "a187d9e36e65373d2d1f469790858dd57d6eb72b6ea16932df9c40616ac9f720"
+  },
+  {
+    "repo": "OpenHands/software-agent-sdk",
+    "path": "openhands-sdk/openhands/sdk/hooks/config.py",
+    "sha": "33d8aa29c3078d074799e2fbf5e847aeb2d71360",
+    "url": "https://github.com/OpenHands/software-agent-sdk/blob/33d8aa29c3078d074799e2fbf5e847aeb2d71360/openhands-sdk/openhands/sdk/hooks/config.py",
+    "read_date": "2026-10-20",
+    "bytes": 14970,
+    "sha256": "b439256a0a0ed5044464a6b018c403245d61a4e7ae79d9da8dab388758dcbe27"
+  },
+  {
+    "repo": "OpenHands/software-agent-sdk",
+    "path": "openhands-sdk/openhands/sdk/hooks/executor.py",
+    "sha": "33d8aa29c3078d074799e2fbf5e847aeb2d71360",
+    "url": "https://github.com/OpenHands/software-agent-sdk/blob/33d8aa29c3078d074799e2fbf5e847aeb2d71360/openhands-sdk/openhands/sdk/hooks/executor.py",
+    "read_date": "2026-10-20",
+    "bytes": 24131,
+    "sha256": "97e3c76219abc55ac1b5ac7794e0f8aa56dcac001fc01f336ceaac5319f6b711"
+  },
+  {
+    "repo": "langchain-ai/langgraph",
+    "path": "libs/checkpoint-conformance/langgraph/checkpoint/conformance/validate.py",
+    "sha": "1400d25b7b88cfa055c55b8a82bd95b7c25caef1",
+    "url": "https://github.com/langchain-ai/langgraph/blob/1400d25b7b88cfa055c55b8a82bd95b7c25caef1/libs/checkpoint-conformance/langgraph/checkpoint/conformance/validate.py",
+    "read_date": "2026-10-20",
+    "bytes": 5199,
+    "sha256": "742c2eeebb5c5d5aff198c02d47b09fe8ec070641004b69def9a397228e18551"
+  },
+  {
+    "repo": "langchain-ai/langgraph",
+    "path": "libs/checkpoint-conformance/langgraph/checkpoint/conformance/spec/test_put_writes.py",
+    "sha": "1400d25b7b88cfa055c55b8a82bd95b7c25caef1",
+    "url": "https://github.com/langchain-ai/langgraph/blob/1400d25b7b88cfa055c55b8a82bd95b7c25caef1/libs/checkpoint-conformance/langgraph/checkpoint/conformance/spec/test_put_writes.py",
+    "read_date": "2026-10-20",
+    "bytes": 11373,
+    "sha256": "598b9032a5b0bfe3286166d6b95ada1646746183b9c3d854d8e205a3e428b781"
+  },
+  {
+    "repo": "langchain-ai/langgraph",
+    "path": "libs/langgraph/langgraph/pregel/_loop.py",
+    "sha": "1400d25b7b88cfa055c55b8a82bd95b7c25caef1",
+    "url": "https://github.com/langchain-ai/langgraph/blob/1400d25b7b88cfa055c55b8a82bd95b7c25caef1/libs/langgraph/langgraph/pregel/_loop.py",
+    "read_date": "2026-10-20",
+    "bytes": 91418,
+    "sha256": "cc51e52a6624aa064ac1688e4a55326012d11b615d9810d4b5c1f19bf5f579e0"
+  },
+  {
+    "repo": "ruvnet/ruflo",
+    "path": "plugins/ruflo-core/scripts/witness/verify.mjs",
+    "sha": "f5f2e40c318c3c390b057333bd971a6d5a9d5e28",
+    "url": "https://github.com/ruvnet/ruflo/blob/f5f2e40c318c3c390b057333bd971a6d5a9d5e28/plugins/ruflo-core/scripts/witness/verify.mjs",
+    "read_date": "2026-10-20",
+    "bytes": 8937,
+    "sha256": "cfb418b71da82a0e0c13901b5c5de0ce4796424ca6d3885b7152ea4f35d5e90a"
+  },
+  {
+    "repo": "ruvnet/ruflo",
+    "path": "v3/docs/spec/witness-receipt-contract.md",
+    "sha": "f5f2e40c318c3c390b057333bd971a6d5a9d5e28",
+    "url": "https://github.com/ruvnet/ruflo/blob/f5f2e40c318c3c390b057333bd971a6d5a9d5e28/v3/docs/spec/witness-receipt-contract.md",
+    "read_date": "2026-10-20",
+    "bytes": 13616,
+    "sha256": "51ee9c11097a9bda8fcfc6926d6be0187f047fe87a9a119f72115e71f740425d"
+  },
+  {
+    "repo": "obra/superpowers",
+    "path": "skills/verification-before-completion/SKILL.md",
+    "sha": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+    "url": "https://github.com/obra/superpowers/blob/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/verification-before-completion/SKILL.md",
+    "read_date": "2026-10-20",
+    "bytes": 3646,
+    "sha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3"
+  },
+  {
+    "repo": "mvdan/sh",
+    "path": "syntax/parser_test.go",
+    "sha": "f6d205ab76b3e5e89073130c2229a43be04e1e2a",
+    "url": "https://github.com/mvdan/sh/blob/f6d205ab76b3e5e89073130c2229a43be04e1e2a/syntax/parser_test.go",
+    "read_date": "2026-10-20",
+    "sha256": "a42859c3c4ba2d49f5558f6a0e623003795ef306fb08dd8928b563ea99c07420"
+  }
+]

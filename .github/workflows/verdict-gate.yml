@@ -1,5 +1,5 @@
-# The authoritative merge gate for the GO verdict (#452): branch protection
-# requires the `verdict-gate` commit status this workflow posts.
+# The intended authoritative GO-verdict merge gate (#452): once activated,
+# branch protection requires this workflow's `verdict-gate` status. Setup: #594.
 #
 # Why a second workflow: verdict-check.yml runs on `pull_request_review`, and a
 # review run loads its workflow file from the PR's merge ref — a PR can rewrite
@@ -15,7 +15,7 @@
 # that completion wakes this gate. The gate re-derives the verdict from the
 # GitHub API and posts it on the PR's CURRENT head (statuses are latest-wins per
 # context, so a later GO clears an earlier failure without a re-run). A push
-# leaves the new head with no status, which blocks until a fresh GO.
+# leaves the new head with no status, which blocks once this status is required.
 #
 # Ordering: `resolve` names the PR first, so `gate` can serialise on that PR.
 # Every run that can write one PR's status shares one lock and posts in order;

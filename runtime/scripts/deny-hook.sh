@@ -901,47 +901,6 @@ cmd_val = ti.get("command") if (norm_tool == "Bash" and isinstance(ti.get("comma
 raw_command = r(cmd_val)
 
 
-def strip_patch_heredocs(cmd):
-    # `apply_patch <<EOF` (Codex spells patches this way in a shell) feeds the patch on
-    # stdin: its body is DATA, not commands, and its file headers name the writes. Pull
-    # the bodies out for header scanning like the apply_patch tool path (#577) and judge
-    # the command with them removed, so a patch line is never read as shell.
-    bodies, out, lines, i = [], [], cmd.split(chr(10)), 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        if not re.search(r"(^|[^A-Za-z0-9_./-])(apply_patch|applypatch)([^A-Za-z0-9_-]|$)", line):
-            continue
-        m = re.search(r"<<(-?)[ \t]*([" + SQ + DQ + r"]?)([A-Za-z_][A-Za-z0-9_]*)\2", line)
-        if not m:
-            continue
-        body = []
-        while i < len(lines):
-            term = lines[i].lstrip(chr(9)) if m.group(1) else lines[i]
-            if term.rstrip() == m.group(3):
-                break
-            body.append(lines[i])
-            i += 1
-        text = chr(10).join(body)
-        bodies.append(text)
-        # An UNQUOTED delimiter (<<EOF) lets the shell expand $(...), `...` and $VAR in the
-        # body before apply_patch reads it, so such a body is live shell, not data: keep it
-        # in the judged command (#592 review). Only a quoted delimiter, or a body with
-        # nothing the shell would expand, is pure data and may be stripped.
-        quoted = bool(m.group(2))
-        inert = not any(ch in text for ch in ("$", chr(96), chr(92)))
-        if not (quoted or inert):
-            out.extend(body)
-        if i < len(lines):
-            out.append(lines[i])
-            i += 1
-    return chr(10).join(out), bodies
-
-
-raw_command, heredoc_patches = strip_patch_heredocs(raw_command) if norm_tool == "Bash" else (raw_command, [])
-command = c(raw_command)
-
 target_paths = []
 for _k in ("file_path", "notebook_path", "path", "filePath"):
     _v = ti.get(_k)
@@ -981,12 +940,6 @@ def patch_targets(blob):
 
 for _pv in _patch_blobs:
     target_paths.extend(patch_targets(_pv))
-heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
-print(s(norm_tool))
-print(command)
-print(s(target_paths[0] if target_paths else ""))
-for _extra_p in target_paths[1:]:
-    record("F", s(_extra_p))
 # Line 4 onward: C = comparison command, W = write target, A = literal argument,
 # E = an off-repo write with no egress receipt arming it (rule 5, judged here
 # because only this side of the protocol still knows the joining operators).
@@ -1014,11 +967,10 @@ _SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
 
 
 def _split_env_string(text):
-    # GNU env -S word splitting, to head-finding fidelity: blanks separate,
-    # `\_` is a SEPARATOR (not a literal underscore), other `\x` is a literal
-    # x, single/double quotes group (and vanish). A plain .split() kept
-    # `ignore\_--version` as one word, hiding --version inside what read as
-    # a -W value, so a version print armed a send (PR #567 review, P1).
+    # GNU coreutils env invocation: split-string syntax is not shell syntax.
+    # In particular, \c stops argv and \_ separates words only outside quotes.
+    # Environment expansion depends on the future command environment, so refuse
+    # it rather than invent argv that could falsely prove a receipt (#567).
     words, cur, quote = [], [], ""
     started = False  # a quote opens a word even if it adds no characters:
     # `""` is an empty argument env preserves and python consumes (P1).
@@ -1032,31 +984,48 @@ def _split_env_string(text):
 
     while i < len(text):
         ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = ""
-            else:
-                cur.append(ch)
-            i += 1
-            continue
-        if ch in (SQ, DQ):
-            quote = ch
-            started = True
-        elif ch == "\\" and i + 1 < len(text):
+        if ch == "\\":
+            if i + 1 == len(text):
+                raise ValueError("env -S ends in a backslash")
             nxt = text[i + 1]
-            if nxt == "_":
+            if quote == SQ and nxt not in (SQ, "\\"):
+                cur.append(ch)
+                started = True
+                i += 1
+                continue
+            if nxt == "c":
+                if quote:
+                    raise ValueError("env -S has a quoted stop escape")
+                break
+            if nxt == "_" and not quote:
                 flush()
             else:
-                cur.append(nxt)
+                escapes = {"f": chr(12), "n": chr(10), "r": chr(13),
+                           "t": chr(9), "v": chr(11), "_": " ",
+                           "#": "#", "$": "$", DQ: DQ, SQ: SQ, "\\": "\\"}
+                if nxt not in escapes:
+                    raise ValueError("unsupported env -S escape")
+                cur.append(escapes[nxt])
                 started = True
             i += 2
             continue
-        elif ch in " \t":
+        if ch == quote:
+            quote = ""
+        elif not quote and ch in (SQ, DQ):
+            quote = ch
+            started = True
+        elif quote != SQ and ch == "$":
+            raise ValueError("env -S environment expansion cannot prove a receipt")
+        elif not quote and ch == "#" and not started:
+            break
+        elif not quote and ch in " \t\n\r\v\f":
             flush()
         else:
             cur.append(ch)
             started = True
         i += 1
+    if quote:
+        raise ValueError("unclosed env -S quote")
     flush()
     return words
 
@@ -1074,12 +1043,26 @@ def _peel_wrapper(ws, operand_flags, is_env=False):
             return ws[1:]
         if is_env and word in ("-S", "--split-string") and len(ws) > 1:
             # The operand IS the command line env runs: its words take the
-            # head, the words after it become their arguments.
-            return _split_env_string(ws[1]) + ws[2:]
+            # head, the words after it become their arguments. env processes
+            # options in the expanded argv too, before selecting its command.
+            ws = _split_env_string(ws[1]) + ws[2:]
+            continue
+        if is_env and word.startswith("--split-string="):
+            ws = _split_env_string(word.split("=", 1)[1]) + ws[1:]
+            continue
         if is_env and word.startswith("-S") and len(word) > 2:
-            return _split_env_string(word[2:]) + ws[1:]
+            ws = _split_env_string(word[2:]) + ws[1:]
+            continue
         if word in operand_flags and len(ws) > 1:
             ws = ws[2:]
+        elif is_env and word.startswith("-"):
+            # Unknown clusters/abbreviations can contain another -S or an
+            # early-exit option: declining to infer them must fail closed.
+            if word not in ("-", "-i", "--ignore-environment", "-v", "--debug") \
+                    and not any(word.startswith(flag + "=") for flag in operand_flags
+                                if flag.startswith("--")):
+                raise ValueError("unsupported env option")
+            ws = ws[1:]
         elif word.startswith("-"):
             ws = ws[1:]  # a lone "-" is env spelling of -i; no command is "-"
         else:
@@ -1219,15 +1202,10 @@ def _is_send(args):
 
 
 def _balanced_paren_end(text, j):
-    # Index just past the ")" closing the "(" before j (or len(text) if unbalanced).
-    n, level = len(text), 1
-    while j < n and level:
-        if text[j] == chr(92):
-            j += 2
-            continue
-        level += {"(": 1, ")": -1}.get(text[j], 0)
-        j += 1
-    return j, level == 0
+    # Use the same lexical walk as command judgment: quotes, comments, arithmetic
+    # and heredoc data cannot close a surrounding command/process substitution.
+    end, closed = substitution_bodies(text[j:], _stop_paren=True)
+    return j + end, closed
 
 
 def _join_continuations(text):
@@ -1272,81 +1250,146 @@ def _heredoc_body_subs(body):
     return out
 
 
-def _heredoc_delims(line):
-    # [(delimiter, quoted, strip_tabs)] for each << redirection on one line, outside quotes;
-    # <<< is a here-STRING (it expands like any word) and is not a heredoc.
-    out, i, n, in_sq, in_dq = [], 0, len(line), False, False
-    while i < n:
-        ch = line[i]
-        if ch == chr(92) and not in_sq:
-            i += 2
-            continue
-        if ch == SQ and not in_dq:
-            in_sq = not in_sq
-        elif ch == DQ and not in_sq:
-            in_dq = not in_dq
-        elif not (in_sq or in_dq) and line.startswith("<<", i):
-            if line.startswith("<<<", i):
-                i += 3
-                continue
-            j = i + 2
-            dash = line[j:j + 1] == "-"
-            j += 1 if dash else 0
-            while j < n and line[j] in " " + chr(9):
-                j += 1
-            # The delimiter is one shell WORD: quotes may hold spaces (<<"EOF X" ends at the
-            # line `EOF X`), and any quoting at all makes the body literal (#592 review).
-            k, parts, quoted = j, [], False
-            while k < n:
-                c = line[k]
-                if c == SQ:
-                    e = line.find(SQ, k + 1)
-                    e = n if e < 0 else e
-                    parts.append(line[k + 1:e])
-                    quoted, k = True, e + 1
-                elif c == DQ:
-                    e, buf = k + 1, []
-                    while e < n and line[e] != DQ:
-                        if line[e] == chr(92) and e + 1 < n and line[e + 1] in (DQ, chr(92), "$", chr(96)):
-                            e += 1
-                        buf.append(line[e])
-                        e += 1
-                    parts.append("".join(buf))
-                    quoted, k = True, e + 1
-                elif c == chr(92):
-                    parts.append(line[k + 1:k + 2])
-                    quoted, k = True, k + 2
-                elif c in " " + chr(9) + ";|&<>()":
-                    break
-                else:
-                    parts.append(c)
-                    k += 1
-            delim = "".join(parts)
-            if k > j:
-                out.append((delim, quoted, dash))
-            i = k
-            continue
-        elif not (in_sq or in_dq) and ch == "#" and (i == 0 or line[i - 1] in " " + chr(9) + ";|&("):
+def _heredoc_delim(text, i):
+    # Called only at a lexically active <<. Parse its one quote-removed WORD;
+    # nested substitutions and arithmetic are handled by the caller, never rescanned.
+    j = i + 2
+    dash = text[j:j + 1] == "-"
+    j += 1 if dash else 0
+    while j < len(text) and (text[j] in BLANKS or text[j:j + 2] == "\\\n"):
+        j += 2 if text[j:j + 2] == "\\\n" else 1
+    k, parts, quoted, started = j, [], False, False
+    while k < len(text):
+        ch = text[k]
+        if ch == SQ:
+            end = text.find(SQ, k + 1)
+            if end < 0:
+                raise ValueError("unclosed heredoc delimiter quote")
+            parts.append(text[k + 1:end])
+            quoted, started, k = True, True, end + 1
+        elif ch == DQ:
+            end, buf = k + 1, []
+            while end < len(text) and text[end] != DQ:
+                if text[end:end + 2] == "\\\n":
+                    end += 2
+                    continue
+                if text[end] == chr(92) and text[end + 1:end + 2] in (DQ, chr(92), "$", chr(96)):
+                    end += 1
+                buf.append(text[end])
+                end += 1
+            if end == len(text):
+                raise ValueError("unclosed heredoc delimiter quote")
+            parts.append("".join(buf))
+            quoted, started, k = True, True, end + 1
+        elif ch == chr(92):
+            if k + 1 == len(text):
+                raise ValueError("incomplete heredoc delimiter escape")
+            if text[k + 1] != chr(10):
+                parts.append(text[k + 1])
+                quoted, started = True, True
+            k += 2
+        elif ch in BLANKS + chr(10) + ";|&<>()":
+            if ch == "(" and text[k - 1:k] == "$":
+                raise ValueError("unsupported heredoc delimiter word")
             break
-        i += 1
-    return out
+        elif ch == chr(96):
+            raise ValueError("unsupported heredoc delimiter word")
+        else:
+            parts.append(ch)
+            started, k = True, k + 1
+    delim = "".join(parts)
+    if not started or chr(10) in delim:
+        raise ValueError("unsupported heredoc delimiter word")
+    return (delim, quoted, dash), k
 
 
-def substitution_bodies(text, depth=0):
+def _bracket_expression(prefix, text, i):
+    # A literal argument [ is not an arithmetic scope. Inspect the current
+    # command words, using the already sanitized outer surface for substitutions.
+    marker, args, pending = "__orca_bracket__", [], False
+    seg = _split(prefix + marker)[-1][1]
+    for kind, value in shell_tokens(seg):
+        if kind == "redirect":
+            pending = True
+        elif pending:
+            if value.endswith(marker):
+                return ""
+            pending = False
+        else:
+            args.append(value)
+    partial = args.pop()[:-len(marker)]
+    if partial:
+        args.append(partial)
+    words = _plain_words(args)
+    keywords = {"if", "then", "elif", "else", "while", "until", "do", "!"}
+    if not partial and text.startswith("[[", i) and all(word in keywords for word in words):
+        return "conditional"
+    name = r"[A-Za-z_][A-Za-z0-9_]*"
+    def assignment_context(before):
+        before = _plain_words(before)
+        while before and before[0] in keywords:
+            before = _plain_words(before[1:])
+        if before and re.fullmatch(name + r"\(\)", before[0]):
+            before = _plain_words(before[1:])
+        if before and before[0] in ("declare", "typeset", "readonly", "local"):
+            return all(word.startswith("-") for word in before[1:])
+        return not before
+
+    # Compound assignments put the element index after NAME=( or NAME+=(,
+    # possibly following earlier elements. Their << is an arithmetic shift.
+    compound = any(re.match(name + r"\+?=\(", word) and assignment_context(args[:j])
+                   for j, word in enumerate(args))
+    if ((partial and words == [partial] and re.fullmatch(name, partial)) or compound) \
+            and re.search(r"\]\+?=", text[i:]):
+        return "array"
+    return ""
+
+
+def substitution_bodies(text, depth=0, _stop_paren=False):
     # Command substitution runs its body as a command BEFORE the outer word is used:
     # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
     # unquoted heredoc all execute, yet no segment of the outer line names them (#592
     # review). Return every such body (nested ones too) so each is judged as a command.
-    # Text that never runs is NOT scanned: single-quoted words, `# comments`, arithmetic
+    # Text that never runs is NOT scanned: single-quoted words, `# comments`, contexts
     # $((...)), and the body of a heredoc whose delimiter is quoted (<<"EOF", <<\EOF) --
-    # so documentation and fixtures that QUOTE a shell example stay writable.
+    # so documentation and fixtures that QUOTE a shell example stay writable. Return
+    # the command surface without heredoc bodies, plus patch bodies for target checks.
     out, i, n, in_sq, in_dq = [], 0, len(text), False, False
-    line_start = 0
+    source_length, paren_level = n, 1
+    # Continuations normalize the scanned text; boundary callers need an index
+    # into their original text. Retain the position of each surviving character.
+    positions = list(range(n)) if _stop_paren else None
+    line_start = surface_start = 0
+    surface, patches, pending, contexts = [], [], [], []
+    brackets, bracket_kind = 0, ""
     while i < n:
         ch = text[i]
-        if ch == chr(10) and not (in_sq or in_dq):
-            # End of a command line: consume the bodies of the heredocs it opened.
-            pending = _heredoc_delims(text[line_start:i])
+        if not in_sq and ch in "$(<>":
+            # Remove continuations within an opener before deciding its context:
+            # $(\<newline>( is arithmetic, and (\<newline>( opens (( too.
+            end, spelling, spelling_positions = i, [], []
+            while end < n and len(spelling) < 3 and text[end] not in (SQ, DQ, chr(96), chr(10)):
+                if text[end:end + 2] == "\\\n":
+                    end += 2
+                    continue
+                if text[end] == chr(92):
+                    break
+                spelling.append(text[end])
+                if _stop_paren:
+                    spelling_positions.append(positions[end])
+                end += 1
+            if end - i > len(spelling):
+                text = text[:i] + "".join(spelling) + text[end:]
+                if _stop_paren:
+                    positions = positions[:i] + spelling_positions + positions[end:]
+                n, ch = len(text), text[i]
+        if ch == chr(10) and not (in_sq or in_dq or contexts):
+            # Consume only redirections queued by this lexical walk. A raw opener
+            # rescan would re-open inner heredocs after their substitution has closed.
+            opener = text[line_start:i]
+            if pending:
+                surface.append(text[surface_start:i + 1])
+            is_patch = re.search(r"(^|[^A-Za-z0-9_./-])(apply_patch|applypatch)([^A-Za-z0-9_-]|$)", opener)
             i += 1
             for delim, quoted, dash in pending:
                 body_start = i
@@ -1354,7 +1397,15 @@ def substitution_bodies(text, depth=0):
                     nl = text.find(chr(10), i)
                     end = n if nl < 0 else nl
                     line = text[i:end]
-                    if (line.lstrip(chr(9)) if dash else line).rstrip() == delim:
+                    if not quoted:
+                        # A continued physical line is joined BEFORE delimiter matching.
+                        # EO\<newline>F closes EOF; text after it is executable shell.
+                        while nl >= 0 and (len(line) - len(line.rstrip(chr(92)))) % 2:
+                            nl = text.find(chr(10), end + 1)
+                            end = n if nl < 0 else nl
+                            line = text[i:end]
+                        line = _join_continuations(line)
+                    if (line.lstrip(chr(9)) if dash else line) == delim:
                         body = text[body_start:i]
                         i = end + 1
                         break
@@ -1362,8 +1413,15 @@ def substitution_bodies(text, depth=0):
                         body, i = text[body_start:], n
                         break
                     i = nl + 1
-                if not quoted:
+                if dash:
+                    body = chr(10).join(line.lstrip(chr(9)) for line in body.split(chr(10)))
+                if is_patch:
+                    patches.append(body)
+                if not quoted and not _stop_paren:
                     out += _heredoc_body_subs(body)
+            if pending:
+                surface_start = i
+            pending = []
             line_start = i
             continue
         if ch == chr(92) and not in_sq and text[i + 1:i + 2] == chr(10):
@@ -1371,6 +1429,8 @@ def substitution_bodies(text, depth=0):
             # so `a\<newline>#$(cmd)` is the single word `a#$(cmd)` and cmd runs. Delete the
             # pair from the stream (bodies of heredocs are consumed separately, untouched).
             text = text[:i] + text[i + 2:]
+            if _stop_paren:
+                positions = positions[:i] + positions[i + 2:]
             n = len(text)
             # `$\<newline>(cmd)` joins into `$(cmd)`: re-read a substitution opener that sat
             # just before the continuation (no quote char is re-read, so state is unchanged).
@@ -1386,42 +1446,125 @@ def substitution_bodies(text, depth=0):
         if ch == chr(92) and not in_sq:
             i += 2
             continue
-        if ch == SQ and not in_dq:
+        param = contexts[-1][5] if contexts and contexts[-1][0] == "{" else None
+        if param and param["mode"] is None and not (in_sq or in_dq):
+            if ch == "[":
+                param["brackets"] += 1
+            elif ch == "]":
+                param["brackets"] = max(0, param["brackets"] - 1)
+            elif not param["brackets"]:
+                end = i + 1
+                while text[end:end + 2] == "\\\n":
+                    end += 2
+                if param["name"] and ch in "-+=?:#%/^,":
+                    param["mode"] = "default" if ch in "-+=?" or (ch == ":" and text[end:end + 1] in "-+=?" and end < n) else "pattern"
+                param["name"] = True
+        param_quoted = bool(param and param["quoted"] and param["mode"] == "default")
+        if ch == SQ and not in_dq and not param_quoted:
             in_sq = not in_sq
         elif ch == DQ and not in_sq:
             in_dq = not in_dq
-        elif not (in_sq or in_dq) and ch == "#" and (i == 0 or text[i - 1] in " " + chr(9) + chr(10) + ";|&("):
+        elif not (in_sq or in_dq or contexts) and ch == "#" and (i == 0 or text[i - 1] in " " + chr(9) + chr(10) + ";|&("):
             nl = text.find(chr(10), i)
             i = n if nl < 0 else nl
             continue
+        elif not in_sq and text[i:i + 2] in ("${", "$["):
+            opening = text[i + 1]
+            quoted = in_dq or bool(param and param["quoted"])
+            meta = {"quoted": quoted, "mode": None, "brackets": 0, "name": False} if opening == "{" else None
+            contexts.append([opening, "}" if opening == "{" else "]", 1, in_sq, in_dq, meta])
+            in_sq = in_dq = False
+            i += 2
+            continue
+        elif not in_sq and text.startswith("$((", i):
+            contexts.append(["(", ")", 2, in_sq, in_dq, None])
+            in_sq = in_dq = False
+            i += 3
+            continue
+        elif not (in_sq or in_dq) and text.startswith("((", i) and (not contexts or contexts[-1][0] == "("):
+            contexts.append(["(", ")", 2, in_sq, in_dq, None])
+            i += 2
+            continue
+        elif contexts and not (in_sq or in_dq) and ch in contexts[-1][:2]:
+            # Only ${ opens a nested parameter expansion; a plain { is data.
+            if ch != "{" or contexts[-1][0] != "{":
+                contexts[-1][2] += 1 if ch == contexts[-1][0] else -1
+            if contexts[-1][2] == 0:
+                _open, _close, _level, in_sq, in_dq, _meta = contexts.pop()
+        elif _stop_paren and not (in_sq or in_dq or contexts) and ch in "()":
+            paren_level += 1 if ch == "(" else -1
+            if paren_level == 0:
+                return positions[i] + 1, True
+        elif not (in_sq or in_dq or contexts) and ch in "[]":
+            if bracket_kind == "conditional":
+                if text.startswith("]]", i):
+                    brackets, bracket_kind = 0, ""
+                    i += 2
+                    continue
+            elif brackets:
+                brackets += 1 if ch == "[" else -1
+                if not brackets:
+                    bracket_kind = ""
+            elif ch == "[":
+                bracket_kind = _bracket_expression("".join(surface) + text[surface_start:i], text, i)
+                brackets = 2 if bracket_kind == "conditional" else int(bracket_kind == "array")
+                if bracket_kind == "conditional":
+                    i += 2
+                    continue
         elif not in_sq and ch == chr(96):
             j = i + 1
             while j < n and text[j] != chr(96):
                 j += 2 if text[j] == chr(92) else 1
             out.append(text[i + 1:j])
+            surface.append(text[surface_start:i] + "__orca_substitution__")
+            surface_start = j + 1
             i = j
-        elif not (in_sq or in_dq) and text.startswith("<<", i):
-            i += 3 if text.startswith("<<<", i) else 2
+        elif not (in_sq or in_dq or contexts) and text.startswith("<<", i):
+            if brackets:
+                raise ValueError("ambiguous bracketed shift or redirection")
+            if text.startswith("<<<", i):
+                i += 3  # a here-string expands as an ordinary shell word
+            else:
+                delim, i = _heredoc_delim(text, i)
+                if _stop_paren and not delim[0]:
+                    raise ValueError("unsupported empty nested heredoc delimiter")
+                pending.append(delim)
             continue
-        elif not in_sq and ch in "$<>" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
-            if ch != "$" and in_dq:
+        elif not in_sq and ch in "$<>" and text[i + 1:i + 2] == "(":
+            if ch != "$" and (in_dq or param_quoted):
                 i += 1
                 continue  # <(...) inside double quotes is literal text
             j, closed = _balanced_paren_end(text, i + 2)
             out.append(text[i + 2:j - 1] if closed else text[i + 2:])
+            surface.append(text[surface_start:i] + "__orca_substitution__")
+            surface_start = j
             i = j - 1
         i += 1
+    if contexts:
+        raise ValueError("unclosed shell expansion context")
+    if _stop_paren:
+        return source_length, False
     if depth < 4:
-        for body in list(out):
-            out += substitution_bodies(body, depth + 1)
-    return [b for b in out if b.strip()]
+        analyzed = []
+        for body in out:
+            nested, inner_surface, nested_patches = substitution_bodies(body, depth + 1)
+            analyzed += [inner_surface] + nested
+            patches += nested_patches
+        out = analyzed
+    return [b for b in out if b.strip()], "".join(surface) + text[surface_start:], patches
 
 
+_subs, _judged, heredoc_patches = substitution_bodies(raw_command)
+for _sub in _subs:
+    _judged += chr(10) + _sub
+heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
+print(s(norm_tool))
+print(c(_judged))
+print(s(target_paths[0] if target_paths else ""))
+for _extra_p in target_paths[1:]:
+    record("F", s(_extra_p))
 _seg_args = []
 _guard_segs = []
-_judged = raw_command
-for _sub in substitution_bodies(raw_command):
-    _judged += chr(10) + _sub
 for _join, seg in _split(_judged):
     args, writes, pending = [], [], None
     for kind, value in shell_tokens(seg):

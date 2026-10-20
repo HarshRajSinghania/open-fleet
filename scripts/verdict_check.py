@@ -1,7 +1,7 @@
 """Verdict-derived merge check (#452): block merge until a GO verdict is posted at the tip.
 
 Branch protection cannot express ``reviewed_sha == head_sha`` natively, so this
-script is the custom required check: it passes iff the pull request carries a
+script implements the custom check: it passes iff the pull request carries a
 GO verdict review whose ``reviewed_sha`` equals the PR's current head SHA. Any
 push moves the head and fails the check until a fresh GO is posted.
 
@@ -21,8 +21,8 @@ review, P1).
 A self-GO is a SHA binding, NOT independent review: it proves which head its
 author claims to have checked, nothing more. Requiring a second person is
 branch protection's job (required approvals), and this check never substitutes
-for it. The checker itself runs from the BASE commit (verdict-check.yml), so a
-PR cannot rewrite the check that gates it. Approval policy beyond that (how many, from whom, conversations
+for it. The trusted status workflow runs the checker from the default branch
+(verdict-gate.yml); its activation remains pending in #594 (docs/ops.md). Approval policy beyond that (how many, from whom, conversations
 resolved) stays enforced by branch protection itself; this check adds SHA
 binding, not a second approval rule. Dismissed and change-requested reviews
 never count. Short SHAs are rejected: ambiguity in what was reviewed is
@@ -35,14 +35,15 @@ reviews and dismissals only — never pushes, so a transient no-GO state cannot
 fail-poison the head (a FAILED conclusion on the head SHA sticks past a newer
 SUCCESS; only a re-run clears it). Post a new review per verdict.
 
-The authoritative gate is ``--post-status`` (verdict-gate.yml). A
+The intended authoritative gate is ``--post-status`` (verdict-gate.yml), once
+its dedicated app identity and required status are configured (docs/ops.md). A
 ``pull_request_review`` run loads the workflow file from the PR, so its job can
 be rewritten by the PR it gates; verdict-gate.yml is a ``workflow_run`` workflow,
 always loaded from the default branch, and runs THIS file from the default
 branch too. It re-derives the verdict from the GitHub API and posts it as the
 ``verdict-gate`` commit status on the PR's current head. A status is
 latest-wins per context, so a later GO clears an earlier failure without a
-re-run; a push leaves the new head with no status, which blocks until a fresh
+re-run; a push leaves the new head with no status, which blocks once required until a fresh
 GO. With ``--post-status`` the exit code reports whether the status was posted
 (0), not the verdict: the status is the verdict, and a red run on the default
 branch for every unverdicted review would only be noise. Fork PRs carry no PR
@@ -66,7 +67,7 @@ GH_API = "gh api"
 # GitHub-computed review author trust tiers that may carry a COMMENTED GO.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
-# The commit-status context verdict-gate.yml posts; branch protection requires it.
+# Intended required status context; activation is tracked in #594 (docs/ops.md).
 STATUS_CONTEXT = "verdict-gate"
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 

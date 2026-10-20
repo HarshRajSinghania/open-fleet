@@ -286,15 +286,17 @@ class TestQuarantineInvariant(unittest.TestCase):
     mode too. The deny-list resolves from the fleet catalog ($ORCA_FLEET_ROOT
     here), never from the target repo in cwd."""
 
-    def _repo_with_quarantine(self, tmp, quarantined):
+    def _repo_with_quarantine(self, tmp, quarantined, layout="catalog"):
         repo = Path(tmp) / "repo"
-        make_repo(repo)
+        make_repo(repo, base="integ")
         (repo / "runtime").mkdir()
         (repo / "runtime" / "quarantine.json").write_text(
             json.dumps({"quarantined": quarantined}))
-        skill = repo / "skills" / "ship-it"
-        skill.mkdir(parents=True)
+        skill = repo if layout == "copied" else repo / "skills" / "ship-it"
+        skill.mkdir(parents=True, exist_ok=True)
         (skill / "SKILL.md").write_text("# ship-it fixture\n")
+        if layout != "catalog":
+            (skill / "references").mkdir()
         return repo
 
     def _run(self, repo, *extra):
@@ -335,6 +337,85 @@ class TestQuarantineInvariant(unittest.TestCase):
             make_repo(repo)
             (repo / "runtime" / "quarantine.json").mkdir(parents=True)
             self.assertEqual(self._run(repo).returncode, 2)
+
+    def _generic(self, root, mode, mission=None):
+        env = {**os.environ, "OPEN_FLEET_ROOT": str(root), "ORCA_FLEET_ROOT": str(root)}
+        args = (["--mode", "readonly"] if mode == "readonly" else
+                ["--offline", "--base", "integ", "--default", "main"])
+        if mission:
+            args += ["--mission", mission]
+        return run_preflight(*args, cwd=root, env=env)
+
+    def test_named_mission_missing_dependency_refuses_in_either_mode(self):
+        for layout in ("catalog", "bundle", "copied"):
+            for mode in ("write", "readonly"):
+                with self.subTest(layout=layout, mode=mode), tempfile.TemporaryDirectory() as tmp:
+                    repo = self._repo_with_quarantine(tmp, [], layout)
+                    skill = repo if layout == "copied" else repo / "skills" / "ship-it"
+                    (skill / "SKILL.md").write_text("Composes `risk-review`.\n")
+                    result = self._generic(repo, mode, mission="ship-it")
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("missing composed dependency risk-review.md", result.stderr)
+
+    def test_omitted_mission_refuses_active_policy_in_either_mode(self):
+        # CLI seam: a valid start with no identity must not skip quarantine.
+        # Synthetic policies live only in temporary repositories.
+        for layout in ("catalog", "bundle", "copied"):
+            for mode in ("write", "readonly"):
+                for component in ("mission:ship-it", "playbook:risk-review", "pack:gstack"):
+                    with self.subTest(layout=layout, mode=mode, component=component), \
+                            tempfile.TemporaryDirectory() as tmp:
+                        repo = self._repo_with_quarantine(tmp, [{
+                            "component": component, "ref": "*", "reason": "compromised",
+                            "date": "2026-10-14", "by": "human:maintainer"}], layout)
+                        result = self._generic(repo, mode)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertIn("--mission", result.stderr)
+                        self.assertIn("quarantine", result.stderr.lower())
+
+    def test_omitted_mission_refuses_unusable_policy(self):
+        for mode in ("write", "readonly"):
+            for state in ("bad-json", "bad-shape", "invalid-utf8", "directory", "broken-link"):
+                with self.subTest(mode=mode, state=state), tempfile.TemporaryDirectory() as tmp:
+                    repo = self._repo_with_quarantine(tmp, [])
+                    policy = repo / "runtime" / "quarantine.json"
+                    policy.unlink()
+                    if state == "directory":
+                        policy.mkdir()
+                    elif state == "broken-link":
+                        policy.symlink_to("missing-policy.json")
+                    else:
+                        policy.write_bytes({"bad-json": b"{broken", "bad-shape": b"{}",
+                                            "invalid-utf8": b"\xff\xfe"}[state])
+                    result = self._generic(repo, mode)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("quarantine.json", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_omitted_mission_allows_empty_policy_diagnostics(self):
+        for layout in ("catalog", "bundle", "copied"):
+            for mode in ("write", "readonly"):
+                with self.subTest(layout=layout, mode=mode), tempfile.TemporaryDirectory() as tmp:
+                    repo = self._repo_with_quarantine(tmp, [], layout)
+                    result = self._generic(repo, mode)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_copied_runtime_without_checker_cannot_clear_generic_start(self):
+        for mode in ("write", "readonly"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                repo = self._repo_with_quarantine(tmp, [], "copied")
+                scripts = repo / "runtime" / "scripts"
+                scripts.mkdir()
+                for name in ("preflight.py", "gitexec.py"):
+                    shutil.copy2(SCRIPT.parent / name, scripts / name)
+                args = (["--mode", "readonly"] if mode == "readonly" else
+                        ["--offline", "--base", "integ", "--default", "main"])
+                env = {k: v for k, v in os.environ.items() if k not in
+                       {"OPEN_FLEET_ROOT", "ORCA_FLEET_ROOT", "CLAUDE_PLUGIN_ROOT"}}
+                result = subprocess.run([sys.executable, str(scripts / "preflight.py"), *args],
+                                        capture_output=True, text=True, cwd=repo, env=env, timeout=60)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("quarantine_check.py unloadable", result.stderr)
 
     def test_target_repo_cannot_shadow_the_fleet_list(self):
         # cwd holds a (forged empty) deny-list; the fleet root holds the real

@@ -208,7 +208,7 @@ def _catalog_roots() -> list[Path]:
     return roots
 
 
-def _quarantine_refusal(mission: str) -> str | None:
+def _quarantine_refusal(mission: str | None) -> str | None:
     """Why this mission may not start under runtime/quarantine.json, or None.
 
     The matcher lives in quarantine_check.py beside this file (loaded by path,
@@ -234,6 +234,11 @@ def _quarantine_refusal(mission: str) -> str | None:
     entries, errors, _ = module.load_quarantine(root)
     if errors:
         return "runtime/quarantine.json is malformed: " + "; ".join(errors)
+    if not mission:
+        if entries:
+            return ("--mission is required while runtime/quarantine.json has active entries "
+                    "— cannot clear an unidentified mission against the deny-list")
+        return None  # generic diagnostics remain useful with a valid empty list
     try:
         view = module.mission_view(root, mission)
     except module.QuarantineError as err:
@@ -482,7 +487,8 @@ def main(argv: list[str]) -> int:
         "--mission",
         metavar="NAME",
         help="Refuse to start if this mission (or a playbook it composes) is quarantined "
-        "in runtime/quarantine.json (#558), or if --runtime lacks its required capabilities (#586).",
+        "in runtime/quarantine.json (#558); required when that list has entries. "
+        "Also refuse if --runtime lacks its required capabilities (#586).",
     )
     parser.add_argument(
         "--runtime",
@@ -562,12 +568,12 @@ def main(argv: list[str]) -> int:
 
     # 2b. Quarantine (#558): a quarantined mission may not start, in either
     #     mode — readonly fleets dispatch missions too. Before the readonly
-    #     early return on purpose.
-    if args.mission:
-        refusal = _quarantine_refusal(args.mission)
-        if refusal:
-            print(f"preflight: ERROR: QUARANTINED {refusal}", file=sys.stderr)
-            return 2
+    #     early return on purpose. An omitted identity cannot bypass the list;
+    #     only valid empty policies allow generic diagnostics.
+    refusal = _quarantine_refusal(args.mission)
+    if refusal:
+        print(f"preflight: ERROR: QUARANTINED {refusal}", file=sys.stderr)
+        return 2
 
     if effective_mode == "readonly":
         if args.json and cap_info is not None:

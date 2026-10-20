@@ -395,6 +395,55 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
         self.assertIn("READY=ready", p.stdout)
         self.assertIn("DISPATCH=disp_", p.stdout)
 
+    def test_inject_claim_excludes_worker_start_during_delivery(self):
+        # The delivery callback fixes the interleaving: a second provider competes
+        # after inject enters its transport but before that transport returns.
+        env = {
+            "OPEN_FLEET_STATE_DB": str(Path(self.tmp.name) / "state.db"),
+            "OPEN_FLEET_POSIX_MUX": "dry-run",
+        }
+        provider = self.posix_mod.PosixWorktreeProvider(repo_root=self.repo, env=env)
+        competing_runner = mock.Mock(return_value={"pid": 0, "backend": "dry-run"})
+        competitor = self.posix_mod.PosixWorktreeProvider(
+            repo_root=self.repo, env=env, runner=competing_runner
+        )
+        host_task = provider.task_create(spec="Host terminal", title="Host")["task"]
+        host = provider.worker_start(
+            task_id=host_task["id"], worktree="current", agent="claude", profile="ro"
+        )
+        injected_task = provider.task_create(spec="Inject once", title="Inject")["task"]
+        deliver = provider._deliver_terminal_input
+
+        def deliver_while_start_competes(term_row, text, enter=True):
+            self.assertEqual(json.loads(text)["taskId"], injected_task["id"])
+            with self.assertRaises(self.providers.ProviderError) as blocked:
+                competitor.worker_start(
+                    task_id=injected_task["id"], worktree="current",
+                    agent="claude", profile="ro",
+                )
+            self.assertEqual(blocked.exception.code, "task_not_startable")
+            with competitor.state._connect() as conn:
+                status = conn.execute(
+                    "SELECT status FROM tasks WHERE id = ?", (injected_task["id"],)
+                ).fetchone()["status"]
+            self.assertEqual(status, "dispatched")
+            return deliver(term_row, text, enter=enter)
+
+        with mock.patch.object(
+            provider, "_deliver_terminal_input", side_effect=deliver_while_start_competes
+        ) as delivery:
+            injected = provider.dispatch_inject(injected_task["id"], host["agentTerminalHandle"])
+
+        self.assertTrue(injected["injected"])
+        delivery.assert_called_once()
+        competing_runner.assert_not_called()
+        workers = competitor.worker_list(task=injected_task["id"])["workers"]
+        self.assertEqual([w["dispatchId"] for w in workers], [injected["dispatchId"]])
+        inbox = self.repo / ".open-fleet" / "inbox.jsonl"
+        messages = [json.loads(line) for line in inbox.read_text().splitlines()]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(json.loads(messages[0]["text"])["taskId"], injected_task["id"])
+
     def test_spawn_worker_sh_enforces_monotonic_parent_profile(self):
         scratch = Path(self.tmp.name) / "scratch2"
         scratch.mkdir()

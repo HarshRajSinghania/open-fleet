@@ -517,6 +517,29 @@ class TestCommandSubstitution(HookCase):
                         "A=$(echo safe) a[1 << 2]=value\ngh issue close 34"):
             result = self.fire(wrapped("exec_command", cmd=command))
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for prefix in ("a=([1<<2]=safe)", "items+=( [1 << 2]=safe )",
+                       "items=(first [1<<2]=safe)",
+                       "declare -a a=([1<<2]=safe)", "typeset -a a=([1<<2]=safe)",
+                       "readonly -a a=([1<<2]=safe)",
+                       "if true; then a=([1<<2]=safe); fi",
+                       "if a=([1<<2]=safe); then :; fi",
+                       "f() { local -a a=([1<<2]=safe); }; f"):
+            for suffix in ("gh issue close 34", "git push --force origin topic"):
+                with self.subTest(compound=prefix, live=suffix):
+                    result = self.fire(wrapped("exec_command", cmd=prefix + "\n" + suffix))
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for prefix in ("a=([4]=safe)", "items+=( [4]=safe )",
+                       "items=(first [4]=safe)",
+                       "declare -a a=([4]=safe)", "typeset -a a=([4]=safe)",
+                       "readonly -a a=([4]=safe)", "if true; then a=([4]=safe); fi",
+                       "if a=([4]=safe); then :; fi", "f() { local -a a=([4]=safe); }; f"):
+            doc = prefix + "\ncat <<'EOF'\ngh issue close 34\nEOF\n"
+            with self.subTest(compound=prefix, literal=True):
+                result = self.fire(wrapped("exec_command", cmd=doc + "echo done"))
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+            with self.subTest(compound=prefix, live=True):
+                result = self.fire(wrapped("exec_command", cmd=doc + "gh issue close 34"))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
     def test_arithmetic_shifts_never_open_heredocs(self):
         prefixes = (

@@ -1324,7 +1324,22 @@ def _bracket_expression(prefix, text, i):
     keywords = {"if", "then", "elif", "else", "while", "until", "do", "!"}
     if not partial and text.startswith("[[", i) and all(word in keywords for word in words):
         return "conditional"
-    if partial and words == [partial] and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", partial) \
+    name = r"[A-Za-z_][A-Za-z0-9_]*"
+    def assignment_context(before):
+        before = _plain_words(before)
+        while before and before[0] in keywords:
+            before = _plain_words(before[1:])
+        if before and re.fullmatch(name + r"\(\)", before[0]):
+            before = _plain_words(before[1:])
+        if before and before[0] in ("declare", "typeset", "readonly", "local"):
+            return all(word.startswith("-") for word in before[1:])
+        return not before
+
+    # Compound assignments put the element index after NAME=( or NAME+=(,
+    # possibly following earlier elements. Their << is an arithmetic shift.
+    compound = any(re.match(name + r"\+?=\(", word) and assignment_context(args[:j])
+                   for j, word in enumerate(args))
+    if ((partial and words == [partial] and re.fullmatch(name, partial)) or compound) \
             and re.search(r"\]\+?=", text[i:]):
         return "array"
     return ""

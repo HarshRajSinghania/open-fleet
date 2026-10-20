@@ -884,6 +884,8 @@ _PASSIVE_PREDICATE_RE = re.compile(
     r"(?P<modifiers>(?:(?:not|never|\w+ly)\s+)*)"
     r"(?P<verb>executed|run|invoked|applied|downloaded|attempted|rejected|refused|ignored|declined)\b"
 )
+_REPORT_ADJUNCT_RE = re.compile(r"(?i)\b(?:when|while|after|before|since|because|once)\b")
+_REPORT_COMPLEMENT_RE = re.compile(r"(?i)\b(?:that|whether|if|when|where|why|how|what|who|which)\b")
 _CLAUSE_BOUNDARY_RE = re.compile(
     r";|(?<=[.!?])\s+|\b(?:but|however)\b|"
     r"\band\s+(?=(?:I|we|refus\w*|reject\w*|declin\w*)\b)", re.I
@@ -921,6 +923,19 @@ def _action_predicates(prose: str) -> list:
     return predicates
 
 
+def _report_execution_adjunct(gap: str) -> bool:
+    """Distinguish an object's factual adjunct from a denied clausal report."""
+    for adjunct in _REPORT_ADJUNCT_RE.finditer(gap):
+        observed_object = gap[:adjunct.start()].strip()
+        if (not observed_object or _REPORT_ADJUNCT_RE.match(observed_object)
+                or _REPORT_COMPLEMENT_RE.search(observed_object)):
+            continue
+        subject = gap[adjunct.end():]
+        if re.fullmatch(r"[\w\s'-]*", subject) and not _REPORT_COMPLEMENT_RE.search(subject):
+            return True
+    return False
+
+
 def _quoted_action_operand(prose: str, start: int, end: int) -> bool:
     """Associate a quote with its active owner or an adjacent definite passive.
 
@@ -933,8 +948,10 @@ def _quoted_action_operand(prose: str, start: int, end: int) -> bool:
     report = reports[-1] if reports and (
         not predicates or reports[-1].start("verb") > predicates[-1][0].start()
     ) else None
-    # A negated observation does not assert that its quoted command executed.
-    if report and not _affirmative_action(prefix[:report.start("verb")]):
+    # Negating a clausal report denies its execution claim. Negating an observed
+    # object ("no errors when ...") leaves a separate factual adjunct intact.
+    if (report and not _affirmative_action(prefix[:report.start("verb")])
+            and not _report_execution_adjunct(prefix[report.end("verb"):])):
         return False
     # An explicit following passive states what happened to this quoted command,
     # even when the preceding predicate says the execution was observed.

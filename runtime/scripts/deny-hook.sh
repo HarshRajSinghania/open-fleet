@@ -1202,15 +1202,10 @@ def _is_send(args):
 
 
 def _balanced_paren_end(text, j):
-    # Index just past the ")" closing the "(" before j (or len(text) if unbalanced).
-    n, level = len(text), 1
-    while j < n and level:
-        if text[j] == chr(92):
-            j += 2
-            continue
-        level += {"(": 1, ")": -1}.get(text[j], 0)
-        j += 1
-    return j, level == 0
+    # Use the same lexical walk as command judgment: quotes, comments, arithmetic
+    # and heredoc data cannot close a surrounding command/process substitution.
+    end, closed = substitution_bodies(text[j:], _stop_paren=True)
+    return j + end, closed
 
 
 def _join_continuations(text):
@@ -1308,7 +1303,34 @@ def _heredoc_delim(text, i):
     return (delim, quoted, dash), k
 
 
-def substitution_bodies(text, depth=0):
+def _bracket_expression(prefix, text, i):
+    # A literal argument [ is not an arithmetic scope. Inspect the current
+    # command words, using the already sanitized outer surface for substitutions.
+    marker, args, pending = "__orca_bracket__", [], False
+    seg = _split(prefix + marker)[-1][1]
+    for kind, value in shell_tokens(seg):
+        if kind == "redirect":
+            pending = True
+        elif pending:
+            if value.endswith(marker):
+                return ""
+            pending = False
+        else:
+            args.append(value)
+    partial = args.pop()[:-len(marker)]
+    if partial:
+        args.append(partial)
+    words = _plain_words(args)
+    keywords = {"if", "then", "elif", "else", "while", "until", "do", "!"}
+    if not partial and text.startswith("[[", i) and all(word in keywords for word in words):
+        return "conditional"
+    if partial and words == [partial] and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", partial) \
+            and re.search(r"\]\+?=", text[i:]):
+        return "array"
+    return ""
+
+
+def substitution_bodies(text, depth=0, _stop_paren=False):
     # Command substitution runs its body as a command BEFORE the outer word is used:
     # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
     # unquoted heredoc all execute, yet no segment of the outer line names them (#592
@@ -1318,15 +1340,19 @@ def substitution_bodies(text, depth=0):
     # so documentation and fixtures that QUOTE a shell example stay writable. Return
     # the command surface without heredoc bodies, plus patch bodies for target checks.
     out, i, n, in_sq, in_dq = [], 0, len(text), False, False
+    source_length, paren_level = n, 1
+    # Continuations normalize the scanned text; boundary callers need an index
+    # into their original text. Retain the position of each surviving character.
+    positions = list(range(n)) if _stop_paren else None
     line_start = surface_start = 0
     surface, patches, pending, contexts = [], [], [], []
-    brackets = 0
+    brackets, bracket_kind = 0, ""
     while i < n:
         ch = text[i]
         if not in_sq and ch in "$(<>":
             # Remove continuations within an opener before deciding its context:
             # $(\<newline>( is arithmetic, and (\<newline>( opens (( too.
-            end, spelling = i, []
+            end, spelling, spelling_positions = i, [], []
             while end < n and len(spelling) < 3 and text[end] not in (SQ, DQ, chr(96), chr(10)):
                 if text[end:end + 2] == "\\\n":
                     end += 2
@@ -1334,9 +1360,13 @@ def substitution_bodies(text, depth=0):
                 if text[end] == chr(92):
                     break
                 spelling.append(text[end])
+                if _stop_paren:
+                    spelling_positions.append(positions[end])
                 end += 1
             if end - i > len(spelling):
                 text = text[:i] + "".join(spelling) + text[end:]
+                if _stop_paren:
+                    positions = positions[:i] + spelling_positions + positions[end:]
                 n, ch = len(text), text[i]
         if ch == chr(10) and not (in_sq or in_dq or contexts):
             # Consume only redirections queued by this lexical walk. A raw opener
@@ -1372,7 +1402,7 @@ def substitution_bodies(text, depth=0):
                     body = chr(10).join(line.lstrip(chr(9)) for line in body.split(chr(10)))
                 if is_patch:
                     patches.append(body)
-                if not quoted:
+                if not quoted and not _stop_paren:
                     out += _heredoc_body_subs(body)
             if pending:
                 surface_start = i
@@ -1384,6 +1414,8 @@ def substitution_bodies(text, depth=0):
             # so `a\<newline>#$(cmd)` is the single word `a#$(cmd)` and cmd runs. Delete the
             # pair from the stream (bodies of heredocs are consumed separately, untouched).
             text = text[:i] + text[i + 2:]
+            if _stop_paren:
+                positions = positions[:i] + positions[i + 2:]
             n = len(text)
             # `$\<newline>(cmd)` joins into `$(cmd)`: re-read a substitution opener that sat
             # just before the continuation (no quote char is re-read, so state is unchanged).
@@ -1399,7 +1431,21 @@ def substitution_bodies(text, depth=0):
         if ch == chr(92) and not in_sq:
             i += 2
             continue
-        if ch == SQ and not in_dq:
+        param = contexts[-1][5] if contexts and contexts[-1][0] == "{" else None
+        if param and param["mode"] is None and not (in_sq or in_dq):
+            if ch == "[":
+                param["brackets"] += 1
+            elif ch == "]":
+                param["brackets"] = max(0, param["brackets"] - 1)
+            elif not param["brackets"]:
+                end = i + 1
+                while text[end:end + 2] == "\\\n":
+                    end += 2
+                if param["name"] and ch in "-+=?:#%/^,":
+                    param["mode"] = "default" if ch in "-+=?" or (ch == ":" and text[end:end + 1] in "-+=?" and end < n) else "pattern"
+                param["name"] = True
+        param_quoted = bool(param and param["quoted"] and param["mode"] == "default")
+        if ch == SQ and not in_dq and not param_quoted:
             in_sq = not in_sq
         elif ch == DQ and not in_sq:
             in_dq = not in_dq
@@ -1409,17 +1455,19 @@ def substitution_bodies(text, depth=0):
             continue
         elif not in_sq and text[i:i + 2] in ("${", "$["):
             opening = text[i + 1]
-            contexts.append([opening, "}" if opening == "{" else "]", 1, in_sq, in_dq])
+            quoted = in_dq or bool(param and param["quoted"])
+            meta = {"quoted": quoted, "mode": None, "brackets": 0, "name": False} if opening == "{" else None
+            contexts.append([opening, "}" if opening == "{" else "]", 1, in_sq, in_dq, meta])
             in_sq = in_dq = False
             i += 2
             continue
         elif not in_sq and text.startswith("$((", i):
-            contexts.append(["(", ")", 2, in_sq, in_dq])
+            contexts.append(["(", ")", 2, in_sq, in_dq, None])
             in_sq = in_dq = False
             i += 3
             continue
-        elif not (in_sq or in_dq) and text.startswith("((", i):
-            contexts.append(["(", ")", 2, in_sq, in_dq])
+        elif not (in_sq or in_dq) and text.startswith("((", i) and (not contexts or contexts[-1][0] == "("):
+            contexts.append(["(", ")", 2, in_sq, in_dq, None])
             i += 2
             continue
         elif contexts and not (in_sq or in_dq) and ch in contexts[-1][:2]:
@@ -1427,9 +1475,27 @@ def substitution_bodies(text, depth=0):
             if ch != "{" or contexts[-1][0] != "{":
                 contexts[-1][2] += 1 if ch == contexts[-1][0] else -1
             if contexts[-1][2] == 0:
-                _open, _close, _level, in_sq, in_dq = contexts.pop()
+                _open, _close, _level, in_sq, in_dq, _meta = contexts.pop()
+        elif _stop_paren and not (in_sq or in_dq or contexts) and ch in "()":
+            paren_level += 1 if ch == "(" else -1
+            if paren_level == 0:
+                return positions[i] + 1, True
         elif not (in_sq or in_dq or contexts) and ch in "[]":
-            brackets = max(0, brackets + (1 if ch == "[" else -1))
+            if bracket_kind == "conditional":
+                if text.startswith("]]", i):
+                    brackets, bracket_kind = 0, ""
+                    i += 2
+                    continue
+            elif brackets:
+                brackets += 1 if ch == "[" else -1
+                if not brackets:
+                    bracket_kind = ""
+            elif ch == "[":
+                bracket_kind = _bracket_expression("".join(surface) + text[surface_start:i], text, i)
+                brackets = 2 if bracket_kind == "conditional" else int(bracket_kind == "array")
+                if bracket_kind == "conditional":
+                    i += 2
+                    continue
         elif not in_sq and ch == chr(96):
             j = i + 1
             while j < n and text[j] != chr(96):
@@ -1445,10 +1511,12 @@ def substitution_bodies(text, depth=0):
                 i += 3  # a here-string expands as an ordinary shell word
             else:
                 delim, i = _heredoc_delim(text, i)
+                if _stop_paren and not delim[0]:
+                    raise ValueError("unsupported empty nested heredoc delimiter")
                 pending.append(delim)
             continue
         elif not in_sq and ch in "$<>" and text[i + 1:i + 2] == "(":
-            if ch != "$" and in_dq:
+            if ch != "$" and (in_dq or param_quoted):
                 i += 1
                 continue  # <(...) inside double quotes is literal text
             j, closed = _balanced_paren_end(text, i + 2)
@@ -1459,6 +1527,8 @@ def substitution_bodies(text, depth=0):
         i += 1
     if contexts:
         raise ValueError("unclosed shell expansion context")
+    if _stop_paren:
+        return source_length, False
     if depth < 4:
         analyzed = []
         for body in out:

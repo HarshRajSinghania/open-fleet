@@ -423,6 +423,101 @@ class TestCommandSubstitution(HookCase):
                 result = self.fire(wrapped("exec_command", cmd=command))
                 self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
 
+    def test_parentheses_in_nested_heredoc_bodies_are_literal(self):
+        for opener, terminator, tab in (("<<'EOF'", "EOF", ""),
+                                         ('<<"EOF X"', "EOF X", ""),
+                                         (r"<<\EOF", "EOF", ""),
+                                         ("<<-'EOF'", "EOF", "\t"),
+                                         ("<<')'", ")", ""),
+                                         ('<<"("', "(", "")):
+            for paren in (")", "(", "))", "(("):
+                literal = "data " + paren if paren == terminator else paren
+                body = f"{tab}{literal}\n{tab}gh issue close 34"
+                inner = f"cat {opener}\n{body}\n{tab}{terminator}\n"
+                for command in (f"echo $({inner})\necho done",
+                                f"cat <({inner})\necho done"):
+                    with self.subTest(command=command):
+                        result = self.fire(wrapped("exec_command", cmd=command))
+                        self.assertEqual((result.returncode, result.stdout.strip()),
+                                         (0, ""), result.stderr)
+
+    def test_literal_nested_parentheses_cannot_hide_outer_writes(self):
+        for paren in (")", "("):
+            prefix = f"echo $(cat <<'EOF'\n{paren}\ncat <<'OTHER'\nEOF\n)\n"
+            for suffix in ("gh issue close 34", "git push --force origin topic"):
+                command = prefix + suffix + "\nOTHER"
+                with self.subTest(command=command):
+                    result = self.fire(wrapped("exec_command", cmd=command))
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertTrue(result.stderr.strip())
+        for command in (
+            "echo $(cat <<EOF\n)\n$(gh issue close 34)\nEOF\n)\necho done",
+            "echo $(cat <<'EOF'\n)\nliteral\nEOF\ngh issue close 34\n)\necho done",
+        ):
+            with self.subTest(command=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_substitution_end_respects_quotes_comments_and_continuations(self):
+        for command in (
+            "echo $(printf '%s\\n' ')' '(')\necho done",
+            "echo $(echo safe # ) is a comment\n)\necho done",
+            "echo $(cat <<\\\n'EOF'\n)\ngh issue close 34\nEOF\n)\\\n && echo done",
+            "echo $(echo $((1 << 2))\ncat <<'EOF'\n)\ngh issue close 34\nEOF\n)\necho done",
+            "echo $(cat <<'EOF'\nprintf ')'\ngit push --force origin topic\nEOF\n)\necho done",
+            "echo $(cat <<')'\ngit push --force origin topic\n)\n)\necho done",
+        ):
+            with self.subTest(command=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+        # Bash can end an old-style command substitution early with this empty
+        # delimiter spelling, so unsupported nested empty delimiters fail closed.
+        command = "echo $(cat <<''\n)\ngh issue close 34\n\n)\necho done"
+        result = self.fire(wrapped("exec_command", cmd=command))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_parameter_defaults_keep_surrounding_quote_rules(self):
+        for command in (
+            'echo "${unset:-\'$(gh issue close 34)\'}"',
+            'echo "${outer:-${inner:-\'$(gh issue close 34)\'}}"',
+            'echo "${unset:-\'`gh issue close 34`\'}"',
+            'echo "${array[0]:-\'$(gh issue close 34)\'}"',
+            'echo "${value#<(gh issue close 34)}"',
+            'echo "${value%<(gh issue close 34)}"',
+            'echo "${value/<(gh issue close 34)/safe}"',
+        ):
+            with self.subTest(live=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for command in (
+            "echo ${unset:-'$(gh issue close 34)'}",
+            'echo "${unset:-\'\\$(gh issue close 34)\'}"',
+            'echo "${unset:-<(gh issue close 34)}"',
+            'echo "${unset:-((literal}"',
+            'echo "${value#\'$(gh issue close 34)\'}"',
+            'echo "${value%\'$(gh issue close 34)\'}"',
+            'echo "${value/\'$(gh issue close 34)\'/safe}"',
+        ):
+            with self.subTest(literal=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+
+    def test_literal_bracket_arguments_do_not_open_expression_contexts(self):
+        for prefix in ("grep -F [ README.md", "printf '%s\\n' [",
+                       "grep -F [[ README.md", "grep -F a[ README.md"):
+            for separator in ("\n", "; ", " && "):
+                doc = prefix + separator + "cat <<'EOF'\ngh issue close 34\nEOF\n"
+                with self.subTest(literal=doc):
+                    result = self.fire(wrapped("exec_command", cmd=doc + "echo done"))
+                    self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+                with self.subTest(live=doc):
+                    result = self.fire(wrapped("exec_command", cmd=doc + "gh issue close 34"))
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for command in ("[[\n4 -eq 1<<2\n]]\ngh issue close 34",
+                        "A=$(echo safe) a[1 << 2]=value\ngh issue close 34"):
+            result = self.fire(wrapped("exec_command", cmd=command))
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
     def test_arithmetic_shifts_never_open_heredocs(self):
         prefixes = (
             "echo $((1 << 2))", "echo $((1<<2))", "((1 << 2))", "((1<<2))",

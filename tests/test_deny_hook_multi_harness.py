@@ -440,7 +440,15 @@ class TestCommandSubstitution(HookCase):
             with self.subTest(live=cmd):
                 r = self.fire(wrapped("exec_command", cmd=cmd), env)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        inert = (f"cat <<EOF{nl}x{bs}$(git push --force origin topic){nl}EOF",
+        live += (f'echo "{bs}{bs}${bs}{nl}(git push --force origin topic)"',  # \\ = literal \, $ live
+                 f'echo "${bs}{nl}(git push --force origin topic)"')
+        for cmd in live[-2:]:
+            with self.subTest(live=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        inert = (f'echo "{bs}${bs}{nl}(git push --force origin topic)"',  # escaped $: literal example
+                 f"echo {bs}${bs}{nl}(git push --force origin topic)",
+                 f"cat <<EOF{nl}x{bs}$(git push --force origin topic){nl}EOF",
                  f"cat <<EOF{nl}x{bs}{bs}{bs}$(git push --force origin topic){nl}EOF",
                  f"echo {bs}{bs}{nl}# $(git push --force origin topic)")
         for cmd in inert:

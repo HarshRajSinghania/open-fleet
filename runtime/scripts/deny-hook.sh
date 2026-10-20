@@ -1374,8 +1374,14 @@ def substitution_bodies(text, depth=0):
             n = len(text)
             # `$\<newline>(cmd)` joins into `$(cmd)`: re-read a substitution opener that sat
             # just before the continuation (no quote char is re-read, so state is unchanged).
+            # An ESCAPED opener (`\$\<newline>(` prints a literal example) stays literal:
+            # an odd run of backslashes right before it means it was escaped (#592 review).
             if i > 0 and text[i - 1] in "$<>":
-                i -= 1
+                k = i - 1
+                while k > 0 and text[k - 1] == chr(92):
+                    k -= 1
+                if (i - 1 - k) % 2 == 0:
+                    i -= 1
             continue
         if ch == chr(92) and not in_sq:
             i += 2

@@ -5,6 +5,13 @@
   "as_of": "2026-10-20",
   "inspected_main": "42d28e4c7413fc369ebe79ae909fce613ca216b7",
   "inspected_pr_592": "d9787142827f4840cd6a20a5fea7d02d683aee40",
+  "external_dependencies": {
+    "PR592": {
+      "url": "https://github.com/ravidsrk/orca-fleet/pull/592",
+      "status": "merged",
+      "merge_commit": "38aed6a6ef4a8873ef70504336976fd47dc3de87"
+    }
+  },
   "roadmap_epic": "https://github.com/ravidsrk/orca-fleet/issues/593",
   "release_epic": "https://github.com/ravidsrk/orca-fleet/issues/526",
   "work_packages": [
@@ -41,7 +48,7 @@
       "hard_dependencies": [
         "PR592"
       ],
-      "entry_state": "Fixture prep; live follow-through after #592"
+      "entry_state": "Ready to scope"
     },
     {
       "code": "R04",
@@ -54,7 +61,7 @@
       "hard_dependencies": [
         "PR592"
       ],
-      "entry_state": "Fixture prep; live follow-through after #592"
+      "entry_state": "Ready to scope"
     },
     {
       "code": "R05",
@@ -67,7 +74,7 @@
       "hard_dependencies": [
         "PR592"
       ],
-      "entry_state": "Fixture prep; live follow-through after #592"
+      "entry_state": "Ready to scope"
     },
     {
       "code": "R06",
@@ -117,7 +124,7 @@
       "hard_dependencies": [
         "PR592"
       ],
-      "entry_state": "Fixture prep; live follow-through after #592"
+      "entry_state": "Ready to scope"
     },
     {
       "code": "R10",

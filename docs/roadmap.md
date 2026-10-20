@@ -21,8 +21,11 @@ existing process; release, credential, spending and policy gates retain their ow
 
 ## What changed since the previous roadmap
 
-At the 2026-10-20 snapshot, main was `42d28e4c`; [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) at `d9787142` was open with
-green checks. These are separate facts: the fixes in that PR are not yet on main.
+Research began against main `42d28e4c` and [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592)
+at `d9787142`. That PR has since merged into main as
+[`38aed6a6`](https://github.com/ravidsrk/orca-fleet/commit/38aed6a6ef4a8873ef70504336976fd47dc3de87),
+satisfying the prerequisite for R03, R04, R05 and R09. The dated source briefs retain
+their original inspection snapshots.
 
 | Previous work | Verified status and next action |
 |---|---|
@@ -102,17 +105,17 @@ live protocol service support and legal conformance are not assumed.
 
 ## Work packages
 
-| Issue | Work package | Wave / size | Hard prerequisite | Entry state at filing |
+| Issue | Work package | Wave / size | Hard prerequisite | Current entry state |
 |---|---|---|---|---|
 | [R01 / #594](https://github.com/ravidsrk/orca-fleet/issues/594) | Activate the trusted verdict-gate identity in branch protection | W0 / S | — | Needs human |
 | [R02 / #595](https://github.com/ravidsrk/orca-fleet/issues/595) | Complete the independent-maintainer review witness for H-10 | W0 / S | — | Needs human |
-| [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596) | Publish witnessed provider and harness certification with a reproducible first-run path | W1 / L | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) | Fixture prep; live follow-through after #592 |
-| [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) | Reconcile POSIX worker launch after crashes at enumerated lifecycle boundaries | W1 / M | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) | Fixture prep; live follow-through after #592 |
-| [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598) | Differential-test deny-hook shell parsing against real shell behavior | W1 / M | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) | Fixture prep; live follow-through after #592 |
+| [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596) | Publish witnessed provider and harness certification with a reproducible first-run path | W1 / L | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
+| [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) | Reconcile POSIX worker launch after crashes at enumerated lifecycle boundaries | W1 / M | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
+| [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598) | Differential-test deny-hook shell parsing against real shell behavior | W1 / M | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
 | [R06 / #599](https://github.com/ravidsrk/orca-fleet/issues/599) | Persist and fence the single-conductor merge queue | W1 / L | [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) | After R04 |
 | [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) | Cover the remaining verifier invariants with isolated VF-Bench traps | W2 / M | — | Ready to scope |
 | [R08 / #601](https://github.com/ravidsrk/orca-fleet/issues/601) | Make VF-Bench independently runnable with held-out and temporal evaluation | W2 / L | [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) | After R07 |
-| [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602) | Evaluate adversarial worker trajectories using observed actions and state | W2 / L | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) | Fixture prep; live follow-through after #592 |
+| [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602) | Evaluate adversarial worker trajectories using observed actions and state | W2 / L | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
 | [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603) | Derive run and wave metrics from an append-only event record | W2 / M | — | Ready to scope |
 | [R11 / #604](https://github.com/ravidsrk/orca-fleet/issues/604) | Measure the WIP throughput curve before changing fleet concurrency defaults | W2 / M | — | Protocol prep ready; authorize live-run budget |
 | [R12 / #605](https://github.com/ravidsrk/orca-fleet/issues/605) | Bind episodic memory hints to source revision and untrusted provenance | W3 / M | — | Ready to scope |
@@ -121,8 +124,9 @@ live protocol service support and legal conformance are not assumed.
 | [R15 / #608](https://github.com/ravidsrk/orca-fleet/issues/608) | Verify provenance retention receipts against the signed inventory offline | W3 / M | [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) | After R07 |
 
 Start with [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600)'s invariant fixtures, [R14 / #607](https://github.com/ravidsrk/orca-fleet/issues/607)'s schema/claim correction, and [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596)'s
-bounded first-run path. Prepare [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598) while [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) is reviewed; retain its fixes before
-running the added corpus. Human-owned W0 work can proceed alongside these.
+bounded first-run path. [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598) can now build its differential corpus
+against the merged fixes from [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592).
+Human-owned W0 work can proceed alongside these.
 
 Dependencies express delivery order, not permission to change scope. The state-writing
 chain is [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) -> [R06 / #599](https://github.com/ravidsrk/orca-fleet/issues/599); integrate those receipts into [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603) after they land. Keep verifier
@@ -152,9 +156,10 @@ flowchart LR
 
 ## Decisions and bounds
 
-The existing user request authorizes research, issue creation and roadmap editing. It
-does not authorize deployment, spending on experiments, changing required checks or
-signing keys, announcing beta, merging to default, or declaring the new work frozen.
+This roadmap records research, issue creation and planning. Publishing it does not
+freeze implementation scope or authorize deployments, paid experiments, changes to
+required checks or signing keys, or a beta announcement. Those decisions retain
+their existing human gates.
 
 | Decision | Recommendation | Status |
 |---|---|---|

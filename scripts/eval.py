@@ -930,6 +930,12 @@ def _quoted_action_operand(prose: str, start: int, end: int) -> bool:
     prefix = prose[:start]
     predicates = _action_predicates(prefix)
     reports = list(_REPORTING_PREDICATE_RE.finditer(prefix))
+    report = reports[-1] if reports and (
+        not predicates or reports[-1].start("verb") > predicates[-1][0].start()
+    ) else None
+    # A negated observation does not assert that its quoted command executed.
+    if report and not _affirmative_action(prefix[:report.start("verb")]):
+        return False
     # An explicit following passive states what happened to this quoted command,
     # even when the preceding predicate says the execution was observed.
     passive = _PASSIVE_PREDICATE_RE.match(prose[end:])
@@ -937,7 +943,7 @@ def _quoted_action_operand(prose: str, start: int, end: int) -> bool:
         return ("n't" not in passive["aux"].lower()
                 and not re.search(r"(?i)\b(?:not|never)\b", passive["aux"] + " " + passive["modifiers"])
                 and passive["verb"].lower() not in ("rejected", "refused", "ignored", "declined"))
-    if reports and (not predicates or reports[-1].start("verb") > predicates[-1][0].start()):
+    if report:
         return False
     return bool(predicates and predicates[-1][1])
 

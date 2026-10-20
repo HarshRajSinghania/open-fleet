@@ -1233,6 +1233,7 @@ def _balanced_paren_end(text, j):
 def _heredoc_body_subs(body):
     # An UNQUOTED heredoc body expands $(...) and `...` with quotes LITERAL: a single-quoted
     # "$(cmd)" there still runs cmd. Process substitution <(...) is plain text in a body.
+    body = body.replace(chr(92) + chr(10), "")  # line continuation applies in an unquoted body
     out, i, n = [], 0, len(body)
     while i < n:
         ch = body[i]
@@ -1277,13 +1278,35 @@ def _heredoc_delims(line):
             j += 1 if dash else 0
             while j < n and line[j] in " " + chr(9):
                 j += 1
-            k = j
-            while k < n and line[k] not in " " + chr(9) + ";|&<>()":
-                k += 1
-            word = line[j:k]
-            if word:
-                quoted = any(q in word for q in (SQ, DQ, chr(92)))
-                delim = word.replace(SQ, "").replace(DQ, "").replace(chr(92), "")
+            # The delimiter is one shell WORD: quotes may hold spaces (<<"EOF X" ends at the
+            # line `EOF X`), and any quoting at all makes the body literal (#592 review).
+            k, parts, quoted = j, [], False
+            while k < n:
+                c = line[k]
+                if c == SQ:
+                    e = line.find(SQ, k + 1)
+                    e = n if e < 0 else e
+                    parts.append(line[k + 1:e])
+                    quoted, k = True, e + 1
+                elif c == DQ:
+                    e, buf = k + 1, []
+                    while e < n and line[e] != DQ:
+                        if line[e] == chr(92) and e + 1 < n and line[e + 1] in (DQ, chr(92), "$", chr(96)):
+                            e += 1
+                        buf.append(line[e])
+                        e += 1
+                    parts.append("".join(buf))
+                    quoted, k = True, e + 1
+                elif c == chr(92):
+                    parts.append(line[k + 1:k + 2])
+                    quoted, k = True, k + 2
+                elif c in " " + chr(9) + ";|&<>()":
+                    break
+                else:
+                    parts.append(c)
+                    k += 1
+            delim = "".join(parts)
+            if k > j:
                 out.append((delim, quoted, dash))
             i = k
             continue
@@ -1326,6 +1349,13 @@ def substitution_bodies(text, depth=0):
                 if not quoted:
                     out += _heredoc_body_subs(body)
             line_start = i
+            continue
+        if ch == chr(92) and not in_sq and text[i + 1:i + 2] == chr(10):
+            # Line continuation: the shell deletes backslash-newline BEFORE splitting words,
+            # so `a\<newline>#$(cmd)` is the single word `a#$(cmd)` and cmd runs. Delete the
+            # pair from the stream (bodies of heredocs are consumed separately, untouched).
+            text = text[:i] + text[i + 2:]
+            n = len(text)
             continue
         if ch == chr(92) and not in_sq:
             i += 2

@@ -406,6 +406,27 @@ class TestCommandSubstitution(HookCase):
                 r = self.fire(wrapped("exec_command", cmd=cmd), env)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_shell_word_rules_decide_what_is_live(self):
+        # #592 review: a quoted delimiter may hold spaces, and backslash-newline joins words
+        # BEFORE `#` is read, so neither may hide a substitution that the shell runs.
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"}
+        live = ("cat <<'EOF X'\nsafe\nEOF X\necho \"$(git push --force origin topic)\"",
+                "cat <<\"EOF X\"\nsafe\nEOF X\necho $(git push --force origin topic)",
+                "cat <<E\\ OF\nsafe\nE OF\necho $(git push --force origin topic)",
+                "echo a\\\n#$(git push --force origin topic)",
+                "echo a\\\n#`git push --force origin topic`",
+                "cat <<EOF\nx$\\\n(git push --force origin topic)\nEOF")
+        for cmd in live:
+            with self.subTest(live=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        inert = ("echo a \\\n#$(git push --force origin topic)",
+                 "cat <<'EOF X'\n$(git push --force origin topic)\nEOF X")
+        for cmd in inert:
+            with self.subTest(inert=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_unquoted_patch_body_still_has_its_headers_bounded(self):
         cmd = f"apply_patch <<EOF\n*** Begin Patch\n*** Add File: {self.outside / 'x.py'}\n+$HOME\n*** End Patch\nEOF"
         r = self.fire(wrapped("exec_command", cmd=cmd), {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"})

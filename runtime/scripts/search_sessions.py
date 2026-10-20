@@ -592,12 +592,15 @@ def _sqlite_ro(path):
     suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
         else ("?mode=ro&immutable=1",)
     for suffix in suffixes:
+        conn = None
         try:
             conn = sqlite3.connect(uri + suffix, uri=True)
             conn.row_factory = sqlite3.Row
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
             return conn
         except sqlite3.Error:
+            if conn is not None:
+                conn.close()  # a failed probe must not leak its connection
             continue
     return None
 

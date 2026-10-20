@@ -36,6 +36,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -127,7 +128,7 @@ def build_fixtures(tmp, token="zeta_token"):
     # 3. OpenCode v1 (session / message / part)
     oc_dir = xdg / "opencode"
     oc_dir.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(oc_dir / "opencode.db")) as conn:
+    with closing(sqlite3.connect(str(oc_dir / "opencode.db"))) as conn, conn:
         conn.executescript("""
             CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
               slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL,
@@ -220,7 +221,7 @@ def build_fixtures(tmp, token="zeta_token"):
     # 7. Goose
     g_dir = tmp / "goose-root" / "data" / "sessions"
     g_dir.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(g_dir / "sessions.db")) as conn:
+    with closing(sqlite3.connect(str(g_dir / "sessions.db"))) as conn, conn:
         conn.executescript("""
             CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
               description TEXT NOT NULL DEFAULT '', user_set_name BOOLEAN DEFAULT FALSE,
@@ -251,7 +252,7 @@ def build_fixtures(tmp, token="zeta_token"):
     # 8. Hermes
     h_dir = tmp / "hermes"
     h_dir.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(h_dir / "state.db")) as conn:
+    with closing(sqlite3.connect(str(h_dir / "state.db"))) as conn, conn:
         conn.executescript("""
             CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, model TEXT,
               system_prompt TEXT, parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL,
@@ -279,7 +280,7 @@ def build_fixtures(tmp, token="zeta_token"):
     (xdg / "crush" / "projects.json").write_text(json.dumps({"projects": [
         {"path": CWD, "data_dir": str(crush_data),
          "last_accessed": "2026-10-10T12:08:00.123456Z"}]}, indent=2), encoding="utf-8")
-    with sqlite3.connect(str(crush_data / "crush.db")) as conn:
+    with closing(sqlite3.connect(str(crush_data / "crush.db"))) as conn, conn:
         conn.executescript("""
             CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT, title TEXT NOT NULL,
               message_count INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0,
@@ -435,7 +436,7 @@ class TestRealFormats(_Base):
     def test_opencode_v2_tables(self):
         oc = Path(self.env["XDG_DATA_HOME"]) / "opencode" / "opencode.db"
         oc.unlink()
-        with sqlite3.connect(str(oc)) as conn:
+        with closing(sqlite3.connect(str(oc))) as conn, conn:
             conn.executescript("""
                 CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT NOT NULL,
                   title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);

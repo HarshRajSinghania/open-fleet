@@ -16,7 +16,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -159,7 +161,8 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         real_spawn = self.prov._spawn_process
 
         def fence_then_spawn(**kw):
-            self.prov.state._connect().execute(
+            with self.prov.state._connect() as _c:
+                _c.execute(
                 "UPDATE dispatches SET state = 'stopped' WHERE dispatch_id = ?", (kw["dispatch_id"],)
             )
             return real_spawn(**kw)
@@ -189,7 +192,8 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         res = self.prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="rw")
         self.prov._spawn_process = real
         disp = res["dispatchId"]
-        self.prov.state._connect().execute("UPDATE dispatches SET state = 'stopped' WHERE dispatch_id = ?", (disp,))
+        with self.prov.state._connect() as _c:
+            _c.execute("UPDATE dispatches SET state = 'stopped' WHERE dispatch_id = ?", (disp,))
         self.prov.backend = "setsid"
         real(**captured)  # writes run_worker.py and launches it
         lane = Path(captured["lane_dir"])
@@ -254,6 +258,7 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
 
     def test_fence_of_finished_dispatch_never_kills_a_reused_pid(self):
         bystander = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(bystander.wait)  # reap it (cleanups run last-in, first-out)
         self.addCleanup(bystander.kill)
         with self.prov.state._connect() as conn:
             conn.execute(
@@ -306,7 +311,8 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         out.unlink(missing_ok=True)
         script = Path(captured["lane_dir"]) / "run_worker.py"
         # The first run finished (and was recorded); re-arm the dispatch for the inherited-env run.
-        self.prov.state._connect().execute(
+        with self.prov.state._connect() as _c:
+            _c.execute(
             "UPDATE dispatches SET state = 'ready' WHERE lane_dir = ?", (str(captured["lane_dir"]),))
         env = {**os.environ, "PATH": self.env["PATH"], "OPEN_FLEET_SIGNING_SEED": "aa" * 32,
                "ORCA_DISPATCH_SIGNING_SEED": "bb" * 32}
@@ -333,27 +339,72 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
             self.prov.terminal_send(res["agentTerminalHandle"], "hello")
         self.assertEqual(ctx.exception.code, "unsupported_operation")
 
-    def test_hermes_gets_fail_closed_hook_in_private_home(self):
+    def _hermes_user_home(self, config_text):
         user_home = Path(self.tmp.name) / "hermes-user"
-        user_home.mkdir()
-        (user_home / "config.yaml").write_text("model: my-model\nhooks:\n  pre_tool_call: []\n", encoding="utf-8")
+        user_home.mkdir(exist_ok=True)
+        if config_text is not None:
+            (user_home / "config.yaml").write_text(config_text, encoding="utf-8")
         (user_home / ".env").write_text("KEY=secret\n", encoding="utf-8")
         self.env["HERMES_HOME"] = str(user_home)
         self.prov = self.providers.get_provider("posix", env=self.env)
+        return user_home
+
+    def _run_fake_hermes(self):
         out = Path(self.tmp.name) / "hermes.txt"
         self.fake_agent("hermes", f'cat "$HERMES_HOME/config.yaml" > "{out}"; echo "ACCEPT=$HERMES_ACCEPT_HOOKS ENV=$(cat "$HERMES_HOME/.env")" >> "{out}"')
         _, res = self.start(agent="hermes")
         self.assertTrue(_wait_for(lambda: out.is_file() and "ACCEPT=" in out.read_text()))
         text = out.read_text()
-        self.assertIn("model: my-model", text, "user config preserved")
-        self.assertIn("fail_closed: true", text)
-        self.assertIn("ORCA_HOOK_STRICT_EXIT=1", text)
-        self.assertIn(str(self.posix.CANONICAL_DENY_HOOK), text)
+        cfg = json.loads(text.split("ACCEPT=")[0])  # written as JSON: valid YAML, no emitter needed
+        hook = cfg["hooks"]["pre_tool_call"][0]
+        self.assertTrue(hook["fail_closed"])
+        self.assertIn("ORCA_HOOK_STRICT_EXIT=1", hook["command"])
+        self.assertIn(str(self.posix.CANONICAL_DENY_HOOK), hook["command"])
         self.assertIn("ACCEPT=1 ENV=KEY=secret", text)
-        wt = res["worker"]["worktree"]
-        self.assertNotIn(wt, text.split("OPEN_FLEET_UNIT_WORKTREE=")[0], "hermes home must live outside the worktree")
-        self.assertIn("model: my-model", (user_home / "config.yaml").read_text())
+        return cfg, res
+
+    def test_hermes_gets_fail_closed_hook_in_private_home(self):
+        # PyYAML present on the coordinator (stubbed: CI installs no test dependencies).
+        stub = types.SimpleNamespace(safe_load=lambda t: json.loads(t) if t.strip() else None)
+        user_home = self._hermes_user_home('{"model": "my-model", "hooks": {"pre_tool_call": [{"command": "mine"}]}}')
+        with mock.patch.dict(sys.modules, {"yaml": stub}):
+            cfg, res = self._run_fake_hermes()
+        self.assertEqual(cfg["model"], "my-model", "user config preserved")
+        self.assertEqual(cfg["hooks"]["pre_tool_call"][1], {"command": "mine"}, "user's own hooks kept, ours first")
         self.assertNotIn("deny-hook", (user_home / "config.yaml").read_text(), "user's own config untouched")
+        self.assertFalse(str(Path(cfg["hooks"]["pre_tool_call"][0]["command"].split("sh ")[-1])).startswith(res["worker"]["worktree"]))
+
+    def test_hermes_without_user_config_needs_no_yaml_parser(self):
+        self._hermes_user_home(None)
+        with mock.patch.dict(sys.modules, {"yaml": None}):  # `import yaml` raises ImportError
+            cfg, _ = self._run_fake_hermes()
+        self.assertEqual(list(cfg), ["hooks"])
+
+    def test_hermes_config_parsed_with_hermes_own_interpreter(self):
+        stubdir = Path(self.tmp.name) / "yamlstub"
+        stubdir.mkdir()
+        (stubdir / "yaml.py").write_text("import json\ndef safe_load(f):\n    return json.load(f)\n", encoding="utf-8")
+        wrapper = Path(self.tmp.name) / "hermes-python"
+        # Stands in for the venv Python Hermes ships with (which has PyYAML).
+        wrapper.write_text(f'#!/bin/sh\n[ "$1" = "-I" ] && shift\nPYTHONPATH={stubdir} exec {sys.executable} "$@"\n', encoding="utf-8")
+        wrapper.chmod(0o755)
+        (self.bin / "hermes").write_text(f"#!{wrapper}\nprint('hermes')\n", encoding="utf-8")
+        (self.bin / "hermes").chmod(0o755)
+        cfg_file = Path(self.tmp.name) / "c.yaml"
+        cfg_file.write_text('{"model": "via-hermes-python"}', encoding="utf-8")
+        with mock.patch.dict(sys.modules, {"yaml": None}):
+            loaded = self.posix._load_hermes_config(cfg_file, self.env)
+        self.assertEqual(loaded, {"model": "via-hermes-python"})
+
+    def test_hermes_with_a_config_and_no_parser_is_refused(self):
+        self._hermes_user_home("model: my-model\n")
+        self.fake_agent("hermes", "exit 0")  # a shell launcher: no Python to borrow PyYAML from
+        task = self.prov.dispatch(["orchestration", "task-create", "--spec", "x"])["task"]
+        with mock.patch.dict(sys.modules, {"yaml": None}):
+            with self.assertRaises(self.providers.ProviderError) as ctx:
+                self.prov.worker_start(task_id=task["id"], worktree="new-child", agent="hermes")
+        self.assertEqual(ctx.exception.code, "hermes_hooks_unavailable")
+        self.assertEqual(self.prov.task_list()["tasks"][0]["status"], "ready", "claim released")
 
     def test_missing_spec_is_refused_before_claim(self):
         task = self.prov.state.task_create(spec="")["task"]

@@ -69,6 +69,16 @@ def default_db_path(env: dict[str, str] | None = None) -> Path:
     return Path.home() / ".open-fleet" / "state" / _repo_state_id(start or None) / "runtime.db"
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """A connection whose `with` block also CLOSES it (sqlite3's own __exit__ only commits)."""
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 class LocalStateStore:
     """Thread-safe / process-safe SQLite WAL state engine for runs, tasks, dispatches, mailbox, and file touches."""
 
@@ -79,7 +89,10 @@ class LocalStateStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=None)
+        # `with sqlite3.connect(...) as conn` only commits; it never closes, so every store
+        # call leaked a connection until GC (a ResourceWarning on 3.13). _ClosingConnection
+        # closes when its `with` block ends.
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=None, factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")

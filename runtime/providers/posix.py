@@ -297,6 +297,67 @@ WORKER_ENV_DENYLIST = frozenset({"OPEN_FLEET_SIGNING_SEED", "ORCA_DISPATCH_SIGNI
 HERMES_HOOK_MATCHER = "terminal|write_file|patch|execute_code|process"
 
 
+def _hermes_interpreter(env: dict[str, str]) -> list[str] | None:
+    """The Python the installed `hermes` launcher runs on (it always has PyYAML: Hermes needs it)."""
+    exe = shutil.which("hermes", path=env.get("PATH"))
+    if not exe:
+        return None
+    try:
+        with open(exe, "rb") as fh:
+            first = fh.readline(512).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    argv = shlex.split(first[2:])
+    if argv and os.path.basename(argv[0]) == "env":
+        argv = [a for a in argv[1:] if not a.startswith("-")]
+    if not argv or "python" not in os.path.basename(argv[0]):
+        return None
+    return argv
+
+
+def _load_hermes_config(user_cfg: Path, env: dict[str, str]) -> dict[str, Any]:
+    """Parse the user's Hermes config.yaml without making PyYAML a hard coordinator dependency.
+
+    Order: an empty/absent file needs no parser; then PyYAML in this interpreter; then the
+    interpreter Hermes itself runs on. With none available the launch is REFUSED — never
+    started with the user's config dropped or the hook missing.
+    """
+    text = user_cfg.read_text(encoding="utf-8") if user_cfg.is_file() else ""
+    if not text.strip():
+        return {}
+    loaded: Any = None
+    try:
+        import yaml
+
+        loaded = yaml.safe_load(text)
+    except ImportError:
+        interp = _hermes_interpreter(env)
+        if interp is None:
+            raise ProviderError(
+                "hermes_hooks_unavailable",
+                "cannot parse the user's Hermes config.yaml (no PyYAML here and no Python `hermes` launcher "
+                "to borrow one from); refusing an unguarded launch",
+            ) from None
+        proc = subprocess.run(
+            [*interp, "-I", "-c", "import json,sys,yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1], encoding='utf-8'))))", str(user_cfg)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            raise ProviderError(
+                "hermes_hooks_unavailable",
+                f"could not parse {user_cfg} with Hermes' own interpreter: {(proc.stderr or proc.stdout).strip()[:200]}",
+            )
+        loaded = json.loads(proc.stdout or "null")
+    loaded = loaded or {}
+    if not isinstance(loaded, dict):
+        raise ProviderError("hermes_hooks_unavailable", f"{user_cfg} is not a YAML mapping")
+    return loaded
+
+
 def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, str]) -> dict[str, str]:
     """A per-dispatch HERMES_HOME (outside the worktree) whose config carries our deny hook.
 
@@ -304,17 +365,12 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
     WITHOUT a shell, blocks only on exit 2 (or `{"decision":"block"}`), and fails OPEN unless
     `fail_closed: true` (NousResearch/hermes-agent agent/shell_hooks.py). The user's own home
     is mirrored by symlink (auth, .env, skills…) except config.yaml, which is the user's config
-    merged with the hook; the worker can neither edit it nor its allowlist.
+    merged with the hook; the worker can neither edit it nor its allowlist. The merged config is
+    written as JSON — valid YAML that every YAML loader reads — so no YAML emitter is needed.
     """
-    try:
-        import yaml
-    except ImportError as exc:
-        raise ProviderError(
-            "hermes_hooks_unavailable",
-            "hermes needs PyYAML on the coordinator to merge its pre_tool_call deny hook; refusing an unguarded launch",
-        ) from exc
     src_raw = (env.get("HERMES_HOME") or "").strip()
     src = Path(os.path.expanduser(src_raw)) if src_raw else Path.home() / ".hermes"
+    cfg = _load_hermes_config(src / "config.yaml", env)
     home = Path(lane_dir) / "hermes-home"
     home.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
@@ -324,13 +380,6 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
             link = home / entry.name
             if not link.exists() and not link.is_symlink():
                 link.symlink_to(entry)
-    cfg: dict[str, Any] = {}
-    user_cfg = src / "config.yaml"
-    if user_cfg.is_file():
-        loaded = yaml.safe_load(user_cfg.read_text(encoding="utf-8")) or {}
-        if not isinstance(loaded, dict):
-            raise ProviderError("hermes_hooks_unavailable", f"{user_cfg} is not a YAML mapping")
-        cfg = loaded
     hooks = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
     pre = [h for h in (hooks.get("pre_tool_call") or []) if isinstance(h, dict)]
     pre.insert(
@@ -345,8 +394,9 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
     )
     hooks["pre_tool_call"] = pre
     cfg["hooks"] = hooks
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-    os.chmod(home / "config.yaml", 0o600)
+    out = home / "config.yaml"
+    out.write_text(json.dumps(cfg, indent=2, default=str) + "\n", encoding="utf-8")
+    os.chmod(out, 0o600)
     return {"HERMES_HOME": str(home), "HERMES_ACCEPT_HOOKS": "1", "HERMES_SAFE_MODE": "0"}
 
 

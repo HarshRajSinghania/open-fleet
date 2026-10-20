@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -283,7 +284,7 @@ class TestMultiHarnessDenyHook(unittest.TestCase):
         )
         self.assertIn("deny", res_deny.stdout)
 
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             rows = conn.execute(
                 "SELECT file_path FROM file_touches WHERE run_id = 'run-99' ORDER BY id"
             ).fetchall()

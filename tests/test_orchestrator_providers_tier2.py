@@ -416,7 +416,8 @@ class TestEmdash(Base):
         with self.assertRaises(ProviderError) as ctx:
             prov.worker_start(task_id="t", worktree=str(self.wt), prompt="x")
         self.assertEqual(ctx.exception.code, "emdash_start_failed")
-        self.assertEqual(self.state._connect().execute("SELECT COUNT(*) c FROM dispatches").fetchone()["c"], 0)
+        with self.state._connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) c FROM dispatches").fetchone()["c"], 0)
 
     def test_fence_uses_conversation_id_and_retain_is_local(self) -> None:
         fake = EmFake()
@@ -655,7 +656,8 @@ class TestVibeKanban(Base):
         stop_i = order.index("/api/workspaces/ws-1/execution/stop")
         self.assertGreater(len([p for p in order[stop_i:] if p.startswith("/api/execution-processes/")]), 1)
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), auto)  # nothing stripped
-        row = self.state._connect().execute("SELECT state FROM dispatches WHERE dispatch_id='ws-1'").fetchone()
+        with self.state._connect() as conn:
+            row = conn.execute("SELECT state FROM dispatches WHERE dispatch_id='ws-1'").fetchone()
         self.assertEqual(row["state"], "stopped")
         self.assertNotEqual(worker_own, auto)
 
@@ -1138,7 +1140,8 @@ class TestMulticlaude(Base):
             self.prov.worker_fence(verb="stop", dispatch_id="mc-a")
         self.assertEqual(ctx.exception.code, "stop_failed")
         self.assertNotIn("remove_agent", self.fake.commands())
-        row = self.state._connect().execute("SELECT state FROM dispatches WHERE dispatch_id='mc-a'").fetchone()
+        with self.state._connect() as conn:
+            row = conn.execute("SELECT state FROM dispatches WHERE dispatch_id='mc-a'").fetchone()
         self.assertEqual(row["state"], "ready")
         self.tmux_down, self.kill_noop = False, True
         with self.assertRaises(ProviderError) as ctx:

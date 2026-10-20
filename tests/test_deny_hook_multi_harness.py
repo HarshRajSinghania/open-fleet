@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -488,12 +489,12 @@ class TestFileTouchConflicts(HookCase):
         return self.fire(payload, env, cwd=wt)
 
     def rows(self):
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             return conn.execute("SELECT worker_id, file_path, start_line, end_line FROM file_touches "
                                 "ORDER BY id").fetchall()
 
     def escalations(self):
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             return conn.execute("SELECT recipient, msg_type, attrs_json FROM messages "
                                 "WHERE msg_type = 'escalation'").fetchall()
 

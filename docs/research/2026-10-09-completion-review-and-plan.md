@@ -1,5 +1,9 @@
 # Product review, research, and completion plan — 2026-10-09
 
+> **Current successor:** [the October 20 roadmap](../roadmap.md) reconciles this plan
+> with the subsequent Linux/external-run proofs, lean release and runtime expansion.
+> The observations below remain the October 9 snapshot.
+
 > **Dated snapshot.** Live facts were re-derived on 2026-10-09 against `main` at
 > `a3fba8908a8921e56533c816902c872ffef62661` (13 commits after `v0.7.0`). This is not a new
 > `complete-it` freeze and does not rewrite `docs/completion/DEFINITION.md`. Destination:

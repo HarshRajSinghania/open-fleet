@@ -1,5 +1,9 @@
 # Forward roadmap & defensibility plan — orca-fleet — 2026-08-28
 
+> **Current successor:** [the product roadmap](../roadmap.md), refreshed October 20,
+> reconciles the delivered items below with new research. This historical snapshot
+> does not establish current competitor capabilities or remaining work.
+
 > **Dated snapshot (2026-08-28).** Round-2 forward-looking research: platform trajectory, the
 > reproducible-proof path, threat durability, and demand/catalog/GTM — turned into a prioritized
 > roadmap. A point-in-time plan, not a live coverage matrix; see [ARCHITECTURE.md](../../ARCHITECTURE.md)

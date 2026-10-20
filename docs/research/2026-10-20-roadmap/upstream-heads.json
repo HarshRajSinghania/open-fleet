@@ -1,0 +1,112 @@
+[
+  {
+    "repo": "stablyai/orca",
+    "default_branch": "main",
+    "sha": "54f1417af7f0d710e8691dd19aba2648f675a274",
+    "commit_date": "2026-10-20T07:33:13Z",
+    "pushed_at": "2026-10-20T07:47:39Z",
+    "archived": false,
+    "url": "https://github.com/stablyai/orca",
+    "subject": "fix(relay): give region-correction reconnects and roll re-placements the in-region reserve fallback (#31042)"
+  },
+  {
+    "repo": "garrytan/gstack",
+    "default_branch": "main",
+    "sha": "c580561e8a5ac08e6cbdd52c7a0ce521ab6310a5",
+    "commit_date": "2026-10-20T06:40:13Z",
+    "pushed_at": "2026-10-20T06:53:16Z",
+    "archived": false,
+    "url": "https://github.com/garrytan/gstack",
+    "subject": "v1.91.164.0 feat(ship-policy): turn merge trains on for gstack (GSTA-49 go-live) (#3317)"
+  },
+  {
+    "repo": "mattpocock/skills",
+    "default_branch": "main",
+    "sha": "5beb35b040e3de97e54fa9e386d7e42d15c295c2",
+    "commit_date": "2026-10-19T15:51:40Z",
+    "pushed_at": "2026-10-19T15:52:15Z",
+    "archived": false,
+    "url": "https://github.com/mattpocock/skills",
+    "subject": "chief-of-staff: keep memory in a dated, commit-cited wiki (#1304)"
+  },
+  {
+    "repo": "addyosmani/agent-skills",
+    "default_branch": "main",
+    "sha": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+    "commit_date": "2026-10-13T20:21:06Z",
+    "pushed_at": "2026-10-13T20:24:07Z",
+    "archived": false,
+    "url": "https://github.com/addyosmani/agent-skills",
+    "subject": "chore(release): bump plugin manifests to 0.6.13"
+  },
+  {
+    "repo": "obra/superpowers",
+    "default_branch": "main",
+    "sha": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+    "commit_date": "2026-10-10T00:28:04Z",
+    "pushed_at": "2026-10-20T06:37:50Z",
+    "archived": false,
+    "url": "https://github.com/obra/superpowers",
+    "subject": "Release v7.0.0: rebuilt brainstorming, Antigravity Marketplace manifest, Windows hook fixes (#2489)"
+  },
+  {
+    "repo": "ruvnet/ruflo",
+    "default_branch": "main",
+    "sha": "f5f2e40c318c3c390b057333bd971a6d5a9d5e28",
+    "commit_date": "2026-10-20T07:32:18Z",
+    "pushed_at": "2026-10-20T07:32:20Z",
+    "archived": false,
+    "url": "https://github.com/ruvnet/ruflo",
+    "subject": "fix(integration): TokenOptimizer.optimizedEdit uses the real agent-booster API (#4311) (#4315)"
+  },
+  {
+    "repo": "a2aproject/A2A",
+    "default_branch": "main",
+    "sha": "1205f45951ca97c209634ce6046180e38c5dfb30",
+    "commit_date": "2026-10-15T19:14:54Z",
+    "pushed_at": "2026-10-19T16:40:46Z",
+    "archived": false,
+    "url": "https://github.com/a2aproject/A2A",
+    "subject": "chore(deps): bump the github-actions group across 1 directory with 4 updates (#2094)"
+  },
+  {
+    "repo": "OpenHands/software-agent-sdk",
+    "default_branch": "main",
+    "sha": "33d8aa29c3078d074799e2fbf5e847aeb2d71360",
+    "commit_date": "2026-10-19T13:32:16Z",
+    "pushed_at": "2026-10-20T07:23:30Z",
+    "archived": false,
+    "url": "https://github.com/OpenHands/software-agent-sdk",
+    "subject": "Release v1.56.0 (#6091)"
+  },
+  {
+    "repo": "SWE-agent/SWE-agent",
+    "default_branch": "main",
+    "sha": "3ea751c087f32b16e039a2233dd6eefecef325d5",
+    "commit_date": "2026-07-16T15:21:18Z",
+    "pushed_at": "2026-10-19T22:57:44Z",
+    "archived": false,
+    "url": "https://github.com/SWE-agent/SWE-agent",
+    "subject": "fix: map multimodal subset to sb-cli's swe-bench-m (#1458)"
+  },
+  {
+    "repo": "langchain-ai/langgraph",
+    "default_branch": "main",
+    "sha": "1400d25b7b88cfa055c55b8a82bd95b7c25caef1",
+    "commit_date": "2026-10-19T14:03:29Z",
+    "pushed_at": "2026-10-19T14:06:21Z",
+    "archived": false,
+    "url": "https://github.com/langchain-ai/langgraph",
+    "subject": "release(cli): 0.4.37 (#9351)"
+  },
+  {
+    "repo": "davepoon/buildwithclaude",
+    "default_branch": "main",
+    "sha": "868d035a103b400a88a106b3f609fe573752b4b0",
+    "commit_date": "2026-10-19T10:51:36Z",
+    "pushed_at": "2026-10-19T10:51:36Z",
+    "archived": false,
+    "url": "https://github.com/davepoon/buildwithclaude",
+    "subject": "Add hiway-kit plugin"
+  }
+]

@@ -1,0 +1,213 @@
+{
+  "schema": "orca-fleet-roadmap/v1",
+  "status": "proposed_not_frozen",
+  "dispatchable": false,
+  "as_of": "2026-10-20",
+  "inspected_main": "42d28e4c7413fc369ebe79ae909fce613ca216b7",
+  "inspected_pr_592": "d9787142827f4840cd6a20a5fea7d02d683aee40",
+  "external_dependencies": {
+    "PR592": {
+      "url": "https://github.com/ravidsrk/orca-fleet/pull/592",
+      "status": "merged",
+      "merge_commit": "38aed6a6ef4a8873ef70504336976fd47dc3de87"
+    }
+  },
+  "roadmap_epic": "https://github.com/ravidsrk/orca-fleet/issues/593",
+  "release_epic": "https://github.com/ravidsrk/orca-fleet/issues/526",
+  "work_packages": [
+    {
+      "code": "R01",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/594",
+      "number": 594,
+      "title": "Activate the trusted verdict-gate identity in branch protection",
+      "wave": "W0",
+      "size_estimate": "S",
+      "owner_role": "Repository administrator",
+      "hard_dependencies": [],
+      "entry_state": "Needs human"
+    },
+    {
+      "code": "R02",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/595",
+      "number": 595,
+      "title": "Complete the independent-maintainer review witness for H-10",
+      "wave": "W0",
+      "size_estimate": "S",
+      "owner_role": "Maintainer and invited reviewer",
+      "hard_dependencies": [],
+      "entry_state": "Needs human"
+    },
+    {
+      "code": "R03",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/596",
+      "number": 596,
+      "title": "Publish witnessed provider and harness certification with a reproducible first-run path",
+      "wave": "W1",
+      "size_estimate": "L",
+      "owner_role": "Runtime and documentation maintainers",
+      "hard_dependencies": [
+        "PR592"
+      ],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R04",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/597",
+      "number": 597,
+      "title": "Reconcile POSIX worker launch after crashes at enumerated lifecycle boundaries",
+      "wave": "W1",
+      "size_estimate": "M",
+      "owner_role": "Runtime maintainer",
+      "hard_dependencies": [
+        "PR592"
+      ],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R05",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/598",
+      "number": 598,
+      "title": "Differential-test deny-hook shell parsing against real shell behavior",
+      "wave": "W1",
+      "size_estimate": "M",
+      "owner_role": "Security/runtime maintainer",
+      "hard_dependencies": [
+        "PR592"
+      ],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R06",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/599",
+      "number": 599,
+      "title": "Persist and fence the single-conductor merge queue",
+      "wave": "W1",
+      "size_estimate": "L",
+      "owner_role": "Runtime maintainer",
+      "hard_dependencies": [
+        "R04"
+      ],
+      "entry_state": "After R04"
+    },
+    {
+      "code": "R07",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/600",
+      "number": 600,
+      "title": "Cover the remaining verifier invariants with isolated VF-Bench traps",
+      "wave": "W2",
+      "size_estimate": "M",
+      "owner_role": "Verifier maintainer",
+      "hard_dependencies": [],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R08",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/601",
+      "number": 601,
+      "title": "Make VF-Bench independently runnable with held-out and temporal evaluation",
+      "wave": "W2",
+      "size_estimate": "L",
+      "owner_role": "Evaluation maintainer",
+      "hard_dependencies": [
+        "R07"
+      ],
+      "entry_state": "After R07"
+    },
+    {
+      "code": "R09",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/602",
+      "number": 602,
+      "title": "Evaluate adversarial worker trajectories using observed actions and state",
+      "wave": "W2",
+      "size_estimate": "L",
+      "owner_role": "Security/evaluation maintainer",
+      "hard_dependencies": [
+        "PR592"
+      ],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R10",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/603",
+      "number": 603,
+      "title": "Derive run and wave metrics from an append-only event record",
+      "wave": "W2",
+      "size_estimate": "M",
+      "owner_role": "Runtime/observability maintainer",
+      "hard_dependencies": [],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R11",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/604",
+      "number": 604,
+      "title": "Measure the WIP throughput curve before changing fleet concurrency defaults",
+      "wave": "W2",
+      "size_estimate": "M",
+      "owner_role": "Evaluation maintainer",
+      "hard_dependencies": [],
+      "entry_state": "Protocol prep ready; authorize live-run budget"
+    },
+    {
+      "code": "R12",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/605",
+      "number": 605,
+      "title": "Bind episodic memory hints to source revision and untrusted provenance",
+      "wave": "W3",
+      "size_estimate": "M",
+      "owner_role": "Runtime/context maintainer",
+      "hard_dependencies": [],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R13",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/606",
+      "number": 606,
+      "title": "Measure instruction-load reductions with paired mission ablations",
+      "wave": "W3",
+      "size_estimate": "M",
+      "owner_role": "Mission/evaluation maintainer",
+      "hard_dependencies": [
+        "R09",
+        "R10"
+      ],
+      "entry_state": "After R09, R10"
+    },
+    {
+      "code": "R14",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/607",
+      "number": 607,
+      "title": "Correct and validate A2A export against a pinned official schema",
+      "wave": "W3",
+      "size_estimate": "M",
+      "owner_role": "Protocol/documentation maintainer",
+      "hard_dependencies": [],
+      "entry_state": "Ready to scope"
+    },
+    {
+      "code": "R15",
+      "issue": "https://github.com/ravidsrk/orca-fleet/issues/608",
+      "number": 608,
+      "title": "Verify provenance retention receipts against the signed inventory offline",
+      "wave": "W3",
+      "size_estimate": "M",
+      "owner_role": "Verifier maintainer",
+      "hard_dependencies": [
+        "R07"
+      ],
+      "entry_state": "After R07"
+    }
+  ],
+  "integration_preferences": {
+    "R10": [
+      "R04",
+      "R06"
+    ],
+    "R11": [
+      "R10"
+    ],
+    "R12": [
+      "R09"
+    ]
+  }
+}

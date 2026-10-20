@@ -1,40 +1,84 @@
 #!/usr/bin/env python3
 """paperclip.py — Paperclip (`paperclipai/paperclip`) RuntimeProvider (#589).
 
-Maps the canonical Runtime Provider Interface (RPI) onto the Paperclip REST API:
-  - Targets `/api/companies/{id}/agents`, `/api/issues/{id}/checkout`, `/api/agents/{id}/wakeup`.
-  - Handles `409 Conflict` on `/api/issues/{id}/checkout` by raising
-    `ProviderError("task_not_startable", ...)` (atomic single-assignee lock).
-  - CRITICAL SAFETY FIX: Paperclip's `claude-local` and `codex-local` adapters default
-    `dangerouslySkipPermissions` and `dangerouslyBypassApprovalsAndSandbox` to `True`!
-    On `profile == "ro"`, `PaperclipProvider` explicitly sets:
-      * `"dangerouslySkipPermissions": False`
-      * `"dangerouslyBypassApprovalsAndSandbox": False`
-      * `"work_mode": "planning"`
-  - On `profile == "danger"`, configures Bubblewrap (`bwrap`) isolation with
-    `filesystemScope: "workspace"` and `networkScope: "deny"`.
+Source-verified against `server/src/routes` + `packages/shared/src/validators` +
+`packages/adapters/{claude,codex}-local` (default `http://127.0.0.1:3100/api`; optional
+bearer key from `OPEN_FLEET_PAPERCLIP_API_KEY`).
+
+  - `worker_start`:
+      1. `POST /api/companies/{co}/agents {name, role, adapterType: claude_local|codex_local,
+         runner: "legacy", adapterConfig}`. `runner:"legacy"` is load-bearing: with the
+         default `auto` runner the server rewrites the agent to `paperclip_runner` and DELETES
+         `dangerouslySkipPermissions`. The permission flags live INSIDE `adapterConfig`, and
+         both adapters default them to TRUE when omitted (`claude-local execute.ts`,
+         `codex-local index.ts`), so every profile sets them explicitly.
+         `engine:"cli"` is load-bearing too: both adapters default to the ACP engine
+         (`acp.ts normalizeEngine`), whose `permissionMode` defaults to `approve-all`
+         (`acpx-engine/constants.ts`) and IGNORES `dangerouslySkipPermissions`, so without it a
+         `PROFILE=ro` agent would have every tool approved. Every profile pins the CLI engine
+         (the lane that honours the permission flag and the worktree deny hooks); ro also sets
+         ACP `permissionMode:"approve-reads"` so a server that rewrote the engine back to ACP
+         would still not approve writes.
+      2. `GET /api/agents/{id}` read-back: the adapter type must still be the legacy one and
+         EVERY requested `adapterConfig` field (engine, permission flag, permissionMode, sandbox
+         scopes) must read back exactly; otherwise the agent is deleted and the start fails closed.
+      3. `POST /api/companies/{co}/issues {title, description=<task spec>, status:"todo",
+         workMode}` — the issue description is how Paperclip hands an agent its task
+         (`heartbeat/task-context.ts`); `workMode:"planning"` for ro.
+      4. `POST /api/issues/{id}/checkout {agentId, expectedStatuses:["todo"]}` — the atomic
+         lock; a board checkout wakes the assignee. A 409 deletes the just-created agent
+         (no orphan) and raises `task_not_startable`.
+  - `PROFILE=danger` adds the bubblewrap fields Paperclip actually reads from
+    `adapterConfig` (`engine:"cli"`, `filesystemScope:"workspace"`, `networkScope:"deny"`).
+  - Logs: `GET /api/heartbeat-runs/{runId}/log` (NDJSON `content`); fence: `pause`,
+    `issues/{id}/release`.
 """
 from __future__ import annotations
 
 import json
-import time
-import urllib.error
-import urllib.request
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import ExternalDispatchMixin, env_lookup, http_json, real_worktree
 from .base import (
     ProviderError,
     RuntimeProvider,
-    build_harness_command,
     check_monotonic_profile,
     env_get,
+    fence_state,
+    normalize_read,
+    normalize_show,
+    require_id,
 )
 from .local_state import LocalStateStore
+from .posix import install_worktree_hooks
+
+PAPERCLIP_ADAPTERS = {"claude": "claude_local", "codex": "codex_local"}
+# The harnesses worker_start accepts (capabilities.json `supported_harnesses` mirrors this).
+SUPPORTED_HARNESSES = tuple(PAPERCLIP_ADAPTERS)
+PAPERCLIP_SANDBOX = {"engine": "cli", "filesystemScope": "workspace", "networkScope": "deny"}
+# The only engine whose permission semantics are the flags below (ACP defaults to approve-all).
+PAPERCLIP_ENGINE = "cli"
+# ACP permission mode for ro: defence in depth should the engine ever be rewritten to ACP.
+PAPERCLIP_RO_ACP_PERMISSION_MODE = "approve-reads"
 
 
-class PaperclipProvider(RuntimeProvider):
+def _adapter_config(agent: str, profile: str, cwd: str | None) -> dict[str, Any]:
+    cfg: dict[str, Any] = {"engine": PAPERCLIP_ENGINE}
+    if agent == "claude":
+        cfg["dangerouslySkipPermissions"] = profile != "ro"
+    else:
+        cfg["dangerouslyBypassApprovalsAndSandbox"] = profile != "ro"
+    if profile == "ro":
+        cfg["permissionMode"] = PAPERCLIP_RO_ACP_PERMISSION_MODE
+    if cwd:
+        cfg["cwd"] = cwd
+    if profile == "danger":
+        cfg.update(PAPERCLIP_SANDBOX)
+    return cfg
+
+
+class PaperclipProvider(ExternalDispatchMixin, RuntimeProvider):
     """RuntimeProvider adapter for Paperclip (`paperclipai/paperclip`)."""
 
     name = "paperclip"
@@ -54,45 +98,63 @@ class PaperclipProvider(RuntimeProvider):
         self.state = state or LocalStateStore(db_path=db_path, env=self.env)
         self.base_url = (
             base_url
-            or env_get("OPEN_FLEET_PAPERCLIP_URL", "ORCA_PAPERCLIP_URL", self.env, "http://127.0.0.1:4000")
+            or env_get("OPEN_FLEET_PAPERCLIP_URL", "ORCA_PAPERCLIP_URL", self.env, "http://127.0.0.1:3100")
         ).rstrip("/")
-        self.company_id = company_id or env_get("OPEN_FLEET_PAPERCLIP_COMPANY", "ORCA_PAPERCLIP_COMPANY", self.env, "default-co")
+        self.company_id = company_id or env_get("OPEN_FLEET_PAPERCLIP_COMPANY", "ORCA_PAPERCLIP_COMPANY", self.env, "")
         self._runner = runner or self._default_runner
         self.call_log: list[dict[str, Any]] = []
 
-    def capabilities(self) -> set[str]:
-        return {"cap:core-orchestration", "cap:paperclip-checkout-lock", "cap:bwrap-sandbox"}
+    def _default_runner(self, req: dict[str, Any], **kwargs: Any) -> Any:
+        key = env_lookup(self.env, "OPEN_FLEET_PAPERCLIP_API_KEY", "ORCA_PAPERCLIP_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else None
+        return http_json(self.base_url, req.get("method", "GET"), req.get("path", "/"), req.get("body"),
+                         provider="paperclip", timeout=kwargs.get("timeout", 60), headers=headers,
+                         allow_empty=req.get("method") == "DELETE")
 
-    def _default_runner(self, req: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        method = req.get("method", "GET")
-        path = req.get("path", "/")
-        body = req.get("body")
-        url = f"{self.base_url}{path}"
-        data = json.dumps(body).encode("utf-8") if body is not None else None
-        http_req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method=method,
-        )
-        try:
-            with urllib.request.urlopen(http_req, timeout=kwargs.get("timeout", 60)) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw.strip() else {"ok": True}
-        except urllib.error.HTTPError as exc:
-            if exc.code == 409:
-                return {"status": 409, "error": "conflict"}
-            raise ProviderError("paperclip_http_error", f"HTTP {exc.code}: {exc.reason}", {"request": req}) from exc
-        except Exception as exc:
-            raise ProviderError("paperclip_http_error", str(exc), {"request": req}) from exc
-
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+    def _request(self, method: str, path: str, body: Any = None) -> Any:
         req = {"method": method, "path": path, "body": body}
         self.call_log.append(req)
-        res = self._runner(req, **kwargs)
-        if isinstance(res, dict):
-            return res
-        return {"result": res}
+        res = self._runner(req)
+        if isinstance(res, dict) and res.get("status") in (409, 422) and "id" not in res:
+            raise ProviderError("paperclip_http_error", f"{method} {path} -> HTTP {res['status']}",
+                                {"status": res["status"], "response": res, "path": path})
+        return res
+
+    def _company(self, company_id: str | None) -> str:
+        co = company_id or self.company_id
+        if not co:
+            raise ProviderError("missing_company", "paperclip: set OPEN_FLEET_PAPERCLIP_COMPANY to the company id")
+        return co
+
+    def _delete_agent(self, agent_id: str) -> dict[str, Any]:
+        try:
+            self._request("DELETE", f"/api/agents/{agent_id}")
+            return {"agentDeleted": agent_id}
+        except ProviderError as exc:
+            return {"orphanAgent": agent_id, "deleteError": exc.code}
+
+    def _verify_agent(self, agent_id: str, adapter_type: str, expected: dict[str, Any]) -> dict[str, Any]:
+        back = self._request("GET", f"/api/agents/{agent_id}")
+        cfg = back.get("adapterConfig") if isinstance(back, dict) else None
+        problems: list[str] = []
+        if not isinstance(back, dict) or back.get("adapterType") != adapter_type:
+            problems.append(f"adapterType is {back.get('adapterType') if isinstance(back, dict) else None!r}, want {adapter_type!r}")
+        if not isinstance(cfg, dict):
+            problems.append("adapterConfig not readable")
+        else:
+            for k, v in expected.items():
+                if k == "cwd":
+                    continue
+                if type(cfg.get(k)) is not type(v) or cfg.get(k) != v:
+                    problems.append(f"adapterConfig.{k} is {cfg.get(k)!r}, want {v!r}")
+        if problems:
+            cleanup = self._delete_agent(agent_id)
+            raise ProviderError(
+                "permissions_unverified",
+                "paperclip: agent did not read back with the requested permissions: " + "; ".join(problems),
+                {"agentId": agent_id, **cleanup},
+            )
+        return cfg
 
     def worker_start(
         self,
@@ -116,141 +178,150 @@ class PaperclipProvider(RuntimeProvider):
         cached = self.state.get_or_record_request(retry_request, "worker-start")
         if cached:
             return cached
-
         check_monotonic_profile(parent_profile, profile)
-        co_id = company_id or self.company_id
-        harness = build_harness_command(agent, profile, worktree, prompt=prompt)
+        adapter_type = PAPERCLIP_ADAPTERS.get(agent)
+        if not adapter_type:
+            raise ProviderError("unsupported_agent", f"paperclip: no local adapter for {agent!r} (want {sorted(PAPERCLIP_ADAPTERS)})")
+        if profile == "ro" and agent != "claude":
+            raise ProviderError("unsupported_profile", "paperclip: only claude_local has a verified read-only configuration")
+        co = self._company(company_id)
+        task_prompt = self.resolve_task_prompt(task_id, prompt)
+        cwd = real_worktree(worktree)
+        if profile == "ro" and not cwd:
+            raise ProviderError("worktree_required", "paperclip: PROFILE=ro needs an existing --worktree so deny hooks precede the agent")
+        hooks = install_worktree_hooks(cwd, agent, profile) if cwd else None
 
-        if profile == "ro":
-            skip_perms = False
-            bypass_sandbox = False
-            work_mode = "planning"
-            sandbox_cfg: dict[str, Any] = {"driver": "none", "filesystemScope": "read-only", "networkScope": "allow"}
-            fs_scope = "read-only"
-            net_scope = "allow"
-        elif profile == "rw":
-            skip_perms = True
-            bypass_sandbox = True
-            work_mode = "execution"
-            sandbox_cfg = {"driver": "worktree", "filesystemScope": "workspace", "networkScope": "allow"}
-            fs_scope = "workspace"
-            net_scope = "allow"
-        elif profile == "danger":
-            skip_perms = True
-            bypass_sandbox = False
-            work_mode = "execution"
-            sandbox_cfg = {"driver": "bwrap", "filesystemScope": "workspace", "networkScope": "deny"}
-            fs_scope = "workspace"
-            net_scope = "deny"
-        else:
-            raise ProviderError("invalid_profile", f"unknown profile {profile!r}")
-
-        agent_payload: dict[str, Any] = {
-            "name": name or (f"pc-{task_id}" if task_id else "pc-worker"),
-            "adapter": f"{agent}-local",
-            "agent": agent,
-            "worktree": worktree,
-            "profile": profile,
-            "dangerouslySkipPermissions": skip_perms,
-            "dangerouslyBypassApprovalsAndSandbox": bypass_sandbox,
-            "work_mode": work_mode,
-            "filesystemScope": fs_scope,
-            "networkScope": net_scope,
-            "sandbox": sandbox_cfg,
-            "command": harness["command"],
+        adapter_cfg = _adapter_config(agent, profile, cwd)
+        agent_body = {
+            "name": name or (f"of-{task_id}" if task_id else "of-worker"),
+            "role": "engineer",
+            "adapterType": adapter_type,
+            "runner": "legacy",
+            "adapterConfig": adapter_cfg,
         }
-        created_agent = self._request("POST", f"/api/companies/{co_id}/agents", agent_payload)
-        agent_id = str(created_agent.get("agent_id") or created_agent.get("id") or f"pc_ag_{uuid.uuid4().hex[:10]}")
+        created = self._request("POST", f"/api/companies/{co}/agents", agent_body)
+        agent_id = require_id(created, "id", provider="paperclip", what="agent id")
+        read_back = self._verify_agent(agent_id, adapter_type, adapter_cfg)
 
-        issue_id = task_id or "adhoc"
-        checkout_resp = self._request(
-            "POST",
-            f"/api/issues/{issue_id}/checkout",
-            {"agent_id": agent_id, "company_id": co_id, "work_mode": work_mode},
-        )
-        if checkout_resp.get("status") == 409 or checkout_resp.get("code") == 409 or checkout_resp.get("conflict") is True:
-            raise ProviderError(
-                "task_not_startable",
-                f"Paperclip issue {issue_id!r} checkout returned 409 Conflict (already locked by another agent)",
-                {"issueId": issue_id, "agentId": agent_id, "response": checkout_resp},
+        try:
+            issue = self._request(
+                "POST",
+                f"/api/companies/{co}/issues",
+                {
+                    "title": (task_prompt.strip().splitlines()[0][:200] or task_id or "open-fleet task"),
+                    "description": task_prompt,
+                    "status": "todo",
+                    "workMode": "planning" if profile == "ro" else "standard",
+                },
             )
+            issue_id = require_id(issue, "id", provider="paperclip", what="issue id")
+            checkout = self._request("POST", f"/api/issues/{issue_id}/checkout", {"agentId": agent_id, "expectedStatuses": ["todo"]})
+        except ProviderError as exc:
+            cleanup = self._delete_agent(agent_id)
+            if exc.data.get("status") == 409:
+                raise ProviderError(
+                    "task_not_startable",
+                    "paperclip: issue checkout returned 409 Conflict (locked by another agent)",
+                    {"agentId": agent_id, "response": exc.data.get("response"), **cleanup},
+                ) from exc
+            exc.data.update(cleanup)
+            raise
 
-        wakeup_resp = self._request(
-            "POST",
-            f"/api/agents/{agent_id}/wakeup",
-            {
-                "issue_id": issue_id,
-                "work_mode": work_mode,
-                "prompt": prompt or f"Work on issue {issue_id}",
-                "dangerouslySkipPermissions": skip_perms,
-                "dangerouslyBypassApprovalsAndSandbox": bypass_sandbox,
-                "filesystemScope": fs_scope,
-                "networkScope": net_scope,
-            },
-        )
+        run_id = None
+        try:
+            execu = self._request("GET", f"/api/issues/{issue_id}/execution")
+            run_id = execu.get("runId") if isinstance(execu, dict) else None
+        except ProviderError:
+            run_id = None
 
         handle = f"paperclip:{agent_id}"
         effective = {
             "agent": agent,
             "profile": profile,
-            "companyId": co_id,
+            "companyId": co,
             "agentId": agent_id,
-            "dangerouslySkipPermissions": skip_perms,
-            "dangerouslyBypassApprovalsAndSandbox": bypass_sandbox,
-            "work_mode": work_mode,
-            "filesystemScope": fs_scope,
-            "networkScope": net_scope,
-            "sandbox": sandbox_cfg,
-            "command": harness["command"],
-            "argv": harness["argv"],
-            "env": harness["env"],
-            "profile_flag": harness["profile_flag"],
+            "issueId": issue_id,
+            "runId": run_id,
+            "adapterType": adapter_type,
+            "adapterConfig": adapter_cfg,
+            "adapterConfigReadBack": read_back,
+            "hooks": hooks,
         }
-        now = time.time()
-        with self.state._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO dispatches(
-                    dispatch_id, task_id, run_id, worktree, agent, profile,
-                    terminal_handle, state, terminal_state, backend, launch_effective, session_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'active', 'paperclip', ?, ?, ?, ?)
-                """,
-                (agent_id, issue_id, run or "default", worktree, agent, profile, handle, json.dumps(effective), agent_id, now, now),
-            )
-
+        self._record_dispatch(
+            dispatch_id=agent_id, task_id=task_id, run=run, worktree=cwd or "", agent=agent,
+            profile=profile, handle=handle, effective=effective, session_id=issue_id,
+        )
         res = {
             "state": "ready",
             "dispatchId": agent_id,
             "agentTerminalHandle": handle,
-            "worktree": worktree,
+            "worktree": cwd,
             "agent": agent,
             "profile": profile,
             "launch": {"effective": effective},
-            "upstream": {"agent": created_agent, "checkout": checkout_resp, "wakeup": wakeup_resp},
+            "upstream": {"agent": created, "issue": issue, "checkout": checkout},
         }
         self.state.save_request(retry_request, "worker-start", "ready", res)
         return res
 
+    def _run_id(self, row: Any) -> str:
+        eff = self._effective(row)
+        if eff.get("runId"):
+            return str(eff["runId"])
+        execu = self._request("GET", f"/api/issues/{eff.get('issueId') or row['session_id']}/execution")
+        run_id = execu.get("runId") if isinstance(execu, dict) else None
+        if not run_id:
+            raise ProviderError("run_not_found", f"paperclip: no heartbeat run yet for agent {row['dispatch_id']!r}")
+        self._patch_dispatch(row["dispatch_id"], effective={"runId": run_id})
+        return str(run_id)
+
     def worker_list(self, **kwargs: Any) -> dict[str, Any]:
-        raw = self._request("GET", f"/api/companies/{self.company_id}/agents")
-        return {"workers": raw.get("agents", raw.get("items", [])), "upstream": raw}
+        return self._list_local(run=kwargs.get("run"), task=kwargs.get("task"), limit=kwargs.get("limit"))
 
     def worker_show(self, *, dispatch_id: str = "", **kwargs: Any) -> dict[str, Any]:
+        row = self._dispatch_row(dispatch_id)
         raw = self._request("GET", f"/api/agents/{dispatch_id}")
-        return {"dispatchId": dispatch_id, "worker": raw}
+        return normalize_show(
+            row["dispatch_id"], row["state"], task_id=row["task_id"], terminal_state=row["terminal_state"],
+            handle=row["terminal_handle"], worktree=row["worktree"],
+            stage=str((raw or {}).get("status") or row["state"]) if isinstance(raw, dict) else row["state"], raw=raw,
+        )
 
     def worker_read(self, *, dispatch_id: str = "", source: str = "transcript", limit: int = 50, **kwargs: Any) -> dict[str, Any]:
-        raw = self._request("GET", f"/api/agents/{dispatch_id}/logs?limit={int(limit)}")
-        return {"dispatchId": dispatch_id, "source": source, "lines": raw.get("lines", []), "upstream": raw}
+        row = self._dispatch_row(dispatch_id)
+        run_id = self._run_id(row)
+        raw = self._request("GET", f"/api/heartbeat-runs/{run_id}/log")
+        content = raw.get("content") if isinstance(raw, dict) else None
+        if not isinstance(content, str):
+            raise ProviderError("paperclip_bad_response", "paperclip: run log has no content", {"response": raw})
+        lines: list[str] = []
+        for ln in content.splitlines():
+            try:
+                rec = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and isinstance(rec.get("chunk"), str):
+                lines.extend(rec["chunk"].splitlines())
+        return normalize_read(
+            "terminal",
+            lines=lines[-int(limit):] if limit else lines,
+            cursor=raw.get("nextOffset"),
+            handle=row["terminal_handle"],
+            fallback_reason="paperclip exposes the heartbeat run log only" if source == "transcript" else None,
+        )
 
     def worker_fence(self, *, verb: str, dispatch_id: str = "", reason: str | None = None, **kwargs: Any) -> dict[str, Any]:
-        raw = self._request("POST", f"/api/agents/{dispatch_id}/stop", {"verb": verb, "reason": reason})
-        with self.state._connect() as conn:
-            conn.execute(
-                "UPDATE dispatches SET state = ?, terminal_state = 'fenced', updated_at = ? WHERE dispatch_id = ?",
-                (verb, time.time(), dispatch_id),
-            )
-        return {"dispatchId": dispatch_id, "verb": verb, "state": verb, "reason": reason, "upstream": raw}
+        fence_state(verb)
+        row = self._dispatch_row(dispatch_id)
+        upstream: dict[str, Any] = {}
+        if verb != "retain":
+            upstream["pause"] = self._request("POST", f"/api/agents/{dispatch_id}/pause")
+        if verb == "release":
+            issue_id = self._effective(row).get("issueId") or row["session_id"]
+            upstream["release"] = self._request("POST", f"/api/issues/{issue_id}/release")
+        new_state, term_state = self._fence_local(dispatch_id, verb)
+        return {"dispatchId": dispatch_id, "verb": verb, "state": new_state, "terminalState": term_state,
+                "reason": reason, "upstream": upstream or None}
 
     # --- Task DAG, Mailbox & Gates (`LocalStateStore`) ---
     def task_create(self, **kwargs: Any) -> dict[str, Any]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -159,6 +160,14 @@ class TestLocalStateStore(unittest.TestCase):
         self.assertTrue(reply["replied"])
 
     def test_synthetic_worker_died_on_silent_exit(self):
+        # A dispatch nobody recorded (withdrawn before launch) never produces a death notice.
+        ghost = self.store.ensure_terminal_or_died(dispatch_id="disp_ghost", run_id="run_2")
+        self.assertFalse(ghost["syntheticDied"])
+        with self.store._connect() as conn:
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, terminal_handle, state, created_at, updated_at) "
+                "VALUES ('disp_dead', 't', 'run_2', '/w', 'claude', 'term_dead', 'ready', 0, 0)"
+            )
         res = self.store.ensure_terminal_or_died(
             dispatch_id="disp_dead",
             worker_handle="term_dead",
@@ -266,10 +275,23 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
             handle = ws["agentTerminalHandle"]
             ts = prov.terminal_send(handle, text="turn_started", enter=True)
             self.assertTrue(ts["send"]["accepted"])
-            tw = prov.terminal_wait(handle, timeout_ms=100)
+            # dry-run delivery is labelled as simulated, never as a real turn start
+            self.assertIn("simulated", ts["send"]["prompt"]["stages"])
+            self.assertNotIn("turn_started", ts["send"]["prompt"]["stages"])
+            tw = prov.terminal_wait(handle, condition="tui-idle", timeout_ms=3000)
             self.assertTrue(tw["wait"]["satisfied"])
-            di = prov.dispatch_inject(task["id"], handle)
+            # a marker that never appears after the wait began times out (no pre-written success)
+            with self.assertRaises(self.providers.ProviderError) as ctx_wait:
+                prov.terminal_wait(handle, condition="never-printed", timeout_ms=200)
+            self.assertEqual(ctx_wait.exception.code, "terminal_wait_timeout")
+
+            task_inj = prov.dispatch(
+                ["orchestration", "task-create", "--spec", "Inject task", "--task-title", "Inj"]
+            )["task"]
+            di = prov.dispatch_inject(task_inj["id"], handle)
             self.assertTrue(di["injected"])
+            # injected work is a real dispatch visible in worker-list
+            self.assertIn(di["dispatchId"], [w["dispatchId"] for w in prov.worker_list()["workers"]])
             wt_dir = Path(prov.terminal_show(handle)["terminal"]["worktree"])
             self.assertTrue((wt_dir / ".open-fleet" / "inbox.jsonl").is_file())
 
@@ -282,6 +304,70 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
                     profile="danger",
                 )
             self.assertEqual(ctx.exception.code, "danger_requires_sandbox")
+
+            # Issue 4: dispatch_inject claims ready task atomically and restores on delivery failure
+            with self.assertRaises(self.providers.ProviderError) as ctx_dup:
+                prov.dispatch_inject(task_inj["id"], handle)
+            self.assertEqual(ctx_dup.exception.code, "task_not_startable")
+
+            # Delivery failure (terminal stopped -> nothing accepted) restores task to ready
+            task_fail = prov.dispatch(
+                ["orchestration", "task-create", "--spec", "Fail inject", "--task-title", "FailInj"]
+            )["task"]
+            prov.worker_fence("stop", ws["dispatchId"])
+            with self.assertRaises(self.providers.ProviderError):
+                prov.dispatch_inject(task_fail["id"], handle)
+            restored = [t for t in prov.task_list()["tasks"] if t["id"] == task_fail["id"]][0]
+            self.assertEqual(restored["status"], "ready")
+
+            # Issue 1 & 2: danger never mounts the host .git writable, never copies the guard
+            # into the worktree, and gives the container a private git dir.
+            ws_danger = prov.worker_start(
+                task_id=task_fail["id"],
+                worktree="new-child",
+                name="danger-wt",
+                agent="omp",
+                profile="danger",
+                on_env="sandbox-img:latest",
+            )
+            danger_wt = Path(ws_danger["worker"]["worktree"])
+            self.assertTrue((danger_wt / ".git").is_file(), "host worktree pointer must stay intact")
+            self.assertFalse((danger_wt / ".open-fleet" / "hooks").exists(), "guard must not live inside the worktree")
+            with prov.state._connect() as conn:
+                d_row = conn.execute(
+                    "SELECT launch_effective, lane_dir FROM dispatches WHERE dispatch_id = ?",
+                    (ws_danger["dispatchId"],),
+                ).fetchone()
+            eff = json.loads(d_row["launch_effective"])
+            cmd = eff["command"]
+            self.assertIn("OPEN_FLEET_DENY_HOOK=", cmd)
+            self.assertIn("GIT_DIR=/open-fleet/sandbox.git", cmd)
+            self.assertIn("--cap-drop ALL", cmd)
+            self.assertIn("--name openfleet-" + ws_danger["dispatchId"], cmd)
+            self.assertEqual(eff["container"], "openfleet-" + ws_danger["dispatchId"])
+            self.assertNotIn(f"{self.repo / '.git'}:", cmd, "host .git must never be mounted")
+            self.assertRegex(cmd, r"/runtime:\S*/runtime:ro")
+            self.assertTrue((Path(d_row["lane_dir"]) / "sandbox.git").is_dir())
+
+            # Issue 5: dispatch fenced during startup terminates backend and raises dispatch_fenced
+            task_race = prov.dispatch(
+                ["orchestration", "task-create", "--spec", "Race fence", "--task-title", "Race"]
+            )["task"]
+
+            def fencing_runner(**kw):
+                prov.worker_fence("stop", kw["dispatch_id"])
+                return {"pid": 0, "backend": "dry-run"}
+
+            prov.runner = fencing_runner
+            with self.assertRaises(self.providers.ProviderError) as ctx_race:
+                prov.worker_start(
+                    task_id=task_race["id"],
+                    worktree="current",
+                    name="race-wt",
+                    agent="claude",
+                    profile="ro",
+                )
+            self.assertEqual(ctx_race.exception.code, "dispatch_fenced")
 
     def test_spawn_worker_sh_runs_end_to_end_on_posix_provider_with_multi_harness(self):
         state_db = Path(self.tmp.name) / "state.db"

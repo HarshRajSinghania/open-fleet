@@ -38,18 +38,6 @@ class OrcaProvider(RuntimeProvider):
         self.env = env
         self.system = system
 
-    def capabilities(self) -> set[str]:
-        return {
-            "cap:core-orchestration",
-            "cap:sandbox-vm",
-            "cap:session-search",
-            "cap:browser",
-            "cap:mobile-emulator",
-            "cap:issue-tracker",
-            "cap:scheduler",
-            "cap:orca-self-audit",
-        }
-
     def binary(self) -> str:
         return resolve_orca_binary(self.env, self.system)
 

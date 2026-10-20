@@ -105,21 +105,40 @@ _PROFILE_FIELDS = ("profile", "parent_profile")
 PROFILE_RANK = {"ro": 0, "rw": 1, "danger": 2}
 
 
+# Every source that may bound a child's profile. The CALLER's own sandbox profile is one: the
+# launcher exports OPEN_FLEET_SANDBOX_PROFILE into every worker, so a ro worker signing for an
+# rw child is refused even when it names no parent or names a wider one (G14).
+_PARENT_ENV = ("OPEN_FLEET_PARENT_PROFILE", "ORCA_PARENT_PROFILE",
+               "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE")
+
+
+def effective_parent(*explicit: str | None, env: dict[str, str] | None = None) -> tuple[str | None, str]:
+    """(most restrictive parent or None, error). Any unknown value is an error, never skipped."""
+    e = env if env is not None else os.environ
+    present = [str(p).strip() for p in (*explicit, *(e.get(k) for k in _PARENT_ENV)) if p and str(p).strip()]
+    for p in present:
+        if p not in PROFILE_RANK:
+            return None, f"invalid parent profile {p!r} (expected one of ro, rw, danger)"
+    return (min(present, key=PROFILE_RANK.__getitem__) if present else None), ""
+
+
 def check_profile_narrowing(
     profile: str | None,
     parent_profile: str | None = None,
     env: dict[str, str] | None = None,
+    *more_parents: str | None,
 ) -> tuple[bool, str]:
     """Enforce monotonic privilege narrowing ro < rw < danger (#590).
 
-    Returns (True, "") when valid, or (False, reason) on privilege escalation or invalid profile.
+    The parent is the MOST restrictive of `parent_profile`, `more_parents` and the inherited
+    parent/sandbox profile env (G14). Returns (True, "") when valid, or (False, reason) on
+    privilege escalation or an invalid profile.
     """
-    e = env if env is not None else os.environ
-    eff_parent = parent_profile or e.get("OPEN_FLEET_PARENT_PROFILE") or e.get("ORCA_PARENT_PROFILE") or None
     if profile is not None and profile not in PROFILE_RANK:
         return False, f"invalid profile {profile!r} (expected one of ro, rw, danger)"
-    if eff_parent is not None and eff_parent not in PROFILE_RANK:
-        return False, f"invalid parent profile {eff_parent!r} (expected one of ro, rw, danger)"
+    eff_parent, err = effective_parent(parent_profile, *more_parents, env=env)
+    if err:
+        return False, err
     if profile is not None and eff_parent is not None:
         if PROFILE_RANK[profile] > PROFILE_RANK[eff_parent]:
             return (
@@ -328,7 +347,8 @@ def envelope(seed: bytes, record: dict, fields=_RECORD_FIELDS) -> dict:
 
 
 def sign(key: Path | None, record: dict, parent_profile: str | None = None) -> int:
-    ok, reason = check_profile_narrowing(record.get("profile"), parent_profile or record.get("parent_profile"))
+    ok, reason = check_profile_narrowing(record.get("profile"), parent_profile, None,
+                                         record.get("parent_profile"))
     if not ok:
         print(f"dispatch-sign: {reason}", file=sys.stderr)
         return 2
@@ -367,8 +387,8 @@ def verify_dispatch(
         rec_obj = env_obj["record"]
 
     eff_profile = profile or rec_obj.get("profile")
-    eff_parent = parent_profile or rec_obj.get("parent_profile")
-    ok, reason = check_profile_narrowing(eff_profile, eff_parent)
+    # The flag and the SIGNED parent both bound the child; neither can widen the other.
+    ok, reason = check_profile_narrowing(eff_profile, parent_profile, None, rec_obj.get("parent_profile"))
     if not ok:
         print(f"dispatch-sign: {reason}", file=sys.stderr)
         return 2

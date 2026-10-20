@@ -9,6 +9,7 @@ orchestrator runtimes.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import shlex
@@ -101,6 +102,51 @@ class ProviderError(Exception):
 
 
 def build_harness_command(
+    agent: str,
+    profile: str,
+    worktree: str,
+    prompt: str | None = None,
+    *,
+    effort: str = "xhigh",
+    deny_hook_path: str | None = None,
+    bridge_dir: str | None = None,
+    data_dir: str | None = None,
+) -> dict[str, Any]:
+    """Build the launch for `agent`; adds `shell`: the COMPLETE quoted launch line.
+
+    `command` is a short human-readable label that omits the prompt and headless options;
+    anything that executes a worker through a shell string must run `shell` (or `argv`),
+    never `command` (#591 review: workers launched from `command` never got their task).
+    """
+    launch = _build_harness_command(
+        agent,
+        profile,
+        worktree,
+        prompt,
+        effort=effort,
+        deny_hook_path=deny_hook_path,
+        bridge_dir=bridge_dir,
+        data_dir=data_dir,
+    )
+    wt_abs = worktree if worktree and os.path.isabs(worktree) else ""
+    if wt_abs:
+        # A shell line must run IN the unit worktree: `pi` has no --cwd flag at all, and an
+        # orchestrator executing `shell` from its own cwd would otherwise start elsewhere.
+        launch["cwd"] = wt_abs
+    launch["shell"] = shell_launch_line(launch)
+    return launch
+
+
+def shell_launch_line(launch: dict[str, Any]) -> str:
+    """Render `env` + `argv` of a launch as one safely quoted POSIX shell line."""
+    env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in sorted((launch.get("env") or {}).items()))
+    argv = " ".join(shlex.quote(str(a)) for a in launch.get("argv") or [])
+    line = f"env {env_prefix} {argv}".strip() if env_prefix else argv
+    cwd = launch.get("cwd")
+    return f"cd {shlex.quote(str(cwd))} && {line}" if cwd else line
+
+
+def _build_harness_command(
     agent: str,
     profile: str,
     worktree: str,
@@ -294,7 +340,10 @@ def build_harness_command(
     if agent == "gemini":
         flag = "--approval-mode plan" if profile == "ro" else "--yolo"
         cmd = f"gemini {flag}"
-        return {"agent": agent, "profile": profile, "argv": cmd.split(), "command": cmd, "env": env, "profile_flag": flag}
+        argv = cmd.split()
+        if prompt_str:
+            argv += ["-p", prompt_str]
+        return {"agent": agent, "profile": profile, "argv": argv, "command": cmd, "env": env, "profile_flag": flag}
 
     if agent in ("cursor", "antigravity", "grok", "droid"):
         if profile == "ro":
@@ -306,9 +355,131 @@ def build_harness_command(
             "droid": ("droid --auto high", "--auto high"),
         }
         cmd, flag = flag_map[agent]
+        if prompt_str:
+            # No verified headless prompt flag: launching would start the agent WITHOUT its
+            # assignment, so refuse rather than report a dispatch that never got its task.
+            raise ProviderError(
+                "unsupported_prompt",
+                f"agent {agent!r} has no verified headless prompt flag; dispatch the task with a verified harness",
+            )
         return {"agent": agent, "profile": profile, "argv": cmd.split(), "command": cmd, "env": env, "profile_flag": flag}
 
     raise ProviderError("unknown_agent", f"unknown agent {agent!r}")
+
+
+FENCE_STATES = {
+    "stop": ("stopped", "stopped"),
+    "abandon": ("abandoned", "abandoned"),
+    "release": ("released", "released"),
+    "retain": ("retained", "retained"),
+}
+FENCED_DISPATCH_STATES = ("stopped", "abandoned", "released")
+
+
+def fence_state(verb: str) -> tuple[str, str]:
+    """Validate a worker fence verb and return `(dispatch_state, terminal_state)`."""
+    if verb not in FENCE_STATES:
+        raise ProviderError("invalid_verb", f"unknown worker fence verb {verb!r} (want stop|abandon|release|retain)")
+    return FENCE_STATES[verb]
+
+
+def parse_json_strict(out: str, provider: str, *, allow_empty: bool = False) -> Any:
+    """Parse upstream CLI/HTTP JSON; unparseable output is an error, never a success."""
+    text = (out or "").strip()
+    if not text:
+        if allow_empty:
+            return {}
+        raise ProviderError(f"{provider}_empty_output", f"{provider}: upstream returned no output")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith(("{", "[")):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    raise ProviderError(f"{provider}_bad_json", f"{provider}: upstream output is not JSON: {text[:200]!r}")
+
+
+def require_id(raw: Any, *keys: str, provider: str, what: str = "id") -> str:
+    """Return the first non-empty id among `keys` (dotted paths allowed); never mint one."""
+    for key in keys:
+        cur: Any = raw
+        for part in key.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if isinstance(cur, (str, int)) and str(cur).strip():
+            return str(cur)
+    raise ProviderError(
+        "upstream_no_id",
+        f"{provider}: upstream response carries no {what} (looked for {', '.join(keys)})",
+        {"response": raw if isinstance(raw, (dict, list)) else str(raw)[:200]},
+    )
+
+
+def normalize_read(
+    source: str,
+    *,
+    lines: list[Any] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    cursor: Any = None,
+    fallback_reason: str | None = None,
+    handle: str | None = None,
+) -> dict[str, Any]:
+    """Shape a worker-read receipt the way `worker_ops.format_read` consumes it."""
+    if source not in ("transcript", "terminal"):
+        raise ProviderError("invalid_source", f"unknown worker-read source {source!r}")
+    out: dict[str, Any] = {"source": source, "cursor": cursor}
+    if fallback_reason:
+        out["fallbackReason"] = fallback_reason
+    if source == "transcript":
+        if messages is None:
+            messages = [
+                {"id": f"line_{i}", "role": "assistant", "blocks": [{"type": "text", "text": str(ln)}]}
+                for i, ln in enumerate(lines or [])
+            ]
+        out["transcript"] = {"messages": messages, "truncated": False}
+    else:
+        out["terminal"] = {"handle": handle, "tail": [str(ln) for ln in (lines or [])]}
+    return out
+
+
+def normalize_show(
+    dispatch_id: str,
+    state: str,
+    *,
+    task_id: str | None = None,
+    terminal_state: str | None = None,
+    handle: str | None = None,
+    worktree: str | None = None,
+    stage: str | None = None,
+    raw: Any = None,
+) -> dict[str, Any]:
+    """Shape a worker-show receipt the way `worker_ops.format_show` consumes it."""
+    worker: dict[str, Any] = {
+        "dispatchId": dispatch_id,
+        "taskId": task_id,
+        "state": state,
+        "stage": stage or state,
+        "terminalState": terminal_state,
+        "agentTerminalHandle": handle,
+        "worktree": worktree,
+    }
+    out: dict[str, Any] = {"dispatch": {"id": dispatch_id, "taskId": task_id}, "worker": worker}
+    if raw is not None:
+        out["upstream"] = raw
+    return out
+
+
+def most_restrictive_profile(*profiles: str | None) -> str:
+    """Return the lowest-ranked valid profile among `profiles` ('' when none are set)."""
+    present = [p.strip() for p in profiles if p and p.strip()]
+    for p in present:
+        if p not in PROFILE_RANK:
+            raise ProviderError("invalid_profile", f"unknown parent profile {p!r} (want ro|rw|danger)")
+    return min(present, key=lambda p: PROFILE_RANK[p]) if present else ""
 
 
 def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
@@ -318,7 +489,7 @@ def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
     BOOL_FLAGS = {
         "--brief", "--wait", "--format", "--unread", "--peek", "--all",
         "--screen", "--focus", "--include-visual-layouts", "--fresh",
-        "--debug", "--inject", "--json", "--force",
+        "--debug", "--inject", "--json", "--force", "--takeover-legacy",
     }
     i = 0
     while i < len(tokens):
@@ -357,10 +528,19 @@ class RuntimeProvider:
     name: str = "base"
 
     def capabilities(self) -> set[str]:
-        return {"cap:core-orchestration"}
+        """Native capabilities as declared in capabilities.json — the single source of truth
+        preflight enforces (a provider class can no longer claim what the matrix does not)."""
+        try:
+            doc = json.loads((Path(__file__).resolve().parent / "capabilities.json").read_text(encoding="utf-8"))
+            entry = doc["providers"][self.name]
+        except (OSError, KeyError, ValueError):
+            return {"cap:core-orchestration"}
+        return set(entry.get("native_capabilities") or [])
 
     def dispatch(self, argv: list[str], *, timeout: int = 120, env: dict[str, str] | None = None) -> dict[str, Any]:
         """Route a canonical CLI `argv` list to the corresponding typed provider method."""
+        if env is None:
+            env = getattr(self, "env", None)
         clean = [a for a in argv if a != "--json"]
         if not clean:
             return self.status()
@@ -483,11 +663,13 @@ class RuntimeProvider:
                     env,
                     os.environ.get("PROFILE", "rw"),
                 )
-                raw_parent = flags.get("parent-profile") or env_get(
-                    "OPEN_FLEET_PARENT_PROFILE",
-                    "ORCA_PARENT_PROFILE",
-                    env,
-                    "",
+                # The parent is the MOST restrictive of the explicit flag, the inherited
+                # OPEN_FLEET_PARENT_PROFILE, and the caller's own sandbox profile: a ro worker
+                # calling worker-start cannot mint an rw child by omitting --parent-profile.
+                raw_parent = most_restrictive_profile(
+                    str(flags.get("parent-profile") or ""),
+                    env_get("OPEN_FLEET_PARENT_PROFILE", "ORCA_PARENT_PROFILE", env, ""),
+                    env_get("OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE", env, ""),
                 )
                 kw: dict[str, Any] = {
                     "task_id": flags.get("task", ""),
@@ -503,8 +685,29 @@ class RuntimeProvider:
                     "profile": str(raw_prof),
                     "parent_profile": str(raw_parent),
                 }
+                # Provider-specific placement flags reach only providers whose worker_start
+                # declares them (e.g. gastown --rig, overstory --capability, emdash --repo).
+                try:
+                    accepted = set(inspect.signature(self.worker_start).parameters)
+                except (TypeError, ValueError):
+                    accepted = set()
+                for flag, param in (
+                    ("rig", "rig"),
+                    ("capability", "capability"),
+                    ("base", "base"),
+                    ("repo", "repo"),
+                    ("workspace-type", "workspace_type"),
+                    ("model", "model"),
+                    ("effort", "effort"),
+                ):
+                    if flag in flags and param in accepted:
+                        kw[param] = flags[flag]
                 if "prompt" in flags:
                     kw["prompt"] = str(flags["prompt"])
+                else:
+                    spec = self.task_spec(kw["task_id"])
+                    if spec:
+                        kw["prompt"] = spec
                 return self.worker_start(**kw)
             if sub == "worker-list":
                 return self.worker_list(
@@ -516,11 +719,33 @@ class RuntimeProvider:
             if sub == "worker-show":
                 return self.worker_show(dispatch_id=flags.get("dispatch", ""))
             if sub == "worker-read":
-                return self.worker_read(
-                    dispatch_id=flags.get("dispatch", ""),
-                    source="transcript" if flags.get("transcript") else ("terminal" if flags.get("terminal") else flags.get("source", "transcript")),
-                    limit=int(flags.get("limit", 50)),
-                )
+                read_kw: dict[str, Any] = {
+                    "dispatch_id": flags.get("dispatch", ""),
+                    "source": "transcript" if flags.get("transcript") else ("terminal" if flags.get("terminal") else flags.get("source", "transcript")),
+                    "limit": int(flags.get("limit", 50)),
+                }
+                if "cursor" in flags:
+                    try:
+                        if "cursor" in inspect.signature(self.worker_read).parameters:
+                            read_kw["cursor"] = flags["cursor"]
+                    except (TypeError, ValueError):
+                        pass
+                return self.worker_read(**read_kw)
+            if sub == "worker-wait":
+                wait_kw: dict[str, Any] = {
+                    "dispatch_id": flags.get("dispatch", ""),
+                    "until": str(flags.get("until") or "settled"),
+                }
+                if "timeout-ms" in flags:
+                    try:
+                        params = set(inspect.signature(self.worker_wait).parameters)
+                    except (TypeError, ValueError):
+                        params = set()
+                    if "timeout_s" in params:
+                        wait_kw["timeout_s"] = max(1, int(flags["timeout-ms"]) // 1000)
+                    else:
+                        wait_kw["timeout_ms"] = int(flags["timeout-ms"])
+                return self.worker_wait(**wait_kw)
             if sub in ("worker-stop", "worker-abandon", "worker-release", "worker-retain"):
                 verb = sub.split("-", 1)[1]
                 fence_kw: dict[str, Any] = {
@@ -531,6 +756,12 @@ class RuntimeProvider:
                 if "verified" in flags:
                     fence_kw["verified"] = flags["verified"] is True or str(flags["verified"]).lower() in ("1", "true", "yes")
                 return self.worker_fence(**fence_kw)
+            if sub == "worker-verify":
+                return self.worker_verify(
+                    dispatch_id=flags.get("dispatch", ""),
+                    sha=str(flags.get("sha") or ""),
+                    manifest=flags.get("manifest"),
+                )
             if sub == "dispatch":
                 return self.dispatch_inject(
                     task_id=flags.get("task", ""),
@@ -574,6 +805,32 @@ class RuntimeProvider:
                     sender=flags.get("from"),
                     retry_request=flags.get("retry-request"),
                 )
+            if sub == "gate-create":
+                return self.gate_create(
+                    task_id=flags.get("task", ""),
+                    question=flags.get("question", ""),
+                    options=flags.get("options"),
+                    run=flags.get("run"),
+                    sender=flags.get("from"),
+                    retry_request=flags.get("retry-request"),
+                )
+            if sub == "gate-resolve":
+                return self.gate_resolve(
+                    gate_id=flags.get("id", ""),
+                    resolution=flags.get("resolution"),
+                    sender=flags.get("from"),
+                    retry_request=flags.get("retry-request"),
+                )
+            if sub == "gate-list":
+                return self.gate_list(run=flags.get("run"), task_id=flags.get("task"), status=flags.get("status"))
+            if sub == "run-create":
+                return self.run_create(objective=flags.get("objective"), run=flags.get("id"), sender=flags.get("from"))
+            if sub == "run-use":
+                return self.run_use(
+                    run=flags.get("id", ""),
+                    sender=flags.get("from"),
+                    takeover=bool(flags.get("takeover-legacy")),
+                )
             if sub == "ask":
                 return self.ask_human(
                     question=flags.get("question"),
@@ -602,6 +859,55 @@ class RuntimeProvider:
             "unsupported_operation",
             f"provider '{self.name}' does not support '{method}' (args={sorted(kwargs.keys())})",
         )
+
+    def task_spec(self, task_id: str) -> str:
+        """Return the locally recorded spec for `task_id` ('' when unknown)."""
+        state = getattr(self, "state", None)
+        if not task_id or state is None or not hasattr(state, "_connect"):
+            return ""
+        try:
+            with state._connect() as conn:
+                row = conn.execute("SELECT spec FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        except Exception:
+            return ""
+        return str(row["spec"] or "") if row else ""
+
+    def resolve_task_prompt(self, task_id: str, prompt: str | None) -> str:
+        """The worker's assignment: explicit prompt, else the task's saved spec; never empty."""
+        text = prompt if prompt and prompt.strip() else self.task_spec(task_id)
+        if not text or not text.strip():
+            raise ProviderError(
+                "missing_task_spec",
+                f"task {task_id!r} has no spec to hand the worker (pass --prompt or create it with --spec)",
+            )
+        return text
+
+    def worker_verify(self, **kwargs: Any) -> dict[str, Any]:
+        return self._unsupported("worker_verify", kwargs)
+
+    def worker_wait(self, **kwargs: Any) -> dict[str, Any]:
+        return self._unsupported("worker_wait", kwargs)
+
+    def _local_state_or_unsupported(self, method: str, kwargs: dict[str, Any]) -> Any:
+        state = getattr(self, "state", None)
+        if state is None or not hasattr(state, method):
+            return self._unsupported(method, kwargs)
+        return getattr(state, method)(**kwargs)
+
+    def gate_create(self, **kwargs: Any) -> dict[str, Any]:
+        return self._local_state_or_unsupported("gate_create", kwargs)
+
+    def gate_resolve(self, **kwargs: Any) -> dict[str, Any]:
+        return self._local_state_or_unsupported("gate_resolve", kwargs)
+
+    def gate_list(self, **kwargs: Any) -> dict[str, Any]:
+        return self._local_state_or_unsupported("gate_list", kwargs)
+
+    def run_create(self, **kwargs: Any) -> dict[str, Any]:
+        return self._local_state_or_unsupported("run_create", kwargs)
+
+    def run_use(self, **kwargs: Any) -> dict[str, Any]:
+        return self._local_state_or_unsupported("run_use", kwargs)
 
     def task_create(self, **kwargs: Any) -> dict[str, Any]:
         return self._unsupported("task_create", kwargs)
@@ -679,9 +985,9 @@ class RuntimeProvider:
         return self._unsupported("search", kwargs)
 
     def vm_recipe_doctor(self, recipe_id: str) -> dict[str, Any]:
-        return {
-            "recipeId": recipe_id,
-            "ok": True,
-            "summary": {"failures": 0, "warnings": 0},
-            "checks": [{"id": "sandbox-ready", "status": "pass"}],
-        }
+        # Fail closed: a provider that cannot actually probe a sandbox must never certify one
+        # (sandbox-policy.md: a doctor is CLEAR only on real evidence, #591 review).
+        raise ProviderError(
+            "unsupported_operation",
+            f"provider '{self.name}' cannot run `vm recipe doctor {recipe_id}`: no sandbox probe is implemented",
+        )

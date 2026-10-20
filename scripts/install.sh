@@ -13,7 +13,11 @@
 #      snippet available. Any failure here exits nonzero.
 #   2. SOFT prerequisites (warnings only — needed to RUN missions, not to
 #      install the catalog): the orca CLI at or above the runtime/pins.json
-#      pin, gh present and authenticated, Claude Code present.
+#      pin, gh present and authenticated, Claude Code present. The orca checks
+#      are runtime-aware: with $OPEN_FLEET_RUNTIME / $ORCA_FLEET_RUNTIME naming a
+#      non-orca provider they are skipped (missions dispatch through that
+#      provider, not the orca CLI); `auto` checks an orca CLI that is present
+#      but never warns about an absent one (auto falls back to posix).
 #   3. --check re-verifies an existing install without changing anything.
 #   4. A shallow clone (git clone --depth 1) is refused up front with the exact
 #      remedy (`git fetch --unshallow`): proven missions' run reports pin older
@@ -63,8 +67,54 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
 
 # --- soft prerequisites (warn, never fail: the catalog installs without them) -
 ORCA_MIN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["orca"]["version"].lstrip("v"))' "$ROOT/runtime/pins.json" 2>/dev/null || true)"
-if command -v orca >/dev/null 2>&1 || command -v orca-ide >/dev/null 2>&1; then
-  ORCA_BIN="$(command -v orca || command -v orca-ide)"
+# The active runtime resolves through the SAME code dispatch uses
+# (runtime/providers active_provider_name + orca.resolve_orca_binary):
+# OPEN_FLEET_RUNTIME over ORCA_FLEET_RUNTIME (a blank/whitespace value falls
+# through), trimmed, case-insensitive; `auto` is orca only when the platform's
+# resolved Orca binary (ORCA_CLI_COMMAND, orca-dev, orca-ide on Linux, orca
+# elsewhere) is on PATH, else posix. Prints "<requested>\t<provider>\t<orca-bin>".
+RUNTIME_PROBE="$(python3 - "$ROOT" 2>/dev/null <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+from runtime.providers import active_provider_name, resolve_orca_binary
+from runtime.providers.base import env_get
+raw = env_get("OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME").lower() or "orca"
+try:
+    name = active_provider_name()
+except Exception:
+    name = "unknown"
+print("\t".join(("_".join(raw.split()), name, resolve_orca_binary())))
+PY
+)"
+ACTIVE_RUNTIME="$(printf '%s' "$RUNTIME_PROBE" | awk -F '\t' '{print $1}')"
+ACTIVE_PROVIDER="$(printf '%s' "$RUNTIME_PROBE" | awk -F '\t' '{print $2}')"
+RESOLVED_ORCA="$(printf '%s' "$RUNTIME_PROBE" | awk -F '\t' '{print $3}')"
+ORCA_BIN=""
+if [ -z "$ACTIVE_PROVIDER" ]; then
+  warn "could not resolve the active runtime through runtime/providers; checking for the orca CLI"
+  ACTIVE_RUNTIME=orca
+  ACTIVE_PROVIDER=orca
+fi
+case "$ACTIVE_RUNTIME:$ACTIVE_PROVIDER" in
+  auto:orca) ORCA_EXPECTED=required ;;
+  auto:*) ORCA_EXPECTED=auto-posix ;;
+  *:orca) ORCA_EXPECTED=required ;;
+  *:unknown) ORCA_EXPECTED=unknown ;;
+  *) ORCA_EXPECTED=none ;;
+esac
+if [ "$ORCA_EXPECTED" = required ]; then
+  # The binary dispatch will exec first; then the other platform's name (an
+  # explicit orca runtime still warns only when neither is installed).
+  ORCA_BIN="$(command -v "${RESOLVED_ORCA:-orca}" 2>/dev/null || command -v orca 2>/dev/null \
+    || command -v orca-ide 2>/dev/null || true)"
+fi
+if [ "$ORCA_EXPECTED" = unknown ]; then
+  warn "runtime ${ACTIVE_RUNTIME} is not a registered provider (missions will refuse to dispatch); orca CLI checks skipped"
+elif [ "$ORCA_EXPECTED" = none ]; then
+  say "runtime ${ACTIVE_RUNTIME}: orca CLI checks skipped (missions dispatch through the ${ACTIVE_PROVIDER} provider)"
+elif [ "$ORCA_EXPECTED" = auto-posix ]; then
+  say "runtime auto: ${RESOLVED_ORCA:-orca} not in PATH, missions dispatch through the posix provider"
+elif [ -n "$ORCA_BIN" ]; then
   ORCA_VER="$("$ORCA_BIN" --version 2>/dev/null | head -n 1 || true)"
   if [ -z "$ORCA_MIN" ]; then
     warn "cannot read the Orca version pin (runtime/pins.json) — unable to verify the Orca floor"
@@ -112,7 +162,7 @@ PY
     fi
   fi
 else
-  warn "no orca CLI in PATH (missions dispatch through it; install Orca >= ${ORCA_MIN:-unknown} to run them)"
+  warn "no orca CLI in PATH (missions dispatch through it; install Orca >= ${ORCA_MIN:-unknown} to run them, or set OPEN_FLEET_RUNTIME to another provider)"
 fi
 if command -v gh >/dev/null 2>&1; then
   gh auth status >/dev/null 2>&1 || warn "gh is present but not authenticated (gh auth login); fleets open PRs per unit"

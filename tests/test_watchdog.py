@@ -8,8 +8,11 @@ slow-but-alive is not stuck (no action); HUNG gets one auto-nudge; still-HUNG
 after the budget, or WEDGED on positive evidence, yields a stop-redispatch
 RECOMMENDATION with JSONL evidence — never an auto-dispatch.
 """
+import gc
 import importlib.util
+import importlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -495,6 +498,274 @@ class FailureHandoverPacket(unittest.TestCase):
         joined = "\n".join(lines)
         self.assertEqual(len(joined.splitlines()), len(lines))
         self.assertLessEqual(len(joined.splitlines()), 40)
+
+
+FAILING_CI = [{"name": "unit", "step": "pytest", "conclusion": "failure", "exit_code": 1}]
+
+
+class WaitingInputSuppressesOnlyTheNudge(unittest.TestCase):
+    """#590: waiting_input suppresses the NUDGE action, never classification or
+    the stop-redispatch recommendation."""
+
+    def test_wedged_still_recommended_while_waiting(self):
+        rec = worker(idle_min=5, wedge_markers=["dialog_block"], waiting_input=True)
+        cls, action, ev, _ = watchdog.decide(rec, T0, CFG, {"workers": {}})
+        self.assertEqual((cls, action), ("WEDGED", "recommend"))
+        self.assertTrue(ev["waiting_input"])
+
+    def test_hung_nudge_suppressed_while_waiting(self):
+        rec = worker(idle_min=45, waiting_input=True)
+        cls, action, ev, note = watchdog.decide(rec, T0, CFG, {"workers": {}})
+        self.assertEqual((cls, action), ("HUNG", "none"))
+        self.assertIn("nudge suppressed", note)
+        self.assertTrue(ev["waiting_input"])
+
+    def test_still_hung_after_budget_recommended_while_waiting(self):
+        state = {"workers": {}}
+        watchdog.record_nudge(state, "task_w", "d-task_w", T0 - timedelta(minutes=90))
+        rec = worker(idle_min=45, waiting_input=True)
+        cls, action, _, _ = watchdog.decide(rec, T0, CFG, state)
+        self.assertEqual((cls, action), ("HUNG", "recommend"))
+
+    def test_settled_classified_while_waiting(self):
+        rec = worker(terminal="exited", waiting_input=True)
+        cls, action, _, _ = watchdog.decide(rec, T0, CFG, {"workers": {}})
+        self.assertEqual((cls, action), ("SETTLED", "none"))
+
+    def test_ci_nudge_suppressed_while_waiting(self):
+        rec = worker(idle_min=1, ci_checks=FAILING_CI, waiting_input=True)
+        cls, action, ev, note = watchdog.decide(rec, T0, CFG, {"workers": {}})
+        self.assertEqual((cls, action), ("OK", "none"))
+        self.assertIn("ci_signature", ev)
+        self.assertIn("waiting on human gate", note)
+
+
+class CiNudgeBudgetIsSeparate(unittest.TestCase):
+    def test_ci_nudge_does_not_spend_the_hang_budget(self):
+        state = {"workers": {}}
+        rec = worker(idle_min=1, ci_checks=FAILING_CI)
+        _, action, ev, _ = watchdog.decide(rec, T0, CFG, state)
+        self.assertEqual(action, "nudge")
+        watchdog.record_nudge(state, "task_w", "d-task_w", T0, ci_signature=ev["ci_signature"])
+        entry = state["workers"]["task_w"]
+        self.assertEqual(entry["nudges"], [])
+        self.assertEqual(len(entry["ci_nudges"]), 1)
+        # 40 min later the worker really hangs. The hourly cap / window count
+        # BOTH kinds (worker-supervision.md), so the hang nudge is DEFERRED —
+        # no nudge, and no stop recommendation either: the hang nudge is owed.
+        later = T0 + timedelta(minutes=40)
+        hung = dict(worker(idle_min=1, ci_checks=[]),
+                    last_movement_at=(later - timedelta(minutes=35)).isoformat())
+        cls, action, _, note = watchdog.decide(hung, later, CFG, state)
+        self.assertEqual((cls, action), ("HUNG", "none"), note)
+        self.assertIn("deferred", note)
+        # Once the window clears it still gets its one hang nudge.
+        clear = T0 + timedelta(minutes=61)
+        hung = dict(hung, last_movement_at=(clear - timedelta(minutes=56)).isoformat())
+        cls, action, _, note = watchdog.decide(hung, clear, CFG, state)
+        self.assertEqual((cls, action), ("HUNG", "nudge"), note)
+
+    def test_ci_nudge_counts_in_the_hang_window_and_hourly_cap(self):
+        # worker-supervision.md: "the hourly cap and window count both kinds".
+        roomy = cfg(max_nudges_per_dispatch=5, max_nudges_per_hour_per_worker=5)
+        state = {"workers": {}}
+        watchdog.record_nudge(state, "task_w", "d-task_w", T0 - timedelta(minutes=10),
+                              ci_signature="sig-a")
+        rec = worker(idle_min=45)
+        cls, action, _, note = watchdog.decide(rec, T0, roomy, state)
+        self.assertEqual((cls, action), ("HUNG", "none"), note)
+        self.assertIn("window holds", note)
+        capped = cfg(max_nudges_per_dispatch=5, nudge_window_s=0,
+                     max_nudges_per_hour_per_worker=1)
+        cls, action, _, note = watchdog.decide(rec, T0, capped, state)
+        self.assertEqual((cls, action), ("HUNG", "none"), note)
+        self.assertIn("hourly cap reached", note)
+        # A hang nudge that its OWN history rate-limits still recommends.
+        watchdog.record_nudge(state, "task_w", "d-task_w", T0 - timedelta(minutes=5))
+        cls, action, _, note = watchdog.decide(rec, T0, roomy, state)
+        self.assertEqual((cls, action), ("HUNG", "recommend"), note)
+
+    def test_ci_budget_key_withholds_and_rate_limits_still_apply(self):
+        state = {"workers": {}}
+        sig_a = watchdog.ci_failure_signature(FAILING_CI)
+        watchdog.record_nudge(state, "task_w", "d-task_w", T0, ci_signature=sig_a)
+        other = [{"name": "lint", "step": "ruff", "conclusion": "failure", "exit_code": 1}]
+        rec = worker(idle_min=1, ci_checks=other)
+        _, action, _, note = watchdog.decide(rec, T0 + timedelta(minutes=5), CFG, state)
+        self.assertEqual(action, "none")
+        self.assertIn("CI nudge budget spent (1/1)", note)
+        roomy = cfg(max_ci_nudges_per_dispatch=3)
+        _, action, _, note = watchdog.decide(rec, T0 + timedelta(minutes=5), roomy, state)
+        self.assertEqual(action, "none")
+        self.assertIn("hourly cap reached", note)
+        # The hourly cap counts hang nudges too.
+        state2 = {"workers": {}}
+        watchdog.record_nudge(state2, "task_w", "d-task_w", T0)
+        _, action, _, note = watchdog.decide(rec, T0 + timedelta(minutes=5), roomy, state2)
+        self.assertEqual(action, "none")
+        self.assertIn("hourly cap reached", note)
+
+    def test_config_accepts_and_validates_ci_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "w.json"
+            conf.write_text(json.dumps({"max_ci_nudges_per_dispatch": 2}))
+            self.assertEqual(watchdog.load_config(conf)["max_ci_nudges_per_dispatch"], 2)
+            conf.write_text(json.dumps({"max_ci_nudges_per_dispatch": -1}))
+            with self.assertRaises(watchdog.ConfigError):
+                watchdog.load_config(conf)
+
+
+class WaitingInputProducer(unittest.TestCase):
+    def test_fill_from_store_respects_explicit_field(self):
+        class FakeStore:
+            def __init__(self):
+                self.calls = []
+
+            def has_pending_question(self, worker_id, run_id=None, dispatch_id=None):
+                self.calls.append((worker_id, run_id, dispatch_id))
+                return worker_id == "task_q"
+
+        store = FakeStore()
+        data = {"run_id": "run_x", "workers": [
+            worker(wid="task_q"), worker(wid="task_n"),
+            worker(wid="task_e", waiting_input=False)]}
+        self.assertEqual(watchdog.fill_waiting_input(data, store=store), 2)
+        self.assertEqual([w.get("waiting_input") for w in data["workers"]], [True, False, False])
+        self.assertEqual(store.calls, [("task_q", "run_x", "d-task_q"),
+                                       ("task_n", "run_x", "d-task_n")])
+
+    def test_no_env_db_means_no_lookup(self):
+        data = {"workers": [worker()]}
+        self.assertEqual(watchdog.fill_waiting_input(data, env={}), 0)
+        self.assertNotIn("waiting_input", data["workers"][0])
+
+    @staticmethod
+    def _store_cls():
+        sys.path.insert(0, str(ROOT))
+        try:
+            return importlib.import_module("runtime.providers.local_state").LocalStateStore
+        finally:
+            sys.path.remove(str(ROOT))
+
+    @staticmethod
+    def _bind_dispatch(db, dispatch_id, task_id, handle, run_id):
+        """The dispatches row posix.py writes: dispatch_id -> terminal_handle."""
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, profile, "
+                "terminal_handle, state, terminal_state, created_at, updated_at) "
+                "VALUES (?, ?, ?, '/wt', 'claude', 'rw', ?, 'ready', 'active', 0, 0)",
+                (dispatch_id, task_id, run_id, handle))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _argv(self, beats):
+        return [sys.executable, str(ROOT / "runtime" / "scripts" / "watchdog.py"),
+                "--heartbeats", str(beats), "--config", str(CONFIG),
+                "--now", "2026-09-14T12:00:00Z", "--dry-run"]
+
+    @staticmethod
+    def _env(**extra):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPEN_FLEET_STATE_DB", "ORCA_FLEET_STATE_DB")}
+        env.update(extra)
+        return env
+
+    def test_cli_derives_waiting_input_from_local_state_db(self):
+        # Real shapes: ask_human stores the asker's TERMINAL HANDLE as sender,
+        # and the dispatches table binds that handle to the heartbeat's dispatch.
+        LocalStateStore = self._store_cls()
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            db = tmp / "runtime.db"
+            store = LocalStateStore(db_path=db)
+            del store
+            self._bind_dispatch(db, "d-task_w", "task_w", "term_7f3a", "run_q")
+            LocalStateStore(db_path=db).ask_human(
+                question="ship it?", run="run_q", sender="term_7f3a")
+            beats = tmp / "beats.json"
+            beats.write_text(json.dumps({"run_id": "run_q", "workers": [worker(idle_min=45)]}))
+            plain = subprocess.run(self._argv(beats), capture_output=True, text=True,
+                                   env=self._env())
+            self.assertIn("WOULD-NUDGE", plain.stdout)
+            gated = subprocess.run(self._argv(beats), capture_output=True, text=True,
+                                   env=self._env(OPEN_FLEET_STATE_DB=str(db)))
+            self.assertEqual(gated.returncode, 0, gated.stderr)
+            self.assertNotIn("WOULD-NUDGE", gated.stdout)
+            self.assertIn("nudge suppressed", gated.stdout)
+
+    def test_question_from_another_workers_handle_does_not_suppress(self):
+        LocalStateStore = self._store_cls()
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            db = tmp / "runtime.db"
+            LocalStateStore(db_path=db)
+            self._bind_dispatch(db, "d-task_w", "task_w", "term_7f3a", "run_q")
+            self._bind_dispatch(db, "d-other", "other", "term_0b0b", "run_q")
+            LocalStateStore(db_path=db).ask_human(
+                question="mine?", run="run_q", sender="term_0b0b")
+            beats = tmp / "beats.json"
+            beats.write_text(json.dumps({"run_id": "run_q", "workers": [worker(idle_min=45)]}))
+            proc = subprocess.run(self._argv(beats), capture_output=True, text=True,
+                                  env=self._env(OPEN_FLEET_STATE_DB=str(db)))
+            self.assertIn("WOULD-NUDGE", proc.stdout, proc.stderr)
+
+    def test_unopenable_state_db_warns_and_still_classifies(self):
+        LocalStateStore = self._store_cls()
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            beats = tmp / "beats.json"
+            beats.write_text(json.dumps({"run_id": "run_q", "workers": [
+                worker(idle_min=45),
+                worker(wid="task_v", idle_min=5, wedge_markers=["dialog_block"])]}))
+            readonly = tmp / "ro" / "runtime.db"
+            readonly.parent.mkdir()
+            LocalStateStore(db_path=readonly)
+            readonly.chmod(0o444)
+            readonly.parent.chmod(0o555)
+            garbage = tmp / "garbage.db"
+            garbage.write_bytes(b"this is not an sqlite database" * 100)
+            try:
+                for db in (readonly, garbage):
+                    proc = subprocess.run(self._argv(beats), capture_output=True, text=True,
+                                          env=self._env(OPEN_FLEET_STATE_DB=str(db)))
+                    self.assertEqual(proc.returncode, 1, f"{db.name}: {proc.stderr}")
+                    self.assertIn("task_v WEDGED WOULD-RECOMMEND", proc.stdout)
+                    self.assertIn("task_w HUNG WOULD-NUDGE", proc.stdout)
+                    if db is garbage:
+                        self.assertIn("WARN", proc.stderr)
+            finally:
+                readonly.parent.chmod(0o755)
+                readonly.chmod(0o644)
+
+    def test_dry_run_leaves_the_state_db_byte_identical(self):
+        import sqlite3
+        LocalStateStore = self._store_cls()
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            db = tmp / "state" / "runtime.db"
+            LocalStateStore(db_path=db).ask_human(
+                question="ship it?", run="run_q", sender="task_w")
+            # A store written before WAL was the default (rollback journal):
+            # LocalStateStore.__init__ would flip it to WAL and rewrite the header.
+            gc.collect()  # close the store's lingering connections
+            conn = sqlite3.connect(str(db))
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.close()
+            before = db.read_bytes()
+            listing = sorted(p.name for p in db.parent.iterdir())
+            beats = tmp / "beats.json"
+            beats.write_text(json.dumps({"run_id": "run_q", "workers": [worker(idle_min=45)]}))
+            proc = subprocess.run(self._argv(beats), capture_output=True, text=True,
+                                  env=self._env(OPEN_FLEET_STATE_DB=str(db)))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("nudge suppressed", proc.stdout)
+            self.assertEqual(db.read_bytes(), before, "dry-run modified the state db")
+            self.assertEqual(sorted(p.name for p in db.parent.iterdir()), listing,
+                             "dry-run created side files (-wal/-shm) beside the state db")
 
 
 if __name__ == "__main__":

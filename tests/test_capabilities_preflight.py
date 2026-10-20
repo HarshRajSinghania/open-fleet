@@ -16,6 +16,7 @@ Covers:
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,17 @@ EXPECTED_PROVIDERS = {
 }
 
 
+def _ALL_TOOLS(name):
+    return f"/stub/bin/{name}"
+
+
+def _stub_tools(directory, *names):
+    for name in names:
+        tool = Path(directory) / name
+        tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        tool.chmod(0o755)
+
+
 def run_preflight(*argv, cwd=None, env=None):
     import contextlib
     import io
@@ -121,15 +133,19 @@ class TestCapabilitiesMatrixSchema(unittest.TestCase):
                 self.assertTrue(native.issubset(EXPECTED_CAPABILITIES))
                 self.assertTrue(fallback.issubset(EXPECTED_CAPABILITIES))
                 self.assertEqual(native & fallback, set(), f"{name} overlaps native and fallback")
-                self.assertGreaterEqual(len(harnesses), 10)
+                # A provider lists only the harnesses it can actually launch (multiclaude is
+                # claude-only, jcode-swarm jcode-only) — never the full table by default.
+                self.assertGreaterEqual(len(harnesses), 1)
                 if name == "orca":
                     self.assertIn("cap:orca-self-audit", native)
                 else:
                     self.assertNotIn("cap:orca-self-audit", native | fallback)
-                # Every non-self-audit capability is available natively or via portable fallback.
+                # Every portable capability is available natively or via fallback. cap:sandbox-vm
+                # is the exception: it is claimed only where a real `vm recipe doctor` exists, so
+                # an adapter that refuses PROFILE=danger must not appear to offer it.
                 self.assertEqual(
-                    (native | fallback) - {"cap:orca-self-audit"},
-                    EXPECTED_CAPABILITIES - {"cap:orca-self-audit"},
+                    (native | fallback) - {"cap:orca-self-audit", "cap:sandbox-vm"},
+                    EXPECTED_CAPABILITIES - {"cap:orca-self-audit", "cap:sandbox-vm"},
                 )
 
     def test_declares_every_catalog_mission(self):
@@ -185,21 +201,35 @@ class TestPreflightCapabilitiesEnforcement(unittest.TestCase):
         data = json.loads(CAPABILITIES_JSON.read_text(encoding="utf-8"))
         for provider in EXPECTED_PROVIDERS:
             for mission in data["missions"]:
+                # Fallback tooling stubbed present: this test is about the matrix, not the host.
                 if mission == "pin-it" and provider != "orca":
-                    refusal, info = preflight._capabilities_refusal(mission, provider)
+                    refusal, info = preflight._capabilities_refusal(mission, provider, which=_ALL_TOOLS)
                     self.assertIsNotNone(refusal)
                     self.assertEqual(info["missing_capability"], "cap:orca-self-audit")
+                elif "cap:sandbox-vm" in data["missions"][mission]["required"] and provider not in ("orca", "posix"):
+                    # Adapters that refuse PROFILE=danger (no certifiable sandbox) must refuse here
+                    # too, not pass preflight and fail at the first danger launch.
+                    refusal, info = preflight._capabilities_refusal(mission, provider, which=_ALL_TOOLS)
+                    self.assertIsNotNone(refusal, f"{mission} must refuse on {provider}")
+                    self.assertEqual(info["missing_capability"], "cap:sandbox-vm")
                 else:
-                    refusal, info = preflight._capabilities_refusal(mission, provider)
+                    refusal, info = preflight._capabilities_refusal(mission, provider, which=_ALL_TOOLS)
                     self.assertIsNone(refusal, f"{mission} failed on {provider}: {refusal}")
                     self.assertTrue(info["ok"])
 
     def test_strict_native_capabilities_mode(self):
-        # offload-it requires cap:sandbox-vm: fallback on posix, native on openhands/orca
-        r_fallback = run_preflight(
-            "--mission", "offload-it", "--runtime", "posix", "--mode", "readonly"
-        )
+        # offload-it requires cap:sandbox-vm: fallback on posix (Docker probed), native on orca only
+        with tempfile.TemporaryDirectory() as tmp:
+            _stub_tools(Path(tmp), "docker")
+            env = {**os.environ, "PATH": tmp + os.pathsep + os.environ.get("PATH", "")}
+            env.pop("OPEN_FLEET_RUNTIME", None)
+            env.pop("ORCA_FLEET_RUNTIME", None)
+            r_fallback = run_preflight(
+                "--mission", "offload-it", "--runtime", "posix", "--mode", "readonly", env=env
+            )
         self.assertEqual(r_fallback.returncode, 0, r_fallback.stderr)
+        self.assertIn("by fallback", r_fallback.stderr)
+        self.assertIn("cap:sandbox-vm via docker", r_fallback.stderr)
 
         r_strict_fail = run_preflight(
             "--mission", "offload-it", "--runtime", "posix", "--strict-native-capabilities"
@@ -211,12 +241,17 @@ class TestPreflightCapabilitiesEnforcement(unittest.TestCase):
             "--mission",
             "offload-it",
             "--runtime",
-            "openhands",
+            "orca",
             "--strict-native-capabilities",
             "--mode",
             "readonly",
         )
-        self.assertEqual(r_strict_ok.returncode, 0, r_strict_ok.stderr)
+        self.assertNotIn("missing_capability", r_strict_ok.stderr)
+
+        # openhands has no certifiable `vm recipe doctor`: no sandbox-vm, natively or otherwise.
+        r_oh = run_preflight("--mission", "offload-it", "--runtime", "openhands", "--mode", "readonly")
+        self.assertEqual(r_oh.returncode, 2, r_oh.stderr)
+        self.assertIn("missing_capability: cap:sandbox-vm", r_oh.stderr)
 
     def test_unknown_runtime_fails_closed(self):
         r = run_preflight("--mission", "ship-it", "--runtime", "not-a-provider")
@@ -244,6 +279,110 @@ class TestPreflightCapabilitiesEnforcement(unittest.TestCase):
             r = run_preflight("--mission", "ship-it", "--runtime", "posix", env=env)
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn("capabilities.json is malformed", r.stderr)
+
+
+class TestFallbackProbesAndSharedResolver(unittest.TestCase):
+    """#586: a fallback counts only when its tooling is present, and the runtime
+    name resolves through dispatch's own resolver (runtime/providers)."""
+
+    def _resolve(self, runtime, **env):
+        from unittest import mock
+        with mock.patch.dict(os.environ, env, clear=True):
+            refusal, info = preflight._capabilities_refusal(None, runtime)
+        self.assertIsNone(refusal, refusal)
+        return info["runtime"]
+
+    def test_field_test_it_on_posix_refuses_without_emulator_tooling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"PATH": tmp, "HOME": tmp}
+            r = run_preflight("--mission", "field-test-it", "--runtime", "posix", "--mode",
+                              "readonly", "--json", env=env)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("missing_capability: cap:mobile-emulator", r.stderr)
+            self.assertIn("adb", r.stderr)
+            payload = json.loads(r.stdout)
+            self.assertFalse(payload["fallback_probes"]["cap:mobile-emulator"]["ok"])
+
+    def test_field_test_it_on_posix_passes_with_adb_and_reports_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _stub_tools(Path(tmp), "adb")
+            refusal, info = preflight._capabilities_refusal(
+                "field-test-it", "posix", which=lambda t: shutil.which(t, path=tmp))
+            self.assertIsNone(refusal, refusal)
+            self.assertEqual(info["fallbacks_used"], ["cap:mobile-emulator"])
+            self.assertTrue(info["fallback_probes"]["cap:mobile-emulator"]["found"])
+            self.assertIn("cap:browser", info["optional_unavailable"] + info["fallback_capabilities"])
+
+    def test_offload_it_on_posix_refuses_non_docker_sandbox_tools(self):
+        # posix only sandboxes through Docker: bwrap/podman/gondolin alone must not
+        # pass preflight and then fail at the first danger launch.
+        with tempfile.TemporaryDirectory() as tmp:
+            _stub_tools(Path(tmp), "bwrap", "podman", "gondolin")
+            refusal, info = preflight._capabilities_refusal(
+                "offload-it", "posix", which=lambda t: shutil.which(t, path=tmp))
+            self.assertIsNotNone(refusal)
+            self.assertEqual(info["missing_capability"], "cap:sandbox-vm")
+            self.assertEqual(info["fallback_probes"]["cap:sandbox-vm"]["tools"], ["docker"])
+            self.assertIn("docker", refusal)
+            r = run_preflight("--mission", "offload-it", "--runtime", "posix", "--mode",
+                              "readonly", env={"PATH": tmp, "HOME": tmp})
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("missing_capability: cap:sandbox-vm", r.stderr)
+            _stub_tools(Path(tmp), "docker")
+            refusal, info = preflight._capabilities_refusal(
+                "offload-it", "posix", which=lambda t: shutil.which(t, path=tmp))
+            self.assertIsNone(refusal, refusal)
+            self.assertEqual(info["fallback_probes"]["cap:sandbox-vm"]["found"], "docker")
+
+    def test_sandbox_fallback_without_a_provider_probe_fails_closed(self):
+        from unittest import mock
+        with mock.patch.object(preflight, "PROVIDER_FALLBACK_PROBES", {}):
+            refusal, info = preflight._capabilities_refusal("offload-it", "posix", which=_ALL_TOOLS)
+        self.assertIsNotNone(refusal)
+        self.assertEqual(info["missing_capability"], "cap:sandbox-vm")
+        self.assertIn("no probed fallback launch path", refusal)
+
+    def test_native_capability_is_never_probed(self):
+        refusal, info = preflight._capabilities_refusal(
+            "field-test-it", "orca", which=lambda t: None)
+        self.assertIsNone(refusal, refusal)
+        self.assertEqual(info["fallback_probes"], {})
+
+    def test_local_posix_alias_maps_to_posix(self):
+        self.assertEqual(self._resolve("local-posix", PATH=""), "posix")
+        r = run_preflight("--mission", "pin-it", "--runtime", "local-posix")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("runtime 'posix'", r.stderr)
+
+    def test_auto_orca_dev_repo_root_with_only_orca_dev_on_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _stub_tools(Path(tmp), "orca-dev")
+            self.assertEqual(
+                self._resolve("auto", PATH=tmp, ORCA_DEV_REPO_ROOT="/src/orca"), "orca")
+            # Without the dev root the platform binary is wanted, and it is absent.
+            self.assertEqual(self._resolve("auto", PATH=tmp), "posix")
+
+    def test_auto_nonexistent_cli_command_is_posix(self):
+        self.assertEqual(
+            self._resolve("auto", PATH="", ORCA_CLI_COMMAND="/nonexistent/orca"), "posix")
+
+    def test_auto_linux_orca_ide_only(self):
+        from unittest import mock
+        # Pin the platform: the Linux binary-name rule is tested on every host, never skipped.
+        with mock.patch("platform.system", return_value="Linux"), tempfile.TemporaryDirectory() as tmp:
+            _stub_tools(Path(tmp), "orca-ide")
+            self.assertEqual(self._resolve("auto", PATH=tmp), "orca")
+        with mock.patch("platform.system", return_value="Linux"), tempfile.TemporaryDirectory() as tmp:
+            _stub_tools(Path(tmp), "orca")  # the macOS name does not count on Linux
+            self.assertEqual(self._resolve("auto", PATH=tmp), "posix")
+
+    def test_mission_without_runtime_checks_against_orca(self):
+        r = run_preflight("--mission", "pin-it", "--mode", "readonly", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["runtime"], "orca")
+        r_bad = run_preflight("--mission", "no-such-mission", "--mode", "readonly")
+        self.assertEqual(r_bad.returncode, 2, r_bad.stderr)
+        self.assertIn("unknown_mission", r_bad.stderr)
 
 
 class TestWave0NeutralEnvVars(unittest.TestCase):

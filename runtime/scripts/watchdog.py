@@ -33,6 +33,23 @@ nudge_window_s between nudges to one worker, and at most
 max_nudges_per_hour_per_worker per worker per hour. Nudge history persists in
 the state file so the limits hold across invocations.
 
+CI-failure nudges (heartbeat ``ci_checks``, #590) carry their OWN per-dispatch
+budget, max_ci_nudges_per_dispatch, recorded separately (state ``ci_nudges``),
+so a CI nudge never spends the hang budget and a later real hang still gets
+its nudge instead of jumping straight to a stop recommendation. Both kinds
+obey the hourly cap and the nudge window, counted over EVERY nudge the worker
+received (hang + CI); a hang nudge held back only by a CI nudge is deferred
+(no nudge, no recommendation), never escalated. A CI nudge fires at most
+once per distinct failure signature (state ``ci_signatures``).
+
+``waiting_input`` (an unresolved HITL question gate) suppresses the NUDGE
+action only: the worker is still classified, and a WEDGED or still-HUNG worker
+still gets its stop-redispatch recommendation. When the heartbeat omits the
+field and OPEN_FLEET_STATE_DB (or ORCA_FLEET_STATE_DB) names an existing
+local-state database, the watchdog fills it by reading that database strictly
+read-only (StateDBReader; senders matched by terminal handle, dispatch id, and
+worker id). An unreadable database is a warning, never an abort.
+
 Modes:
 
 * --dry-run classifies and prints WOULD-nudge / WOULD-recommend with zero side
@@ -55,6 +72,7 @@ Exit codes
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -69,6 +87,7 @@ DEFAULTS = {
     "hung_after_s": 1800,
     "wedge_frozen_s": 1200,
     "max_nudges_per_dispatch": 1,
+    "max_ci_nudges_per_dispatch": 1,
     "nudge_window_s": 3600,
     "max_nudges_per_hour_per_worker": 1,
     "nudge_text": "finish-or-report now.",
@@ -121,8 +140,8 @@ def load_config(path):
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in data.items() if not k.startswith("_")})
     for key in ("slow_after_s", "hung_after_s", "wedge_frozen_s",
-                "max_nudges_per_dispatch", "nudge_window_s",
-                "max_nudges_per_hour_per_worker"):
+                "max_nudges_per_dispatch", "max_ci_nudges_per_dispatch",
+                "nudge_window_s", "max_nudges_per_hour_per_worker"):
         if not isinstance(cfg[key], (int, float)) or cfg[key] < 0:
             raise ConfigError(f"config {path}: {key} must be a non-negative number")
     if cfg["nudge_command"] is not None and (
@@ -184,6 +203,147 @@ def save_state(path, state):
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _state_db_path(env=None):
+    env = os.environ if env is None else env
+    for var in ("OPEN_FLEET_STATE_DB", "ORCA_FLEET_STATE_DB"):
+        value = (env.get(var) or "").strip()
+        if value:
+            return Path(value).expanduser()
+    return None
+
+
+def _ro_connect(db_path):
+    """A strictly read-only sqlite3 connection that never writes beside the DB.
+
+    ``mode=ro`` alone still creates ``-wal``/``-shm`` side files next to a
+    WAL-mode database, and LocalStateStore.__init__ always writes (mkdir, WAL
+    pragma, CREATE/ALTER) — neither is acceptable for a watchdog (and never for
+    --dry-run). When a live writer already holds both side files, ``mode=ro``
+    reads through the WAL without creating anything; otherwise ``immutable=1``
+    opens the main file with no locks and no side files. Tradeoff: a lone
+    ``-wal`` with no ``-shm`` (a crashed writer) is not replayed — rows still in
+    it are invisible until a writer checkpoints.
+    """
+    import sqlite3
+    from urllib.parse import quote
+    path = Path(db_path).resolve()
+    wal, shm = Path(str(path) + "-wal"), Path(str(path) + "-shm")
+    flags = "mode=ro" if wal.exists() and shm.exists() else "mode=ro&immutable=1"
+    conn = sqlite3.connect(f"file:{quote(str(path))}?{flags}", uri=True, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+class StateDBReader:
+    """Read-only view of the local-state DB's HITL question tables (#590).
+
+    Mirrors LocalStateStore.has_pending_question, but over the real sender
+    shapes: ask_human stores the asker's TERMINAL HANDLE (or the dispatch id)
+    as ``sender``, not the heartbeat's worker id, so the senders matched are the
+    worker id, the dispatch id, and every ``dispatches.terminal_handle`` bound to
+    that dispatch (falling back to the worker id as a dispatch or task id).
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def _senders(self, worker_id, dispatch_id):
+        ids = [x for x in (dispatch_id, worker_id) if isinstance(x, str) and x and x != "?"]
+        senders = set(ids)
+        rows = []
+        if dispatch_id and dispatch_id != "?":
+            rows = self.conn.execute(
+                "SELECT terminal_handle FROM dispatches WHERE dispatch_id = ?",
+                (dispatch_id,)).fetchall()
+        if not rows:
+            rows = self.conn.execute(
+                "SELECT terminal_handle FROM dispatches WHERE dispatch_id = ? OR task_id = ?",
+                (worker_id, worker_id)).fetchall()
+        senders.update(r["terminal_handle"] for r in rows if r["terminal_handle"])
+        return sorted(senders)
+
+    def has_pending_question(self, worker_id, run_id=None, dispatch_id=None):
+        senders = self._senders(worker_id, dispatch_id)
+        marks = ",".join("?" for _ in senders)
+        q = f"SELECT COUNT(*) AS c FROM gates WHERE sender IN ({marks}) AND status = 'pending'"
+        params = list(senders)
+        if run_id:
+            q += " AND run_id = ?"
+            params.append(run_id)
+        row = self.conn.execute(q, params).fetchone()
+        if row and row["c"] > 0:
+            return True
+        mq = (f"SELECT COUNT(*) AS c FROM deliveries d JOIN messages m ON m.id = d.message_id "
+              f"WHERE m.sender IN ({marks}) AND m.msg_type = 'question' AND d.acked = 0")
+        gate_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(gates)").fetchall()}
+        if "message_id" in gate_cols:
+            # A question whose gate a human already answered is not waiting on input, even
+            # if nobody acked its delivery (#592 review: it suppressed later hang nudges).
+            mq += (" AND NOT EXISTS (SELECT 1 FROM gates g WHERE g.message_id = m.id "
+                   "AND g.status != 'pending')")
+        mparams = list(senders)
+        if run_id:
+            mq += " AND d.run_id = ?"
+            mparams.append(run_id)
+        mrow = self.conn.execute(mq, mparams).fetchone()
+        return bool(mrow and mrow["c"] > 0)
+
+
+def fill_waiting_input(data, env=None, store=None):
+    """Producer for the heartbeat ``waiting_input`` field (#590).
+
+    For each worker whose heartbeat does not already carry ``waiting_input``,
+    ask the state DB for an open HITL gate or an unacked ``question`` from that
+    worker (its terminal handle, dispatch id, or worker id). Only an EXISTING
+    database named by OPEN_FLEET_STATE_DB / ORCA_FLEET_STATE_DB is consulted,
+    opened strictly read-only (_ro_connect: the watchdog never creates,
+    migrates, or journals it). A database that cannot be opened or queried is a
+    stderr warning and leaves waiting_input unset — it never aborts
+    classification, so a WEDGED/HUNG worker is still reported. Returns the
+    number of workers filled.
+    """
+    conn = None
+    if store is None:
+        db_path = _state_db_path(env)
+        if db_path is None:
+            return 0
+        if not db_path.is_file():
+            print(f"watchdog: WARN: state db {db_path} does not exist; "
+                  "waiting_input not derived", file=sys.stderr)
+            return 0
+        try:
+            conn = _ro_connect(db_path)
+            store = StateDBReader(conn)
+        except Exception as exc:
+            print(f"watchdog: WARN: cannot open state db {db_path} read-only ({exc}); "
+                  "waiting_input not derived", file=sys.stderr)
+            return 0
+    run_id = data.get("run_id")
+    run_id = run_id if isinstance(run_id, str) and run_id and run_id != "?" else None
+    filled = 0
+    try:
+        for worker in data.get("workers", []):
+            if not isinstance(worker, dict) or "waiting_input" in worker:
+                continue
+            wid = worker.get("worker_id")
+            if not isinstance(wid, str) or not wid:
+                continue
+            did = worker.get("dispatch_id")
+            did = did if isinstance(did, str) and did else None
+            try:
+                worker["waiting_input"] = bool(
+                    store.has_pending_question(wid, run_id, dispatch_id=did))
+            except Exception as exc:
+                print(f"watchdog: WARN: worker {wid}: state db query failed ({exc}); "
+                      "waiting_input not derived", file=sys.stderr)
+                continue
+            filled += 1
+    finally:
+        if conn is not None:
+            conn.close()
+    return filled
 
 
 def classify(worker, now, cfg):
@@ -266,41 +426,100 @@ def prior_nudge_times(worker, state_entry):
     return sorted(times)
 
 
-def nudge_allowed(worker_id, dispatch_id, worker, state, now, cfg):
-    """(allowed, reason): rate-limit check for a HUNG worker."""
+def _dispatch_entry(state, worker_id, dispatch_id):
     entry = state.get("workers", {}).get(worker_id, {})
     if not isinstance(entry, dict):
         raise HeartbeatError(f"worker {worker_id}: state entry must be an object")
     if entry.get("dispatch_id") and entry.get("dispatch_id") != dispatch_id:
         entry = {}  # a fresh dispatch resets the per-dispatch budget
-    try:
-        times = prior_nudge_times(worker, entry)
-    except ValueError as exc:
-        raise HeartbeatError(f"worker {worker_id}: {exc}")
-    if len(times) >= cfg["max_nudges_per_dispatch"]:
-        return False, f"nudge budget spent ({len(times)}/{cfg['max_nudges_per_dispatch']})"
+    return entry
+
+
+def _ci_nudge_times(entry):
+    stored = entry.get("ci_nudges") or []
+    if not isinstance(stored, list):
+        raise ValueError("state ci_nudges: must be a list")
+    return sorted(parse_ts(raw, "state ci_nudges") for raw in stored)
+
+
+def _rate_limited(times, now, cfg):
+    """The hourly cap and the nudge window over `times`; None when clear."""
     hour_ago = now.timestamp() - 3600
     recent = [t for t in times if t.timestamp() >= hour_ago]
     if len(recent) >= cfg["max_nudges_per_hour_per_worker"]:
-        return False, f"hourly cap reached ({len(recent)}/{cfg['max_nudges_per_hour_per_worker']})"
+        return f"hourly cap reached ({len(recent)}/{cfg['max_nudges_per_hour_per_worker']})"
     if times and (now - times[-1]).total_seconds() < cfg["nudge_window_s"]:
         wait = int(cfg["nudge_window_s"] - (now - times[-1]).total_seconds())
-        return False, f"nudge window holds for {wait}s"
-    return True, "within budget"
+        return f"nudge window holds for {wait}s"
+    return None
+
+
+def nudge_allowed(worker_id, dispatch_id, worker, state, now, cfg):
+    """(verdict, reason): rate-limit check for a HUNG worker.
+
+    verdict is "allow", "defer", or "withhold". The per-dispatch budget counts
+    hang nudges only — a CI-failure nudge has its own budget (ci_nudge_allowed)
+    and must not turn a later real hang into a stop recommendation. The hourly
+    cap and the nudge window count BOTH kinds (worker-supervision.md). When
+    only a CI nudge holds the hang nudge back, the verdict is "defer": no nudge
+    this tick, and no stop recommendation either — the hang nudge is still owed.
+    """
+    entry = _dispatch_entry(state, worker_id, dispatch_id)
+    try:
+        times = prior_nudge_times(worker, entry)
+        all_times = sorted(set(times) | set(_ci_nudge_times(entry)))
+    except ValueError as exc:
+        raise HeartbeatError(f"worker {worker_id}: {exc}")
+    if len(times) >= cfg["max_nudges_per_dispatch"]:
+        return "withhold", f"nudge budget spent ({len(times)}/{cfg['max_nudges_per_dispatch']})"
+    limited = _rate_limited(times, now, cfg)
+    if limited:
+        return "withhold", limited
+    limited = _rate_limited(all_times, now, cfg)
+    if limited:
+        return "defer", f"{limited} after a CI-failure nudge"
+    return "allow", "within budget"
+
+
+def ci_nudge_allowed(worker_id, dispatch_id, worker, state, now, cfg):
+    """(allowed, reason): rate-limit check for a CI-failure nudge.
+
+    Its own per-dispatch budget (max_ci_nudges_per_dispatch), but the hourly
+    cap and the nudge window count every nudge the worker got, hang + CI.
+    """
+    entry = _dispatch_entry(state, worker_id, dispatch_id)
+    try:
+        ci_times = _ci_nudge_times(entry)
+        all_times = sorted(set(prior_nudge_times(worker, entry)) | set(ci_times))
+    except ValueError as exc:
+        raise HeartbeatError(f"worker {worker_id}: {exc}")
+    budget = cfg.get("max_ci_nudges_per_dispatch", DEFAULTS["max_ci_nudges_per_dispatch"])
+    if len(ci_times) >= budget:
+        return False, f"CI nudge budget spent ({len(ci_times)}/{budget})"
+    limited = _rate_limited(all_times, now, cfg)
+    if limited:
+        return False, limited
+    return True, "within CI budget"
 
 
 def record_nudge(state, worker_id, dispatch_id, at, ci_signature=None):
+    """Persist one sent nudge. A CI-failure nudge (ci_signature set) lands in
+    ci_nudges + ci_signatures, never in the hang budget's nudges list."""
     workers = state.setdefault("workers", {})
     entry = workers.setdefault(worker_id, {"dispatch_id": dispatch_id, "nudges": []})
     if entry.get("dispatch_id") != dispatch_id:
         entry["dispatch_id"] = dispatch_id
         entry["nudges"] = []
+        entry["ci_nudges"] = []
         entry["ci_signatures"] = []
-    entry["nudges"].append(at.isoformat())
+    entry.setdefault("nudges", [])
     if ci_signature:
+        entry.setdefault("ci_nudges", []).append(at.isoformat())
         sigs = entry.setdefault("ci_signatures", [])
         if ci_signature not in sigs:
             sigs.append(ci_signature)
+    else:
+        entry["nudges"].append(at.isoformat())
 
 
 def build_nudge_argv(cfg, run_id, worker_id, dispatch_id):
@@ -319,34 +538,49 @@ def decide(worker, now, cfg, state):
 
     action is one of none / nudge / recommend. decide() never sends, writes,
     or mutates — the caller applies the action. SETTLED workers get none.
+
+    Classification always runs first: ``waiting_input`` (an open HITL question
+    gate) suppresses only the NUDGE action, never the WEDGED / still-HUNG
+    stop-redispatch recommendation and never the classification itself.
     """
     wid = worker.get("worker_id", "?")
     dispatch_id = worker.get("dispatch_id", "?")
     waiting_input = bool(worker.get("waiting_input"))
-    if waiting_input:
-        return "OK", "none", {"waiting_input": True}, "waiting on human gate (nudge suppressed)"
     classification, evidence = classify(worker, now, cfg)
+    if waiting_input:
+        evidence = {**evidence, "waiting_input": True}
     ci_checks = worker.get("ci_checks")
     if isinstance(ci_checks, list) and ci_checks and classification in ("OK", "SLOW"):
-        entry = state.get("workers", {}).get(wid, {})
-        if isinstance(entry, dict) and entry.get("dispatch_id") == dispatch_id:
-            prior_sigs = set(entry.get("ci_signatures") or [])
-        else:
-            prior_sigs = set()
+        entry = _dispatch_entry(state, wid, dispatch_id)
+        prior_sigs = set(entry.get("ci_signatures") or [])
         seen_map = {wid: prior_sigs}
-        ok_ci, sig = should_nudge_ci(wid, ci_checks, seen_map, waiting_input=waiting_input)
+        ok_ci, sig = should_nudge_ci(wid, ci_checks, seen_map)
         if sig:
             evidence = {**evidence, "ci_signature": sig}
-            if ok_ci:
-                return classification, "nudge", evidence, f"new CI failure signature {sig[:12]}"
-            return classification, "none", evidence, f"duplicate CI failure signature {sig[:12]} suppressed"
+            if not ok_ci:
+                return classification, "none", evidence, f"duplicate CI failure signature {sig[:12]} suppressed"
+            if waiting_input:
+                return classification, "none", evidence, \
+                    f"CI failure signature {sig[:12]}: waiting on human gate (nudge suppressed)"
+            allowed_ci, reason_ci = ci_nudge_allowed(wid, dispatch_id, worker, state, now, cfg)
+            if allowed_ci:
+                return classification, "nudge", evidence, f"new CI failure signature {sig[:12]} ({reason_ci})"
+            return classification, "none", evidence, f"CI failure nudge withheld ({reason_ci})"
     if classification in ("OK", "SLOW", "SETTLED"):
-        return classification, "none", evidence, "slow-but-alive is not stuck"
+        note = "slow-but-alive is not stuck"
+        if waiting_input and classification != "SETTLED":
+            note = "waiting on human gate (nudge suppressed); " + note
+        return classification, "none", evidence, note
     if classification == "WEDGED":
         return classification, "recommend", evidence, \
             "wedged: stop + re-dispatch fresh (coordinator decision)"
-    allowed, reason = nudge_allowed(wid, dispatch_id, worker, state, now, cfg)
-    if allowed:
+    verdict, reason = nudge_allowed(wid, dispatch_id, worker, state, now, cfg)
+    if verdict == "defer":
+        return classification, "none", evidence, f"HUNG, hang nudge deferred ({reason})"
+    if verdict == "allow":
+        if waiting_input:
+            return classification, "none", evidence, \
+                f"HUNG but waiting on human gate (nudge suppressed; {reason})"
         return classification, "nudge", evidence, reason
     return classification, "recommend", evidence, \
         f"still HUNG, nudge withheld ({reason}): stop + re-dispatch fresh"
@@ -578,7 +812,9 @@ def build_parser():
                     help="JSON snapshot: {run_id, workers: [{worker_id, dispatch_id, "
                          "dispatched_at, last_movement_at, stop_at, reported, "
                          "terminal, wedge_markers, last_nudge_at, "
-                         "last_nudge_answered, prior_nudges}]}")
+                         "last_nudge_answered, prior_nudges, ci_checks: "
+                         "[{name, step, conclusion, exit_code}], waiting_input}]}; "
+                         "waiting_input is derived from $OPEN_FLEET_STATE_DB when absent")
     ap.add_argument("--handover", default=None,
                     help="attempt JSON to format as a sanitized, bounded Failure Handover Packet "
                          "for worker-start --retry-of")
@@ -616,6 +852,7 @@ def main(argv=None):
         return 2
     try:
         data = load_heartbeats(args.heartbeats)
+        fill_waiting_input(data)
         state = load_state(args.state)
         now = parse_ts(args.now, "--now") if args.now else utcnow()
     except (HeartbeatError, ValueError) as exc:

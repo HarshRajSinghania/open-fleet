@@ -63,6 +63,19 @@ Exit codes
     2  SCOPE_ERROR=unmatched  -- files changed but no category matched; the
                                  unmatched paths are printed as comments
 
+--predict-merge BASE BRANCH (#590) predicts the 3-way merge in memory with
+``git merge-tree --write-tree`` (HEAD, index and worktree untouched) and prints
+``{"clean", "tree_oid", "conflicts"}`` as JSON:
+    0  clean merge
+    1  the merge conflicts (``conflicts`` names the paths)
+    2  SCOPE_ERROR=no_base     -- BASE or BRANCH does not resolve to a commit, or
+                                  the two share no merge base; nothing was predicted
+    2  SCOPE_ERROR=diff_failed -- git merge-tree --write-tree could not run
+                                  (git < 2.38 included: the classic form is never
+                                  guessed from), or prediction failed unexpectedly
+An unresolvable ref is never reported as a conflict: exit 1 always means a
+real conflict between two real commits.
+
 How to wire
     The scope-gated review playbook reads these flags instead of eyeballing the
     diff: each true flag dispatches its lens, and every dispatch appends its
@@ -84,6 +97,7 @@ import sys
 from pathlib import Path
 
 EXIT_OK = 0
+EXIT_PREDICTED_CONFLICT = 1  # --predict-merge only: a real conflict between two real commits
 EXIT_SCOPE_ERROR = 2
 
 CONTENT_CAP = 256 * 1024
@@ -166,7 +180,10 @@ def _git_env():
 
 def git(repo, *args, tolerate=False):
     try:
+        # surrogateescape: a non-UTF-8 path round-trips instead of raising
+        # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
         r = subprocess.run([GIT, "-C", str(repo), *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="surrogateescape",
                            timeout=60, env=_git_env())
     except (OSError, subprocess.SubprocessError):
         return None
@@ -369,14 +386,23 @@ def _tracked_files(repo):
 
 
 def predict_merge(repo, base, branch):
-    """Detect 3-way merge conflicts in memory via git merge-tree without touching HEAD/index/worktree."""
-    if (git(repo, "rev-parse", "--verify", "-q", f"{base}^{{commit}}") is None
-            or git(repo, "rev-parse", "--verify", "-q", f"{branch}^{{commit}}") is None):
-        return {"clean": False, "tree_oid": None, "conflicts": []}
+    """Detect 3-way merge conflicts in memory via git merge-tree without touching HEAD/index/worktree.
+
+    Raises ScopeError(kind="no_base") when either ref does not resolve to a
+    commit (or the two share no merge base), and ScopeError(kind="diff_failed")
+    when merge-tree cannot run: "could not predict" must never read as a conflict.
+    """
+    for label, ref in (("base", base), ("branch", branch)):
+        if not ref or ref.startswith("-") or git(
+                repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}") is None:
+            raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo}",
+                             kind="no_base")
     try:
         r = subprocess.run(
-            [GIT, "-C", str(repo), "merge-tree", "--write-tree", base, branch],
-            capture_output=True, text=True, timeout=60, env=_git_env(),
+            [GIT, "-C", str(repo), "-c", "core.quotePath=false",
+             "merge-tree", "--write-tree", base, branch],
+            capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+            timeout=60, env=_git_env(),
         )
     except (OSError, subprocess.SubprocessError):
         r = None
@@ -403,29 +429,28 @@ def predict_merge(repo, base, branch):
 
     mb_out = git(repo, "merge-base", base, branch)
     if not mb_out or not mb_out.strip():
-        return {"clean": False, "tree_oid": None, "conflicts": []}
-    mb = mb_out.strip().splitlines()[0]
-    classic = git(repo, "merge-tree", mb, base, branch, tolerate=True)
-    if classic is None:
-        return {"clean": False, "tree_oid": None, "conflicts": []}
-    conflicts = set()
-    has_conflict = False
-    for line in classic.splitlines():
-        if line.startswith("<<<<<<<") or line.startswith("changed in both"):
-            has_conflict = True
-        m_path = re.match(r"^\s+(?:base|our|their)\s+[0-9]{6}\s+[0-9a-f]{40,64}\s+(.+)$", line)
-        if m_path:
-            conflicts.add(m_path.group(1).strip())
-    if has_conflict or conflicts:
-        return {"clean": False, "tree_oid": None, "conflicts": sorted(conflicts)}
-    return {"clean": True, "tree_oid": None, "conflicts": []}
+        raise ScopeError(f"predict-merge: {base!r} and {branch!r} share no merge base", kind="no_base")
+    # No guessing from the classic `git merge-tree <base> <a> <b>` form (git < 2.38): its
+    # output lists every changed path ("added in remote", "changed in both" with a clean
+    # 3-way result, ...), so reading it reported clean merges as conflicts. "Could not
+    # predict" is SCOPE_ERROR=diff_failed (exit 2), never a verdict.
+    tail = ""
+    if r is not None:
+        lines = (r.stderr or r.stdout or "").strip().splitlines()
+        tail = f" (exit {r.returncode}: {lines[-1][:200] if lines else 'no output'})"
+    raise ScopeError(
+        f"predict-merge: `git merge-tree --write-tree` failed in {repo}{tail}; predicting a "
+        "merge needs git >= 2.38 — the classic merge-tree form cannot tell a clean merge "
+        "from a conflict, so no prediction is made",
+        kind="diff_failed")
 
 
 def build_parser():
     p = argparse.ArgumentParser(
         prog="diff_scope.py",
         description="Classify the changed surface into SCOPE_* review flags, failing loud when it cannot look.",
-        epilog="exit 0 classified / 2 SCOPE_ERROR=no_base|diff_failed|unmatched|invalid_overlap",
+        epilog="exit 0 classified (or clean predicted merge) / 1 predicted merge conflict (--predict-merge) / "
+               "2 SCOPE_ERROR=no_base|diff_failed|unmatched|invalid_overlap",
     )
     p.add_argument("--base", default=None, help="base ref (default: origin/HEAD, then origin/main, origin/master, main, master)")
     p.add_argument("--repo", default=".", help="repository to classify (default: cwd)")
@@ -445,9 +470,24 @@ def main(argv=None):
     repo = Path(args.repo)
     if args.predict_merge is not None:
         base_ref, branch_ref = args.predict_merge
-        res = predict_merge(repo, base_ref, branch_ref)
+        err = None
+        try:
+            res = predict_merge(repo, base_ref, branch_ref)
+        except ScopeError as exc:
+            err = exc
+        except Exception as exc:  # never exit 1 (the conflict code) on a crash
+            err = ScopeError(f"predict-merge failed unexpectedly: {type(exc).__name__}: {exc}",
+                             kind="diff_failed")
+        if err is not None:
+            if args.json:
+                print(json.dumps({"clean": None, "tree_oid": None, "conflicts": [],
+                                  "error": err.kind, "detail": str(err)}))
+            else:
+                print(f"SCOPE_ERROR={err.kind}")
+                print(f"# {err}")
+            return EXIT_SCOPE_ERROR
         print(json.dumps(res))
-        return EXIT_OK if res["clean"] else 1
+        return EXIT_OK if res["clean"] else EXIT_PREDICTED_CONFLICT
     if args.overlap is not None:
         try:
             raw = json.loads(Path(args.overlap).read_text(encoding="utf-8"))

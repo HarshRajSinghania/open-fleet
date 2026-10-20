@@ -38,7 +38,8 @@
 #   - `terminal wait` result is READ: `wait.satisfied:false` is an unsatisfied condition. The CLI
 #     also sets exit 1 for it (`terminal.ts:125-129` at v1.4.203), so v4 failed closed BY ACCIDENT; v5 reads
 #     the field, so a host that sets only one of the two still fails closed.
-#   - PROFILE=ro NEVER takes worker-start: launch args come from the host's `agentDefaultArgs`
+#   - PROFILE=ro NEVER takes worker-start on Orca (off Orca the provider builds ro from --profile,
+#     so ro rides worker-start there): launch args come from the host's `agentDefaultArgs`
 #     profile setting, whose migrated default IS the YOLO map (`tui-agent-launch-defaults.ts:10`
 #     re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS`), so a default host would
 #     silently upgrade a read-only reviewer to a bypass one. A host set to manual mode has `''`
@@ -50,8 +51,12 @@
 #   - fail-closed: any failed step exits nonzero with a SPAWN=FAILED diagnostic line on stderr
 #   - respects the task DAG: never forces `ready`; `--mark-ready` is an explicit opt-in and
 #     only applies when every declared dep is already completed
-#   - least-privilege launch profiles: PROFILE=ro|rw|danger; danger is refused until authoritative
-#     prelaunch placement binding to the validated disposable sandbox is supported.
+#   - least-privilege launch profiles: PROFILE=ro|rw|danger; on Orca, danger is refused until
+#     authoritative prelaunch placement binding to the validated disposable sandbox is supported.
+#     A non-Orca runtime runs the SAME `vm recipe doctor` through orca_cli.py; danger proceeds there
+#     only when the clear transcript is a portable backend proving isolation AND prelaunch
+#     placement (sandbox_doctor.py --require-placement, #585). Non-Orca launches come from
+#     runtime/providers/base.py build_harness_command — one launch table (#580).
 #   - distinct exit codes so coordinators can react:
 #       0  dispatched — supervised: state=ready; custom-argv: `turn_started` observed
 #       1  a spawn/dispatch step failed (includes the refusal code `runtime_error`)
@@ -165,7 +170,7 @@ trap 'rc=$?; echo "SPAWN=FAILED task=${task} step=${step} rc=${rc}" >&2; exit "$
 orca_json() {
   local out="$1"; shift
   "$ORCA_BIN" "$@" --json > "$out"
-  python3 - "$out" <<'PY'
+  python3 -I - "$out" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 err = None
@@ -267,7 +272,7 @@ if { [ "$TITLE_GIVEN" = "1" ] || [ "$DEPS_GIVEN" = "1" ] || [ "$PARENT_GIVEN" = 
   exit 2
 fi
 if [ "$DEPS_GIVEN" = "1" ]; then
-  if ! printf '%s' "$DEPS" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d,list) and all(isinstance(x,str) for x in d) else 1)' 2>/dev/null; then
+  if ! printf '%s' "$DEPS" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d,list) and all(isinstance(x,str) for x in d) else 1)' 2>/dev/null; then
     echo "SPAWN=REFUSED task=${tname} --deps must be a JSON array of task-id strings" >&2
     exit 2
   fi
@@ -404,11 +409,46 @@ if [ "$RETRY_REQ_GIVEN" = "1" ]; then WS_ARGS+=(--retry-request "$RETRY_REQUEST"
 SP="${SP:-$(pwd)}"
 PROFILE="${PROFILE:-rw}"
 SETTLE_SECS="${SETTLE_SECS:-20}"
-ACTIVE_RUNTIME="${OPEN_FLEET_RUNTIME:-${ORCA_FLEET_RUNTIME:-orca}}"
+# The runtime, resolved by the SAME rule the providers use (runtime/providers/__init__.py
+# active_provider_name): case- and space-insensitive, local-posix → posix, auto → orca only when
+# the Orca CLI is on PATH. A raw string compare read OPEN_FLEET_RUNTIME=ORCA as a non-Orca
+# runtime and swapped in the wrong launch table and danger rules.
+if ! ACTIVE_RUNTIME=$(python3 -I - "$HERE/../.." <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from runtime.providers import ProviderError, active_provider_name
+try:
+    print(active_provider_name())
+except ProviderError as err:
+    print(err.message, file=sys.stderr)
+    raise SystemExit(2)
+PY
+); then
+  echo "SPAWN=REFUSED task=${tname} unknown runtime OPEN_FLEET_RUNTIME/ORCA_FLEET_RUNTIME — see runtime/providers/__init__.py" >&2
+  exit 2
+fi
+# The parent profile a child must not exceed is the MOST restrictive of every source that
+# names one: the --parent-profile flag, the inherited OPEN_FLEET_PARENT_PROFILE /
+# ORCA_PARENT_PROFILE, and the CALLER's own OPEN_FLEET_SANDBOX_PROFILE / ORCA_SANDBOX_PROFILE
+# (the launcher exports it into every worker). Taking the first non-empty one let a ro
+# worker mint an rw child by passing --parent-profile rw, or by naming none at all (G14).
+profile_rank() { case "$1" in ro) echo 0 ;; rw) echo 1 ;; danger) echo 2 ;; *) echo x ;; esac; }
+eff_parent_profile=""
+for _pp in "${PARENT_PROFILE:-}" "${OPEN_FLEET_PARENT_PROFILE:-}" "${ORCA_PARENT_PROFILE:-}" \
+           "${OPEN_FLEET_SANDBOX_PROFILE:-}" "${ORCA_SANDBOX_PROFILE:-}"; do
+  [ -n "$_pp" ] || continue
+  if [ "$(profile_rank "$_pp")" = "x" ]; then
+    echo "SPAWN=REFUSED task=${task} unknown parent profile '${_pp}' (want ro|rw|danger)" >&2
+    exit 2
+  fi
+  if [ -z "$eff_parent_profile" ] || [ "$(profile_rank "$_pp")" -lt "$(profile_rank "$eff_parent_profile")" ]; then
+    eff_parent_profile="$_pp"
+  fi
+done
 if [ -n "$ACTIVE_RUNTIME" ] && [ "$ACTIVE_RUNTIME" != "orca" ]; then
   WS_ARGS+=(--profile "$PROFILE")
-  if [ -n "${PARENT_PROFILE:-${OPEN_FLEET_PARENT_PROFILE:-${ORCA_PARENT_PROFILE:-}}}" ]; then
-    WS_ARGS+=(--parent-profile "${PARENT_PROFILE:-${OPEN_FLEET_PARENT_PROFILE:-${ORCA_PARENT_PROFILE:-}}}")
+  if [ -n "$eff_parent_profile" ]; then
+    WS_ARGS+=(--parent-profile "$eff_parent_profile")
   fi
 fi
 # Keep a readable worktree/receipt label with a checksum to distinguish squashed titles (#44).
@@ -453,7 +493,7 @@ ver_lt() {
   done
   return 1
 }
-pin_version=$(python3 - "$HERE/../pins.json" <<'PIN'
+pin_version=$(python3 -I - "$HERE/../pins.json" <<'PIN'
 import json, sys
 try:
     with open(sys.argv[1]) as fh:
@@ -462,7 +502,7 @@ except Exception:
     print("")
 PIN
 )
-witness_binary=$(python3 - "$HERE/../pins.json" <<'PIN'
+witness_binary=$(python3 -I - "$HERE/../pins.json" <<'PIN'
 import json, sys
 try:
     with open(sys.argv[1]) as fh:
@@ -497,21 +537,10 @@ step=resolve-profile
 case "$PROFILE" in ro|rw|danger) : ;; *)
   echo "SPAWN=REFUSED task=${task} unknown PROFILE='$PROFILE' (want ro|rw|danger)" >&2; exit 2 ;;
 esac
-eff_parent_profile="${PARENT_PROFILE:-${OPEN_FLEET_PARENT_PROFILE:-${ORCA_PARENT_PROFILE:-}}}"
+# eff_parent_profile: the most restrictive parent source, folded (and validated) above.
 if [ -n "$eff_parent_profile" ]; then
-  case "$eff_parent_profile" in
-    ro) _pr=0 ;;
-    rw) _pr=1 ;;
-    danger) _pr=2 ;;
-    *)
-      echo "SPAWN=REFUSED task=${task} unknown parent profile '${eff_parent_profile}' (want ro|rw|danger)" >&2
-      exit 2 ;;
-  esac
-  case "$PROFILE" in
-    ro) _cr=0 ;;
-    rw) _cr=1 ;;
-    danger) _cr=2 ;;
-  esac
+  _pr=$(profile_rank "$eff_parent_profile")
+  _cr=$(profile_rank "$PROFILE")
   if [ "$_cr" -gt "$_pr" ]; then
     echo "SPAWN=REFUSED task=${task} monotonic privilege narrowing violation: child PROFILE=${PROFILE} exceeds parent profile '${eff_parent_profile}' (ro < rw < danger)" >&2
     exit 2
@@ -553,6 +582,20 @@ if [ "$PROFILE" = "danger" ]; then
       echo "SPAWN=REFUSED task=${task} ORCA_SANDBOX_RECIPE='${recipe}' is not a recipe id (want 3+ chars of [A-Za-z0-9._-])" >&2
       exit 2 ;;
   esac
+  if [ "$ACTIVE_RUNTIME" != "orca" ]; then
+    # Off Orca the provider places the worker in `--on <x>` or, absent that, in its own read of
+    # OPEN_FLEET_SANDBOX_RECIPE/ORCA_SANDBOX_RECIPE. The doctor below certifies `$recipe`; any
+    # OTHER placement source would launch danger somewhere nobody certified (#592).
+    if [ -n "${OPEN_FLEET_SANDBOX_RECIPE:-}" ] && [ -n "${ORCA_SANDBOX_RECIPE:-}" ] \
+      && [ "$OPEN_FLEET_SANDBOX_RECIPE" != "$ORCA_SANDBOX_RECIPE" ]; then
+      echo "SPAWN=REFUSED task=${task} OPEN_FLEET_SANDBOX_RECIPE='${OPEN_FLEET_SANDBOX_RECIPE}' disagrees with ORCA_SANDBOX_RECIPE='${ORCA_SANDBOX_RECIPE}' — one recipe is certified and launched, never two; unset one" >&2
+      exit 2
+    fi
+    if [ "$ON_GIVEN" = "1" ] && [ "$ON_ENV" != "$recipe" ]; then
+      echo "SPAWN=REFUSED task=${task} --on '${ON_ENV}' differs from the sandbox recipe '${recipe}' this script certifies — danger launches only in the recipe the doctor cleared" >&2
+      exit 2
+    fi
+  fi
   if ! command -v "$ORCA_BIN" >/dev/null 2>&1; then
     echo "SPAWN=REFUSED task=${task} PROFILE=danger needs \`${ORCA_BIN}\` on PATH to run \`vm recipe doctor ${recipe}\` — a sandbox cannot be certified without the runtime that provides it (#283)" >&2
     exit 2
@@ -581,10 +624,26 @@ if [ "$PROFILE" = "danger" ]; then
     rm -f "$doctor_out"
     exit 2
   fi
-  if ! python3 "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>/dev/null; then
-    echo "SPAWN=REFUSED task=${task} recipe doctor for '${recipe}' is not clear — sandbox-policy.md: clear means no fail AND no warn (ok:true alone proves nothing): $(python3 "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>&1 >/dev/null | head -c 200)" >&2
+  if ! python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>/dev/null; then
+    echo "SPAWN=REFUSED task=${task} recipe doctor for '${recipe}' is not clear — sandbox-policy.md: clear means no fail AND no warn (ok:true alone proves nothing): $(python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>&1 >/dev/null | head -c 200)" >&2
     rm -f "$doctor_out"
     exit 2
+  fi
+  # A non-Orca runtime answers the same `vm recipe doctor` through orca_cli.py; providers
+  # without a real probe fail closed (unsupported_operation → nonzero above). A PORTABLE
+  # backend's transcript can additionally prove prelaunch placement — evidence Orca's
+  # recipe doctor cannot give — and, isolation-checked by sandbox_doctor.py, that is what
+  # lets danger launch there (#585). A command override bypasses the provider's placement,
+  # so it never qualifies.
+  placement_bound=0
+  case "$agent" in
+    claude) _danger_override="${CLAUDE_CMD:-${WORKER_CMD:-}}" ;;
+    codex)  _danger_override="${CODEX_CMD:-${WORKER_CMD:-}}" ;;
+    *)      _danger_override="${WORKER_CMD:-}" ;;
+  esac
+  if [ "$ACTIVE_RUNTIME" != "orca" ] && [ -z "$_danger_override" ] \
+    && python3 -I "$HERE/sandbox_doctor.py" --require-placement "$doctor_out" "$recipe" 2>/dev/null; then
+    placement_bound=1
   fi
   # The transcript is OURS now; record it where the lane ledger wants it.
   DOCTOR_DEST="${OPEN_FLEET_SANDBOX_DOCTOR:-${ORCA_SANDBOX_DOCTOR:-}}"
@@ -597,13 +656,20 @@ if [ "$PROFILE" = "danger" ]; then
   fi
   rm -f "$doctor_out"
   echo "SPAWN=NOTE task=${task} sandbox recipe='${recipe}' doctored clear by this script (#283)" >&2
-  # Doctor proves recipe health, not this selector's execution placement (R1). The documented
-  # probe can clean up its instance; worker-start --on names a saved server, not that instance.
-  # Neither supported launch lane binds the validated disposable environment BEFORE launch.
-  # Fail closed here, before task mutation or either launch, including command overrides.
-  # A receipt inspected after launch is too late; do not invent placement fields or trust a path.
-  echo "SPAWN=REFUSED task=${task} PROFILE=danger has no supported authoritative placement binding for worktree='${sel}' to the validated disposable sandbox. A clear doctor is insufficient. Implement and validate prelaunch placement binding before enabling danger; use PROFILE=ro or PROFILE=rw only for work authorized for those profiles." >&2
-  exit 2
+  if [ "$placement_bound" = "1" ]; then
+    # Bind the launch to EXACTLY the certified recipe: --on wins over the provider's env read.
+    if [ "$ON_GIVEN" != "1" ]; then WS_ARGS+=(--on "$recipe"); fi
+    export OPEN_FLEET_SANDBOX_RECIPE="$recipe" ORCA_SANDBOX_RECIPE="$recipe"
+    echo "SPAWN=NOTE task=${task} runtime '${ACTIVE_RUNTIME}' doctor binds prelaunch placement for recipe='${recipe}' with isolation proven (sandbox_doctor.py --require-placement) — danger proceeds through its worker-start --on '${recipe}' (#585)" >&2
+  else
+    # Doctor proves recipe health, not this selector's execution placement (R1). The documented
+    # probe can clean up its instance; worker-start --on names a saved server, not that instance.
+    # Neither supported launch lane binds the validated disposable environment BEFORE launch.
+    # Fail closed here, before task mutation or either launch, including command overrides.
+    # A receipt inspected after launch is too late; do not invent placement fields or trust a path.
+    echo "SPAWN=REFUSED task=${task} PROFILE=danger has no supported authoritative placement binding for worktree='${sel}' to the validated disposable sandbox. A clear doctor is insufficient. Implement and validate prelaunch placement binding before enabling danger; use PROFILE=ro or PROFILE=rw only for work authorized for those profiles." >&2
+    exit 2
+  fi
 fi
 
 # Per-agent × profile launch command. Autonomy is the WHOLE POINT: a worker that blocks on a
@@ -652,7 +718,6 @@ case "$agent:$PROFILE" in
   pi:ro)                     if [ "$ACTIVE_RUNTIME" != "orca" ]; then cmd_default="pi --tools read,grep,find,ls --no-session"; fi ;;
   pi:rw|pi:danger)           if [ "$ACTIVE_RUNTIME" != "orca" ]; then cmd_default="pi --no-session"; fi ;;
 esac
-
 # Generalized launch override: WORKER_CMD (any agent) or the legacy CLAUDE_CMD/CODEX_CMD.
 # An override replaces the profile's command entirely, so an inherited env var with bypass
 # flags would silently defeat PROFILE=ro — it needs its own opt-in, mirroring the danger guard.
@@ -662,6 +727,90 @@ case "$agent" in
   codex)  override="${CODEX_CMD:-${WORKER_CMD:-}}" ;;
   *)      override="${WORKER_CMD:-}" ;;
 esac
+# Lane. An override always takes the custom-argv lane (terminal create + dispatch --inject). On
+# Orca so does ro: worker-start there launches the HOST's agentDefaultArgs (the YOLO map). Off
+# Orca the provider builds the launch itself from `--profile` — base.py's line WITH the task spec
+# as its prompt, in the resolved worktree, with a dispatch record — so ro rides worker-start too.
+# base.py's ro lines are one-shot and prompt-bound; a TUI awaiting an inject they are not (#592).
+custom_lane=0
+if [ -n "$override" ] || { [ "$PROFILE" = "ro" ] && [ "$ACTIVE_RUNTIME" = "orca" ]; }; then
+  custom_lane=1
+fi
+
+# A non-Orca runtime launches what runtime/providers/base.py builds — ONE launch table. This
+# script's own rows above were weaker for exactly the harnesses whose read-only mode is
+# subtle (crush auto-approves every `run`; hermes bundles writes into `file`; jcode's minimal
+# profile keeps bash/edit), so ro here must be base.py's `shell` line verbatim (#580). An
+# (agent, profile) base.py refuses leaves cmd_default empty and fails closed to WORKER_CMD.
+# base_launch <worktree>: line 1 the `shell` launch, line 2 its profile_flag; empty on refusal.
+base_launch() {
+  python3 -I - "$HERE/.." "$agent" "$PROFILE" "$1" "$effort" <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+from providers.base import ProviderError, build_harness_command
+try:
+    launch = build_harness_command(sys.argv[2], sys.argv[3], sys.argv[4], None, effort=sys.argv[5])
+    print(launch["shell"])
+    print(launch["profile_flag"])
+except ProviderError as err:
+    print(f"spawn_worker: base.py has no {sys.argv[3]} launch for {sys.argv[2]}: {err.message}", file=sys.stderr)
+PY
+}
+base_profile_flag=""
+if [ "$ACTIVE_RUNTIME" != "orca" ]; then
+  # A selector is never a path: `codex exec -C new-child` and `cd current && …` ran nowhere.
+  # Resolve it the way the runtime does — path:/…::<path> name it; current/active are the repo
+  # top-level; new-* is CREATED through the runtime's own `worktree create` (only for the ro
+  # worker-start lane, which then names the created path; rw/danger let worker-start create it).
+  _base="${OPEN_FLEET_REPO_ROOT:-${OPEN_FLEET_CLI_CWD:-${ORCA_CLI_CWD:-$(pwd)}}}"
+  _repo_top=$(git -C "$_base" rev-parse --show-toplevel 2>/dev/null || (cd "$_base" && pwd -P))
+  case "$sel" in
+    path:*) _launch_wt="${sel#path:}" ;;
+    *::*) _launch_wt="${sel##*::}" ;;
+    current|active) _launch_wt="$_repo_top" ;;
+    *) _launch_wt="$sel" ;;
+  esac
+  _bl=$(base_launch "$_launch_wt")
+  # Only a runtime with a standalone `worktree create` can pre-create one; overstory, gastown,
+  # t3code and the daemon adapters create the worktree inside worker-start and inherit the
+  # base class's unsupported method, so they keep the original new-* selector (#592 review).
+  _standalone_wc=$(python3 -I - "$HERE/../.." "$ACTIVE_RUNTIME" <<'PY' || echo 0
+import importlib, sys
+sys.path.insert(0, sys.argv[1])
+prov = importlib.import_module("runtime.providers")
+mod_name, cls_name = prov._PROVIDER_MODULES[sys.argv[2]]
+cls = getattr(importlib.import_module(mod_name, package="runtime.providers"), cls_name)
+print(1 if cls.worktree_create is not prov.RuntimeProvider.worktree_create else 0)
+PY
+)
+  case "$sel" in
+    new-*)
+      if [ -n "$_bl" ] && [ "$PROFILE" = "ro" ] && [ "$custom_lane" = "0" ] && [ "$_standalone_wc" = "1" ]; then
+        step=worktree-create
+        _wc=$(mktemp)
+        orca_json "$_wc" worktree create --name "$safe_title" --repo "$_repo_top" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
+        _launch_wt=$(python3 -I - "$_wc" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d.get("result", d) if isinstance(d, dict) else {}
+wt = (r.get("worktree") or {}) if isinstance(r, dict) else {}
+p = wt.get("path") if isinstance(wt, dict) else None
+if not p or not isinstance(p, str):
+    print("worktree create returned no path", file=sys.stderr)
+    raise SystemExit(1)
+print(p)
+PY
+)
+        rm -f "$_wc"
+        sel="path:${_launch_wt}"
+        echo "SPAWN=NOTE task=${tname} worktree ${_launch_wt} created for the ${ACTIVE_RUNTIME} ro launch" >&2
+        _bl=$(base_launch "$_launch_wt")
+      fi ;;
+  esac
+  cmd_default=$(printf '%s\n' "$_bl" | sed -n '1p')
+  base_profile_flag=$(printf '%s\n' "$_bl" | sed -n '2p')
+fi
+
 ALLOW_OVERRIDE="${OPEN_FLEET_COORD_ALLOW_CMD_OVERRIDE:-${ORCA_COORD_ALLOW_CMD_OVERRIDE:-0}}"
 if [ -n "$override" ]; then
   if [ "$ALLOW_OVERRIDE" != "1" ]; then
@@ -676,10 +825,17 @@ else
   exit 2
 fi
 
-# worker-start-only flags on the custom-argv lane (overrides + PROFILE=ro) would be silently
-# dropped — no worker-start runs there. Refuse rather than mislead. (--run/--from/--spec
+# Contract hook: print the resolved launch and stop before any orchestration side effect,
+# so a test can hold this script's launch table to base.py's (#580).
+if [ -n "${SW_PRINT_LAUNCH:-}" ]; then
+  printf 'LAUNCH=%s\n' "$cmd"
+  exit 0
+fi
+
+# worker-start-only flags on the custom-argv lane (overrides + PROFILE=ro on Orca) would be
+# silently dropped — no worker-start runs there. Refuse rather than mislead. (--run/--from/--spec
 # stay: dispatch --inject and task-create accept them.)
-if [ -n "$override" ] || [ "$PROFILE" = "ro" ]; then
+if [ "$custom_lane" = "1" ]; then
   if [ "$TIMEOUT_GIVEN" = "1" ]; then
     echo "SPAWN=REFUSED task=${tname} --timeout-ms is a worker-start flag, and this spawn takes the custom-argv lane (override or PROFILE=ro) where no worker-start runs" >&2
     exit 2
@@ -737,7 +893,7 @@ if [ "$SPEC_GIVEN" = "1" ]; then
   if [ "$DEPS_GIVEN" = "1" ]; then create_args+=(--deps "$DEPS"); fi
   if [ "$PARENT_GIVEN" = "1" ]; then create_args+=(--parent "$PARENT"); fi
   orca_json "$tc" orchestration task-create ${create_args[@]+"${create_args[@]}"} ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-  task=$(python3 - "$tc" <<'PY'
+  task=$(python3 -I - "$tc" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -760,7 +916,7 @@ tl="$SP/tl-$safe_title.json"
 brief_args=()
 if [ "$TASK_BRIEF" = "1" ]; then brief_args=(--brief); fi
 orca_json "$tl" orchestration task-list ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${brief_args[@]+"${brief_args[@]}"}
-tl_out=$(python3 - "$tl" "$task" <<'PY'
+tl_out=$(python3 -I - "$tl" "$task" <<'PY'
 import json, sys
 
 
@@ -850,12 +1006,14 @@ esac
 #                                           `agentDefaultArgs` setting, whose migrated default IS
 #                                           the YOLO map, so on a default host it would silently
 #                                           turn a read-only reviewer into a permission-bypass one.
-#                                           ro NEVER takes worker-start. (Host-dependent: a
+#                                           ro NEVER takes worker-start ON ORCA. (Host-dependent: a
 #                                           manual-mode host has `''` — probe owed, pin-it.)
+#   PROFILE=ro off Orca, no override      → supervised worker-start --profile ro: the provider
+#                                           builds base.py's ro line itself, with the task prompt
 #   PROFILE=rw|danger, no override        → supervised worker-start lane
 step=spawn
 ws="$SP/ws-$safe_title.json"
-if [ -z "$override" ] && [ "$PROFILE" != "ro" ]; then
+if [ "$custom_lane" = "0" ]; then
   # The supervised path: one call composes worktree + agent terminal + readiness + dispatch.
   # Creation flags (--name et al.) are REJECTED for current/existing worktrees — pass --name only
   # when the selector asks for a new worktree.
@@ -883,12 +1041,14 @@ if [ -z "$override" ] && [ "$PROFILE" != "ro" ]; then
     opencode) profile_flag="--auto --standalone" ;;
     pi)     profile_flag="--tools read,bash,edit,write,grep,find,ls" ;;
   esac
+  # ro off Orca: the provider launched base.py's ro line, so ITS flag is the one to find.
+  if [ "$PROFILE" = "ro" ]; then profile_flag="$base_profile_flag"; fi
 
   step=read-start-receipt
   # Line 1 is the machine verdict; the remaining stdout lines are the caller-facing receipt
   # fields. nextSteps / nextCommands go to stderr verbatim — they are the runtime's own
   # recovery text, not ours to paraphrase.
-  ws_out=$(python3 - "$ws" "$profile_flag" <<'PY'
+  ws_out=$(python3 -I - "$ws" "$profile_flag" <<'PY'
 import json, sys
 
 # Every typed preflight refusal is a POLICY/usage answer, not a transport failure: the
@@ -1069,7 +1229,7 @@ PY
       rq="$SP/rq-$safe_title.json"
       rq_rc=0
       "$ORCA_BIN" orchestration request-show --request "$RETRY_REQUEST" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$rq" 2>&1 || rq_rc=$?
-      rq_state=$(python3 - "$rq" <<'PY'
+      rq_state=$(python3 -I - "$rq" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -1146,7 +1306,7 @@ else
   step=create-terminal
   tj="$SP/sw-$safe_title.json"
   orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-  h=$(python3 - "$tj" <<'PY'
+  h=$(python3 -I - "$tj" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 if d.get("error"):
@@ -1168,7 +1328,7 @@ PY
   tw="$SP/tw-$safe_title.json"
   wait_rc=0
   "$ORCA_BIN" terminal wait --terminal "$h" --for tui-idle --timeout-ms 90000 ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tw" 2>&1 || wait_rc=$?
-  satisfied=$(python3 - "$tw" <<'PY'
+  satisfied=$(python3 -I - "$tw" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -1197,7 +1357,7 @@ PY
 
   step=read-inject-receipt
   read_stages() {
-    python3 - "$1" <<'PY'
+    python3 -I - "$1" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))

@@ -184,9 +184,10 @@ def _composed_playbooks(skill_text, root, skill_dir):
     """Resolve declarations BEFORE classifying protocols as playbooks.
 
     Match the validator's bare backtick/name.md forms, not arbitrary code.
-    Bundles flatten both layers into references/: runtime headings identify
-    policies there; unknown headings conservatively retain a playbook edge.
-    Missing or unreadable files never mean an unused dependency.
+    Catalog directories identify the layer. Bundles flatten both layers into
+    references/, so every declared name conservatively keeps a quarantine
+    edge: a document's content cannot exempt its own name. Missing or
+    unreadable files never mean an unused dependency.
     """
     names = set()
     name_re = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -210,12 +211,10 @@ def _composed_playbooks(skill_text, root, skill_dir):
                 "— cannot clear the mission against the deny-list"
             )
         try:
-            text = doc.read_text(encoding="utf-8")
+            doc.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as err:
             raise QuarantineError(f"{doc}: unreadable composed dependency ({err})") from err
-        is_runtime = (text.startswith(("# Runtime policy — ", "# Runtime pin — "))
-                      if bundled else doc.parent == root / "runtime")
-        if not is_runtime:
+        if bundled or doc.parent != root / "runtime":
             found.add(name)
     return found
 

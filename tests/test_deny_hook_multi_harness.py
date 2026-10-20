@@ -403,6 +403,72 @@ class TestCommandSubstitution(HookCase):
         result = self.fire(wrapped("exec_command", cmd=command))
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_following_commands_after_nested_heredocs_are_judged(self):
+        prefixes = (
+            "echo $(cat <<'EOF'\nliteral\nEOF\n)",
+            'echo "$(cat <<\'EOF\'\nliteral\nEOF\n)"',
+            "echo $(echo $(cat <<'EOF'\nliteral\nEOF\n))",
+            "cat <(cat <<'EOF'\nliteral\nEOF\n)",
+            "cat <((cat <<'EOF'\nliteral\nEOF\n))",
+            "echo `cat <<'EOF'\nliteral\nEOF\n`",
+        )
+        for prefix in prefixes:
+            for suffix in ("gh issue close 34", "git push --force origin topic"):
+                command = prefix + "\n" + suffix
+                with self.subTest(command=command):
+                    result = self.fire(wrapped("exec_command", cmd=command))
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            command = prefix.replace("literal", "gh issue close 34") + "\necho done"
+            with self.subTest(benign=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+
+    def test_arithmetic_shifts_never_open_heredocs(self):
+        prefixes = (
+            "echo $((1 << 2))", "echo $((1<<2))", "((1 << 2))", "((1<<2))",
+            'echo "$((1 << (2 + 1)))"', "echo $((1 << $((1 + 1))))",
+            "echo $((\n1 << 2\n))", "((\n1 << 2\n))",
+            "(\\\n(1 << 2))", 'echo "$\\\n(\\\n(1 << 2))"',
+            "echo $(printf %s $((1 << 2)))", "cat <(echo $((1 << 2)))",
+            "echo $[1 << 2]", "echo ${a[1 << 2]}", "echo ${unset:-literal << EOF}",
+            "for ((i=1<<2; i<5; i++)); do echo safe; done",
+        )
+        for prefix in prefixes:
+            for suffix in ("gh issue close 34", "git push --force origin topic"):
+                command = prefix + "\n" + suffix
+                with self.subTest(command=command):
+                    result = self.fire(wrapped("exec_command", cmd=command))
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            command = prefix + "\necho done"
+            with self.subTest(benign=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+
+    def test_arithmetic_context_keeps_live_expansions_and_real_heredocs(self):
+        for command in (
+            "echo $((1 << $(gh issue close 34)))",
+            "((1 << $(git push --force origin topic)))",
+            "echo $(\\\n(1 << '2'\n + $(gh issue close 34)))",
+            "echo $((1 << 2)); cat <<EOF\n$(gh issue close 34)\nEOF",
+            "echo $(cat <<'EOF'\nliteral\nEOF\n)\n"
+            "cat <<'OUTER'\nsafe\nOUTER\ngh issue close 34",
+        ):
+            with self.subTest(command=command):
+                result = self.fire(wrapped("exec_command", cmd=command))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for command in (
+            "echo $((1 << 2)); cat <<'EOF'\ngh issue close 34\nEOF\necho done",
+            "echo ${value:-{literal} <<'EOF' }\ngh issue close 34\nEOF\necho done",
+        ):
+            result = self.fire(wrapped("exec_command", cmd=command))
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, ""), result.stderr)
+        # Other bracket grammars (array assignments and [[ arithmetic operands])
+        # are deliberately refused when their << cannot be classified safely.
+        for command in ("a[1 << 2]=safe\ngh issue close 34",
+                        "[[ 4 -eq 1<<2 ]]\ngh issue close 34"):
+            result = self.fire(wrapped("exec_command", cmd=command))
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
     def test_live_heredoc_expansions_and_following_commands_stay_blocked(self):
         for command in (
             "cat <<EOF\ngh issue close 34\n$(gh issue close 34)\nEOF",

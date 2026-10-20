@@ -1218,15 +1218,49 @@ def _is_send(args):
     return False
 
 
-def substitution_bodies(text, depth=0):
-    # Command substitution runs its body as a command BEFORE the outer word is used:
-    # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
-    # unquoted heredoc all execute, yet no segment of the outer line names them (#592
-    # review). Return every such body (nested ones too) so each is judged as a command.
-    # Single-quoted text expands nothing; arithmetic $((...)) is not a command.
-    out, i, n, in_sq, in_dq = [], 0, len(text), False, False
+def _balanced_paren_end(text, j):
+    # Index just past the ")" closing the "(" before j (or len(text) if unbalanced).
+    n, level = len(text), 1
+    while j < n and level:
+        if text[j] == chr(92):
+            j += 2
+            continue
+        level += {"(": 1, ")": -1}.get(text[j], 0)
+        j += 1
+    return j, level == 0
+
+
+def _heredoc_body_subs(body):
+    # An UNQUOTED heredoc body expands $(...) and `...` with quotes LITERAL: a single-quoted
+    # "$(cmd)" there still runs cmd. Process substitution <(...) is plain text in a body.
+    out, i, n = [], 0, len(body)
     while i < n:
-        ch = text[i]
+        ch = body[i]
+        if ch == chr(92):
+            i += 2
+            continue
+        if ch == chr(96):
+            j = i + 1
+            while j < n and body[j] != chr(96):
+                j += 2 if body[j] == chr(92) else 1
+            out.append(body[i + 1:j])
+            i = j + 1
+            continue
+        if ch == "$" and body[i + 1:i + 2] == "(" and body[i + 2:i + 3] != "(":
+            j, closed = _balanced_paren_end(body, i + 2)
+            out.append(body[i + 2:j - 1] if closed else body[i + 2:])
+            i = j
+            continue
+        i += 1
+    return out
+
+
+def _heredoc_delims(line):
+    # [(delimiter, quoted, strip_tabs)] for each << redirection on one line, outside quotes;
+    # <<< is a here-STRING (it expands like any word) and is not a heredoc.
+    out, i, n, in_sq, in_dq = [], 0, len(line), False, False
+    while i < n:
+        ch = line[i]
         if ch == chr(92) and not in_sq:
             i += 2
             continue
@@ -1234,21 +1268,91 @@ def substitution_bodies(text, depth=0):
             in_sq = not in_sq
         elif ch == DQ and not in_sq:
             in_dq = not in_dq
+        elif not (in_sq or in_dq) and line.startswith("<<", i):
+            if line.startswith("<<<", i):
+                i += 3
+                continue
+            j = i + 2
+            dash = line[j:j + 1] == "-"
+            j += 1 if dash else 0
+            while j < n and line[j] in " " + chr(9):
+                j += 1
+            k = j
+            while k < n and line[k] not in " " + chr(9) + ";|&<>()":
+                k += 1
+            word = line[j:k]
+            if word:
+                quoted = any(q in word for q in (SQ, DQ, chr(92)))
+                delim = word.replace(SQ, "").replace(DQ, "").replace(chr(92), "")
+                out.append((delim, quoted, dash))
+            i = k
+            continue
+        elif not (in_sq or in_dq) and ch == "#" and (i == 0 or line[i - 1] in " " + chr(9) + ";|&("):
+            break
+        i += 1
+    return out
+
+
+def substitution_bodies(text, depth=0):
+    # Command substitution runs its body as a command BEFORE the outer word is used:
+    # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
+    # unquoted heredoc all execute, yet no segment of the outer line names them (#592
+    # review). Return every such body (nested ones too) so each is judged as a command.
+    # Text that never runs is NOT scanned: single-quoted words, `# comments`, arithmetic
+    # $((...)), and the body of a heredoc whose delimiter is quoted (<<"EOF", <<\EOF) --
+    # so documentation and fixtures that QUOTE a shell example stay writable.
+    out, i, n, in_sq, in_dq = [], 0, len(text), False, False
+    line_start = 0
+    while i < n:
+        ch = text[i]
+        if ch == chr(10) and not (in_sq or in_dq):
+            # End of a command line: consume the bodies of the heredocs it opened.
+            pending = _heredoc_delims(text[line_start:i])
+            i += 1
+            for delim, quoted, dash in pending:
+                body_start = i
+                while i <= n:
+                    nl = text.find(chr(10), i)
+                    end = n if nl < 0 else nl
+                    line = text[i:end]
+                    if (line.lstrip(chr(9)) if dash else line).rstrip() == delim:
+                        body = text[body_start:i]
+                        i = end + 1
+                        break
+                    if nl < 0:
+                        body, i = text[body_start:], n
+                        break
+                    i = nl + 1
+                if not quoted:
+                    out += _heredoc_body_subs(body)
+            line_start = i
+            continue
+        if ch == chr(92) and not in_sq:
+            i += 2
+            continue
+        if ch == SQ and not in_dq:
+            in_sq = not in_sq
+        elif ch == DQ and not in_sq:
+            in_dq = not in_dq
+        elif not (in_sq or in_dq) and ch == "#" and (i == 0 or text[i - 1] in " " + chr(9) + chr(10) + ";|&("):
+            nl = text.find(chr(10), i)
+            i = n if nl < 0 else nl
+            continue
         elif not in_sq and ch == chr(96):
             j = i + 1
             while j < n and text[j] != chr(96):
                 j += 2 if text[j] == chr(92) else 1
             out.append(text[i + 1:j])
             i = j
+        elif not (in_sq or in_dq) and text.startswith("<<", i):
+            i += 3 if text.startswith("<<<", i) else 2
+            continue
         elif not in_sq and ch in "$<>" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
-            j, level = i + 2, 1
-            while j < n and level:
-                if text[j] == chr(92):
-                    j += 2
-                    continue
-                level += {"(": 1, ")": -1}.get(text[j], 0)
-                j += 1
-            out.append(text[i + 2:j - 1] if level == 0 else text[i + 2:])
+            if ch != "$" and in_dq:
+                i += 1
+                continue  # <(...) inside double quotes is literal text
+            j, closed = _balanced_paren_end(text, i + 2)
+            out.append(text[i + 2:j - 1] if closed else text[i + 2:])
             i = j - 1
         i += 1
     if depth < 4:
@@ -1332,7 +1436,26 @@ def _glob_segments(op_segs, sample_segs, prefix_ok):
     return True
 
 
+_GUARD_SEG_CANON = {seg.lower(): seg for g in GUARD_SAMPLES for seg in g.split("/")}
+
+
+def _fold_guard_case(p):
+    # Git matches pathspecs case-insensitively under --icase-pathspecs / GIT_ICASE_PATHSPECS,
+    # and so does a case-insensitive filesystem (macOS default): there `.CLAUDE` IS `.claude`
+    # (#592 review). Fold every guard-named segment to its canonical spelling.
+    return "/".join(_GUARD_SEG_CANON.get(seg.lower(), seg) for seg in p.split("/"))
+
+
 def guarded(p, deleting, base=None):
+    if not p:
+        return False
+    folded = _fold_guard_case(p)
+    if folded != p and _guarded_exact(folded, deleting, base):
+        return True
+    return _guarded_exact(p, deleting, base)
+
+
+def _guarded_exact(p, deleting, base=None):
     if not p:
         return False
     norm = os.path.normpath(os.path.expanduser(p))

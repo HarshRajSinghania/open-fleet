@@ -280,6 +280,20 @@ class TestSelfGuard(HookCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("own guard", r.stderr)
 
+    def test_case_insensitive_matches_of_guard_paths_are_denied(self):
+        # #592 review: --icase-pathspecs / GIT_ICASE_PATHSPECS / a case-insensitive filesystem
+        # make `.CLAUDE` the guard directory.
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt)}
+        for command in ("git --icase-pathspecs clean -fdx -- .CLAUDE",
+                        "GIT_ICASE_PATHSPECS=1 git clean -fdx -- .Codex",
+                        "rm -rf .CLAUDE", "rm -f .Claude/Settings.Local.json"):
+            with self.subTest(command=command):
+                r = self.fire(wrapped("bash", command=command), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("own guard", r.stderr)
+        r = self.fire(wrapped("bash", command="git --icase-pathspecs clean -fdx -- BUILD/"), env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_the_hook_file_itself_is_guarded_wherever_it_is(self):
         r = self.fire(wrapped("Edit", file_path=str(HOOK), old_string="a", new_string="b"))
         self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -366,6 +380,31 @@ class TestCommandSubstitution(HookCase):
             with self.subTest(cmd=cmd):
                 r = self.fire(wrapped("exec_command", cmd=cmd), env)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_text_that_never_runs_is_not_judged(self):
+        # #592 review: comments and QUOTED heredoc bodies only quote an example; they execute
+        # nothing, so reading the repo and writing docs/fixtures stays possible.
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"}
+        for cmd in ("git status # $(git push --force origin topic)",
+                    "cat > src/doc.md <<'EOF'\nexample: $(git push --force origin topic)\nEOF",
+                    "cat > src/doc.md <<\"EOF\"\nexample: $(rm -rf /)\nEOF",
+                    "cat > src/doc.md <<\\EOF\nexample: `rm -rf /`\nEOF",
+                    "cat > src/doc.md <<-'EOF'\n\t$(rm -rf /)\n\tEOF\necho done"):
+            with self.subTest(cmd=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_live_text_around_comments_and_heredocs_is_still_judged(self):
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "ORCA_HOOK_STRICT_EXIT": "1"}
+        for cmd in ("echo $(rm -rf /) # trailing comment",
+                    "echo \"#$(rm -rf /)\"",
+                    "cat <<< \"$(rm -rf /)\"",
+                    "cat > src/doc.md <<EOF\n'$(rm -rf /)'\nEOF",  # quotes are literal in a body
+                    "cat > src/doc.md <<'EOF'\nsafe $(rm -rf /)\nEOF\necho $(rm -rf /)",
+                    "x=$(\nrm -rf /\n)"):
+            with self.subTest(cmd=cmd):
+                r = self.fire(wrapped("exec_command", cmd=cmd), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
     def test_unquoted_patch_body_still_has_its_headers_bounded(self):
         cmd = f"apply_patch <<EOF\n*** Begin Patch\n*** Add File: {self.outside / 'x.py'}\n+$HOME\n*** End Patch\nEOF"

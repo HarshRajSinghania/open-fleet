@@ -41,13 +41,20 @@ review, recorded in HUMAN_ACTIONS.
 
 ## Merge gate
 
-The required check for a GO verdict is the `verdict-gate` commit status, posted by
+The intended trusted check for a GO verdict is the `verdict-gate` commit status, posted by
 [`verdict-gate.yml`](../.github/workflows/verdict-gate.yml). GitHub loads that workflow from
 `main` on `workflow_run`, after every review that
 [`verdict-check.yml`](../.github/workflows/verdict-check.yml) sees, and it runs `main`'s
 `scripts/verdict_check.py`, so nothing a PR edits takes part in gating it. The `verdict` job in
-`verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR, so
-it is not a gate.
+`verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR,
+where the PR can rewrite it.
+
+Activation remains pending in [#594](https://github.com/ravidsrk/orca-fleet/issues/594).
+The 2026-10-20 API read-back found `main` still requiring `verdict` from GitHub Actions
+(app 15368), rather than `verdict-gate` from a dedicated app. The `verdict-gate` environment
+exists, with no deployment branch restriction, variables, or secrets. An administrator must
+provide the dedicated app credential and complete the setup below before this trusted status
+enforces merge protection.
 
 Branch protection matches a required check by name, and a fork PR can add a workflow job named
 `verdict-gate`. The status must therefore come from an identity only `main`'s gate can use:

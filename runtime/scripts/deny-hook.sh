@@ -901,47 +901,6 @@ cmd_val = ti.get("command") if (norm_tool == "Bash" and isinstance(ti.get("comma
 raw_command = r(cmd_val)
 
 
-def strip_patch_heredocs(cmd):
-    # `apply_patch <<EOF` (Codex spells patches this way in a shell) feeds the patch on
-    # stdin: its body is DATA, not commands, and its file headers name the writes. Pull
-    # the bodies out for header scanning like the apply_patch tool path (#577) and judge
-    # the command with them removed, so a patch line is never read as shell.
-    bodies, out, lines, i = [], [], cmd.split(chr(10)), 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        if not re.search(r"(^|[^A-Za-z0-9_./-])(apply_patch|applypatch)([^A-Za-z0-9_-]|$)", line):
-            continue
-        m = re.search(r"<<(-?)[ \t]*([" + SQ + DQ + r"]?)([A-Za-z_][A-Za-z0-9_]*)\2", line)
-        if not m:
-            continue
-        body = []
-        while i < len(lines):
-            term = lines[i].lstrip(chr(9)) if m.group(1) else lines[i]
-            if term.rstrip() == m.group(3):
-                break
-            body.append(lines[i])
-            i += 1
-        text = chr(10).join(body)
-        bodies.append(text)
-        # An UNQUOTED delimiter (<<EOF) lets the shell expand $(...), `...` and $VAR in the
-        # body before apply_patch reads it, so such a body is live shell, not data: keep it
-        # in the judged command (#592 review). Only a quoted delimiter, or a body with
-        # nothing the shell would expand, is pure data and may be stripped.
-        quoted = bool(m.group(2))
-        inert = not any(ch in text for ch in ("$", chr(96), chr(92)))
-        if not (quoted or inert):
-            out.extend(body)
-        if i < len(lines):
-            out.append(lines[i])
-            i += 1
-    return chr(10).join(out), bodies
-
-
-raw_command, heredoc_patches = strip_patch_heredocs(raw_command) if norm_tool == "Bash" else (raw_command, [])
-command = c(raw_command)
-
 target_paths = []
 for _k in ("file_path", "notebook_path", "path", "filePath"):
     _v = ti.get(_k)
@@ -981,12 +940,6 @@ def patch_targets(blob):
 
 for _pv in _patch_blobs:
     target_paths.extend(patch_targets(_pv))
-heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
-print(s(norm_tool))
-print(command)
-print(s(target_paths[0] if target_paths else ""))
-for _extra_p in target_paths[1:]:
-    record("F", s(_extra_p))
 # Line 4 onward: C = comparison command, W = write target, A = literal argument,
 # E = an off-repo write with no egress receipt arming it (rule 5, judged here
 # because only this side of the protocol still knows the joining operators).
@@ -1014,11 +967,10 @@ _SUDO_OPERAND_FLAGS = ("-u", "-U", "-g", "-h", "-p", "-C", "-T", "-R", "-t")
 
 
 def _split_env_string(text):
-    # GNU env -S word splitting, to head-finding fidelity: blanks separate,
-    # `\_` is a SEPARATOR (not a literal underscore), other `\x` is a literal
-    # x, single/double quotes group (and vanish). A plain .split() kept
-    # `ignore\_--version` as one word, hiding --version inside what read as
-    # a -W value, so a version print armed a send (PR #567 review, P1).
+    # GNU coreutils env invocation: split-string syntax is not shell syntax.
+    # In particular, \c stops argv and \_ separates words only outside quotes.
+    # Environment expansion depends on the future command environment, so refuse
+    # it rather than invent argv that could falsely prove a receipt (#567).
     words, cur, quote = [], [], ""
     started = False  # a quote opens a word even if it adds no characters:
     # `""` is an empty argument env preserves and python consumes (P1).
@@ -1032,31 +984,48 @@ def _split_env_string(text):
 
     while i < len(text):
         ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = ""
-            else:
-                cur.append(ch)
-            i += 1
-            continue
-        if ch in (SQ, DQ):
-            quote = ch
-            started = True
-        elif ch == "\\" and i + 1 < len(text):
+        if ch == "\\":
+            if i + 1 == len(text):
+                raise ValueError("env -S ends in a backslash")
             nxt = text[i + 1]
-            if nxt == "_":
+            if quote == SQ and nxt not in (SQ, "\\"):
+                cur.append(ch)
+                started = True
+                i += 1
+                continue
+            if nxt == "c":
+                if quote:
+                    raise ValueError("env -S has a quoted stop escape")
+                break
+            if nxt == "_" and not quote:
                 flush()
             else:
-                cur.append(nxt)
+                escapes = {"f": chr(12), "n": chr(10), "r": chr(13),
+                           "t": chr(9), "v": chr(11), "_": " ",
+                           "#": "#", "$": "$", DQ: DQ, SQ: SQ, "\\": "\\"}
+                if nxt not in escapes:
+                    raise ValueError("unsupported env -S escape")
+                cur.append(escapes[nxt])
                 started = True
             i += 2
             continue
-        elif ch in " \t":
+        if ch == quote:
+            quote = ""
+        elif not quote and ch in (SQ, DQ):
+            quote = ch
+            started = True
+        elif quote != SQ and ch == "$":
+            raise ValueError("env -S environment expansion cannot prove a receipt")
+        elif not quote and ch == "#" and not started:
+            break
+        elif not quote and ch in " \t\n\r\v\f":
             flush()
         else:
             cur.append(ch)
             started = True
         i += 1
+    if quote:
+        raise ValueError("unclosed env -S quote")
     flush()
     return words
 
@@ -1074,12 +1043,26 @@ def _peel_wrapper(ws, operand_flags, is_env=False):
             return ws[1:]
         if is_env and word in ("-S", "--split-string") and len(ws) > 1:
             # The operand IS the command line env runs: its words take the
-            # head, the words after it become their arguments.
-            return _split_env_string(ws[1]) + ws[2:]
+            # head, the words after it become their arguments. env processes
+            # options in the expanded argv too, before selecting its command.
+            ws = _split_env_string(ws[1]) + ws[2:]
+            continue
+        if is_env and word.startswith("--split-string="):
+            ws = _split_env_string(word.split("=", 1)[1]) + ws[1:]
+            continue
         if is_env and word.startswith("-S") and len(word) > 2:
-            return _split_env_string(word[2:]) + ws[1:]
+            ws = _split_env_string(word[2:]) + ws[1:]
+            continue
         if word in operand_flags and len(ws) > 1:
             ws = ws[2:]
+        elif is_env and word.startswith("-"):
+            # Unknown clusters/abbreviations can contain another -S or an
+            # early-exit option: declining to infer them must fail closed.
+            if word not in ("-", "-i", "--ignore-environment", "-v", "--debug") \
+                    and not any(word.startswith(flag + "=") for flag in operand_flags
+                                if flag.startswith("--")):
+                raise ValueError("unsupported env option")
+            ws = ws[1:]
         elif word.startswith("-"):
             ws = ws[1:]  # a lone "-" is env spelling of -i; no command is "-"
         else:
@@ -1339,14 +1322,20 @@ def substitution_bodies(text, depth=0):
     # review). Return every such body (nested ones too) so each is judged as a command.
     # Text that never runs is NOT scanned: single-quoted words, `# comments`, arithmetic
     # $((...)), and the body of a heredoc whose delimiter is quoted (<<"EOF", <<\EOF) --
-    # so documentation and fixtures that QUOTE a shell example stay writable.
+    # so documentation and fixtures that QUOTE a shell example stay writable. Return
+    # the command surface without heredoc bodies, plus patch bodies for target checks.
     out, i, n, in_sq, in_dq = [], 0, len(text), False, False
-    line_start = 0
+    line_start = surface_start = 0
+    surface, patches = [], []
     while i < n:
         ch = text[i]
         if ch == chr(10) and not (in_sq or in_dq):
             # End of a command line: consume the bodies of the heredocs it opened.
-            pending = _heredoc_delims(text[line_start:i])
+            opener = text[line_start:i]
+            pending = _heredoc_delims(opener)
+            if pending:
+                surface.append(text[surface_start:i + 1])
+            is_patch = re.search(r"(^|[^A-Za-z0-9_./-])(apply_patch|applypatch)([^A-Za-z0-9_-]|$)", opener)
             i += 1
             for delim, quoted, dash in pending:
                 body_start = i
@@ -1354,7 +1343,15 @@ def substitution_bodies(text, depth=0):
                     nl = text.find(chr(10), i)
                     end = n if nl < 0 else nl
                     line = text[i:end]
-                    if (line.lstrip(chr(9)) if dash else line).rstrip() == delim:
+                    if not quoted:
+                        # A continued physical line is joined BEFORE delimiter matching.
+                        # EO\<newline>F closes EOF; text after it is executable shell.
+                        while nl >= 0 and (len(line) - len(line.rstrip(chr(92)))) % 2:
+                            nl = text.find(chr(10), end + 1)
+                            end = n if nl < 0 else nl
+                            line = text[i:end]
+                        line = _join_continuations(line)
+                    if (line.lstrip(chr(9)) if dash else line) == delim:
                         body = text[body_start:i]
                         i = end + 1
                         break
@@ -1362,8 +1359,14 @@ def substitution_bodies(text, depth=0):
                         body, i = text[body_start:], n
                         break
                     i = nl + 1
+                if dash:
+                    body = chr(10).join(line.lstrip(chr(9)) for line in body.split(chr(10)))
+                if is_patch:
+                    patches.append(body)
                 if not quoted:
                     out += _heredoc_body_subs(body)
+            if pending:
+                surface_start = i
             line_start = i
             continue
         if ch == chr(92) and not in_sq and text[i + 1:i + 2] == chr(10):
@@ -1399,6 +1402,8 @@ def substitution_bodies(text, depth=0):
             while j < n and text[j] != chr(96):
                 j += 2 if text[j] == chr(92) else 1
             out.append(text[i + 1:j])
+            surface.append(text[surface_start:i] + "__orca_substitution__")
+            surface_start = j + 1
             i = j
         elif not (in_sq or in_dq) and text.startswith("<<", i):
             i += 3 if text.startswith("<<<", i) else 2
@@ -1409,19 +1414,31 @@ def substitution_bodies(text, depth=0):
                 continue  # <(...) inside double quotes is literal text
             j, closed = _balanced_paren_end(text, i + 2)
             out.append(text[i + 2:j - 1] if closed else text[i + 2:])
+            surface.append(text[surface_start:i] + "__orca_substitution__")
+            surface_start = j
             i = j - 1
         i += 1
     if depth < 4:
-        for body in list(out):
-            out += substitution_bodies(body, depth + 1)
-    return [b for b in out if b.strip()]
+        analyzed = []
+        for body in out:
+            nested, inner_surface, nested_patches = substitution_bodies(body, depth + 1)
+            analyzed += [inner_surface] + nested
+            patches += nested_patches
+        out = analyzed
+    return [b for b in out if b.strip()], "".join(surface) + text[surface_start:], patches
 
 
+_subs, _judged, heredoc_patches = substitution_bodies(raw_command)
+for _sub in _subs:
+    _judged += chr(10) + _sub
+heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
+print(s(norm_tool))
+print(c(_judged))
+print(s(target_paths[0] if target_paths else ""))
+for _extra_p in target_paths[1:]:
+    record("F", s(_extra_p))
 _seg_args = []
 _guard_segs = []
-_judged = raw_command
-for _sub in substitution_bodies(raw_command):
-    _judged += chr(10) + _sub
 for _join, seg in _split(_judged):
     args, writes, pending = [], [], None
     for kind, value in shell_tokens(seg):

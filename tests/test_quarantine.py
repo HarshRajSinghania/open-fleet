@@ -113,15 +113,19 @@ class Matching(unittest.TestCase):
         self.assertEqual(self.found([entry(component="pack:nope")]), [])
 
 
-def write_catalog(root: Path, quarantined):
+def write_catalog(root: Path, quarantined, layout="catalog"):
     (root / "runtime").mkdir(parents=True)
     (root / "runtime" / "quarantine.json").write_text(
         json.dumps({"quarantined": quarantined}))
-    (root / "playbooks").mkdir()
-    (root / "playbooks" / "risk-review.md").write_text("# x\n")
-    skill = root / "skills" / "ship-it"
-    skill.mkdir(parents=True)
+    skill = root if layout == "copied" else root / "skills" / "ship-it"
+    skill.mkdir(parents=True, exist_ok=True)
+    protocols = root / "playbooks" if layout == "catalog" else skill / "references"
+    protocols.mkdir()
+    (protocols / "risk-review.md").write_text("# x\n")
+    policies = root / "runtime" if layout == "catalog" else protocols
+    (policies / "evidence-manifest.md").write_text("# Runtime policy — evidence\n")
     (skill / "SKILL.md").write_text("Composes `risk-review`; rides `evidence-manifest`.\n")
+    return skill, protocols
 
 
 class Cli(unittest.TestCase):
@@ -228,6 +232,72 @@ class Cli(unittest.TestCase):
             self.assertEqual(result.returncode, 3)
             self.assertNotIn("Traceback", result.stderr)
 
+    def test_missing_composed_dependency_refuses_in_each_layout(self):
+        # The declaration is authoritative even when copying lost the file.
+        # This seam checks refusal and a useful path, not the copy operation.
+        for layout in ("catalog", "bundle", "copied"):
+            for declaration in ("`risk-review`", "risk-review.md", "`risk-review.md`"):
+                with self.subTest(layout=layout, declaration=declaration), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    skill, protocols = write_catalog(
+                        root, [entry(component="playbook:risk-review")], layout)
+                    (protocols / "risk-review.md").unlink()
+                    (skill / "SKILL.md").write_text(f"Composes {declaration}.\n")
+                    result = self.run_cli("--root", tmp, "--mission", "ship-it")
+                    self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                    self.assertIn("risk-review.md", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_unusable_dependency_refuses_mission_and_catalog_checks(self):
+        for mode in (("--mission", "ship-it"), ("--catalog",)):
+            layouts = ("catalog", "bundle", "copied") if mode[0] == "--mission" else ("catalog", "bundle")
+            for layout in layouts:
+                for state in ("directory", "broken-link", "invalid-utf8"):
+                    with self.subTest(mode=mode, layout=layout, state=state), \
+                            tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        _, protocols = write_catalog(root, [], layout)
+                        dependency = protocols / "risk-review.md"
+                        dependency.unlink()
+                        if state == "directory":
+                            dependency.mkdir()
+                        elif state == "broken-link":
+                            dependency.symlink_to("missing-protocol.md")
+                        else:
+                            dependency.write_bytes(b"\xff\xfe")
+                        result = self.run_cli("--root", tmp, *mode)
+                        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                        self.assertIn(str(dependency), result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+
+    def test_runtime_policies_are_resolved_without_becoming_playbooks(self):
+        for layout in ("catalog", "bundle", "copied"):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                skill, protocols = write_catalog(
+                    root, [entry(component="playbook:evidence-manifest")], layout)
+                (skill / "SKILL.md").write_text(
+                    "Composes risk-review.md; rides `evidence-manifest`.\n")
+                clean = self.run_cli("--root", tmp, "--mission", "ship-it")
+                self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+                policies = root / "runtime" if layout == "catalog" else protocols
+                (policies / "evidence-manifest.md").unlink()
+                refused = self.run_cli("--root", tmp, "--mission", "ship-it")
+                self.assertEqual(refused.returncode, 3, refused.stdout + refused.stderr)
+                self.assertIn("evidence-manifest.md", refused.stderr)
+
+    def test_bare_md_and_unknown_bundle_heading_retain_playbook_edge(self):
+        for heading in ("", "# x\n", "# Runtime example\n", "# Playbook — risk-review\n"):
+            with self.subTest(heading=heading), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                skill, protocols = write_catalog(
+                    root, [entry(component="playbook:risk-review")], "copied")
+                (protocols / "risk-review.md").write_text(heading)
+                (skill / "SKILL.md").write_text("Composes risk-review.md.\n")
+                result = self.run_cli("--root", tmp, "--mission", "ship-it")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
     def test_absent_file_says_no_quarantine_in_force(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_cli("--root", tmp, "--catalog")
@@ -321,6 +391,19 @@ class MainInProcess(unittest.TestCase):
 
 
 class ShippedTree(unittest.TestCase):
+    def test_generated_and_copied_bundles_keep_catalog_playbook_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "bundle.py"), "--out", tmp],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            catalog = qc.catalog_view(ROOT)
+            bundled = qc.catalog_view(Path(tmp))
+            self.assertEqual(bundled["composes"], catalog["composes"])
+            for mission, playbooks in catalog["composes"].items():
+                copied = qc.mission_view(Path(tmp) / "skills" / mission, mission)
+                self.assertEqual(copied["composes"][mission], playbooks, mission)
+
     def test_shipped_deny_list_is_well_formed_and_clean(self):
         entries, errors, present = qc.load_quarantine(ROOT)
         self.assertTrue(present, "runtime/quarantine.json must ship in this repo")

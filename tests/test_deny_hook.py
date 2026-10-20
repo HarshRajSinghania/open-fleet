@@ -1774,6 +1774,47 @@ class TestEgressReceiptRule(HookBase):
     RECEIPT = ("runtime/scripts/egress.py write --sink pr-open --host github.com "
                "--payload-class pr-body --consent grant:pr-open-on-base")
 
+    def test_env_split_string_cannot_receipt_ignored_arguments(self):
+        # These are hook JSON inputs only. GNU env ends argv at \c or a comment,
+        # so Python reads closed stdin and succeeds without running egress.py.
+        for split in (r"python3 -W ignore\c runtime/scripts/egress.py write",
+                      "python3 -W ignore # runtime/scripts/egress.py write"):
+            command = f"env -S {shlex.quote(split)} </dev/null && gh issue close 34"
+            with self.subTest(split=split):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_env_split_string_retains_quoted_python_and_empty_warning_operand(self):
+        # #567 follow-ups: quoting the executable keeps it executable, and an
+        # empty quoted -W operand occupies argv even though it has no characters.
+        for split in ('"python3" -W ignore runtime/scripts/egress.py write',
+                      'python3 -W "" runtime/scripts/egress.py write',
+                      r'python3 -W "ignore\_default" runtime/scripts/egress.py write'):
+            for option in ("-S ", "--split-string ", "--split-string=", "-S"):
+                command = f"env {option}{shlex.quote(split)} && gh issue close 34"
+                with self.subTest(split=split, option=option):
+                    self.assertIsNone(self.decision(self.fire(event("Bash", command=command))),
+                                      command)
+
+    def test_env_split_string_unsupported_syntax_fails_closed(self):
+        for split in (r'python3 -W "ignore\c" runtime/scripts/egress.py write',
+                      r"python3 -W ignore\q runtime/scripts/egress.py write",
+                      'python3 -W "ignore runtime/scripts/egress.py write',
+                      r"python3 -W ${WARNING} runtime/scripts/egress.py write"):
+            command = f"env -S {shlex.quote(split)} && gh issue close 34"
+            with self.subTest(split=split):
+                result = self.fire(event("Bash", command=command))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("Fail-closed", result.stderr)
+
+    def test_env_split_string_underscore_exposes_python_version_option(self):
+        split = r"python3 -W ignore\_--version runtime/scripts/egress.py write"
+        command = f"env -S {shlex.quote(split)} && gh issue close 34"
+        block = self.decision(self.fire(event("Bash", command=command)))
+        self.assertIsNotNone(block, command)
+        self.assertEqual(block["permissionDecision"], "deny", command)
+
     def test_unreceipted_writes_deny(self):
         for command in (
             "gh pr create --title x",

@@ -180,32 +180,43 @@ class QuarantineError(Exception):
     """The check cannot be evaluated (missing mission, unreadable tree)."""
 
 
-def _playbook_names(root, mission=None):
-    """Playbook stems in either layout: the catalog keeps them under
-    playbooks/, the bundle vendors them under skills/<mission>/references/.
-    Reading only the catalog layout made playbook quarantines silently inert
-    in bundled installs."""
+def _composed_playbooks(skill_text, root, skill_dir):
+    """Resolve declarations BEFORE classifying protocols as playbooks.
+
+    Match the validator's bare backtick/name.md forms, not arbitrary code.
+    Bundles flatten both layers into references/: runtime headings identify
+    policies there; unknown headings conservatively retain a playbook edge.
+    Missing or unreadable files never mean an unused dependency.
+    """
     names = set()
-    playbooks = Path(root) / "playbooks"
-    if playbooks.is_dir():
-        names |= {p.stem for p in playbooks.glob("*.md")}
-    if mission:
-        references = Path(root) / "skills" / mission / "references"
-        if references.is_dir():
-            names |= {p.stem for p in references.glob("*.md")}
-    return names
-
-
-def _composed_playbooks(skill_text, playbook_names):
-    """Playbooks named in Composes/rides clauses. Over-matching is the safe
-    direction for a refusal gate; the catalog gate (validate.py) passes its
-    own precise extraction into violations() instead."""
-    found = set()
+    name_re = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     for clause in _CLAUSE.findall(skill_text):
-        for token in re.findall(r"`([^`]+)`", clause):
+        tokens = re.findall(r"`([^`]+)`", clause)
+        tokens += re.findall(r"[\w./-]+\.md\b", clause)
+        for token in tokens:
             stem = token[:-3] if token.endswith(".md") else token
-            if stem in playbook_names:
-                found.add(stem)
+            if name_re.fullmatch(stem):
+                names.add(stem)
+    references = skill_dir / "references"
+    bundled = references.is_dir() or skill_dir == root
+    found = set()
+    for name in sorted(names):
+        paths = ([references / f"{name}.md"] if bundled else
+                 [root / "playbooks" / f"{name}.md", root / "runtime" / f"{name}.md"])
+        doc = next((p for p in paths if os.path.lexists(p)), None)
+        if doc is None:
+            raise QuarantineError(
+                f"missing composed dependency {name}.md (tried {', '.join(map(str, paths))}) "
+                "— cannot clear the mission against the deny-list"
+            )
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as err:
+            raise QuarantineError(f"{doc}: unreadable composed dependency ({err})") from err
+        is_runtime = (text.startswith(("# Runtime policy — ", "# Runtime pin — "))
+                      if bundled else doc.parent == root / "runtime")
+        if not is_runtime:
+            found.add(name)
     return found
 
 
@@ -228,15 +239,10 @@ def mission_view(root, mission):
         text = skill.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as err:
         raise QuarantineError(f"{skill}: unreadable ({err})") from err
-    names = _playbook_names(root, mission)
-    if skill == candidates[1]:  # bundle root: references sit at the top
-        references = root / "references"
-        if references.is_dir():
-            names |= {p.stem for p in references.glob("*.md")}
     pins, pins_error = pins_view(root)
     return {
         "missions": {mission},
-        "composes": {mission: _composed_playbooks(text, names)},
+        "composes": {mission: _composed_playbooks(text, root, skill.parent)},
         "pins": pins,
         "pins_error": pins_error,
     }
@@ -275,10 +281,7 @@ def catalog_view(root):
             skill = skill_dir / "SKILL.md"
             if skill_dir.is_dir() and skill.exists():
                 missions.add(skill_dir.name)
-                composes[skill_dir.name] = _composed_playbooks(
-                    skill.read_text(encoding="utf-8"),
-                    _playbook_names(root, skill_dir.name),
-                )
+                composes[skill_dir.name] = mission_view(root, skill_dir.name)["composes"][skill_dir.name]
     pins, pins_error = pins_view(root)
     return {"missions": missions, "composes": composes,
             "pins": pins, "pins_error": pins_error}
@@ -309,7 +312,11 @@ def main(argv=None):
         )
         return 0
     if args.catalog:
-        view = catalog_view(root)
+        try:
+            view = catalog_view(root)
+        except QuarantineError as err:
+            print(f"quarantine_check: {err}", file=sys.stderr)
+            return 3
         present = sorted(
             e["name"] for e in entries
             if e["kind"] == "mission" and e["name"] in view["missions"]

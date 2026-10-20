@@ -39,6 +39,14 @@ def _git(*args, cwd, env=None, check=True):
     return subprocess.run(["git", *args], cwd=cwd, env=env, check=check, capture_output=True, text=True)
 
 
+def _group_alive(pid):
+    try:
+        os.killpg(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
 def _wait_for(pred, timeout=15.0, step=0.05):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -78,12 +86,25 @@ class PosixRealProcessBase(unittest.TestCase):
         self.addCleanup(self._kill_all)
 
     def _kill_all(self):
+        # Stop every live worker (retained ones too) and let its monitor finish writing into
+        # the temp state dir before the TemporaryDirectory cleanup removes it.
         try:
             for w in self.prov.worker_list()["workers"]:
-                if w["state"] in ("ready", "running"):
+                if w["state"] in ("ready", "running", "retained"):
                     self.prov.worker_fence("stop", w["dispatchId"])
+            with self.prov.state._connect() as conn:
+                pids = [r["pid"] for r in conn.execute("SELECT pid FROM dispatches WHERE pid > 0").fetchall()]
+            for pid in pids:
+                _wait_for(lambda pid=pid: not _group_alive(pid), timeout=10)
         except Exception:
             pass
+
+    def wait_monitor_done(self, dispatch_id, timeout=30.0):
+        """The monitor's LAST write is the dispatch state; wait until it has left the live states."""
+        return _wait_for(
+            lambda: self.prov.state.dispatch_state(dispatch_id) not in ("ready", "running", "retained"),
+            timeout=timeout,
+        )
 
     def fake_agent(self, name: str, body: str) -> None:
         """Put a fake `claude` on PATH; `body` is POSIX sh run with the worker's env."""
@@ -293,7 +314,8 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         self.prov._spawn_process = retain_then_spawn
         res = self.prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="rw")
         self.assertEqual(res["state"], "ready")
-        self.assertTrue(_wait_for(ran.exists), "retaining a dispatch must not cancel its work")
+        self.assertTrue(_wait_for(ran.exists, timeout=30), "retaining a dispatch must not cancel its work")
+        self.assertTrue(self.wait_monitor_done(res["dispatchId"]))
 
     def test_monitor_strips_secrets_inherited_from_its_own_environment(self):
         """A tmux server started with a seed hands it to the monitor's os.environ."""
@@ -307,7 +329,11 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         self.prov._spawn_process = real
         self.prov.backend = "setsid"
         real(**captured)  # writes run_worker.py (then launches a first copy without secrets)
-        _wait_for(out.is_file)
+        disp = captured["dispatch_id"]
+        self.assertTrue(_wait_for(out.is_file, timeout=30))
+        # Wait for the first monitor's FINAL write (the dispatch state) before re-arming, or its
+        # late `died` lands after the re-arm and the launch gate rightly refuses the re-run.
+        self.assertTrue(self.wait_monitor_done(disp))
         out.unlink(missing_ok=True)
         script = Path(captured["lane_dir"]) / "run_worker.py"
         # The first run finished (and was recorded); re-arm the dispatch for the inherited-env run.
@@ -316,8 +342,8 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
             "UPDATE dispatches SET state = 'ready' WHERE lane_dir = ?", (str(captured["lane_dir"]),))
         env = {**os.environ, "PATH": self.env["PATH"], "OPEN_FLEET_SIGNING_SEED": "aa" * 32,
                "ORCA_DISPATCH_SIGNING_SEED": "bb" * 32}
-        subprocess.run([sys.executable, "-I", str(script)], env=env, cwd=captured["wt_path"], timeout=60)
-        self.assertTrue(_wait_for(out.is_file))
+        subprocess.run([sys.executable, "-I", str(script)], env=env, cwd=captured["wt_path"], timeout=120)
+        self.assertTrue(out.is_file(), "the re-run is synchronous: its agent has already written")
         self.assertEqual(out.read_text().strip(), "[][]")
 
     def test_vanished_monitor_is_detected_by_liveness_sweep(self):

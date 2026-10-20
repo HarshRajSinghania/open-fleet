@@ -13,7 +13,7 @@ block.
 `tui-agent-launch-defaults.ts:17` re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS` — but
 a host whose owner chose manual mode carries `''` instead. Two consequences, opposite in sign: on a
 default host a supervised `PROFILE=ro` launch would be silently upgraded to bypass (which is why ro
-never takes `worker-start`, dispatch-lifecycle.md); on a manual host, `worker-start` launches
+never takes Orca's `worker-start`, dispatch-lifecycle.md); on a manual host, `worker-start` launches
 PROMPTING workers while the fleet believes they are autonomous, and the run blocks on invisible
 dialogs. Neither is knowable from source: read `launch.effective` off the start receipt and record
 the host's permission mode in the ledger header. Source-witnessed at v1.4.203 (the 2026-09-16 pin-it run — docs/runs/2026-09-16-pin-it-416/ — re-read the YOLO map and launch defaults at the build commit)
@@ -87,17 +87,22 @@ Two rules the guide states and a lane will otherwise learn the expensive way:
   `PROFILE=danger` needs `ORCA_COORD_ALLOW_DANGER=1`, a valid `ORCA_SANDBOX_RECIPE`, and `orca` on
   PATH; the script runs `vm recipe doctor <recipe>` (WITHOUT `--provision` — #335: no doctor verdict,
   clear or not, can authorize this lane, so bringing a VM up buys nothing and bills for it) and reads
-  the verdict via `sandbox_doctor.py`. Even a clear doctor is then REFUSED unconditionally until a
+  the verdict via `sandbox_doctor.py`. On Orca a clear doctor is then REFUSED unconditionally until a
   prelaunch placement binding exists — the doctor proves recipe health, not that this worker will
   land in the validated sandbox. `ORCA_SANDBOX_DOCTOR` is an **output** path: where that transcript
   is written for the lane ledger. A transcript the caller names is not evidence.
+- **Off Orca (#585)** the doctor runs via `orca_cli.py` (no probe: fail closed); danger needs a
+  `--require-placement` pass: portable `backend` (docker: `capDrop` ALL, `noNewPrivileges`,
+  `pidsLimit`; bwrap: workspace fs, non-host net; gondolin: `/workspace` only), `ephemeral`, no
+  `credential_mounts`, `prelaunch_placement_bound`; no privileged, host net, socket or dir above
+  one, `$HOME`/`/root`, ancestor, or credential dir (exit 2). Pinned `--on <recipe>`; no override.
 - **Never snapshot a machine on which `orca serve` has already run.** The pairing identity is
   baked in, so every clone of that snapshot claims to be the same Orca server — the fleet then
   cannot tell two sandboxes apart, and remote placement resolves to the wrong host. Snapshot
   BEFORE `serve`, or not at all.
 
-Lane contract (BLOCKED until that placement binding exists — today every danger spawn is refused,
-so no mission may plan on this lane): N sandboxes for N parallel danger lanes; harvest work OFF the mortal disk via
+Lane contract (on Orca BLOCKED until that placement binding exists — every Orca danger spawn is
+refused, so no mission may plan on that lane): N sandboxes for N parallel danger lanes; harvest work OFF the mortal disk via
 `git push` to the lane's own work branch BEFORE teardown (never straight to BASE — sandbox work
 enters BASE through the normal PR + review + merge-train pipeline); DESTROY per lane and verify;
 record `lane · sandbox · pushed branch@sha · destroyed ts` in the ledger. A lane whose sandbox died
@@ -147,5 +152,5 @@ raw `gh issue view` outside that script, so the fence stays the only path (#284)
 
 `runtime/scripts/` never builds code strings by interpolation: no `python -c "…$var…"`, no
 `eval`, no shell built from task/branch/mission names. Values pass as argv or stdin (heredoc to
-`python3 -`), and names are validated against the known keyset first — the predecessor repo
+`python3 -I -`), and names are validated against the known keyset first — the predecessor repo
 shipped a P0 RCE in its own driver exactly this way, live even under `--dry-run`.

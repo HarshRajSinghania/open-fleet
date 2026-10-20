@@ -8,6 +8,7 @@ event and the decision is parsed as JSON — the shape is asserted, not assumed.
 """
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1287,17 +1288,30 @@ class TestBashWritesAreBounded(HookBase):
 
 
 class TestFailClosed(HookBase):
+    def unreadable(self, result):
+        """#577: an unreadable payload exits 2 with the reason on stderr, ALWAYS.
+
+        OpenHands and jcode fail OPEN on exit 1 and on an exit-0 reply they cannot
+        attribute; every audited host (Claude Code included) reads exit 2 as block.
+        The deny object still rides stdout for hosts that read it.
+        """
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Fail-closed", result.stderr)
+        block = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(block["hookEventName"], "PreToolUse")
+        return block
+
     def test_unparseable_stdin_denies(self):
-        block = self.decision(self.fire("this is not json"))
+        block = self.unreadable(self.fire("this is not json"))
         self.assertEqual(block["permissionDecision"], "deny")
         self.assertIn("Fail-closed", block["permissionDecisionReason"])
 
     def test_empty_stdin_denies(self):
-        block = self.decision(self.fire(""))
+        block = self.unreadable(self.fire(""))
         self.assertEqual(block["permissionDecision"], "deny")
 
     def test_a_json_array_denies(self):
-        block = self.decision(self.fire("[1, 2, 3]"))
+        block = self.unreadable(self.fire("[1, 2, 3]"))
         self.assertEqual(block["permissionDecision"], "deny")
 
     def test_a_payload_with_no_tool_input_is_allowed(self):
@@ -1344,8 +1358,8 @@ class TestThePayloadReaderStaysRunnable(HookBase):
 
     def test_the_embedded_program_carries_no_apostrophe(self):
         text = HOOK.read_text(encoding="utf-8")
-        start = text.index("python3 -c '", text.index("FIELDS="))
-        body = text[start + len("python3 -c '"):]
+        start = text.index("python3 -I -c '", text.index("FIELDS="))
+        body = text[start + len("python3 -I -c '"):]
         body = body[:body.index("' 2>/dev/null)")]
         offenders = [f"{i}: {ln}" for i, ln in enumerate(body.splitlines(), 1) if "'" in ln]
         self.assertEqual(offenders, [], "an apostrophe ends the sh string the reader lives in")
@@ -1859,6 +1873,66 @@ class TestEgressReceiptRule(HookBase):
         block = self.decision(self.fire(event("Bash", command=unreceipted)))
         self.assertIsNotNone(block, unreceipted)
         self.assertEqual(block["permissionDecision"], "deny", unreceipted)
+
+
+class TestPlantedModulesCannotDisarmTheHook(unittest.TestCase):
+    """#592: the hook ran `python3 -c`/`python3 -` with cwd = the worker's worktree, so a
+    worker-planted json.py / re.py / shlex.py / fnmatch.py shadowed the stdlib and the payload
+    reader returned nothing — `rm -rf /` was allowed even under STRICT. Every interpreter the
+    hook starts is isolated (-I: no cwd, no PYTHON* env, no user site)."""
+
+    PLANTS = {
+        "json": "def loads(*a, **k):\n    return {}\ndef dumps(*a, **k):\n    return '{}'\n",
+        "re": "raise SystemExit(0)\n",
+        "shlex": "raise SystemExit(0)\n",
+        "fnmatch": "raise SystemExit(0)\n",
+    }
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="dh-plant-")
+        self.wt = Path(self._tmp.name) / "wt"
+        self.wt.mkdir()
+        subprocess.run(["git", "-C", str(self.wt), "init", "-q"], check=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def fire(self, command, env_extra):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("ORCA_", "OPEN_FLEET_", "PYTHON", "JCODE_", "CODEX_"))}
+        env.update({"OPEN_FLEET_UNIT_WORKTREE": str(self.wt), "OPEN_FLEET_HOOK_STRICT_EXIT": "1"})
+        env.update(env_extra)
+        return subprocess.run(["sh", str(HOOK)], input=event("Bash", command=command),
+                              capture_output=True, text=True, env=env, cwd=str(self.wt), timeout=60)
+
+    def test_a_planted_stdlib_module_in_the_worktree_does_not_disarm_the_guard(self):
+        for name, body in self.PLANTS.items():
+            with self.subTest(module=name):
+                plant = self.wt / f"{name}.py"
+                plant.write_text(body, encoding="utf-8")
+                try:
+                    r = self.fire("rm -rf /", {})
+                finally:
+                    plant.unlink()
+                self.assertEqual(r.returncode, 2, f"{name}.py disarmed the hook: {r.stdout!r} {r.stderr!r}")
+                self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_pythonpath_cannot_inject_a_module_either(self):
+        evil = Path(self._tmp.name) / "evil"
+        evil.mkdir()
+        (evil / "json.py").write_text(self.PLANTS["json"], encoding="utf-8")
+        r = self.fire("rm -rf /", {"PYTHONPATH": str(evil), "PYTHONSAFEPATH": ""})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_every_python_the_hook_starts_is_isolated(self):
+        text = HOOK.read_text(encoding="utf-8")
+        starts = [ln.strip() for ln in text.splitlines()
+                  if re.search(r"(^|[\s|(])python3( |$)", ln) and not ln.lstrip().startswith("#")
+                  and re.search(r"python3 +(-[A-Za-z]+ +)*(-c|-)( |$)", ln)]
+        self.assertTrue(starts, "the hook's interpreter starts were not found")
+        for line in starts:
+            with self.subTest(line=line[:80]):
+                self.assertRegex(line, r"python3 -I ", "a python start without -I reads the worker's cwd")
 
 
 if __name__ == "__main__":

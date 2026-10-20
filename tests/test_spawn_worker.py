@@ -7,9 +7,12 @@ orchestration side effect. The lane tests stub `orca` per subcommand and assert 
 receipt contracts against Orca v1.4.199 — the SHIPPED tag, not upstream HEAD. Standard
 library only.
 """
+import importlib
 import copy
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -1114,6 +1117,367 @@ esac
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertIn("HANDLE=term_agent1", p.stdout)
             self.assertIn("DISPATCH=ctx_x", p.stdout)
+
+
+sys.path.insert(0, str(ROOT / "runtime"))
+provider_base = importlib.import_module("providers.base")
+
+
+def run_launch(agent, profile, env_extra=None, selector="path:/tmp/of-wt", effort="high", args=None):
+    """Run spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) on a NON-Orca runtime."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", tmp), "SP": tmp,
+               "OPEN_FLEET_RUNTIME": "posix", "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s.db"),
+               "SW_PRINT_LAUNCH": "1", "PROFILE": profile}
+        env.update(env_extra or {})
+        p = subprocess.run(["bash", str(SPAWN), *(args or []), "task_x", selector, "t", agent, effort],
+                           env=env, capture_output=True, text=True)
+        launch = next((ln[len("LAUNCH="):] for ln in p.stdout.splitlines() if ln.startswith("LAUNCH=")), None)
+        return p.returncode, launch, p.stderr
+
+
+class TestNonOrcaLaunchTableIsBasePy(unittest.TestCase):
+    """#580: a non-Orca runtime launches EXACTLY what base.py builds — no second, weaker table.
+
+    The old rows here ran `crush run --quiet` for ro (crush auto-approves every run),
+    `hermes chat --Continue` (writes allowed) and a jcode ro that kept `replace`.
+    """
+
+    def test_every_harness_matches_base_py_for_ro_and_rw(self):
+        for agent in provider_base.SUPPORTED_HARNESSES:
+            for profile, extra in (("ro", {}), ("rw", {"ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"})):
+                with self.subTest(agent=agent, profile=profile):
+                    rc, launch, err = run_launch(agent, profile, extra)
+                    try:
+                        want = provider_base.build_harness_command(
+                            agent, profile, "/tmp/of-wt", None, effort="high")["shell"]
+                    except provider_base.ProviderError:
+                        want = None
+                    if want is None:
+                        self.assertEqual(rc, 2, err)
+                        self.assertIn("no verified PROFILE", err)
+                    else:
+                        self.assertEqual(rc, 0, err)
+                        self.assertEqual(launch, want)
+
+    def test_ro_flags_that_make_read_only_real_are_present(self):
+        cases = {"crush": "--data-dir /tmp/of-wt/.crush-orca-ro",
+                 "hermes": "HERMES_WRITE_SAFE_ROOT=/dev/null",
+                 "jcode": "--disabled-tools bash,write,edit,replace,apply_patch",
+                 "omp": "--approval-mode always-ask",
+                 "pi": "--exclude-tools"}
+        for agent, needle in cases.items():
+            with self.subTest(agent=agent):
+                rc, launch, err = run_launch(agent, "ro")
+                self.assertEqual(rc, 0, err)
+                self.assertIn(needle, launch)
+
+    def test_selector_forms_resolve_to_the_worktree_path(self):
+        for selector in ("path:/tmp/of-wt", "id:repo-1::/tmp/of-wt"):
+            with self.subTest(selector=selector):
+                _rc, launch, err = run_launch("codex", "ro", selector=selector)
+                self.assertIn("-C /tmp/of-wt", launch or "", err)
+
+    def test_orca_runtime_launch_rows_are_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+                   "SW_PRINT_LAUNCH": "1", "PROFILE": "ro"}
+            p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
+                               env=env, capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn("LAUNCH=claude --permission-mode plan", p.stdout)
+
+
+class TestParentProfileNarrowing(unittest.TestCase):
+    """G14: the parent bound is the MOST restrictive of flag, inherited parent, and the caller's
+    own sandbox profile — not whichever happens to be set first."""
+
+    RW = {"ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
+
+    def test_the_callers_sandbox_profile_bounds_the_child(self):
+        for env, args in (
+            ({"OPEN_FLEET_SANDBOX_PROFILE": "ro"}, []),
+            ({"ORCA_SANDBOX_PROFILE": "ro"}, ["--parent-profile", "rw"]),
+            ({"OPEN_FLEET_PARENT_PROFILE": "rw", "ORCA_PARENT_PROFILE": "ro"}, []),
+            ({"OPEN_FLEET_SANDBOX_PROFILE": "ro", "OPEN_FLEET_PARENT_PROFILE": "danger"},
+             ["--parent-profile", "danger"]),
+        ):
+            with self.subTest(env=env, args=args):
+                rc, _launch, err = run_launch("claude", "rw", dict(self.RW, **env), args=args)
+                self.assertEqual(rc, 2, err)
+                self.assertIn("monotonic privilege narrowing violation", err)
+                self.assertIn("parent profile 'ro'", err)
+
+    def test_equal_or_narrower_children_pass_and_unknown_values_refuse(self):
+        rc, launch, err = run_launch("claude", "rw", dict(self.RW, OPEN_FLEET_SANDBOX_PROFILE="rw",
+                                                         OPEN_FLEET_PARENT_PROFILE="danger"))
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(launch)
+        rc, _launch, err = run_launch("claude", "ro", {"ORCA_SANDBOX_PROFILE": "ro"})
+        self.assertEqual(rc, 0, err)
+        rc, _launch, err = run_launch("claude", "ro", {"OPEN_FLEET_SANDBOX_PROFILE": "root"})
+        self.assertEqual(rc, 2)
+        self.assertIn("unknown parent profile 'root'", err)
+
+    def test_the_provider_receives_the_folded_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "calls.log"
+            stub = Path(tmp) / "orca"
+            stub.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{log}\"\n"
+                            'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
+                            ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
+            stub.chmod(0o755)
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
+                   "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
+                   "OPEN_FLEET_PARENT_PROFILE": "danger"}
+            p = subprocess.run(["bash", str(SPAWN), "task_x", "new-child", "t", "claude"],
+                               env=env, capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            ws = next(ln for ln in log.read_text().splitlines() if "worker-start" in ln)
+            self.assertIn("--parent-profile rw", ws)
+
+
+class TestNonOrcaDanger(unittest.TestCase):
+    """#585: off Orca, danger is decided by the runtime's own doctor — proven isolation AND
+    prelaunch placement — instead of an unconditional refusal; everything short of that refuses."""
+
+    PORTABLE = {"recipeId": "lane-7", "backend": "docker", "ok": True, "ephemeral": True,
+                "credential_mounts": [], "prelaunch_placement_bound": True,
+                "checks": [{"id": "isolation-flags", "status": "pass"}],
+                "isolation": {"capDrop": ["ALL"], "noNewPrivileges": True, "pidsLimit": 512,
+                              "privileged": False, "network": "bridge"},
+                "mounts": [{"source": "/tmp/of-wt", "target": "/tmp/of-wt", "mode": "rw"}],
+                "failures": [], "warnings": []}
+
+    def spawn(self, doctor, doctor_rc=0, args=(), selector="new-child", **extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "calls.log"
+            files = {"doctor.json": {"ok": doctor_rc == 0, "result": doctor},
+                     "tl.json": {"result": {"tasks": [{"id": "task_x", "status": "ready"}]}},
+                     "ws.json": {"result": {"state": "ready", "dispatchId": "d1",
+                                            "launch": {"effective": "claude -p --dangerously-skip-permissions"},
+                                            "effects": [{"kind": "terminal", "role": "agent", "id": "h1"}]}}}
+            for name, doc in files.items():
+                (Path(tmp) / name).write_text(json.dumps(doc))
+            stub = Path(tmp) / "orca"
+            stub.write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" >> "{log}"
+case "$*" in
+  *"recipe doctor"*) cat "{tmp}/doctor.json"; exit {doctor_rc} ;;
+  *task-list*) cat "{tmp}/tl.json" ;;
+  *worker-start*) cat "{tmp}/ws.json" ;;
+  *) echo '{{"result": {{}}}}' ;;
+esac
+""")
+            stub.chmod(0o755)
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
+                   "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
+                   "ORCA_SANDBOX_RECIPE": "lane-7"}
+            env.update(extra)
+            p = subprocess.run(["bash", str(SPAWN), *args, "task_x", selector, "t", "claude"],
+                               env=env, capture_output=True, text=True)
+            return p, (log.read_text() if log.exists() else "")
+
+    def test_a_portable_doctor_proving_isolation_and_placement_launches_danger(self):
+        p, calls = self.spawn(self.PORTABLE)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("binds prelaunch placement", p.stderr)
+        ws = next(ln for ln in calls.splitlines() if "worker-start" in ln)
+        self.assertIn("--profile danger", ws)
+
+    def test_danger_launches_on_exactly_the_certified_recipe(self):
+        p, calls = self.spawn(self.PORTABLE)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        ws = next(ln for ln in calls.splitlines() if "worker-start" in ln)
+        self.assertIn("--on lane-7", ws)
+
+    def test_a_different_on_or_recipe_override_refuses_before_any_launch(self):
+        cases = {
+            "--on another recipe": (["--on", "lane-8"], {}, "differs from the sandbox recipe"),
+            "env disagreement": ([], {"OPEN_FLEET_SANDBOX_RECIPE": "lane-8"}, "disagrees with"),
+        }
+        for label, (args, extra, needle) in cases.items():
+            with self.subTest(case=label):
+                p, calls = self.spawn(self.PORTABLE, args=args, selector="path:/tmp/of-wt", **extra)
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn(needle, p.stderr)
+                for launch in ("worker-start", "terminal create", "--inject", "task-update"):
+                    self.assertNotIn(launch, calls)
+        p, calls = self.spawn(self.PORTABLE, args=["--on", "lane-7"], selector="path:/tmp/of-wt")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        ws = next(ln for ln in calls.splitlines() if "worker-start" in ln)
+        self.assertEqual(ws.count("--on "), 1, ws)
+
+    def test_every_shortfall_still_refuses_before_any_launch(self):
+        cases = {
+            "no placement": (dict(self.PORTABLE, prelaunch_placement_bound=False), 0, {}, "not clear"),
+            "privileged": (dict(self.PORTABLE, isolation=dict(self.PORTABLE["isolation"], privileged=True)),
+                           0, {}, "not clear"),
+            "no cap drop": (dict(self.PORTABLE, isolation={"noNewPrivileges": True, "pidsLimit": 1}),
+                            0, {}, "not clear"),
+            "home mount": (dict(self.PORTABLE, mounts=[os.path.expanduser("~") + ":/h"]), 0, {}, "not clear"),
+            "no backend": ({"recipeId": "lane-7", "ok": True, "failures": []}, 0, {},
+                           "authoritative placement"),
+            "unsupported provider probe": ({"code": "unsupported_operation"}, 1, {}, "did not come up clean"),
+            "command override": (self.PORTABLE, 0, {"WORKER_CMD": "claude --dangerously-skip-permissions",
+                                                    "ORCA_COORD_ALLOW_CMD_OVERRIDE": "1"},
+                                 "authoritative placement"),
+        }
+        for label, (doctor, rc, extra, needle) in cases.items():
+            with self.subTest(case=label):
+                p, calls = self.spawn(doctor, rc, **extra)
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn(needle, p.stderr)
+                for launch in ("worker-start", "terminal create", "--inject", "task-update"):
+                    self.assertNotIn(launch, calls)
+
+
+def _git_repo(root):
+    repo = Path(root) / "repo"
+    (repo / "sub").mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@example.invalid", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    return Path(os.path.realpath(repo))
+
+
+class TestRuntimeNameIsCaseInsensitive(unittest.TestCase):
+    """OPEN_FLEET_RUNTIME=ORCA means orca, exactly as runtime/providers/__init__.py reads it."""
+
+    def test_any_spelling_of_orca_keeps_the_orca_launch_rows(self):
+        for spelled in ("ORCA", "Orca", " orca "):
+            for var in ("OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME"):
+                with self.subTest(runtime=spelled, var=var), tempfile.TemporaryDirectory() as tmp:
+                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+                           "SW_PRINT_LAUNCH": "1", "PROFILE": "ro", var: spelled}
+                    p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
+                                       env=env, capture_output=True, text=True)
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    self.assertIn("LAUNCH=claude --permission-mode plan\n", p.stdout)
+
+    def test_any_spelling_of_a_provider_selects_it(self):
+        rc, launch, err = run_launch("codex", "ro", {"OPEN_FLEET_RUNTIME": "POSIX"})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("codex exec --json -C /tmp/of-wt --sandbox read-only", launch)
+
+
+class TestNonOrcaRoLaneResolvesTheWorktree(unittest.TestCase):
+    """#592: off Orca the ro lane passed the literal selector into base.py (`codex exec -C
+    new-child`, `cd current && …`) and launched a prompt-less one-shot into a terminal that the
+    later inject could not reach. Now the selector resolves to a real path first, and ro rides
+    worker-start --profile ro, where the provider builds the launch WITH the task prompt."""
+
+    def stub(self, tmp, created):
+        log = Path(tmp) / "calls.log"
+        files = {"wc.json": {"ok": True, "result": {"worktree": {"path": created}}},
+                 "tl.json": {"result": {"tasks": [{"id": "task_x", "status": "ready"}]}},
+                 "ws.json": {"result": {"state": "ready", "dispatchId": "d1",
+                                        "launch": {"effective": {"args": "--sandbox read-only"}},
+                                        "effects": [{"kind": "terminal", "role": "agent", "id": "h1"}]}}}
+        for name, doc in files.items():
+            (Path(tmp) / name).write_text(json.dumps(doc))
+        stub = Path(tmp) / "orca"
+        stub.write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" >> "{log}"
+case "$*" in
+  *"worktree create"*) cat "{tmp}/wc.json" ;;
+  *task-list*) cat "{tmp}/tl.json" ;;
+  *worker-start*) cat "{tmp}/ws.json" ;;
+  *) echo '{{"result": {{}}}}' ;;
+esac
+""")
+        stub.chmod(0o755)
+        return stub, log
+
+    def run_spawn(self, selector, agent="codex", print_launch=True, cwd=None, extra=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _git_repo(tmp)
+            created = str(Path(tmp) / "wts" / "unit-1")
+            stub, log = self.stub(tmp, created)
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro"}
+            if print_launch:
+                env["SW_PRINT_LAUNCH"] = "1"
+            env.update(extra or {})
+            p = subprocess.run(["bash", str(SPAWN), "task_x", selector, "t", agent, "high"],
+                               env=env, capture_output=True, text=True, cwd=str(cwd or repo / "sub"))
+            launch = next((ln[len("LAUNCH="):] for ln in p.stdout.splitlines() if ln.startswith("LAUNCH=")), "")
+            return p, launch, (log.read_text() if log.exists() else ""), repo, created
+
+    def test_current_and_active_resolve_to_the_repo_top_level(self):
+        for selector in ("current", "active"):
+            for agent in provider_base.SUPPORTED_HARNESSES:
+                with self.subTest(selector=selector, agent=agent):
+                    p, launch, calls, repo, _ = self.run_spawn(selector, agent)
+                    if p.returncode == 2 and "no verified PROFILE" in p.stderr:
+                        continue  # base.py has no ro launch for this harness
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    self.assertIn(f"OPEN_FLEET_UNIT_WORKTREE={repo} ", launch)
+                    self.assertNotRegex(launch, rf"(-C|--cwd|--dir|--in|cd) {selector}\b")
+                    self.assertNotIn("worktree create", calls)
+
+    def test_new_child_is_created_through_the_runtime_first(self):
+        for selector in ("new-child", "new-top-level"):
+            with self.subTest(selector=selector):
+                p, launch, calls, repo, created = self.run_spawn(selector)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn(f"-C {created} ", launch)
+                self.assertNotIn(selector, launch)
+                wc = next(ln for ln in calls.splitlines() if "worktree create" in ln)
+                self.assertIn(f"--repo {repo}", wc)
+                self.assertIn("--name t-", wc)
+
+    def test_the_ro_lane_rides_worker_start_with_the_resolved_path(self):
+        p, _launch, calls, _repo, created = self.run_spawn("new-child", print_launch=False)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        ws = next(ln for ln in calls.splitlines() if "worker-start" in ln)
+        self.assertIn(f"--worktree path:{created}", ws)
+        self.assertIn("--profile ro", ws)
+        self.assertNotIn("--name", ws)
+        for custom in ("terminal create", "--inject", "terminal wait"):
+            self.assertNotIn(custom, calls)
+
+    def test_a_receipt_without_the_ro_flag_is_unusable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _git_repo(tmp)
+            stub, _log = self.stub(tmp, str(Path(tmp) / "wts" / "u"))
+            (Path(tmp) / "ws.json").write_text(json.dumps({"result": {
+                "state": "ready", "dispatchId": "d1",
+                "launch": {"effective": {"args": "--dangerously-bypass-approvals-and-sandbox"}}}}))
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro"}
+            p = subprocess.run(["bash", str(SPAWN), "task_x", "current", "t", "codex", "high"],
+                               env=env, capture_output=True, text=True, cwd=str(repo))
+            self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
+            self.assertIn("--sandbox read-only", p.stderr)
+
+    def test_an_override_keeps_the_custom_argv_lane_and_its_selector(self):
+        p, launch, calls, _repo, _ = self.run_spawn(
+            "new-child", extra={"WORKER_CMD": "mytool --ro", "ORCA_COORD_ALLOW_CMD_OVERRIDE": "1"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(launch, "mytool --ro")
+        self.assertNotIn("worktree create", calls)
+
+    def test_end_to_end_on_the_posix_provider_the_worker_gets_its_task(self):
+        # Real orca_cli.py + PosixWorktreeProvider (dry-run backend): the launched command is
+        # base.py's ro line in a created worktree, carrying the task spec as its prompt.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _git_repo(tmp)
+            env = {"PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+                   "OPEN_FLEET_STATE_DB": str(Path(tmp) / "state" / "s.db"),
+                   "OPEN_FLEET_POSIX_BACKEND": "dry-run", "PROFILE": "ro"}
+            p = subprocess.run(["bash", str(SPAWN), "--spec", "review the README", "new-child", "rev",
+                                "claude", "high"], env=env, capture_output=True, text=True, cwd=str(repo))
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            eff = json.loads(next(ln for ln in p.stdout.splitlines()
+                                  if ln.startswith("LAUNCH_EFFECTIVE="))[len("LAUNCH_EFFECTIVE="):])
+            self.assertIn("--permission-mode plan", eff["command"])
+            self.assertIn("'review the README'", eff["command"])
+            wts = subprocess.run(["git", "-C", str(repo), "worktree", "list"], capture_output=True,
+                                 text=True).stdout
+            self.assertIn("fleet/rev-", wts)
 
 
 if __name__ == "__main__":

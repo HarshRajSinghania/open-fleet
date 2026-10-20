@@ -473,5 +473,44 @@ class SignTranscriptSignsOnlyItsOwnVerifiersVerdict(unittest.TestCase):
         self.assertEqual(dispatch_sign.TOOLCHAIN_FILES, verify._Transcript.TOOLCHAIN)
 
 
+class TestParentProfileFolding(unittest.TestCase):
+    """G14: the parent bound is the MOST restrictive of the flag, the signed record, the
+    inherited parent profile and the caller's own sandbox profile."""
+
+    def check(self, profile, parent=None, env=None, *more):
+        return dispatch_sign.check_profile_narrowing(profile, parent, env or {}, *more)
+
+    def test_the_callers_sandbox_profile_bounds_the_child(self):
+        for env in ({"OPEN_FLEET_SANDBOX_PROFILE": "ro"}, {"ORCA_SANDBOX_PROFILE": "ro"},
+                    {"OPEN_FLEET_PARENT_PROFILE": "danger", "ORCA_PARENT_PROFILE": "ro"}):
+            with self.subTest(env=env):
+                ok, reason = self.check("rw", "danger", env)
+                self.assertFalse(ok)
+                self.assertIn("'ro'", reason)
+                self.assertFalse(self.check("rw", None, env)[0], "omitting the flag must not widen")
+
+    def test_a_signed_parent_cannot_be_widened_by_the_flag(self):
+        self.assertFalse(self.check("rw", "danger", {}, "ro")[0])
+        self.assertTrue(self.check("rw", "danger", {}, "rw")[0])
+
+    def test_equal_or_narrower_passes_and_unknown_values_refuse(self):
+        self.assertTrue(self.check("ro", "rw", {"OPEN_FLEET_SANDBOX_PROFILE": "ro"})[0])
+        self.assertTrue(self.check("rw", None, {"OPEN_FLEET_SANDBOX_PROFILE": "rw"})[0])
+        ok, reason = self.check("ro", None, {"ORCA_SANDBOX_PROFILE": "root"})
+        self.assertFalse(ok)
+        self.assertIn("invalid parent profile", reason)
+
+    def test_sign_refuses_through_the_cli_with_exit_2(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPEN_FLEET_PARENT_PROFILE", "ORCA_PARENT_PROFILE", "ORCA_SANDBOX_PROFILE")}
+        env.update(OPEN_FLEET_SANDBOX_PROFILE="ro", OPEN_FLEET_SIGNING_SEED="11" * 32)
+        r = subprocess.run(["python3", str(ROOT / "runtime" / "scripts" / "dispatch-sign.py"), "sign",
+                            "--manifest-id", "m-1", "--contract-digest", "a" * 64,
+                            "--unit-class", "code", "--parent-profile", "danger", "--profile", "rw"],
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("escalation refused", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

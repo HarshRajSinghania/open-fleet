@@ -70,7 +70,24 @@ still-HUNG or WEDGED, and formatting a sanitized Failure Handover Packet
 (`watchdog.py --handover <attempt>.json`, enforcing the reflection gate and
 identical-error kill before `worker-start --retry-of`). Nudge rate limits: at most 1 nudge per dispatch, 1
 per worker per hour, one window between nudges — a flapping worker cannot
-cause a nudge storm.
+cause a nudge storm. A CI-failure nudge has its own per-dispatch budget
+(`max_ci_nudges_per_dispatch`, default 1) and fires once per distinct failure
+signature, so it never spends the hang nudge; the hourly cap and window count
+both kinds — a hang nudge held back only by a CI nudge is deferred, not escalated.
+
+Heartbeat inputs beyond liveness (the snapshot the coordinator assembles):
+
+- `ci_checks`: `[{name, step, conclusion, exit_code}]` from the worker's PR
+  checks (the coordinator maps e.g. `gh pr checks --json name,state` rows,
+  `state` -> `conclusion`); passing rows are ignored, run ids and log URLs
+  never enter the signature. No producer ships in-repo: absent means no CI nudge.
+- `waiting_input`: `true` while the worker has an open HITL question. The
+  coordinator may set it; when absent and `OPEN_FLEET_STATE_DB` names an
+  existing local-state DB, the watchdog derives it by reading that DB strictly
+  read-only (no side files, no migration), matching gate/question senders on
+  the dispatch's terminal handle, dispatch id and worker id; an unreadable DB
+  is a warning, never an abort. It suppresses the nudge only — the worker is
+  still classified, and WEDGED / still-HUNG is still recommended.
 
 Stays manual, always: the stop, the re-dispatch (dispatch spends money and
 mutates run state), coordinator re-bind after fencing, and every verdict on

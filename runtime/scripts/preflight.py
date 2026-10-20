@@ -21,6 +21,18 @@ Verifies the invariants that, if wrong, silently corrupt a whole run:
        present-but-malformed deny-list refuses the run; none anywhere means no
        quarantine is in force. Runs in readonly mode too: report-only fleets
        dispatch missions all the same.
+    8. Capabilities (#586): with `--mission` and/or `--runtime` (or
+       $OPEN_FLEET_RUNTIME / $ORCA_FLEET_RUNTIME; orca when none is set), the
+       provider resolves through runtime/providers' own `active_provider_name`
+       (the resolver dispatch uses: `local-posix` -> posix, `auto` -> orca only
+       when the resolved Orca binary is on PATH), and every capability the
+       mission requires (runtime/providers/capabilities.json) must be native
+       to it or a fallback whose provider-aware tooling probe passes
+       (cap:mobile-emulator -> adb|xcrun; cap:sandbox-vm -> docker on posix,
+       the only launch path it execs, and refused on any provider with no
+       probed sandbox launch path). Otherwise
+       exit 2 with `missing_capability: <cap>`. Fallback-satisfied and
+       unavailable-optional capabilities are reported (NOTE lines / --json).
 
 The BASE/default comparison canonicalizes ref aliases first (D1 remediation):
 `origin/main`, `refs/remotes/origin/main`, and `refs/heads/main` all reduce to `main`,
@@ -243,19 +255,79 @@ def _active_runtime(explicit: str | None) -> str | None:
     return None
 
 
+def _load_providers():
+    """runtime/providers — the SAME registry and resolver dispatch uses (orca_cli.py)."""
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from runtime import providers
+    return providers
+
+
+def _resolve_provider(runtime: str) -> str:
+    """Canonical provider name for `runtime`, through dispatch's own resolver.
+
+    `active_provider_name` maps `local-posix` to `posix` and resolves `auto`
+    exactly as dispatch does (resolve_orca_binary: ORCA_CLI_COMMAND /
+    OPEN_FLEET_CLI_COMMAND, then ORCA_DEV_REPO_ROOT -> orca-dev, then orca-ide
+    on Linux / orca elsewhere — and only a binary actually on PATH counts).
+    Raises the registry's ProviderError for an unknown name.
+    """
+    providers = _load_providers()
+    env = dict(os.environ)
+    env["OPEN_FLEET_RUNTIME"] = runtime.strip().lower()
+    return providers.active_provider_name(env)
+
+
+# Required capabilities a provider only offers as a portable FALLBACK are
+# probed before they count: a fallback whose tooling is absent is not a
+# capability. Capabilities with no entry here (cap:browser has no in-repo
+# browser convention; the rest are built into the portable runtime) count
+# as declared and are reported under `unprobed_fallbacks`.
+FALLBACK_PROBES: dict[str, tuple[str, ...]] = {
+    "cap:mobile-emulator": ("adb", "xcrun"),
+}
+
+# Provider-aware probes: a fallback counts only if the tooling THAT provider's
+# launch path actually execs is present. posix sandboxes PROFILE=danger
+# exclusively through Docker (posix.py `docker run`), so bwrap/podman/gondolin
+# on PATH must not let offload-it pass preflight and then fail at launch.
+PROVIDER_FALLBACK_PROBES: dict[str, dict[str, tuple[str, ...]]] = {
+    "posix": {"cap:sandbox-vm": ("docker",)},
+}
+
+# Fallbacks that must be probed: a provider declaring one with no
+# provider-specific probe is refused (fail closed) instead of trusted unprobed.
+PROBE_REQUIRED = frozenset({"cap:sandbox-vm"})
+
+
+def _fallback_probe(provider: str, cap: str) -> tuple[str, ...] | None:
+    specific = PROVIDER_FALLBACK_PROBES.get(provider, {})
+    if cap in specific:
+        return specific[cap]
+    if cap in PROBE_REQUIRED:
+        return ()  # probe-required, no launch path known for this provider
+    return FALLBACK_PROBES.get(cap)
+
+
 def _capabilities_refusal(
     mission: str | None,
     runtime: str,
     *,
     strict_native: bool = False,
+    which=None,
 ) -> tuple[str | None, dict[str, Any]]:
     """Validate runtime provider and mission required capabilities (#586).
 
     Returns `(refusal_reason_or_None, structured_info)`. Fails closed (non-None
     refusal) if `runtime/providers/capabilities.json` is missing/malformed, if
     `runtime` is unknown, if `mission` is unknown, or if any required capability
-    of `mission` is not provided by `runtime`.
+    of `mission` is neither native to the provider nor a fallback whose tooling
+    probe (PROVIDER_FALLBACK_PROBES for that provider, else FALLBACK_PROBES)
+    finds a binary on PATH. `which` is injectable for
+    tests (default shutil.which).
     """
+    which = which or shutil.which
     root = next(
         (r for r in _catalog_roots()
          if os.path.lexists(r / "runtime" / "providers" / "capabilities.json")),
@@ -279,13 +351,17 @@ def _capabilities_refusal(
         msg = "runtime/providers/capabilities.json is missing 'providers' or 'missions' map"
         return msg, {"ok": False, "error": msg}
 
-    provider_name = runtime.strip().lower()
-    if provider_name == "auto":
-        override = (os.environ.get("OPEN_FLEET_CLI_COMMAND") or os.environ.get("ORCA_CLI_COMMAND") or "").strip()
-        platform_bin = "orca" if sys.platform == "darwin" else "orca-ide"
-        provider_name = "orca" if (override or _which(platform_bin)) else "posix"
+    known = ", ".join(sorted(providers))
+    try:
+        provider_name = _resolve_provider(runtime)
+    except Exception as err:  # unknown name, or a registry that will not load
+        code = getattr(err, "code", "")
+        if code == "unknown_provider":
+            msg = f"unknown_runtime: {runtime!r} is not a registered RPI provider (known: {known})"
+        else:
+            msg = f"runtime provider registry unloadable ({err}) — refusing rather than guessing"
+        return msg, {"ok": False, "runtime": runtime, "error": msg}
     if provider_name not in providers:
-        known = ", ".join(sorted(providers))
         msg = f"unknown_runtime: {runtime!r} is not a registered RPI provider (known: {known})"
         return msg, {"ok": False, "runtime": runtime, "error": msg}
 
@@ -295,38 +371,85 @@ def _capabilities_refusal(
         return msg, {"ok": False, "runtime": provider_name, "error": msg}
 
     native = set(p_entry.get("native_capabilities") or [])
-    fallback = set(p_entry.get("fallback_capabilities") or [])
-    available = native if strict_native else (native | fallback)
+    fallback = set(p_entry.get("fallback_capabilities") or []) - native
+    declared = native if strict_native else (native | fallback)
+    info: dict[str, Any] = {
+        "mission": mission,
+        "runtime": provider_name,
+        "requested_runtime": runtime,
+        "strict_native": strict_native,
+        "native_capabilities": sorted(native),
+        "fallback_capabilities": [] if strict_native else sorted(fallback),
+    }
 
     if mission:
         if mission not in missions or not isinstance(missions[mission], dict):
             msg = f"unknown_mission: {mission!r} is not declared in runtime/providers/capabilities.json"
-            return msg, {"ok": False, "mission": mission, "runtime": provider_name, "error": msg}
+            return msg, {**info, "ok": False, "error": msg}
         m_entry = missions[mission]
         required = list(m_entry.get("required") or [])
-        missing = [cap for cap in required if cap not in available]
+        optional = list(m_entry.get("optional") or [])
+        missing = [cap for cap in required if cap not in declared]
+        probes: dict[str, Any] = {}
+        unprobed: list[str] = []
+        for cap in required:
+            if cap in native or cap not in declared:
+                continue
+            tools = _fallback_probe(provider_name, cap)
+            if tools is None:
+                unprobed.append(cap)
+                continue
+            found = next((t for t in tools if which(t)), None)
+            probes[cap] = {"ok": bool(found), "tools": list(tools), "found": found}
+            if not found:
+                missing.append(cap)
+        info.update({
+            "required": required,
+            "fallbacks_used": sorted(c for c in required if c not in native and c not in missing),
+            "fallback_probes": probes,
+            "unprobed_fallbacks": unprobed,
+            "optional_unavailable": sorted(c for c in optional if c not in declared),
+        })
         if missing:
             first = missing[0]
             mode_note = " (strict-native)" if strict_native else ""
-            missing_str = ", ".join(f"missing_capability: {c}" for c in missing)
-            msg = f"mission {mission!r} cannot run on runtime {provider_name!r}{mode_note} — {missing_str}"
+            parts = []
+            for c in missing:
+                probe = probes.get(c)
+                if probe and not probe["tools"]:
+                    hint = f" (no probed fallback launch path for runtime {provider_name!r})"
+                elif probe:
+                    hint = f" (fallback tooling absent: none of {', '.join(probe['tools'])} on PATH)"
+                else:
+                    hint = ""
+                parts.append(f"missing_capability: {c}{hint}")
+            msg = f"mission {mission!r} cannot run on runtime {provider_name!r}{mode_note} — {', '.join(parts)}"
             return msg, {
+                **info,
                 "ok": False,
-                "mission": mission,
-                "runtime": provider_name,
-                "strict_native": strict_native,
                 "missing_capability": first,
                 "missing_capabilities": missing,
                 "error": msg,
             }
 
-    return None, {
-        "ok": True,
-        "mission": mission,
-        "runtime": provider_name,
-        "strict_native": strict_native,
-        "capabilities": sorted(available),
-    }
+    return None, {**info, "ok": True, "capabilities": sorted(declared)}
+
+
+def _print_fallback_notes(cap_info: dict[str, Any] | None) -> None:
+    """Report which required capabilities ride a portable fallback (stderr)."""
+    if not cap_info:
+        return
+    used = cap_info.get("fallbacks_used") or []
+    if used:
+        probes = cap_info.get("fallback_probes") or {}
+        shown = ", ".join(
+            f"{c} via {probes[c]['found']}" if c in probes else f"{c} (unprobed)" for c in used)
+        print(f"preflight: NOTE: runtime {cap_info.get('runtime')} satisfies {shown} by fallback, "
+              "not natively", file=sys.stderr)
+    opt = cap_info.get("optional_unavailable") or []
+    if opt:
+        print(f"preflight: NOTE: optional capabilities unavailable on {cap_info.get('runtime')}: "
+              f"{', '.join(opt)}", file=sys.stderr)
 
 
 def main(argv: list[str]) -> int:
@@ -385,9 +508,13 @@ def main(argv: list[str]) -> int:
     effective_mode = args.mode
 
     # Capability check (#586): when --runtime (or OPEN_FLEET_RUNTIME /
-    # ORCA_FLEET_RUNTIME) is active, validate provider and mission capabilities
-    # fail-closed before usage/branch checks so incompatible missions exit 2.
+    # ORCA_FLEET_RUNTIME) is active, or a --mission is named (the active
+    # provider then defaults to orca, exactly as dispatch resolves it),
+    # validate provider and mission capabilities fail-closed before
+    # usage/branch checks so incompatible missions exit 2.
     cap_info: dict[str, Any] | None = None
+    if runtime_provider is None and args.mission:
+        runtime_provider = "orca"
     if runtime_provider:
         cap_refusal, cap_info = _capabilities_refusal(
             args.mission, runtime_provider, strict_native=args.strict_native
@@ -448,6 +575,7 @@ def main(argv: list[str]) -> int:
         else:
             rt_suffix = f", runtime={cap_info['runtime']}" if cap_info else ""
             print(f"preflight: OK — mode=readonly{rt_suffix} (binary + repo checks only; no BASE/PR invariants)")
+            _print_fallback_notes(cap_info)
         return 0
 
     if args.offline:
@@ -539,6 +667,7 @@ def main(argv: list[str]) -> int:
     if warnings:
         for w in warnings:
             print(f"preflight: WARN: {w}", file=sys.stderr)
+    _print_fallback_notes(cap_info)
 
     print(
         f"preflight: OK — repo={repo}, base={args.base}, default={default_branch}, "

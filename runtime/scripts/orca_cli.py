@@ -58,13 +58,30 @@ _PROVIDER_DOMAINS = frozenset({
 
 
 def _active_non_orca_runtime(env=None) -> str:
+    """The explicitly selected non-Orca runtime, or '' for the Orca CLI path.
+
+    An explicit `OPEN_FLEET_RUNTIME` wins over an inherited `ORCA_CLI_COMMAND` (Orca exports that
+    inside its own sessions, which used to silently override `OPEN_FLEET_RUNTIME=posix`, #578
+    audit). The CLI-command override only decides WHICH Orca binary runs.
+    """
     env = os.environ if env is None else env
-    if (env.get("OPEN_FLEET_CLI_COMMAND") or env.get("ORCA_CLI_COMMAND") or "").strip():
-        return ""
     rt = (env.get("OPEN_FLEET_RUNTIME") or env.get("ORCA_FLEET_RUNTIME") or "").strip().lower()
     if rt and rt != "orca":
         return rt
     return ""
+
+
+def _validate_runtime(env=None):
+    """Return an error string when the selected runtime is unknown, else None."""
+    rt = _active_non_orca_runtime(env)
+    if not rt:
+        return None
+    providers = _load_providers()
+    try:
+        providers.active_provider_name(os.environ if env is None else env)
+    except providers.ProviderError as exc:
+        return exc.message
+    return None
 
 
 def _load_providers():
@@ -100,7 +117,7 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
         providers = _load_providers()
         try:
             clean = [a for a in argv if a != "--json"]
-            res = providers.get_provider().dispatch(clean)
+            res = providers.get_provider().dispatch(clean, timeout=timeout)
             return res if isinstance(res, dict) else {}
         except providers.ProviderError as exc:
             raise error(f"orca refused: {exc.code}")
@@ -140,6 +157,10 @@ def _pinned_version() -> str:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    bad_runtime = _validate_runtime()
+    if bad_runtime:
+        print(f"orca_cli: {bad_runtime}", file=sys.stderr)
+        return 2
     if argv == []:
         print(resolve())
         return 0

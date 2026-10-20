@@ -2,6 +2,7 @@
 """Unit tests and negative controls for all 12 external orchestrator RuntimeProviders (#582, #583, #584, #588, #589)."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import types
@@ -67,447 +68,553 @@ class ProviderTestBase(unittest.TestCase):
 
 
 class TestSupersetProvider(ProviderTestBase):
-    """#582: SupersetProvider (`superset-sh/superset`) CLI/Desktop adapter."""
+    """#582: SupersetProvider (`superset-sh/superset`) CLI adapter (full suite: test_superset_provider.py)."""
 
     def test_worktree_lifecycle_and_worker_profiles(self) -> None:
+        import os
+        import subprocess
+
         calls: list[list[str]] = []
+        git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+        main, wt = self.tmp_path / "repo", self.tmp_path / "ws-1"
+        subprocess.run(["git", "init", "-q", str(main)], check=True, env=git_env)
+        subprocess.run(["git", "-C", str(main), "commit", "-q", "--allow-empty", "-m", "base"], check=True, env=git_env)
+        subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "-b", "ws-1", str(wt)], check=True, env=git_env)
 
-        def runner(argv: list[str], **_kw: object) -> dict[str, object]:
+        def runner(argv: list[str], **_kw: object) -> object:
             calls.append(argv)
-            return {"id": "sup-123", "workspaces": [{"id": "ws-1"}]}
+            if argv[0] == "git":  # worktree_rm pins HEAD / checks dirt in the real worktree first
+                return subprocess.run(argv, capture_output=True, text=True, check=True, env=git_env).stdout
+            if argv[:3] == ["superset", "workspaces", "get"]:
+                return {"id": "ws-1", "worktreePath": str(wt), "worktreeExists": True}
+            if argv[:3] == ["superset", "workspaces", "list"]:
+                return [{"id": "ws-1"}]
+            if argv[:3] == ["superset", "workspaces", "delete"]:
+                return {"deleted": ["ws-1"], "notFound": [], "failed": []}
+            if argv[:3] == ["superset", "terminals", "create"]:
+                return {"terminalId": "term-1", "status": "active"}
+            if argv[:3] == ["superset", "agents", "create"]:
+                return {"kind": "terminal", "sessionId": "term-2", "label": "claude"}
+            if argv[:3] == ["superset", "workspaces", "create"]:
+                return {"id": "cloud-1", "branch": "b", "status": "provisioning"}
+            if argv[:3] == ["superset", "terminals", "close"]:
+                return {"terminalId": "term-1", "status": "disposed"}
+            if argv[:2] == ["superset", "snapshot"]:
+                return {"workspaces": []}
+            raise AssertionError(argv)
 
-        prov = SupersetProvider(state=self.state, runner=runner, env={})
-        wt_list = prov.worktree_list()
+        hooks: list[str] = []
+        prov = SupersetProvider(state=self.state, runner=runner, env={}, install_hooks=lambda w, a, p: hooks.append(w) or {})
+        self.assertEqual(prov.worktree_list()["worktrees"], [{"id": "ws-1"}])
         self.assertEqual(calls[-1], ["superset", "workspaces", "list", "--local", "--json"])
-        self.assertEqual(wt_list["worktrees"], [{"id": "ws-1"}])
-
         prov.worktree_show(selector="ws-1")
         self.assertEqual(calls[-1], ["superset", "workspaces", "get", "ws-1", "--local", "--json"])
-
-        prov.worktree_create(name="feat-a", base="main")
-        self.assertEqual(
-            calls[-1],
-            ["superset", "workspaces", "create", "--name", "feat-a", "--local", "--json", "--base", "main"],
-        )
-
         prov.worktree_rm(selector="ws-1", force=True)
-        self.assertEqual(calls[-1], ["superset", "workspaces", "delete", "ws-1", "--local", "--json", "--force"])
+        self.assertEqual(calls[-1], ["superset", "workspaces", "delete", "ws-1", "--local", "--json"])
+        self.assertIn(["git", "-C", str(wt), "update-ref", "refs/open-fleet/preserved/superset-ws-1",
+                       subprocess.run(["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True,
+                                      check=True).stdout.strip()], calls)
 
         # PROFILE=ro MUST use `superset terminals create` (never `superset agents create`)
-        ro_res = prov.worker_start(task_id="t1", worktree="ws-1", agent="claude", profile="ro")
+        ro_res = prov.worker_start(task_id="t1", worktree="ws-1", agent="claude", profile="ro", prompt="Audit")
         self.assertEqual(calls[-1][:3], ["superset", "terminals", "create"])
-        self.assertNotEqual(calls[-1][:3], ["superset", "agents", "create"])
-        self.assertIn("--permission-mode plan", ro_res["launch"]["effective"]["command"])
+        self.assertFalse([c for c in calls if c[:3] == ["superset", "agents", "create"]])
+        self.assertIn("--permission-mode plan", ro_res["launch"]["effective"]["shell"])
+        self.assertIn("Audit", ro_res["launch"]["effective"]["shell"])
         self.assertEqual(ro_res["launch"]["effective"]["mechanism"], "terminals.create")
+        self.assertEqual(hooks, [str(wt)])
 
-        # PROFILE=rw uses `superset agents create`
-        rw_res = prov.worker_start(task_id="t2", worktree="ws-1", agent="claude", profile="rw")
+        # PROFILE=rw uses `superset agents create` and hands it the prompt
+        prov.worker_start(task_id="t2", worktree="ws-1", agent="claude", profile="rw", prompt="Fix it")
         self.assertEqual(
             calls[-1],
-            ["superset", "agents", "create", "--workspace", "ws-1", "--agent", "claude", "--json"],
+            ["superset", "agents", "create", "--local", "--json", "--workspace", "ws-1", "--agent", "claude", "--prompt", "Fix it"],
         )
-        self.assertEqual(rw_res["launch"]["effective"]["profile_flag"], "--dangerously-skip-permissions")
 
-        # PROFILE=danger fails closed without OPEN_FLEET_SANDBOX_RECIPE / ORCA_SANDBOX_RECIPE
+        # PROFILE=danger fails closed without a recipe, else cloud `workspaces create --environment`
         with self.assertRaises(ProviderError) as ctx:
-            prov.worker_start(task_id="t3", worktree="ws-1", agent="claude", profile="danger")
+            prov.worker_start(task_id="t3", worktree="ws-1", agent="claude", profile="danger", prompt="x")
         self.assertEqual(ctx.exception.code, "missing_sandbox_recipe")
-
-        # PROFILE=danger succeeds with recipe and passes `--environment`
-        prov_cloud = SupersetProvider(
-            state=self.state,
-            runner=runner,
-            env={"OPEN_FLEET_SANDBOX_RECIPE": "rcp-cloud-1"},
-        )
-        danger_res = prov_cloud.worker_start(task_id="t3", worktree="ws-1", agent="claude", profile="danger")
-        self.assertIn("--environment", calls[-1])
+        prov_cloud = SupersetProvider(state=self.state, runner=runner, env={"OPEN_FLEET_SANDBOX_RECIPE": "rcp-cloud-1"})
+        danger_res = prov_cloud.worker_start(task_id="t3", agent="claude", profile="danger", prompt="x")
+        self.assertEqual(calls[-1][:3], ["superset", "workspaces", "create"])
         self.assertIn("rcp-cloud-1", calls[-1])
         self.assertEqual(danger_res["launch"]["effective"]["environment"], "rcp-cloud-1")
 
-        # Monotonic privilege narrowing negative control
         with self.assertRaises(ProviderError) as pctx:
-            prov.worker_start(task_id="t4", worktree="ws-1", agent="claude", profile="rw", parent_profile="ro")
+            prov.worker_start(task_id="t4", worktree="ws-1", agent="claude", profile="rw", parent_profile="ro", prompt="x")
         self.assertEqual(pctx.exception.code, "privilege_escalation")
 
-        # Worker list / show / read / fence
-        prov.worker_list()
-        self.assertEqual(calls[-1], ["superset", "snapshot", "--json"])
-        prov.worker_show(dispatch_id="sup-123")
-        self.assertEqual(calls[-1], ["superset", "agents", "explain", "sup-123", "--json"])
-        prov.worker_read(dispatch_id="sup-123", limit=25)
-        self.assertEqual(calls[-1], ["superset", "agents", "read", "sup-123", "--limit", "25", "--json"])
-        prov.worker_fence(verb="stop", dispatch_id="sup-123")
-        self.assertEqual(calls[-1], ["superset", "terminals", "kill", "sup-123", "--json"])
+        prov.worker_fence(verb="stop", dispatch_id=ro_res["dispatchId"])
+        self.assertEqual(calls[-1], ["superset", "terminals", "close", "--workspace", "ws-1", "--terminal", "term-1", "--local", "--json"])
 
 
 class TestGastownProvider(ProviderTestBase):
-    """#583: GastownProvider (`gt` + `bd` Beads)."""
+    """#583: GastownProvider (`gt` + `bd` Beads) (full suite: test_gastown_worktrunk_providers.py)."""
 
     def test_beads_dag_ro_alias_and_mail_bridge(self) -> None:
         calls: list[list[str]] = []
+        wt = self.tmp_path / "polecat"
+        wt.mkdir()
 
-        def runner(argv: list[str], **_kw: object) -> dict[str, object]:
+        def runner(argv: list[str], **_kw: object) -> object:
             calls.append(argv)
-            return {"id": "bd-1", "polecatId": "pc-1", "messages": [{"id": "m1"}]}
+            if argv[:2] == ["bd", "create"]:
+                return {"id": "bd-1"}
+            if argv[:2] in (["bd", "update"], ["bd", "list"]):
+                return []
+            if argv[:2] == ["gt", "sling"]:
+                return "🎯 Slinging bd-1 to rig-alpha/polecats/Toast...\n"
+            if argv[:3] == ["gt", "polecat", "status"]:
+                return {"clone_path": str(wt), "state": "working", "session_id": "ra-Toast"}
+            if argv[:3] == ["gt", "mail", "inbox"]:
+                return [{"id": "m1"}]
+            return ""
 
-        prov = GastownProvider(state=self.state, runner=runner, rig="rig-alpha")
+        prov = GastownProvider(state=self.state, runner=runner, rig="rig-alpha", install_hooks=lambda w, a, p: {})
         created = prov.task_create(spec="fix bug", title="Fix bug")
-        self.assertEqual(calls[-1], ["bd", "create", "Fix bug", "--json"])
+        self.assertEqual(calls[-1], ["bd", "create", "--title=Fix bug", "--description=fix bug", "--json"])
         task_id = created["task"]["id"]
+        self.assertEqual(created["task"]["beadId"], "bd-1")
 
         prov.task_update(task_id=task_id, status="completed")
-        self.assertEqual(calls[-1], ["bd", "update", task_id, "--status", "completed", "--json"])
+        self.assertEqual(calls[-1], ["bd", "update", "bd-1", "--status", "closed", "--json"])
+        self.assertEqual(len(prov.task_list()["tasks"]), 1)
 
-        listed = prov.task_list()
-        self.assertEqual(calls[-1], ["bd", "list", "--json"])
-        self.assertEqual(len(listed["tasks"]), 1)
-
-        # PROFILE=ro registers `<agent>-ro` alias and passes `--no-merge`
-        ro_res = prov.worker_start(task_id=task_id, worktree="/tmp/wt", agent="claude", profile="ro")
-        self.assertEqual(calls[-2][:4], ["gt", "config", "agent", "set"])
-        self.assertEqual(calls[-2][4], "claude-ro")
-        self.assertEqual(
-            calls[-1],
-            ["gt", "sling", task_id, "rig-alpha", "--agent", "claude-ro", "--no-merge", "--json"],
-        )
+        # PROFILE=ro registers `<agent>-ro` alias and slings the BEAD with `--no-merge`
+        ro_res = prov.worker_start(task_id=task_id, agent="claude", profile="ro")
+        alias = [c for c in calls if c[:4] == ["gt", "config", "agent", "set"]][-1]
+        self.assertEqual(alias[4], "claude-ro")
+        sling = [c for c in calls if c[:2] == ["gt", "sling"]][-1]
+        self.assertEqual(sling, ["gt", "sling", "bd-1", "rig-alpha", "--agent", "claude-ro", "--no-merge", "--review-only"])
         self.assertEqual(ro_res["launch"]["effective"]["agentAlias"], "claude-ro")
+        self.assertEqual(ro_res["worktree"], str(wt))
 
-        # PROFILE=rw uses `<agent>` and `--no-merge`
-        prov.worker_start(task_id=task_id, worktree="/tmp/wt", agent="codex", profile="rw")
-        self.assertEqual(
-            calls[-1],
-            ["gt", "sling", task_id, "rig-alpha", "--agent", "codex", "--no-merge", "--json"],
-        )
+        prov.worker_start(task_id=task_id, agent="codex", profile="rw")
+        sling = [c for c in calls if c[:2] == ["gt", "sling"]][-1]
+        self.assertEqual(sling, ["gt", "sling", "bd-1", "rig-alpha", "--agent", "codex", "--no-merge"])
 
-        # Mail send & check bridge
+        # Mail send & check bridge (worker mailboxes are scoped: read the recipient's own)
         prov.send_message(subject="done", msg_type="worker_done", to="mayor", payload="ok")
         self.assertEqual(
             calls[-1],
-            ["gt", "mail", "send", "mayor", "--subject", "done", "--type", "worker_done", "--body", "ok", "--json"],
+            ["gt", "mail", "send", "mayor", "-s", "[worker_done] done", "-m", "ok", "--type", "notification"],
         )
-        inbox = prov.check_messages()
-        self.assertEqual(calls[-1], ["gt", "mail", "inbox", "--unread", "--json"])
+        inbox = prov.check_messages(terminal="mayor")
+        self.assertEqual(calls[-1], ["gt", "mail", "inbox", "--json", "--unread", "--address", "mayor"])
         self.assertEqual(len(inbox["messages"]), 1)
         self.assertEqual(inbox["upstreamInbox"], [{"id": "m1"}])
 
 
 class TestWorktrunkProvider(ProviderTestBase):
-    """#583: WorktrunkProvider (`wt`)."""
+    """#583: WorktrunkProvider (`wt`) (full suite: test_gastown_worktrunk_providers.py)."""
 
     def test_cow_worktree_dispatch_and_merge_prediction(self) -> None:
         calls: list[list[str]] = []
 
-        def runner(argv: list[str], **_kw: object) -> dict[str, object]:
+        def runner(argv: list[str], **_kw: object) -> object:
             calls.append(argv)
-            return {"path": "/tmp/wt/feat-1", "merged": True, "conflicts": []}
+            if argv[:3] == ["wt", "switch", "--create"]:
+                return {"action": "created", "branch": "feat-1", "path": "/tmp/wt/feat-1"}
+            if argv[:2] == ["wt", "list"]:
+                return {"items": [{"branch": "feat-1", "worktree": {"path": "/tmp/wt/feat-1"}, "default_branch": {"merge_conflicts": False}}]}
+            if argv[:2] == ["wt", "merge"]:
+                return {"branch": "feat-1", "target": "main", "squashed": True}
+            if argv[:2] == ["wt", "remove"]:
+                return [{"kind": "worktree", "branch": "feat-1"}]
+            return {} if argv[0] == "wt" else ""
 
-        prov = WorktrunkProvider(state=self.state, runner=runner)
-        res = prov.worker_start(task_id="t10", name="feat-1", agent="omp", profile="ro")
-        self.assertEqual(calls[0], ["wt", "switch", "--create", "feat-1", "--no-cd", "-y", "--format=json"])
-        self.assertEqual(calls[1], ["wt", "step", "copy-ignored"])
-        self.assertEqual(calls[2][:5], ["wt", "switch", "feat-1", "--no-cd", "-y"])
-        self.assertIn("--approval-mode always-ask", res["launch"]["effective"]["command"])
+        prov = WorktrunkProvider(state=self.state, runner=runner, install_hooks=lambda w, a, p: {})
+        res = prov.worker_start(task_id="t10", name="feat-1", agent="omp", profile="ro", prompt="Survey")
+        self.assertEqual(calls[0], ["wt", "switch", "--create", "feat-1", "--no-cd", "--no-hooks", "--format=json"])
+        self.assertEqual(calls[1], ["wt", "step", "copy-ignored", "--to", "/tmp/wt/feat-1", "--format=json"])
+        launch = [c for c in calls if c[:2] == ["tmux", "new-session"]][0]
+        self.assertEqual(launch[:7], ["tmux", "new-session", "-d", "-s", f"feat-1-{res['dispatchId']}", "-c", "/tmp/wt/feat-1"])
+        self.assertIn("--approval-mode always-ask", launch[7])
+        self.assertIn("Survey", launch[7])
+        self.assertEqual(res["worktree"], "/tmp/wt/feat-1")
 
         merge_res = prov.predict_and_merge("feat-1", target="main")
-        self.assertEqual(calls[-1], ["wt", "merge", "feat-1", "--format=json", "--target", "main"])
+        self.assertEqual(calls[-1], ["wt", "merge", "main", "--branch", "feat-1", "--no-remove", "--format=json"])
         self.assertTrue(merge_res["merged"])
 
         prov.worktree_rm(selector="feat-1", force=True)
-        self.assertEqual(calls[-1], ["wt", "remove", "--reap", "feat-1", "--force"])
+        self.assertEqual(calls[-1], ["wt", "remove", "feat-1", "--reap", "--foreground", "--format=json", "--force"])
 
 
 class TestOpenHandsProvider(ProviderTestBase):
-    """#584: OpenHandsProvider (`openhands.agent_server` REST API)."""
+    """#584: OpenHandsProvider (`openhands.agent_server` REST API) (full suite: test_openhands_provider.py)."""
 
     def test_ro_tool_stripping_hooks_and_danger_containers(self) -> None:
         reqs: list[dict[str, object]] = []
+        runtime = {"conversation_runtime": "local"}
 
         def runner(req: dict[str, object], **_kw: object) -> dict[str, object]:
             reqs.append(req)
-            return {"conversation_id": "conv-99", "events": [{"id": "ev-1"}]}
+            if req["path"] == "/server_info":
+                return runtime
+            if str(req["path"]).startswith("/api/conversations/conv-99/events/search"):
+                return {"items": [], "next_page_id": None}
+            return {"id": "conv-99", "success": True}
 
-        prov = OpenHandsProvider(state=self.state, runner=runner)
+        prov = OpenHandsProvider(state=self.state, runner=runner, env={"OPEN_FLEET_OPENHANDS_MODEL": "m"},
+                                 install_hooks=lambda w, a, p: {})
         wt_dir = self.tmp_path / "oh-wt"
         wt_dir.mkdir(parents=True, exist_ok=True)
 
-        ro_res = prov.worker_start(task_id="t1", worktree=str(wt_dir), profile="ro")
-        conv_req = reqs[0]
-        self.assertEqual(conv_req["path"], "/api/conversations")
-        body = conv_req["body"]
+        ro_res = prov.worker_start(task_id="t1", worktree=str(wt_dir), profile="ro", prompt="Review auth")
+        body = reqs[0]["body"]
         assert isinstance(body, dict)
-        self.assertEqual(body["tools"], ["glob", "grep", "planning_file_editor"])
-        self.assertIn("terminal", body["disabled_tools"])
-        self.assertIn("file_editor", body["disabled_tools"])
-        self.assertTrue((wt_dir / ".openhands" / "hooks.json").is_file())
+        self.assertEqual(reqs[0]["path"], "/api/conversations")
+        self.assertEqual([t["name"] for t in body["agent"]["tools"]], ["glob", "grep", "planning_file_editor"])
+        self.assertIn("deny-hook.sh", body["hook_config"]["pre_tool_use"][0]["hooks"][0]["command"])
+        self.assertEqual(body["initial_message"]["content"][0]["text"], "Review auth")
         self.assertEqual(ro_res["dispatchId"], "conv-99")
 
-        # PROFILE=danger uses docker or apptainer, rejects unknown workspace_type
-        danger_res = prov.worker_start(task_id="t2", worktree=str(wt_dir), profile="danger", workspace_type="apptainer")
-        self.assertEqual(danger_res["launch"]["effective"]["workspace_type"], "apptainer")
-
+        # PROFILE=danger needs a docker conversation runtime on the server; apptainer is client-side only
         with self.assertRaises(ProviderError) as ctx:
-            prov.worker_start(task_id="t3", worktree=str(wt_dir), profile="danger", workspace_type="host")
-        self.assertEqual(ctx.exception.code, "invalid_workspace_type")
+            prov.worker_start(task_id="t2", worktree=str(wt_dir), profile="danger", prompt="x")
+        self.assertEqual(ctx.exception.code, "sandbox_unavailable")
+        with self.assertRaises(ProviderError) as ctx2:
+            prov.worker_start(task_id="t3", worktree=str(wt_dir), profile="danger", workspace_type="host", prompt="x")
+        self.assertEqual(ctx2.exception.code, "invalid_workspace_type")
+        runtime["conversation_runtime"] = "docker"
+        danger_res = prov.worker_start(task_id="t2", worktree=str(wt_dir), profile="danger", prompt="x")
+        self.assertEqual(danger_res["launch"]["effective"]["conversation_runtime"], "docker")
 
         prov.worker_read(dispatch_id="conv-99", limit=10)
-        self.assertEqual(reqs[-1]["path"], "/api/conversations/conv-99/events/search?limit=10")
-
+        self.assertTrue(str(reqs[-1]["path"]).startswith("/api/conversations/conv-99/events/search?limit=10"))
         prov.worker_fence(verb="stop", dispatch_id="conv-99", reason="timeout")
         self.assertEqual(reqs[-1]["path"], "/api/conversations/conv-99/interrupt")
 
 
 class TestOverstoryProvider(ProviderTestBase):
-    """#588: OverstoryProvider (`ov`)."""
+    """#588: OverstoryProvider (`ov`) (full suite: test_orchestrator_providers_tier1.py)."""
 
     def test_scout_vs_builder_capability_and_mail(self) -> None:
         calls: list[list[str]] = []
 
         def runner(argv: list[str], **_kw: object) -> dict[str, object]:
             calls.append(argv)
-            return {"agentName": "ov-worker-1", "messages": []}
+            if argv[:3] == ["ov", "spec", "write"]:
+                return {"success": True, "path": f"/r/.overstory/specs/{argv[3]}.md"}
+            return {"success": True, "agentName": "ov-worker-1", "worktree": "/r/.overstory/worktrees/ov-worker-1", "messages": []}
 
         prov = OverstoryProvider(state=self.state, runner=runner)
-        ro = prov.worker_start(task_id="t-ro", agent="claude", profile="ro")
-        self.assertEqual(calls[-1], ["ov", "sling", "t-ro", "--capability", "scout", "--runtime", "claude", "--json"])
+        ro = prov.worker_start(task_id="t-ro", agent="claude", profile="ro", prompt="Scout it")
+        self.assertEqual(calls[-2], ["ov", "spec", "write", "t-ro", "--body", "Scout it", "--json"])
+        self.assertEqual(
+            calls[-1],
+            ["ov", "sling", "t-ro", "--capability", "scout", "--runtime", "claude", "--spec", "/r/.overstory/specs/t-ro.md",
+             "--skip-task-check", "--json"],
+        )
         self.assertEqual(ro["capability"], "scout")
+        with self.assertRaises(ProviderError):
+            prov.worker_start(task_id="t-ro", agent="claude", profile="ro", capability="builder", prompt="x")
 
-        rw = prov.worker_start(task_id="t-rw", agent="codex", profile="rw")
-        self.assertEqual(calls[-1], ["ov", "sling", "t-rw", "--capability", "builder", "--runtime", "codex", "--json"])
+        rw = prov.worker_start(task_id="t-rw", agent="codex", profile="rw", prompt="Build it")
+        self.assertEqual(calls[-1][:6], ["ov", "sling", "t-rw", "--capability", "builder", "--runtime"])
         self.assertEqual(rw["capability"], "builder")
 
         prov.send_message(subject="ready", msg_type="merge_ready", to="orchestrator", payload="sha123")
         self.assertEqual(
             calls[-1],
-            ["ov", "mail", "send", "--type", "merge_ready", "--subject", "ready", "--body", "sha123", "--json", "--to", "orchestrator"],
+            ["ov", "mail", "send", "--to", "orchestrator", "--subject", "ready", "--body", "sha123", "--type", "merge_ready", "--json"],
         )
 
 
 class TestT3CodeProvider(ProviderTestBase):
-    """#588: T3CodeProvider (`t3` OrchestratorV2)."""
+    """#588: T3CodeProvider (T3 MCP tools via `t3 acp-mcp-call`) (full suite: test_orchestrator_providers_tier1.py)."""
 
     def test_session_modes_and_turn_dispatch(self) -> None:
+        import os
+        import subprocess
+
         calls: list[dict[str, object]] = []
+        repo = self.tmp_path / "t3-repo"
+        git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, env=git_env)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True, env=git_env)
 
         def runner(call: dict[str, object], **_kw: object) -> dict[str, object]:
             calls.append(call)
-            return {"sessionId": "t3-sess-1"}
+            if call["tool"] == "t3_thread_read":
+                data: dict[str, object] = {"thread": {"threadId": "t3-thr-1", "status": "running", "worktreePath": None}, "items": []}
+            elif call["tool"] == "t3_project_read":
+                data = {"id": "p-1", "workspaceRoot": str(repo)}
+            else:
+                data = {"threadId": "t3-thr-1", "status": "running"}
+            return {"content": [], "structuredContent": data, "isError": False}
 
-        prov = T3CodeProvider(state=self.state, runner=runner)
+        prov = T3CodeProvider(state=self.state, runner=runner, install_hooks=lambda w, a, p: {},
+                              env={"OPEN_FLEET_T3_PROJECT_ID": "p-1", "OPEN_FLEET_T3_WORKTREE_ROOT": str(self.tmp_path / "wts")})
         ro = prov.worker_start(task_id="t1", agent="claude", profile="ro", prompt="Audit")
-        self.assertEqual(calls[0]["method"], "orchestration.createSession")
-        p0 = calls[0]["params"]
+        self.assertEqual(calls[0]["tool"], "t3_thread_launch")
+        p0 = calls[0]["arguments"]
         assert isinstance(p0, dict)
-        self.assertEqual(p0["isolationMode"], "worktree")
+        self.assertEqual(p0["workspaceStrategy"]["type"], "worktree")
         self.assertEqual(p0["interactionMode"], "plan")
         self.assertEqual(p0["runtimeMode"], "approval-required")
-        self.assertEqual(calls[1]["method"], "orchestration.sendTurn")
+        self.assertEqual(p0["message"], "Audit")
         self.assertEqual(ro["launch"]["effective"]["interactionMode"], "plan")
 
-        rw = prov.worker_start(task_id="t2", agent="claude", profile="rw")
+        rw = prov.worker_start(task_id="t2", agent="claude", profile="rw", prompt="Fix")
         self.assertEqual(rw["launch"]["effective"]["interactionMode"], "default")
         self.assertEqual(rw["launch"]["effective"]["runtimeMode"], "full-access")
+        # rw never hands T3 the create-and-start `worktree` strategy: the worktree is cut (and hooked) first.
+        self.assertEqual(calls[-1]["tool"], "t3_thread_read")
+        self.assertEqual(calls[-2]["arguments"]["workspaceStrategy"]["type"], "existing_worktree")
+        self.assertEqual(rw["worktree"], os.path.realpath(self.tmp_path / "wts" / "t3-t2"))
+        with self.assertRaises(ProviderError):
+            prov.worker_start(task_id="t3", profile="danger", prompt="x")
 
 
 class TestComposioAOProvider(ProviderTestBase):
-    """#588: ComposioAOProvider (`ao`)."""
+    """#588: ComposioAOProvider (`ao`) — POST /api/v1/sessions + worker-HEAD preserved refs."""
 
-    def test_ro_custom_launch_and_preserved_refs(self) -> None:
+    def test_rw_spawn_body_ro_fails_closed_and_worker_head_preserved(self) -> None:
         calls: list[object] = []
+        wt = self.tmp_path / "ao-wt"
+        wt.mkdir()
+        head = "a" * 40
+        common_dir = self.tmp_path / "project.git"  # a linked worktree's common dir lives outside it
 
         def runner(call: object, **_kw: object) -> dict[str, object]:
             calls.append(call)
-            return {"sessionId": "ao-sess-1", "output": "hello"}
+            if isinstance(call, list):
+                if "--git-common-dir" in call:
+                    return {"raw": str(common_dir)}
+                return {"raw": head} if "rev-parse" in call else {"raw": ""}
+            assert isinstance(call, dict)
+            if call["path"] == "/api/v1/sessions":
+                return {"session": {"id": "ao-sess-1"}, "promptBytes": 9}
+            if str(call["path"]).endswith("/workspace"):
+                return {"sessionId": "ao-sess-1", "workspacePath": str(wt)}
+            return {"ok": True}
 
         prov = ComposioAOProvider(state=self.state, runner=runner, project="orca-proj")
-        ro = prov.worker_start(task_id="t1", agent="pi", profile="ro", worktree="/tmp/wt")
-        first = calls[0]
-        assert isinstance(first, dict)
-        self.assertEqual(first["path"], "/api/v1/sessions")
-        self.assertEqual(first["body"]["permissions"], "plan")
-        self.assertIn("--exclude-tools", first["body"]["launch_command"])
-        self.assertEqual(ro["launch"]["effective"]["mechanism"], "api.sessions.ro")
+        with self.assertRaises(ProviderError) as ctx:
+            prov.worker_start(task_id="t1", agent="pi", profile="ro", prompt="Audit")
+        self.assertEqual(ctx.exception.code, "unsupported_profile")
 
-        prov.worker_start(task_id="t2", agent="claude", profile="rw")
-        self.assertEqual(calls[-1], ["ao", "spawn", "orca-proj", "t2", "--agent", "claude", "--json"])
-
-        prov.terminal_read(terminal="ao:ao-sess-1")
-        self.assertEqual(calls[-1], {"method": "GET", "path": "/api/v1/sessions/ao-sess-1/output", "body": None})
+        rw = prov.worker_start(task_id="t2", agent="claude", profile="rw", prompt="Fix bug")
+        body = calls[0]["body"]
+        self.assertEqual(body["harness"], "claude-code")
+        self.assertEqual(body["prompt"], "Fix bug")
+        self.assertEqual(body["approvalMode"], "bypass-permissions")
+        self.assertEqual(rw["dispatchId"], "ao-sess-1")
+        self.assertEqual(rw["worktree"], str(wt.resolve()))
 
         fenced = prov.worker_fence(verb="release", dispatch_id="ao-sess-1")
-        self.assertEqual(fenced["preservedRef"], "refs/ao/preserved/ao-sess-1")
-        self.assertIn(["git", "update-ref", "refs/ao/preserved/ao-sess-1", "HEAD"], calls)
+        self.assertEqual(fenced["preservedRef"], "refs/open-fleet/preserved/ao-sess-1")
+        self.assertIn(["git", "-C", str(wt.resolve()), "update-ref", "refs/open-fleet/preserved/ao-sess-1", head], calls)
+        self.assertIn(["git", "-C", str(wt.resolve()), "rev-parse", "--verify", "refs/open-fleet/preserved/ao-sess-1"], calls)
+        self.assertNotIn(["git", "update-ref", "refs/ao/preserved/ao-sess-1", "HEAD"], calls)
+        self.assertEqual(calls[-1]["path"], "/api/v1/sessions/ao-sess-1/kill")
+        self.assertEqual(fenced["state"], "released")
 
 
 class TestJCodeSwarmProvider(ProviderTestBase):
-    """#588: JCodeSwarmProvider (`jcode serve` + `jcode api-bridge`)."""
+    """#588: JCodeSwarmProvider (`jcode serve` daemon socket)."""
 
-    def test_ro_explicit_disabled_tools_and_file_touches(self) -> None:
+    def test_comm_spawn_ro_fails_closed_and_file_touch_ranges(self) -> None:
         calls: list[dict[str, object]] = []
+        wt = self.tmp_path / "jc-wt"
+        wt.mkdir()
 
-        def runner(call: dict[str, object], **_kw: object) -> dict[str, object]:
-            calls.append(call)
-            if call.get("op") == "file_touches":
-                return {
-                    "touches": [
-                        {"worker_id": "w1", "file_path": "src/a.py", "start_line": 10, "end_line": 20, "op": "write"},
-                        {"worker_id": "w2", "file_path": "src/a.py", "start_line": 15, "end_line": 25, "op": "write"},
-                    ]
-                }
-            return {"session_id": "jc-1"}
+        def runner(req: dict[str, object], **_kw: object) -> dict[str, object]:
+            calls.append(req)
+            if req["type"] == "comm_spawn":
+                return {"type": "comm_spawn_response", "id": req["id"], "session_id": "coord", "new_session_id": "jc-1"}
+            if req["type"] == "debug_command":
+                touches = [
+                    {"path": "src/a.py", "session_id": "w1", "op": "edited", "summary": "edited lines 10-20"},
+                    {"path": "src/a.py", "session_id": "w2", "op": "edited", "summary": "edited lines 15-25"},
+                ]
+                return {"type": "debug_response", "id": req["id"], "ok": True, "output": json.dumps(touches)}
+            return {"type": "ack", "id": req["id"]}
 
-        prov = JCodeSwarmProvider(state=self.state, runner=runner)
-        ro = prov.worker_start(task_id="t1", worktree="/tmp/wt", profile="ro")
-        sess_call = calls[0]["payload"]
-        assert isinstance(sess_call, dict)
-        self.assertFalse(sess_call["use_minimal_profile"])
-        self.assertIn("bash,write,edit,replace,apply_patch", sess_call["disabled_tools"])
-        self.assertEqual(ro["launch"]["effective"]["disabled_tools"], sess_call["disabled_tools"])
+        prov = JCodeSwarmProvider(state=self.state, runner=runner, coordinator_session="coord")
+        with self.assertRaises(ProviderError) as ctx:
+            prov.worker_start(task_id="t1", worktree=str(wt), profile="ro", prompt="look")
+        self.assertEqual(ctx.exception.code, "unsupported_profile")
+
+        rw = prov.worker_start(task_id="t2", worktree=str(wt), profile="rw", prompt="Build it")
+        spawn = calls[-1]
+        self.assertEqual(spawn["type"], "comm_spawn")
+        self.assertEqual(spawn["initial_message"], "Build it")
+        self.assertEqual(rw["agent"], "jcode")
+        self.assertEqual(rw["dispatchId"], "jc-1")
 
         sync = prov.sync_file_touches(run_id="r1")
         self.assertEqual(sync["synced"], 2)
         self.assertTrue(sync["results"][1]["conflict"])
         self.assertEqual(sync["results"][1]["conflicts"][0]["kind"], "overlapping_hunk")
+        self.assertEqual(sync["results"][1]["conflicts"][0]["lines"], [15, 25])
 
 
 class TestEmdashProvider(ProviderTestBase):
-    """#589: EmdashProvider (`workspace-server` JSON-RPC 2.0)."""
+    """#589: EmdashProvider (`workspace-server` wire protocol over a unix socket)."""
 
-    def test_jsonrpc_auto_approve_and_pty(self) -> None:
-        rpcs: list[dict[str, object]] = []
+    def test_start_session_auto_approve_and_pty(self) -> None:
+        msgs: list[dict[str, object]] = []
+        wt = self.tmp_path / "em-wt"
+        wt.mkdir()
 
-        def runner(payload: dict[str, object], **_kw: object) -> dict[str, object]:
-            rpcs.append(payload)
-            return {"path": "/tmp/emdash/w1", "streamId": "em-1", "ptyId": "pty-1", "snapshot": "ready$"}
+        def runner(msg: dict[str, object], **_kw: object) -> dict[str, object]:
+            msgs.append(msg)
+            if msg.get("path") == "tuiAgents.startSession":
+                value: object = {"outcome": "started"}
+            elif msg.get("kind") == "snapshot":
+                value = {"sequence": 3, "data": {"baseOffset": 0, "text": "ready$\n", "truncated": False}}
+            else:
+                value = {"success": True, "data": None}
+            return {"kind": "result", "id": msg["id"], "ok": True, "value": value}
 
         prov = EmdashProvider(state=self.state, runner=runner)
-        ro = prov.worker_start(task_id="t1", worktree="/tmp/emdash/w1", agent="claude", profile="ro")
-        self.assertEqual(rpcs[-1]["method"], "agent.startStream")
-        params = rpcs[-1]["params"]
+        ro = prov.worker_start(task_id="t1", worktree=str(wt), agent="claude", profile="ro", prompt="Audit")
+        params = msgs[-1]["input"]
         assert isinstance(params, dict)
         self.assertFalse(params["autoApprove"])
         self.assertIn("plan", params["extraArgs"])
-        self.assertFalse(ro["launch"]["effective"]["autoApprove"])
+        self.assertNotIn("-p", params["extraArgs"])
+        self.assertEqual(params["initialPrompt"], "Audit")
+        self.assertEqual(ro["dispatchId"], params["conversationId"])
 
-        rw = prov.worker_start(task_id="t2", worktree="/tmp/emdash/w1", agent="claude", profile="rw")
+        rw = prov.worker_start(task_id="t2", worktree=str(wt), agent="claude", profile="rw", prompt="Fix")
         self.assertTrue(rw["launch"]["effective"]["autoApprove"])
 
-        snap = prov.terminal_read(terminal="emdash:pty-1")
-        self.assertEqual(rpcs[-1]["method"], "pty.snapshot")
-        self.assertEqual(snap["snapshot"], "ready$")
+        snap = prov.worker_read(dispatch_id=rw["dispatchId"], source="terminal")
+        self.assertEqual(msgs[-1]["kind"], "snapshot")
+        self.assertIn(rw["dispatchId"], str(msgs[-1]["topic"]))
+        self.assertEqual(snap["terminal"]["tail"], ["ready$"])
 
 
 class TestVibeKanbanProvider(ProviderTestBase):
-    """#589: VibeKanbanProvider (`BloopAI/vibe-kanban`)."""
+    """#589: VibeKanbanProvider (`BloopAI/vibe-kanban` workspaces API)."""
 
-    def test_ro_dangerously_skip_permissions_false_and_auto_commit_guard(self) -> None:
+    def test_ro_profile_read_back_false_and_start_body(self) -> None:
         reqs: list[dict[str, object]] = []
+        profiles = {"executors": {"CLAUDE_CODE": {"DEFAULT": {"CLAUDE_CODE": {"dangerously_skip_permissions": True}}}}}
 
         def runner(req: dict[str, object], **_kw: object) -> dict[str, object]:
             reqs.append(req)
-            return {"attempt_id": "vk-1", "execution_process_id": "proc-1", "logs": ["line1"]}
+            if req["path"] == "/api/profiles" and req["method"] == "GET":
+                return {"success": True, "data": {"content": json.dumps(profiles), "path": "/x"}}
+            if req["path"] == "/api/profiles" and req["method"] == "PUT":
+                profiles.clear()
+                profiles.update(req["body"])
+                return {"success": True, "data": None}
+            if req["path"] == "/api/workspaces/start":
+                return {"success": True, "data": {"workspace": {"id": "ws-1", "container_ref": None},
+                                                  "execution_process": {"id": "proc-1", "run_reason": "codingagent"}}}
+            return {"success": True, "data": {"id": "ws-1", "container_ref": None}}
 
-        prov = VibeKanbanProvider(state=self.state, runner=runner)
-        ro = prov.worker_start(
-            task_id="t1",
-            worktree="/tmp/vk-wt",
-            agent="claude",
-            profile="ro",
-            head_subject="Changes from coding agent (vibe-kanban 123)",
-            strip_auto_commit=True,
-        )
-        # 1. Profile registration explicitly sets dangerously_skip_permissions: False
-        prof_req = reqs[0]
-        self.assertEqual(prof_req["path"], "/api/profiles")
-        self.assertEqual(prof_req["body"]["name"], "ORCA_RO")
-        self.assertIs(prof_req["body"]["dangerously_skip_permissions"], False)
-        self.assertEqual(prof_req["body"]["permission_policy"], "plan")
-
-        # 2. Task attempt also enforces dangerously_skip_permissions: False
-        att_req = reqs[1]
-        self.assertEqual(att_req["path"], "/api/task-attempts")
-        self.assertIs(att_req["body"]["dangerously_skip_permissions"], False)
-
-        # 3. Auto-commit "Changes from coding agent" is stripped when strip_auto_commit=True
-        self.assertEqual(reqs[2]["path"], "/api/task-attempts/strip-auto-commit")
-        self.assertTrue(ro["launch"]["effective"]["autoCommitGuard"]["stripped"])
-
-        # Negative control: strip_auto_commit=False rejects the auto-commit with ProviderError
-        with self.assertRaises(ProviderError) as ctx:
-            prov.inspect_or_strip_auto_commit(
-                "/tmp/vk-wt",
-                head_subject="Changes from coding agent",
-                strip_auto_commit=False,
-            )
-        self.assertEqual(ctx.exception.code, "unverified_auto_commit")
+        prov = VibeKanbanProvider(state=self.state, runner=runner,
+                                  env={"OPEN_FLEET_VIBE_KANBAN_REPO_ID": "repo-1", "OPEN_FLEET_VIBE_KANBAN_TARGET_BRANCH": "main"})
+        ro = prov.worker_start(task_id="t1", agent="claude", profile="ro", prompt="Review")
+        put = next(r for r in reqs if r["method"] == "PUT")
+        variant = put["body"]["executors"]["CLAUDE_CODE"]["ORCA_RO"]["CLAUDE_CODE"]
+        self.assertIs(variant["dangerously_skip_permissions"], False)
+        start = next(r for r in reqs if r["path"] == "/api/workspaces/start")
+        body = start["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["executor_config"], {"executor": "CLAUDE_CODE", "permission_policy": "PLAN", "variant": "ORCA_RO"})
+        self.assertEqual(body["prompt"], "Review")
+        self.assertEqual(ro["dispatchId"], "ws-1")
+        self.assertFalse(any("strip-auto-commit" in str(r["path"]) for r in reqs))
 
 
 class TestPaperclipProvider(ProviderTestBase):
     """#589: PaperclipProvider (`paperclipai/paperclip`)."""
 
-    def test_ro_permission_override_409_checkout_and_bwrap_danger(self) -> None:
+    def test_ro_adapter_config_read_back_409_and_bwrap_danger(self) -> None:
         reqs: list[dict[str, object]] = []
-        conflict_mode = False
+        agents: dict[str, dict[str, object]] = {}
+        conflict = {"on": False}
 
-        def runner(req: dict[str, object], **_kw: object) -> dict[str, object]:
+        def runner(req: dict[str, object], **_kw: object) -> object:
             reqs.append(req)
-            if conflict_mode and str(req.get("path", "")).endswith("/checkout"):
-                return {"status": 409, "error": "conflict"}
-            return {"agent_id": "pc-agent-1", "status": 200}
+            path, method = str(req["path"]), req["method"]
+            if method == "POST" and path.endswith("/agents"):
+                aid = f"ag-{len(agents) + 1}"
+                agents[aid] = dict(req["body"])
+                return {"id": aid, **agents[aid]}
+            if method == "GET" and path.startswith("/api/agents/"):
+                return {"id": path.rsplit("/", 1)[1], **agents[path.rsplit("/", 1)[1]]}
+            if method == "POST" and path.endswith("/issues"):
+                return {"id": "iss-1"}
+            if path.endswith("/checkout") and conflict["on"]:
+                raise ProviderError("paperclip_http_error", "409", {"status": 409, "response": {"error": "Issue checkout conflict"}})
+            if method == "DELETE":
+                return {"ok": True}
+            return {"id": "iss-1", "status": "in_progress", "runId": "run-1"}
 
         prov = PaperclipProvider(state=self.state, runner=runner, company_id="co-1")
+        wt = self.tmp_path / "pc"
+        wt.mkdir()
+        ro = prov.worker_start(task_id="t1", worktree=str(wt), agent="claude", profile="ro", prompt="Plan it")
+        body = reqs[0]["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["adapterType"], "claude_local")
+        self.assertEqual(body["runner"], "legacy")
+        self.assertIs(body["adapterConfig"]["dangerouslySkipPermissions"], False)
+        # claude_local defaults to the ACP engine (approve-all, flag ignored): ro must pin the CLI lane.
+        self.assertEqual(body["adapterConfig"]["engine"], "cli")
+        self.assertEqual(body["adapterConfig"]["permissionMode"], "approve-reads")
+        read_back = ro["launch"]["effective"]["adapterConfigReadBack"]
+        self.assertIs(read_back["dangerouslySkipPermissions"], False)
+        self.assertEqual((read_back["engine"], read_back["permissionMode"]), ("cli", "approve-reads"))
+        issue = next(r for r in reqs if str(r["path"]).endswith("/issues"))
+        self.assertEqual(issue["body"]["description"], "Plan it")
 
-        # 1. PROFILE=ro explicitly sets dangerouslySkipPermissions=False & dangerouslyBypassApprovalsAndSandbox=False
-        ro = prov.worker_start(task_id="iss-1", worktree="/tmp/pc", agent="claude", profile="ro")
-        agent_body = reqs[0]["body"]
-        assert isinstance(agent_body, dict)
-        self.assertIs(agent_body["dangerouslySkipPermissions"], False)
-        self.assertIs(agent_body["dangerouslyBypassApprovalsAndSandbox"], False)
-        self.assertEqual(agent_body["work_mode"], "planning")
-        self.assertIs(ro["launch"]["effective"]["dangerouslySkipPermissions"], False)
+        danger = prov.worker_start(task_id="t2", worktree=str(wt), agent="codex", profile="danger", prompt="Go")
+        cfg = danger["launch"]["effective"]["adapterConfig"]
+        self.assertEqual((cfg["filesystemScope"], cfg["networkScope"], cfg["engine"]), ("workspace", "deny", "cli"))
 
-        # 2. PROFILE=danger configures bwrap filesystemScope="workspace" and networkScope="deny"
-        danger = prov.worker_start(task_id="iss-2", worktree="/tmp/pc", agent="codex", profile="danger")
-        eff = danger["launch"]["effective"]
-        self.assertEqual(eff["filesystemScope"], "workspace")
-        self.assertEqual(eff["networkScope"], "deny")
-        self.assertEqual(eff["sandbox"]["driver"], "bwrap")
-
-        # 3. 409 Conflict on /api/issues/{id}/checkout raises ProviderError("task_not_startable")
-        conflict_mode = True
+        conflict["on"] = True
         with self.assertRaises(ProviderError) as ctx:
-            prov.worker_start(task_id="iss-locked", worktree="/tmp/pc", agent="claude", profile="rw")
+            prov.worker_start(task_id="t3", worktree=str(wt), agent="claude", profile="rw", prompt="Locked")
         self.assertEqual(ctx.exception.code, "task_not_startable")
+        self.assertEqual(reqs[-1]["method"], "DELETE")
 
 
 class TestMulticlaudeProvider(ProviderTestBase):
     """#589: MulticlaudeProvider (`~/.multiclaude/daemon.sock`)."""
 
-    def test_ro_wrapper_strips_skip_permissions_and_blocks_unverified_complete(self) -> None:
+    def test_ro_settings_injected_and_release_needs_durable_verify(self) -> None:
+        home = self.tmp_path / "mc-home"
+        (home / "repos" / "proj").mkdir(parents=True)
         msgs: list[dict[str, object]] = []
 
         def runner(msg: dict[str, object], **_kw: object) -> dict[str, object]:
             msgs.append(msg)
-            return {"agent_id": "mc-1", "ok": True}
+            if msg["command"] == "spawn_agent":
+                args = msg["args"]
+                assert isinstance(args, dict)
+                wt = home / "wts" / "proj" / str(args["name"])
+                (wt / ".claude").mkdir(parents=True)
+                src = home / "repos" / "proj" / ".multiclaude" / "hooks.json"
+                (wt / ".claude" / "settings.json").write_text(src.read_text())
+                return {"success": True, "data": {"name": args["name"], "worktree_path": str(wt)}}
+            return {"success": True, "data": None}
 
-        prov = MulticlaudeProvider(state=self.state, runner=runner)
-        ro = prov.worker_start(task_id="t1", worktree="/tmp/mc", agent="claude", profile="ro")
-        spawn_msg = msgs[-1]
-        self.assertEqual(spawn_msg["action"], "spawn_agent")
-        self.assertIs(spawn_msg["strip_dangerously_skip_permissions"], True)
-        self.assertEqual(spawn_msg["permission_mode"], "plan")
-        self.assertIn("--permission-mode plan", str(spawn_msg["wrapper_command"]))
-        self.assertEqual(ro["dispatchId"], "mc-1")
+        prov = MulticlaudeProvider(state=self.state, runner=runner, home=home, repo="proj")
+        ro = prov.worker_start(task_id="t1", agent="claude", profile="ro", prompt="Review only", name="mc-1")
+        spawn = next(m for m in msgs if m["command"] == "spawn_agent")
+        self.assertIn("Review only", str(spawn["args"]["prompt"]))
+        settings = json.loads((Path(ro["worktree"]) / ".claude" / "settings.json").read_text())
+        self.assertIn("Edit", settings["permissions"]["deny"])
+        self.assertFalse((home / "repos" / "proj" / ".multiclaude" / "hooks.json").exists())
 
-        # Negative control: releasing (`complete_agent`) before verification is blocked!
         with self.assertRaises(ProviderError) as ctx:
-            prov.worker_fence(verb="release", dispatch_id="mc-1")
+            prov.worker_fence(verb="release", dispatch_id="mc-1", verified=True)
         self.assertEqual(ctx.exception.code, "unverified_release_blocked")
-
-        # Once verified, `complete_agent` succeeds
-        prov.mark_verified("mc-1")
-        released = prov.worker_fence(verb="release", dispatch_id="mc-1", reason="merged")
-        self.assertTrue(released["verified"])
-        self.assertEqual(msgs[-1]["action"], "complete_agent")
+        with self.assertRaises(ProviderError) as ctx:
+            prov.worker_verify(dispatch_id="mc-1", sha="a" * 40)  # a bare --sha is not evidence
+        self.assertEqual(ctx.exception.code, "manifest_required")
+        self.assertIsNone(prov._verification("mc-1"))
+        self.assertFalse(any(m["command"] == "complete_agent" for m in msgs))
 
 
 if __name__ == "__main__":

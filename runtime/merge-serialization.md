@@ -62,6 +62,8 @@ Two corrections against v1.4.199, both of which make this rule the FLEET's, not 
    migrations, barrels) form a merge CHAIN — pre-partitioned at decompose via
    `runtime/scripts/diff_scope.py --overlap <slices.json> --json` when scopes are known up front, or
    merged one-at-a-time as a union when discovered mid-wave.
+6. Predict (#590, advisory): `diff_scope.py --predict-merge origin/<BASE> <branch>` — in-memory
+   merge-tree; exit 0 clean · 1 conflict (pre-rebase/reorder) · 2 `SCOPE_ERROR` = could not predict.
 
 ## First-merge spot-check (the pipeline inherits it)
 

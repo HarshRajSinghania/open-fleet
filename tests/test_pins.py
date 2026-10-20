@@ -236,10 +236,23 @@ class TestPins(unittest.TestCase):
                         f"skills/{mission} compatibility names {slug!r}, which runtime/pins.json "
                         "does not pin — add an entry (commit + witnessed date) or drop the reference"
                     )
-            self.assertIn(
-                "orca", hits,
-                f"skills/{mission} compatibility does not name the Orca substrate",
-            )
+            # The substrate: pin-it audits the Orca binary itself, so it stays
+            # Orca-only; every other mission may declare the runtime interface
+            # (#586: "open-fleet RPI runtime (Orca, posix, …)") instead of Orca.
+            rpi = "open-fleet rpi runtime" in " ".join(low.split())
+            if mission == "pin-it":
+                self.assertIn(
+                    "orca", hits,
+                    "skills/pin-it compatibility does not name the Orca substrate",
+                )
+                self.assertFalse(
+                    rpi, "skills/pin-it audits Orca itself — it must not claim another runtime")
+            else:
+                self.assertTrue(
+                    rpi or "orca" in hits,
+                    f"skills/{mission} compatibility names neither the open-fleet RPI "
+                    "runtime nor the Orca substrate",
+                )
             referenced |= hits
         unreferenced = sorted(set(pins) - referenced)
         self.assertEqual(

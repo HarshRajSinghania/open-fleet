@@ -225,7 +225,8 @@ Fail-loud scope classification: which review lenses a change earns. Emits shell-
 `runtime/scripts/diff_scope.py:1-75`; behavior pinned by `tests/test_diff_scope.py`.
 
 Usage: `diff_scope.py [--base REF] [--repo DIR] [--strict] [--overlap FILE] [--json]` (also sourcable as
-`source <(diff_scope.py)`).
+`source <(diff_scope.py)`), or `diff_scope.py --predict-merge BASE BRANCH [--repo DIR]` (also
+`wtree.sh predict-merge`) to predict a 3-way merge in memory without touching HEAD, index or working tree.
 
 Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master),
 `--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
@@ -240,7 +241,7 @@ independent flags: `FRONTEND`, `BACKEND`, `PROMPTS`, `TESTS`, `DOCS`, `CONFIG`,
 content signals (capped at 256 KiB per file; deleted files contribute path signals only).
 Only `BACKEND` is exclusive of frontend view files.
 
-Exits: 0 classified · 2 SCOPE_ERROR=no_base|diff_failed|unmatched|invalid_overlap.
+Exits: 0 classified (or `--predict-merge`: clean) · 1 `--predict-merge` only: a real conflict between two real commits · 2 SCOPE_ERROR=no_base|diff_failed|unmatched|invalid_overlap (an unresolvable or unrelated ref is `no_base`, never a conflict).
 
 > Why: the failure mode that makes a scope gate worthless is silence — a shallow checkout
 > resolves no base, the diff is empty, and a legitimate-looking zero is recorded. So the
@@ -699,7 +700,7 @@ Exits: 0 clear · 1 not clear (reason on stderr) · 2 usage.
 reports broken. Source `runtime/scripts/search_sessions.py:1-23`; behavior pinned by
 `tests/test_search_sessions.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint] [--runs-dir DIR] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C]`
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint] [--runs-dir DIR] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback on non-Orca runtimes); every snippet and title is fenced by `guard_text`.
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks
@@ -1147,7 +1148,8 @@ Keys:
 | `slow_after_s` | 600 — idle past this is SLOW |
 | `hung_after_s` | 1800 — idle past this is HUNG |
 | `wedge_frozen_s` | 1200 — transcript frozen past this beyond STOP (plus an unanswered nudge) is WEDGED |
-| `max_nudges_per_dispatch` | 1 |
+| `max_nudges_per_dispatch` | 1 — hang/liveness nudges |
+| `max_ci_nudges_per_dispatch` | 1 (default when absent) — CI-failure nudges, a separate budget so a later real hang still gets its nudge; the hourly cap and window count both kinds |
 | `nudge_window_s` | 3600 — minimum spacing between nudges to one worker |
 | `max_nudges_per_hour_per_worker` | 1 |
 | `nudge_text` | The auto-nudge message |

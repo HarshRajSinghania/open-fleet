@@ -464,5 +464,127 @@ class TestScopeOverlaps(ScopeBase):
         self.assertEqual(json.loads(r.stdout)["error"], "diff_failed")
 
 
+class PredictMergeContract(ScopeBase):
+    """#590 predict-merge: 0 clean, 1 real conflict, 2 SCOPE_ERROR — an unknown
+    ref must never masquerade as a conflict."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.repo, "shared.txt", "work\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "work change")
+        git(self.repo, "checkout", "-q", "main")
+        write(self.repo, "shared.txt", "main\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "main change")
+        git(self.repo, "checkout", "-q", "-b", "clean", "main")
+        write(self.repo, "other.txt", "x\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "clean change")
+        git(self.repo, "checkout", "-q", "main")
+
+    def predict(self, *refs, json_out=False):
+        extra = ["--json"] if json_out else []
+        return self.run_scope("--predict-merge", *refs, *extra)
+
+    def test_clean_conflict_and_untouched_worktree(self):
+        head = git(self.repo, "rev-parse", "HEAD").stdout
+        status = git(self.repo, "status", "--porcelain").stdout
+        clean = self.predict("main", "clean")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertTrue(json.loads(clean.stdout)["clean"])
+        conflict = self.predict("main", "work")
+        self.assertEqual(conflict.returncode, 1, conflict.stdout + conflict.stderr)
+        self.assertIn("shared.txt", json.loads(conflict.stdout)["conflicts"])
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout, head)
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout, status)
+
+    def test_unknown_ref_is_no_base_not_a_conflict(self):
+        for refs in (("no-such-base", "work"), ("main", "no-such-branch")):
+            with self.subTest(refs=refs):
+                r = self.predict(*refs)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("SCOPE_ERROR=no_base", r.stdout)
+                rj = self.predict(*refs, json_out=True)
+                self.assertEqual(rj.returncode, 2)
+                doc = json.loads(rj.stdout)
+                self.assertEqual(doc["error"], "no_base")
+                self.assertIsNone(doc["clean"])
+        for refs in (("main", "nope"), ("--output=/tmp/x", "work")):  # never an option to git
+            with self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(self.repo, *refs)
+            self.assertEqual(cm.exception.kind, "no_base")
+
+    def test_unrelated_history_is_no_base(self):
+        git(self.repo, "checkout", "-q", "--orphan", "island")
+        git(self.repo, "rm", "-rqf", ".")
+        write(self.repo, "island.txt", "i\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "island")
+        git(self.repo, "checkout", "-q", "main")
+        r = self.predict("main", "island")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("SCOPE_ERROR=no_base", r.stdout)
+
+    def _pre_238_git(self):
+        """A git that predates `merge-tree --write-tree` (2.38): usage error, exit 129."""
+        real = shutil.which("git")
+        bindir = Path(self.tmp) / "oldgit"
+        bindir.mkdir()
+        shim = bindir / "git"
+        shim.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do\n"
+            "  if [ \"$a\" = --write-tree ]; then\n"
+            "    echo 'usage: git merge-tree <base-tree> <branch1> <branch2>' >&2; exit 129\n"
+            "  fi\n"
+            "done\n"
+            f"exec {real} \"$@\"\n", encoding="utf-8")
+        shim.chmod(0o755)
+        return {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+    def test_old_git_is_diff_failed_never_a_guessed_verdict(self):
+        env = self._pre_238_git()
+        for refs in (("main", "clean"), ("main", "work")):
+            with self.subTest(refs=refs):
+                r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo),
+                                    "--predict-merge", *refs, "--json"],
+                                   capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                doc = json.loads(r.stdout)
+                self.assertEqual(doc["error"], "diff_failed")
+                self.assertIsNone(doc["clean"])
+                self.assertIn("2.38", doc["detail"])
+
+    def test_non_utf8_path_conflict_is_reported_as_json(self):
+        name = os.fsdecode(b"caf\xe9.txt")
+        git(self.repo, "checkout", "-q", "-b", "latin", "main")
+        (self.repo / name).write_text("latin\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "latin side")
+        git(self.repo, "checkout", "-q", "main")
+        (self.repo / name).write_text("main\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "main side")
+        r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo),
+                            "--predict-merge", "main", "latin", "--json"],
+                           capture_output=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        doc = json.loads(r.stdout)
+        self.assertFalse(doc["clean"])
+        self.assertIn(name, doc["conflicts"])
+
+    def test_unexpected_crash_is_exit_2_not_the_conflict_code(self):
+        out = io.StringIO()
+        with mock.patch.object(diff_scope, "predict_merge", side_effect=RuntimeError("boom")), \
+                contextlib.redirect_stdout(out):
+            rc = diff_scope.main(["--repo", str(self.repo), "--predict-merge", "main", "work",
+                                  "--json"])
+        self.assertEqual(rc, diff_scope.EXIT_SCOPE_ERROR)
+        doc = json.loads(out.getvalue())
+        self.assertEqual(doc["error"], "diff_failed")
+        self.assertIn("boom", doc["detail"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

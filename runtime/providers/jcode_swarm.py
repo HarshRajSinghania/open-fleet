@@ -1,40 +1,82 @@
 #!/usr/bin/env python3
-"""jcode_swarm.py — JCode Swarm (`1jehuang/jcode`, `jcode serve` + `jcode api-bridge`) RuntimeProvider (#588).
+"""jcode_swarm.py — JCode Swarm (`1jehuang/jcode`, `jcode serve` daemon socket) RuntimeProvider (#588).
 
-Maps the canonical Runtime Provider Interface (RPI) onto JCode's native multi-agent swarm:
-  - Targets `jcode serve` Unix socket via `jcode api-bridge` (`create_session`, `assign_task`,
-    `dm`, `broadcast`, `create_plan`, `run_plan`, `file_touches`).
-  - CRITICAL SAFETY FIX: `jcode --profile minimal` still enables `bash,write,edit,replace,apply_patch`!
-    `JCodeSwarmProvider` NEVER uses `--profile minimal` for `profile == "ro"`; it enforces explicit
-    `--tools read,agentgrep,ls,session_search,conversation_search,memory,web_search` and
-    `--disabled-tools bash,write,edit,replace,apply_patch,swarm,selfdev,desktop_selfdev,bg,codemode,mcp`.
-  - Queries `file_touches` and feeds `LocalStateStore.record_file_touch` for real-time line-range
-    conflict detection (`overlapping_hunk` vs `same_file_disjoint_hunk`).
+Source-derived (crates/jcode-protocol/src/wire.rs + wire/events.rs) — there is NO
+`jcode api-bridge <op> <json>` CLI and the api-bridge exposes no swarm ops, so this adapter
+speaks the daemon's own newline-delimited JSON protocol (`{"type": ..., "id": N, ...}`) on
+the `jcode serve` socket (`--socket` / `JCODE_SOCKET`, default `<runtime_dir>/jcode.sock`;
+override with `OPEN_FLEET_JCODE_SOCKET`). A connection must `subscribe` first; it attaches
+to the coordinator session named by `OPEN_FLEET_JCODE_COORDINATOR_SESSION` (swarm requests
+are issued *as* that session).
+
+  - `worker_start` -> `comm_spawn{session_id, working_dir, initial_message=<task spec>,
+    spawn_mode:"headless", label}`; the dispatch id is the reply's `new_session_id`.
+    A swarm member is always a jcode session (no external harness), so `agent` must be
+    `jcode`. `comm_spawn` carries no tool restriction, so `PROFILE=ro` fails closed
+    (`unsupported_profile`); `danger` fails closed (no sandbox).
+  - `worker_read` -> `comm_read_context{target_session}` (history messages).
+  - `worker_show` -> `comm_status{target_session}` and syncs file touches.
+  - `worker_fence` stop/abandon/release -> `comm_stop{target_session, force}`; retain is local.
+  - `sync_file_touches` -> `debug_command{command:"swarm:touches"}` (daemon needs
+    `JCODE_DEBUG_CONTROL=1`). FileTouch has no line fields; the range is parsed from the
+    summary exactly like jcode's `parse_file_activity_line_range`, and only a touch whose
+    range is unknown is recorded as whole-file.
 """
 from __future__ import annotations
 
 import json
-import subprocess
+import re
+import socket
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import ExternalDispatchMixin, env_lookup, real_worktree
 from .base import (
     ProviderError,
     RuntimeProvider,
-    build_harness_command,
     check_monotonic_profile,
+    fence_state,
+    normalize_read,
+    parse_json_strict,
+    require_id,
 )
 from .local_state import LocalStateStore
 
-JCODE_RO_TOOLS = "read,agentgrep,ls,session_search,conversation_search,memory,web_search"
-JCODE_RO_DISABLED_TOOLS = "bash,write,edit,replace,apply_patch,swarm,selfdev,desktop_selfdev,bg,codemode,mcp"
-JCODE_RW_DISABLED_TOOLS = "selfdev,desktop_selfdev"
+WHOLE_FILE_END = 999999
+_WRITE_OPS = {"wrote", "edited", "write", "edit"}
 
 
-class JCodeSwarmProvider(RuntimeProvider):
-    """RuntimeProvider adapter for JCode Swarm (`jcode serve` + `jcode api-bridge`)."""
+def parse_line_range(summary: Any) -> tuple[int, int] | None:
+    """Port of jcode `parse_file_activity_line_range` (server/file_activity.rs)."""
+    if not isinstance(summary, str):
+        return None
+    idx = summary.find("lines ")
+    if idx >= 0:
+        rest = summary[idx + len("lines "):]
+    else:
+        idx = summary.find("line ")
+        if idx < 0:
+            return None
+        rest = summary[idx + len("line "):]
+    m = re.match(r"(\d+)(?:-(\d*))?", rest)
+    if not m:
+        return None
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    return (min(start, end), max(start, end))
+
+
+def default_socket_path(env: dict[str, str] | None) -> str:
+    explicit = env_lookup(env, "OPEN_FLEET_JCODE_SOCKET", "ORCA_JCODE_SOCKET", "JCODE_SOCKET")
+    if explicit:
+        return explicit
+    runtime = env_lookup(env, "JCODE_RUNTIME_DIR", "XDG_RUNTIME_DIR")
+    return str(Path(runtime) / "jcode.sock") if runtime else ""
+
+
+class JCodeSwarmProvider(ExternalDispatchMixin, RuntimeProvider):
+    """RuntimeProvider adapter for JCode Swarm (`jcode serve` daemon socket)."""
 
     name = "jcode-swarm"
 
@@ -45,90 +87,93 @@ class JCodeSwarmProvider(RuntimeProvider):
         *,
         db_path: str | Path | None = None,
         env: dict[str, str] | None = None,
+        socket_path: str | Path | None = None,
+        coordinator_session: str | None = None,
         **kwargs: Any,
     ) -> None:
         self.env = dict(env) if env is not None else None
         self.state = state or LocalStateStore(db_path=db_path, env=self.env)
+        self.socket_path = str(socket_path or default_socket_path(self.env))
+        self.coordinator_session = coordinator_session or env_lookup(
+            self.env, "OPEN_FLEET_JCODE_COORDINATOR_SESSION", "ORCA_JCODE_COORDINATOR_SESSION"
+        )
         self._runner = runner or self._default_runner
         self.call_log: list[dict[str, Any]] = []
+        self._seq = 1
+        with self.state._connect() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS jcode_touch_sync (touch_key TEXT PRIMARY KEY, synced_at REAL NOT NULL)")
 
-    def capabilities(self) -> set[str]:
-        return {"cap:core-orchestration", "cap:jcode-swarm", "cap:file-touches"}
-
-    def _default_runner(self, call: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        argv = call.get("argv") or ["jcode", "api-bridge", str(call.get("op", "")), json.dumps(call.get("payload", {}))]
-        proc = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=kwargs.get("timeout", 60))
-        if proc.returncode != 0:
-            raise ProviderError(
-                "jcode_bridge_error",
-                proc.stderr.strip() or f"jcode api-bridge exited with {proc.returncode}",
-                {"argv": argv, "returncode": proc.returncode},
-            )
-        out = (proc.stdout or "").strip()
-        if not out:
-            return {"ok": True}
+    # --- transport -------------------------------------------------------------------
+    def _default_runner(self, request: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        if not self.socket_path:
+            raise ProviderError("jcode_socket_unknown", "jcode: set OPEN_FLEET_JCODE_SOCKET (or JCODE_SOCKET / JCODE_RUNTIME_DIR)")
+        timeout = float(kwargs.get("timeout", 60))
+        subscribe = {"type": "subscribe", "id": 1, "target_session_id": self.coordinator_session}
+        wd = request.get("working_dir")
+        if wd:
+            subscribe["working_dir"] = wd
+        req_id = int(request.get("id") or 2)
+        deadline = time.monotonic() + timeout
         try:
-            data = json.loads(out)
-            return data if isinstance(data, dict) else {"items": data}
-        except json.JSONDecodeError:
-            return {"raw": out}
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                sock.connect(self.socket_path)
+                sock.sendall((json.dumps(subscribe) + "\n").encode("utf-8"))
+                sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+                buf = b""
+                while time.monotonic() < deadline:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise ProviderError("jcode_bad_json", f"jcode: daemon sent non-JSON line {line[:120]!r}") from exc
+                        if isinstance(ev, dict) and ev.get("id") in (1, req_id) and ev.get("type") == "error":
+                            raise ProviderError("jcode_daemon_error", str(ev.get("message") or "error"), {"event": ev})
+                        if isinstance(ev, dict) and ev.get("id") == req_id and ev.get("type") != "ack":
+                            return ev
+        except ProviderError:
+            raise
+        except (OSError, socket.timeout) as exc:
+            raise ProviderError("jcode_unreachable", f"jcode: daemon socket {self.socket_path}: {exc}") from exc
+        raise ProviderError("jcode_no_reply", f"jcode: no reply to {request.get('type')!r} before the socket closed")
 
-    def _bridge(self, op: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        argv = ["jcode", "api-bridge", op, json.dumps(payload, sort_keys=True)]
-        call = {"op": op, "payload": payload, "argv": argv}
-        self.call_log.append(call)
-        res = self._runner(call, **kwargs)
-        if isinstance(res, dict):
-            return res
-        return {"result": res}
+    def _request(self, req_type: str, **fields: Any) -> dict[str, Any]:
+        self._seq += 1
+        request = {"type": req_type, "id": self._seq, **{k: v for k, v in fields.items() if v is not None}}
+        self.call_log.append(request)
+        res = self._runner(request)
+        if not isinstance(res, dict):
+            raise ProviderError("jcode_bad_response", f"jcode: expected an event object for {req_type!r}")
+        if res.get("type") == "error":
+            raise ProviderError("jcode_daemon_error", str(res.get("message") or "error"), {"event": res})
+        return res
 
-    # --- Task DAG (`create_plan` / `run_plan` + `LocalStateStore`) ---
-    def task_create(
-        self,
-        *,
-        spec: str = "",
-        title: str | None = None,
-        display_name: str | None = None,
-        deps: list[str] | None = None,
-        parent: str | None = None,
-        run: str | None = None,
-        sender: str | None = None,
-        retry_request: str | None = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        local = self.state.task_create(
-            spec=spec,
-            title=title,
-            display_name=display_name,
-            deps=deps,
-            parent=parent,
-            run=run,
-            sender=sender,
-            retry_request=retry_request,
-        )
-        upstream = self._bridge(
-            "create_plan",
-            {
-                "task_id": local["task"]["id"],
-                "title": title or display_name or local["task"]["id"],
-                "spec": spec,
-                "deps": list(deps or []),
-                "run_id": run or "default",
-            },
-        )
-        local["task"]["jcodePlan"] = upstream
-        return local
+    def _coordinator(self) -> str:
+        if not self.coordinator_session:
+            raise ProviderError(
+                "missing_coordinator_session",
+                "jcode: swarm requests are issued as a coordinator session; set OPEN_FLEET_JCODE_COORDINATOR_SESSION",
+            )
+        return self.coordinator_session
+
+    # --- Task DAG (local; jcode plans are proposed by sessions, not by an external client) ---
+    def task_create(self, **kwargs: Any) -> dict[str, Any]:
+        return self.state.task_create(**kwargs)
 
     def task_update(self, **kwargs: Any) -> dict[str, Any]:
-        local = self.state.task_update(**kwargs)
-        if kwargs.get("status") == "ready":
-            self._bridge("run_plan", {"task_id": kwargs.get("task_id"), "status": "ready"})
-        return local
+        return self.state.task_update(**kwargs)
 
     def task_list(self, **kwargs: Any) -> dict[str, Any]:
         return self.state.task_list(**kwargs)
 
-    # --- Worker Dispatch (`create_session` + `assign_task`) ---
+    # --- Worker dispatch (`comm_spawn`) ---
     def worker_start(
         self,
         *,
@@ -150,98 +195,107 @@ class JCodeSwarmProvider(RuntimeProvider):
         cached = self.state.get_or_record_request(retry_request, "worker-start")
         if cached:
             return cached
-
         check_monotonic_profile(parent_profile, profile)
-        harness = build_harness_command("jcode" if agent == "jcode-swarm" else agent, profile, worktree, prompt=prompt)
-
-        if profile == "ro":
-            tools = JCODE_RO_TOOLS
-            disabled_tools = JCODE_RO_DISABLED_TOOLS
-        else:
-            tools = "*"
-            disabled_tools = JCODE_RW_DISABLED_TOOLS
-
-        session_payload = {
-            "worktree": worktree,
-            "agent": agent,
-            "profile": profile,
-            "tools": tools,
-            "disabled_tools": disabled_tools,
-            "use_minimal_profile": False,  # Never use `--profile minimal` (includes bash/write/edit!)
-            "command": harness["command"],
-            "argv": harness["argv"],
-        }
-        sess = self._bridge("create_session", session_payload)
-        session_id = str(sess.get("session_id") or sess.get("id") or f"jc_sess_{uuid.uuid4().hex[:10]}")
-
-        assigned = self._bridge(
-            "assign_task",
-            {
-                "session_id": session_id,
-                "task_id": task_id,
-                "prompt": prompt or f"Execute task {task_id}",
-                "profile": profile,
-                "disabled_tools": disabled_tools,
-            },
+        if agent not in ("jcode", "jcode-swarm"):
+            raise ProviderError(
+                "unsupported_agent",
+                f"jcode-swarm: a swarm member is always a jcode session; agent {agent!r} cannot be launched by comm_spawn",
+            )
+        if profile != "rw":
+            raise ProviderError(
+                "unsupported_profile",
+                f"jcode-swarm: PROFILE={profile} cannot be enforced — comm_spawn has no tool restriction field "
+                "(configure_tools only applies to an attached session after its first turn starts) and no sandbox",
+            )
+        wt = real_worktree(worktree)
+        if not wt:
+            raise ProviderError("worktree_required", f"jcode-swarm: jcode does not create worktrees; pass an existing --worktree (got {worktree!r})")
+        coord = self._coordinator()
+        task_prompt = self.resolve_task_prompt(task_id, prompt)
+        reply = self._request(
+            "comm_spawn",
+            session_id=coord,
+            working_dir=wt,
+            initial_message=task_prompt,
+            spawn_mode="headless",
+            label=(name or task_id or None),
+            request_nonce=retry_request or None,
         )
-
+        session_id = require_id(reply, "new_session_id", provider="jcode", what="new_session_id")
         handle = f"jcode:{session_id}"
         effective = {
-            "agent": agent,
+            "agent": "jcode",
             "profile": profile,
-            "tools": tools,
-            "disabled_tools": disabled_tools,
-            "command": harness["command"],
-            "argv": harness["argv"],
-            "env": harness["env"],
-            "profile_flag": harness["profile_flag"],
+            "mechanism": "comm_spawn",
+            "spawnMode": "headless",
+            "coordinatorSession": coord,
             "sessionId": session_id,
+            # jcode reads its PreToolUse hook from JCODE_HOOK_PRE_TOOL in the DAEMON env; no
+            # per-worktree file is read, so nothing is written into the worker worktree.
+            "hooks": None,
         }
-        now = time.time()
-        with self.state._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO dispatches(
-                    dispatch_id, task_id, run_id, worktree, agent, profile,
-                    terminal_handle, state, terminal_state, backend, launch_effective, session_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'active', 'jcode-swarm', ?, ?, ?, ?)
-                """,
-                (session_id, task_id, run or "default", worktree, agent, profile, handle, json.dumps(effective), session_id, now, now),
-            )
-
+        self._record_dispatch(
+            dispatch_id=session_id, task_id=task_id, run=run, worktree=wt, agent="jcode",
+            profile=profile, handle=handle, effective=effective, session_id=session_id,
+        )
         res = {
             "state": "ready",
             "dispatchId": session_id,
             "agentTerminalHandle": handle,
-            "worktree": worktree,
-            "agent": agent,
+            "worktree": wt,
+            "agent": "jcode",
             "profile": profile,
             "launch": {"effective": effective},
-            "upstream": {"session": sess, "assigned": assigned},
+            "upstream": reply,
         }
         self.state.save_request(retry_request, "worker-start", "ready", res)
         return res
 
-    # --- File-Touch Coordination (`file_touches` + `LocalStateStore.record_file_touch`) ---
+    # --- File-touch coordination (`debug_command swarm:touches`) ---
     def sync_file_touches(self, *, run_id: str = "default", **kwargs: Any) -> dict[str, Any]:
-        raw = self._bridge("file_touches", {"run_id": run_id})
-        touches = raw.get("touches", raw.get("items", []))
+        reply = self._request("debug_command", command="swarm:touches", session_id=self.coordinator_session or None)
+        if reply.get("ok") is False:
+            raise ProviderError("jcode_debug_refused", str(reply.get("output") or "swarm:touches refused"), {"event": reply})
+        output = reply.get("output")
+        touches = parse_json_strict(output, "jcode", allow_empty=False) if isinstance(output, str) else output
+        if not isinstance(touches, list):
+            raise ProviderError("jcode_bad_response", "jcode: swarm:touches output is not a JSON list", {"event": reply})
         results: list[dict[str, Any]] = []
+        skipped = 0
         for t in touches:
             if not isinstance(t, dict):
                 continue
+            op = str(t.get("op") or "")
+            path = str(t.get("path") or t.get("file_path") or "")
+            worker = str(t.get("session_id") or t.get("worker_id") or "")
+            if not path or not worker or op.lower() not in _WRITE_OPS:
+                skipped += 1
+                continue
+            if t.get("start_line") is not None:
+                start = int(t["start_line"])
+                end = int(t.get("end_line") if t.get("end_line") is not None else start)
+                known = True
+            else:
+                rng = parse_line_range(t.get("summary"))
+                known = rng is not None
+                start, end = rng if rng else (1, WHOLE_FILE_END)
+            key = json.dumps([run_id, worker, path, op, t.get("timestamp_unix"), t.get("summary"), start, end])
+            with self.state._connect() as conn:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO jcode_touch_sync(touch_key, synced_at) VALUES (?, ?)", (key, time.time())
+                )
+                fresh = cur.rowcount == 1
+            if not fresh:
+                skipped += 1
+                continue
             rec = self.state.record_file_touch(
-                worker_id=str(t.get("worker_id") or t.get("session_id") or "worker"),
-                file_path=str(t.get("file_path") or t.get("path") or ""),
-                start_line=int(t.get("start_line", 1)),
-                end_line=int(t.get("end_line", 999999)),
-                op=str(t.get("op", "write")),
-                run_id=run_id,
+                worker_id=worker, file_path=path, start_line=start, end_line=end, op="write", run_id=run_id
             )
+            rec["rangeKnown"] = known
             results.append(rec)
-        return {"synced": len(results), "results": results, "upstream": raw}
+        return {"synced": len(results), "skipped": skipped, "results": results, "upstream": reply}
 
-    # --- Mailbox (`dm` / `broadcast` + `LocalStateStore`) ---
+    # --- Mailbox (`comm_message` + `LocalStateStore`) ---
     def send_message(
         self,
         *,
@@ -256,21 +310,24 @@ class JCodeSwarmProvider(RuntimeProvider):
         **kwargs: Any,
     ) -> dict[str, Any]:
         local = self.state.send_message(
-            subject=subject,
-            msg_type=msg_type,
-            to=to,
-            outcome=outcome,
-            sender=sender,
-            payload=payload,
-            run=run,
-            attrs=attrs,
+            subject=subject, msg_type=msg_type, to=to, outcome=outcome, sender=sender,
+            payload=payload, run=run, attrs=attrs,
         )
         body = payload if payload is not None else subject
-        if to in ("all", "broadcast", "*"):
-            upstream = self._bridge("broadcast", {"subject": subject, "type": msg_type, "body": body, "from": sender or "worker"})
-        else:
-            upstream = self._bridge("dm", {"to": to or "coordinator", "subject": subject, "type": msg_type, "body": body, "from": sender or "worker"})
-        local["upstream"] = upstream
+        target: str | None = None
+        broadcast = to in ("all", "broadcast", "*")
+        if to and not broadcast:
+            with self.state._connect() as conn:
+                row = conn.execute(
+                    "SELECT session_id FROM dispatches WHERE backend = ? AND (dispatch_id = ? OR terminal_handle = ?)",
+                    (self.name, to, to),
+                ).fetchone()
+            target = str(row["session_id"]) if row else None
+        if broadcast or target:
+            local["upstream"] = self._request(
+                "comm_message", from_session=self._coordinator(), message=f"[{msg_type}] {subject}\n{body}",
+                to_session=target,
+            )
         return local
 
     def check_messages(self, **kwargs: Any) -> dict[str, Any]:
@@ -285,23 +342,47 @@ class JCodeSwarmProvider(RuntimeProvider):
     def request_show(self, request_id: str, **kwargs: Any) -> dict[str, Any]:
         return self.state.request_show(request_id)
 
+    # --- Worker observation & fencing ---
     def worker_list(self, **kwargs: Any) -> dict[str, Any]:
-        raw = self._bridge("list_sessions", {})
-        return {"workers": raw.get("sessions", []), "upstream": raw}
+        return self._list_local(run=kwargs.get("run"), task=kwargs.get("task"), limit=kwargs.get("limit"))
 
     def worker_show(self, *, dispatch_id: str = "", **kwargs: Any) -> dict[str, Any]:
-        raw = self._bridge("get_session", {"session_id": dispatch_id})
-        return {"dispatchId": dispatch_id, "worker": raw}
+        row = self._dispatch_row(dispatch_id)
+        status = self._request("comm_status", session_id=self._coordinator(), target_session=str(row["session_id"]))
+        out = self._show_row(row, raw=status)
+        try:
+            out["fileTouches"] = self.sync_file_touches(run_id=row["run_id"] or "default")
+        except ProviderError as exc:
+            out["fileTouches"] = {"error": exc.to_envelope()["error"]}
+        return out
 
     def worker_read(self, *, dispatch_id: str = "", source: str = "transcript", limit: int = 50, **kwargs: Any) -> dict[str, Any]:
-        raw = self._bridge("read_session", {"session_id": dispatch_id, "limit": limit})
-        return {"dispatchId": dispatch_id, "source": source, "lines": raw.get("lines", []), "upstream": raw}
+        row = self._dispatch_row(dispatch_id)
+        if source != "transcript":
+            raise ProviderError("unsupported_operation", "jcode-swarm: only the session transcript is readable")
+        reply = self._request("comm_read_context", session_id=self._coordinator(), target_session=str(row["session_id"]))
+        msgs = reply.get("messages")
+        if not isinstance(msgs, list):
+            raise ProviderError("jcode_bad_response", "jcode: comm_read_context carried no messages", {"event": reply})
+        window = msgs[-int(limit):] if limit else msgs
+        messages = [
+            {"id": f"msg_{i}", "role": str(m.get("role") or "assistant"),
+             "blocks": [{"type": "text", "text": str(m.get("content") or "")}]}
+            for i, m in enumerate(window) if isinstance(m, dict)
+        ]
+        return normalize_read("transcript", messages=messages)
 
     def worker_fence(self, *, verb: str, dispatch_id: str = "", reason: str | None = None, **kwargs: Any) -> dict[str, Any]:
-        raw = self._bridge("close_session", {"session_id": dispatch_id, "verb": verb, "reason": reason})
-        with self.state._connect() as conn:
-            conn.execute(
-                "UPDATE dispatches SET state = ?, terminal_state = 'fenced', updated_at = ? WHERE dispatch_id = ?",
-                (verb, time.time(), dispatch_id),
+        fence_state(verb)
+        row = self._dispatch_row(dispatch_id)
+        raw = None
+        if verb != "retain":
+            raw = self._request(
+                "comm_stop", session_id=self._coordinator(), target_session=str(row["session_id"]),
+                force=(verb == "abandon") or None,
             )
-        return {"dispatchId": dispatch_id, "verb": verb, "state": verb, "reason": reason, "upstream": raw}
+        new_state, term_state = self._fence_local(dispatch_id, verb)
+        return {"dispatchId": dispatch_id, "verb": verb, "state": new_state, "terminalState": term_state,
+                "reason": reason, "upstream": raw}
+
+

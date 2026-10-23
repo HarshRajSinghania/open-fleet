@@ -928,9 +928,16 @@ against `ORCA_TERMINAL_HANDLE`);
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
 
-Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`
+Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`,
+`jcode`, `goose`, `hermes`, `crush`
 (default `claude`; effort default `xhigh`, keyset `minimal|low|medium|high|xhigh|max|ultra`
-— the codex levels, the only path that interpolates it); unknown agents refuse. Profiles: `ro`, `rw`
+— the codex levels, the only path that interpolates it); unknown agents refuse. Off Orca every
+launch is `runtime/providers/base.py`'s line. On Orca, `ro` runs the script's own row on the
+custom-argv lane: the jcode and hermes rows carry base.py's ro restriction (jcode's `--tools`
+allowlist and `--disabled-tools` set; hermes' `HERMES_WRITE_SAFE_ROOT=/dev/null` and
+`--toolsets file,web,session_search`), and crush `ro` refuses there, because its read-only mode
+is a `<data-dir>/crush.json` that only the posix provider installs (#596). `opencode`, `omp` and
+`pi` have no Orca row for any profile, so they refuse on Orca without a `WORKER_CMD`. Profiles: `ro`, `rw`
 (default), `danger` — least privilege; `danger` needs the ephemeral sandbox plus
 `ORCA_SANDBOX_RECIPE`, and the script runs the doctor transcript itself into
 `ORCA_SANDBOX_DOCTOR` for `runtime/scripts/sandbox_doctor.py`. Note: `danger` is

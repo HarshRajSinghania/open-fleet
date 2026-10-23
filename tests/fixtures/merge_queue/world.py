@@ -157,6 +157,16 @@ class World:
         self.git(self.worker, "push", "-q", "-f", "origin", f"{u['branch']}:refs/heads/{u['branch']}")
         return self.git(self.worker, "rev-parse", "HEAD")
 
+    def slow_deletions(self, seconds: float) -> Path:
+        """Make every branch DELETION pushed to the bare repo take `seconds`, marking start and end."""
+        marker = self.tmp / "deletions.log"
+        hook = self.bare / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nwhile read old new ref; do\n  case \"$new\" in 0000000000000000000000000000000000000000)\n"
+                        f"    echo start >> {marker}; sleep {seconds}; echo end >> {marker};;\n  esac\ndone\n",
+                        encoding="utf-8")
+        hook.chmod(0o755)
+        return marker
+
     def external_base_write(self, rel: str = "external.txt") -> str:
         """A non-cooperating writer moves BASE directly (not through the queue)."""
         self.git(self.worker, "fetch", "-q", "origin")

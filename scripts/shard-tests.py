@@ -97,7 +97,7 @@ WEIGHTS = {
     "test_inventory": 27.5,
     "test_local_state": 1.6,
     "test_merge_queue": 93.0,
-    "test_merge_queue_drills": 51.0,
+    "test_merge_queue_drills": 54.0,
     "test_migration_walkthrough": 0.1,
     "test_multi_harness_hooks_and_search": 3.2,
     "test_negative_control": 0.9,

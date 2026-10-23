@@ -218,6 +218,31 @@ class PauseTransferResume(DrillCase):
         self.assert_landed_once(units)
 
 
+class DeletionBoundary(DrillCase):
+    """A branch deletion is a remote write inside the merge boundary, like the merge (PR #647)."""
+
+    def test_a_conductor_killed_mid_deletion_holds_the_boundary_until_the_deletion_lands(self):
+        units = self.boarded("alpha")
+        marker = self.w.slow_deletions(3)
+        a = self.conductor("A")
+        deadline = time.time() + 60
+        while not (marker.exists() and "start" in marker.read_text()) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists(), "the conductor never started the branch deletion")
+        a.kill()  # its deletion push is still running, holding the inherited lock
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover")
+        self.assertEqual((rc, out.get("code")), (1, "merge_in_flight"), "ownership moved under a running deletion")
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover", "--wait", "30")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("end", marker.read_text().split(), "the handoff completed before the deletion landed")
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "B", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assert_landed_once(units)
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "branch", "--list", "alpha"), "")
+        outcomes = [r["body"]["outcome"] for r in self.receipts() if r["kind"] == "branch_teardown"]
+        self.assertEqual(outcomes, ["gone: deleted elsewhere"], "the next owner did not adopt the landed deletion")
+
+
 class TwoConductors(DrillCase):
     def test_two_competing_conductors_merge_each_unit_exactly_once(self):
         units = self.boarded("alpha", "beta", "gamma")

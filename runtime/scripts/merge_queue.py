@@ -17,8 +17,9 @@ What holds, and for whom
     after a token-checked compare-and-set that records the merge intent (`merging`). A handoff
     must hold the same lock to bump the epoch. A conductor paused after its lease check
     therefore resumes into a refused compare-and-set and never sends. One paused INSIDE the
-    boundary blocks the handoff (`merge_in_flight`) instead of being raced. The merge child
-    inherits the lock, so a conductor killed mid-call holds the boundary until the call ends.
+    boundary blocks the handoff (`merge_in_flight`) instead of being raced. Every remote write's
+    child (the merge, and a branch deletion) inherits the lock, so a conductor killed mid-call
+    holds the boundary until the call ends.
   * A handoff first reconciles every in-flight merge against authoritative state
     (`gh pr view`, or `git ls-remote` plus ancestry). One it cannot decide, because the remote
     is unreachable, blocks the handoff (`in_flight_unknown`). Nothing is guessed.
@@ -1022,7 +1023,7 @@ class MergeQueue:
         try:
             if not lock.acquire(30.0):
                 raise QueueError("merge_in_flight", "another process holds the merge boundary")
-            return [{"entry": e["entry_id"], "outcome": self._teardown_branch(token, cfg, e)} for e in owed]
+            return [{"entry": e["entry_id"], "outcome": self._teardown_branch(token, cfg, e, lock)} for e in owed]
         finally:
             lock.release()
 
@@ -1317,7 +1318,7 @@ class MergeQueue:
                 self._clear_tested(conn, repo, base, 0 if decision["resolution"] == "requeued" else e["seq"])
         if decision["resolution"] == "merged":
             self._boundary("merged_recorded", info)
-            branch = self._teardown_branch(token, cfg, e)
+            branch = self._teardown_branch(token, cfg, e, lock)
             return {"ok": True, "result": "merged", "entry": e["entry_id"], "unit": e["unit"], **decision,
                     "noGh": cfg["mode"] == "git", "branch": branch}
         if decision["resolution"] == "unknown":
@@ -1350,7 +1351,7 @@ class MergeQueue:
             return {**out, "outcome": "retained: the PR's head branch is not the entry's branch"}
         return {**out, "delete": True, "outcome": "delete"}
 
-    def _teardown_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any]) -> str:
+    def _teardown_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any], lock: EffectLock) -> str:
         """Carry out the entry's persisted teardown request, once. Never fails the merge.
 
         `keep` (the merge's --keep-branch) records that the branch was kept. `delete` deletes the
@@ -1370,7 +1371,7 @@ class MergeQueue:
             try:
                 d = self._teardown_decide(cfg, e)
                 if d["delete"]:
-                    d["outcome"], d["final"] = self._delete_branch(token, cfg, e)
+                    d["outcome"], d["final"] = self._delete_branch(token, cfg, e, lock)
             except egress.EgressError as exc:
                 d.update(final=False, outcome=f"pending: no egress receipt ({exc})")
             except QueueError as exc:
@@ -1388,8 +1389,14 @@ class MergeQueue:
                 self._receipt(conn, cfg["repo"], cfg["base"], "branch_teardown", d, e["entry_id"], lease)
         return d["outcome"]
 
-    def _delete_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any]) -> tuple[str, bool]:
-        """(outcome, final) of the compare-and-swap deletion of the merged head branch."""
+    def _delete_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any], lock: EffectLock) -> tuple[str, bool]:
+        """(outcome, final) of the compare-and-swap deletion of the merged head branch.
+
+        Called only with the effect lock held, and the push inherits it (`pass_fds`), as the
+        merge's send does: a conductor killed mid-deletion holds the boundary until its push
+        ends, so no handoff completes under a deletion still in flight (PR #647). The next owner
+        then finds the branch gone and records that.
+        """
         remote = self._bound_remote(cfg)
         self._owner(token)
         body = json.dumps({"repo": cfg["repo"], "branch": e["branch"], "head": e["accepted_head"]},
@@ -1398,8 +1405,10 @@ class MergeQueue:
         egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
                              "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
                              payload_sha256=hashlib.sha256(body).hexdigest())
+        if lock.fd is None:
+            raise QueueError("merge_in_flight", "a branch deletion needs the held merge boundary")
         proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
-                            remote, f":refs/heads/{e['branch']}", check=False)
+                            remote, f":refs/heads/{e['branch']}", check=False, pass_fds=(lock.fd,))
         if proc.returncode == 0:
             return "deleted", True
         now = self.git.fetch(remote, f"refs/heads/{e['branch']}", f"teardown/{e['branch']}")

@@ -6,6 +6,11 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
+  key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
+  a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it
+  signed itself. floor_guard.py already read the pin at its base ref; this gives the CLI the same
+  anchor. Without the flag, behaviour is unchanged.
 - **The A2A export says what it is, and A2A cards are validated against the official schema**
   (#607). `scripts/a2a_export.py` emits an offline mission descriptor, not an A2A transport
   AgentCard. Its `a2a-agent-card/v1` tags stay for existing consumers, it gains a `kind` field,

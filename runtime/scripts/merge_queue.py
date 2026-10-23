@@ -226,7 +226,8 @@ class Store:
         );
     """
     # Additive columns, migrated in place (local_state.py's `_migrate` rule): a store written by
-    # an older schema gains them on open, and two processes opening it at once both succeed.
+    # an older schema gains them on open. Schema and migration run in ONE `BEGIN IMMEDIATE`
+    # transaction, so concurrent openers take turns and each re-reads the columns under the lock.
     COLUMNS = {
         "mq_entries": {
             "accepted_head": "TEXT", "expected_base": "TEXT", "tested_base_tree": "TEXT",
@@ -236,19 +237,51 @@ class Store:
         },
     }
 
+    BUSY_SECONDS = 30.0
+
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as conn:
-            conn.executescript(self.SCHEMA)
+        with self.tx() as conn:
+            # Not executescript: it COMMITs first and runs each statement in autocommit, which
+            # would let another opener interleave between the CREATEs and the migration.
+            for statement in self.SCHEMA.split(";"):
+                if statement.strip():
+                    conn.execute(statement)
             self._migrate(conn)
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=30.0, isolation_level=None, factory=_ClosingConnection)
+        conn = sqlite3.connect(str(self.path), timeout=self.BUSY_SECONDS, isolation_level=None,
+                               factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
+        # The busy timeout first, so every statement below (and after) waits out a lock.
+        conn.execute(f"PRAGMA busy_timeout={int(self.BUSY_SECONDS * 1000)};")
+        self._wal(conn)
         return conn
+
+    def _wal(self, conn: sqlite3.Connection) -> None:
+        """Put the store in WAL mode, once per database file, surviving concurrent openers.
+
+        Switching the journal mode needs an exclusive lock, and SQLite answers a contender
+        `database is locked` at once rather than through the busy handler. Several conductors
+        opening a fresh store together hit exactly that (#599 CI: openers exiting 1 at random).
+        WAL is persistent, so the first opener's switch is every later connection's no-op;
+        a contender backs off and re-reads the mode until it sees WAL.
+        """
+        deadline = time.monotonic() + self.BUSY_SECONDS
+        delay = 0.005
+        while True:
+            try:
+                if str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower() == "wal":
+                    return
+                conn.execute("PRAGMA journal_mode=WAL;")
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 0.2)
 
     @classmethod
     def _migrate(cls, conn: sqlite3.Connection) -> None:
@@ -259,7 +292,7 @@ class Store:
                     continue
                 try:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-                except sqlite3.OperationalError as exc:  # a concurrent opener added it first
+                except sqlite3.OperationalError as exc:  # added already: the outcome we wanted
                     if "duplicate column" not in str(exc).lower():
                         raise
 

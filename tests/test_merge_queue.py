@@ -526,6 +526,37 @@ class StoreMigration(unittest.TestCase):
             results = [p.communicate(timeout=60) for p in procs]
             self.assertEqual([p.returncode for p in procs], [0] * 4, results)
 
+    OPENER = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('m',sys.argv[1]);"
+              "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.Store(sys.argv[2]);print('ok')")
+
+    def _open_together(self, db: Path, count: int) -> None:
+        procs = [subprocess.Popen([sys.executable, "-c", self.OPENER, str(W.SCRIPT), str(db)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) for _ in range(count)]
+        errors = [p.communicate(timeout=120)[1] for p in procs]
+        self.assertEqual([p.returncode for p in procs], [0] * count, [e for e in errors if e])
+
+    def test_many_openers_of_a_fresh_store_all_succeed_round_after_round(self):
+        # The CI race (PR #647): switching a fresh store to WAL refused a concurrent opener with
+        # `database is locked` instead of waiting. One round of four rarely shows it; eight
+        # openers over several rounds made it reproducible.
+        for _round in range(6):
+            with tempfile.TemporaryDirectory() as tmp:
+                self._open_together(Path(tmp) / "mq.db", 8)
+
+    def test_openers_racing_a_migration_all_succeed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "mq.db"
+            conn = sqlite3.connect(db)
+            conn.executescript(mq_mod.Store.SCHEMA)  # an older store: rollback journal, no new columns
+            conn.close()
+            self._open_together(db, 8)
+            conn = sqlite3.connect(db)
+            names = [r[1] for r in conn.execute("PRAGMA table_info(mq_entries)")]
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            conn.close()
+            self.assertTrue(set(mq_mod.Store.COLUMNS["mq_entries"]) <= set(names))
+            self.assertEqual(mode, "wal")
+
 
 class DoctrineWiring(unittest.TestCase):
     def test_the_policy_names_the_mechanism_that_enforces_it(self):

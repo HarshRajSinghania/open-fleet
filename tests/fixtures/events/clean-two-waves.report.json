@@ -1,0 +1,572 @@
+{
+  "carried": [],
+  "complete": true,
+  "conflicts": [],
+  "epochs": [
+    {
+      "clock": "host-a",
+      "coordinator": "coord-1",
+      "digest": "8d51f0037741d20256ca5842f9c971385460d579c458dc730103b718d710fe3a",
+      "epoch": 1,
+      "kind": "run.start"
+    }
+  ],
+  "fenced": [],
+  "record": {
+    "conflicts": 0,
+    "duplicates": 2,
+    "fenced": 0,
+    "head": "78970c4c61c5aa08baa964c23fdfcb3040bd212825787c96aa1a9b96888b040d",
+    "lines": 44,
+    "log_sha256": "2ee35fc6b701161929f76e2c9df84435d47c70e63c4c7528a9186fa23936ab02",
+    "other_run_events": 0,
+    "run_events": 42
+  },
+  "run": "run-a",
+  "schema": "open-fleet.events-report/1",
+  "unplanned": [],
+  "usage": {
+    "models": {
+      "claude-fixture": {
+        "cache_creation_input_tokens": {
+          "known_sum": null,
+          "unavailable": "5 of 5 observation(s) did not report it",
+          "value": null
+        },
+        "cache_read_input_tokens": {
+          "known_sum": null,
+          "unavailable": "5 of 5 observation(s) did not report it",
+          "value": null
+        },
+        "cost_usd": {
+          "known_sum": "1.00",
+          "unavailable": "1 of 5 observation(s) did not report it",
+          "value": null
+        },
+        "input_tokens": {
+          "value": 4000
+        },
+        "observations": 5,
+        "output_tokens": {
+          "value": 800
+        },
+        "provenance": [
+          "fixture stream d1 result line 40",
+          "fixture stream d2 result line 31; not reported: cost_usd",
+          "fixture stream d3 result line 22",
+          "fixture stream d4 result line 18",
+          "fixture stream d5 result line 27"
+        ]
+      },
+      "claude-review-fixture": {
+        "cache_creation_input_tokens": {
+          "known_sum": null,
+          "unavailable": "4 of 4 observation(s) did not report it",
+          "value": null
+        },
+        "cache_read_input_tokens": {
+          "known_sum": null,
+          "unavailable": "4 of 4 observation(s) did not report it",
+          "value": null
+        },
+        "cost_usd": {
+          "value": "0.17"
+        },
+        "input_tokens": {
+          "value": 900
+        },
+        "observations": 4,
+        "output_tokens": {
+          "value": 180
+        },
+        "provenance": [
+          "fixture stream r1 result line 9",
+          "fixture stream r2 result line 7",
+          "fixture stream r3 result line 8",
+          "fixture stream r4 result line 6"
+        ]
+      }
+    },
+    "run_total": {
+      "cache_creation_input_tokens": {
+        "unavailable": [
+          "model claude-fixture: 5 observation(s) did not report it",
+          "model claude-review-fixture: 4 observation(s) did not report it"
+        ],
+        "value": null
+      },
+      "cache_read_input_tokens": {
+        "unavailable": [
+          "model claude-fixture: 5 observation(s) did not report it",
+          "model claude-review-fixture: 4 observation(s) did not report it"
+        ],
+        "value": null
+      },
+      "cost_usd": {
+        "unavailable": [
+          "model claude-fixture: 1 observation(s) did not report it"
+        ],
+        "value": null
+      },
+      "input_tokens": {
+        "value": 4900
+      },
+      "output_tokens": {
+        "value": 980
+      }
+    },
+    "unobserved_dispatches": []
+  },
+  "waves": [
+    {
+      "builders": 2,
+      "metrics": {
+        "freshness": {
+          "value": "1"
+        },
+        "latency_max": {
+          "units": 2,
+          "value": "24.00m"
+        },
+        "latency_median": {
+          "units": 2,
+          "value": "22.00m"
+        },
+        "retries": {
+          "value": "1"
+        },
+        "review_queue_max": {
+          "reviews": 3,
+          "value": "10.00m"
+        },
+        "review_queue_median": {
+          "reviews": 3,
+          "value": "5.00m"
+        },
+        "rework": {
+          "bounced": 1,
+          "units": 2,
+          "value": "1/2"
+        },
+        "throughput": {
+          "value": "1.14/h",
+          "verified_closed": 2,
+          "wall_clock_s": "6300"
+        }
+      },
+      "outcomes": {
+        "closed-unverified": 0,
+        "completed": 0,
+        "open": 0,
+        "parked": 0,
+        "task_completed": 2,
+        "verified": 0,
+        "verified-closed": 2
+      },
+      "reviewers": 1,
+      "row": "| `wave=1` | `builders=2 reviewers=1` | `throughput=1.14/h` | `latency_median=22.00m latency_max=24.00m` | `rework=1/2` | `freshness=1` |",
+      "units": [
+        {
+          "bounced": false,
+          "dispatches": [
+            "d1"
+          ],
+          "events": [
+            {
+              "digest": "1a787ca348ce1f0e991d941ee1b781d3c942014f431b0b81fae193ee809dea5c",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "a2d1a0ed11766c5886806fb30cdd2cf8dd0d496702e5806904d84f5d347b2ded",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+              }
+            },
+            {
+              "digest": "e5eab533920a191cb654ebfbded628c273024483b72dec222d705d6baf286f0f",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "e16598558f5066c4298c59a8c0d224748e2b3e2babed274affc72e51b2d6ce8f",
+              "kind": "review.started",
+              "source": {
+                "ref": "fixture:review.started",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "72dbe0c6567e7891a72d4f9dbc716bc3e1fe4c44a0258fcb78ca02b6a3de2441",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "782bf570bd62c6d881fe5003659b5fd981cc926d21a9993a069720d27ea2e453",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "82fb41530393f5f20a590941b727cd0e8d91afc89b50c9755cb990c769c071be",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "seconds": "1200",
+            "value": "20.00m"
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "closed_tree": null,
+            "done_at": [
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            "reviewed": [
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            "verified_at": [
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ]
+          },
+          "task": "t1",
+          "task_completed": true,
+          "voided_reviews": []
+        },
+        {
+          "bounced": true,
+          "dispatches": [
+            "d2",
+            "d3"
+          ],
+          "events": [
+            {
+              "digest": "1e85f91a1214e31d08510909f7381233edf90f3a8a6b6318d3f6614c55f807bb",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "78c7400f1724b9ea9a66323b93213cc0859003264e4c4e6a935c01349bbd2143",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "cdd68575d599339faf1b64d0204b95884717d8cc5e26c69c0ebfefcae9e7156a",
+              "kind": "review.started",
+              "source": {
+                "ref": "fixture:review.started",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "66f8a6e71bbfce317054e4a1d50fb63bb8f5576d67b947be144b0d430ecbbf58",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "7e9f1e39a0de8bbffe1bf83f932585ef339154e11df3c69991ab9087aeafdf9e",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "e736c9bb7d4c42932e513cf79c1665c526a12fa4cbdbbd8e9339f4dee1b52a8f",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "e7c684080e5900ba25cf289606157a7e32692ef5877908819fbede3f229f5a15",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "2897c78ee9c702d1f95f62cdc8547fb96f8e511074f3cd1306a69e9dee0cd1bf",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "d6b367f9c85da12bba8d214bf7775a127010f5c809e2f3e1137d5a266adf4784",
+              "kind": "review.started",
+              "source": {
+                "ref": "fixture:review.started",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "94bc4b00863ea601ebe6559a2ed28a8d703f976d1f9fa5db69f22c60693bc738",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "37bd031262d365199dcda2cf97b03fc134c7c9f20c0675e2e31685c64f3b2c2a",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "seconds": "1440",
+            "value": "24.00m"
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            "closed_tree": null,
+            "done_at": [
+              "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ],
+            "reviewed": [
+              "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ],
+            "verified_at": [
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          },
+          "task": "t2",
+          "task_completed": true,
+          "voided_reviews": [
+            "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+          ]
+        }
+      ],
+      "wave": 1
+    },
+    {
+      "builders": 1,
+      "metrics": {
+        "freshness": {
+          "value": "0"
+        },
+        "latency_max": {
+          "units": 2,
+          "value": "20.00m"
+        },
+        "latency_median": {
+          "units": 2,
+          "value": "12.50m"
+        },
+        "retries": {
+          "value": "0"
+        },
+        "review_queue_max": {
+          "reviews": 1,
+          "value": "1.00m"
+        },
+        "review_queue_median": {
+          "reviews": 1,
+          "value": "1.00m"
+        },
+        "rework": {
+          "bounced": 0,
+          "units": 2,
+          "value": "0/2"
+        },
+        "throughput": {
+          "value": "0.86/h",
+          "verified_closed": 1,
+          "wall_clock_s": "4200"
+        }
+      },
+      "outcomes": {
+        "closed-unverified": 0,
+        "completed": 0,
+        "open": 0,
+        "parked": 1,
+        "task_completed": 2,
+        "verified": 0,
+        "verified-closed": 1
+      },
+      "reviewers": 1,
+      "row": "| `wave=2` | `builders=1 reviewers=1` | `throughput=0.86/h` | `latency_median=12.50m latency_max=20.00m` | `rework=0/2` | `freshness=0` |",
+      "units": [
+        {
+          "bounced": false,
+          "dispatches": [
+            "d4"
+          ],
+          "events": [
+            {
+              "digest": "84e014c4572c730ca0820b1f2fbc9e65dab0e5e61f5ec25fd3d46bd71b357cbd",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "f82d19ffd2e286db8c847a6e542e466ef4cb3b7283bdd53155c366d0f9f22832",
+              "kind": "unit.parked",
+              "source": {
+                "ref": "fixture:unit.parked",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "93ed63b63637d2f1c26d89a3dc20a2c3c428a7c87977ed7863875966b01d80f6",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "seconds": "300",
+            "value": "5.00m"
+          },
+          "outcome": "parked",
+          "park_classes": [
+            "needs-human"
+          ],
+          "revisions": {
+            "closed_at": null,
+            "closed_tree": null,
+            "done_at": [
+              "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+            ],
+            "reviewed": [],
+            "verified_at": []
+          },
+          "task": "t3",
+          "task_completed": true,
+          "voided_reviews": []
+        },
+        {
+          "bounced": false,
+          "dispatches": [
+            "d5"
+          ],
+          "events": [
+            {
+              "digest": "71335a570b266bdef994482fb83beba27b1e7eb10924225ebb79ecf298db6c17",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "dd7377bb47b33fde1ea005cf61355ebd47c0ad62dd8a1e965bc95803b4114529",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "8c37d441e879beb7326719bcb6297df69f91d35eb67c13dcb841418811e081fa",
+              "kind": "review.started",
+              "source": {
+                "ref": "fixture:review.started",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "c7dabb425ca14ef508449967000a2b0b1c9d3af30473ee0ea6663e384042b341",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "06f144d0b84652677f52e189b284c9502896294155ab98f5e2bf01ad9bd506e8",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "2ff5813c9860489bc0a00880cee4ab0dce8d7df37dc4f496a88e4f337d297532",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "f12de0cce7bd5d0e1de475f7a2399cbb3b49aab5950c6e707a2a51129b601328",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "seconds": "1200",
+            "value": "20.00m"
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+            "closed_tree": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7",
+            "done_at": [
+              "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+            ],
+            "reviewed": [
+              "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+            ],
+            "verified_at": [
+              "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+              "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+            ]
+          },
+          "task": "t4",
+          "task_completed": true,
+          "voided_reviews": []
+        }
+      ],
+      "wave": 2
+    }
+  ]
+}

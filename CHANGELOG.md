@@ -22,10 +22,11 @@ truth is `.claude-plugin/plugin.json`.
   the CI gate also fails on a trap refused for the wrong reason or a corpus case neither scored
   nor skipped by name. Result: false-done 0/53, false-reject 0/19 (corpus digest
   `277f594ca6e1…`; `VERSION` unchanged). The README carries a guard-by-guard inventory of every
-  verifier check — trap, justified unsupported, or deferred with its unit-test pin — and states
-  that the provenance, intent, reviewer-mode and lighting legs verify presence, not truth. No
-  verifier hole was found: every new trap was refused for its declared reason as `verify.py`
-  stood.
+  verifier check — trap, justified unsupported, or deferred with its unit-test pin — each row
+  citing the `verify.py` refusal sites it owns, so a site read from source with no row, or a row
+  no test would miss, fails the build — and states that the provenance, intent, reviewer-mode
+  and lighting legs verify presence, not truth. No verifier hole was found: every new trap was
+  refused for its declared reason as `verify.py` stood.
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

@@ -483,7 +483,9 @@ the change under review, and grant only as a one-way human decision (`--source h
 plus `--grant-sig` when `.orca/human-grant-pubkey` is pinned at the base): land the waiver on
 the base branch first (2026-10-23 review, P1-7). Every diff is taken with `--text`, `--no-color`
 and pinned prefix keys, so a `.gitattributes` `-diff` or a repo-local diff prefix cannot blank
-the rules (P1-6, P2-4). Run it OFF the worker.
+the rules (P1-6, P2-4). Binary media (images, fonts, audio/video, archives) skip the content
+rules by extension, never by a NUL byte; the guard surface still sees them by path. Run it OFF
+the worker.
 
 Exits: 0 clean · 1 un-waived findings · 2 could-not-run (never read as clean).
 

@@ -1,0 +1,841 @@
+#!/usr/bin/env python3
+"""first_run.py — a reproducible first run of the POSIX route, inert or live (#596).
+
+One review unit is driven through the PUBLIC wrappers an operator types, never the provider
+classes underneath them:
+
+  preflight  preflight.py --mission review-it --runtime posix --mode readonly
+  create     task_ops.py create --spec <frozen spec>
+  dispatch   spawn_worker.sh <task> new-child <title> <agent>   (OPEN_FLEET_RUNTIME=posix, setsid)
+  guard      deny-hook.sh --verify-settings on the registration the provider installed
+  delivery   the launch the provider recorded carries the spec nonce, and the worker echoes it
+  result     worker_ops.py show/read + check_reply.py: the worker's exit and its report
+  verify     verify.py --unit-class report-only on a SHA-bound manifest, run in a checkout the
+             coordinator cuts from git at the evidence head (never the worker's own tree)
+  release    worker_ops.py retain, then release; the evidence commit survives both
+
+and the run ends in a SHA-bound verdict line, `FIRST_RUN=GO` or `FIRST_RUN=NO-GO step=<s>`.
+
+ONE code path, two kinds of worker:
+
+  --worker inert (default)  an inert stand-in answers to the harness name from a private bin
+      directory first on PATH, behind tripwires for every other harness name. It reads the
+      spec, diffs the reviewed range and answers in the harness's own result shape. No model
+      is called and nothing is spent. A GO here is a FIXTURE result: it proves the fleet's
+      route, never the harness.
+  --worker live             the operator's real harness on PATH does the review. The receipt
+      is labelled `live-unreviewed`: it becomes certification evidence only once a maintainer
+      binds it into docs/runs/ (runtime/providers/certification.json says which cells hold).
+
+Profiles: `ro` (default; the review-it shape — the worker prints its report and has no tool to
+send mail, so posix records its clean exit as `worker_died (exit=0)` and the coordinator commits
+the report it read from the transcript) and `rw` (the worker commits the report itself and sends
+`worker_done`; its HEAD is re-read from git, never taken from the claim).
+
+The reviewed target is a two-commit repository the run synthesizes, or `--target <repo>`
+(cloned into the sandbox, never modified) with `--base/--head`. Every artifact lives in one
+sandbox directory: the state store, the clone, the worker worktree, the verifier checkout and
+`receipt.json` (per-step argv, exit, elapsed seconds, failure and recovery hint). The sandbox
+is removed after a GO unless `--keep`; it is always kept after a NO-GO.
+
+`probes` runs the negative probes instead: unsupported profile, privilege escalation, unarmed
+deny hook, malformed runtime response and missing capability, each through the same wrapper,
+each required to refuse BEFORE a launch (the stand-in never runs, no dispatch is recorded).
+
+Usage:
+  first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert|live]
+               [--target <repo> [--base <rev>] [--head <rev>]] [--workdir <dir>] [--keep]
+               [--timeout <s>] [--json]
+  first_run.py probes [--workdir <dir>] [--keep] [--json]
+
+Exit: 0 GO (every step / every probe held) · 1 NO-GO (receipt names the step) · 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+import platform
+import re
+import secrets
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = ROOT / "runtime" / "scripts"
+CAPABILITIES = ROOT / "runtime" / "providers" / "capabilities.json"
+SCHEMA = "open-fleet-first-run/v1"
+# The launch names a harness by its binary; every one gets a tripwire in inert mode.
+HARNESS_BINARIES = {"antigravity": "agy"}
+LIVE_STATES = ("ready", "running", "retained")
+
+
+class StepFailed(Exception):
+    """A lifecycle step did not hold; `recovery` is the operator's next move."""
+
+    def __init__(self, message: str, recovery: str = ""):
+        super().__init__(message)
+        self.recovery = recovery
+
+
+def posix_harnesses() -> list[str]:
+    caps = json.loads(CAPABILITIES.read_text(encoding="utf-8"))
+    return list(caps["providers"]["posix"]["supported_harnesses"])
+
+
+def all_harness_binaries() -> list[str]:
+    """Every harness name and binary base.py knows: each gets a tripwire in inert mode."""
+    spec = importlib.util.spec_from_file_location("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    names = {HARNESS_BINARIES.get(h, h) for h in mod.SUPPORTED_HARNESSES}
+    return sorted(names | set(mod.SUPPORTED_HARNESSES))
+
+
+INERT_WORKER = r'''
+"""Inert stand-in for a coding-agent harness (first_run.py, #596). Calls no model."""
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+harness, argv = sys.argv[1], sys.argv[2:]
+log_dir = Path(sys.argv[0]).resolve().parent
+dispatch = os.environ.get("OPEN_FLEET_DISPATCH_ID", "")
+with open(log_dir / "runs.log", "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({"harness": harness, "dispatch": dispatch}) + "\n")
+(log_dir / f"{dispatch or 'unknown'}.argv.json").write_text(json.dumps(argv), encoding="utf-8")
+spec = next((a for a in argv if "FR-NONCE:" in a), "")
+m = re.search(r"FIRST-RUN-REPORT (FR-NONCE:[0-9a-f]{16}) ([0-9a-f]{40})", spec)
+rng = re.search(r"git diff ([0-9a-f]{40}) ([0-9a-f]{40})", spec)
+if not m or not rng:
+    print(json.dumps({"type": "result", "subtype": "error", "result": "no first-run spec in argv"}))
+    sys.exit(3)
+stat = subprocess.run(["git", "diff", "--stat", rng.group(1), rng.group(2)],
+                      capture_output=True, text=True).stdout.strip()
+report = f"FIRST-RUN-REPORT {m.group(1)} {m.group(2)}\n" + (stat or "(empty diff)") + "\n"
+rc = 0
+if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
+    rel = re.search(r"write the report to (\S+)", spec).group(1)
+    Path(rel).parent.mkdir(parents=True, exist_ok=True)
+    Path(rel).write_text(report, encoding="utf-8")
+    subprocess.run(["git", "add", "--", rel], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "first-run report", "--", rel], check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    rc = subprocess.run([sys.executable, "-I", os.path.join(os.environ["OPEN_FLEET_ROOT"], "runtime",
+                         "scripts", "send_msg.py"), "--type", "worker_done", "--outcome", "succeeded",
+                         "--subject", f"worker_done:{dispatch}",
+                         "--payload", json.dumps({"head": head, "report": rel})]).returncode
+print(json.dumps({"type": "result", "subtype": "success", "result": report}))
+sys.exit(rc)
+'''
+
+
+class Sandbox:
+    """Every path one run touches, plus the environment its wrappers run under."""
+
+    def __init__(self, workdir: Path, worker: str, agent: str):
+        self.dir = workdir
+        self.worker = worker
+        self.agent = agent
+        self.inert = workdir / "inert"
+        self.tripwire = workdir / "tripwire"
+        self.state_db = workdir / "state" / "runtime.db"
+        self.target = workdir / "target"
+        self.scratch = workdir / "sp"
+        self.home = workdir / "home"
+        for d in (self.scratch, self.home, self.state_db.parent):
+            d.mkdir(parents=True, exist_ok=True)
+        path = [os.path.dirname(sys.executable), os.environ.get("PATH", os.defpath)]
+        if worker == "inert":
+            self._install_inert()
+            path = [str(self.inert), str(self.tripwire)] + path
+        self.env = {
+            **os.environ,
+            "PATH": os.pathsep.join(path),
+            # setsid only: tmux would start a server whose login shell can reorder PATH; and no
+            # rc file of a login shell (zsh reads ~/.zshenv even for `-c`) may run at all.
+            "SHELL": "/bin/sh",
+            "OPEN_FLEET_RUNTIME": "posix",
+            "OPEN_FLEET_POSIX_BACKEND": "setsid",
+            "OPEN_FLEET_STATE_DB": str(self.state_db),
+            "OPEN_FLEET_CLI_CWD": str(self.target),
+            "SP": str(self.scratch),
+            "PYTHON": sys.executable,
+        }
+        # An inherited CLI override or Orca session would route the wrappers somewhere else.
+        for var in ("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", "ORCA_FLEET_RUNTIME", "OPEN_FLEET_REPO_ROOT",
+                    "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE", "OPEN_FLEET_PARENT_PROFILE",
+                    "ORCA_PARENT_PROFILE", "OPEN_FLEET_DENY_HOOK_SETTINGS", "ORCA_DENY_HOOK_SETTINGS",
+                    "WORKER_CMD", "CLAUDE_CMD", "CODEX_CMD", "ORCA_TERMINAL_HANDLE", "OPEN_FLEET_TERMINAL_HANDLE"):
+            self.env.pop(var, None)
+        if worker == "inert":
+            # The stand-in needs no credentials; a private HOME keeps every user config out.
+            self.env["HOME"] = str(self.home)
+
+    def _install_inert(self) -> None:
+        self.inert.mkdir(parents=True, exist_ok=True)
+        self.tripwire.mkdir(parents=True, exist_ok=True)
+        (self.inert / "worker.py").write_text(INERT_WORKER, encoding="utf-8")
+        for name in all_harness_binaries():
+            trip = self.tripwire / name
+            trip.write_text(f'#!/bin/sh\necho "{name} $*" >> {shlex.quote(str(self.tripwire / "hits.log"))}\nexit 97\n',
+                            encoding="utf-8")
+            trip.chmod(0o755)
+        stand_in = self.inert / HARNESS_BINARIES.get(self.agent, self.agent)
+        stand_in.write_text(
+            "#!/bin/sh\n# first_run.py inert stand-in: no model is called.\n"
+            f"exec {shlex.quote(sys.executable)} -I {shlex.quote(str(self.inert / 'worker.py'))} "
+            f"{shlex.quote(self.agent)} \"$@\"\n",
+            encoding="utf-8",
+        )
+        stand_in.chmod(0o755)
+
+    def inert_runs(self) -> list[dict]:
+        log = self.inert / "runs.log"
+        if not log.is_file():
+            return []
+        return [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    def tripwire_hits(self) -> str:
+        log = self.tripwire / "hits.log"
+        return log.read_text(encoding="utf-8") if log.is_file() else ""
+
+
+class Recorder:
+    """Runs each command, times it, and keeps the receipt's step list."""
+
+    def __init__(self, sandbox: Sandbox):
+        self.sb = sandbox
+        self.steps: list[dict] = []
+        self.commands: list[dict] = []
+
+    def run(self, argv: list[str], *, cwd: Path | None = None, env: dict | None = None,
+            timeout: int = 300, record: bool = True) -> subprocess.CompletedProcess:
+        start = time.monotonic()
+        full_env = {**self.sb.env, **(env or {})}
+        try:
+            proc = subprocess.run(argv, cwd=str(cwd or self.sb.target), env=full_env, capture_output=True,
+                                  text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc = subprocess.CompletedProcess(argv, 124, exc.stdout or "", f"timed out after {timeout}s")
+        if record:  # polling reads are not receipts
+            self.commands.append({"argv": [str(a) for a in argv], "env": sorted((env or {}).keys()),
+                                  "rc": proc.returncode, "elapsed_s": round(time.monotonic() - start, 3)})
+        return proc
+
+    def step(self, name: str, fn, *args, **kwargs):
+        start = time.monotonic()
+        record: dict = {"step": name}
+        try:
+            detail = fn(*args, **kwargs)
+            record.update(ok=True, detail=detail)
+            return detail
+        except StepFailed as exc:
+            record.update(ok=False, detail=str(exc), recovery=exc.recovery)
+            raise
+        finally:
+            record["elapsed_s"] = round(time.monotonic() - start, 3)
+            self.steps.append(record)
+
+
+def py(script: str, *args: str) -> list[str]:
+    return [sys.executable, str(SCRIPTS / script), *args]
+
+
+def field(out: str, key: str) -> str:
+    m = re.search(rf"(?m)(?:^|\s){re.escape(key)}=(\S+)", out)
+    return m.group(1) if m else ""
+
+
+def git(rec: Recorder, *args: str, cwd: Path | None = None) -> str:
+    proc = rec.run(["git", *args], cwd=cwd)
+    if proc.returncode != 0:
+        raise StepFailed(f"git {' '.join(args)} failed: {(proc.stderr or proc.stdout).strip()[:300]}")
+    return proc.stdout.strip()
+
+
+def harness_version(binary: str, env: dict) -> str:
+    try:
+        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"unreadable: {exc}"
+    return (proc.stdout or proc.stderr).strip().splitlines()[0][:200] if (proc.stdout or proc.stderr).strip() else ""
+
+
+def host_facts() -> dict:
+    def version(argv):
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            return (out.stdout or out.stderr).strip().splitlines()[0]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            return None
+
+    catalog = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True)
+    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True)
+    return {
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "git": version(["git", "--version"]),
+        "bash": version(["bash", "--version"]),
+        "catalog_commit": catalog.stdout.strip() if catalog.returncode == 0 else None,
+        "catalog_dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None,
+    }
+
+
+# --- lifecycle ------------------------------------------------------------------------------
+
+class FirstRun:
+    def __init__(self, args: argparse.Namespace, sandbox: Sandbox):
+        self.args = args
+        self.sb = sandbox
+        self.rec = Recorder(sandbox)
+        self.run_id = f"fr-{secrets.token_hex(3)}"
+        self.nonce = f"FR-NONCE:{secrets.token_hex(8)}"
+        self.unit_dir = f".first-run/{self.run_id}"
+        self.facts: dict = {"run_id": self.run_id, "nonce": self.nonce}
+
+    # Each method is one step; it returns its detail string or raises StepFailed.
+    def prereqs(self) -> str:
+        if sys.version_info < (3, 11):
+            raise StepFailed(f"python {platform.python_version()} < 3.11", "run with Python 3.11-3.13")
+        missing = [t for t in ("git", "bash", "sh") if not shutil.which(t, path=self.sb.env["PATH"])]
+        if missing:
+            raise StepFailed(f"not on PATH: {', '.join(missing)}", "install the missing tools")
+        binary = HARNESS_BINARIES.get(self.args.agent, self.args.agent)
+        found = shutil.which(binary, path=self.sb.env["PATH"])
+        if not found:
+            raise StepFailed(f"`{binary}` is not on PATH", f"install {self.args.agent} and sign it in, or use --worker inert")
+        if self.args.worker == "live" and Path(found).resolve().is_relative_to(self.sb.dir.resolve()):
+            raise StepFailed("live mode resolved the harness inside the sandbox", "remove the stand-in from PATH")
+        self.facts["harness"] = {
+            "name": self.args.agent,
+            "path": found,
+            "version": "inert stand-in (no model)" if self.args.worker == "inert" else harness_version(found, self.sb.env),
+        }
+        return f"{binary} -> {found}"
+
+    def target(self) -> str:
+        t = self.sb.target
+        if self.args.target:
+            src = Path(self.args.target).resolve()
+            proc = self.rec.run(["git", "clone", "-q", "--no-hardlinks", str(src), str(t)], cwd=self.sb.dir)
+            if proc.returncode != 0:
+                raise StepFailed(f"cannot clone {src}: {proc.stderr.strip()[:300]}", "--target must be a git repository")
+        else:
+            t.mkdir(parents=True)
+            git(self.rec, "init", "-q", "-b", "main", cwd=t)
+        for key, val in (("user.email", "first-run@open-fleet.invalid"), ("user.name", "open-fleet first run"),
+                         ("commit.gpgsign", "false"), ("tag.gpgsign", "false"), ("core.hooksPath", "/dev/null")):
+            git(self.rec, "config", key, val, cwd=t)
+        if not self.args.target:
+            (t / "README.md").write_text("# first-run target\n", encoding="utf-8")
+            git(self.rec, "add", "README.md", cwd=t)
+            git(self.rec, "commit", "-q", "-m", "seed", cwd=t)
+            (t / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
+            git(self.rec, "add", "app.py", cwd=t)
+            git(self.rec, "commit", "-q", "-m", "add greet()", cwd=t)
+        base = git(self.rec, "rev-parse", "--verify", f"{self.args.base}^{{commit}}", cwd=t)
+        head = git(self.rec, "rev-parse", "--verify", f"{self.args.head}^{{commit}}", cwd=t)
+        if base == head:
+            raise StepFailed("--base and --head name the same commit", "review a range with at least one commit")
+        self.facts["reviewed"] = {"base_sha": base, "head_sha": head}
+        # The coordinator's evidence branch starts at the reviewed head; its first commit is the
+        # frozen contract, so the contract exists in git BEFORE any worker is dispatched.
+        git(self.rec, "checkout", "-q", "-b", f"first-run/{self.run_id}", head, cwd=t)
+        contract = (
+            f"# First-run contract {self.run_id}\n\n"
+            f"Frozen by first_run.py before dispatch. Reviewed change: `{base}..{head}`.\n\n"
+            f"- FR-1: the worker receives this unit's frozen spec ({self.nonce}) through the posix route.\n"
+            f"- FR-2: the worker's report opens with `FIRST-RUN-REPORT {self.nonce} {head}`.\n"
+            "- FR-3: the report is bound to a commit the coordinator reads from git and verify.py re-derives.\n"
+        )
+        path = t / self.unit_dir / "contract.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(contract, encoding="utf-8")
+        git(self.rec, "add", f"{self.unit_dir}/contract.md", cwd=t)
+        git(self.rec, "commit", "-q", "-m", f"first-run {self.run_id}: freeze contract", cwd=t)
+        self.facts["contract"] = {
+            "source": f"{self.unit_dir}/contract.md@{git(self.rec, 'rev-parse', 'HEAD', cwd=t)}",
+            "digest": "sha256:" + hashlib.sha256(contract.encode("utf-8")).hexdigest(),
+            "criterion_ids": ["FR-1", "FR-2", "FR-3"],
+            "text": contract,
+        }
+        return f"reviewed {base[:12]}..{head[:12]}; contract frozen"
+
+    def preflight(self) -> str:
+        proc = self.rec.run(py("preflight.py", "--mission", "review-it", "--runtime", "posix", "--mode", "readonly"))
+        if proc.returncode != 0:
+            raise StepFailed(f"preflight refused: {(proc.stderr or proc.stdout).strip()[:300]}",
+                             "read the preflight line; docs/troubleshooting.md")
+        return proc.stdout.strip().splitlines()[-1]
+
+    def spec(self) -> str:
+        r = self.facts["reviewed"]
+        lines = [
+            f"open-fleet first-run review unit {self.run_id} ({self.nonce}).",
+            f"Review the change: git diff {r['base_sha']} {r['head_sha']}",
+            "Report what the change does and any problem you see, one line each.",
+            f"Your report MUST start with this exact line: FIRST-RUN-REPORT {self.nonce} {r['head_sha']}",
+        ]
+        if self.args.profile == "rw":
+            lines += [
+                f"Modify nothing except: write the report to {self.unit_dir}/report.md and commit only that file.",
+                "Then report completion with:",
+                '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded'
+                ' --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" --payload \'{"head": "<the report commit sha>"}\'',
+            ]
+        else:
+            lines.append("Modify nothing. Print the report as your final answer.")
+        lines.append(f"Frozen contract: {self.facts['contract']['source']} ({self.facts['contract']['digest']}).")
+        return "\n".join(lines)
+
+    def create(self) -> str:
+        proc = self.rec.run(py("task_ops.py", "create", "--spec", self.spec()))
+        task = field(proc.stdout, "CREATED")
+        if proc.returncode != 0 or not task:
+            raise StepFailed(f"task_ops.py create: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}",
+                             "run task_ops.py create in the sandbox target to see the refusal")
+        self.facts["task"] = task
+        return task
+
+    def dispatch(self) -> str:
+        env = {"PROFILE": self.args.profile}
+        if self.args.profile == "rw":
+            env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
+        proc = self.rec.run(["bash", str(SCRIPTS / "spawn_worker.sh"), self.facts["task"], "new-child",
+                             self.run_id, self.args.agent], env=env)
+        disp, handle = field(proc.stdout, "DISPATCH"), field(proc.stdout, "HANDLE")
+        launch = next((ln.split("=", 1)[1] for ln in proc.stdout.splitlines() if ln.startswith("LAUNCH_EFFECTIVE=")), "")
+        if proc.returncode != 0 or not disp:
+            raise StepFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}",
+                             "read the SPAWN= line; docs/troubleshooting.md")
+        self.facts.update(dispatch=disp, handle=handle)
+        try:
+            self.facts["launch_effective"] = json.loads(launch)
+        except json.JSONDecodeError:
+            raise StepFailed(f"spawn_worker.sh printed no readable LAUNCH_EFFECTIVE: {launch[:200]!r}") from None
+        return f"{disp} on {handle}"
+
+    def worker_show(self) -> dict:
+        proc = self.rec.run(py("orca_cli.py", "orchestration", "worker-show", "--dispatch", self.facts["dispatch"], "--json"))
+        try:
+            return json.loads(proc.stdout)["result"]["worker"]
+        except (ValueError, KeyError, TypeError):
+            raise StepFailed(f"worker-show unreadable: {proc.stdout[:200]!r}") from None
+
+    def guard(self) -> str:
+        wt = Path(self.worker_show()["worktree"])
+        self.facts["worktree"] = str(wt)
+        settings = wt / ".claude" / "settings.local.json"
+        proc = self.rec.run(["sh", str(SCRIPTS / "deny-hook.sh"), "--verify-settings", str(settings)])
+        if proc.returncode != 0:
+            raise StepFailed(f"the installed guard is not armed: {proc.stderr.strip()[:300]}",
+                             f"deny-hook.sh --verify-settings {settings}")
+        return proc.stdout.strip()
+
+    def delivery(self) -> str:
+        command = str((self.facts.get("launch_effective") or {}).get("command", ""))
+        if self.nonce not in command:
+            raise StepFailed("the launch the provider recorded does not carry the task spec",
+                             "the worker would start without its assignment; compare LAUNCH_EFFECTIVE to the task")
+        if self.sb.worker == "inert":
+            if not self.wait_for(lambda: (self.sb.inert / f"{self.facts['dispatch']}.argv.json").is_file()):
+                raise StepFailed("the stand-in never ran for this dispatch", "worker_ops.py read --dispatch <d>")
+            argv = json.loads((self.sb.inert / f"{self.facts['dispatch']}.argv.json").read_text(encoding="utf-8"))
+            if not any(self.nonce in a for a in argv):
+                raise StepFailed("the stand-in ran without the task spec in its argv")
+            return "spec in the recorded launch and in the worker's argv"
+        return "spec in the recorded launch (the live worker's echo is checked at result)"
+
+    def wait_for(self, pred, timeout: float | None = None) -> bool:
+        deadline = time.monotonic() + (timeout or self.args.timeout)
+        while time.monotonic() < deadline:
+            if pred():
+                return True
+            time.sleep(0.25)
+        return False
+
+    def result(self) -> str:
+        disp = self.facts["dispatch"]
+        state = {"v": ""}
+
+        def settled():
+            out = self.rec.run(py("worker_ops.py", "show", "--dispatch", disp), record=False).stdout
+            state["v"] = field(out, "STATE")
+            return state["v"] not in ("",) + LIVE_STATES
+
+        if not self.wait_for(settled):
+            raise StepFailed(f"worker still {state['v'] or 'unknown'} after {self.args.timeout}s",
+                             f"worker_ops.py read --dispatch {disp} --source transcript; raise --timeout")
+        mail = self.rec.run(py("check_reply.py", "check", "--terminal", "coordinator"))
+        msgs = parse_mail(mail.stdout)
+        mine = [m for m in msgs if disp in m["subject"]]
+        expected = "completed" if self.args.profile == "rw" else "died"
+        if state["v"] != expected:
+            raise StepFailed(f"dispatch settled {state['v']!r}, expected {expected!r}: {mine}",
+                             f"worker_ops.py read --dispatch {disp} --source transcript")
+        if self.args.profile == "rw":
+            done = [m for m in mine if m["type"] == "worker_done"]
+            if not done:
+                raise StepFailed("no worker_done from this dispatch", "the worker never reported; read its transcript")
+            self.facts["worker_claim"] = done[0]["payload"]
+        else:
+            # A ro worker has no tool to send mail: posix records its CLEAN exit as worker_died.
+            died = [m for m in mine if m["type"] == "escalation" and m["subject"].startswith("worker_died:")]
+            if not died or (died[0]["payload"] or {}).get("exitCode") != 0:
+                raise StepFailed(f"ro worker did not exit cleanly: {died}", f"worker_ops.py read --dispatch {disp}")
+        read = self.rec.run(py("worker_ops.py", "read", "--dispatch", disp, "--source", "transcript"))
+        if read.returncode != 0 or "SOURCE=transcript" not in read.stdout:
+            raise StepFailed(f"transcript read not certified: {(read.stderr or read.stdout).strip()[:200]}")
+        report = self.transcript_report()
+        first = report.splitlines()[0] if report else ""
+        want = f"FIRST-RUN-REPORT {self.nonce} {self.facts['reviewed']['head_sha']}"
+        if first.strip() != want:
+            raise StepFailed(f"report does not open with {want!r}: {first[:200]!r}",
+                             "the worker did not follow the spec; read its transcript")
+        self.facts["report"] = report
+        return f"settled {state['v']}; report names the reviewed head"
+
+    def transcript_report(self) -> str:
+        proc = self.rec.run(py("orca_cli.py", "orchestration", "worker-read", "--dispatch", self.facts["dispatch"],
+                               "--limit", "100000", "--json"))
+        try:
+            messages = json.loads(proc.stdout)["result"]["transcript"]["messages"]
+        except (ValueError, KeyError, TypeError):
+            raise StepFailed(f"worker-read unreadable: {proc.stdout[:200]!r}") from None
+        result = ""
+        for msg in messages:
+            for block in msg.get("blocks") or []:
+                try:
+                    event = json.loads(block.get("text") or "")
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") == "result" and isinstance(event.get("result"), str):
+                    result = event["result"]
+        return result
+
+    def evidence(self) -> str:
+        t, rel = self.sb.target, f"{self.unit_dir}/report.md"
+        if self.args.profile == "rw":
+            head = git(self.rec, "rev-parse", "HEAD", cwd=Path(self.facts["worktree"]))
+            claim = (self.facts.get("worker_claim") or {}).get("head")
+            if claim != head:
+                raise StepFailed(f"worker_done claims head {claim!r}; git says {head}", "the claim is not evidence")
+        else:
+            path = t / rel
+            path.write_text(self.facts["report"], encoding="utf-8")
+            git(self.rec, "add", rel, cwd=t)
+            git(self.rec, "commit", "-q", "-m", f"first-run {self.run_id}: report from the worker transcript", cwd=t)
+            head = git(self.rec, "rev-parse", "HEAD", cwd=t)
+        contract_sha = self.facts["contract"]["source"].rsplit("@", 1)[1]
+        changed = git(self.rec, "diff", "--name-only", contract_sha, head, cwd=t).splitlines()
+        if changed != [rel]:
+            raise StepFailed(f"the evidence range changes more than the report: {changed}",
+                             "a review unit may not change code")
+        self.facts["evidence"] = {"base_sha": contract_sha, "head_sha": head}
+        return f"{contract_sha[:12]}..{head[:12]} carries only {rel}"
+
+    def verify(self) -> str:
+        ev, contract = self.facts["evidence"], self.facts["contract"]
+        checkout = self.sb.dir / "verify"
+        git(self.rec, "worktree", "add", "-q", "--detach", str(checkout), ev["head_sha"], cwd=self.sb.target)
+        rel = f"{self.unit_dir}/report.md"
+        report = (checkout / rel).read_bytes()
+        manifest = {
+            "unit": f"first-run-{self.run_id}",
+            "claim": f"first-run review of {self.facts['reviewed']['head_sha']} on the posix route "
+                     f"({self.args.worker} {self.args.agent}, PROFILE={self.args.profile})",
+            "base_sha": ev["base_sha"],
+            "head_sha": ev["head_sha"],
+            "base_branch": f"first-run/{self.run_id}",
+            "contract": {k: contract[k] for k in ("source", "digest", "criterion_ids")},
+            "criteria": [{"id": cid, "text": cid, "addressed": True} for cid in contract["criterion_ids"]],
+            "artifacts": [{"path": rel, "sha256": hashlib.sha256(report).hexdigest()}],
+        }
+        mpath = checkout / self.unit_dir / "manifest.json"
+        write_manifest(mpath, manifest)
+        argv = py("verify.py", "--manifest", f"{self.unit_dir}/manifest.json", "--contract-source", contract["source"],
+                  "--contract-digest", contract["digest"], "--unit-class", "report-only")
+        proc = self.rec.run(argv, cwd=checkout)
+        self.facts["verify"] = {"argv": argv[1:], "cwd": str(checkout), "rc": proc.returncode,
+                                "out": (proc.stdout + proc.stderr).strip().splitlines()[-6:]}
+        if proc.returncode != 0 or "verify: OK" not in proc.stdout:
+            fails = [ln for ln in (proc.stdout + proc.stderr).splitlines() if ln.startswith("FAIL")]
+            why = "; ".join(fails)[:1500] or (proc.stderr or proc.stdout).strip()[-400:]
+            raise StepFailed(f"verify.py rc={proc.returncode}: {why}",
+                             f"re-run in {checkout}: {' '.join(shlex.quote(a) for a in argv)}")
+        return "verify: OK (report-only, SHA-bound)"
+
+    def release(self) -> str:
+        disp, head = self.facts["dispatch"], self.facts["evidence"]["head_sha"]
+        for verb, want in (("retain", "retained"), ("release", "released")):
+            proc = self.rec.run(py("worker_ops.py", verb, "--dispatch", disp))
+            got = field(self.rec.run(py("worker_ops.py", "show", "--dispatch", disp)).stdout, "STATE")
+            if proc.returncode != 0 or got != want:
+                raise StepFailed(f"worker_ops.py {verb}: rc={proc.returncode} state={got!r}",
+                                 f"worker_ops.py show --dispatch {disp}")
+            if self.rec.run(["git", "cat-file", "-e", f"{head}^{{commit}}"]).returncode != 0:
+                raise StepFailed(f"the evidence commit {head} is gone after {verb}")
+        return "retained, then released; the evidence commit survives"
+
+    def execute(self) -> dict:
+        order = ["prereqs", "target", "preflight", "create", "dispatch", "guard", "delivery", "result",
+                 "evidence", "verify", "release"]
+        failed = None
+        start = time.monotonic()
+        try:
+            for name in order:
+                self.rec.step(name, getattr(self, name))
+            if self.sb.worker == "inert":
+                self.rec.step("isolation", self.isolation)
+        except StepFailed:
+            failed = self.rec.steps[-1]
+        return self.receipt(failed, round(time.monotonic() - start, 3))
+
+    def isolation(self) -> str:
+        hits = self.sb.tripwire_hits()
+        if hits:
+            raise StepFailed(f"a harness resolved past the stand-in to a tripwire: {hits[:200]!r}")
+        runs = [r["dispatch"] for r in self.sb.inert_runs()]
+        if runs != [self.facts["dispatch"]]:
+            raise StepFailed(f"the stand-in ran for {runs}, expected exactly this dispatch")
+        return "only the stand-in ran, once, for this dispatch"
+
+    def receipt(self, failed: dict | None, elapsed: float) -> dict:
+        facts = {k: v for k, v in self.facts.items() if k not in ("report", "contract")}
+        if "contract" in self.facts:
+            facts["contract"] = {k: self.facts["contract"][k] for k in ("source", "digest", "criterion_ids")}
+        return {
+            "schema": SCHEMA,
+            "verdict": "NO-GO" if failed else "GO",
+            "tier": "fixture-tested" if self.sb.worker == "inert" else "live-unreviewed",
+            "route": {"provider": "posix", "backend": "setsid", "profile": self.args.profile,
+                      "harness": self.args.agent, "worker": self.sb.worker},
+            "host": host_facts(),
+            "facts": facts,
+            "steps": self.rec.steps,
+            "commands": self.rec.commands,
+            "failure": failed,
+            "elapsed_s": elapsed,
+            "sandbox": str(self.sb.dir),
+        }
+
+
+def write_manifest(path: Path, manifest: dict) -> None:
+    """The coordinator's manifest; a separate function so a test can mutate what gets bound."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+MAIL_HEAD = re.compile(r"^--- (\S+) \((\S+)\) from (\S+)$")
+
+
+def parse_mail(text: str) -> list[dict]:
+    """check_reply.py's printed messages: header, SUBJ line, then the payload line."""
+    out: list[dict] = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = MAIL_HEAD.match(line)
+        if not m:
+            continue
+        subj = lines[i + 1][len("SUBJ: "):] if i + 1 < len(lines) and lines[i + 1].startswith("SUBJ: ") else ""
+        payload = None
+        if i + 2 < len(lines):
+            try:
+                payload = json.loads(lines[i + 2])
+            except ValueError:
+                payload = None
+        out.append({"id": m.group(1), "type": m.group(2), "from": m.group(3), "subject": subj, "payload": payload})
+    return out
+
+
+# --- negative probes ------------------------------------------------------------------------
+
+def probe_table(sb: Sandbox, unarmed: Path, garbage: Path) -> list[tuple]:
+    """(name, why, argv, env, expected exit, refusal text) — `{task}` is a fresh ready task."""
+    rw = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
+    spawn = ["bash", str(SCRIPTS / "spawn_worker.sh")]
+    return [
+        ("unsupported-profile", "PROFILE=ro for a harness with no verified read-only launch (cursor)",
+         spawn + ["{task}", "new-child", "probe", "cursor"], {"PROFILE": "ro"}, 2,
+         "no verified PROFILE=ro launch flag"),
+        ("privilege-escalation", "a ro parent asks for an rw child",
+         spawn + ["{task}", "new-child", "probe", "claude"], {**rw, "OPEN_FLEET_PARENT_PROFILE": "ro"}, 2,
+         "monotonic privilege narrowing violation"),
+        ("unarmed-deny-hook", "the named hook registration never denies",
+         spawn + ["{task}", "new-child", "probe", "claude"], {**rw, "OPEN_FLEET_DENY_HOOK_SETTINGS": str(unarmed)}, 2,
+         "deny-hook not armed"),
+        ("malformed-upstream-response", "the runtime CLI answers with non-JSON",
+         spawn + ["{task}", "new-child", "probe", "claude"], {"PROFILE": "ro", "ORCA_CLI_COMMAND": str(garbage)}, 1,
+         "SPAWN=FAILED"),
+        ("missing-capability", "pin-it needs cap:orca-self-audit, which posix lacks",
+         py("preflight.py", "--mission", "pin-it", "--runtime", "posix", "--mode", "readonly"), {}, 2,
+         "missing_capability: cap:orca-self-audit"),
+    ]
+
+
+def probes(sb: Sandbox) -> dict:
+    """Each probe must REFUSE before a launch: the stand-in never runs, no dispatch is recorded."""
+    rec = Recorder(sb)
+    sb.target.mkdir(parents=True, exist_ok=True)
+    git(rec, "init", "-q", "-b", "main", cwd=sb.target)
+    for key, val in (("user.email", "probe@open-fleet.invalid"), ("user.name", "probe"), ("commit.gpgsign", "false")):
+        git(rec, "config", key, val, cwd=sb.target)
+    git(rec, "commit", "-q", "--allow-empty", "-m", "seed", cwd=sb.target)
+
+    unarmed = sb.dir / "unarmed-settings.json"
+    block = subprocess.run(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)],
+                           capture_output=True, text=True, check=True).stdout
+    doc = json.loads(block)
+    for entry in doc["hooks"]["PreToolUse"]:
+        for hook in entry["hooks"]:
+            hook["command"] = "true # deny-hook.sh registered but never denies"
+    unarmed.write_text(json.dumps(doc), encoding="utf-8")
+    garbage = sb.dir / "garbage-cli"
+    garbage_log = sb.dir / "garbage-cli.log"
+    garbage.write_text(f'#!/bin/sh\necho "$*" >> {shlex.quote(str(garbage_log))}\necho "<html>502 Bad Gateway</html>"\n',
+                       encoding="utf-8")
+    garbage.chmod(0o755)
+
+    results = []
+    for name, why, argv, env, want_rc, want_text in probe_table(sb, unarmed, garbage):
+        created = rec.run(py("task_ops.py", "create", "--spec", f"probe {name}"))
+        task = field(created.stdout, "CREATED")
+        before = len(sb.inert_runs())
+        proc = rec.run([a.replace("{task}", task) for a in argv], env=env)
+        text = proc.stdout + proc.stderr
+        workers = rec.run(py("orca_cli.py", "orchestration", "worker-list", "--json")).stdout
+        try:
+            dispatched = [w for w in json.loads(workers)["result"]["workers"] if w.get("taskId") == task]
+        except (ValueError, KeyError, TypeError):
+            dispatched = [{"unreadable": workers[:200]}]
+        if dispatched:
+            # A probe that did NOT refuse launched asynchronously: give the worker time to show.
+            deadline = time.monotonic() + 15
+            while len(sb.inert_runs()) == before and time.monotonic() < deadline:
+                time.sleep(0.2)
+        problems = []
+        if proc.returncode != want_rc:
+            problems.append(f"exit {proc.returncode}, expected {want_rc}")
+        if want_text not in text:
+            problems.append(f"no {want_text!r} in the output")
+        if len(sb.inert_runs()) != before or sb.tripwire_hits():
+            problems.append("a worker launched")
+        if dispatched:
+            problems.append(f"a dispatch was recorded: {dispatched}")
+        if name == "malformed-upstream-response" and garbage_log.is_file() and "worker-start" in garbage_log.read_text():
+            problems.append("worker-start was called after an unreadable response")
+        results.append({"probe": name, "why": why, "rc": proc.returncode, "refused": not problems,
+                        "problems": problems, "evidence": [ln for ln in text.splitlines() if want_text in ln][:2]})
+    return {"schema": SCHEMA, "verdict": "GO" if all(r["refused"] for r in results) else "NO-GO",
+            "probes": results, "host": host_facts(), "sandbox": str(sb.dir)}
+
+
+# --- entry point ----------------------------------------------------------------------------
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(prog="first_run.py", description="Reproducible first run of the posix route (#596).")
+    ap.add_argument("mode", nargs="?", default="run", choices=("run", "probes"))
+    ap.add_argument("--profile", default="ro", choices=("ro", "rw"))
+    ap.add_argument("--agent", default="claude")
+    ap.add_argument("--worker", default="inert", choices=("inert", "live"))
+    ap.add_argument("--target", default=None, help="git repository to review (cloned; never modified)")
+    ap.add_argument("--base", default="HEAD~1")
+    ap.add_argument("--head", default="HEAD")
+    ap.add_argument("--workdir", default=None, help="sandbox directory (created; default a new temp dir)")
+    ap.add_argument("--keep", action="store_true", help="keep the sandbox after a GO")
+    ap.add_argument("--timeout", type=int, default=None, help="seconds to wait for the worker (inert 60, live 1800)")
+    ap.add_argument("--json", action="store_true", help="print the receipt JSON instead of lines")
+    ns = ap.parse_args(argv)
+    if ns.agent not in posix_harnesses():
+        ap.error(f"--agent {ns.agent!r} is not a posix harness (want {'|'.join(posix_harnesses())})")
+    if ns.timeout is None:
+        ns.timeout = 60 if ns.worker == "inert" else 1800
+    if ns.timeout < 1:
+        ap.error("--timeout must be positive")
+    return ns
+
+
+def make_workdir(arg: str | None) -> Path:
+    if arg:
+        path = Path(arg).resolve()
+        if path.exists() and any(path.iterdir()):
+            raise SystemExit(f"first_run.py: --workdir {path} is not empty")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return Path(tempfile.mkdtemp(prefix="open-fleet-first-run-")).resolve()
+
+
+def emit(receipt: dict, path: Path, as_json: bool) -> None:
+    path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    if as_json:
+        print(json.dumps(receipt, indent=2))
+        return
+    if "probes" in receipt:
+        for p in receipt["probes"]:
+            state = "REFUSED" if p["refused"] else "NOT-REFUSED"
+            print(f"PROBE={p['probe']} {state} rc={p['rc']}" + (f" problems={p['problems']}" if p["problems"] else ""))
+        print(f"PROBES={receipt['verdict']}")
+    else:
+        f = receipt["facts"]
+        route = receipt["route"]
+        failed = receipt["failure"]
+        print(f"FIRST_RUN={receipt['verdict']}" + (f" step={failed['step']}" if failed else ""))
+        print(f"ROUTE=posix/setsid PROFILE={route['profile']} HARNESS={route['harness']} "
+              f"WORKER={route['worker']} TIER={receipt['tier']}")
+        if "reviewed" in f:
+            print(f"REVIEWED={f['reviewed']['base_sha']}..{f['reviewed']['head_sha']}")
+        if "evidence" in f:
+            verdict = "OK" if not failed or failed["step"] not in ("verify",) else "FAILED"
+            print(f"EVIDENCE={f['evidence']['base_sha']}..{f['evidence']['head_sha']} VERIFY={verdict}")
+        if "dispatch" in f:
+            print(f"DISPATCH={f['dispatch']} TASK={f.get('task', '')}")
+        if failed:
+            print(f"FAILURE={failed['detail']}")
+            if failed.get("recovery"):
+                print(f"RECOVERY={failed['recovery']}")
+        print(f"ELAPSED_S={receipt['elapsed_s']}")
+    print(f"RECEIPT={path}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    workdir = make_workdir(args.workdir)
+    agent = "claude" if args.mode == "probes" else args.agent
+    sb = Sandbox(workdir, "inert" if args.mode == "probes" else args.worker, agent)
+    receipt = probes(sb) if args.mode == "probes" else FirstRun(args, sb).execute()
+    stop_workers(sb)
+    if receipt["verdict"] == "GO" and not args.keep:
+        # Everything but the receipt goes: state store, clone, worktrees, verifier checkout.
+        for child in workdir.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink()
+        receipt["sandbox_pruned"] = True
+    emit(receipt, workdir / "receipt.json", args.json)
+    return 0 if receipt["verdict"] == "GO" else 1
+
+
+def stop_workers(sb: Sandbox) -> None:
+    """Fence anything still live in this sandbox's store before its directory goes away."""
+    proc = subprocess.run(py("orca_cli.py", "orchestration", "worker-list", "--json"), cwd=str(sb.target)
+                          if sb.target.is_dir() else str(sb.dir), env=sb.env, capture_output=True, text=True)
+    try:
+        workers = json.loads(proc.stdout)["result"]["workers"]
+    except (ValueError, KeyError, TypeError):
+        return
+    for w in workers:
+        if w.get("state") in LIVE_STATES:
+            subprocess.run(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env,
+                           capture_output=True, text=True, cwd=str(sb.dir))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -129,7 +129,9 @@ class TestSupportedHarnessesMatchAdapters(unittest.TestCase):
     def test_table_and_registry_derived_lists(self) -> None:
         launch_rw = launchable_with_prompt("rw")
         expected = {
-            "orca": set(HARNESSES),  # pass-through to Orca, which owns the full harness table
+            # Orca can host every harness, but spawn_worker.sh has no Orca row for opencode/omp/pi
+            # (Orca strips their launch args), so the claim stops where the wrapper does (#596).
+            "orca": set(HARNESSES) - {"opencode", "omp", "pi"},
             "posix": launch_rw,
             "worktrunk": launch_rw,
             "superset": launch_rw & SUPERSET_AGENT_PRESETS,

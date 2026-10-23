@@ -82,6 +82,8 @@ All 14 providers implement [`RuntimeProvider`](../runtime/providers/base.py) and
 
 Every adapter delivers the task spec to the worker (`resolve_task_prompt`), refuses unparseable upstream output instead of inventing ids, treats `worker-retain` as non-destructive, preserves the worker's real HEAD (`refs/open-fleet/preserved/<dispatch>`) before any destructive cleanup, and fails closed (`unsupported_operation` / `unsupported_profile`) where upstream has no verified way to honour a profile. Only `cap:core-orchestration` (plus Beads on `gastown`) is native on the external adapters; everything else is a portable fallback.
 
+A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) names only harnesses its adapter honours (`tests/test_capability_harnesses.py`) AND that `spawn_worker.sh` launches on it for some advertised profile (`tests/test_capability_launch_agreement.py`). Orca can host every harness, but the fleet's wrapper has no Orca row for `opencode`, `omp` or `pi` (Orca strips their launch arguments), so the `orca` entry does not claim them; run them on Orca only through a `WORKER_CMD` override, whose semantics are then the operator's assertion.
+
 ### Tier 1 — Primary providers
 
 | Provider | Upstream | Transport | Profiles | Native capabilities |

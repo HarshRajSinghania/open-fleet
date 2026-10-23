@@ -58,6 +58,7 @@ WEIGHTS = {
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
     "test_capability_harnesses": 0.5,
+    "test_capability_launch_agreement": 8.8,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
     "test_check_reply": 0.7,

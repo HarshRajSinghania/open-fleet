@@ -62,6 +62,7 @@ WEIGHTS = {
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
     "test_check_reply": 0.7,
+    "test_claude_ro_launches": 0.9,
     "test_cross_runtime_upgrades": 2.4,
     "test_decisions": 11.9,
     "test_deny_hook": 134.4,

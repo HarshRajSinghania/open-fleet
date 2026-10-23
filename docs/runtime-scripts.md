@@ -936,7 +936,10 @@ launch is `runtime/providers/base.py`'s line. On Orca, `ro` runs the script's ow
 custom-argv lane: the jcode and hermes rows carry base.py's ro restriction (jcode's `--tools`
 allowlist and `--disabled-tools` set; hermes' `HERMES_WRITE_SAFE_ROOT=/dev/null` and
 `--toolsets file,web,session_search`), and crush `ro` refuses there, because its read-only mode
-is a `<data-dir>/crush.json` that only the posix provider installs (#596). `opencode`, `omp` and
+is a `<data-dir>/crush.json` that only the posix provider installs (#596). The Orca claude `ro` row
+stays the live-witnessed plan-mode TUI line and does not carry base.py's
+`--disallowedTools Edit,Write,MultiEdit,NotebookEdit`; every other claude `ro` launch and alias
+does (`tests/test_claude_ro_launches.py`). `opencode`, `omp` and
 `pi` have no Orca row for any profile, so they refuse on Orca without a `WORKER_CMD`. Profiles: `ro`, `rw`
 (default), `danger` — least privilege; `danger` needs the ephemeral sandbox plus
 `ORCA_SANDBOX_RECIPE`, and the script runs the doctor transcript itself into

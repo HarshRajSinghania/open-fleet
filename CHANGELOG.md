@@ -6,6 +6,31 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **One fenced conductor per BASE now merges, from a persisted queue** (#599). Merge serialization
+  was doctrine only: two coordinators could merge onto one BASE, and a conductor that crashed
+  mid-train left no record of what it had sent. `runtime/scripts/merge_queue.py` is now the merge
+  boundary that cooperating fleet writers route merges through.
+  - A SQLite lease issues a fencing token per repository and BASE. Every queue write checks it, so
+    a superseded conductor is refused `fenced` and cannot board, plan, merge, acknowledge or
+    release.
+  - The remote merge runs inside a per-queue `flock`, after a token-checked intent write. A
+    handoff needs the same lock, so a conductor paused after its lease check never merges once
+    ownership moves, and a merge still in flight blocks the handoff. A handoff reconciles every
+    in-flight merge from `gh pr view` or git ancestry first. A merged PR is adopted, never sent
+    again; an unreadable one (offline) blocks the handoff.
+  - Entries bind run, unit, PR, branch, reviewed SHA and tree, BASE and arrival order. A
+    duplicate `merge_ready` is a no-op.
+  - `plan` tests the prefix in memory with #590's merge engine, and optionally runs a gate per
+    prefix. `merge` revalidates the BASE tree, the tested merge tree and the head first. A changed
+    tree returns to review; a content-identical move keeps it. A conflict, failed gate or refused
+    merge freezes the train behind it until `resolve`.
+  - Promotion to the default branch stays human: the queue refuses it as a BASE or a target.
+  - What is tested: two competing conductor processes, pause-transfer-resume, and crash restarts
+    before the merge, after the remote merge and before the acknowledgement, on the gh lane and
+    the local no-gh lane. All of them run over disposable repositories with a fake `gh`. Mutation
+    controls that delete the fencing check or the freshness check make the drills fail. No live
+    GitHub run has exercised the gh lane, and the guarantee covers one host's cooperating writers,
+    not arbitrary GitHub users.
 - **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
   first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
   a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry

@@ -30,6 +30,7 @@ boundary rather than assembling a gate command from its flags alone.
 | Write or check an artifact inventory | [`inventory.py`](../runtime/scripts/inventory.py) | [Run submission](run-submission-guide.md#step-by-step); recheck history at the report's named commit |
 | Check whether a run report binds | [`run_report.py`](../runtime/scripts/run_report.py) | [What binding means](run-submission-guide.md#what-binding-means) |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
+| Merge onto a BASE behind one fenced conductor | [`merge_queue.py`](#merge_queuepy) | [`merge-serialization.md`](../runtime/merge-serialization.md), plus the section below |
 | Review a pack pin bump for rug-pulls | [`pin_review.py`](#pin_reviewpy) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), [`pins.json`](#pinsjson), plus the section below |
 
 The remaining reference sections cover:
@@ -41,7 +42,7 @@ The remaining reference sections cover:
 - **Workers and workspace operations:** [spawn](#spawn_workersh), [workers](#worker_opspy),
   [tasks](#task_opspy), [terminals](#terminal_opspy), [worktrees](#worktree_opspy),
   [working-tree fingerprints](#wtreesh), [session search](#search_sessionspy),
-  [chain gate](#chain_checkpy).
+  [chain gate](#chain_checkpy), [merge queue](#merge_queuepy).
 - **Guards and sandbox checks:** [tool guard](#deny-hooksh), [visible-text guard](#guard_textpy),
   [change scope](#diff_scopepy), [quality floor](#floor_guardpy), [sandbox doctor](#sandbox_doctorpy),
   [egress receipts](#egresspy), [component quarantine](#quarantine_checkpy),
@@ -424,7 +425,8 @@ refuses an unreceipted `gh` write wherever it is wired, and run close anchors th
 chain head (`head`, recorded in the loop-log; `verify --expect-ancestor` at the next
 close — appends since the anchor are healthy, so `--expect-head` would refuse a
 live ledger; it is for a sealed one). Where the hook is not wired, receipts remain
-coordinator discipline.
+coordinator discipline. One automated sink writes them itself: `runtime/scripts/merge_queue.py`
+appends a receipt before each merge it sends (#599), since the hook never sees that `gh` call.
 
 Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
@@ -684,6 +686,86 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 > that way is asked twice or lost. The durable ask/resume protocol keeps the question
 > addressable, and printing the resume id on timeout turns "no answer yet" into a
 > rejoinable state instead of a blind retry.
+
+## `merge_queue.py`
+
+The persisted, fenced single-conductor merge queue (#599), the mechanism behind
+[`runtime/merge-serialization.md`](../runtime/merge-serialization.md). Source
+`runtime/scripts/merge_queue.py:1-62`; behavior pinned by `tests/test_merge_queue.py`, and the
+process-level drills (two conductors, pause-transfer-resume, crash restarts, mutation controls)
+by `tests/test_merge_queue_drills.py`.
+
+Usage: `merge_queue.py [--db PATH] [--repo-dir DIR] [--repo ID] <command> ...`
+
+Subcommands: `init`, `acquire`, `release`, `enqueue`, `plan`, `merge`, `ack`, `resolve`,
+`reconcile`, `status`, `receipts`, `drain`.
+
+Flags: `--db` (default `$OPEN_FLEET_MERGE_QUEUE_DB`, else `$OPEN_FLEET_STATE_DIR/merge-queue.db`,
+else `~/.open-fleet/state/merge-queue.db`: one store per host, so conductors in two clones contend
+for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's identity; default the
+origin URL as `host/owner/name`). `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
+or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,
+`--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--ack`, `--max-steps`,
+`--keep-branch`. The rest take the lease's `--token`: `enqueue` adds `--payload` (the
+`merge_ready` JSON), `--run`, `--delivery`; `plan` adds `--gate-cmd`, `--gate-timeout`; `merge`
+adds `--entry`, `--keep-branch`; `ack` adds `--entry`, `--note`, `--accept-untested-tree`;
+`resolve` adds `--entry`, `--action` (`requeue`, `bounce`, `drop`), `--reason`. Every command
+prints one JSON object.
+
+A conductor runs `acquire` once, `enqueue` for each `merge_ready` it boards, then `plan`, `merge`
+and `ack` for each unit. `drain` is that whole turn, ending in `release`. What each step enforces:
+
+- **One conductor per repository and BASE.** `acquire` issues a fencing token and bumps a
+  monotonic epoch. Every write checks the token in its own SQLite transaction
+  (`runtime/scripts/merge_queue.py:_fence`), so a superseded conductor gets `fenced` and changes
+  nothing. A live holder is refused `lease_held` unless `--takeover`. The same `--holder`
+  re-acquiring is a restart, and it fences the older process too.
+- **The remote merge is inside the effect lock** (`runtime/scripts/merge_queue.py:EffectLock`), a
+  per-queue `flock`. A token-checked compare-and-set records the intent first. A handoff holds the
+  same lock, so a conductor paused after its lease check resumes into a refused write and never
+  sends. One paused inside the boundary blocks the handoff (`merge_in_flight`). The merge child
+  inherits the lock, so a conductor killed mid-call holds it until the call ends.
+- **Reconcile before handoff.** `acquire` settles every in-flight entry from `gh pr view`, or from
+  `git ls-remote` plus ancestry, before it bumps the epoch. A merged PR is adopted, never sent
+  again. One that never landed is requeued. One it cannot read (offline) refuses the handoff
+  (`in_flight_unknown`).
+- **Entries bind** run, unit, PR, branch, reviewed SHA and tree, BASE, and arrival `seq`. The
+  same run, unit and reviewed SHA delivered again is a no-op (`duplicate: true`). The same key
+  with another PR, branch or tree is refused (`payload_mismatch`). A new reviewed SHA for a queued
+  unit supersedes it and joins the back.
+- **`plan` tests the prefix:** BASE plus each queued entry in arrival order, merged in memory with
+  `diff_scope.py --predict-merge`'s engine (#590). It records each entry's expected BASE tree,
+  tested merge tree and accepted head. `--gate-cmd` runs in a detached checkout of each prefix
+  commit. A conflict or a failed gate FAILS that entry, and the train freezes behind it
+  (`queue_frozen`) until `resolve`.
+- **`merge` revalidates first.** A BASE whose tree moved, or a merge tree that is no longer the
+  tested one, gets `retest_required`. A head that moved to new content is returned to review
+  (`bounced`). A content-identical move (reviewed-sha-freshness.md) keeps the review and pins the
+  new head. Then it sends `gh pr merge <n> --merge --match-head-commit <head>`, or on the git lane
+  pushes a `commit-tree` of the tested tree with `--force-with-lease=<BASE>:<expected>`. Ancestry
+  verifies the result. Only the head of the train merges (`not_head`), and a merged entry must be
+  acknowledged (`ack`) before the next merge (`ack_owed`).
+- **Default-branch promotion stays human.** `init` refuses a BASE equal to `--default`, and
+  boarding refuses a payload aimed at it. A PR retargeted there is bounced, and no command writes
+  to it.
+
+Receipts for every transition (boarded, tested, merge intent, reconciled, retest, returned to
+review, failed, acknowledged, resolved, offline) are listed by `receipts`. The git lane's
+acknowledgement records `no-gh: local-merge`.
+
+Exits: 0 ok · 1 blocked (frozen, ack owed, retest, returned to review, offline, in flight) · 2 usage
+or refused input · 3 not the owner (fenced, lease held, unknown token).
+
+> Why: one conductor, arrival order and an expected-head guard were doctrine with nothing behind
+> them, so two coordinators could merge onto one BASE, and a crash mid-train left no record of
+> what had been sent. The guarantee is scoped to cooperating fleet writers that share this store
+> on one host. A lease cannot fence an arbitrary GitHub user or a writer that bypasses the script.
+> Their writes surface as a moved BASE or head, which the guards refuse. In gh mode GitHub picks
+> the BASE commit it merges onto, so a merge whose first parent is not the expected head is
+> recorded `treeMatchesTested: false`, and `ack` needs `--accept-untested-tree`. Tested tier: the
+> drills run real conductor processes over disposable repositories against a fake `gh`
+> (`tests/fixtures/merge_queue/fake_gh.py`). No live GitHub run has exercised the gh lane, and
+> conductors on two hosts are out of scope, because a flock and a SQLite file are single-host.
 
 ## `orca_cli.py`
 

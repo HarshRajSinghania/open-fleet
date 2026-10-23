@@ -12,7 +12,7 @@ merge_ready --payload '{"unit":"<id>","pr":123,"branch":"<head>","reviewed_sha":
 first-class Orca message type with NO built-in behavior — the runtime delivers it and stops, so the
 fleet owns the queue semantics.
 
-Two corrections against v1.4.199, both of which make this rule the FLEET's, not the runtime's:
+Two corrections against v1.4.199 make this rule the FLEET's, not the runtime's:
 
 - **`--to` is optional** from an active Dispatch — an omitted recipient defaults to the owning Run
   mailbox, which is the coordinator inbox and the address upstream prefers (`cli/specs/orchestration.ts:78`).
@@ -49,10 +49,9 @@ Two corrections against v1.4.199, both of which make this rule the FLEET's, not 
    `gh pr merge <n> --merge --delete-branch --match-head-commit <reviewed_sha>`.
    Every coordinator off-repo write — the `gh pr create`, this merge, issue closes, deploy
    triggers — is preceded by `egress.py write … &&` (#368): the receipt is appended BEFORE the
-   send, and its exit 3 stops the send. At run close, `egress.py verify` runs beside the
-   integrity inventory; together they answer "what did this run produce, and what left the
-   machine". Where the deny-hook is wired, an unreceipted `gh` write is refused below
-   the model (#561); elsewhere the prefix is coordinator discipline, checked at close.
+   send, and its exit 3 stops the send; run close verifies the chain (conductor-close.md).
+   Where the deny-hook is wired, an unreceipted `gh` write is refused below the model (#561);
+   elsewhere the prefix is coordinator discipline. `merge_queue.py` receipts its own merges.
    A concurrent head change refuses the merge: requeue for fresh review, then repeat FRESH;
    never retry without the expected-head guard. `--admin` only under a recorded once-per-run human
    grant when a merge-trap check hangs (gate-classification.md), never routinely.
@@ -70,9 +69,9 @@ Two corrections against v1.4.199, both of which make this rule the FLEET's, not 
 The FIRST merge of a run gets an extra dispatched verification before the second unit merges: a
 fresh worker confirms it landed as a merge commit (commits preserved, not squashed), every commit
 is authored by the maintainer with no trailers, the branch is deleted, and the worktree is
-retired. Whatever shape the first merge takes, the rest of the train copies — so a squashed or
-mis-authored first merge silently sets the pattern for every unit after it. Catch it once, at unit
-one, not at run close.
+retired. Whatever shape the first merge takes, the rest of the train copies, so a squashed or
+mis-authored first merge sets the pattern for every unit after it: catch it at unit one, not at
+run close.
 
 ## No-gh fallback (offline / unauthenticated)
 
@@ -106,6 +105,7 @@ skipped, every git-based BASE invariant still runs — and the conductor works P
 
 ## Rules
 
-- ONE conductor per BASE. Two trains on one base is a race, not redundancy.
+- ONE conductor per BASE. `merge_queue.py` (#599) enforces it: a fenced lease, durable FIFO
+  entries, steps 2-4 rechecked before each merge, in-flight merges reconciled before a handoff.
 - Arrival order only; no priority lanes without a human gate.
 - Merge to the DEFAULT branch is out of scope here — that promotion is a one-way human gate.

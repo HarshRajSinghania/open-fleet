@@ -21,7 +21,6 @@ truth is `.claude-plugin/plugin.json`.
   A fixed 22-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
   suppression and poisoned-note propagation with hints off/unchecked/checked; the live
   repeated-failure arm is wired but has not been run (it needs a declared model budget).
-||||||| 5fcab11f93
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

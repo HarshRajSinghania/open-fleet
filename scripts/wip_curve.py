@@ -1402,6 +1402,19 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
     metrics["usage_unavailable"] = sorted({r for f in events.USAGE_FIELDS
                                            for r in usage["run_total"][f].get(events.UNAVAILABLE, [])})
     metrics["models"] = sorted(usage["models"])
+    # Reviewer effort (a pre-registered confound): the usage of the review dispatches alone.
+    reviewers = {r["dispatch"] for u in (rec.get("units") or {}).values() for r in u.get("reviews", [])}
+    seen = {}
+    for e in raw:
+        if e["kind"] == "model.usage" and e["dispatch"] in reviewers:
+            seen.setdefault(e["event_id"], e)
+    covered = {e["dispatch"] for e in seen.values()}
+    review_usage = {"reviews": len(reviewers), "observed": len(covered)}
+    for field in ("input_tokens", "output_tokens"):
+        values = [e["data"][field] for e in seen.values()]
+        review_usage[field] = (sum(values) if covered == reviewers and reviewers and None not in values
+                               else None)
+    metrics["review_usage"] = review_usage
     tasks_out = {}
     for w in derived["waves"]:
         for u in w["units"]:
@@ -1453,6 +1466,21 @@ def condition_block(cond: dict, runs: list[dict]) -> dict:
         values = [r["metrics"][key] for r in runs if r.get("metrics")]
         block[key] = ({"values": values, "total": sum(values)} if values and None not in values
                       else {"values": values, "total": None})
+    per_review = [Fraction(r["metrics"]["review_usage"]["input_tokens"] + r["metrics"]["review_usage"]["output_tokens"],
+                           r["metrics"]["review_usage"]["reviews"])
+                  for r in runs if r.get("metrics") and r["metrics"]["review_usage"]["input_tokens"] is not None]
+    usable = [r for r in runs if r.get("metrics")]
+    block["review_tokens_per_review"] = (describe(per_review) if usable and len(per_review) == len(usable)
+                                         else {"n": len(usable), "unavailable": "a run's review usage was not "
+                                               "fully observed; never 0"})
+    tasks = {}
+    for r in usable:  # within-task reading of the difficulty confound
+        for tid, info in r["metrics"]["tasks"].items():
+            entry = tasks.setdefault(tid, {"runs": 0, "verified_closed": 0, "latency_min": []})
+            entry["runs"] += 1
+            entry["verified_closed"] += info["outcome"] == "verified-closed"
+            entry["latency_min"] += info["latency_min"]
+    block["tasks"] = dict(sorted(tasks.items()))
     for field in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cost_usd"):
         vals = [r["metrics"]["usage"][field] for r in runs if r.get("metrics")]
         block[field] = (describe([Fraction(str(v)) for v in vals], 4 if field == "cost_usd" else 2)
@@ -1569,6 +1597,25 @@ def render_markdown(report: dict) -> str:
                      f"{len(c['runs'])} | {_cell(c['throughput_per_h'])} | {_cell(c['latency_median_min'])} | "
                      f"{rework} | {_cell(c['freshness']['total'])} | {_cell(c['conflicts']['total'])} | "
                      f"{_cell(c['gate_failures']['total'])} | {cost} |")
+    lines += ["", "## Confounds read within the data", "",
+              "Reviewer effort: tokens (input + output) per review, mean [95% CI] — "
+              + "; ".join(f"`{c['condition']}` {_cell(c['review_tokens_per_review'])}"
+                          if "mean" in c["review_tokens_per_review"] else f"`{c['condition']}` unavailable"
+                          for c in report["conditions"]) + ".", "",
+              "Task difficulty: verified-CLOSED/runs and median unit latency in minutes, per task and condition.", "",
+              "| Task | " + " | ".join(f"`{c['condition']}`" for c in report["conditions"]) + " |",
+              "|---|" + "---|" * len(report["conditions"])]
+    for tid in sorted({t for c in report["conditions"] for t in c["tasks"]}):
+        cells = []
+        for c in report["conditions"]:
+            entry = c["tasks"].get(tid)
+            if not entry:
+                cells.append("no run")
+                continue
+            lat = [Fraction(x) for x in entry["latency_min"]]
+            cells.append(f"{entry['verified_closed']}/{entry['runs']}, "
+                         + (fmt(events._median(lat)) if lat else "no latency"))
+        lines.append(f"| {tid} | " + " | ".join(cells) + " |")
     lines += ["", "## Runs (every run, failed, stopped and parked included)", "",
               "| Run | Condition | Tier | Status | Throughput | Latency median/max min | Rework | Freshness | "
               "Conflicts | Retries | Cost USD | Compliant |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]

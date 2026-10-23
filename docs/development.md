@@ -56,6 +56,7 @@ when one does not.
 | `python3 scripts/eval.py run --suite trajectories` | Replay the adversarial worker trajectories through the real guards and print the [results table](adversarial-evals.md) (#602) |
 | `python3 scripts/hint_replay.py --check` | Replay the fixed episodic-hint corpus ([`tests/fixtures/hint-replay.json`](../tests/fixtures/hint-replay.json), #605) with hints off, unchecked and checked; fails unless provenance checks retrieve every useful note and leak no stale or poisoned one |
 | `python3 scripts/bundle.py --check` | Build in a temporary directory and check bundled references |
+| `python3 scripts/wip_curve.py check-prereg` | Check the [WIP-curve pre-registration](experiments/wip-curve-prereg.md) (#604): its digests, its seed commit, and that every oracle fails on the seed and passes on its reference edit |
 | `python3 scripts/release_check.py --fast --skip-github` | Verify the local [Release 1.0 checklist](release-1.0-checklist.md) gates |
 | `python3 -m unittest discover -s tests -v` | Run the complete contract and fixture suite |
 | `git diff --check` | Catch whitespace errors in the patch |

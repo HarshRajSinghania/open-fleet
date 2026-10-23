@@ -6,6 +6,35 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The WIP-curve experiment is pre-registered, and everything but its live runs is built** (#604).
+  The attention budget's WIP caps are still ASSERTED. They need at least three
+  protocol-compliant runs at differing WIP settings, and none existed.
+  - `docs/experiments/wip-curve-prereg.json` (explained in `wip-curve-prereg.md`) fixes the design
+    before any data. It sets four conditions (builders=1, the asserted cap of 3, and 6 builders
+    at one and at two reviewers), with three repetitions in a Williams Latin-square order. Each
+    run's task order is seeded, and per-run isolation starts from a seed commit that any host
+    rebuilds. It names the confounds and how each is separated, the stopping rule, the metrics
+    and the decision rule. The cost cap is `PENDING OWNER AUTHORISATION`.
+  - The fixed task set has six tasks on a synthetic package. Two pairs of tasks edit the same
+    region, so wider waves can conflict. `scripts/wip_curve.py check-prereg` shows that every
+    oracle fails on the seed and passes on its reference edit.
+  - `run` drives scheduled runs on the posix provider through the public wrappers. It adds
+    build-blind reviewers up to the condition's reviewer count, a coordinator-run oracle at each
+    worker's head in a clean checkout, and merges through `merge_queue.py`'s git lane. Every
+    observation goes into the run's `events.py` record, and the run retains a git bundle, the
+    store, the receipts, the transcripts and the streams, all bound by sha256. `run` refuses to
+    start without an explicit `--cost-cap-usd`. A live run also refuses a zero cap and refuses to
+    run without a model pin. `run` stops before a wave the cap cannot cover.
+  - `report` derives throughput, verification latency, rework, freshness, conflicts, and tokens
+    and cost from the retained sources alone. It gives each condition a t interval, gives rework
+    a Wilson interval, and includes every failed, stopped or parked run. It re-checks every
+    CLOSED unit against git and review authority. `verify` recomputes the report and names every
+    altered cell, then runs `events.py check` on each run's rows.
+  - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
+    scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
+    live runs and publishing a recommendation remain open. Both need the owner to authorise the
+    spend.
+
 - **One fenced conductor per BASE now merges, from a persisted queue** (#599). Merge serialization
   was doctrine only: two coordinators could merge onto one BASE, and a conductor that crashed
   mid-train left no record of what it had sent. `runtime/scripts/merge_queue.py` is now the merge

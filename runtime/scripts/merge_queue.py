@@ -71,6 +71,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -1018,19 +1019,45 @@ class MergeQueue:
         try:
             self.git.run("worktree", "add", "--detach", str(checkout), commit)
             env = {**self.env, "MQ_ENTRY": e["entry_id"], "MQ_UNIT": e["unit"], "MQ_PREFIX_COMMIT": commit}
+            # Its own session, so a timeout kills everything the gate started: a grandchild left
+            # holding the output pipe would otherwise stretch the timeout to its own lifetime.
+            proc = subprocess.Popen(["/bin/sh", "-c", gate_cmd], cwd=checkout, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, start_new_session=True)
             try:
-                proc = subprocess.run(["/bin/sh", "-c", gate_cmd], cwd=checkout, env=env, capture_output=True,
-                                      text=True, timeout=timeout)
-                code, tail = proc.returncode, (proc.stdout + proc.stderr)[-500:]
+                out, _ = proc.communicate(timeout=timeout)
+                code, tail = proc.returncode, (out or "")[-500:]
             except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
                 code, tail = 124, f"gate timed out after {timeout}s"
             return {"cmd": gate_cmd, "exit": code, "tail": tail, "commit": commit}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             self.git.run("worktree", "prune", check=False)
 
-    def merge(self, token: str, *, entry_id: str | None = None, delete_branch: bool = True) -> dict[str, Any]:
-        """Merge the head of the train, once, behind every guard (merge-serialization.md steps 2-4)."""
+    @staticmethod
+    def plan_passed(e: dict[str, Any], gate_cmd: str | None) -> bool:
+        """Whether the entry's saved plan covers this request: a tested merge tree and, when a gate
+        is asked for, THAT gate passed on THAT prefix commit (PR #647: a saved plan that ran no
+        gate, or another one, let a requested gate be skipped)."""
+        if not e.get("tested_tree"):
+            return False
+        if gate_cmd is None:
+            return True
+        try:
+            gate = json.loads(e.get("gate_json") or "null")
+        except ValueError:
+            return False
+        return (isinstance(gate, dict) and gate.get("cmd") == gate_cmd and gate.get("exit") == 0
+                and bool(e.get("prefix_commit")) and gate.get("commit") == e.get("prefix_commit"))
+
+    def merge(self, token: str, *, entry_id: str | None = None, delete_branch: bool = True,
+              require_gate: str | None = None) -> dict[str, Any]:
+        """Merge the head of the train, once, behind every guard (merge-serialization.md steps 2-4).
+
+        `require_gate` refuses a head whose saved plan did not pass exactly that gate command.
+        """
         self.settle_in_flight(token)
         cfg, lease = self._owner(token)
         repo, base = cfg["repo"], cfg["base"]
@@ -1040,6 +1067,11 @@ class MergeQueue:
         if not head["tested_tree"]:
             raise QueueError("untested", f"{head['entry_id']} has no tested merge tree: run plan first",
                              {"entry": head["entry_id"]})
+        if not self.plan_passed(head, require_gate):
+            raise QueueError("gate_not_run", f"{head['entry_id']}'s saved plan did not pass the required gate "
+                             f"{require_gate!r}: run plan --gate-cmd with it first",
+                             {"entry": head["entry_id"], "required": require_gate,
+                              "saved": json.loads(head["gate_json"] or "null")})
         info = {"entry": head["entry_id"], "unit": head["unit"], "pr": head["pr"], "epoch": lease["epoch"],
                 "pid": os.getpid()}
         self._boundary("lease_checked", info)
@@ -1086,11 +1118,15 @@ class MergeQueue:
         now = self.clock()
         with self.store.tx() as conn:
             lease = self._fence(conn, token)
+            # The compare-and-set binds the plan validated above: the tested tree and the gate record
+            # (a concurrent re-plan by this owner changes one of them, and the write is refused).
             cur = conn.execute("UPDATE mq_entries SET state = ?, accepted_head = ?, expected_base = ?, merging_epoch = ?, "
-                               "merging_pid = ?, updated_at = ? WHERE entry_id = ? AND state = ?",
-                               (MERGING, accepted, base_head, lease["epoch"], os.getpid(), now, e["entry_id"], QUEUED))
+                               "merging_pid = ?, updated_at = ? WHERE entry_id = ? AND state = ? AND tested_tree = ? "
+                               "AND COALESCE(gate_json, '') = ?",
+                               (MERGING, accepted, base_head, lease["epoch"], os.getpid(), now, e["entry_id"], QUEUED,
+                                e["tested_tree"], e["gate_json"] or ""))
             if cur.rowcount != 1:
-                raise QueueError("queue_changed", f"{e['entry_id']} is no longer queued")
+                raise QueueError("queue_changed", f"{e['entry_id']} is no longer queued as it was validated")
             self._receipt(conn, repo, base, "merge_intent", {"acceptedHead": accepted, "how": how, "expectedBase": base_head,
                                                              "testedTree": e["tested_tree"], "mode": cfg["mode"],
                                                              "localMerge": local_merge}, e["entry_id"], lease)
@@ -1294,7 +1330,7 @@ class MergeQueue:
 
     def drain(self, *, repo: str, base: str, holder: str, ttl: float = DEFAULT_TTL, takeover: bool = False,
               wait: float = 10.0, gate_cmd: str | None = None, ack: bool = False, max_steps: int = 100,
-              delete_branch: bool = True) -> dict[str, Any]:
+              delete_branch: bool = True, gate_timeout: float = 1800.0) -> dict[str, Any]:
         """acquire -> (plan -> merge -> ack)* -> release: one conductor turn over the whole train."""
         acq = self.acquire(repo=repo, base=base, holder=holder, ttl=ttl, takeover=takeover, wait=wait)
         token, steps = acq["token"], []
@@ -1308,10 +1344,12 @@ class MergeQueue:
                 try:
                     if head["state"] == MERGED and ack:
                         steps.append({"ack": self.ack(token, head["entry_id"], note=f"drain by {holder}")})
-                    elif head["state"] == QUEUED and not head["tested_tree"]:
-                        steps.append({"plan": self.plan(token, gate_cmd=gate_cmd)})
+                    elif head["state"] == QUEUED and not self.plan_passed(head, gate_cmd):
+                        # Re-plan unless the saved plan passed THIS gate on this prefix (PR #647).
+                        steps.append({"plan": self.plan(token, gate_cmd=gate_cmd, gate_timeout=gate_timeout)})
                     else:
-                        steps.append({"merge": self.merge(token, entry_id=head["entry_id"], delete_branch=delete_branch)})
+                        steps.append({"merge": self.merge(token, entry_id=head["entry_id"], delete_branch=delete_branch,
+                                                          require_gate=gate_cmd)})
                 except QueueError as exc:
                     if exc.code == "retest_required":
                         steps.append({"retest": exc.as_json()})
@@ -1361,7 +1399,9 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--wait", type=float, default=0.0 if name == "acquire" else 10.0,
                        help="seconds to wait for the merge boundary")
         if name == "drain":
-            s.add_argument("--gate-cmd", default=None, help="shell command run in each prefix checkout")
+            s.add_argument("--gate-cmd", default=None, help="shell command run in each prefix checkout; a saved "
+                           "plan is reused only when it passed exactly this command")
+            s.add_argument("--gate-timeout", type=float, default=1800.0)
             s.add_argument("--ack", action="store_true", help="acknowledge each verified merge")
             s.add_argument("--max-steps", type=int, default=100)
             s.add_argument("--keep-branch", action="store_true", help="gh lane: do not pass --delete-branch")
@@ -1381,6 +1421,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--token", required=True)
     s.add_argument("--entry", default=None)
     s.add_argument("--keep-branch", action="store_true")
+    s.add_argument("--require-gate", default=None, help="refuse unless the saved plan passed exactly this gate")
     s = sub.add_parser("ack", help="acknowledge a verified merge (merged -> landed)")
     s.add_argument("--token", required=True)
     s.add_argument("--entry", required=True)
@@ -1414,7 +1455,7 @@ def run(args: argparse.Namespace, mq: MergeQueue) -> dict[str, Any]:
     if cmd == "drain":
         return mq.drain(repo=repo, base=args.base, holder=args.holder, ttl=args.ttl, takeover=args.takeover,
                         wait=args.wait, gate_cmd=args.gate_cmd, ack=args.ack, max_steps=args.max_steps,
-                        delete_branch=not args.keep_branch)
+                        delete_branch=not args.keep_branch, gate_timeout=args.gate_timeout)
     if cmd == "status":
         return mq.status(repo, args.base)
     if cmd == "receipts":
@@ -1426,7 +1467,8 @@ def run(args: argparse.Namespace, mq: MergeQueue) -> dict[str, Any]:
     if cmd == "plan":
         return mq.plan(args.token, gate_cmd=args.gate_cmd, gate_timeout=args.gate_timeout)
     if cmd == "merge":
-        return mq.merge(args.token, entry_id=args.entry, delete_branch=not args.keep_branch)
+        return mq.merge(args.token, entry_id=args.entry, delete_branch=not args.keep_branch,
+                        require_gate=args.require_gate)
     if cmd == "ack":
         return mq.ack(args.token, args.entry, note=args.note, accept_untested_tree=args.accept_untested_tree)
     if cmd == "resolve":

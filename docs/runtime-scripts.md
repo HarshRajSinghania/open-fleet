@@ -802,11 +802,11 @@ else `~/.open-fleet/state/merge-queue.db`: one store per host, so conductors in 
 for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's identity; default the
 origin URL as `host/owner/name`). `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,
-`--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--ack`, `--max-steps`,
-`--keep-branch`. `status` and `receipts` are read-only and take `--base` (`receipts` adds
+`--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--gate-timeout`, `--ack`,
+`--max-steps`, `--keep-branch`. `status` and `receipts` are read-only and take `--base` (`receipts` adds
 `--entry`). The rest take the lease's `--token`: `enqueue` adds `--payload` (the
 `merge_ready` JSON), `--run`, `--delivery`; `plan` adds `--gate-cmd`, `--gate-timeout`; `merge`
-adds `--entry`, `--keep-branch`; `ack` adds `--entry`, `--note`, `--accept-untested-tree`;
+adds `--entry`, `--keep-branch`, `--require-gate`; `ack` adds `--entry`, `--note`, `--accept-untested-tree`;
 `resolve` adds `--entry`, `--action` (`requeue`, `bounce`, `drop`), `--reason`; `reconcile`
 settles an in-flight entry an earlier attempt left. Every command prints one JSON object.
 
@@ -834,8 +834,11 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
 - **`plan` tests the prefix:** BASE plus each queued entry in arrival order, merged in memory with
   `diff_scope.py --predict-merge`'s engine (#590). It records each entry's expected BASE tree,
   tested merge tree and accepted head. `--gate-cmd` runs in a detached checkout of each prefix
-  commit. A conflict or a failed gate FAILS that entry, and the train freezes behind it
-  (`queue_frozen`) until `resolve`.
+  commit, in its own session, so a timeout kills everything the gate started. A conflict or a
+  failed gate FAILS that entry, and the train freezes behind it (`queue_frozen`) until `resolve`.
+  A saved plan counts only for the gate it passed: `drain --gate-cmd` plans again unless the head
+  passed exactly that command on its current prefix commit, and `merge --require-gate` refuses
+  one that did not (`gate_not_run`).
 - **`merge` revalidates first.** A BASE whose tree moved, or a merge tree that is no longer the
   tested one, gets `retest_required`. A head that moved to new content is returned to review
   (`bounced`). A content-identical move (reviewed-sha-freshness.md) keeps the review and pins the

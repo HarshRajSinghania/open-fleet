@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -308,6 +309,75 @@ class FifoAndFreeze(QueueCase):
         self.assertEqual(out["planned"][1]["conflicts"], ["shared.txt"])
         self.assertEqual(self.state_of(ids[1]), "failed")
 
+
+class GateSelection(QueueCase):
+    """A gate the conductor asks for runs on the prefix that merges, or nothing merges (PR #647)."""
+
+    def _plan(self, *gate):
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        rc, out = self.w.cli("plan", "--token", token, *gate)
+        self.assertEqual(rc, 0, out)
+        return token, entry
+
+    def _frozen_on_the_gate(self, entry, out, rc):
+        self.assertEqual((rc, out.get("code")), (1, "queue_frozen"), out)
+        self.assertEqual(self.w.merge_log("start"), [], "the unit merged without the requested gate")
+        self.assertEqual(self.state_of(entry), "failed")
+        failed = [r["body"] for r in self.receipts(entry) if r["kind"] == "failed"][0]
+        self.assertEqual((failed["reason"], failed["gate"]["cmd"]), ("gate_failed", "exit 1"))
+
+    def test_drain_runs_a_requested_gate_the_saved_plan_never_ran(self):
+        token, entry = self._plan()
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", "exit 1", "--ack")
+        self._frozen_on_the_gate(entry, out, rc)
+
+    def test_drain_runs_the_requested_gate_when_the_saved_plan_ran_another(self):
+        token, entry = self._plan("--gate-cmd", "true")
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", "exit 1", "--ack")
+        self._frozen_on_the_gate(entry, out, rc)
+
+    def test_a_saved_plan_that_passed_the_same_gate_is_reused(self):
+        ran = self.w.tmp / "gate.log"
+        gate = f"echo ran >> {ran}"
+        token, _entry = self._plan("--gate-cmd", gate)
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", gate, "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(ran.read_text().splitlines(), ["ran"], "a passed gate ran again for the same prefix")
+        self.assertEqual(len(self.w.merge_log()), 1)
+
+    def test_merge_refuses_a_plan_that_did_not_pass_the_required_gate(self):
+        token, entry = self._plan()
+        rc, out = self.w.cli("merge", "--token", token, "--require-gate", "true")
+        self.assertEqual((rc, out.get("code")), (1, "gate_not_run"), out)
+        self.assertEqual((self.w.merge_log("start"), self.state_of(entry)), ([], "queued"))
+        self.assertEqual(self.w.cli("plan", "--token", token, "--gate-cmd", "true")[0], 0)
+        rc, out = self.w.cli("merge", "--token", token, "--require-gate", "true")
+        self.assertEqual((rc, out.get("result")), (0, "merged"), out)
+
+    def test_drain_passes_its_gate_timeout_to_the_gate(self):
+        token, entry = self._plan()
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", "sleep 5",
+                             "--gate-timeout", "0.5", "--ack")
+        self.assertEqual((rc, out.get("code")), (1, "queue_frozen"), out)
+        failed = [r["body"] for r in self.receipts(entry) if r["kind"] == "failed"][0]
+        self.assertEqual(failed["gate"]["exit"], 124)
+        self.assertEqual(self.w.merge_log("start"), [])
+
+    def test_a_timed_out_gate_is_stopped_with_everything_it_started(self):
+        token, entry = self._plan()
+        late = self.w.tmp / "late.txt"
+        rc, out = self.w.cli("plan", "--token", token, "--gate-cmd", f"sh -c 'sleep 2; echo late > {late}'; true",
+                             "--gate-timeout", "0.5")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([(x["result"], x["gate"]["exit"]) for x in out["planned"]], [("fail", 124)])
+        self.assertEqual(self.state_of(entry), "failed")
+        time.sleep(3)
+        self.assertFalse(late.exists(), "a timed-out gate's child kept running after the gate was failed")
 
 class Freshness(QueueCase):
     def _planned(self, *units):

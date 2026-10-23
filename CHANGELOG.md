@@ -25,6 +25,11 @@ truth is `.claude-plugin/plugin.json`.
     container, against a real daemon in the opt-in tier `tests/test_posix_docker_crash.py`
     (`OPEN_FLEET_DOCKER_CRASH_TEST=1`, a digest-pinned fixture image with an inert `claude`). Any
     other run reports that tier as NOT RUN. tmux and cmux are not crash-tested.
+- **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
+  key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
+  a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it
+  signed itself. floor_guard.py already read the pin at its base ref; this gives the CLI the same
+  anchor. Without the flag, behaviour is unchanged.
 
 ## [0.8.0] - 2026-10-23
 

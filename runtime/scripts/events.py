@@ -233,9 +233,12 @@ def _typed(kind_type, value, name, strict=True):
     if kind_type == "ids":
         if not isinstance(value, list) or not value:
             raise ValueError(f"{name} must be a non-empty list of ids")
-        if len(set(value)) != len(value):
+        # Each element first: set() over an unhashable one raised TypeError, which escaped
+        # emit's usage path and the reader's fail-closed one (PR #638 review, P2).
+        values = [_text(v, name, ID_RE, strict=strict) for v in value]
+        if len(set(values)) != len(values):
             raise ValueError(f"{name} names an id twice")
-        return sorted(_text(v, name, ID_RE, strict=strict) for v in value)
+        return sorted(values)
     raise ValueError(f"unknown field type {kind_type}")
 
 
@@ -250,7 +253,7 @@ def normalize(event, strict=True):
     if event.get("v") != RECORD_VERSION:
         raise ValueError(f"v must be {RECORD_VERSION}")
     kind = event.get("kind")
-    if kind not in KINDS:
+    if not isinstance(kind, str) or kind not in KINDS:  # a list kind is unhashable
         raise ValueError(f"kind {kind!r} is not one of {sorted(KINDS)}")
     task_req, dispatch_req, spec = KINDS[kind]
     out = {"v": RECORD_VERSION, "kind": kind,

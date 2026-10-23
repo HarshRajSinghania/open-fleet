@@ -701,6 +701,24 @@ class TestRecordIntegrity(Base):
                 self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertFalse(self.log.exists())
 
+    def test_an_unhashable_value_is_refused_not_a_traceback(self):
+        # PR #638 review (P2): set() over `"tasks": [{}]` raised TypeError before any id was
+        # checked — a traceback (exit 1) on emit, and an escape from the reader's fail-closed path.
+        plan = '{"wave": 1, "builders": 1, "reviewers": 1, "tasks": [{}]}'
+        proc = self.emit(kind="wave.open", data=plan)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertFalse(self.log.exists())
+        for field, value in (("data", {"wave": 1, "builders": 1, "reviewers": 1, "tasks": [{}]}),
+                             ("kind", ["wave.open"])):
+            with self.subTest(field=field):
+                evs = unit_stream()[:2]
+                evs[1][field] = value
+                self.write(evs)
+                proc = self.cli("report")
+                self.assertEqual(proc.returncode, 3, proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr)
+
     def test_emit_refuses_a_credential_shape_and_writes_nothing(self):
         token = "gh" + "p_" + "A" * 36
         for extra in (("--source-ref", f"https://ci.example/{token}"),

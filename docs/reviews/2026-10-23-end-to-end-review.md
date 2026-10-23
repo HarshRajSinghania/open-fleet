@@ -246,12 +246,18 @@ timeout 5 orca orchestration reset        -> ALLOW
   `runtime/scripts/quarantine_check.py:194-199` (counts both).
 - A playbook composed by a `name.md` token inside the clause is charged as activation load but
   never checked against `runtime/quarantine.json`. A playbook named only in a DEFERRED READS
-  paragraph is checked by nothing. `ship-it`'s live clause spells `build-change.md` this way.
-- Reproduced: with `playbook:build-change` quarantined, `validate.py` flags clean-sweep,
-  deflake-it, oss-contribute and prove-it and reports `ok ship-it`; `quarantine_check.py
-  --mission ship-it` reports QUARANTINED, exit 2. The CI gate sees a strictly smaller
-  composition set than the CLI. Transitive playbook-to-playbook edges (24 in the catalog) and
-  body mentions are also unchecked by `preflight.py --mission` (P2-11).
+  paragraph is checked by nothing.
+- Reproduced in a throwaway clone with one fixture edit: `ship-it`'s clause respelled from
+  `` `build-change` `` to `build-change.md` (at the reviewed SHA the live clause,
+  `skills/ship-it/SKILL.md:38`, uses the backticked form, which the gate does see). With
+  `playbook:build-change` quarantined, `validate.py` then flags clean-sweep, deflake-it,
+  oss-contribute and prove-it and reports `ok ship-it`, while `quarantine_check.py --mission
+  ship-it` reports QUARANTINED, exit 2. The CI gate sees a strictly smaller composition set than
+  the CLI. The live tree carries one candidate of the same shape: `skills/migrate-it/SKILL.md:46`
+  names `release.md` in prose that `transitive_load` charges; with `playbook:release`
+  quarantined the reviewer saw `validate.py` exit 0 and `quarantine_check.py --catalog` report
+  migrate-it QUARANTINED (reviewer). Transitive playbook-to-playbook edges (24 in the catalog)
+  and body mentions are also unchecked by `preflight.py --mission` (P2-11).
 
 ### P1-11. The test suite launches the real `claude` CLI with `--dangerously-skip-permissions`
 
@@ -598,13 +604,17 @@ Items marked (reviewer) were reproduced by the layer reviewer and read, not re-r
 
 ## 8. Evidence
 
-All reproductions live under the session scratchpad
-`/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-repo-end-to-end-review-d87a8e/cfdbec6e-bb43-44ad-af55-735d6d1a4721/scratchpad/`:
-`evidence-core/r3b` (stillborn), `evidence-core/r2c` (hook), `evidence-core/mkfix.py` (fixture
-builder), `sandbox-boundary/probe.py` (hook harness; `mine-hook/` is the author's rerun),
-`coordinator-scripts/fg/*` and `dec/` (floor guard and ledger clones; `mine-dec/` the author's
-rerun), `build-scripts/e32` and `e10` (validator clones), `mine-tmux/drive.py` (the tmux launch
-trace), `review-notes.md` (the running log). Branch protection, rulesets and tag protection were
-read with `gh api`; GitHub's skipped-check semantics were read from
-docs.github.com (troubleshooting-required-status-checks); the runner image inventory from
-actions/runner-images (Ubuntu 24.04 README). No tracked file was modified.
+The reproduction fixtures were built in throwaway clones on the author's machine and are not
+retained in this repository. Each finding above names the exact source lines, the input shape
+(the fixture edit, the command, the payload) and the observed output, which is what a
+maintainer needs to rebuild it; the repository's own standard is that a guard's negative-path
+fixture lives beside the guard as a test, so the durable form of each reproduction is the
+regression test that should land with its fix, not a file in `docs/`. The deny-hook probes used
+the invocation shape of `tests/test_deny_hook.py`; the verifier fixtures mirror the
+`bench/vf-bench` fixture; the floor-guard and ledger fixtures are one-file repositories built
+with `git init` plus the single edit each finding describes.
+
+Branch protection, rulesets and tag protection were read with `gh api`; GitHub's skipped-check
+semantics were read from docs.github.com (troubleshooting-required-status-checks); the runner
+image inventory from actions/runner-images (Ubuntu 24.04 README). No tracked file other than
+this document was added or modified.

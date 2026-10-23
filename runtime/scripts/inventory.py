@@ -160,7 +160,8 @@ def sha256_file(path):
 def repo_root(start):
     try:
         r = subprocess.run(gitexec.argv("-C", str(start), "rev-parse", "--show-toplevel"),
-                           capture_output=True, text=True, timeout=30, env=gitexec.env())
+                           capture_output=True, text=True, timeout=30, env=gitexec.env(),
+                           stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 or not r.stdout.strip():
@@ -246,6 +247,7 @@ def sha256_at(rev, path_text, cwd):
     proc = subprocess.run(
         gitexec.argv("cat-file", "blob", f"{rev}:{path_text}"),
         cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=gitexec.env(),
+        stdin=subprocess.DEVNULL,
     )
     if proc.returncode != 0:
         return None
@@ -257,6 +259,7 @@ def rev_exists(rev, cwd):
     return subprocess.run(
         gitexec.argv("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"),
         cwd=str(cwd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=gitexec.env(),
+        stdin=subprocess.DEVNULL,
     ).returncode == 0
 
 

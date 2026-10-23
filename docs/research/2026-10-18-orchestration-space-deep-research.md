@@ -8,6 +8,13 @@
 > descriptor, not a validated transport AgentCard. Episodic hints read matching
 > manifests, not the `docs/runs/*.md` scan described here. These mechanisms exist;
 > their stronger interoperability/currentness claims remain roadmap work.
+>
+> **October 23 resolution of the A2A claim ([#607](https://github.com/ravidsrk/open-fleet/issues/607)):**
+> the `a2a-agent-card/v1` output below is open-fleet's own offline mission descriptor, not a
+> "standard" A2A card. Checked against the official `lf.a2a.v1` proto pinned at
+> `a2aproject/A2A@1205f459`, it fails as a transport AgentCard. A validated AgentCard is
+> available only through the opt-in `--standard-card` projection, for an endpoint you supply.
+> See [A2A export](../a2a-export.md).
 
 **Date:** 2026-10-18
 **Scope:** Multi-agent coding orchestration harnesses, protocols (`MCP`, `A2A`, `ACP`, `agentskills.io`), worktree swarms, execution-backed review engines, and verification architectures — and what `orca-fleet` implements from the findings.

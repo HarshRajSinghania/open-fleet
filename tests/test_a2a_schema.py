@@ -409,6 +409,24 @@ class TestReviewFindings(unittest.TestCase):
                 self.assertIn("$.supportedInterfaces[1].url: expected an absolute URL or host:port",
                               self.errors_for(grpc(bad)))
 
+    def test_extension_and_binding_identifiers_are_rfc3986_uris_not_hosts(self):
+        # a2a.proto AgentExtension.uri: "The unique URI identifying the extension"; spec 5.8: a
+        # custom protocolBinding SHOULD be a URI. A URI needs a scheme, not a network host.
+        def ext(uri):
+            return lambda c: c["capabilities"].update(extensions=[{"uri": uri}])
+
+        for good in ("tag:acme.org,2026:mission-v1", "urn:example:a2a:ext:v1",
+                     "https://e.org/ext/v1#part", "https://e.org/ext/%7Euser/v1"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors_for(ext(good)), [])
+        for bad in ("relative/ext/v1", "ext-v1", "tag:", "1tag:acme.org", "tag:acme org",
+                    "https://", "https:///no-host", "tag:a%zz", "tag:a#b#c"):
+            with self.subTest(bad=bad):
+                self.assertIn("$.capabilities.extensions[0].uri: expected an absolute URI",
+                              self.errors_for(ext(bad)))
+        self.assertEqual(self.errors_for(lambda c: c["supportedInterfaces"][0].update(
+            protocolBinding="tag:acme.org,2026:binding-v1")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

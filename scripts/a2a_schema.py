@@ -78,6 +78,11 @@ _MEDIA_TYPE = re.compile(
     _RESTRICTED_NAME + "/" + _RESTRICTED_NAME
     + r"(?:[ \t]*;[ \t]*" + _HTTP_TOKEN + "=(?:" + _HTTP_TOKEN + "|" + _QUOTED_STRING + "))*")
 _BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
+# An RFC 3986 URI: a scheme, `:`, then a non-empty run of unreserved, reserved or %HH characters
+# with at most one `#`. An identifier needs no network host (`tag:`, `urn:`) (#636).
+_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:(?:[A-Za-z0-9._~!$&'()*+,;=:@/?#\[\]-]|%[0-9A-Fa-f]{2})+")
+# Schemes whose URI names a network authority: for these an empty host is not a URI (RFC 9110 4.2).
+_HOST_SCHEMES = ("http", "https", "ws", "wss")
 # gRPC `host:port`: a DNS name or IPv4 address, or a bracketed IPv6 literal (#636).
 _HOST_PORT = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(\d{1,5})")
 
@@ -595,6 +600,13 @@ def _absolute_url(text):
         return False
 
 
+def _absolute_uri(text):
+    """An RFC 3986 absolute URI such as an extension or custom-binding identifier (#636)."""
+    if not isinstance(text, str) or not _URI.fullmatch(text) or text.count("#") > 1:
+        return False
+    return text.split(":", 1)[0].lower() not in _HOST_SCHEMES or _absolute_url(text)
+
+
 def grpc_address(text):
     """(host, port) of a gRPC `host:port` address, or None (a2a.proto AgentInterface.url).
 
@@ -627,7 +639,7 @@ def semantic_errors(card, schema=None):
     for i, iface in enumerate(card.get("supportedInterfaces") or []):
         where = f"$.supportedInterfaces[{i}]"
         binding, url = iface.get("protocolBinding", ""), iface.get("url", "")
-        if binding not in CORE_BINDINGS and not _absolute_url(binding):
+        if binding not in CORE_BINDINGS and not _absolute_uri(binding):
             errors.append(f"{where}.protocolBinding: {binding!r} is neither a core binding "
                           f"({', '.join(CORE_BINDINGS)}) nor a custom-binding URI")
         if not _PROTOCOL_VERSION.match(iface.get("protocolVersion", "")):
@@ -664,7 +676,7 @@ def semantic_errors(card, schema=None):
                 errors.append(f"$.signatures[{i}].{part}: expected unpadded base64url")
     uris = [e.get("uri", "") for e in (card.get("capabilities") or {}).get("extensions") or []]
     for i, uri in enumerate(uris):
-        if not _absolute_url(uri) and not uri.startswith("urn:"):
+        if not _absolute_uri(uri):
             errors.append(f"$.capabilities.extensions[{i}].uri: expected an absolute URI")
     for dup in sorted({u for u in uris if uris.count(u) > 1}):
         errors.append(f"$.capabilities.extensions: duplicate extension uri {dup!r}")

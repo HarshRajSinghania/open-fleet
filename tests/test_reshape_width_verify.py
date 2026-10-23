@@ -19,6 +19,9 @@ F-1/F-2 (`_Authority`: the review authority pinned once at startup and classed b
 plus the lane that decides whether a worker-influenceable authority is advisory or fatal)
 is again ONE class, and it is paid for: the single-use `_WAIVER_NEEDS_EXECUTED_NC` moved
 into check_review, the only function that ever read it, so the pin holds at 91.
+#608 (`check_retention_receipt`: the provenance retention receipt bound offline to its signed
+inventory) is paid for the same way: the one-line `_scan_text` folded into check_redaction, its
+only caller, so the pin still holds at 91.
 
 The pin is a ratchet against the deepening RE-WIDENING, not a freeze: the
 invariant it defends is `width < BASELINE_WIDTH`, and that baseline never

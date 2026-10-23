@@ -49,8 +49,13 @@ Unlike verify.py the rest of the environment passes: these tools are not a verif
 stating facts against a worker, and a coordinator's locale, HOME and PATH stay theirs.
 diff_scope.py inlines the same floor rather than importing this module: verify.py loads
 diff_scope by path, so a sibling it imported would join the signed verifier toolchain
-(verify._Transcript.TOOLCHAIN and run_report.TOOLCHAIN_FILES). verify.py's _Authority
-mirrors env() and driver_blanks() for the same reason.
+(verify._Transcript.TOOLCHAIN and run_report.TOOLCHAIN_FILES). This module is in that
+toolchain since #608 all the same: verify.py loads inventory.py to check a retention
+receipt, and inventory.py loads this module at import. verify.py's _Authority keeps its
+own git_env() and a mirror of driver_blanks() rather than calling this module, but no
+longer to stay out of the toolchain: every verifier git leg runs the custody-classed git
+_Authority pinned at startup under its scrubbed nc_env floor, where this module runs its
+own GIT under the caller's whole environment.
 
 Library only: no CLI, no exit codes.
 """

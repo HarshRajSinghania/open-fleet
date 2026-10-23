@@ -16,8 +16,10 @@ truth is `.claude-plugin/plugin.json`.
   - `gitexec.env()` (floor_guard, decisions, inventory, evidence-run, preflight) now pins
     `core.hooksPath=/dev/null`, `diff.external=` and `GIT_GRAFT_FILE=/dev/null` on top of the
     existing `core.fsmonitor=false` / `protocol.ext.allow=never` / replace-objects-off belt, at
-    command-line precedence over repo config. `diff_scope.py`'s and `verify.py`'s inlined copies
-    mirror it (they load into the signed verifier toolchain, so they cannot import the sibling).
+    command-line precedence over repo config. `diff_scope.py`'s inlined copy mirrors it;
+    `verify.py`'s `_Authority` keeps its own belt and a `driver_blanks` mirror, since every
+    verifier git leg runs its custody-pinned git under a scrubbed environment. `gitexec.py` is
+    in the signed verifier toolchain since #608, so this change moves its toolchain hash.
   - `gitexec.driver_blanks(repo)` closes the attribute-selected filter/textconv channel a fixed
     `-c` cannot name — `-c` cannot enumerate an unknown `<driver>`, and `$GIT_DIR/info/attributes`
     outranks any `--attr-source`. It reads the driver names the repo's OWN config declares (the
@@ -33,6 +35,38 @@ truth is `.claude-plugin/plugin.json`.
     (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with
     them in force it never does. `verify.py`'s guarded lines and interface width are unchanged
     (the new logic is an `_Authority` classmethod).
+- **Episodic hints are bound to source revision and untrusted provenance** (#605). Every
+  `search_sessions.py --episodic-hint` entry names its source repo/revision (or `unknown`), the
+  artifact it came from with its sha256, the checked path/symbol scope, the producing run and why
+  it matched, and opens with a currency label computed by the new `hint_provenance.py` — never
+  read from a manifest. Against a live source (`--repo`, optional `--live-rev`) changed, deleted
+  or renamed scope, a moved symbol, a divergent or ahead-of-live revision, a changed related test
+  and a modified artifact make an entry `STALE`; a newer contradicting record or the frozen task's
+  `--current-evidence` makes it `SUPERSEDED`; missing provenance and changed dependencies leave it
+  `UNKNOWN`. The default worker-facing mode suppresses stale entries and withholds notes and
+  identifiers that assert a grant or speak as an authority outside quotes, while quoted lessons
+  stay usable;
+  `--hint-mode historical` lists everything labelled. `guard_text.py` gains `grant_labels()` and
+  `unquoted()`; the failure handover states its authority and withholds unquoted grant claims.
+  A fixed 27-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
+  suppression and poisoned-note propagation with hints off/unchecked/checked; the live
+  repeated-failure arm is wired but has not been run (it needs a declared model budget).
+- **Provenance retention receipts are verified offline against the signed inventory** (#608).
+  `provenance.retention` names a v1 receipt (`open-fleet/retention-receipt/v1`): a
+  `{record, sig_b64}` envelope whose eight fields — schema, unit, source revision, inventory
+  path, the inventory's signed digest, log index, entry UUID, signer — are all signed over
+  dispatch-sign.py's canonical form. `inventory.py receipt` writes one for an inventory the same
+  key signed. `verify.py` checks it when the binding is claimed (`provenance.retention_receipt` in
+  the manifest, or `--retention-pubkey` from the coordinator) and only against that supplied key:
+  a key declared in the receipt is refused. It refuses a missing, unreadable or path-escaping
+  receipt, the wrong key or signer, a signature mismatch, a replay from another unit, revision,
+  run or inventory, an unsigned or altered inventory, and a manifest the inventory does not pin.
+  The NOTE says what was not verified: log inclusion, retention, the inventoried files, any legal
+  determination. Unclaimed provenance keeps its presence-only check. `inventory.py` and
+  `gitexec.py` join the signed verifier toolchain, and the transcript's argument tuple gains
+  `retention_pubkey`; run_report.py mirrors both. `tests/test_retention_receipt.py` deletes each
+  refusal's guard from a copy of the verifier and requires the case to pass there.
+
 - **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
   first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
   a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry

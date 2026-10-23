@@ -30,9 +30,12 @@ boundary rather than assembling a gate command from its flags alone.
 | Write, check or sign an artifact inventory | [`inventory.py`](../runtime/scripts/inventory.py) | [Run submission](run-submission-guide.md#step-by-step); recheck history at the report's named commit |
 | Record a log upload as a retention receipt, or verify one offline | [`inventory.py receipt`](../runtime/scripts/inventory.py), [`verify.py --retention-pubkey`](../runtime/scripts/verify.py) | [Retention receipt v1](compliance-provenance.md#retention-receipt-v1--what-the-offline-check-proves-608): the shape, the claim, and what is and is not verified |
 | Check whether a run report binds | [`run_report.py`](../runtime/scripts/run_report.py) | [What binding means](run-submission-guide.md#what-binding-means) |
+| Derive or check a run's WIP-curve rows from observed events | [`events.py`](#eventspy) | [WIP-curve protocol](../runtime/attention-budget.md#the-wip-curve-protocol-how-a-cap-graduates-from-asserted-to-measured), plus the section below |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
 | Merge onto a BASE behind one fenced conductor | [`merge_queue.py`](#merge_queuepy) | [`merge-serialization.md`](../runtime/merge-serialization.md), plus the section below |
 | Review a pack pin bump for rug-pulls | [`pin_review.py`](#pin_reviewpy) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), [`pins.json`](#pinsjson), plus the section below |
+| See how far a provider/harness route is proven, or which cells a re-pin voids | [`certification.py`](#certificationpy) | [Certification](certification.md) |
+| Reproduce a first run on the posix route, inert or live, and its negative probes | [`first_run.py`](#first_runpy) | [First run on a clean host](certification.md#first-run-on-a-clean-host) |
 
 The remaining reference sections cover:
 
@@ -50,8 +53,10 @@ The remaining reference sections cover:
   [egress receipts](#egresspy), [component quarantine](#quarantine_checkpy),
   [quarantine registry](#quarantinejson).
 - **Runtime compatibility and liveness:** [CLI adapter](#orca_clipy), [upstream probe](#upstream_probepy),
+  [route certification](#certificationpy), [reproducible first run](#first_runpy),
   [pin rug-pull review](#pin_reviewpy), [upstream pin registry](#pinsjson),
-  [watchdog](#watchdogpy), [watchdog registry](#watchdogjson).
+  [watchdog](#watchdogpy), [watchdog registry](#watchdogjson),
+  [lifecycle event record and wave metrics](#eventspy).
 - **Signing and internal primitives:** [Ed25519 library](#ed25519py),
   [control-outcome reader](#_verify_sigpy), [hunk-counted diff parser](#diffparsepy),
   [hardened git executor](#gitexecpy),
@@ -136,6 +141,48 @@ Exits: n/a (library).
 > counts a SyntaxError raised by an in-test import as `1 failed`, and Jest/Vitest count a suite
 > that never loaded as a failed suite, so `runtime/scripts/_verify_sig.py:STILLBORN_SHAPE_RE`
 > runs whatever the summary says (2026-10-23 review, P1-1).
+
+## `certification.py`
+
+Validator and renderer for the provider/harness certification record,
+`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-50`;
+behavior pinned by `tests/test_certification.py`.
+
+Usage: `certification.py [check|matrix|markdown] [--root DIR] [--record FILE] [--pins FILE] [--json]`
+
+Modes: `check` (default) validates the record; `matrix` prints one line per cell with its
+effective tier and upstream version (`--json` for objects); `markdown` prints the block
+`docs/certification.md` carries between its `certification-matrix` markers.
+
+`check` fails (one `FAIL:` line each) when the route groups of a provider do not partition its
+advertised `supported_profiles` x `supported_harnesses` exactly, or the harness groups do not
+partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any of these:
+
+- an evidence path that does not resolve, or a `path::Name` whose file defines no `class`/`def Name`;
+- a group with no limitation;
+- an `unsupported` group with no typed `refusal`;
+- a `live-witnessed` group without `witnessed`, without an exact upstream version, or without a
+  `docs/runs/*.md` report whose `RUN:` header records `verifier=GREEN` and which binds under
+  `run_report.py` (needs full git history, like `validate.py`);
+- a `live-witnessed` group whose cited run does not name its route. `witnessed.route` quotes
+  whole lines of artifacts in the run's own directory that the report's inventory binds. The
+  lines are read from git at the run's `inventory_at`. Together they must name the provider, put
+  `PROFILE=<profile>` beside the harness in one quote, and carry the recorded harness and
+  upstream versions. The record only points to the lines; the route is read from them. A
+  group that copies another route's witness, or cites a run that never names a route, is
+  refused;
+- a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
+
+A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
+check at a candidate pins file, so a re-pin can preview the cells it voids.
+
+Exits: 0 valid and fresh · 1 invalid or stale (`matrix`/`markdown` still print) · 2 unreadable or
+usage.
+
+> Why: "supported" meant "an adapter exists", and the matrix could not say which routes had ever
+> run against a real upstream (#596). One record, one cell per advertised route, gives a fixture a
+> place to say what it proves and stops it from claiming more. Freshness is bound to
+> `runtime/pins.json`, so a re-pin cannot leave a stale live claim in place.
 
 ## `chain_check.py`
 
@@ -460,6 +507,208 @@ Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
 > genesis — a rewritten history links correctly — so `verify` prints the head
 > (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
 > output says so rather than reading as a clean bill.
+
+## `first_run.py`
+
+A reproducible first run of the posix route (#596). One review unit goes through the public
+wrappers: `preflight.py`, `task_ops.py create`, `spawn_worker.sh` (`OPEN_FLEET_RUNTIME=posix`,
+`setsid`), the installed guard checked with `deny-hook.sh --verify-settings`, delivery of the
+spec, the worker result (`worker_ops.py`, `check_reply.py`), `verify.py --unit-class report-only`
+in a checkout the coordinator cuts at the evidence head, and `worker_ops.py retain` then
+`release`. Source `runtime/scripts/first_run.py:1-52`; behavior pinned by
+`tests/test_certification.py`.
+
+Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert|live]
+[--target <repo> [--base <rev>] [--head <rev>]] [--workdir <dir>] [--keep] [--timeout <s>] [--json]`
+and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
+
+`--worker inert` (the default) puts a stand-in for the harness first on PATH, behind tripwires
+for every other harness name. It calls no model and its receipt reads `fixture-tested`.
+`--worker live` uses the operator's real harness. That run spends, and its receipt reads
+`live-unreviewed` until a maintainer binds it into `docs/runs/`.
+
+`ro` (the default, the review-it shape) takes the report from the transcript and commits it on
+the coordinator's evidence branch. `rw` has the worker commit the report and send `worker_done`;
+the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
+profiles the report committed at the evidence head, the file `verify.py` binds, must open with
+the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
+
+The change reaches every worker, in both profiles, as a file: `.first-run/<run>/change.diff` holds
+`git diff <base> <head>` and is committed with the frozen contract before dispatch, so it is the
+evidence range's base and never part of the result. Most read-only launches have no shell to
+run `git diff` (omp, pi, opencode, jcode, goose, hermes, crush, gemini; claude in plan mode), and
+no ro tool set is widened for it. The file's last line is a per-run `FIRST-RUN-READ` receipt that
+reaches the worker through nothing else. A report, printed or committed, that does not quote
+that receipt and name every changed path is NO-GO: a worker that copied the header without
+reading the file, or read only one end of it, cannot pass (FR-4).
+
+Git output is captured as bytes. `change.diff` carries git's bytes verbatim, so a reviewed file
+in an older encoding reaches the worker byte-exact. Output is decoded, with invalid bytes
+replaced, only for display and checks. An unexpected error inside any step ends in a NO-GO
+receipt that names the step, the error and the line that raised it; it never ends in a
+traceback with no receipt.
+
+The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
+`change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
+worker to add its report the same way. A target that ignores `*.diff` or `.first-run/` still
+gets a first run.
+
+The report is read from the transcript in the harness's own output format
+(`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the
+last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last
+assistant message for goose (its chunks joined), jcode's `done.text`, and plain text for hermes,
+crush and gemini. jcode and plain text carry every turn's text, so there the report starts at
+its last `FIRST-RUN-REPORT` line. The inert stand-in prints each of these formats.
+
+`probes` runs five probes: unsupported profile, privilege escalation, unarmed deny hook,
+malformed runtime response, and missing capability. Each must refuse before a launch.
+
+Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
+command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
+after a NO-GO it is kept whole. However the run ends, it first stops every worker still live in
+its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal closes (SIGHUP).
+A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended
+that way writes no receipt and keeps the sandbox.
+
+Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its workers are stopped.
+
+> Why: the provider matrix was certified by adapter unit tests alone, and no documented path
+> took a fresh clone through dispatch to independently verified evidence (#596). The inert and
+> live modes share one code path, so the live first run is one flag away from the fixture CI runs.
+
+## `events.py`
+
+Append-only lifecycle event record, and the WIP-curve rows derived from it (#603). One
+hash-chained JSON object per observed transition in `.orca/events.jsonl` (mode 0600). Source
+`runtime/scripts/events.py:1-60`; behavior pinned by `tests/test_events.py`, over the fixture
+streams and golden reports in `tests/fixtures/events/`.
+
+Status: local evidence tooling, not telemetry — no network, no daemon. Existing observations
+are read, never modified: the local-state DB (`ingest-state`, strictly read-only through
+`runtime/scripts/watchdog.py:_ro_connect`), verify.py's `--transcript-out` verdict
+(`ingest-transcript`, bound to the judged manifest's head only while its bytes still hash to
+the transcript's `manifest_sha256`), and a Claude worker's stream-json `result` line
+(`ingest-usage`). Waves, reviews, closes and parks have no machine output yet: the coordinator
+records them with `emit`. No provider and no verifier calls `emit` itself. `ingest-state` reads
+the R04 (#597) launch gate (a monitor claim, or a gate closed before any claim) to tell a launch
+from a dispatch that never ran, but not its recovery receipts; those, and the R06 (#599)
+merge-queue receipts once that lands, are the next sources.
+
+Usage: `events.py [--log PATH] <emit|ingest-state|ingest-transcript|ingest-usage|verify|report|check> ...`
+
+Subcommands: `emit`, `ingest-state`, `ingest-transcript`, `ingest-usage`, `verify`, `report`,
+`check`.
+
+Flags: `--log` (default `$OPEN_FLEET_EVENTS_LOG`, `$ORCA_EVENTS_LOG` or `.orca/events.jsonl`).
+Every writer takes `--run`, `--epoch` (the coordinator epoch: 1 at `run.start`, one more per
+`coordinator.resume`) and `--clock` (the clock domain its times were read on — name the
+machine; producers on one host share one label). `emit` takes `--kind`, `--task`, `--dispatch`,
+`--producer`, `--basis` (`occurred`, `observed` or `recovered`), `--observed-at`,
+`--source-ref`, `--source-sha256` or `--source-file`, `--event-id` (the idempotency key; default
+derived from the content) and `--data` (the kind's fields as JSON). `ingest-state` takes `--db`;
+`ingest-transcript` takes `--transcript`, `--manifest` and `--task`; `ingest-usage` takes
+`--stream`, `--task`, `--dispatch` and `--observed-at`. `report` takes `--run` (required when
+the record holds several runs) and `--json`; `check` takes `--run-report`; `verify`, `report`
+and `check` take `--expect-head` and `--expect-ancestor`.
+
+Kinds (`runtime/scripts/events.py:KINDS`, each a closed schema — no free text rides in):
+`run.start`, `coordinator.resume`, `wave.open` (wave, builders, reviewers, the planned task
+ids), `wave.close`, `dispatch.launched`, `dispatch.died`, `task.done` (head), `review.started`
+(head), `review.verdict`, `review.voided`, `verify.verdict` (exit, head), `unit.closed` (head,
+tree), `unit.parked` (park class), `unit.suspect`, `model.usage` (model, token counts and cost,
+each nullable, plus a provenance line).
+
+Derivation (`runtime/scripts/events.py:derive`). A unit is a task in a `wave.open` plan; a task
+planned in several waves is measured in each, from the events in that wave's window — the latest
+planning wave whose `wave.open` the event does not precede, on one clock
+(`runtime/scripts/events.py:place`); an event no window can hold leaves the unit unavailable in
+all of them. A recovered `wave.open` bounds from one side only (its time is when it was rebuilt,
+no earlier than the real opening): an event before it may be that wave's, so it is refused,
+never placed in an earlier wave. The unit's events in its earlier planning waves are context for a later one, never
+a second measurement: which dispatches already ran and launched, the worker_done an interval
+starts from, the pass a close rests on and the approvals a close voids; each interval and void
+is measured once, in the wave its end is placed in (a pass at a head ends its interval; a
+park ends one only if a worker_done at that head preceded it, so a unit parked before any
+worker_done and finished later at the same head is measured in the later wave). A unit a later
+wave re-plans is final in the earlier one (every later event of it is placed in the later
+wave), so it no longer leaves that wave pending; it has no latency there unless it verified
+or parked there. Its outcome comes from
+the set of its events, never their order: verified-CLOSED (closed at a head a verdict passed,
+in this wave or an earlier one), closed-unverified, parked, verified, completed (worker_done
+only) or open. Latency runs from the worker_done at a head to the first passing verdict at that
+same head (or to the park); review queue from that worker_done to the review starting on it.
+Throughput is verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share
+of units with a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a
+replacement dispatched into a later wave — a worker carried into it is neither); freshness counts
+approving reviews (one per reviewer dispatch and head) voided by a closing head that moved,
+unless both trees are recorded and equal (a void an earlier wave counted is not counted again
+when a reopened unit's later wave records it). Retries count each launch attempt of a task after
+its first, in the wave it is first seen in — so a replacement that carried the unit into a later
+wave is a retry there, and a worker carried into it is not. An attempt is the dispatch id and
+its launch's identity (`runtime/scripts/events.py:launch_attempt`, the store row's creation
+time), so a restart that reuses the id (multiclaude's `of-<task_id>`) is a retry too; a launch
+observed any other way names no attempt of its own. An interval needs one clock, no
+`recovered` endpoint and a non-negative difference. Coordinator history must be whole —
+`run.start` at epoch 1, then each `coordinator.resume` at the next epoch — or every metric of
+the run is unavailable. Events recorded under an epoch below the
+declared one (a fenced coordinator) or above it (undeclared) are excluded, as is a reused
+`event_id` that says something different; the metrics they touch report unavailable. What an
+event says (`runtime/scripts/events.py:identity`) leaves out who recorded it (`epoch`) and,
+unless `basis` is `occurred`, when, so re-ingesting the same rows or stream after a resume or
+later in time is a duplicate, never a conflict; a source with a digest is compared by its bytes,
+not its ref, so the same transcript or stream read from another path or a copy is a duplicate
+too. A head derived from something outside the observation — the judged manifest, the store's
+dispatch row — is bound into the event id (`runtime/scripts/events.py:bound_id`): an import that
+derives another head, or none (the manifest changed or vanished), records its own observation
+beside the first, which SHA binding then sorts out. `ingest-usage` binds each result line to the
+stream's bytes through that line (its id and `source.sha256`), so a stream re-ingested after
+the worker or monitor appended to it adds only its new result lines. `ingest-state` records a
+launch only when the store proves its worker ran (`runtime/scripts/events.py:launch_proof`, the
+#597 launch gate): a worker-start dispatch whose gate closed before any monitor claimed it (a
+fence, or recovery's `abandon_unlaunched`) is no launch, no retry and no usage to cover; one with
+no claim and an open gate is deferred with its mail (listed on stderr) until the store resolves
+it, so each import records exactly one launch for it, or none. A row with no launch intent (an
+injected dispatch, another provider, a pre-#597 store) carries no such proof and is recorded as
+a launch, as before. A launch is bound to its row's creation time, so a dispatch id an external
+provider records again (`INSERT OR REPLACE` under an upstream id) is a second launch, not a
+conflict; a death's time is its synthetic `worker_died` message, not the row's `updated_at`,
+which moves after it; and mail naming another task, or older than the row it names, came from
+an earlier holder of the id and is not attributed (listed on stderr).
+`ingest-state` binds a worker_done to the head its message names; one that names none takes its dispatch's head, which
+the store writes when the worker exits, so the message is deferred (and listed on stderr) until
+the dispatch is terminal — imports before and after exit then record one `task.done`, not a
+conflict. A provider that rewrites a terminal dispatch's head later (multiclaude's
+`worker_verify` and ao's head preservation write `dispatches.head_sha` directly) gives that
+message a second `task.done` at the new head, not a conflict. Model usage keeps
+any field an observation did not report null — with its provenance — in the model's sum and in
+the run total; it is never 0. The run total covers every dispatch the record admits — builders,
+reviewers named on their review events, any other — so it is the whole run's usage or
+unavailable with the uncovered dispatches named. Excluded evidence never shrinks coverage: a
+dispatch named only by fenced or conflicting events still counts, so without a usage
+observation of its own the run total is unavailable; a dispatch id launched several times (a
+re-recorded row) is covered only when usage names each launch's task; and a wave named only
+by excluded events is listed, unavailable, rather than dropped (once the run has declared an epoch).
+
+`report` prints the rows in docs/runs/TEMPLATE.md's table, `unavailable` in any cell the record
+cannot support (`runtime/scripts/run_report.py` then refuses the row, which is the point),
+with the reasons listed under it and the record's sha256 and head; `--json` adds per-unit
+outcomes, raw event digests, source references and revisions, plus review queue, retries and
+model usage. Strings in a report are redacted (`runtime/scripts/decisions.py:SECRET_SHAPES`,
+plus credentials in URLs); `emit` refuses them outright. `check` reads a run report's rows with
+run_report.py's own parser and names every cell that disagrees with the record.
+
+Exits: 0 ok · 1 incomplete (`report`: a metric unavailable; `check`: a row disagrees; `emit`: a
+reused id recorded as a conflict; an ingest found nothing) · 2 usage (including an event the
+schema refuses) · 3 fail-closed (the record is unwritable, unreadable, tampered or
+schema-invalid, or misses its anchor).
+
+> Why: attention-budget.md's WIP-curve rows were typed by the coordinator, so a duplicate
+> delivery, a clock that stepped back or a crashed coordinator's stale write could reach the
+> curve as a number. Deriving them from an append-only record makes each cell reproducible
+> from the events it cites, and makes "the record cannot say" (`unavailable`) a value of its
+> own rather than a guess. Endpoints are bound by head SHA rather than record order because
+> ingestion lags and resumes reorder appends. The chain proves continuity with a genesis
+> only, as egress.py's does, so anchor the head off the writer.
 
 ## `floor_guard.py`
 
@@ -1513,6 +1762,9 @@ Keys:
 | `gstack` | `garrytan/gstack` worker-playbook pack pin (requires a `docs/research/pin-reviews/gstack-<full-commit>.md` rug-pull review on bump) |
 | `addyosmani` | `addyosmani/agent-skills` worker-playbook pack pin (requires a `docs/research/pin-reviews/addyosmani-<full-commit>.md` rug-pull review on bump) |
 | `mattpocock` | `mattpocock/skills` worker-playbook pack pin (requires a `docs/research/pin-reviews/mattpocock-<full-commit>.md` rug-pull review on bump) |
+
+A bump of the `orca` entry voids every `orca` certification cell until they are rechecked
+(`certification.py check` reads `stale`; see [`certification.py`](#certificationpy)).
 
 > Why: when the pinned Orca floor or upstream pack commit lived in prose, the installer,
 > the validator, and the pin record drifted apart silently. Centralizing `runtime/pins.json:orca`

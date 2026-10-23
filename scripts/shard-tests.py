@@ -58,6 +58,9 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
+    "test_certification": 104.9,  # #596, re-measured 2026-10-24 (macOS arm64, mean of 109.6 and 100.2):
+    # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
+    # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
     "test_capability_harnesses": 0.5,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
@@ -75,6 +78,7 @@ WEIGHTS = {
     "test_escape_probe": 0.6,
     "test_eval_coverage": 0.1,
     "test_evals": 12.9,
+    "test_events": 5.0,
     "test_evidence_run": 7.9,
     "test_external_ci_monitor": 0.1,
     "test_floor_guard": 9.7,

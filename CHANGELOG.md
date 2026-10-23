@@ -6,6 +6,19 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Run and wave metrics derive from an append-only event record** (#603). New
+  `runtime/scripts/events.py` keeps one hash-chained line per observed lifecycle transition in
+  `.orca/events.jsonl`, bound to run/task/dispatch with an event id, producer, timestamp, clock
+  domain, time basis, coordinator epoch and source reference. `report` derives the WIP-curve
+  rows attention-budget.md requires (verified-CLOSED throughput, verification latency, rework,
+  freshness) plus review queue time, retries and observed model usage; `check` compares a run
+  report's rows against the record. Duplicate deliveries collapse by event id, cross-clock,
+  recovered and negative intervals, fenced or undeclared coordinator epochs and conflicting
+  re-deliveries leave a metric `unavailable` with its reason, and unreported tokens or cost stay
+  null with provenance — never estimated, never 0. It reads the local-state DB (read-only),
+  verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
+  are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
+  it reads the R04 (#597) launch gate, and its receipts and R06's (#599) are later sources.
 - **Episodic hints are bound to source revision and untrusted provenance** (#605). Every
   `search_sessions.py --episodic-hint` entry names its source repo/revision (or `unknown`), the
   artifact it came from with its sha256, the checked path/symbol scope, the producing run and why

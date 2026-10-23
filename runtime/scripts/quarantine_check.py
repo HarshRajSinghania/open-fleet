@@ -13,6 +13,10 @@ playbook, upstream pack) a human has declared unusable. Three gates consume it:
                              playbooks it composes (invariant, exit 2)
     this CLI                 ad hoc checks and the tests
 
+"Composes" means one set at all three gates (2026-10-23 review, P1-10): the
+clause's backticked names and `name.md` tokens, the DEFERRED READS, every
+protocol the mission body names, and every playbook those reach in turn.
+
 Semantics, stated because they bound what this is worth: quarantine is a
 checked-in file, so it takes effect on checkouts that contain it; it cannot
 reach an already-running worker or a stale clone. It is the fast, reversible,
@@ -40,11 +44,25 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
 import sys
 from pathlib import Path
+
+
+def _sibling(name):
+    """Load a runtime/scripts sibling by path (no sys.path edits)."""
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The composition grammar every gate reads (COMPOSE_CLAUSE_RE used to be copied here and could
+# drift from validate.py's — 2026-10-23 review, §5). validate.py loads it through this module.
+_grammar = _sibling("_catalog_grammar")
 
 KINDS = ("mission", "playbook", "pack")
 _HEX = re.compile(r"^[0-9a-f]{7,40}$")
@@ -56,9 +74,6 @@ _RESERVED_HUMAN_NAMES = frozenset({
     "fleet", "human", "model", "nobody", "none", "orca", "system",
     "unknown", "worker",
 })
-_CLAUSE = re.compile(
-    r"\b(?:Composes|COMPOSES|composes|Rides|RIDES|rides)\b\s+(.+?)(?:\n\n|\Z)", re.DOTALL
-)
 
 
 def parse_quarantine(data):
@@ -180,43 +195,60 @@ class QuarantineError(Exception):
     """The check cannot be evaluated (missing mission, unreadable tree)."""
 
 
-def _composed_playbooks(skill_text, root, skill_dir):
-    """Resolve declarations BEFORE classifying protocols as playbooks.
+def _read_dependency(doc):
+    try:
+        return doc.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as err:
+        raise QuarantineError(f"{doc}: unreadable composed dependency ({err})") from err
 
-    Match the validator's bare backtick/name.md forms, not arbitrary code.
-    Catalog directories identify the layer. Bundles flatten both layers into
-    references/, so every declared name conservatively keeps a quarantine
-    edge: a document's content cannot exempt its own name. Missing or
-    unreadable files never mean an unused dependency.
+
+def _composed_playbooks(skill_text, root, skill_dir):
+    """Every playbook the mission can reach, resolved BEFORE classifying the layer.
+
+    One composition set for every gate (2026-10-23 review, P1-10 / P2-11): the clause's
+    backticked names and `name.md` tokens, the DEFERRED READS, every protocol the body names,
+    and — transitively — every protocol those documents name (acceptance-review → risk-review).
+    The clause and the deferred reads are DECLARATIONS: missing or unreadable, they refuse,
+    because a dependency nobody can read never means an unused one. Other mentions count once
+    they resolve (prose is not a declaration), and an unreadable reached document refuses too.
+    Catalog directories identify the layer. Bundles flatten both layers into references/, so
+    every reached name conservatively keeps a quarantine edge: a document's content cannot
+    exempt its own name.
     """
-    names = set()
-    name_re = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    for clause in _CLAUSE.findall(skill_text):
-        tokens = re.findall(r"`([^`]+)`", clause)
-        tokens += re.findall(r"[\w./-]+\.md\b", clause)
-        for token in tokens:
-            stem = token[:-3] if token.endswith(".md") else token
-            if name_re.fullmatch(stem):
-                names.add(stem)
     references = skill_dir / "references"
     bundled = references.is_dir() or skill_dir == root
-    found = set()
-    for name in sorted(names):
-        paths = ([references / f"{name}.md"] if bundled else
-                 [root / "playbooks" / f"{name}.md", root / "runtime" / f"{name}.md"])
-        doc = next((p for p in paths if os.path.lexists(p)), None)
+    bases = [references] if bundled else [root / "playbooks", root / "runtime"]
+    listings = {}
+
+    def candidates(name):
+        return [base / f"{name}.md" for base in bases]
+
+    def resolve(name):
+        # Exact-case: on a case-insensitive filesystem `architecture` must not resolve to a
+        # bundle's references/ARCHITECTURE.md.
+        for path in candidates(name):
+            if path.parent not in listings:
+                try:
+                    listings[path.parent] = set(os.listdir(path.parent))
+                except OSError:
+                    listings[path.parent] = set()
+            if path.name in listings[path.parent]:
+                return path
+        return None
+
+    declared = _grammar.clause_refs(skill_text) | _grammar.deferred_declared(skill_text)
+    for name in sorted(declared):
+        doc = resolve(name)
         if doc is None:
             raise QuarantineError(
-                f"missing composed dependency {name}.md (tried {', '.join(map(str, paths))}) "
+                f"missing composed dependency {name}.md (tried "
+                f"{', '.join(map(str, candidates(name)))}) "
                 "— cannot clear the mission against the deny-list"
             )
-        try:
-            doc.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as err:
-            raise QuarantineError(f"{doc}: unreadable composed dependency ({err})") from err
-        if bundled or doc.parent != root / "runtime":
-            found.add(name)
-    return found
+        _read_dependency(doc)
+    reached = _grammar.protocol_closure(skill_text, resolve, _read_dependency)
+    return {name for name, doc in reached.items()
+            if bundled or doc.parent != root / "runtime"}
 
 
 def mission_view(root, mission):

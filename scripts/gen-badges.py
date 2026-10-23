@@ -237,22 +237,37 @@ README = ROOT / "README.md"
 README_BEGIN = "<!-- BEGIN GENERATED: proof-status — scripts/gen-badges.py -->"
 README_END = "<!-- END GENERATED: proof-status -->"
 README_BLOCK_RE = re.compile(re.escape(README_BEGIN) + r".*?" + re.escape(README_END), re.S)
-PROOF_RE = re.compile(r"(?m)^  proof:\s*(\S+)")
 TIERS = ("external-run", "self-run", "doctrine-only")
 
 
+def _grammar():
+    """The catalog's one frontmatter reader (runtime/scripts/_catalog_grammar.py), by path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_catalog_grammar", ROOT / "runtime" / "scripts" / "_catalog_grammar.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def proof_tiers() -> dict[str, list[str]]:
-    """{tier: [mission, ...]} read from every SKILL.md frontmatter; unknown tiers raise."""
+    """{tier: [mission, ...]} read from every SKILL.md frontmatter; unknown tiers raise.
+
+    Read with the shared frontmatter reader. This used `text.split("---")[1]`, so a `---` inside
+    a description ended the "frontmatter" early, the proof tier vanished, and the RuntimeError
+    crashed validate.py before its quarantine gate ran (2026-10-23 review, §5).
+    """
     tiers: dict[str, list[str]] = {tier: [] for tier in TIERS}
+    parse = _grammar().parse_frontmatter
     for d in sorted(SKILLS_DIR.iterdir()):
         if not d.is_dir() or d.name.startswith((".", "_")) or not (d / "SKILL.md").exists():
             continue
-        text = (d / "SKILL.md").read_text(encoding="utf-8")
-        head = text.split("---")[1] if text.startswith("---") else ""
-        m = PROOF_RE.search(head)
-        if not m or m.group(1) not in tiers:
+        data, _err = parse((d / "SKILL.md").read_text(encoding="utf-8"))
+        meta = (data or {}).get("metadata")
+        proof = meta.get("proof") if isinstance(meta, dict) else None
+        if not isinstance(proof, str) or proof not in tiers:
             raise RuntimeError(f"skills/{d.name}/SKILL.md: no legal metadata.proof tier")
-        tiers[m.group(1)].append(d.name)
+        tiers[proof].append(d.name)
     return tiers
 
 
@@ -287,7 +302,11 @@ def check_readme() -> list[str]:
     found = README_BLOCK_RE.search(text)
     if not found:
         return [f"{README.name} has no generated proof-status block — run scripts/gen-badges.py"]
-    if found.group(0) != proof_block():
+    try:
+        want = proof_block()
+    except RuntimeError as err:  # a check reports; it never takes the caller's later gates down
+        return [str(err)]
+    if found.group(0) != want:
         return [f"{README.name} proof-status sentence is stale — run scripts/gen-badges.py"]
     return []
 

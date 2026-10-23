@@ -9,6 +9,7 @@ error branch to a fixture that must trip it.
 """
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,24 @@ def make_skill(tmp, body, frontmatter_extra="proof: doctrine-only\nautonomy: L4\
         encoding="utf-8",
     )
     return d
+
+
+def generated_copies(gb, where):
+    """Point gen-badges' generated LIVE targets at copies under `where`.
+
+    gb.write() rewrites the mission guides' callouts, ARCHITECTURE.md's table and README.md's
+    proof sentence as well as the badges. Patching only BADGES_DIR let the badge tests below
+    rewrite 18 live docs/missions/*.md callouts and the live ARCHITECTURE.md table whenever
+    those were stale (2026-10-23 review, P2-24 — the same hazard as test_architecture's).
+    Copies, not empty dirs, so check() still sees a full catalog and passes once write() ran.
+    """
+    where.mkdir(parents=True, exist_ok=True)
+    guides = where / "missions"
+    shutil.copytree(ROOT / "docs" / "missions", guides, dirs_exist_ok=True)
+    for name in ("ARCHITECTURE.md", "README.md"):
+        shutil.copy2(ROOT / name, where / name)
+    return mock.patch.multiple(gb, GUIDES_DIR=guides, ARCH=where / "ARCHITECTURE.md",
+                               README=where / "README.md")
 
 
 class TestValidatorFailureBranches(unittest.TestCase):
@@ -874,7 +893,8 @@ class TestCountAgnosticGuards(unittest.TestCase):
                 if not outcome:
                     self.assertIn("AssertionError", run.stderr)
                 with mock.patch.object(gb, "TESTS_DIR", tests), \
-                     mock.patch.object(gb, "BADGES_DIR", tests / "badges"):
+                     mock.patch.object(gb, "BADGES_DIR", tests / "badges"), \
+                     generated_copies(gb, tests / "generated"):
                     gb.write()
                     badge = json.loads((gb.BADGES_DIR / "tests.json").read_text())
                     generated.append(badge)
@@ -922,7 +942,8 @@ class TestCountAgnosticGuards(unittest.TestCase):
             tests = Path(tmp)
             fixture = tests / "test_fixture.py"
             with mock.patch.object(gb, "TESTS_DIR", tests), \
-                 mock.patch.object(gb, "BADGES_DIR", tests / "badges"):
+                 mock.patch.object(gb, "BADGES_DIR", tests / "badges"), \
+                 generated_copies(gb, tests / "generated"):
                 for source, count in (("", 0), ("def test_one(): pass\n", 1),
                                       ("def test_one(): pass\ndef test_two(): pass\n", 2)):
                     fixture.write_text(source, encoding="utf-8")

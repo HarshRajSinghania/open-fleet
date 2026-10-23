@@ -46,6 +46,11 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT / "skills"
+# The catalog's one frontmatter reader (2026-10-23 review, §5), loaded by path like any sibling.
+_grammar_spec = importlib.util.spec_from_file_location(
+    "_catalog_grammar", ROOT / "runtime" / "scripts" / "_catalog_grammar.py")
+_grammar = importlib.util.module_from_spec(_grammar_spec)
+_grammar_spec.loader.exec_module(_grammar)
 EVALS_DIR = ROOT / "evals"
 ROUTING_EVAL = EVALS_DIR / "routing.json"
 INJECTION_EVAL = EVALS_DIR / "injection-drills.json"
@@ -98,9 +103,6 @@ MIN_TOKEN_LEN = 2
 
 _EXCLUSION_RE = re.compile(r"(?:^|[.;])\s*Not (?:for|the|a)\b", re.I)
 _USE_WHEN_RE = re.compile(r"\bUse when\b", re.I)
-_FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.S)
-_FIELD_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*)$")
-_BLOCK_SCALAR = {">", ">-", ">+", "|", "|-", "|+"}
 
 
 def _stem(token: str) -> str:
@@ -152,32 +154,15 @@ def tokenize(text: str, synonyms: dict[str, list[str]] | None = None) -> list[st
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
-    """Minimal YAML-frontmatter reader for `name:`/`description:`.
+    """The top-level string fields (`name:`, `description:`, …) of a SKILL.md frontmatter.
 
-    Deliberately local instead of importing scripts/validate.py: validate.py
-    imports THIS module for its eval gate, so depending on it here would be a
-    circular import. Handles the two shapes the catalog uses — a plain scalar
-    and a folded/literal block (`>-`, `|`) — and nothing else.
+    Reads through the catalog's one frontmatter reader (runtime/scripts/_catalog_grammar.py),
+    loaded by path — not through scripts/validate.py, which imports THIS module for its eval
+    gate. This file used to keep its own reader, one of five that had drifted apart (2026-10-23
+    review, §5). Nested maps (`metadata:`) are not strings and are left out.
     """
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return {}
-    fields: dict[str, str] = {}
-    key: str | None = None
-    buf: list[str] = []
-    for line in match.group(1).split("\n"):
-        field = _FIELD_RE.match(line)
-        if field:
-            if key is not None:
-                fields[key] = " ".join(buf).strip()
-            key = field.group(1)
-            value = field.group(2).strip()
-            buf = [] if value in _BLOCK_SCALAR else [value]
-        elif key is not None and (not line.strip() or line[:1] in (" ", "\t")):
-            buf.append(line.strip())
-    if key is not None:
-        fields[key] = " ".join(buf).strip()
-    return fields
+    data, _err = _grammar.parse_frontmatter(text)
+    return {key: value for key, value in (data or {}).items() if isinstance(value, str)}
 
 
 def split_description(description: str) -> tuple[str, str, str]:
@@ -535,7 +520,12 @@ def validate_routing_eval() -> list[str]:
             if mission not in expected_missions:
                 errors.append(f"{_rel(ROUTING_EVAL)}: eval[{idx}] names unknown mission '{mission}'")
         if kind == "positive":
-            seen_missions.update(m for m in named if m in expected_missions)
+            # Coverage is a row the mission WINS (2026-10-23 review, §5). An expected_any row
+            # accepts several winners and the prompt goes to one of them; counting every name in
+            # it let a mission be "covered" by a row it never takes.
+            winners = ([route_prompt(str(ev.get("prompt", "")))]
+                       if isinstance(ev.get("expected_any"), list) else named)
+            seen_missions.update(m for m in winners if m in named and m in expected_missions)
             if "expected_any" in ev:
                 problem = _over_broad_expected_any(ev)
                 if problem:

@@ -262,6 +262,10 @@ class TheActivationLoadTableIsGenerated(unittest.TestCase):
             arch = Path(tmp) / "ARCHITECTURE.md"
             arch.write_text(f"{gen.ARCH_BEGIN}\nplaceholder\n{gen.ARCH_END}\n", encoding="utf-8")
             gen.ARCH = arch
+            # write() ends with write_readme(): left pointing at the live README, this test
+            # rewrote it whenever the proof block was stale (2026-10-23 review, P2-24).
+            gen.README = Path(tmp) / "README.md"
+            shutil.copy2(ROOT / "README.md", gen.README)
             with contextlib.redirect_stdout(io.StringIO()):
                 gen.write()
             written = guide.read_text(encoding="utf-8")
@@ -293,6 +297,8 @@ class TheActivationLoadTableIsGenerated(unittest.TestCase):
             gen.ARCH = stale
             gen.BADGES_DIR = Path(tmp) / "badges"
             gen.GUIDES_DIR = Path(tmp) / "guides"
+            gen.README = Path(tmp) / "README.md"  # never the live README (P2-24)
+            shutil.copy2(ROOT / "README.md", gen.README)
             # Swallow the writer's chatter. It names real-looking paths ("wrote ARCHITECTURE.md",
             # "skip docs/missions/ship-it.md") while writing only into tmp, and in a CI log that
             # reads as though the run had modified the repository.

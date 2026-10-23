@@ -7,13 +7,13 @@ resolves to a file in the repo — for humans (default report), machines (``--js
 and CI (``--check``).
 
 Reads every ``skills/*/SKILL.md`` frontmatter. Never writes files, never touches the
-network. Frontmatter parsing mirrors ``scripts/validate.py``'s minimal key/scalar
-approach — only ``name`` and ``metadata.proof`` / ``metadata.proof_evidence``
-are consumed here.
+network. Frontmatter is read by the catalog's shared reader
+(``runtime/scripts/_catalog_grammar.py``, the one ``scripts/validate.py`` uses) — only
+``name`` and ``metadata.proof`` / ``metadata.proof_evidence`` are consumed here.
 """
 import argparse
+import importlib.util
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -25,63 +25,17 @@ PROOF_TIERS = ("doctrine-only", "self-run", "external-run")
 TIERS_REQUIRING_EVIDENCE = {"self-run", "external-run"}
 
 
-def parse_frontmatter(text):
-    """Minimal YAML-frontmatter reader (ported from scripts/validate.py).
+def _sibling(name):
+    """Load a runtime/scripts sibling by path (no sys.path edits)."""
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-    Returns (data, error). Scalars, block scalars, and the one nested map the
-    agentskills.io spec allows: ``metadata:``, where this repo's proof claims
-    live (issue #263).
-    """
-    if not text.startswith("---"):
-        return None, "missing opening ---"
-    end = text.find("\n---", 4)
-    if end == -1:
-        return None, "missing closing ---"
-    block = text[3:end].strip()
-    data = {}
-    current_key = None
-    multiline_indicator = None
-    multiline_value = []
-    nested_key = None
 
-    def unquote(val):
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-            return val[1:-1]
-        return val
-
-    for line in block.split("\n"):
-        if multiline_indicator and (line.startswith("  ") or line.strip() == ""):
-            multiline_value.append(line[2:] if line.startswith("  ") else line)
-            continue
-        if multiline_indicator:
-            data[current_key] = " ".join(l.strip() for l in multiline_value if l.strip())
-            multiline_indicator = None
-            multiline_value = []
-        if nested_key is not None and line.startswith("  ") and line.strip():
-            sub = re.match(r"^\s+([a-zA-Z_-][a-zA-Z0-9_-]*):\s*(.*)$", line)
-            if sub:
-                if data[nested_key] == "<object>":
-                    data[nested_key] = {}
-                if isinstance(data[nested_key], dict):
-                    data[nested_key][sub.group(1)] = unquote(sub.group(2).strip())
-                continue
-        m = re.match(r"^([a-zA-Z_-][a-zA-Z0-9_-]*):\s*(.*)$", line)
-        if m:
-            nested_key = None
-            key, val = m.group(1), m.group(2).strip()
-            if val in (">", "|", ">-", "|-"):
-                current_key = key
-                multiline_indicator = val
-                multiline_value = []
-            elif val == "":
-                current_key = key
-                nested_key = key
-                data[key] = "<object>"
-            else:
-                data[key] = unquote(val)
-    if multiline_indicator:
-        data[current_key] = " ".join(l.strip() for l in multiline_value if l.strip())
-    return data, None
+# The catalog's one frontmatter reader, shared with scripts/validate.py. This file used to carry
+# a port of validate.py's copy, and the five readers had drifted (2026-10-23 review, §5).
+parse_frontmatter = _sibling("_catalog_grammar").parse_frontmatter
 
 
 def collect(skills_dir, root):
@@ -117,9 +71,10 @@ def collect(skills_dir, root):
         rec["name"] = data.get("name")
         meta = data.get("metadata")
         meta = meta if isinstance(meta, dict) else {}
-        rec["proof"] = meta.get("proof")
-        evidence = meta.get("proof_evidence")
-        if evidence and evidence != "<object>":
+        # Only strings: the shared reader returns a map nested under a key as a dict.
+        proof, evidence = meta.get("proof"), meta.get("proof_evidence")
+        rec["proof"] = proof if isinstance(proof, str) else None
+        if isinstance(evidence, str) and evidence and evidence != "<object>":
             rec["proof_evidence"] = evidence
             evidence_path = (root / evidence).resolve()
             rec["evidence_resolves"] = (

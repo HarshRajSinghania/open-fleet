@@ -479,5 +479,28 @@ class WorkflowRunsTheBaseChecker(unittest.TestCase):
             self.TEXT)
 
 
+
+class AContradictedGoIsNotAGo(unittest.TestCase):
+    """2026-10-23 review, §5: `VERDICT: GO` followed by `VERDICT: NO-GO` in one review body read
+    as GO — the first GO line won. Any non-GO verdict line voids the review (fail closed)."""
+
+    def test_go_then_no_go_is_not_a_go(self):
+        body = f"VERDICT: GO\nreviewed_sha: {HEAD}\n\nOn reflection:\nVERDICT: NO-GO\n"
+        self.assertFalse(verdict_at_tip([review(body)], HEAD))
+        self.assertFalse(verdict_at_tip([review(body, state="COMMENTED", association="OWNER")], HEAD))
+
+    def test_no_go_then_go_is_not_a_go_either(self):
+        body = f"VERDICT: NO-GO\nreviewed_sha: {HEAD}\nVERDICT: GO\n"
+        self.assertFalse(verdict_at_tip([review(body)], HEAD))
+
+    def test_any_other_verdict_line_voids_the_review(self):
+        for other in ("VERDICT: HOLD", "  VERDICT: GO-ISH", "VERDICT:"):
+            body = go_body(HEAD) + other + "\n"
+            with self.subTest(other=other):
+                self.assertFalse(verdict_at_tip([review(body)], HEAD))
+
+    def test_a_repeated_go_is_still_a_go(self):
+        self.assertTrue(verdict_at_tip([review(go_body(HEAD) + "VERDICT: GO\n")], HEAD))
+
 if __name__ == "__main__":
     unittest.main()

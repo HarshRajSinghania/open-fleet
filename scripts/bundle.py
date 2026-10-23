@@ -35,11 +35,16 @@ between edits. Build it at release time, or before running a copy installer.
     python3 scripts/bundle.py --out /tmp/x    # build somewhere else
     python3 scripts/bundle.py --check         # build to a temp dir and verify only
 
-Exit: 0 built and verified · 1 a reference could not be resolved · 2 could not run.
+A build records every file it writes in `<out>/.orca-fleet-bundle.json`; a rebuild deletes only
+those, and refuses (exit 2, nothing deleted) when anything else sits where it would write.
+
+Exit: 0 built and verified · 1 a reference could not be resolved · 2 could not run (or refused
+an --out holding content a previous build did not write).
 """
 import argparse
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -52,6 +57,7 @@ SKILLS_DIR = ROOT / "skills"
 _spec = importlib.util.spec_from_file_location("_validate", ROOT / "scripts" / "validate.py")
 validate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validate)
+_grammar = validate._grammar
 
 # `](../../X.md)` and `](../../dir/X.md)` — the outbound links the rewriter knows how to vendor.
 OUTBOUND_LINK_RE = re.compile(r"\]\((?:\.\./)+([A-Za-z0-9_./-]+\.md)(#[^)]*)?\)")
@@ -63,8 +69,7 @@ OUTBOUND_ANY_RE = re.compile(r"\]\((?:\.\./)+([A-Za-z0-9_./-]+)(#[^)]*)?\)")
 # links it was written with — `](runtime/evidence-manifest.md)` — and from `references/` those
 # resolve under `references/`, where nothing was copied. They escape nothing, so OUTBOUND_ANY_RE
 # never saw them, and 56 of them shipped dead while --check stayed green (PR #308 review, P1).
-RELATIVE_LINK_RE = re.compile(
-    r"\[([^\]]*)\]\((?!https?:|mailto:|#|/|\.\./)([A-Za-z0-9_./-]+)(#[^)]*)?\)")
+RELATIVE_LINK_RE = _grammar.RELATIVE_LINK_RE
 REFERENCES = "references"
 # A runtime path as a protocol spells it: repo-root-relative, because in the repository that is
 # where it is. Beside an installed mission it is not, and the worker runs from the PROJECT
@@ -86,10 +91,14 @@ MANUAL_SUBSTITUTION_NOTE = ('Runtime invocations below already name\n'
 # The distribution's runtime interface, independent of what survived in the input tree.
 # Ship additional runtime files too, but never let discovery shrink this required floor.
 REQUIRED_RUNTIME = tuple(f"runtime/scripts/{name}" for name in (
+    # The shared catalog grammar: proof_status.py and quarantine_check.py (preflight's quarantine
+    # gate) load it beside themselves (2026-10-23 review, P1-9 / P1-10).
+    "_catalog_grammar.py",
     "decisions.py", "deny-hook.sh", "diff_scope.py", "dispatch-sign.py", "ed25519.py",
     "egress.py", "evidence-run.py", "floor_guard.py", "guard_text.py", "hitl-loop.template.sh",
-    "inventory.py", "pm.py", "preflight.py", "proof_status.py", "run_report.py",
-    "sandbox_doctor.py", "spawn_worker.sh", "verify-gate.sh", "verify.py", "wtree.sh",
+    "inventory.py", "pm.py", "preflight.py", "proof_status.py", "quarantine_check.py",
+    "run_report.py", "sandbox_doctor.py", "spawn_worker.sh", "verify-gate.sh", "verify.py",
+    "wtree.sh",
 )) + ("runtime/one-way-doors.json", "runtime/pins.json")
 # build-change's mandatory reporting input is outside the protocol directories.
 SUPPORT_DOCS = ("docs/runs/TEMPLATE.md",)
@@ -104,7 +113,8 @@ def missing_inputs(protocols):
                 if not (ROOT / name).is_file()]
     for path in [*SKILLS_DIR.glob("*/SKILL.md"), *(ROOT / "playbooks").glob("*.md"),
                  *(ROOT / "runtime").glob("*.md")]:
-        for name in sorted(validate.explicit_protocol_refs(path.read_text()) - protocols):
+        text = path.read_text(encoding="utf-8")  # never the locale's codec (2026-10-23 review)
+        for name in sorted(validate.explicit_protocol_refs(text) - protocols):
             problems.append(f"{path.relative_to(ROOT)}: missing required protocol: {name}.md")
     return problems
 
@@ -113,23 +123,21 @@ def protocol_docs(text, protocols):
     """Resolve the protocol closure, including calls inside other protocols.
 
     Playbooks call each other with bare backticks outside Composes/rides clauses.
-    Include conditional calls too: they may become mandatory later in a run.
+    Include conditional calls too: they may become mandatory later in a run. The closure is the
+    catalog grammar's (runtime/scripts/_catalog_grammar.py), the same one the quarantine gates
+    read, so what a bundle vendors and what quarantine checks are one set (2026-10-23 review,
+    P2-11) — DEFERRED READS named bare ("compound-learn at VERDICT") included.
     """
-    found = {}
-    pending = [text]
-    while pending:
-        current = pending.pop()
-        names = validate.explicit_protocol_refs(current)
-        names |= set(re.findall(r"`([a-z][a-z0-9-]+)`", current))
-        names |= {Path(m.group(2)).stem for m in RELATIVE_LINK_RE.finditer(current)}
-        for name in sorted(names & protocols - found.keys()):
-            for base in (ROOT / "playbooks", ROOT / "runtime"):
-                doc = base / f"{name}.md"
-                if doc.is_file():
-                    found[name] = doc
-                    pending.append(doc.read_text(encoding="utf-8"))
-                    break
-    return found
+    def resolve(name):
+        if name not in protocols:
+            return None
+        for base in (ROOT / "playbooks", ROOT / "runtime"):
+            doc = base / f"{name}.md"
+            if doc.is_file():
+                return doc
+        return None
+
+    return _grammar.protocol_closure(text, resolve, lambda doc: doc.read_text(encoding="utf-8"))
 
 
 def root_docs(text):
@@ -267,32 +275,125 @@ def plugin_files():
     return files
 
 
+# --out ownership (2026-10-23 review, P2-21 / #623). build() used to rmtree <out>/.claude-plugin,
+# hooks, runtime and skills whenever they were not the source's own tree, so `--out ~/.claude`
+# deleted the user's own skills/ (where the README's symlink install puts missions), hooks/ and
+# runtime/ with exit 0 and no prompt. A build now records every file it writes in MARKER at the
+# root of --out; a rebuild deletes only files that marker lists, and never a directory tree.
+# Anything else where the build would write — a file the marker does not list, a symlink, a
+# symlinked parent — is a collision, and the build refuses before deleting or writing anything.
+MARKER = ".orca-fleet-bundle.json"
+
+
+class BundleRefused(Exception):
+    """--out holds content this script did not write; nothing was deleted or written."""
+
+
+def _entries_under(path):
+    """Every non-directory entry at or under `path`; symlinks are entries, never followed."""
+    if not os.path.lexists(path):
+        return []
+    if path.is_symlink() or not path.is_dir():
+        return [path]
+    found = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        found += [Path(dirpath) / name for name in filenames]
+        found += [Path(dirpath) / name for name in dirnames if (Path(dirpath) / name).is_symlink()]
+    return found
+
+
+def _owned(out):
+    """The out-relative files a previous build recorded (empty when there is no marker)."""
+    marker = out / MARKER
+    if not os.path.lexists(marker):
+        return set()
+    try:
+        files = json.loads(marker.read_text(encoding="utf-8")).get("files")
+    except (OSError, UnicodeDecodeError, ValueError, AttributeError) as err:
+        raise BundleRefused(f"{marker}: unreadable ownership marker ({err}) — refusing to guess "
+                            "what a previous build wrote") from err
+    if not isinstance(files, list) or not all(
+            isinstance(f, str) and f and not Path(f).is_absolute() and ".." not in Path(f).parts
+            for f in files):
+        raise BundleRefused(f"{marker}: malformed ownership marker — refusing to guess what a "
+                            "previous build wrote")
+    return set(files)
+
+
+def _claim(out, planned):
+    """Delete what a previous build wrote, or refuse: `planned` are the out-relative paths this
+    build writes (files, or mission directories written whole)."""
+    if out.exists() and not out.is_dir():
+        raise BundleRefused(f"--out {out} is not a directory")
+    owned = _owned(out)
+    foreign = []
+    for rel in planned:
+        parts = Path(rel).parts
+        parents = [out.joinpath(*parts[:i]) for i in range(1, len(parts))]
+        foreign += [p for p in parents if p.is_symlink() or (p.exists() and not p.is_dir())]
+        foreign += [entry for entry in _entries_under(out / rel)
+                    if entry.relative_to(out).as_posix() not in owned or entry.is_symlink()]
+    if foreign:
+        shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
+        raise BundleRefused(
+            f"--out {out}: {len(set(foreign))} path(s) where the bundle writes were not written by "
+            f"bundle.py (not listed in {MARKER}): {shown} — move them away or choose an empty "
+            "--out; bundle.py never deletes what it did not write")
+    for rel in sorted(owned):
+        path = out / rel
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        for parent in path.parents:
+            if parent == out or not parent.is_relative_to(out):
+                break
+            try:
+                parent.rmdir()  # only once empty: a directory is never removed with content
+            except OSError:
+                break
+
+
+def _record(out, planned):
+    files = sorted(entry.relative_to(out).as_posix()
+                   for rel in planned for entry in _entries_under(out / rel))
+    (out / MARKER).write_text(json.dumps({"generator": "scripts/bundle.py", "files": files},
+                                         indent=2) + "\n", encoding="utf-8")
+
+
 def build(out_dir):
-    """Write the distribution tree. Returns (missions built, unresolved refs)."""
+    """Write the distribution tree. Returns (missions built, unresolved refs).
+
+    Raises BundleRefused, having deleted and written nothing, when --out holds content a
+    previous build did not write (MARKER).
+    """
     protocols = validate.known_protocol_names()
     problems = missing_inputs(protocols)
     if problems:
         return 0, problems
     out = Path(out_dir)
-    for stale in (out / ".claude-plugin", out / "hooks", out / "runtime"):
-        # Never delete the source's own tree: --out at the repo root must not eat its inputs.
-        if stale.exists() and stale.resolve() != (ROOT / stale.name).resolve():
-            shutil.rmtree(stale)
+    missions = [d for d in sorted(SKILLS_DIR.iterdir())
+                if d.is_dir() and not d.name.startswith((".", "_")) and (d / "SKILL.md").is_file()]
+    planned = sorted({source.relative_to(ROOT).as_posix() for source in plugin_files()}
+                     | {f"skills/{d.name}" for d in missions})
+    _claim(out, planned)
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        return _build_into(out, missions, protocols)
+    finally:
+        _record(out, planned)  # even a failed build owns exactly what it wrote
+
+
+def _build_into(out, missions, protocols):
     for source in plugin_files():
         destination = out / source.relative_to(ROOT)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
     skills_out = out / "skills"
-    if skills_out.exists():
-        shutil.rmtree(skills_out)
     built, problems = 0, []
-    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+    for skill_dir in missions:
         skill_md = skill_dir / "SKILL.md"
-        if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")) or not skill_md.is_file():
-            continue
         text = skill_md.read_text(encoding="utf-8")
         target = skills_out / skill_dir.name
-        (target / REFERENCES).mkdir(parents=True)
+        (target / REFERENCES).mkdir(parents=True, exist_ok=True)
         inventory = {"SKILL.md"}
         for extra in skill_dir.iterdir():
             if extra.name == "SKILL.md":
@@ -300,7 +401,10 @@ def build(out_dir):
             inventory.update(path.relative_to(skill_dir).as_posix()
                              for path in (extra.rglob("*") if extra.is_dir() else [extra])
                              if path.is_file())
-            (shutil.copytree if extra.is_dir() else shutil.copy2)(extra, target / extra.name)
+            if extra.is_dir():
+                shutil.copytree(extra, target / extra.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(extra, target / extra.name)
         docs = protocol_docs(text, protocols)
         for name, source in docs.items():
             inventory.add(f"{REFERENCES}/{name}.md")
@@ -422,18 +526,23 @@ def main(argv=None):
         return 2
 
     if not args.check:
-        # build() rmtrees <out>/skills before rebuilding; `--out .` resolves that to the real
-        # catalog and deletes all 21 missions it was asked to copy (#350). Refuse the footgun.
+        # build() once rmtree'd <out>/skills before rebuilding; `--out .` resolved that to the
+        # real catalog and deleted all 21 missions it was asked to copy (#350). It now removes only
+        # what its own marker lists, but writing over the source catalog stays refused.
         if (Path(args.out) / "skills").resolve() == SKILLS_DIR.resolve():
             print(f"--out {args.out}: its skills/ IS the source catalog; refusing to delete what "
                   "this script copies from", file=sys.stderr)
             return 2
 
-    if args.check:
-        with tempfile.TemporaryDirectory() as tmp:
-            built, problems = build(tmp)
-    else:
-        built, problems = build(args.out)
+    try:
+        if args.check:
+            with tempfile.TemporaryDirectory() as tmp:
+                built, problems = build(tmp)
+        else:
+            built, problems = build(args.out)
+    except BundleRefused as refusal:
+        print(f"bundle: {refusal}", file=sys.stderr)
+        return 2
     for problem in problems:
         print(f"FAIL {problem}", file=sys.stderr)
     if problems:

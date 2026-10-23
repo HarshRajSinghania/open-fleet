@@ -152,6 +152,14 @@ python3 scripts/bundle.py           # writes dist/skills/<name>/ with references
 python3 scripts/bundle.py --check   # verify no reference escapes a mission directory
 ```
 
+A build records every file it writes in `<out>/.orca-fleet-bundle.json` (`dist/` unless `--out`
+names another directory), and a rebuild deletes only the files that marker lists — never a
+directory tree. Anything else where the bundle would write (a file the marker does not list, a
+symlink, a symlinked parent) makes it exit 2 having deleted and written nothing, so your own
+skills, hooks and runtime files beside a bundle survive, and one under a mission's name is a
+refusal rather than a casualty. A local `dist/` built before the marker existed has no marker,
+so the first rebuild refuses: remove that `dist/` once by hand, then rebuild.
+
 Each bundled mission carries its own `references/` copies of every protocol it names plus the root
 docs it links, with its SKILL.md links rewritten to point there and an index at
 `references/README.md`. A copy installer must take `dist/`, never the repo root — and no installer

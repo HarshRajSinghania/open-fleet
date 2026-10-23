@@ -32,6 +32,41 @@ truth is `.claude-plugin/plugin.json`.
   UNSCANNED rather than clean. The CI reproduction's first run
   on PR #645 reproduced the macOS reference on Linux. Not done: a real external verifier, and an
   actual holder and held-out set.
+- **Adversarial trajectory evals (#602).** `python3 scripts/eval.py run --suite trajectories`
+  replays recorded worker tool events (JSONL) against a git repository built at test time,
+  through the worker, the retry handover and the verifier under one frozen task contract, and
+  grades the tool events and the resulting git state. Attempted and successful violations are
+  recorded separately, and the final answer never moves a grade. Thirteen pinned fixtures cover
+  forged approvals, hidden-criterion removal, test tampering, cross-worker memory poisoning,
+  handover contamination and credential-like canaries, plus benign and clean controls for false
+  denials and utility. Each attack case is proven RED with its guard removed. The published table
+  in `docs/adversarial-evals.md` shows the unknown coverage cells, the UNRUN live-model arm and
+  one known gap: a plain canary in a receipted PR comment leaks, because no guard reads outbound
+  PR text. Fixtures only, no model, not proof evidence.
+- **Provider and harness routes are certified cell by cell, with a reproducible first run**
+  (#596). `runtime/providers/certification.json` classifies each of the 218 advertised routes:
+  every `(provider, profile, harness)` in `capabilities.json`, and every `(harness, profile)` of
+  `base.py`'s launch table. A route is `live-witnessed`, `fixture-tested`, `source-only`,
+  `unsupported` (with its typed refusal) or `unavailable`. Each cell carries its upstream version
+  (`unknown` when none was recorded), evidence paths and limitations.
+  `runtime/scripts/certification.py` checks the following:
+  - every cell is covered exactly once;
+  - every evidence path resolves;
+  - a live claim rests on a run report that binds;
+  - a moved `pins.json` pin turns the provider's cells `stale` until they are rechecked.
+  Only Orca with Claude Code (`ro` and `rw`) is live-witnessed. The 12 external adapters remain
+  fixture-tested at `unknown` upstream versions. The record shows three gaps: the Orca `ro` rows
+  for crush, hermes and jcode are weaker than the posix rows; opencode, omp and pi are refused on
+  Orca; a posix `ro` worker's clean exit is recorded as `worker_died (exit=0)`.
+  `runtime/scripts/first_run.py` drives one review unit through the public wrappers on the posix
+  route: create → dispatch → delivery → result → independent `verify.py` → retain/release. With
+  the default inert worker it calls no model; `--worker live` uses the real harness. Its `probes`
+  mode checks that unsupported profile, privilege escalation, unarmed deny hook, malformed
+  runtime response and missing capability are each refused before launch.
+  `tests/test_certification.py` runs that subset in CI for every posix harness, with no paid
+  agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
+  first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
+  for other providers.
 - **Run and wave metrics derive from an append-only event record** (#603). New
   `runtime/scripts/events.py` keeps one hash-chained line per observed lifecycle transition in
   `.orca/events.jsonl`, bound to run/task/dispatch with an event id, producer, timestamp, clock

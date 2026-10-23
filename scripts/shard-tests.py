@@ -58,6 +58,9 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
+    "test_certification": 104.9,  # #596, re-measured 2026-10-24 (macOS arm64, mean of 109.6 and 100.2):
+    # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
+    # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
     "test_capability_harnesses": 0.5,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
@@ -136,6 +139,7 @@ WEIGHTS = {
     "test_superset_provider": 0.8,
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,
+    "test_trajectory_evals": 70.0,  # #602/#644, measured 2026-10-23, macOS host at load average ~21
     "test_upstream_probe": 4.1,
     "test_validate": 9.6,
     "test_validate_catalog_grammar": 0.3,

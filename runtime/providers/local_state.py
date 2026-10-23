@@ -1303,6 +1303,28 @@ class LocalStateStore:
         }
 
     # --- #590: Synthetic `worker_died` Guarantee on Exit Without Terminal Mail (learned from Overstory) ---
+    @staticmethod
+    def _terminal_report(conn: sqlite3.Connection, run_id: str, senders: list[str]) -> Any:
+        """The worker's own terminal mail (or the worker_died already sent for it), if any."""
+        placeholders = ",".join("?" for _ in senders)
+        return conn.execute(
+            f"""
+            SELECT id, msg_type FROM messages
+            WHERE run_id = ? AND sender IN ({placeholders})
+              AND msg_type IN ('worker_done', 'merge_ready', 'escalation')
+              AND COALESCE(attrs_json, '') NOT LIKE '%"fileTouchConflict"%'
+            LIMIT 1
+            """,
+            [run_id, *senders],
+        ).fetchone()
+
+    def terminal_report(self, *, dispatch_id: str, worker_handle: str | None = None, run_id: str = "default") -> str | None:
+        """The id of the terminal mail this dispatch already reported, or None (#596)."""
+        senders = [s for s in {dispatch_id, worker_handle or ""} if s]
+        with self._connect() as conn:
+            row = self._terminal_report(conn, run_id, senders)
+        return row["id"] if row else None
+
     def ensure_terminal_or_died(
         self,
         *,
@@ -1341,17 +1363,7 @@ class LocalStateStore:
             if disp and disp["state"] == "died":
                 conn.execute("COMMIT")
                 return {"syntheticDied": False, "alreadyDied": True}
-            placeholders = ",".join("?" for _ in senders)
-            row = conn.execute(
-                f"""
-                SELECT id, msg_type FROM messages
-                WHERE run_id = ? AND sender IN ({placeholders})
-                  AND msg_type IN ('worker_done', 'merge_ready', 'escalation')
-                  AND COALESCE(attrs_json, '') NOT LIKE '%"fileTouchConflict"%'
-                LIMIT 1
-                """,
-                [run_id, *senders],
-            ).fetchone()
+            row = self._terminal_report(conn, run_id, senders)
             if row:
                 conn.execute(
                     "UPDATE dispatches SET state = 'completed', terminal_state = 'exited', head_sha = COALESCE(NULLIF(?, ''), head_sha), "

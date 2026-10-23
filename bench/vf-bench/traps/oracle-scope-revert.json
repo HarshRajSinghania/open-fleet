@@ -1,0 +1,76 @@
+{
+  "id": "oracle-scope-revert-1",
+  "class": "oracle-scope-revert",
+  "sound_expected": "RED",
+  "note": "#600: the oracle-scope exception authorizes ONE reviewed hand mutant; this unit offers a narrated REVERT of the authorized path instead, quoting the authorized artifact. Reverting mod.py to base_sha is a no-op in a characterization unit, so executed it would be refused by #255 (the right verdict for the wrong reason); narrated, only the hand-only rule stands between it and a GREEN.",
+  "unit_class": "mutation",
+  "fixture": "characterization",
+  "gh_stub": true,
+  "repo": "vf-bench/oracle-scope-revert",
+  "manifest": {
+    "unit": "vf-bench-oracle-scope-revert",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.json",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/nc-scope.txt",
+        "sha256": "{{nc_scope_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the characterization test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc-scope.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  },
+  "expect_reason": "oracle scope: requires a pinned hand-mutant artifact",
+  "neighbour": "oracle-scope-valid-control-1"
+}

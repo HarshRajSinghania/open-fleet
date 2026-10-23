@@ -1,0 +1,73 @@
+{
+  "id": "surviving-mutant-1",
+  "class": "surviving-mutant",
+  "sound_expected": "RED",
+  "note": "#600: a mutmut control pinned to m7 whose artifact says `m7: survived` beside two other kills and `2 of 3 mutants KILLED` \u2014 kill-words present, the PINNED mutant alive. The survival reading is scoped to the pinned id.",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "gh_stub": true,
+  "repo": "vf-bench/surviving-mutant",
+  "manifest": {
+    "unit": "vf-bench-surviving-mutant",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/nc-mutmut-survived.txt",
+        "sha256": "{{nc_mutmut_survived_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "ran mutmut over mod.py at head_sha",
+      "tool": "mutmut",
+      "mutant": "m7",
+      "result": "the pinned mutant m7 was KILLED (the suite went RED)",
+      "artifact": "docs/reports/vf/nc-mutmut-survived.txt"
+    }
+  },
+  "expect_reason": "negative_control.artifact reports the pinned mutant SURVIVED",
+  "neighbour": "mutmut-valid-control-1"
+}

@@ -263,6 +263,32 @@ def _speaks_with_authority(value):
     return sorted(set(_label_names(bare)) & WITHHOLD_LABELS)
 
 
+def _ident(value, limit, withhold, status=False):
+    """An untrusted IDENTIFIER -- run name, unit, status, session id, artifact path, scope path,
+    symbol, match candidate -- under the note rules (PR #639 review: run names printed raw and a
+    session id asserting a grant survived withholding): withheld in current mode when it speaks
+    with authority outside quotes, otherwise inert."""
+    if withhold and _speaks_with_authority(value):
+        return "(withheld)"
+    return _inert(value, limit, status=status)
+
+
+def _reason(reason, limit, withhold):
+    """A computed reason: its class (before the first ':') is trusted, the tail can carry a
+    record's own path or run/unit name and gets the identifier rules."""
+    head, sep, tail = str(reason).partition(":")
+    return f"{head}{sep}{_ident(tail, limit, withhold)}" if sep else _inert(head, limit)
+
+
+def _hint_identifiers(hint):
+    """Every untrusted identifier a prior-run entry renders (label scan and withhold check)."""
+    paths = hint.get("paths") or []
+    syms = [s for names in (hint.get("symbols") or {}).values() for s in names]
+    return [hint["run"], hint["unit"], hint["status"], hint["artifact"], hint["repo"],
+            hint["match"][2], hint["match"][3], *paths, *syms,
+            *(reason.partition(":")[2] for _label, reason in hint["reasons"])]
+
+
 def _structured_tokens(unit):
     out = {}
     for key in ("files_touched", "scope_allow"):
@@ -369,57 +395,65 @@ def _rank_key(hint):
             when is None, -(when or 0), hint["order"])
 
 
-def _render_label(hint):
+def _render_label(hint, withhold):
     if not hint["why"]:
         return hint["currency"]
     extra = f"+{len(hint['why']) - 1}" if len(hint["why"]) > 1 else ""
-    return f"{hint['currency']}:{_inert(hint['why'][0], 80)}{extra}"
+    return f"{hint['currency']}:{_reason(hint['why'][0], 80, withhold)}{extra}"
+
+
+def _token(value, limit, withhold, keep):
+    """A short token field (repo, agent): withheld under the identifier rule, else charset-cut."""
+    if withhold and _speaks_with_authority(value):
+        return "(withheld)"
+    return re.sub(keep, "", str(value))[:limit]
 
 
 def _render_prior(hint, withhold):
-    run_s = _one_line(hint["run"], 48)
+    run_s = _ident(hint["run"], 48, withhold)
     uid_raw, status_raw = hint["unit"], hint["status"]
     park, inv = _one_line(hint["park"] or "", 90), _one_line(hint["inv"] or "", 90)
-    spoken = {name for field in (uid_raw, status_raw, hint["park"], hint["inv"])
+    spoken = {name for field in (hint["park"], hint["inv"], *_hint_identifiers(hint))
               for name in _speaks_with_authority(field)}
     hint["withheld"] = bool(withhold and spoken)
-    uid = "(withheld)" if withhold and _speaks_with_authority(uid_raw) else _inert(uid_raw, 40)
-    status = "(withheld)" if withhold and _speaks_with_authority(status_raw) else _inert(status_raw, 24, status=True)
+    uid = _ident(uid_raw, 40, withhold)
+    status = _ident(status_raw, 24, withhold, status=True)
     if hint["withheld"]:
         detail = WITHHELD_NOTE
     else:
         detail = (f"parked={_inert(park, 90)}" if park else
                   (f"invariant={_inert(inv, 90)}" if inv else "touched matching scope"))
     (_rank, field, cand, sym, query, kind) = hint["match"]
-    scope = _inert(hint["paths"][0], 60) if hint["paths"] else "unresolved"
+    scope = _ident(hint["paths"][0], 60, withhold) if hint["paths"] else "unresolved"
     syms = sorted(hint["symbols"].get(hint["paths"][0], ())) if hint["paths"] else []
-    scope += f"::{_inert(syms[0], 40)}" if syms else ""
+    scope += f"::{_ident(syms[0], 40, withhold)}" if syms else ""
     scope += f"+{len(hint['paths']) - 1}" if len(hint["paths"]) > 1 else ""
     when = datetime.datetime.fromtimestamp(hint["time"], datetime.timezone.utc).strftime("%Y-%m-%d") \
         if hint.get("time") is not None else "unknown"
-    repo = re.sub(r"[^A-Za-z0-9._/-]", "", str(hint["repo"]))[:60] if hint["repo"] else "unknown"
+    repo = _token(hint["repo"], 60, withhold, r"[^A-Za-z0-9._/-]") if hint["repo"] else "unknown"
     prov = (f"src={repo or 'unknown'}@{hint['rev'][:12] if hint['rev'] else 'unknown'} "
-            f"artifact={_inert(hint['artifact'], 80)}@sha256:{hint['digest'][:16]} at={when} "
-            f"scope={scope} match={field}:{_inert(cand, 60)}{'::' + _inert(sym, 40) if sym else ''}"
-            f"~{_inert(query, 60)}({kind})")
+            f"artifact={_ident(hint['artifact'], 80, withhold)}@sha256:{hint['digest'][:16]} at={when} "
+            f"scope={scope} match={field}:{_ident(cand, 60, withhold)}"
+            f"{'::' + _ident(sym, 40, withhold) if sym else ''}~{_inert(query, 60)}({kind})")
     body = _guard_entry(f"[run {run_s} / {uid} ({status})] {detail}",
-                        uid_raw, status_raw, hint["park"], hint["inv"], cand, hint["repo"])
-    return f"- [{_render_label(hint)}] {body} ‖ {prov}"
+                        hint["park"], hint["inv"], *_hint_identifiers(hint))
+    return f"- [{_render_label(hint, withhold)}] {body} ‖ {prov}"
 
 
 def _render_session(hint, withhold):
-    spoken = {name for field in (hint["sid"], hint["title"], hint["snippet"])
+    spoken = {name for field in (hint["sid"], hint["title"], hint["snippet"], hint["agent"])
               for name in _speaks_with_authority(field)}
     hint["withheld"] = bool(withhold and spoken)
-    sid = _inert(hint["sid"] or "?", 40)
+    sid = _ident(hint["sid"] or "?", 40, withhold)
     if hint["withheld"]:
         text = WITHHELD_NOTE
     else:
         snip = _inert(hint["snippet"] or "", 80)
         text = _inert(hint["title"] or "(untitled)", 60) + (f" — {snip}" if snip else "")
-    agent = re.sub(r"[^A-Za-z0-9._-]", "", str(hint["agent"] or "session"))[:32] or "session"
-    body = _guard_entry(f"[session {sid}] {text}", hint["sid"], hint["title"], hint["snippet"])
-    return (f"- [{_render_label(hint)}] {body} ‖ src=unknown@unknown "
+    agent = _token(hint["agent"] or "session", 32, withhold, r"[^A-Za-z0-9._-]") or "session"
+    body = _guard_entry(f"[session {sid}] {text}", hint["sid"], hint["title"], hint["snippet"],
+                        hint["agent"])
+    return (f"- [{_render_label(hint, withhold)}] {body} ‖ src=unknown@unknown "
             f"artifact=session:{agent}@sha256:{hint['digest'][:16]} at=unknown scope=unresolved "
             f"match=query(session-search)")
 
@@ -487,18 +521,19 @@ def build_episodic_selection(paths, runs_dir=None, session_hits=None, max_lines=
         is_run = hint["kind"] == "run"
         out_entries.append({
             "kind": hint["kind"],
-            "run": _one_line(hint["run"], 48) if is_run else None,
-            "unit": _inert(hint["unit"], 40) if is_run else _inert(hint["sid"] or "?", 40),
-            "status": _inert(hint["status"], 24, status=True) if is_run else None,
-            "currency": hint["currency"], "reasons": [_inert(r, 120) for r in hint["why"]],
+            "run": _ident(hint["run"], 48, withhold) if is_run else None,
+            "unit": _ident(hint["unit"] if is_run else (hint["sid"] or "?"), 40, withhold),
+            "status": _ident(hint["status"], 24, withhold, status=True) if is_run else None,
+            "currency": hint["currency"], "reasons": [_reason(r, 120, withhold) for r in hint["why"]],
             "shown": id(hint) in shown_ids, "withheld": bool(hint.get("withheld")),
-            "source": {"repo": hint.get("repo") and _inert(hint["repo"], 60) or "unknown",
+            "source": {"repo": hint.get("repo") and _ident(hint["repo"], 60, withhold) or "unknown",
                        "rev": hint.get("rev") or "unknown",
-                       "artifact": _inert(hint["artifact"], 120) if is_run else "session",
+                       "artifact": _ident(hint["artifact"], 120, withhold) if is_run else "session",
                        "sha256": hint["digest"]},
-            "scope": {"paths": [_inert(p, 120) for p in hint.get("paths") or []],
-                      "symbols": {_inert(k, 120): sorted(v) for k, v in (hint.get("symbols") or {}).items()}},
-            "match": ({"field": hint["match"][1], "candidate": _inert(hint["match"][2], 120),
+            "scope": {"paths": [_ident(p, 120, withhold) for p in hint.get("paths") or []],
+                      "symbols": {_ident(k, 120, withhold): sorted(_ident(n, 40, withhold) for n in v)
+                                  for k, v in (hint.get("symbols") or {}).items()}},
+            "match": ({"field": hint["match"][1], "candidate": _ident(hint["match"][2], 120, withhold),
                        "query": _inert(hint["match"][4], 120), "kind": hint["match"][5]}
                       if is_run else {"field": "query", "kind": "session-search"}),
         })

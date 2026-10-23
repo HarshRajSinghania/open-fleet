@@ -275,6 +275,13 @@ class Archive:
         # archive is laid out docs/runs/<run>/, so the repo root is two levels up.
         self.root = self.top or self.runs_dir.resolve().parent.parent
 
+    def history_reasons(self):
+        """[(UNKNOWN, "artifact-unversioned")] for an archive outside git: with no committed bytes
+        to compare against, a copied or edited manifest cannot be told from the recorded one, so
+        its revision and scope prove nothing (PR #639 review: it came out CURRENT). The same rule
+        as an untracked manifest inside git."""
+        return [] if self.top is not None else [(UNKNOWN, "artifact-unversioned")]
+
     def artifact_reasons(self, manifest_path, records):
         """[(label, reason)] for the artifact's own integrity: a tracked manifest edited since its
         commit, or an evidence file whose bytes no longer hash to the recorded sha256."""
@@ -476,6 +483,7 @@ def assess(hint, live, archive=None):
     if rev is None:
         reasons.append((UNKNOWN, "revision-malformed" if hint.get("rev_raw") else "no-revision"))
     if archive is not None and hint.get("manifest_path"):
+        reasons.extend(archive.history_reasons())
         reasons.extend(archive.artifact_reasons(hint["manifest_path"], hint.get("records") or []))
     if live is None:
         reasons.append((UNKNOWN, "no-live-source"))

@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -808,6 +809,29 @@ class SameRevisionRecordsAreOrdered(unittest.TestCase):
         got = self.select([unit_run("2026-02-01-run-a", "SAME-1", "@c0", ["src/auth.py"], note="passes"),
                            unit_run("2026-02-01-run-b", "SAME-1", "@c0", ["src/auth.py"], note="passes again")])
         self.assertEqual(list(got.values()), [("CURRENT", [], True)] * 2)
+
+
+class ArchiveIntegrityFailsClosed(unittest.TestCase):
+    """PR #639 review: an archive whose bytes cannot be checked must not read as CURRENT, and one
+    unreadable artifact must not take every other hint down with it."""
+
+    def test_an_archive_outside_git_is_unknown_not_current(self):
+        # Outside a git checkout the manifest check was skipped without a reason, so a copied or
+        # edited manifest naming a live revision and an unchanged scope came out CURRENT.
+        fx = Fixture(scenario([{"name": "c0", "files": BASE}],
+                              [unit_run("2026-02-01-run-a", "AUTH-1", "@c0", ["src/auth.py"], note="copied note")]))
+        try:
+            loose = fx.tmp / "loose" / "docs" / "runs"
+            shutil.copytree(fx.runs, loose)
+            committed = fx.select()["entries"][0]
+            copied = ss.build_episodic_selection(["src/auth.py"], runs_dir=str(loose), live=str(fx.repo))
+            entry = copied["entries"][0]
+        finally:
+            fx.close()
+        self.assertEqual((committed["currency"], committed["reasons"]), ("CURRENT", []))
+        self.assertEqual((entry["currency"], entry["reasons"], entry["shown"]),
+                         ("UNKNOWN", ["artifact-unversioned"], True))
+        self.assertTrue(entry_line(copied["lines"], "AUTH-1").startswith("- [UNKNOWN:artifact-unversioned]"))
 
 
 if __name__ == "__main__":

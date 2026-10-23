@@ -19,6 +19,22 @@ truth is `.claude-plugin/plugin.json`.
   verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
   are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
   it reads the R04 (#597) launch gate, and its receipts and R06's (#599) are later sources.
+- **Episodic hints are bound to source revision and untrusted provenance** (#605). Every
+  `search_sessions.py --episodic-hint` entry names its source repo/revision (or `unknown`), the
+  artifact it came from with its sha256, the checked path/symbol scope, the producing run and why
+  it matched, and opens with a currency label computed by the new `hint_provenance.py` — never
+  read from a manifest. Against a live source (`--repo`, optional `--live-rev`) changed, deleted
+  or renamed scope, a moved symbol, a divergent or ahead-of-live revision, a changed related test
+  and a modified artifact make an entry `STALE`; a newer contradicting record or the frozen task's
+  `--current-evidence` makes it `SUPERSEDED`; missing provenance and changed dependencies leave it
+  `UNKNOWN`. The default worker-facing mode suppresses stale entries and withholds notes and
+  identifiers that assert a grant or speak as an authority outside quotes, while quoted lessons
+  stay usable;
+  `--hint-mode historical` lists everything labelled. `guard_text.py` gains `grant_labels()` and
+  `unquoted()`; the failure handover states its authority and withholds unquoted grant claims.
+  A fixed 27-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
+  suppression and poisoned-note propagation with hints off/unchecked/checked; the live
+  repeated-failure arm is wired but has not been run (it needs a declared model budget).
 - **Provenance retention receipts are verified offline against the signed inventory** (#608).
   `provenance.retention` names a v1 receipt (`open-fleet/retention-receipt/v1`): a
   `{record, sig_b64}` envelope whose eight fields — schema, unit, source revision, inventory

@@ -162,6 +162,9 @@ WEIGHTS = {
     "test_vfbench_heldout": 1.8,
     "test_vfbench_replay": 22.3,
     "test_watchdog": 1.1,
+    # #604, measured 2026-10-24 (macOS arm64; 50.9 s twice): two whole inert runs through the
+    # posix provider and the merge queue (b3r1, b6r2), then the tamper and binding checks on copies.
+    "test_wip_curve": 50.9,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,
     "test_worktree_ops": 0.5,

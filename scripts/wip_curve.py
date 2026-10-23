@@ -81,6 +81,7 @@ T95 = {1: "12.706", 2: "4.303", 3: "3.182", 4: "2.776", 5: "2.571", 6: "2.447", 
        8: "2.306", 9: "2.262", 10: "2.228", 11: "2.201", 12: "2.179", 13: "2.160", 14: "2.145",
        15: "2.131", 16: "2.120", 17: "2.110", 18: "2.101", 19: "2.093", 20: "2.086"}
 Z95 = Decimal("1.959963984540054")
+AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavailable'"
 
 
 def _load(name: str, path: Path):
@@ -542,7 +543,9 @@ class Run:
         self.cond = entry["condition"]
         self.dir = results / "runs" / self.rid
         self.log = self.dir / "events.jsonl"
-        self.clock = "wip-runner@" + re.sub(r"[^A-Za-z0-9._-]", "-", platform.node() or "host")[:60]
+        # One clock per host (events.py intervals need one); the label hashes the host name, so a
+        # published record names the machine without carrying its name.
+        self.clock = "wip-runner@host-" + sha256_bytes((platform.node() or "host").encode())[:12]
         self.cap = args.cost_cap
         self.spent_before = spent_before
         # What one dispatch can spend at worst: the pre-registered reservation for a live worker;
@@ -650,18 +653,19 @@ class Run:
             conn.close()
 
     def worker_done(self, dispatch):
-        """The outcome of the dispatch's worker_done, read from the store (read-only), or None."""
+        """(outcome, store time) of the dispatch's worker_done, read from the store read-only, or
+        (None, None) when it sent none."""
         row = self.dispatch_row(dispatch)
         if row is None:
-            return None
+            return None, None
         conn = sqlite3.connect(f"file:{self.sb.state_db}?mode=ro", uri=True)
         try:
-            hit = conn.execute("SELECT outcome FROM messages WHERE msg_type = 'worker_done' AND sender = ? "
-                               "AND run_id = ? ORDER BY created_at DESC LIMIT 1",
+            hit = conn.execute("SELECT outcome, created_at FROM messages WHERE msg_type = 'worker_done' "
+                               "AND sender = ? AND run_id = ? ORDER BY created_at DESC LIMIT 1",
                                (row["terminal_handle"], self.rid)).fetchone()
         finally:
             conn.close()
-        return hit[0] if hit else None
+        return (hit[0], hit[1]) if hit else (None, None)
 
     def create_task(self, spec, title):
         proc = self.wrapper(first_run.py("task_ops.py", "create", "--spec", spec, "--run", self.rid,
@@ -818,8 +822,9 @@ class Run:
             state = states[a["dispatch"]]
             head = git_out(self.sb.target, "rev-parse", a["branch"], env=self.sb.env)
             row = self.dispatch_row(a["dispatch"])
+            outcome, a["done_at"] = self.worker_done(a["dispatch"])
             a["state"] = state
-            if state != "completed" or self.worker_done(a["dispatch"]) != "succeeded" or head == base:
+            if state != "completed" or outcome != "succeeded" or head == base:
                 a["outcome"] = "builder-failed" if state != "timeout" else "builder-timeout"
             elif row is not None and row["head_sha"] and row["head_sha"] != head:
                 a["outcome"] = "builder-claim-mismatch"  # the store's head is not what git holds
@@ -827,6 +832,8 @@ class Run:
                 a["head"] = head
                 a["tree"] = git_out(self.sb.target, "rev-parse", f"{head}^{{tree}}", env=self.sb.env)
                 done.append(tid)
+        # Done units wait for a reviewer, and board the merge queue, in worker_done order.
+        done.sort(key=lambda tid: (attempts[tid]["done_at"], tid))
         self.review(done)
         passed = [tid for tid in done if attempts[tid]["outcome"] is None and self.oracle(tid, attempts[tid])]
         self.merge(passed, attempts)
@@ -1333,40 +1340,60 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
     except (events.EventsError, events.UsageError) as err:
         raise SourceError(f"{rid}: {err}") from err
     by_store = {u["store_task"]: t for t, u in (rec.get("units") or {}).items()}
-    waves, closed, wall, lat, lat_reasons, tp_reasons = [], 0, Fraction(0), [], [], []
+    na = events.UNAVAILABLE
+    waves, closed, wall, lat = [], 0, Fraction(0), []
+    why = {"throughput": [], "latency": [], "rework": [], "freshness": [], "retries": []}
     bounced = units = fresh = retries = 0
     for w in derived["waves"]:
         m = w["metrics"]
         waves.append({"wave": w["wave"], "row": w["row"], "outcomes": w["outcomes"]})
         if m["throughput"]["value"] is None:
-            tp_reasons += m["throughput"][events.UNAVAILABLE]
+            why["throughput"] += m["throughput"][na]
         else:
             closed += m["throughput"]["verified_closed"]
             wall += Fraction(m["throughput"]["wall_clock_s"])
-        if m["latency_median"]["value"] is None:
-            lat_reasons += m["latency_median"][events.UNAVAILABLE]
-        for u in w["units"]:
-            if u["latency"].get("seconds") is not None:
-                lat.append(Fraction(u["latency"]["seconds"]))
+        # Latency is pooled from the units that reached verified-or-parked. A wave none of whose
+        # units did (a builders=1 wave whose one unit was bounced) has no observation to pool;
+        # events.py prints its cell `unavailable`, and it neither adds to nor voids the run's
+        # latency. A wave whose units ARE measurable but unavailable (a contested or cross-clock
+        # interval) voids it, with events.py's reasons.
+        measured = [Fraction(u["latency"]["seconds"]) for u in w["units"] if u["latency"].get("seconds")]
+        unmeasurable = [u for u in w["units"] if u["latency"].get("value") is None
+                        and not u["latency"].get("excluded")]
+        if m["latency_median"]["value"] is None and (measured or unmeasurable):
+            why["latency"] += m["latency_median"][na]
+        lat += measured
+        for key in ("rework", "freshness", "retries"):
+            if m[key]["value"] is None:
+                why[key] += m[key][na]
         if m["rework"]["value"] is not None:
             bounced += m["rework"]["bounced"]
             units += m["rework"]["units"]
-        if m["freshness"]["value"] is not None:
-            fresh += int(m["freshness"]["value"])
-        if m["retries"]["value"] is not None:
-            retries += int(m["retries"]["value"])
+        fresh += int(m["freshness"]["value"] or 0)
+        retries += int(m["retries"]["value"] or 0)
+    if not derived["waves"]:
+        for key in why:
+            why[key].append("the record holds no wave")
+    if not lat:
+        why["latency"].append("no unit reached verified-or-parked after an observed worker_done")
+
+    def cell(key, value):
+        return {"value": None, na: sorted(set(why[key]))} if why[key] else value
+
+    tput = Fraction(closed * 3600) / wall if wall else None
+    if tput is None:
+        why["throughput"].append("no wave wall-clock")
     metrics = {
-        "throughput": ({"value": fmt(Fraction(closed * 3600) / wall) + "/h", "exact": str(Fraction(closed * 3600) / wall),
-                        "verified_closed": closed, "wall_clock_s": str(wall)}
-                       if not tp_reasons and wall > 0 else {"value": None, "unavailable": sorted(set(tp_reasons))
-                                                            or ["no wave wall-clock"]}),
-        "latency": ({"median_min": fmt(events._median(lat) / 60), "max_min": fmt(max(lat) / 60),
-                     "units": len(lat), "median_exact_s": str(events._median(lat))}
-                    if lat and not lat_reasons else {"value": None, "unavailable": sorted(set(lat_reasons))
-                                                     or ["no unit latency"]}),
-        "rework": {"bounced": bounced, "units": units},
-        "freshness": fresh, "retries": retries,
-        "complete": derived["complete"],
+        "throughput": cell("throughput", {"value": f"{fmt(tput)}/h" if tput is not None else None,
+                                          "exact": str(tput), "verified_closed": closed, "wall_clock_s": str(wall)}),
+        "latency": cell("latency", {"median_min": fmt(events._median(lat) / 60) if lat else None,
+                                    "max_min": fmt(max(lat) / 60) if lat else None, "units": len(lat),
+                                    "median_exact_s": str(events._median(lat)) if lat else None}),
+        "rework": cell("rework", {"bounced": bounced, "units": units}),
+        "freshness": None if why["freshness"] else fresh,
+        "retries": retries if not why["retries"] else None,
+        "derivable": not any(why[k] for k in ("throughput", "latency", "rework", "freshness")),
+        "events_report_complete": derived["complete"],
         "rows": [w["row"] for w in waves],
     }
     metrics.update(merge_counts(bound))
@@ -1397,8 +1424,8 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
         reasons.append("the model pin or harness version was not recorded")
     elif metrics["models"] != [rec["model_pin"]]:
         reasons.append(f"observed model(s) {metrics['models']} are not the pin {rec['model_pin']!r}")
-    if not derived["complete"]:
-        reasons.append("events.py cannot derive every WIP-curve cell")
+    if not metrics["derivable"]:
+        reasons.append("events.py cannot derive the throughput, latency, rework and freshness the experiment uses")
     if out["binding_problems"]:
         reasons.append(f"{len(out['binding_problems'])} terminal outcome(s) do not bind")
     if rec.get("status") != "complete":
@@ -1413,11 +1440,15 @@ def condition_block(cond: dict, runs: list[dict]) -> dict:
           if r.get("metrics") and r["metrics"]["throughput"].get("exact")]
     med = [Fraction(r["metrics"]["latency"]["median_exact_s"]) / 60 for r in runs
            if r.get("metrics") and r["metrics"]["latency"].get("median_exact_s")]
-    bounced = sum(r["metrics"]["rework"]["bounced"] for r in runs if r.get("metrics"))
-    units = sum(r["metrics"]["rework"]["units"] for r in runs if r.get("metrics"))
+    reworks = [r["metrics"]["rework"] for r in runs if r.get("metrics")]
+    if all("bounced" in rw for rw in reworks):
+        rework = wilson(sum(rw["bounced"] for rw in reworks), sum(rw["units"] for rw in reworks))
+    else:  # a run whose rework is unavailable is never pooled as if it had none
+        rework = {"k": None, "n": None, "p": None, "ci95": None,
+                  "unavailable": "a run's rework could not be derived"}
     block = {"condition": cond["id"], "builders": cond["builders"], "reviewers": cond["reviewers"],
              "runs": [r["run_id"] for r in runs], "throughput_per_h": describe(tp),
-             "latency_median_min": describe(med), "rework": wilson(bounced, units)}
+             "latency_median_min": describe(med), "rework": rework}
     for key in ("freshness", "conflicts", "gate_failures", "retries"):
         values = [r["metrics"][key] for r in runs if r.get("metrics")]
         block[key] = ({"values": values, "total": sum(values)} if values and None not in values
@@ -1531,7 +1562,8 @@ def render_markdown(report: dict) -> str:
              "|---|---|---|---|---|---|---|---|---|---|"]
     for c in report["conditions"]:
         rw = c["rework"]
-        rework = f"{rw['k']}/{rw['n']} = {rw['p']} [{rw['ci95'][0]}, {rw['ci95'][1]}]" if rw["p"] else "no unit"
+        rework = (f"{rw['k']}/{rw['n']} = {rw['p']} [{rw['ci95'][0]}, {rw['ci95'][1]}]" if rw["p"]
+                  else "unavailable" if rw.get("unavailable") else "no unit")
         cost = _cell(c["cost_usd"]) if "mean" in c["cost_usd"] else "unavailable"
         lines.append(f"| `{c['condition']}` | `builders={c['builders']} reviewers={c['reviewers']}` | "
                      f"{len(c['runs'])} | {_cell(c['throughput_per_h'])} | {_cell(c['latency_median_min'])} | "
@@ -1549,10 +1581,12 @@ def render_markdown(report: dict) -> str:
         lat = (f"{m['latency']['median_min']}/{m['latency']['max_min']}" if m["latency"].get("median_min")
                else "unavailable")
         status = r["status"] + (f" ({r['stop_reason']})" if r.get("stop_reason") else "")
+        rework = (f"{m['rework']['bounced']}/{m['rework']['units']}" if "bounced" in m["rework"]
+                  else "unavailable")
         lines.append(f"| `{r['run_id']}` | `{r['condition']}` | {r['tier']} | {status} | "
                      f"{m['throughput'].get('value') or 'unavailable'} | {lat} | "
-                     f"{m['rework']['bounced']}/{m['rework']['units']} | {m['freshness']} | {_cell(m['conflicts'])} | "
-                     f"{m['retries']} | {_cell(m['usage']['cost_usd'])} | {'yes' if r['compliant'] else 'no'} |")
+                     f"{rework} | {_cell(m['freshness'])} | {_cell(m['conflicts'])} | "
+                     f"{_cell(m['retries'])} | {_cell(m['usage']['cost_usd'])} | {'yes' if r['compliant'] else 'no'} |")
     lines += ["", "## Per-wave WIP-curve rows (derived by events.py from each run's record)", ""]
     for r in report["runs"]:
         if r.get("metrics"):
@@ -1767,8 +1801,11 @@ def cmd_verify(args) -> int:
         proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", str(d / "events.jsonl"),
                                    "check", "--run-report", str(d / "run-report.md"), "--run", r["run_id"],
                                    "--expect-head", claimed_heads.get(r["run_id"]) or ""])
-        if proc.returncode != 0:
-            mismatches += [f"{r['run_id']}/run-report.md: {ln}" for ln in proc.stderr.strip().splitlines()]
+        # A cell the record cannot derive and the row prints `unavailable` agrees: events.py check
+        # still names it, since such a row can never bind under run_report.py.
+        lines = [ln for ln in proc.stderr.strip().splitlines() if not ln.endswith(AGREED_UNAVAILABLE)]
+        if proc.returncode not in (0, 1) or lines:
+            mismatches += [f"{r['run_id']}/run-report.md: {ln}" for ln in lines or [f"events.py check rc={proc.returncode}"]]
     for line in mismatches:
         print(f"wip-curve: MISMATCH {line}", file=sys.stderr)
     if mismatches:

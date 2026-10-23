@@ -548,7 +548,7 @@ differs from the store) · 2 usage or store error.
 Single git resolution rule and hardened git environment for the read-side tools
 (`runtime/scripts/inventory.py`, `runtime/scripts/evidence-run.py`,
 `runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`). Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-61`; behavior pinned by `tests/test_inventory.py`,
+Source `runtime/scripts/gitexec.py:1-62`; behavior pinned by `tests/test_inventory.py`,
 `tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`,
 `tests/test_diff_scope.py`, and `tests/test_gitexec_config_commands.py`.
 
@@ -581,6 +581,7 @@ inlines this floor (`_git_env` and `_driver_blanks`) rather than importing the m
 `runtime/scripts/verify.py`'s `_Authority` keeps its own `git_env` and a `driver_blanks` mirror:
 every verifier git leg runs the custody-classed git it pinned at startup under its scrubbed
 environment, where this module runs `GIT` under the caller's whole environment.
+`tests/test_gitexec_config_commands.py` holds both `driver_blanks` copies to this one.
 
 Exits: n/a (library).
 

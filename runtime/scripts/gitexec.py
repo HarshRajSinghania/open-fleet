@@ -55,7 +55,8 @@ receipt, and inventory.py loads this module at import. verify.py's _Authority ke
 own git_env() and a mirror of driver_blanks() rather than calling this module, but no
 longer to stay out of the toolchain: every verifier git leg runs the custody-classed git
 _Authority pinned at startup under its scrubbed nc_env floor, where this module runs its
-own GIT under the caller's whole environment.
+own GIT under the caller's whole environment. tests/test_gitexec_config_commands.py holds
+both driver_blanks copies (diff_scope's and verify's) to this one.
 
 Library only: no CLI, no exit codes.
 """

@@ -957,9 +957,11 @@ class _Authority:
                 "GIT_CONFIG_KEY_2": "safe.directory", "GIT_CONFIG_VALUE_2": "*",
                 "GIT_CONFIG_KEY_3": "core.hooksPath", "GIT_CONFIG_VALUE_3": os.devnull}
 
-    # gitexec.driver_blanks, mirrored (verify.py loads no sibling that would join the toolchain,
-    # so git_env and this live here as copies — see git_env's note). A config key named here is
-    # the ONLY source of a filter/diff-driver command, and `-c` cannot wildcard the <driver>.
+    # gitexec.driver_blanks, mirrored rather than called: gitexec.py is in the toolchain since
+    # #608 (via inventory.py), but its copy runs gitexec's GIT under the caller's whole env, and
+    # every verifier git leg runs the custody-pinned git_bin() under git_env() — so does this.
+    # A config key named here is the ONLY source of a filter/diff-driver command, and `-c`
+    # cannot wildcard the <driver>. tests/test_gitexec_config_commands.py holds it to gitexec's.
     _DRIVER_KEY_RE = re.compile(
         r"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z")
 

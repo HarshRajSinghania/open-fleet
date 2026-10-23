@@ -136,6 +136,22 @@ class GitexecDriverBlanks(unittest.TestCase):
         p._git("config", "diff.jpg.binary", "true")
         self.assertEqual(gitexec.driver_blanks(p.repo), [])
 
+    def test_the_toolchain_copies_blank_exactly_what_gitexec_blanks(self):
+        # diff_scope.py inlines driver_blanks and verify.py's _Authority mirrors it (each runs its
+        # own git under its own env); a copy that falls behind reopens the channel at that gate.
+        verify = _load("verify_parity", "verify.py")
+        verify._Authority.reset()
+        self.addCleanup(verify._Authority.reset)
+        p = self._repo()
+        for key in ("filter.media.clean", "filter.media.smudge", "filter.media.process",
+                    "diff.jpg.textconv", "diff.jpg.command", "filter.my.lfs.clean"):
+            p._git("config", key, "danger")
+        p._git("config", "filter.media.required", "true")
+        want = gitexec.driver_blanks(p.repo)
+        self.assertEqual(len(want), 12)
+        self.assertEqual(diff_scope._driver_blanks(p.repo), want)
+        self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
+
 
 class StaticBeltClosesTheFixedKeyChannels(unittest.TestCase):
     """The env belt (command-line precedence, so it overrides repo .git/config) names every

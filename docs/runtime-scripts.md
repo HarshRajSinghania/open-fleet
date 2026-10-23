@@ -538,6 +538,12 @@ reaches the worker through nothing else. A report, printed or committed, that do
 that receipt and name every changed path is NO-GO: a worker that copied the header without
 reading the file, or read only one end of it, cannot pass (FR-4).
 
+Git output is captured as bytes. `change.diff` carries git's bytes verbatim, so a reviewed file
+in an older encoding reaches the worker byte-exact. Output is decoded, with invalid bytes
+replaced, only for display and checks. An unexpected error inside any step ends in a NO-GO
+receipt that names the step, the error and the line that raised it; it never ends in a
+traceback with no receipt.
+
 The report is read from the transcript in the harness's own output format
 (`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the
 last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last

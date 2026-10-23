@@ -68,6 +68,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,6 +107,22 @@ class StepFailed(Exception):
     def __init__(self, message: str, recovery: str = ""):
         super().__init__(message)
         self.recovery = recovery
+
+
+def text_of(data: bytes | str | None) -> str:
+    """Captured output as text for display and checks only (#596 review): a reviewed file in an
+    older encoding must never raise. Bytes that are evidence (the diff) stay bytes."""
+    if isinstance(data, str):
+        return data
+    return (data or b"").decode("utf-8", "replace")
+
+
+def run_text(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run capturing BYTES, with stdout/stderr decoded by text_of; `.raw` keeps stdout."""
+    proc = subprocess.run(argv, capture_output=True, **kwargs)
+    out = subprocess.CompletedProcess(argv, proc.returncode, text_of(proc.stdout), text_of(proc.stderr))
+    out.raw = proc.stdout or b""
+    return out
 
 
 def posix_harnesses() -> list[str]:
@@ -229,10 +246,12 @@ def answer(text):
             print(json.dumps(event))
     else:  # hermes, crush, gemini print plain text
         print(note + text, end="")
-# Like an ro harness with no shell, it learns the change only by reading the file it was given.
-change = Path(inp.group(1)).read_text(encoding="utf-8")
+# Like an ro harness with no shell, it learns the change only by reading the file it was given:
+# the bytes git wrote, any encoding; it reads them as text the way a model would (#596 review).
+raw = Path(inp.group(1)).read_bytes()
+change = raw.decode("utf-8", "replace")
 lines = change.splitlines()
-stat = subprocess.run(["git", "apply", "--stat", "-"], input=change, capture_output=True, text=True).stdout.strip()
+stat = subprocess.run(["git", "apply", "--stat", "-"], input=raw, capture_output=True).stdout.decode("utf-8", "replace").strip()
 stat = re.sub(r" [|] +", " | ", stat)
 paths = [d.group(1) for d in map(re.compile(r"^diff --git a/.* b/(.*)$").match, lines) if d]
 read = [ln for ln in lines if ln.startswith("FIRST-RUN-READ ")][-1:]
@@ -245,7 +264,7 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
     Path(rel).write_text(report, encoding="utf-8")
     subprocess.run(["git", "add", "--", rel], check=True)
     subprocess.run(["git", "commit", "-q", "-m", "first-run report", "--", rel], check=True)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True).stdout.decode("ascii", "replace").strip()
     rc = subprocess.run([sys.executable, "-I", os.path.join(os.environ["OPEN_FLEET_ROOT"], "runtime",
                          "scripts", "send_msg.py"), "--type", "worker_done", "--outcome", "succeeded",
                          "--subject", f"worker_done:{dispatch}",
@@ -323,7 +342,7 @@ class Sandbox:
 
     def tripwire_hits(self) -> str:
         log = self.tripwire / "hits.log"
-        return log.read_text(encoding="utf-8") if log.is_file() else ""
+        return log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
 
 
 class Recorder:
@@ -339,10 +358,10 @@ class Recorder:
         start = time.monotonic()
         full_env = {**self.sb.env, **(env or {})}
         try:
-            proc = subprocess.run(argv, cwd=str(cwd or self.sb.target), env=full_env, capture_output=True,
-                                  text=True, timeout=timeout)
+            proc = run_text(argv, cwd=str(cwd or self.sb.target), env=full_env, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            proc = subprocess.CompletedProcess(argv, 124, exc.stdout or "", f"timed out after {timeout}s")
+            proc = subprocess.CompletedProcess(argv, 124, text_of(exc.stdout), f"timed out after {timeout}s")
+            proc.raw = exc.stdout if isinstance(exc.stdout, bytes) else b""
         if record:  # polling reads are not receipts
             self.commands.append({"argv": [str(a) for a in argv], "env": sorted((env or {}).keys()),
                                   "rc": proc.returncode, "elapsed_s": round(time.monotonic() - start, 3)})
@@ -358,6 +377,15 @@ class Recorder:
         except StepFailed as exc:
             record.update(ok=False, detail=str(exc), recovery=exc.recovery)
             raise
+        except Exception as exc:
+            # A defect here must still end in a receipt, not a traceback with none (#596 review).
+            # KeyboardInterrupt and the signal exits are BaseException and still unwind.
+            where = traceback.extract_tb(exc.__traceback__)[-1]
+            detail = f"unexpected {type(exc).__name__}: {exc}"[:1000]
+            recovery = (f"a first_run.py defect at {Path(where.filename).name}:{where.lineno}; the sandbox is "
+                        "kept: report it with receipt.json")
+            record.update(ok=False, detail=detail, recovery=recovery)
+            raise StepFailed(detail, recovery) from exc
         finally:
             record["elapsed_s"] = round(time.monotonic() - start, 3)
             self.steps.append(record)
@@ -381,7 +409,7 @@ def git(rec: Recorder, *args: str, cwd: Path | None = None) -> str:
 
 def harness_version(binary: str, env: dict) -> str:
     try:
-        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30, env=env)
+        proc = run_text([binary, "--version"], timeout=30, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"unreadable: {exc}"
     return (proc.stdout or proc.stderr).strip().splitlines()[0][:200] if (proc.stdout or proc.stderr).strip() else ""
@@ -390,13 +418,13 @@ def harness_version(binary: str, env: dict) -> str:
 def host_facts() -> dict:
     def version(argv):
         try:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            out = run_text(argv, timeout=30)
             return (out.stdout or out.stderr).strip().splitlines()[0]
         except (OSError, subprocess.SubprocessError, IndexError):
             return None
 
-    catalog = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True)
-    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True)
+    catalog = run_text(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
+    dirty = run_text(["git", "-C", str(ROOT), "status", "--porcelain"])
     return {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -479,12 +507,13 @@ class FirstRun:
         names = self.rec.run(["git", "-c", "core.quotePath=false", "diff", "--name-only", base, head], cwd=t)
         if diff.returncode != 0 or names.returncode != 0:
             raise StepFailed(f"git diff {base} {head} failed: {(diff.stderr or names.stderr).strip()[:300]}")
-        body = diff.stdout if not diff.stdout or diff.stdout.endswith("\n") else diff.stdout + "\n"
+        # Byte-exact: a reviewed file in an older encoding reaches the worker as git wrote it.
+        body = diff.raw if not diff.raw or diff.raw.endswith(b"\n") else diff.raw + b"\n"
         change = (f"# first-run {self.run_id}: the change under review, `git diff {base} {head}`.\n"
-                  "# Written before dispatch. Read it to the end: its last line is the read receipt.\n"
-                  f"{body}{self.read_receipt}\n")
+                  "# Written before dispatch. Read it to the end: its last line is the read receipt.\n").encode()
+        change += body + f"{self.read_receipt}\n".encode()
         (t / self.unit_dir).mkdir(parents=True)
-        (t / self.change_rel).write_text(change, encoding="utf-8")
+        (t / self.change_rel).write_bytes(change)
         self.facts["change"] = {"input": self.change_rel, "paths": names.stdout.splitlines()}
         contract = (
             f"# First-run contract {self.run_id}\n\n"
@@ -680,7 +709,7 @@ class FirstRun:
                 raise StepFailed(f"worker_done claims head {claim!r}; git says {head}", "the claim is not evidence")
         else:
             path = t / rel
-            path.write_text(self.facts["report"], encoding="utf-8")
+            path.write_text(self.facts["report"], encoding="utf-8", errors="replace")
             git(self.rec, "add", rel, cwd=t)
             git(self.rec, "commit", "-q", "-m", f"first-run {self.run_id}: report from the worker transcript", cwd=t)
             head = git(self.rec, "rev-parse", "HEAD", cwd=t)
@@ -849,8 +878,7 @@ def probes(sb: Sandbox) -> dict:
     git(rec, "commit", "-q", "--allow-empty", "-m", "seed", cwd=sb.target)
 
     unarmed = sb.dir / "unarmed-settings.json"
-    block = subprocess.run(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)],
-                           capture_output=True, text=True, check=True).stdout
+    block = run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)], check=True).stdout
     doc = json.loads(block)
     for entry in doc["hooks"]["PreToolUse"]:
         for hook in entry["hooks"]:
@@ -888,7 +916,7 @@ def probes(sb: Sandbox) -> dict:
             problems.append("a worker launched")
         if dispatched:
             problems.append(f"a dispatch was recorded: {dispatched}")
-        if name == "malformed-upstream-response" and garbage_log.is_file() and "worker-start" in garbage_log.read_text():
+        if name == "malformed-upstream-response" and garbage_log.is_file() and "worker-start" in garbage_log.read_text(errors="replace"):
             problems.append("worker-start was called after an unreadable response")
         results.append({"probe": name, "why": why, "rc": proc.returncode, "refused": not problems,
                         "problems": problems, "evidence": [ln for ln in text.splitlines() if want_text in ln][:2]})
@@ -1016,16 +1044,15 @@ def restore_signals(previous: dict) -> None:
 
 def stop_workers(sb: Sandbox) -> None:
     """Fence anything still live in this sandbox's store before its directory goes away."""
-    proc = subprocess.run(py("orca_cli.py", "orchestration", "worker-list", "--json"), cwd=str(sb.target)
-                          if sb.target.is_dir() else str(sb.dir), env=sb.env, capture_output=True, text=True)
+    proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
+                    cwd=str(sb.target) if sb.target.is_dir() else str(sb.dir), env=sb.env)
     try:
         workers = json.loads(proc.stdout)["result"]["workers"]
     except (ValueError, KeyError, TypeError):
         return
     for w in workers:
         if w.get("state") in LIVE_STATES:
-            subprocess.run(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env,
-                           capture_output=True, text=True, cwd=str(sb.dir))
+            run_text(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env, cwd=str(sb.dir))
 
 
 if __name__ == "__main__":

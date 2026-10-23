@@ -1000,5 +1000,58 @@ class TestLiveRouteIsIdentified(Tripwired):
         self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude")})
 
 
+class TargetRepo(Tripwired):
+    """A `--target` repository whose last commit is the reviewed change, run in-process."""
+
+    def target(self, name: str, base_files: dict, change_files: dict) -> Path:
+        repo = self.tmp / name
+        git = ["git", "-C", str(repo), "-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        for files, msg in ((base_files, "base"), (change_files, "change")):
+            for rel, data in files.items():
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_bytes(data)
+            subprocess.run([*git, "add", "-f", "--", *files], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", msg], check=True)
+        return repo
+
+    def run_target(self, repo: Path, name: str, *args):
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main(["--target", str(repo), *args, "--workdir", str(self.tmp / name), "--json"])
+        return rc, json.loads(buf.getvalue())
+
+
+class TestOlderTextEncodings(TargetRepo):
+    """A reviewed file in an older encoding is reviewed, not a traceback (#596 review)."""
+
+    LATIN1 = b"caf\xe9 cr\xe8me br\xfbl\xe9e\n"  # ISO-8859-1: not valid UTF-8
+
+    def test_a_non_utf8_change_reaches_the_worker_byte_exact(self):
+        repo = self.target("latin1", {"README.md": b"# r\n"}, {"legacy.txt": self.LATIN1})
+        diff = subprocess.run(["git", "-C", str(repo), "diff", "HEAD~1", "HEAD"], capture_output=True, check=True).stdout
+        self.assertIn(self.LATIN1.strip(), diff)
+        for profile in ("ro", "rw"):
+            with self.subTest(profile=profile):
+                rc, receipt = self.run_target(repo, f"latin1-{profile}", "--profile", profile, "--keep")
+                self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+                wt = Path(receipt["facts"]["worktree"])
+                change = (wt / receipt["facts"]["change"]["input"]).read_bytes()
+                self.assertIn(diff, change, "the worker must see exactly the bytes git produced")
+
+    def test_an_unexpected_error_is_a_recorded_no_go(self):
+        wd = self.tmp / "boom"
+        buf = io.StringIO()
+        with mock.patch.object(first_run.FirstRun, "preflight", side_effect=RuntimeError("boom")), \
+                mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main(["--workdir", str(wd), "--json"])
+        receipt = json.loads(buf.getvalue())
+        self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"))
+        self.assertEqual(receipt["failure"]["step"], "preflight")
+        self.assertIn("RuntimeError: boom", receipt["failure"]["detail"])
+        self.assertTrue(receipt["failure"]["recovery"], "an unexpected failure still names the next move")
+        self.assertEqual(json.loads((wd / "receipt.json").read_text(encoding="utf-8"))["verdict"], "NO-GO")
+
+
 if __name__ == "__main__":
     unittest.main()

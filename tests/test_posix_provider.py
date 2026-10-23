@@ -763,5 +763,133 @@ class TestPosixDoctorFailsClosed(PosixRealProcessBase):
             base.RuntimeProvider().vm_recipe_doctor("anything")
 
 
+# A stand-in for a ro model: it can only PRINT (stream-json, like `claude -p`). It finds its own
+# dispatch id where a model would — in its assignment, never in an env var it has no tool to read.
+_RO_MODEL = r"""python3 - "$@" <<'PY'
+import json, re, sys
+prompt = sys.argv[-1]
+m = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", prompt)
+lines = ["REPORT: nothing to change."] + ([f"OPEN_FLEET_WORKER_DONE {m.group(1)} {OUTCOME}"] if m else [])
+print(json.dumps({"type": "result", "result": "\n".join(lines)}))
+PY"""
+
+
+class TestRoWorkerSignalsCompletion(PosixRealProcessBase):
+    """#596 certification finding: a PROFILE=ro worker could never send `worker_done`. Every ro
+    line strips the tool that would (no shell to run send_msg.py; codex's read-only sandbox and
+    hermes' /dev/null write root also deny the state-DB write it needs), so posix recorded its
+    clean exit as `worker_died (exit=0)`. Now the ro prompt names a completion line and the exit
+    monitor — which already holds the dispatch's identity and the state DB — relays it as that
+    worker's `worker_done`. The worker gains no tool and no writable path."""
+
+    def ro_model(self, outcome="succeeded", tail=""):
+        self.fake_agent("claude", _RO_MODEL.replace("{OUTCOME}", outcome) + tail)
+
+    def mine(self, disp):
+        return [m for m in self.prov.check_messages(terminal="coordinator")["messages"] if disp in m["subject"]]
+
+    def settled(self, disp, state):
+        self.assertTrue(self.wait_monitor_done(disp))
+        self.assertEqual(self.prov.worker_show(disp)["worker"]["state"], state)
+        return self.mine(disp)
+
+    def test_a_ro_completion_line_reaches_the_coordinator_as_worker_done(self):
+        for outcome in ("succeeded", "failed"):
+            with self.subTest(outcome=outcome):
+                self.ro_model(outcome)
+                _, res = self.start(profile="ro")
+                disp = res["dispatchId"]
+                mail = self.settled(disp, "completed")
+                self.assertEqual([(m["type"], m["outcome"]) for m in mail], [("worker_done", outcome)], mail)
+                self.assertEqual(mail[0]["from"], res["agentTerminalHandle"])
+                self.assertRegex(json.loads(mail[0]["payload"])["headSha"], r"^[0-9a-f]{40}$")
+
+    def test_a_clean_ro_exit_without_the_line_is_still_worker_died(self):
+        self.fake_agent("claude", 'echo \'{"type": "result", "result": "REPORT only"}\'')
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(mail[0]["payload"])["exitCode"], 0)
+
+    def test_echoed_instructions_and_other_dispatches_lines_are_not_relayed(self):
+        # The assignment itself (echoed back verbatim) and a line naming another dispatch.
+        self.fake_agent("claude", 'printf "%s\\n" "$@"; echo "OPEN_FLEET_WORKER_DONE disp_0123456789 succeeded"')
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+
+    def test_a_ro_worker_that_crashes_after_the_line_is_a_death(self):
+        self.ro_model("succeeded", "\nexit 3")
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(mail[0]["payload"])["exitCode"], 3)
+
+    def test_rw_gets_no_relay_and_no_footer(self):
+        # rw has its own mail tool (send_msg.py); the relay must not become a second channel.
+        seen = Path(self.tmp.name) / "rw-argv.json"
+        self.fake_agent("claude", f'python3 -c \'import json,sys; json.dump(sys.argv[1:], open("{seen}", "w"))\' "$@"; '
+                                  'echo "OPEN_FLEET_WORKER_DONE $OPEN_FLEET_DISPATCH_ID succeeded"')
+        _, res = self.start(spec="RW-SPEC", profile="rw")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(seen.read_text())[-1], "RW-SPEC")
+
+    def test_the_relay_widens_nothing_the_ro_launch_can_do(self):
+        import shlex
+        self.ro_model()
+        _, res = self.start(spec="RO-SPEC", profile="ro")
+        base = self.providers.build_harness_command("claude", "ro", "/w", prompt="RO-SPEC")
+        argv = shlex.split(res["launch"]["effective"]["command"])
+        self.assertEqual(argv[:-1], base["argv"][:-1], "the ro launch gained a flag")
+        self.assertTrue(argv[-1].startswith("RO-SPEC"), "the assignment must lead the prompt")
+        self.assertEqual(res["launch"]["effective"]["args"], base["profile_flag"])
+        self.settled(res["dispatchId"], "completed")
+
+    def test_no_exit_monitor_no_promise(self):
+        # dry-run and an injected runner never run the monitor that relays the line, so a ro
+        # worker there is not told it has one: its prompt is exactly the spec. Each provider gets
+        # its OWN state DB, which _kill_all never fences (dry-run records a placeholder pid).
+        import shlex
+        for backend, runner in (("dry-run", None), ("setsid", lambda **_kw: {"pid": 0, "backend": "setsid"})):
+            with self.subTest(backend=backend, runner=runner is not None):
+                env = {**self.env, "OPEN_FLEET_POSIX_BACKEND": backend,
+                       "OPEN_FLEET_STATE_DB": str(Path(self.tmp.name) / f"own-{backend}" / "runtime.db")}
+                prov = self.providers.get_provider("posix", env=env)
+                prov.runner = runner
+                task = prov.dispatch(["orchestration", "task-create", "--spec", "RO-SPEC"])["task"]
+                res = prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="ro")
+                self.assertEqual(shlex.split(res["launch"]["effective"]["command"])[-1], "RO-SPEC")
+
+
+class TestRoCompletionLineParser(unittest.TestCase):
+    """The relay reads the worker's own output; only a whole line naming THIS dispatch counts."""
+
+    def setUp(self):
+        self.read = getattr(_posix(), "ro_completion_outcome", None)
+        self.assertIsNotNone(self.read, "posix.ro_completion_outcome is missing")
+
+    def test_json_escaped_markdown_and_plain_lines(self):
+        cases = {
+            json.dumps({"type": "result", "result": "report\nOPEN_FLEET_WORKER_DONE disp_ab12 succeeded"}): "succeeded",
+            "**OPEN_FLEET_WORKER_DONE disp_ab12 failed**": "failed",
+            "> `OPEN_FLEET_WORKER_DONE disp_ab12 succeeded`.": "succeeded",
+            json.dumps({"item": {"content": [{"text": "OPEN_FLEET_WORKER_DONE disp_ab12 failed"}]}}): "failed",
+        }
+        for transcript, want in cases.items():
+            with self.subTest(transcript=transcript[:40]):
+                self.assertEqual(self.read(transcript, "disp_ab12"), want)
+
+    def test_the_last_line_wins_and_anything_else_is_none(self):
+        both = "OPEN_FLEET_WORKER_DONE disp_ab12 succeeded\nmore work\nOPEN_FLEET_WORKER_DONE disp_ab12 failed\n"
+        self.assertEqual(self.read(both, "disp_ab12"), "failed")
+        footer = _posix().ro_completion_footer("disp_ab12")
+        for transcript in ("OPEN_FLEET_WORKER_DONE disp_ab13 succeeded", footer, json.dumps({"p": footer}),
+                           "done: OPEN_FLEET_WORKER_DONE disp_ab12 succeeded",
+                           "OPEN_FLEET_WORKER_DONE disp_ab12 succeeded and more", ""):
+            with self.subTest(transcript=transcript[:40]):
+                self.assertIsNone(self.read(transcript, "disp_ab12"))
+
+
 if __name__ == "__main__":
     unittest.main()

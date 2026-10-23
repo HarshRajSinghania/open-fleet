@@ -6,11 +6,13 @@ test: open-fleet's sound verifier is fooled by NO trap (0% false-done), a self-s
 fooled by at least one (else there is no contrast), and the sound gate still passes a valid control
 (it is not trivially always-RED).
 """
+import ast
 import contextlib
 import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -86,6 +88,40 @@ class VFBenchSoundness(unittest.TestCase):
         naive, sound = self.res["self-scoring (naive)"], self.res["open-fleet verify.py (sound)"]
         self.assertRegex(readme, rf"self-scoring \(naive\)\s*\|\s*{naive['false_done']}/{naive['red_total']}\b")
         self.assertRegex(readme, rf"verify\.py.*\|\s*{sound['false_done']}/{sound['red_total']}\b")
+
+    def test_readme_publishes_the_false_reject_rate_too(self):
+        # #600: false acceptance and false rejection are published side by side — a gate that
+        # refuses everything scores 0% false-done, so the first number alone flatters it. The
+        # denominator is the corpus's own control count: a skip can drop a control from a run,
+        # never add a rejection, so this pin holds on a shallow checkout too.
+        readme = (ROOT / "bench" / "vf-bench" / "README.md").read_text(encoding="utf-8")
+        controls = sum(1 for t in vfbench.load_traps() if t["sound_expected"] == "GREEN")
+        for label, res in (("self-scoring \\(naive\\)", self.res["self-scoring (naive)"]),
+                           ("verify\\.py` \\(sound\\)", self.res["open-fleet verify.py (sound)"])):
+            with self.subTest(gate=label):
+                self.assertRegex(readme, rf"{label}\s*\|[^|]*\|[^|]*\|\s*{res['false_reject']}/"
+                                         rf"{controls}\s*\|")
+
+    def test_false_rejection_is_scored_beside_false_acceptance(self):
+        # #600: a valid control going RED is a scored FALSE REJECTION, counted per gate.
+        for name, res in self.res.items():
+            with self.subTest(gate=name):
+                self.assertEqual(res["false_reject"], len(res["valid_failed"]))
+                self.assertEqual(res["false_reject_rate"],
+                                 res["false_reject"] / res["valid_total"] if res["valid_total"] else 0.0)
+        self.assertEqual(self.res["open-fleet verify.py (sound)"]["false_reject"], 0,
+                         self.res["open-fleet verify.py (sound)"]["false_rejects"])
+
+    def test_every_reasoned_trap_is_refused_for_the_invariant_it_plants(self):
+        # #600: a RED from an unrelated leg is not a catch; the bench names it instead of scoring it.
+        self.assertEqual(self.res["open-fleet verify.py (sound)"]["wrong_reason"], [])
+
+    def test_every_corpus_case_is_scored_or_skipped_by_name(self):
+        # #600: no silent denominator omission — the scored and named-skipped cases ARE the corpus.
+        sound = self.res["open-fleet verify.py (sound)"]
+        self.assertEqual(sound["red_total"] + sound["valid_total"] + len(sound["skipped"]),
+                         len(vfbench.load_traps()))
+        self.assertEqual(sound["corpus_total"], len(vfbench.load_traps()))
 
 
 class VFBenchShallowSkips(unittest.TestCase):
@@ -503,6 +539,320 @@ class CountingRunnersAndHooksAreSampled(unittest.TestCase):
         runner = vfbench.SHAPES["vitest-shaped"][0]
         self.assertIn("Failed Suites 1", runner)
         self.assertNotIn("SyntaxError:", runner.split("except SyntaxError")[1])
+
+
+class RunScoresRejectionsAndReasons(unittest.TestCase):
+    """#600: the bench scores false REJECTION beside false acceptance, and holds a gate that gives
+    reasons to the refusal each trap declares. Fast by design: a stand-in gate over a two-case
+    corpus, so these pin the scoring itself rather than the verifier."""
+
+    CORPUS = [
+        {"id": "planted-1", "class": "planted", "sound_expected": "RED",
+         "expect_reason": "the planted invariant", "manifest": {}},
+        {"id": "control-1", "class": "control-not-a-trap", "sound_expected": "GREEN", "manifest": {}},
+    ]
+
+    def _run(self, gate):
+        saved = (vfbench.load_traps, vfbench.GATES)
+        vfbench.load_traps = lambda: [dict(t) for t in self.CORPUS]
+        vfbench.GATES = {"g": gate}
+        try:
+            return vfbench.run()["g"]
+        finally:
+            vfbench.load_traps, vfbench.GATES = saved
+
+    def test_a_red_for_another_reason_is_named_not_counted_as_a_catch(self):
+        def gate(trap, detail=None):
+            detail["fails"] = ["FAIL: some unrelated leg"]
+            return trap["sound_expected"] == "GREEN"
+        res = self._run(gate)
+        self.assertEqual(res["false_done"], 0)
+        self.assertEqual([w["id"] for w in res["wrong_reason"]], ["planted-1"])
+        self.assertEqual(res["wrong_reason"][0]["want"], "the planted invariant")
+
+    def test_the_declared_refusal_clears_it(self):
+        def gate(trap, detail=None):
+            detail["fails"] = ["FAIL: refused for the planted invariant, as declared"]
+            return trap["sound_expected"] == "GREEN"
+        res = self._run(gate)
+        self.assertEqual(res["wrong_reason"], [])
+        self.assertEqual(res["false_reject"], 0)
+
+    def test_a_red_valid_control_is_a_scored_false_rejection_with_its_refusal(self):
+        def gate(trap, detail=None):
+            detail["fails"] = ["FAIL: the planted invariant"]
+            return False
+        res = self._run(gate)
+        self.assertEqual(res["false_reject"], 1)
+        self.assertEqual(res["valid_failed"], ["control-1"])
+        self.assertEqual(res["false_rejects"][0]["refusals"], ["FAIL: the planted invariant"])
+        self.assertEqual(res["false_reject_rate"], 1.0)
+
+    def test_a_gate_that_gives_no_reasons_is_scored_on_verdicts_alone(self):
+        res = self._run(lambda trap, detail=None: False)
+        self.assertEqual(res["wrong_reason"], [])
+        self.assertEqual(res["false_done"], 0)
+
+    def test_a_red_fixture_control_is_scored_not_raised(self):
+        # Before #600 a fixture control going RED raised out of fixture_gate, so a run stopped at
+        # the first broken control and published no false-rejection count at all.
+        control = next(t for t in vfbench.load_traps() if t["id"] == "narrated-valid-control-1")
+        broken = json.loads(json.dumps(control))
+        broken["manifest"]["reviewer_mode"] = "self"
+        detail = {}
+        self.assertFalse(vfbench.fixture_gate(broken, detail))
+        self.assertTrue(any("reviewer_mode must be one of" in f for f in detail["fails"]),
+                        detail)
+
+
+class IsolatedInvariantTrapsAreSampled(unittest.TestCase):
+    """#600: the verifier invariants the 2026-10-23 review listed as unsampled each have an
+    isolated trap with a neighbouring valid control. tests/test_vfbench_guards.py deletes each
+    trap's guard; this class pins that the corpus carries them at all, shaped as required."""
+
+    REQUIRED = {
+        "dispatch-profile-tamper", "dispatch-class-substitution", "dispatch-replay",
+        "hidden-criterion-table", "hidden-criterion-json", "lighting-illegal", "lighting-swap",
+        "empty-intent", "reviewer-mode-illegal", "provenance-incomplete", "surviving-mutant",
+        "zero-kill-artifact", "oracle-scope-revert", "oracle-scope-production",
+        "oracle-scope-artifact-swap", "pr-number-path", "pr-number-bool", "pr-number-negative",
+        "author-as-approver", "non-member-approver", "dismissed-approval",
+        "nc-artifact-symlink-escape", "unpinned-artifact", "missing-artifact-path",
+        "criterion-unaddressed", "criterion-ids-shrunk", "manifest-digest-swap",
+        "stale-reviewed-sha",
+    }
+
+    def setUp(self):
+        self.traps = vfbench.load_traps()
+        self.by_class = {t["class"]: t for t in self.traps}
+        self.by_id = {t["id"]: t for t in self.traps}
+
+    def test_each_is_present_red_and_declares_its_refusal_and_neighbour(self):
+        for name in sorted(self.REQUIRED):
+            with self.subTest(trap=name):
+                self.assertIn(name, self.by_class, "the trap is gone")
+                trap = self.by_class[name]
+                self.assertEqual(trap["sound_expected"], "RED")
+                self.assertTrue(trap.get("expect_reason"))
+                self.assertIn(trap.get("neighbour"), self.by_id)
+                self.assertEqual(self.by_id[trap["neighbour"]]["sound_expected"], "GREEN")
+
+    def test_the_signed_dispatch_cases_are_profile_signed(self):
+        # The 2026-10-23 review's P2-2: every profile-signed record read as forged. The valid
+        # neighbour is profile-signed, and the tamper trap edits the profile and nothing else.
+        control = self.by_id["dispatch-valid-control-1"]
+        self.assertIn("profile", control["dispatch"]["record"])
+        tamper = self.by_class["dispatch-profile-tamper"]
+        self.assertEqual(set(tamper["dispatch"]["tamper"]), {"profile"})
+        self.assertEqual(tamper["dispatch"]["record"], control["dispatch"]["record"])
+
+    def test_the_provenance_control_is_complete_not_true(self):
+        # The presence-vs-truth exhibit: every audit field filled, with values nothing verifies.
+        prov = self.by_id["provenance-present-valid-control-1"]["manifest"]["provenance"]
+        self.assertTrue(all(isinstance(v, str) and v.strip() for v in prov.values()))
+        self.assertEqual(prov["model"], "vf-model-0")
+
+
+class TheInventoryHasNoSilentOmissions(unittest.TestCase):
+    """#600: the README's verifier check inventory maps every check to a trap, a justified
+    unsupported case, or a deferred item. A check missing from it, a trap row naming no corpus
+    case, a corpus trap no row names, or a non-trap row with no reason is a silent omission."""
+
+    STATUSES = ("trap", "unsupported", "deferred")
+    # Guards that live outside a check_* function but refuse on their own.
+    HELPERS = {"verify", "execute_negative_control", "review_ok", "_resolve", "_read_artifact",
+               "_Authority.authority_leg", "_Authority.review_leg"}
+
+    def _rows(self):
+        readme = (ROOT / "bench" / "vf-bench" / "README.md").read_text(encoding="utf-8")
+        section = readme.split("## Verifier check inventory", 1)[1].split("\n## ", 1)[0]
+        return [[c.strip() for c in line.strip().strip("|").split("|")]
+                for line in section.splitlines() if line.startswith("| `")]
+
+    def test_every_row_is_well_formed(self):
+        rows = self._rows()
+        self.assertGreater(len(rows), 40)
+        for row in rows:
+            with self.subTest(row=row[:2]):
+                self.assertEqual(len(row), 4, row)
+                self.assertIn(row[2], self.STATUSES)
+
+    def test_every_check_is_inventoried(self):
+        verify_src = (ROOT / "runtime" / "scripts" / "verify.py").read_text(encoding="utf-8")
+        checks = set(re.findall(r"^def (check_\w+)\(", verify_src, re.M)) | self.HELPERS
+        named = {n for row in self._rows() for n in re.findall(r"`([\w.]+)`", row[0])}
+        self.assertEqual(sorted(checks - named), [], "a verifier check has no inventory row")
+        self.assertEqual(sorted(named - checks), [], "an inventory row names no verifier check")
+
+    def test_trap_rows_name_corpus_cases_and_others_say_why(self):
+        classes = {t["class"] for t in vfbench.load_traps()}
+        for row in self._rows():
+            with self.subTest(row=row[:2]):
+                named = re.findall(r"`([^`]+)`", row[3])
+                if row[2] == "trap":
+                    self.assertTrue(named, "a trap row must name its corpus case(s)")
+                    self.assertEqual(sorted(set(named) - classes), [])
+                else:
+                    self.assertGreaterEqual(len(row[3]), 40, "an out-of-scope row must say why")
+
+    def test_every_corpus_trap_is_inventoried(self):
+        inventoried = {n for row in self._rows() if row[2] == "trap"
+                       for n in re.findall(r"`([^`]+)`", row[3])}
+        red = {t["class"] for t in vfbench.load_traps() if t["sound_expected"] == "RED"}
+        self.assertEqual(sorted(red - inventoried), [], "a corpus trap is missing from the inventory")
+
+
+def _message(node, names):
+    """The text of a message expression, an f-string's values read as `{}`; None if it is not one.
+    A local name bound to a literal, a `.format` template and the left side of `"..." + suffix`
+    resolve to their literal."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    if isinstance(node, ast.Name):
+        return names.get(node.id)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+        text = _message(node.func.value, names)
+        return None if text is None else re.sub(r"\{[^{}]*\}", "{}", text)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _message(node.left, names)
+    return None
+
+
+def _messages(node, names):
+    """Every message a returned or appended expression can carry: list items, a comprehension's
+    element, both arms of a conditional, both sides of a list concatenation, and each operand of
+    an `or` (`gerr.strip() or "fallback"`)."""
+    if isinstance(node, ast.List):
+        for item in node.elts:
+            yield from _messages(item, names)
+    elif isinstance(node, ast.BoolOp):
+        for operand in node.values:
+            yield from _messages(operand, names)
+    elif isinstance(node, ast.ListComp):
+        yield from _messages(node.elt, names)
+    elif isinstance(node, ast.IfExp):
+        yield from _messages(node.body, names)
+        yield from _messages(node.orelse, names)
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and _message(node, names) is None:
+        yield from _messages(node.left, names)
+        yield from _messages(node.right, names)
+    else:
+        text = _message(node, names)
+        if text is not None:
+            yield text
+
+
+def refusal_sites(source, functions):
+    """#600, PR #643 review: every message verify.py can refuse with, read from its SOURCE, per
+    named function (`Class.method` for a method), nested helpers included. A site is a message a
+    function returns in a list, returns as the error half of a `(value, error)` pair, appends /
+    extends onto a list, or assigns as a list inside an exception handler. A message composed in
+    a helper outside the inventory and forwarded whole is that helper's, not a site here. Lines
+    starting `NOTE:` are advisories, not refusals, and come back apart.
+    Returns ({function: {refusal}}, {function: {note}})."""
+    defs = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef):
+            defs[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            defs.update((f"{node.name}.{sub.name}", sub) for sub in node.body
+                        if isinstance(sub, ast.FunctionDef))
+    refusals, notes = {}, {}
+    for name in functions:
+        names = {n.targets[0].id: _message(n.value, {}) for n in ast.walk(defs[name])
+                 if isinstance(n, ast.Assign) and len(n.targets) == 1
+                 and isinstance(n.targets[0], ast.Name) and _message(n.value, {}) is not None}
+        found = set()
+        for n in ast.walk(defs[name]):
+            if isinstance(n, ast.Return) and n.value is not None:
+                found.update(_messages(n.value.elts[-1] if isinstance(n.value, ast.Tuple)
+                                       else n.value, names))
+            elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                  and n.func.attr in ("append", "extend") and isinstance(n.func.value, ast.Name)):
+                for arg in n.args:
+                    found.update(_messages(arg, names))
+            elif isinstance(n, ast.ExceptHandler):  # an exception turned into a refusal list
+                for stmt in n.body:
+                    if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.List):
+                        found.update(_messages(stmt.value, names))
+        refusals[name] = {m for m in found if not m.startswith("NOTE:")}
+        notes[name] = found - refusals[name]
+    return refusals, notes
+
+
+class EveryRefusalSiteHasAnInventoryRow(unittest.TestCase):
+    """#600, PR #643 review: comparing FUNCTION names let a guard's row vanish unnoticed — delete
+    check_scope's digest-mismatch row and check_scope is still named by its other rows. The unit
+    is the refusal SITE (refusal_sites, read from verify.py's source): each inventory row cites,
+    after `Sites:`, the sites it owns by a stem of their message. A site no row cites, a stem that
+    names no site or several, and a row whose deletion nothing would notice all fail here."""
+
+    # verify()'s unknown-class handling is an advisory, not a refusal (its fail-safe is the row
+    # above it); the NOTE it prints is that row's anchor, pinned so the row cannot vanish either.
+    ANCHORING_NOTES = {"verify": ("unknown unit class",)}
+
+    def setUp(self):
+        source = (ROOT / "runtime" / "scripts" / "verify.py").read_text(encoding="utf-8")
+        checks = set(re.findall(r"^def (check_\w+)\(", source, re.M))
+        self.refusals, notes = refusal_sites(source, checks | TheInventoryHasNoSilentOmissions.HELPERS)
+        self.anchors = {(f, n) for f, stems in self.ANCHORING_NOTES.items() for stem in stems
+                        for n in notes[f] if stem in n}
+        self.sites = {(f, s) for f, found in self.refusals.items() for s in found} | self.anchors
+        self.rows = TheInventoryHasNoSilentOmissions._rows(self)
+
+    @staticmethod
+    def _stems(row):
+        return re.findall(r"`([^`]+)`", row[1].partition("Sites:")[2])
+
+    def _resolve(self, row, stem):
+        """The sites a row's stem names: in the functions the row names, an exact message before a
+        substring match; a predicate that prints nothing itself (review_ok) cites the refusal its
+        caller prints, so its stems are looked up everywhere."""
+        funcs = set(re.findall(r"`([\w.]+)`", row[0]))
+        pool = {site for site in self.sites if site[0] in funcs} or self.sites
+        return {site for site in pool if site[1] == stem} or {site for site in pool if stem in site[1]}
+
+    def _cited(self, rows):
+        return {site for row in rows for stem in self._stems(row) for site in self._resolve(row, stem)}
+
+    @staticmethod
+    def _cases(rows):
+        return {n for row in rows if row[2] == "trap" for n in re.findall(r"`([^`]+)`", row[3])}
+
+    def test_the_sites_are_read_from_source(self):
+        # A broken extractor would make every check below pass on an empty set.
+        self.assertGreater(len(self.sites), 100)
+        self.assertIn(("check_scope", "scope: authoritative source does not match --contract-digest "
+                                      "({} != {})"), self.sites)
+        self.assertEqual(sorted(f for f, found in self.refusals.items() if not found), ["review_ok"],
+                         "only review_ok, a predicate, may refuse without a message of its own")
+        self.assertEqual(len(self.anchors), sum(map(len, self.ANCHORING_NOTES.values())),
+                         "an anchoring NOTE no longer names exactly one NOTE in verify.py")
+
+    def test_every_stem_names_exactly_one_site(self):
+        for row in self.rows:
+            for stem in self._stems(row):
+                with self.subTest(row=row[:2], stem=stem):
+                    self.assertEqual(len(self._resolve(row, stem)), 1,
+                                     "a stem must name exactly one refusal site of its row's check")
+
+    def test_every_refusal_site_has_a_row(self):
+        uncited = sorted(f"{f}: {s}" for f, s in self.sites - self._cited(self.rows))
+        self.assertEqual(uncited, [], "a refusal site in verify.py has no inventory row")
+
+    def test_no_row_can_be_deleted_unnoticed(self):
+        # What a row alone contributes: a site or a corpus case no other row covers. Deleting a
+        # row with neither would leave every other test here, and the corpus check, green.
+        red = {t["class"] for t in vfbench.load_traps() if t["sound_expected"] == "RED"}
+        cited, cases = self._cited(self.rows) & self.sites, self._cases(self.rows) & red
+        for i, row in enumerate(self.rows):
+            with self.subTest(row=row[:2]):
+                rest = self.rows[:i] + self.rows[i + 1:]
+                lost = (cited - self._cited(rest)) | (cases - self._cases(rest))
+                self.assertTrue(lost, "deleting this row fails no test: cite a site no other row "
+                                "cites, or name a corpus case no other row names")
 
 
 if __name__ == "__main__":

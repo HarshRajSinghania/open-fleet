@@ -2596,6 +2596,19 @@ def check_commands(m, is_mutation, nc_command=None):
                     "command, so it binds nothing; fail-closed"]
     fresh, _ = _fresh_command_records(m)
     if not fresh:
+        # PR #649 review (PRRT_kwDOTWxN9c6vwb7P): an exit-0 run evidence-run.py could not
+        # fingerprint because a repository-declared filter selects a changed path is UNVERIFIABLE,
+        # not stale — its content cannot be compared without running the repo's command, which
+        # nothing here does. Say so. The reason is worker-written: shown truncated and repr()'d,
+        # and it only ever words a refusal, never lifts one.
+        why = next((c["wtree_unverifiable"] for c in records if c.get("exit") == 0
+                    and c.get("wtree") is None and isinstance(c.get("wtree_unverifiable"), str)),
+                   None)
+        if why is not None:
+            return [f"commands ledger: the exit-0 run carries no fingerprint for head_sha's tree "
+                    f"{want} because its working tree was UNVERIFIABLE, not stale: "
+                    f"{why[:300]!r} — the coordinator's clean-env re-run at head_sha is the "
+                    "authority for this unit; fail-closed (#629)"]
         seen = sorted({str(c.get("wtree")) for c in records if c.get("exit") == 0})
         return [f"commands ledger: no recorded command with exit 0 whose wtree is head_sha's tree "
                 f"{want} (exit-0 records carry {seen or 'no wtree at all'}) — the recorded run was "

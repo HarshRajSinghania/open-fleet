@@ -31,10 +31,17 @@ truth is `.claude-plugin/plugin.json`.
     neutralised whole — commands blank and `required=false` — since git dies on a required filter
     that runs nothing, which let a planted `required=true` (or a local Git LFS) stop every gate
     (PR #649 review); the gate reads the working-tree bytes as they are. Reads of committed
-    objects alone (inventory, decisions `--pin-ref`) never select a filter and skip it. `wtree.sh` gets the same env belt and driver blanks (its `add -A` and
-    `write-tree` ran a selected filter and `core.fsmonitor`); its attribute-selected filters are
-    blanked, while global/system config stays in force so a committed tree still fingerprints
-    faithfully.
+    objects alone (inventory, decisions `--pin-ref`) never select a filter and skip it.
+  - `wtree.sh` gets the same env belt and driver blanks (its `add -A` and `write-tree` ran a
+    selected filter and `core.fsmonitor`), built as `env(1)` arguments rather than shell code. It
+    blanks only drivers the REPOSITORY declares; global/system config stays in force, so the
+    coordinator's own filters (a global Git LFS) still keep the fingerprint exact. A file a
+    repo-declared driver filters keeps its fingerprint while its stat is unchanged, but once it is
+    re-staged its bytes cannot be compared to the committed tree without running that driver. So
+    wtree.sh exits 3 with the reason rather than print a value that would read as STALE (PR #649
+    review); `evidence-run.py` records it as `wtree_unverifiable`, and `verify.py check_commands`
+    refuses the record as UNVERIFIABLE with that reason. The coordinator's clean-env re-run at
+    `head_sha` decides such a unit.
   - No gate hands git its own stdin: every gitexec-routed call (floor_guard, diff_scope,
     decisions, inventory, evidence-run, preflight), verify.py's `_run`/`_run_bytes`/`_run_at`
     and `wtree.sh` pass `/dev/null`, so a hook, filter or git itself can never block a gate on

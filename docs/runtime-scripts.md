@@ -852,8 +852,9 @@ Exits: n/a (library).
 > `runtime/scripts/gitexec.py:env`, and blanking attribute-selected driver commands via
 > `runtime/scripts/gitexec.py:driver_blanks` keeps read-side git queries deterministic.
 > `runtime/scripts/wtree.sh` carries the same belt and blanks for its `add -A`/`write-tree`
-> fingerprint, leaving global/system config in force so a commit's tree still fingerprints
-> faithfully (#629). Since #608 the module is part of the signed verifier toolchain
+> fingerprint, blanking only repository-declared drivers and leaving global/system config in
+> force; a changed path a repo-declared driver filters is refused as unverifiable (exit 3) rather
+> than fingerprinted from bytes the commit was never built from (#629, PR #649 review). Since #608 the module is part of the signed verifier toolchain
 > (`runtime/scripts/verify.py:_Transcript`): verify.py loads `runtime/scripts/inventory.py` to
 > check a retention receipt, and that loads this module — so a change here changes a toolchain
 > hash, and a signed transcript binds to it at the graded pin like any other sibling.
@@ -1618,7 +1619,8 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage.
 
 Prints a working-tree CONTENT fingerprint (a git tree hash). Builds a temp index, stages
 the full tree into it, prints `git write-tree` of that index — the real index is never
-touched. Source `runtime/scripts/wtree.sh:1-41`; exercised by `tests/test_evidence_run.py`.
+touched. Source `runtime/scripts/wtree.sh:1-50`; exercised by `tests/test_evidence_run.py` and
+`tests/test_gitexec_config_commands.py`.
 
 Usage: `wtree.sh [repo-dir]` (default: current directory).
 
@@ -1638,8 +1640,23 @@ leaned on ignored content (`.env`, a stale build artifact, a file hidden by
 tree — the fingerprint binds committable content only, and the coordinator's clean-env re-run
 at `head_sha` is what catches such a pass.
 
-Exits: 0 prints the hash · 1 outside a git repo, or no commits and no usable index
-(callers fail closed on nonzero — never treat it as an empty fingerprint).
+Filters and the repository's config (#629, PR #649 review). wtree.sh runs over a worker's
+worktree, so a filter driver the REPOSITORY declares (`--show-scope` local/worktree, includes
+counted in the including file's scope) is blanked and never runs, and the fsmonitor/hooks/replace
+belt is set as for gitexec. A filter from the coordinator's own global or system config is
+trusted and still runs, so a globally installed Git LFS keeps its committed form. The trade-off:
+a file a repo-declared driver filters can be compared to the committed tree only by running that
+driver. While its stat is unchanged, git reuses the index's cleaned blob and the fingerprint is
+exact. Once its stat changes (a touch, an edit), git would re-clean it, and the raw bytes it
+stages instead would make a good run read as STALE. So for any such path staged differently from
+HEAD (found with `diff-index --cached` and `check-attr filter`, which run nothing) wtree.sh exits
+3 with the reason instead of printing a misleading value. `evidence-run.py` records that reason as
+`wtree_unverifiable`, and `verify.py check_commands` refuses the record as UNVERIFIABLE, naming
+the reason, not as STALE. The coordinator's clean-env re-run at `head_sha` decides such a unit.
+
+Exits: 0 prints the hash · 1 outside a git repo, or no commits and no usable index · 3 a path
+staged differently from HEAD is filtered by a repo-declared driver, reason on stderr, nothing on
+stdout (callers fail closed on nonzero — never treat it as an empty fingerprint).
 
 > Why this and not `HEAD^{tree}`: committing identical content must not invalidate a
 > record made on a dirty tree, a new untracked file must invalidate "tests passed", and

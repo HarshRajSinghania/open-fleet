@@ -18,9 +18,12 @@ marker comes back, so the test proves the hardening is load-bearing, not that th
 was dormant. Stdlib only; no network.
 """
 import importlib.util
+import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -263,9 +266,11 @@ class WtreeFingerprint(unittest.TestCase):
     def test_the_fingerprint_runs_no_config_command(self):
         p = self._repo()
         out, err = evidence_run.working_tree_fingerprint(str(p.repo))
-        self.assertIsNone(err, err)
-        self.assertTrue(out)
         self.assertEqual(p.fired(), set(), "wtree.sh ran a repo-config command on the coordinator")
+        # The dirty a.txt is filtered by the repo-declared `p`: unverifiable without running it, so
+        # wtree.sh refuses honestly (exit 3) rather than fingerprint unfiltered bytes (PR #649).
+        self.assertIsNone(out)
+        self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
 
     def test_mutation_control_a_stripped_wtree_fires_fsmonitor_and_the_filter(self):
         # The control is a COPY of wtree.sh with the two hardening hunks removed, run the same way,
@@ -342,8 +347,11 @@ class ByteExactDriverNames(unittest.TestCase):
             with self.subTest(name=name):
                 p, _ = self._repo(name)
                 out, err = evidence_run.working_tree_fingerprint(str(p.repo))
-                self.assertIsNone(err, err)
                 self.assertEqual(p.fired(), set(), f"wtree.sh ran the {name!r} filter")
+                # Refused as unverifiable (PR #649): which also proves the attribute's value and the
+                # declared name matched byte for byte, or a fingerprint would have been printed.
+                self.assertIsNone(out)
+                self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
 
     def test_the_enumeration_names_the_exact_declared_bytes(self):
         tmp = tempfile.mkdtemp()
@@ -406,20 +414,6 @@ class RequiredFilters(unittest.TestCase):
             self.assertIn("filter 'req' failed", plain.stderr)
         return p, base
 
-    def _raw_tree(self, p):
-        """The tree of the working tree's RAW bytes (no filter), built in a throwaway index."""
-        idx = p.dir / "raw-index"
-        env = {**_CLEAN_ENV, "GIT_INDEX_FILE": str(idx)}
-
-        def run(*a):
-            return subprocess.run(["git", "-C", str(p.repo), *a], env=env, check=True,
-                                  capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        run("read-tree", "HEAD")
-        for name in ("a.txt", "b.txt"):
-            blob = run("hash-object", "--no-filters", "-w", name).stdout.strip()
-            run("update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
-        return run("write-tree").stdout.strip()
-
     def test_floor_guard_reads_raw_bytes_and_neither_runs_nor_dies(self):
         for with_command in (True, False):
             with self.subTest(with_command=with_command):
@@ -437,14 +431,18 @@ class RequiredFilters(unittest.TestCase):
                 diff_scope.scope(p.repo, base)
                 self.assertEqual(p.fired(), set(), "diff_scope ran the required filter")
 
-    def test_the_wtree_fingerprint_is_the_raw_tree_and_neither_runs_nor_dies(self):
+    def test_the_wtree_fingerprint_refuses_honestly_and_neither_runs_nor_dies(self):
+        # The changed a.txt is filtered by the repo-declared `req`: wtree.sh does not run it, does
+        # not die on `required`, and refuses as unverifiable (exit 3) instead of printing a tree of
+        # bytes the committed one was never built from (PR #649 review, PRRT_kwDOTWxN9c6vwb7P).
         for with_command in (True, False):
             with self.subTest(with_command=with_command):
                 p, _ = self._repo(with_command)
                 out, err = evidence_run.working_tree_fingerprint(str(p.repo))
-                self.assertIsNone(err, err)
                 self.assertEqual(p.fired(), set(), "wtree.sh ran the required filter")
-                self.assertEqual(out, self._raw_tree(p))
+                self.assertIsNone(out)
+                self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
+                self.assertNotIn("filter 'req' failed", err)
 
     def test_the_enumeration_overrides_required_for_every_declared_filter(self):
         tmp = tempfile.mkdtemp()
@@ -458,6 +456,146 @@ class RequiredFilters(unittest.TestCase):
         for var in ("clean", "smudge", "process"):
             self.assertEqual(blanks.get(f"filter.req.{var}"), "")
         self.assertFalse([k for k in blanks if k.startswith("diff.jpg.")], blanks)
+
+
+# PR #649 review (PRRT_kwDOTWxN9c6vwb7P): with a REPO-declared clean filter blanked, a filtered file
+# whose stat changed is re-staged from its smudged working-tree bytes, so the fingerprint differs
+# from HEAD and a good run read as STALE. Mapping those bytes back to the committed clean blob
+# needs the repository's own command, which the coordinator must not run. wtree.sh therefore says
+# so: exit 3 with the reason, which evidence-run.py records and verify.py check_commands reports in
+# place of "STALE". An untouched file still fingerprints as HEAD (the stat cache never re-hashes),
+# and a filter declared in the coordinator's OWN global config still runs, so it keeps fidelity.
+_UNVERIFIABLE = "cannot be compared to the committed tree without running repository-supplied commands"
+
+
+class FilteredFileFidelity(unittest.TestCase):
+
+    def _repo(self, scope="local"):
+        """A checkout whose `x` filter EXPANDS stored content: the committed blob is `hello`, the
+        working tree holds `EXPANDED-hello`, and the index stat cache is current and not racy.
+        `scope` is where the driver is declared: the repo's own config, or a global file."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        clean = p.dir / "clean.sh"
+        clean.write_text("#!/bin/sh\necho clean >> " + _sh(p.marker) + "\nexec sed -e 's/^EXPANDED-//'\n",
+                         encoding="utf-8")
+        clean.chmod(0o755)
+        driver = {"filter.x.clean": str(clean), "filter.x.smudge": "sed -e 's/^/EXPANDED-/'"}
+        env = dict(_CLEAN_ENV)
+        if scope == "global":
+            glob = p.dir / "global.gitconfig"
+            glob.write_text("[filter \"x\"]\n" + "".join(
+                f"\t{k.split('.')[-1]} = {v}\n" for k, v in driver.items()), encoding="utf-8")
+            env["GIT_CONFIG_GLOBAL"] = str(glob)
+        else:
+            for key, value in driver.items():
+                p._git("config", key, value)
+        self.env = env
+
+        def git(*a):
+            return subprocess.run(["git", "-C", str(p.repo), *a], env=env, check=True,
+                                  capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        (p.repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+        (p.repo / ".git" / "info" / "attributes").write_text("*.txt filter=x\n", encoding="utf-8")
+        (p.repo / "f.txt").write_text("hello\n", encoding="utf-8")
+        git("add", "f.txt")
+        git("commit", "-qm", "filtered")
+        (p.repo / "f.txt").unlink()
+        git("checkout", "--", "f.txt")
+        self.assertEqual((p.repo / "f.txt").read_text(), "EXPANDED-hello\n", "fixture: smudge did not run")
+        past = time.time() - 120
+        os.utime(p.repo / "f.txt", (past, past))
+        git("update-index", "--refresh")
+        self.head_tree = git("rev-parse", "HEAD^{tree}").stdout.strip()
+        p.fired()
+        return p
+
+    def _touch(self, p):
+        later = time.time() - 60
+        os.utime(p.repo / "f.txt", (later, later))
+
+    def _fingerprint(self, p):
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": self.env["GIT_CONFIG_GLOBAL"]}):
+            return evidence_run.working_tree_fingerprint(str(p.repo))
+
+    def test_an_untouched_filtered_file_still_fingerprints_as_head(self):
+        p = self._repo()
+        out, err = self._fingerprint(p)
+        self.assertIsNone(err, err)
+        self.assertEqual(out, self.head_tree)
+        self.assertEqual(p.fired(), set())
+
+    def test_a_touched_filtered_file_is_unverifiable_not_stale(self):
+        p = self._repo()
+        self._touch(p)
+        out, err = self._fingerprint(p)
+        self.assertIsNone(out, "a fingerprint was produced for content it cannot compare")
+        self.assertIn(_UNVERIFIABLE, err)
+        self.assertIn("f.txt", err)
+        self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
+        self.assertEqual(p.fired(), set(), "the repo-declared filter ran to make the comparison")
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=self.env,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_mutation_control_with_the_blanks_stripped_the_filter_runs(self):
+        # The trade-off, measured: let the repo's filter run and it maps the bytes back to HEAD —
+        # which is exactly the repository-supplied command the coordinator must not execute.
+        p = self._repo()
+        self._touch(p)
+        src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
+        self.assertEqual(src.count("GIT_CONFIG_COUNT=$_n"), 1)
+        mutant = p.dir / "wtree_control.sh"
+        mutant.write_text(src.replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0"), encoding="utf-8")
+        r = subprocess.run(["sh", str(mutant), str(p.repo)], env=self.env, capture_output=True,
+                           text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertIn("clean", p.fired(), "control: the stripped wtree.sh must run the filter")
+        self.assertEqual(r.stdout.strip(), self.head_tree)
+
+    def test_a_filter_from_the_coordinators_own_global_config_keeps_fidelity(self):
+        p = self._repo(scope="global")
+        self._touch(p)
+        out, err = self._fingerprint(p)
+        self.assertIsNone(err, err)
+        self.assertEqual(out, self.head_tree)
+        self.assertIn("clean", p.fired(), "the global (coordinator-supplied) filter should run")
+
+    def test_a_repo_key_shadowing_a_global_driver_is_still_blanked(self):
+        p = self._repo(scope="global")
+        p._git("config", "filter.x.process", "")  # a repo-scope key naming the same driver
+        self._touch(p)
+        out, err = self._fingerprint(p)
+        self.assertIsNone(out)
+        self.assertIn(_UNVERIFIABLE, err)
+        self.assertEqual(p.fired(), set())
+
+    def test_evidence_run_and_verify_report_unverifiable_not_stale(self):
+        p = self._repo()
+        self._touch(p)
+        runner = SCRIPTS / "evidence-run.py"
+        r = subprocess.run([sys.executable, str(runner), "--label", "t", "--manifest", "m.json",
+                            "--", sys.executable, "-c", "pass"], cwd=p.repo, env=self.env,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(_UNVERIFIABLE, r.stderr)
+        self.assertNotIn("STALE", r.stderr)
+        manifest = json.loads((p.repo / "m.json").read_text(encoding="utf-8"))
+        rec = manifest["commands"][0]
+        self.assertIsNone(rec["wtree"])
+        self.assertIn(_UNVERIFIABLE, rec["wtree_unverifiable"])
+        verify = _load("verify_unverifiable", "verify.py")
+        verify._Authority.reset()
+        self.addCleanup(verify._Authority.reset)
+        head = subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=self.env,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.strip()
+        with mock.patch.dict(verify._ROOTS, {"git": str(p.repo)}):
+            errs = verify.check_commands({"head_sha": head, "commands": [rec]}, True)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("UNVERIFIABLE", errs[0])
+        self.assertIn(_UNVERIFIABLE, errs[0])
+        self.assertNotIn("STALE", errs[0])
 
 
 if __name__ == "__main__":

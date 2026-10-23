@@ -39,6 +39,15 @@
 #   wtree.sh predict-merge <base> <branch> [repo]  # 3-way merge conflict prediction in memory
 # Exit 1 outside a git repo, or in a repo with no commits and no usable index — callers MUST treat
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.
+# Exit 3, with the reason on stderr, when a path staged differently from HEAD is selected by a
+# filter driver the REPOSITORY declares (#629, PR #649 review). Such a filter is never run here: it
+# is a command the worker wrote. But without it, a smudged file's bytes cannot be mapped back to
+# the committed clean blob, so for that path the comparison is genuinely unverifiable — touching
+# an unchanged expanded file would otherwise fingerprint it as different from HEAD and a good run
+# would read as STALE. Exit 3 says so instead of printing a misleading value. An untouched file is
+# never re-hashed (the stat cache holds), so a clean checkout still fingerprints normally; a filter
+# declared in the coordinator's OWN global/system config is trusted and still runs. The
+# coordinator's clean-env re-run at head_sha remains the authority for a unit this refuses.
 set -eu
 
 if [ "${1:-}" = "predict-merge" ]; then
@@ -64,11 +73,11 @@ fi
 # call. Set at command-line precedence (GIT_CONFIG_COUNT), which overrides the repo's own
 # .git/config: core.fsmonitor (a program git runs on `add`/`status`), core.hooksPath (every hook),
 # and the ext:: transport; plus replacement objects and grafts off, so a planted refs/replace or
-# .git/info/grafts cannot change the tree this fingerprints. The attribute-selected filters are
-# deliberately LEFT in force here: this value is compared to a commit's tree, and that tree was
-# built WITH the repo's filters, so disabling them would make every filtered repo read as stale.
-# Global/system config is left alone for the same fidelity reason (a global core.excludesFile
-# governs what the committed tree omits). The coordinator's clean-env re-run is the backstop.
+# .git/info/grafts cannot change the tree this fingerprints. A filter the REPOSITORY declares is
+# blanked below and never runs (exit 3 covers what that costs). Global/system config is left in
+# force for fidelity — it is the coordinator's own (a global core.excludesFile governs what the
+# committed tree omits, and a global filter such as Git LFS still maps content to its committed
+# form). The coordinator's clean-env re-run is the backstop.
 GIT_TERMINAL_PROMPT=0
 GIT_NO_REPLACE_OBJECTS=1
 GIT_GRAFT_FILE=/dev/null
@@ -99,16 +108,32 @@ TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
 # The pairs are POSITIONAL `NAME=value` arguments that `env "$@" git ...` applies to each call
 # that can run a filter: env(1) splits each one at its first `=` (the variable name holds none),
 # so the key's bytes reach git intact and no shell text is ever built from them and re-parsed.
+# Only a key the REPOSITORY supplies is blanked: `--show-scope` names each key's origin, a key a
+# repo config includes from elsewhere is reported in the including file's scope, and a key from
+# the coordinator's own global/system file is trusted. A repo key that merely shadows a global
+# driver's name still blanks that driver whole. DECLARED keeps the blanked filter names, one per
+# line, for the exit-3 check after staging.
 LC_ALL=C
 export LC_ALL
+NL='
+'
+TAB=$(printf '\t')
+DECLARED=
 set --
 _n=$GIT_CONFIG_COUNT
-if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0' '\n'); then
+if BLANK_KEYS=$(git -C "$TOP" config --list --show-scope -z --name-only 2>/dev/null | tr '\0' '\n'); then
   OLDIFS=$IFS
-  IFS='
-'
+  IFS=$NL
   set -f
+  _scope=
   for _k in $BLANK_KEYS; do
+    if [ -z "$_scope" ]; then
+      _scope=$_k
+      continue
+    fi
+    _from=$_scope
+    _scope=
+    case "$_from" in system|global) continue ;; esac
     case "$_k" in
       filter.*.*)
         # A filter is neutralised WHOLE: commands blank AND required=false, since git dies on a
@@ -116,6 +141,7 @@ if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0'
         # Repeats for a name's other keys are harmless (same pairs, last one wins).
         _d=${_k#filter.}
         _d=${_d%.*}
+        DECLARED="$DECLARED$_d$NL"
         for _v in clean smudge process required; do
           _val=
           [ "$_v" = required ] && _val=false
@@ -162,4 +188,35 @@ env "$@" git -C "$TOP" add -A 2>/dev/null || exit 1
 # write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
 # above makes likely) is re-hashed here, which re-runs the clean filter — so the blanks (#629)
 # ride this call as well, not only `add -A`.
-env "$@" git -C "$TOP" write-tree 2>/dev/null || exit 1
+TREE=$(env "$@" git -C "$TOP" write-tree 2>/dev/null) || exit 1
+
+# Exit 3 (see the header): a path staged differently from HEAD that a repo-declared driver filters.
+# `diff-index --cached` compares the temp index to HEAD's tree and `check-attr` reads attributes;
+# neither runs any command. check-attr -z prints `path NUL filter NUL value NUL`: NUL and newline
+# are swapped so each field is one line (a newline inside a path becomes a NUL that `read` drops,
+# which keeps every third line the value). A value is never a path, and holds no whitespace.
+if [ -n "$DECLARED" ]; then
+  HEAD_TREE=$(git -C "$TOP" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null) \
+    || HEAD_TREE=$(git -C "$TOP" hash-object -t tree /dev/null)
+  HIT=$(git -C "$TOP" diff-index --cached -z --name-only --no-renames --diff-filter=AMT \
+          "$HEAD_TREE" -- 2>/dev/null \
+        | git -C "$TOP" check-attr --stdin -z filter 2>/dev/null \
+        | tr '\0\n' '\n\0' \
+        | { _i=0; _path=
+            while IFS= read -r _f; do
+              # `(pattern)`: a bare `pattern)` inside $( ) trips bash 3.2's parser (macOS /bin/sh).
+              case $((_i % 3)) in
+                (0) _path=$_f ;;
+                (2) case "$NL$DECLARED" in
+                      (*"$NL$_f$NL"*) printf '%s%s%s\n' "$_f" "$TAB" "$_path"; break ;;
+                    esac ;;
+              esac
+              _i=$((_i + 1))
+            done; }) || HIT=
+  if [ -n "$HIT" ]; then
+    printf 'wtree: %s: filtered by repo-declared driver %s and staged differently from HEAD; its content cannot be compared to the committed tree without running repository-supplied commands, so no fingerprint (#629)\n' \
+      "${HIT#*"$TAB"}" "${HIT%%"$TAB"*}" >&2
+    exit 3
+  fi
+fi
+printf '%s\n' "$TREE"

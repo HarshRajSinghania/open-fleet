@@ -7,7 +7,7 @@ scored as the frontmatter `description` (plus its `name`, weighted) that a host
 router actually reads, not as a second hand-written keyword vocabulary that
 drifts from the descriptions it is supposed to stand in for.
 
-Three suites:
+Suites:
 
   routing     stemmed TF-IDF cosine of a prompt against every mission's real
               description; fixtures in evals/routing.json assert rank-1
@@ -20,6 +20,14 @@ Three suites:
               workspace it leaves against `workspace_state[]` (file reads, no
               model), and have a second headless call grade the trace against
               `assertions[]`. A case passes only when both hold.
+  injection   VAL-01 trust-envelope drills (evals/injection-drills.json, #560).
+  trajectories  adversarial worker trajectories (evals/adversarial-trajectories.json,
+              #602): recorded tool events replayed by an inert executor against a
+              git repo built at test time, through the worker, handover and
+              verifier under one frozen contract, graded on tool events and git
+              state with attempted and successful violations kept apart. No model;
+              the engine is scripts/_trajectories.py. Not in `all`: it replays
+              every guard and every mutation control, so it is asked for by name.
 
 NOTHING here is proof evidence. A behavioral run grades a trace to ask a
 CATALOG question ("does this mission's text make an agent freeze the spec
@@ -31,6 +39,7 @@ Usage:
     python3 scripts/eval.py validate
     python3 scripts/eval.py run --suite routing|skills|injection|all [--threshold 0.90] [--json]
     python3 scripts/eval.py run --suite behavioral --mission <name> [--dry-run]
+    python3 scripts/eval.py run --suite trajectories [--markdown] [--case <id> [--trajectory <jsonl>]]
 """
 import argparse
 import importlib.util
@@ -54,6 +63,8 @@ _grammar_spec.loader.exec_module(_grammar)
 EVALS_DIR = ROOT / "evals"
 ROUTING_EVAL = EVALS_DIR / "routing.json"
 INJECTION_EVAL = EVALS_DIR / "injection-drills.json"
+TRAJECTORY_EVAL = EVALS_DIR / "adversarial-trajectories.json"
+TRAJECTORY_DIR = EVALS_DIR / "trajectories"
 
 # ---------------------------------------------------------------------------
 # scoring configuration
@@ -659,6 +670,7 @@ def validate_all() -> list[str]:
     errors = validate_routing_eval()
     errors.extend(validate_trigger_phrases())
     errors.extend(validate_injection_eval())
+    errors.extend(validate_trajectory_eval())
     for skill_dir in sorted(SKILLS_DIR.iterdir()):
         if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
             continue
@@ -1112,6 +1124,190 @@ def run_injection_eval() -> dict:
         "failures": failures,
         "obedience_criteria": list(OBEDIENCE_CRITERIA),
     }
+
+
+# ---------------------------------------------------------------------------
+# adversarial trajectory suite (#602; deterministic; NEVER proof evidence)
+#
+# The injection drills above grade the FENCE: what an envelope says about hostile text. This suite
+# grades what a worker DID with it. Each fixture pins its initial state, allowed actions, injected
+# content and where it arrives, protected assets and end-state oracle before any replay (`pin`); a
+# recorded trajectory (JSONL of tool events) is replayed by scripts/_trajectories.py through the
+# real guards, and the grade reads tool events and git state, never the final answer. Mutation
+# controls disable one guard per arm and must turn the fixture RED for the declared reason.
+# ---------------------------------------------------------------------------
+_TRAJECTORY_ENGINE = None
+
+
+def _trajectory_engine():
+    global _TRAJECTORY_ENGINE
+    if _TRAJECTORY_ENGINE is None:
+        spec = importlib.util.spec_from_file_location(
+            "_trajectories", Path(__file__).resolve().parent / "_trajectories.py")
+        _TRAJECTORY_ENGINE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_TRAJECTORY_ENGINE)
+    return _TRAJECTORY_ENGINE
+
+
+def _trajectory_contract(data) -> Path | None:
+    """The frozen contract the suite names, or None when the name could leave the repository."""
+    rel = (data.get("contract") or {}).get("path") if isinstance(data, dict) else None
+    if not isinstance(rel, str) or not rel or os.path.isabs(rel) or ".." in Path(rel).parts:
+        return None
+    return ROOT / rel
+
+
+def validate_trajectory_eval() -> list[str]:
+    """Schema, pins and coverage of the trajectory suite; [] when sound. No replay, no git."""
+    if not TRAJECTORY_EVAL.exists():
+        return []
+    try:
+        data = load_json(TRAJECTORY_EVAL)
+    except ValueError as err:
+        return [str(err)]
+    contract = _trajectory_contract(data)
+    if contract is None:
+        return [f"{_rel(TRAJECTORY_EVAL)}: contract.path must name the frozen contract, "
+                "repo-relative"]
+    return [f"{_rel(TRAJECTORY_EVAL)}: {e}" for e in _trajectory_engine().suite_errors(
+        data, TRAJECTORY_DIR, contract)]
+
+
+def _trajectory_summary(rows: list[dict]) -> dict:
+    guarded = [r for r in rows if r["arm"] == "guarded"]
+    attacks = [r for r in guarded if r["kind"] == "attack"]
+    controls = [r for r in guarded if r["kind"] != "attack"]
+    mutated = [r for r in rows if r["arm"] != "guarded"]
+    return {
+        "guarded_runs": len(guarded),
+        "attack_runs": len(attacks),
+        "attempted_violations": sum(len(r["attempted"]) for r in attacks),
+        "successful_violations": sum(len(r["successful"]) for r in attacks),
+        "known_gaps": sorted({r["case"] for r in attacks if r["verdict"] == "GAP"}),
+        "control_runs": len(controls),
+        "utility": sum(1 for r in controls if r["landed"] and r["task_done"]),
+        "false_denial_runs": sum(1 for r in controls if r["false_denials"]),
+        "mutation_arms": len(mutated),
+        "mutation_red": sum(1 for r in mutated if r["verdict"] == "RED"),
+        "passed": (all(r["verdict"] in ("PASS", "GAP") for r in guarded)
+                   and all(r["verdict"] == "RED" for r in mutated)),
+    }
+
+
+def _trajectory_coverage(data: dict) -> dict:
+    """family -> arrival surface -> attack case ids; an empty cell is published as unknown."""
+    engine = _trajectory_engine()
+    cells = {fam: {via: [] for via in engine.ARRIVALS} for fam in engine.FAMILIES}
+    for case in data["cases"]:
+        via = (case.get("injection") or {}).get("via")
+        if case["kind"] == "attack" and via:
+            cells[case["family"]][via].append(case["id"])
+    return cells
+
+
+def run_trajectory_eval(mutations: bool = True, case_id: str | None = None,
+                        trajectory: Path | None = None) -> dict:
+    """Replay the adversarial trajectory suite (#602). Deterministic; no model; not proof.
+
+    With `case_id` and `trajectory` it grades one UNPINNED recording (a live run's JSONL, say)
+    against that case's fixture: no successful violation, the injection arrived, the fences held,
+    and a control case landed its task with nothing legitimate refused."""
+    if not TRAJECTORY_EVAL.exists():
+        return {"error": f"missing {_rel(TRAJECTORY_EVAL)}", "rows": []}
+    errors = validate_trajectory_eval()
+    if errors:
+        return {"error": "; ".join(errors), "rows": []}
+    data = load_json(TRAJECTORY_EVAL)
+    engine = _trajectory_engine()
+    contract = _trajectory_contract(data)
+    if case_id is not None:
+        case = next((c for c in data["cases"] if c["id"] == case_id), None)
+        if case is None:
+            return {"error": f"no trajectory case {case_id!r}", "rows": []}
+        if trajectory is None:
+            data = dict(data, cases=[case])
+        else:
+            try:
+                events = engine.load_events(trajectory)
+            except (OSError, ValueError) as err:
+                return {"error": f"{trajectory}: {err}", "rows": []}
+            problems = engine.event_errors(events, case,
+                                            json.loads(contract.read_bytes()).get("id"))
+            if problems:
+                return {"error": f"{trajectory}: " + "; ".join(problems), "rows": []}
+            with tempfile.TemporaryDirectory(prefix="of-trajectory-one-") as scratch:
+                ctx = engine.Context(scratch, contract.read_bytes(), OBEDIENCE_FIXTURE_SECRET)
+                graded = engine.run_case(case, events, None, data["base_state"], ctx,
+                                         check_workspace_state)
+            verdict = "FAIL" if graded["failures"] else "PASS"
+            row = {"case": case_id, "family": case["family"], "kind": case["kind"],
+                   "arrival": (case.get("injection") or {}).get("via"), "guards": case["guards"],
+                   "trajectory": str(trajectory), "arm": "unpinned", "verdict": verdict, **graded}
+            return {"rows": [row], "summary": {"passed": verdict == "PASS"}, "unpinned": True}
+    rows = engine.run_suite(data, TRAJECTORY_DIR, contract, OBEDIENCE_FIXTURE_SECRET,
+                            check_workspace_state, mutations=mutations)
+    return {
+        "rows": rows,
+        "summary": _trajectory_summary(rows),
+        "coverage": _trajectory_coverage(data),
+        "live": data.get("live_cases") or [],
+        "tier": data.get("tier"),
+    }
+
+
+def _cell(items) -> str:
+    return ", ".join(items) if items else "—"
+
+
+def trajectory_table(result: dict) -> str:
+    """The published results: every arm, the coverage matrix with its unknown cells, and the live
+    arm as UNRUN until a separately authorized run fills it. Deterministic text."""
+    out = ["| Case | Kind | Family | Arrives via | Trajectory | Arm | Attempted | Successful | "
+           "Landed | Verdict |",
+           "|---|---|---|---|---|---|---|---|---|---|"]
+    for r in result["rows"]:
+        arm = r["arm"] if r["arm"] in ("guarded", "unpinned") else (
+            f"{r['arm']} ({r['mutation_guard']})")
+        verdict = {"RED": "RED (required)", "SURVIVED": "SURVIVED (guard unproven)"}.get(
+            r["verdict"], r["verdict"])
+        traj = Path(r["trajectory"]).name.removesuffix(".jsonl").split(".", 1)[-1]
+        out.append(f"| {r['case']} | {r['kind']} | {r['family']} | {r['arrival'] or '—'} | "
+                   f"{traj} | {arm} | {_cell(r['attempted'])} | {_cell(r['successful'])} | "
+                   f"{'yes' if r['landed'] else 'no'} | {verdict} |")
+    s = result.get("summary") or {}
+    if "attack_runs" in s:
+        gaps = f" (known gap: {', '.join(s['known_gaps'])})" if s["known_gaps"] else ""
+        out += ["",
+                f"- Attack runs (guarded): {s['attack_runs']}; attempted violations "
+                f"{s['attempted_violations']}, successful {s['successful_violations']}{gaps}.",
+                f"- Utility controls (benign + clean): {s['utility']}/{s['control_runs']} landed "
+                f"with the task done; {s['false_denial_runs']}/{s['control_runs']} saw a false "
+                "denial.",
+                f"- Mutation controls: {s['mutation_red']}/{s['mutation_arms']} RED for the "
+                "declared reason."]
+    coverage = result.get("coverage")
+    if coverage:
+        vias = list(_trajectory_engine().ARRIVALS)
+        out += ["", "| Family \\ arrives via | " + " | ".join(vias) + " |",
+                "|---|" + "---|" * len(vias)]
+        for fam, cells in coverage.items():
+            out.append(f"| {fam} | " + " | ".join(_cell(cells[v]) if cells[v] else "unknown"
+                                                  for v in vias) + " |")
+    live = result.get("live")
+    if live:
+        out += ["", "| Live case | Replays | Family | Model | Harness (version) | Budget (USD) | "
+                "Repeats | Environment | Status |", "|---|---|---|---|---|---|---|---|---|"]
+        for row in live:
+            def val(key, row=row):
+                return "unknown" if row.get(key) in (None, "") else str(row[key])
+            harness = ("unknown" if row.get("harness") in (None, "")
+                       else f"{row['harness']} ({val('harness_version')})")
+            out.append(f"| {row['id']} | {row.get('replays', '—')} | {row['family']} | "
+                       f"{val('model')} | {harness} | {val('budget_usd')} | {val('repeats')} | "
+                       f"{val('environment')} | {row['status']} |")
+        needs = sorted({row["needs"] for row in live if row["status"] == "UNRUN"})
+        out += [f"\nUNRUN needs: {n}" for n in needs]
+    return "\n".join(out) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -1611,6 +1807,28 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2))
         return exit_code
 
+    if args.suite == "trajectories":
+        case_id = getattr(args, "case", None)
+        trajectory = Path(args.trajectory) if getattr(args, "trajectory", None) else None
+        if trajectory is not None and not case_id:
+            print("Trajectory eval error: --trajectory grades one recording against --case <id>")
+            return 2
+        result = run_trajectory_eval(case_id=case_id, trajectory=trajectory)
+        if getattr(args, "json", False):
+            print(json.dumps({"trajectories": result}, indent=2))
+        elif result.get("error"):
+            print(f"Trajectory eval error: {result['error']}")
+        elif getattr(args, "markdown", False):
+            print(trajectory_table(result), end="")
+        else:
+            print(f"Adversarial trajectories (#602, {result.get('tier') or 'unpinned recording'}):")
+            print(trajectory_table(result), end="")
+            for row in result["rows"]:
+                for failure in row["failures"] if row["verdict"] in ("FAIL", "SURVIVED") else []:
+                    print(f"  {row['case']} {row['arm']}: [{failure['category']}] "
+                          f"{failure['detail']}")
+        return 0 if not result.get("error") and result["summary"]["passed"] else 1
+
     if args.suite in ("routing", "all"):
         result = run_routing_eval()
         payload["routing"] = {**result, "threshold": threshold}
@@ -1661,7 +1879,7 @@ def main() -> int:
     run_parser = subparsers.add_parser("run", help="run an eval suite")
     run_parser.add_argument(
         "--suite",
-        choices=["routing", "skills", "injection", "behavioral", "all"],
+        choices=["routing", "skills", "injection", "behavioral", "trajectories", "all"],
         default="all",
         help="which eval suite to run",
     )
@@ -1678,6 +1896,11 @@ def main() -> int:
         help="behavioral: print the plan without invoking any agent",
     )
     run_parser.add_argument("--json", action="store_true", help="emit machine-readable results")
+    run_parser.add_argument("--markdown", action="store_true",
+                            help="trajectories: print only the published results table")
+    run_parser.add_argument("--case", help="trajectories: replay one case")
+    run_parser.add_argument("--trajectory",
+                            help="trajectories: grade this recorded JSONL against --case (unpinned)")
 
     args = parser.parse_args()
     if args.command == "validate":

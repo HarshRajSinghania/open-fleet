@@ -20,7 +20,7 @@ import re
 import subprocess
 import urllib.request
 
-REPO = "ravidsrk/orca-fleet"
+REPO = "ravidsrk/open-fleet"
 API = "https://api.github.com"
 
 
@@ -67,7 +67,7 @@ def rest_json(path):
     """GET one public REST endpoint. Never echoes the response on failure."""
     request = urllib.request.Request(f"{API}/{path}", headers={
         "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "orca-fleet-external-ci-monitor"})
+        "User-Agent": "open-fleet-external-ci-monitor"})
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         request.add_header("Authorization", f"Bearer {token}")

@@ -12,21 +12,21 @@ Render every label EXACTLY as written below, with the exact spelling and punctua
 HERO_DARK = """Wide website banner, flat vector illustration, no photorealism, no text other than the two lines given.
 Background: deep navy (#0B1220) with a subtle radial glow toward the right and a very faint constellation node-graph (thin lines, small pale-blue dots) woven through the right half.
 Right half: a pod of four stylised orcas (killer whales) swimming in formation toward the left, drawn as clean dark-navy shapes with white eye patches, electric-blue (#4C8DFF) rim-light edges and a soft blue glow; a thin horizontal waterline passes behind them.
-Left half: the wordmark in large clean monospace type, white, exactly: orca-fleet
+Left half: the wordmark in large clean monospace type, white, exactly: open-fleet
 Beneath the wordmark, one line in smaller muted grey-blue (#8A9BB8) monospace, exactly: Give a mission a goal. Come back to an evidence-verified end state.
 Keep all text at least 6% away from every edge. Calm, premium developer-tool aesthetic."""
 
 HERO_LIGHT = """Wide website banner, flat vector illustration, no photorealism, no text other than the two lines given.
 Background: near-white (#F4F7FD) with a very faint pale-blue constellation node-graph (thin lines, small dots) woven through the right half.
 Right half: a pod of four stylised orcas (killer whales) swimming in formation toward the left, drawn as clean dark-navy (#0B1220) shapes with white eye patches and electric-blue (#4C8DFF) rim-light edges; a thin horizontal pale-blue waterline passes behind them.
-Left half: the wordmark in large clean monospace type, dark navy (#0B1220), exactly: orca-fleet
+Left half: the wordmark in large clean monospace type, dark navy (#0B1220), exactly: open-fleet
 Beneath the wordmark, one line in smaller muted grey-blue (#5B6B85) monospace, exactly: Give a mission a goal. Come back to an evidence-verified end state.
 Keep all text at least 6% away from every edge. Calm, premium developer-tool aesthetic."""
 
 SOCIAL = """Social-media preview card for a software project, flat vector illustration, no photorealism, no text other than the two lines given.
 Background: deep navy (#0B1220) with a faint constellation node-graph (thin lines, small pale-blue dots) across the canvas.
 One uniform background over the whole canvas — no bands, stripes, borders or colour changes anywhere. Composition centred, everything grouped in the middle two-thirds of the height.
-Upper centre: the wordmark in large clean monospace type, white, exactly: orca-fleet
+Upper centre: the wordmark in large clean monospace type, white, exactly: open-fleet
 Directly beneath it, smaller muted grey-blue (#8A9BB8) monospace, exactly: Autonomous fleets for the Orca runtime
 Lower centre-right: three stylised orcas (killer whales) swimming in formation toward the left, dark navy shapes with white eye patches, electric-blue (#4C8DFF) rim-light edges and a soft blue glow, with a thin horizontal waterline behind them.
 Calm, premium developer-tool aesthetic."""

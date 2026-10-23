@@ -12,7 +12,7 @@ assignees: ""
 
 ## Where
 
-- orca-fleet version or commit: <!-- .claude-plugin/plugin.json `version`, or `git rev-parse HEAD` -->
+- open-fleet version or commit: <!-- .claude-plugin/plugin.json `version`, or `git rev-parse HEAD` -->
 - Install path: <!-- symlink (`sh scripts/install.sh`) / plugin / other -->
 - Orca version (`orca --version`, `orca-ide --version` on Linux): <!-- and `orca status --json` runtime.state -->
 - OS and Python (`python3 --version`):

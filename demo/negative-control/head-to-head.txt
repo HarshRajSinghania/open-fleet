@@ -5,7 +5,7 @@
 selfscore: GREEN — all 1 self-reported criteria addressed
 self-scorer exit: 0
 
-== [2] orca-fleet INDEPENDENT verifier (re-derives the frozen denominator) ==
+== [2] open-fleet INDEPENDENT verifier (re-derives the frozen denominator) ==
 NOTE: base_sha 'HEAD' is not a pinned 40-hex commit SHA (a symbolic ref is not immutable)
 NOTE: head_sha 'HEAD' is not a pinned 40-hex commit SHA (a symbolic ref is not immutable)
 NOTE: --base not given — ancestry check skipped (pre-merge/offline)
@@ -15,5 +15,5 @@ verify: 2 invariant(s) failed — unit is NOT done
 verify.py exit: 2
 
 == verdict ==
-PASS: self-scorer GREEN (exit 0) while orca-fleet caught the dropped criterion RED (exit 2).
+PASS: self-scorer GREEN (exit 0) while open-fleet caught the dropped criterion RED (exit 2).
 The moat is the frozen denominator + independent re-derivation, not the gate mechanism.

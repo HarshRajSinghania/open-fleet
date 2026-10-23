@@ -8,13 +8,13 @@ downgrade its class. To make the native path SOUND, the coordinator — which ru
 signs the dispatch tuple at dispatch time. The gate (verify.py) verifies that signature against the
 repo-pinned PUBLIC key, so an in-session substitution is detected.
 
-    dispatch-sign.py gen-key --out ~/.orca-fleet/dispatch-key
+    dispatch-sign.py gen-key --out ~/.open-fleet/dispatch-key
         # writes the 32-byte seed to <out> (keep OFF the worker AND out of this repo) and the
         # public key to <out>.pub; commit <out>.pub as .orca/dispatch-pubkey to turn on
         # enforcement (docs/verify-gate.md). gen-key refuses to write a seed inside a git work
         # tree unless the path is git-ignored (or --in-repo-ok is given).
 
-    dispatch-sign.py sign --key ~/.orca-fleet/dispatch-key \\
+    dispatch-sign.py sign --key ~/.open-fleet/dispatch-key \\
         --manifest-id <unit-id> --contract-digest sha256:… --unit-class mutation [--lighting lit] \\
         [--nc-path src/app.py --nc-command "pytest -k AC_1" --nc-artifact-sha256 <hex>] \\
         [--no-gh] [--lane A|B|0] [--execute-nc]
@@ -28,7 +28,7 @@ repo-pinned PUBLIC key, so an in-session substitution is detected.
         # run using --no-gh or --lane the record does not sign is refused, and a signed flag the
         # run contradicts (dropping a signed --execute-nc included) is a substitution.
 
-    dispatch-sign.py sign-transcript --key ~/.orca-fleet/dispatch-key \\
+    dispatch-sign.py sign-transcript --key ~/.open-fleet/dispatch-key \\
         --transcript <verdict.json> [--out <transcript.json>]
         # wraps verify.py's VERDICT OBJECT (what `verify.py --transcript-out` writes) in the same
         # {record, sig_b64} envelope, over the same canonical form, with the same key (#281/#386).
@@ -274,7 +274,7 @@ def gen_key(out: Path, in_repo_ok: bool = False) -> int:
         print("  verified git-ignored — one `git add -A` would commit the key and void every",
               file=sys.stderr)
         print("  signed-dispatch guarantee.", file=sys.stderr)
-        print("  pick an out-of-repo path (e.g. ~/.orca-fleet/dispatch-key), git-ignore it,",
+        print("  pick an out-of-repo path (e.g. ~/.open-fleet/dispatch-key), git-ignore it,",
               file=sys.stderr)
         print("  or pass --in-repo-ok if you really mean it.", file=sys.stderr)
         return 2

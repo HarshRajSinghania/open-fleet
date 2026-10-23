@@ -1,7 +1,7 @@
-# Negative-control head-to-head — a self-scoring gate vs orca-fleet's verifier
+# Negative-control head-to-head — a self-scoring gate vs open-fleet's verifier
 
-A **reproducible, third-party-checkable** demonstration of orca-fleet's moat: on the *same* gamed
-solution, a self-scoring completion gate returns **GREEN** while orca-fleet's independent verifier
+A **reproducible, third-party-checkable** demonstration of open-fleet's moat: on the *same* gamed
+solution, a self-scoring completion gate returns **GREEN** while open-fleet's independent verifier
 returns **RED**. Run it yourself:
 
 ```sh
@@ -16,7 +16,7 @@ worker quietly **reported only `AC-1`** in its manifest. This is one of round-2'
 | Gate | What it does | Verdict on the trap |
 |---|---|---|
 | [`selfscore.py`](selfscore.py) — a faithful **self-scoring** stand-in | grades the worker's OWN self-reported criteria (no frozen denominator, no independent session, no negative control) | **GREEN** (exit 0) — it never sees the dropped `AC-2` |
-| [`verify.py`](../../runtime/scripts/verify.py) — orca-fleet's **independent** verifier | re-derives the criterion set from the frozen source (`frozen-spec.md`) and checks the reported `criteria` cover it | **RED** (exit 2) — `scope: authoritative criteria not addressed in criteria[] … ['AC-2']` (the transcript also records the #310 empty-range refusal, which fires on the same manifest) |
+| [`verify.py`](../../runtime/scripts/verify.py) — open-fleet's **independent** verifier | re-derives the criterion set from the frozen source (`frozen-spec.md`) and checks the reported `criteria` cover it | **RED** (exit 2) — `scope: authoritative criteria not addressed in criteria[] … ['AC-2']` (the transcript also records the #310 empty-range refusal, which fires on the same manifest) |
 
 Recorded run: [`head-to-head.txt`](head-to-head.txt). The delta is not the gate *mechanism* (anyone
 can ship a gate) — it is the **frozen denominator + independent re-derivation**, which a self-scorer
@@ -55,7 +55,7 @@ predates convergence (round-2 threat brief: competitors run public priority doss
 
 | Artifact | sha256 |
 |----------|--------|
-| `head-to-head.txt` | `39ebe265f5e3e704c10e802e7605223f8941e5f2ca78985815852c0ff449eb3d` |
+| `head-to-head.txt` | `3cef4e0a8908a85f80bb361079531bfaa2178ed4451948635cd7c540ac3c755e` |
 
 (Re-running `run.sh` re-stamps the timestamp line, so a fresh transcript hashes differently; the value
 above pins the committed snapshot and is re-derived from it, not carried forward — the 2026-09-10 deep

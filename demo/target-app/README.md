@@ -1,6 +1,6 @@
 # fixture target app
 
-A small issue-tracker fixture for orca-fleet mission runs: FastAPI JSON API +
+A small issue-tracker fixture for open-fleet mission runs: FastAPI JSON API +
 server-rendered UI on SQLite, with Prometheus metrics, structured JSON logs,
 and a 7-service compose stack (app, staging, Prometheus, Grafana, Loki,
 Promtail, Alertmanager).

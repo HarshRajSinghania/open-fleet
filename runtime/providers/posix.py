@@ -1169,7 +1169,6 @@ if {repr(self.backend)} == "cmux":
             **launch["env"],
             **identity_env,
             "OPEN_FLEET_STATE_DB": str(self.state.db_path),
-            "ORCA_FLEET_STATE_DB": str(self.state.db_path),
         }
 
         eff_json = json.dumps(

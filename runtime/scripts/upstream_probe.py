@@ -78,7 +78,7 @@ UPSTREAM_REPO = "stablyai/orca"
 TAGS_URL = f"https://api.github.com/repos/{UPSTREAM_REPO}/tags?per_page=100"
 MAX_PAGES = 5
 DEFAULT_MAX_PATCHES = 10
-USER_AGENT = "orca-fleet-upstream-probe (runtime/scripts/upstream_probe.py)"
+USER_AGENT = "open-fleet-upstream-probe (runtime/scripts/upstream_probe.py)"
 STABLE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 # A bundled-reference name as `skills get <topic> --references` lists it.
 REF_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

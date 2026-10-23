@@ -57,8 +57,8 @@ def call(prompt, aspect, size, timeout=420, image_bytes=None, mime="image/jpeg")
     req = urllib.request.Request(API, data=json.dumps(body).encode(), headers={
         "Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"],
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/ravidsrk/orca-fleet",
-        "X-Title": "orca-fleet image regen",
+        "HTTP-Referer": "https://github.com/ravidsrk/open-fleet",
+        "X-Title": "open-fleet image regen",
     })
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.load(r)
@@ -124,7 +124,7 @@ def main():
     ap.add_argument("--size", default="2K", help="model image_size: 1K, 2K or 4K")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--force", action="store_true", help="regenerate even when a raw PNG exists")
-    ap.add_argument("--raw-dir", default=os.path.join(tempfile.gettempdir(), "orca-fleet-image-raw"))
+    ap.add_argument("--raw-dir", default=os.path.join(tempfile.gettempdir(), "open-fleet-image-raw"))
     a = ap.parse_args()
     if not os.environ.get("OPENROUTER_API_KEY"):
         sys.exit("OPENROUTER_API_KEY is not set")

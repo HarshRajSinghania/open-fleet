@@ -6,6 +6,8 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
 - **The project is renamed orca-fleet → open-fleet.** The repository is `ravidsrk/open-fleet`
   (old `ravidsrk/orca-fleet` URLs redirect), and the Claude Code plugin and its marketplace are
   `open-fleet`: an existing plugin install reinstalls as `open-fleet@open-fleet`. A2A card ids

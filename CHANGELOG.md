@@ -6,6 +6,115 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Provider and harness routes are certified cell by cell, with a reproducible first run**
+  (#596). `runtime/providers/certification.json` classifies each of the 218 advertised routes:
+  every `(provider, profile, harness)` in `capabilities.json`, and every `(harness, profile)` of
+  `base.py`'s launch table. A route is `live-witnessed`, `fixture-tested`, `source-only`,
+  `unsupported` (with its typed refusal) or `unavailable`. Each cell carries its upstream version
+  (`unknown` when none was recorded), evidence paths and limitations.
+  `runtime/scripts/certification.py` checks the following:
+  - every cell is covered exactly once;
+  - every evidence path resolves;
+  - a live claim rests on a run report that binds;
+  - a moved `pins.json` pin turns the provider's cells `stale` until they are rechecked.
+  Only Orca with Claude Code (`ro` and `rw`) is live-witnessed. The 12 external adapters remain
+  fixture-tested at `unknown` upstream versions. The record shows three gaps: the Orca `ro` rows
+  for crush, hermes and jcode are weaker than the posix rows; opencode, omp and pi are refused on
+  Orca; a posix `ro` worker's clean exit is recorded as `worker_died (exit=0)`.
+  `runtime/scripts/first_run.py` drives one review unit through the public wrappers on the posix
+  route: create → dispatch → delivery → result → independent `verify.py` → retain/release. With
+  the default inert worker it calls no model; `--worker live` uses the real harness. Its `probes`
+  mode checks that unsupported profile, privilege escalation, unarmed deny hook, malformed
+  runtime response and missing capability are each refused before launch.
+  `tests/test_certification.py` runs that subset in CI for every posix harness, with no paid
+  agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
+  first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
+  for other providers.
+- **Run and wave metrics derive from an append-only event record** (#603). New
+  `runtime/scripts/events.py` keeps one hash-chained line per observed lifecycle transition in
+  `.orca/events.jsonl`, bound to run/task/dispatch with an event id, producer, timestamp, clock
+  domain, time basis, coordinator epoch and source reference. `report` derives the WIP-curve
+  rows attention-budget.md requires (verified-CLOSED throughput, verification latency, rework,
+  freshness) plus review queue time, retries and observed model usage; `check` compares a run
+  report's rows against the record. Duplicate deliveries collapse by event id, cross-clock,
+  recovered and negative intervals, fenced or undeclared coordinator epochs and conflicting
+  re-deliveries leave a metric `unavailable` with its reason, and unreported tokens or cost stay
+  null with provenance — never estimated, never 0. It reads the local-state DB (read-only),
+  verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
+  are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
+  it reads the R04 (#597) launch gate, and its receipts and R06's (#599) are later sources.
+- **Episodic hints are bound to source revision and untrusted provenance** (#605). Every
+  `search_sessions.py --episodic-hint` entry names its source repo/revision (or `unknown`), the
+  artifact it came from with its sha256, the checked path/symbol scope, the producing run and why
+  it matched, and opens with a currency label computed by the new `hint_provenance.py` — never
+  read from a manifest. Against a live source (`--repo`, optional `--live-rev`) changed, deleted
+  or renamed scope, a moved symbol, a divergent or ahead-of-live revision, a changed related test
+  and a modified artifact make an entry `STALE`; a newer contradicting record or the frozen task's
+  `--current-evidence` makes it `SUPERSEDED`; missing provenance and changed dependencies leave it
+  `UNKNOWN`. The default worker-facing mode suppresses stale entries and withholds notes and
+  identifiers that assert a grant or speak as an authority outside quotes, while quoted lessons
+  stay usable;
+  `--hint-mode historical` lists everything labelled. `guard_text.py` gains `grant_labels()` and
+  `unquoted()`; the failure handover states its authority and withholds unquoted grant claims.
+  A fixed 27-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
+  suppression and poisoned-note propagation with hints off/unchecked/checked; the live
+  repeated-failure arm is wired but has not been run (it needs a declared model budget).
+- **Provenance retention receipts are verified offline against the signed inventory** (#608).
+  `provenance.retention` names a v1 receipt (`open-fleet/retention-receipt/v1`): a
+  `{record, sig_b64}` envelope whose eight fields — schema, unit, source revision, inventory
+  path, the inventory's signed digest, log index, entry UUID, signer — are all signed over
+  dispatch-sign.py's canonical form. `inventory.py receipt` writes one for an inventory the same
+  key signed. `verify.py` checks it when the binding is claimed (`provenance.retention_receipt` in
+  the manifest, or `--retention-pubkey` from the coordinator) and only against that supplied key:
+  a key declared in the receipt is refused. It refuses a missing, unreadable or path-escaping
+  receipt, the wrong key or signer, a signature mismatch, a replay from another unit, revision,
+  run or inventory, an unsigned or altered inventory, and a manifest the inventory does not pin.
+  The NOTE says what was not verified: log inclusion, retention, the inventoried files, any legal
+  determination. Unclaimed provenance keeps its presence-only check. `inventory.py` and
+  `gitexec.py` join the signed verifier toolchain, and the transcript's argument tuple gains
+  `retention_pubkey`; run_report.py mirrors both. `tests/test_retention_receipt.py` deletes each
+  refusal's guard from a copy of the verifier and requires the case to pass there.
+
+- **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
+  first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
+  a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry
+  failed `task_not_startable` and pointed nowhere, and a crash after the spawn let `worker-stop`
+  record `stopped` while the agent kept running.
+  - The launch intent is now written in the same transaction as the task claim, before any side
+    effect. The launch gate is a compare-and-set, so one monitor at most runs a dispatch.
+  - `orchestration launch-reconcile` (and, automatically, `worker-list`, `worker-show` and a new
+    start of the same task) settles a launch whose coordinator is provably gone, by its recorded
+    identity: it rolls back, or adopts the monitor that won the gate. It never respawns.
+  - `--takeover` fences a live coordinator, which fails its next commit with `launch_fenced`.
+  - A `--retry-request` replays its outcome, and a changed payload is refused as `request_mismatch`.
+  - Every recovery writes a receipt naming processes, preserved refs, task and dispatch states and
+    cleanup, with `completionInferred: false`.
+  - What is tested, as `docs/runtimes.md` records it: setsid is crash-tested at every boundary.
+    Docker `danger` is crash-tested at every boundary, and through a host crash that orphans the
+    container, against a real daemon in the opt-in tier `tests/test_posix_docker_crash.py`
+    (`OPEN_FLEET_DOCKER_CRASH_TEST=1`, a digest-pinned fixture image with an inert `claude`). Any
+    other run reports that tier as NOT RUN. tmux and cmux are not crash-tested.
+- **VF-Bench samples the verifier invariants it used to name as unsampled** (#600). Twenty-eight
+  isolated traps join the corpus — signed-dispatch tamper on a profile-signed record, class
+  substitution and replay; hidden criteria in a table and in JSON; unaddressed and dropped
+  criteria; a swapped manifest digest; a stale reviewed SHA; illegal and swapped lighting; an
+  empty intent packet; an illegal reviewer mode; incomplete Art-12/50 provenance; a surviving
+  pinned mutant and a zero-kill tally; a revert, a production change and a swapped mutant under
+  the oracle-scope exception; three `pr.number` shapes; the author's own approval, a non-member's,
+  and a dismissed one; a negative-control artifact symlinked out of the clone, an unpinned one,
+  and a named run log that does not exist — each beside a named valid neighbour on the same
+  fixture (eleven new controls) and each declaring the refusal it exists to earn.
+  `tests/test_vfbench_guards.py` deletes each trap's one guard from a copy of `verify.py` and
+  requires the trap to pass and its neighbour to stay green. The bench now scores false
+  REJECTION beside false acceptance, a fixture control going RED is scored instead of raised, and
+  the CI gate also fails on a trap refused for the wrong reason or a corpus case neither scored
+  nor skipped by name. Result: false-done 0/53, false-reject 0/19 (corpus digest
+  `277f594ca6e1…`; `VERSION` unchanged). The README carries a guard-by-guard inventory of every
+  verifier check — trap, justified unsupported, or deferred with its unit-test pin — each row
+  citing the `verify.py` refusal sites it owns, so a site read from source with no row, or a row
+  no test would miss, fails the build — and states that the provenance, intent, reviewer-mode
+  and lighting legs verify presence, not truth. No verifier hole was found: every new trap was
+  refused for its declared reason as `verify.py` stood.
 - **The provider-certification first run's five findings are fixed** (#596). Each was
   reproduced by a failing test first:
   - `verify.py`: a file tracked at `head_sha` that the manifest's `artifacts[]` also pins must
@@ -26,12 +135,22 @@ truth is `.claude-plugin/plugin.json`.
   - gastown's claude `ro` alias carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`.
     `tests/test_claude_ro_launches.py` checks every claude ro row and alias for that set. The one
     exemption is the live-witnessed Orca TUI row, which is unchanged.
-
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it
   signed itself. floor_guard.py already read the pin at its base ref; this gives the CLI the same
   anchor. Without the flag, behaviour is unchanged.
+- **The A2A export says what it is, and A2A cards are validated against the official schema**
+  (#607). `scripts/a2a_export.py` emits an offline mission descriptor, not an A2A transport
+  AgentCard. Its `a2a-agent-card/v1` tags stay for existing consumers, it gains a `kind` field,
+  and every `capabilities` flag is now `false`: `stateTransitionHistory` was `true`, though
+  nothing serves A2A tasks. New `scripts/a2a_schema.py` checks ProtoJSON AgentCards with the
+  stdlib against the official `lf.a2a.v1` proto, vendored at `a2aproject/A2A@1205f459` and
+  pinned by sha256. The check refuses unknown fields, wrong shapes and missing or empty REQUIRED
+  fields. The custom descriptor fails it, and upstream's example cards pass. The opt-in
+  `--standard-card` projection requires a real `--endpoint` and `--binding`, refuses placeholder
+  hosts, and keeps mission proof and governance data in one namespaced extension.
+  `docs/a2a-export.md` documents the field comparison and the compatibility policy.
 
 ## [0.8.0] - 2026-10-23
 

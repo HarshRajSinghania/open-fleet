@@ -193,6 +193,35 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         stamp = marker.stat().st_mtime
         self.assertTrue(_wait_for(lambda: marker.stat().st_mtime != stamp, timeout=3))
 
+    def test_a_retain_after_settlement_survives_every_later_read(self):
+        # #641 settles a dispatch from exit.json when its monitor died BEFORE settling it. A
+        # dispatch its own monitor already settled, then retained by the coordinator, is not that
+        # case: a later show or list must keep reading `retained`, never re-settle it (#596: the
+        # first run retains, then releases, and reads the state back after each).
+        go = Path(self.tmp.name) / "go"
+        self.fake_agent("claude", f'while [ ! -f "{go}" ]; do sleep 0.05; done')
+        for mail, settled in ((None, "died"), ("worker_done", "completed")):
+            with self.subTest(settled=settled):
+                go.unlink(missing_ok=True)
+                _, res = self.start()
+                disp = res["dispatchId"]
+                if mail:
+                    with self.prov.state._connect() as conn:
+                        run = conn.execute("SELECT run_id FROM dispatches WHERE dispatch_id = ?", (disp,)).fetchone()[0]
+                    self.prov.state.send_message(subject=f"worker_done:{disp}", msg_type=mail, sender=disp,
+                                                 outcome="succeeded", run=run)
+                go.touch()
+                self.assertTrue(self.wait_monitor_done(disp), "the monitor never settled the dispatch")
+                self.assertEqual(self.prov.worker_show(disp)["worker"]["state"], settled)
+                self.assertEqual(self.prov.worker_fence("retain", disp)["state"], "retained")
+                for _ in range(2):
+                    self.assertEqual(self.prov.worker_show(disp)["worker"]["state"], "retained")
+                    listed = {w["dispatchId"]: w["state"] for w in self.prov.worker_list()["workers"]}
+                    self.assertEqual(listed[disp], "retained")
+                died = [m for m in self.prov.check_messages(terminal="coordinator")["messages"]
+                        if m["subject"].startswith(f"worker_died:{disp}")]
+                self.assertEqual(len(died), 1 if settled == "died" else 0, "a read never reports a death twice")
+
     def test_launch_gate_refuses_a_dispatch_fenced_before_launch(self):
         ran = Path(self.tmp.name) / "ran"
         self.fake_agent("claude", f'touch "{ran}"')

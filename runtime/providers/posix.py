@@ -11,15 +11,21 @@ an external orchestrator daemon (`stablyai/orca`), combining:
     `hermes`, `crush`) across `PROFILE=ro|rw|danger`
   - Automatic per-worktree `PreToolUse` hook installation (`deny-hook.sh`)
   - Overstory-style synthetic `worker_died` guarantee on process exit without terminal mail (#590).
+  - Crash-recoverable worker launch: a launch intent persisted before the first external side
+    effect, settled by recorded identity after a coordinator crash (#597, docs/runtimes.md).
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import time
 import uuid
@@ -349,6 +355,87 @@ def ro_completion_outcome(transcript: str, dispatch_id: str) -> str | None:
                 if m and m.group(1).strip("`'\"*") == dispatch_id:
                     found = m.group(2)
     return found
+
+
+# The committed boundaries of a `worker_start`, in the order it crosses them (#597). The spec —
+# what is durable after each and what a restarted coordinator does — is docs/runtimes.md.
+LAUNCH_BOUNDARIES = (
+    "intent_claimed",
+    "worktree_created",
+    "registered",
+    "monitor_spawned",
+    "published",
+    "receipted",
+)
+LAUNCH_FINAL_OUTCOMES = ("completed", "failed")
+
+
+class _IntentLease:
+    """An exclusive `flock` the coordinator launching an intent holds until it finishes (#597).
+
+    The kernel releases it when the holder dies, however it dies, so a free lock on an OPEN intent
+    (same host) proves its owner is gone; that is what lets recovery act without guessing from a
+    pid that may have been reused. The fd is non-inheritable: no spawned process keeps it.
+    """
+
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.held = False
+        self.fd: int | None = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+
+    def try_acquire(self) -> bool:
+        if self.fd is None:
+            return False
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        self.held = True
+        return True
+
+    def release(self, *, unlink: bool) -> None:
+        if self.fd is None:
+            return
+        if unlink and self.held:
+            # Only the holder's own bookkeeping, never a lock someone else holds (a takeover's
+            # lease, #597 review): an undeletable lock file is harmless (an open intent is
+            # judged by acquiring the lock, never by the file's presence).
+            with contextlib.suppress(OSError):
+                self.path.unlink()
+        os.close(self.fd)
+        self.fd = None
+
+
+def _launch_payload_sha256(fields: dict[str, Any]) -> str:
+    """The request payload a `--retry-request` id binds (#597): same id + other payload = mismatch."""
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _worktree_slug(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "._-" else "-" for c in name).strip("-")
+
+
+def _col(row: Any, key: str) -> Any:
+    """`row[key]`, or None for a row (or hand-built dict) that predates the column."""
+    return row[key] if key in row.keys() else None
+
+
+def _pid_runs_monitor(pid: int, lane: Path) -> bool:
+    """Whether `pid` is alive AND still the monitor of `lane` (a reused pid is not, #597)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        proc = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return True  # no `ps` here: the pid is alive, which is all that can be known
+    cmd = proc.stdout.strip()
+    # A reaped or zombie pid prints nothing / "<defunct>"; the monitor's argv names its script.
+    return proc.returncode == 0 and os.path.join(lane.name, "run_worker.py") in cmd
 
 
 def _hermes_interpreter(env: dict[str, str]) -> list[str] | None:
@@ -685,7 +772,7 @@ class PosixWorktreeProvider(RuntimeProvider):
 
     def worktree_create(self, name: str, base: str | None = None, repo: str | None = None) -> dict[str, Any]:
         root = Path(repo).resolve() if repo else self.repo_root
-        slug = "".join(c if c.isalnum() or c in "._-" else "-" for c in name).strip("-") or f"wt-{uuid.uuid4().hex[:6]}"
+        slug = _worktree_slug(name) or f"wt-{uuid.uuid4().hex[:6]}"
         wt_path = self._worktree_base_dir() / slug
         branch = f"fleet/{slug}"
         is_git = (root / ".git").exists()
@@ -905,13 +992,17 @@ def _log(obj):
     with open(log_path, "a", encoding="utf-8") as lf:
         lf.write(json.dumps(obj) + "\\n")
 
-# Launch gate: a dispatch fenced while it was starting never runs its agent (#591 review).
-if SUPERVISED and store.dispatch_state(DISPATCH) not in ("ready", "running", "retained"):
-    _log({{"type": "launch_refused", "dispatchId": DISPATCH, "reason": "dispatch fenced or withdrawn before launch"}})
+# Launch gate: a dispatch fenced while it was starting never runs its agent (#591 review), and
+# it is a compare-and-set, so ONE monitor ever runs it: a late monitor from a dead coordinator's
+# launcher loses to the one recovery adopted, or to recovery abandoning the dispatch (#597).
+# A fence before any claim closes the gate for good: a later retain never reopens it.
+MONITOR_PID = os.getpid()
+if SUPERVISED and not store.claim_monitor(DISPATCH, MONITOR_PID):
+    _log({{"type": "launch_refused", "dispatchId": DISPATCH, "reason": store.gate_refusal(DISPATCH)}})
     sys.exit(0)
 
 with open(log_path, "a", encoding="utf-8") as lf:
-    lf.write(json.dumps({{"type": "turn_started", "dispatchId": DISPATCH}}) + "\\n")
+    lf.write(json.dumps({{"type": "turn_started", "dispatchId": DISPATCH, "monitorPid": MONITOR_PID}}) + "\\n")
     lf.flush()
     proc = subprocess.Popen(
         {repr(command)},
@@ -944,7 +1035,7 @@ else:
         head = ""
 try:
     with open({repr(str(lane_dir / "exit.json"))}, "w", encoding="utf-8") as xf:
-        json.dump({{"rc": rc, "ts": time.time(), "headSha": head}}, xf)
+        json.dump({{"rc": rc, "ts": time.time(), "headSha": head, "monitorPid": MONITOR_PID}}, xf)
 except OSError:
     pass
 tail = ""
@@ -967,6 +1058,9 @@ if SUPERVISED and RO_RELAY and rc == 0:
         _log({{"type": "ro_relay_failed", "dispatchId": DISPATCH, "error": str(exc)[:500]}})
 with store._connect() as conn:
     conn.execute("UPDATE terminals SET state = 'exited' WHERE handle = ? AND state = 'running'", ({repr(term_handle)},))
+    # Release the gate BEFORE the final state write (exit.json above already records the run;
+    # monitor_started_at keeps proving a monitor ran). Its last write stays the dispatch state.
+    conn.execute("UPDATE dispatches SET monitor_pid = 0 WHERE dispatch_id = ? AND monitor_pid = ?", (DISPATCH, MONITOR_PID))
     bound = [] if SUPERVISED else conn.execute(
         "SELECT dispatch_id, run_id FROM dispatches WHERE terminal_handle = ? AND state IN ('ready', 'running')",
         ({repr(term_handle)},),
@@ -1117,22 +1211,85 @@ if {repr(self.backend)} == "cmux":
                 "danger_requires_linked_worktree",
                 "profile='danger' never runs in the main checkout; use --worktree new-child",
             )
-        cached = self.state.get_or_record_request(retry_request, "worker-start")
-        if cached:
-            return cached
+        payload_sha = _launch_payload_sha256(
+            {
+                "task": task_id,
+                "worktree": worktree,
+                "agent": agent,
+                "name": name,
+                "run": run,
+                "profile": profile,
+                "parentProfile": parent_profile or "",
+                "prompt": prompt,
+                "effort": effort,
+                "sandbox": sandbox_recipe if profile == "danger" else "",
+                "retryOf": retry_of,
+            }
+        )
+        if retry_request:
+            replay = self._replay_worker_start(retry_request, payload_sha)
+            if replay is not None:
+                return replay
 
         run_id = run or "default"
+        # A dead coordinator's unfinished launch of THIS task is settled before a new claim (#597).
+        self._reconcile_dead_intents(task_id=task_id)
         with self.state._connect() as conn:
             t_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-            if not t_row:
-                raise ProviderError("task_not_found", f"task {task_id!r} not found")
-            if t_row["status"] != "ready":
-                raise ProviderError(
-                    "task_not_startable",
-                    f"task {task_id!r} has status {t_row['status']!r} (must be 'ready')",
-                )
+        if not t_row:
+            raise ProviderError("task_not_found", f"task {task_id!r} not found")
+        if t_row["status"] != "ready":
+            raise self._not_startable(task_id, t_row["status"])
         spec_text = self.resolve_task_prompt(task_id, prompt if prompt is not None else t_row["spec"])
 
+        intent_id = f"li_{uuid.uuid4().hex[:12]}"
+        lease = _IntentLease(self._intent_lock_path(intent_id))
+        if not lease.try_acquire():
+            lease.release(unlink=False)
+            raise ProviderError("launch_lease_unavailable", f"could not lock {lease.path}")
+        try:
+            return self._launch(
+                intent_id=intent_id,
+                payload_sha=payload_sha,
+                task_id=task_id,
+                run_id=run_id,
+                worktree=worktree,
+                agent=agent,
+                name=name,
+                retry_request=retry_request,
+                profile=profile,
+                effort=effort,
+                spec_text=spec_text,
+                sandbox_recipe=sandbox_recipe,
+            )
+        finally:
+            # Released however this call ends. An intent still open afterwards (an unexpected
+            # error) is then provably ownerless, and recovery settles it.
+            lease.release(unlink=True)
+
+    def _launch(
+        self,
+        *,
+        intent_id: str,
+        payload_sha: str,
+        task_id: str,
+        run_id: str,
+        worktree: str,
+        agent: str,
+        name: str | None,
+        retry_request: str | None,
+        profile: str,
+        effort: str | None,
+        spec_text: str,
+        sandbox_recipe: str,
+    ) -> dict[str, Any]:
+        """The six committed launch boundaries (LAUNCH_BOUNDARIES), in order (#597).
+
+        Every commit after the first checks this coordinator's owner token in the same
+        transaction: a coordinator that was taken over (`launch-reconcile --takeover`) stops
+        at its next commit (`launch_fenced`) and leaves everything to the new owner.
+        """
+        token = uuid.uuid4().hex
         dispatch_id = f"disp_{uuid.uuid4().hex[:10]}"
         term_handle = f"term_{uuid.uuid4().hex[:8]}"
         # A ro worker's only completion channel (#596) is relayed by the exit monitor, so the
@@ -1141,32 +1298,65 @@ if {repr(self.backend)} == "cmux":
         if relay_ro:
             spec_text += ro_completion_footer(dispatch_id)
         lane_dir = self.state.db_path.parent / "lanes" / dispatch_id
+        wt_name, planned_wt = self._plan_worktree(worktree, name or task_id)
+        info: dict[str, Any] = {
+            "intentId": intent_id,
+            "requestId": retry_request,
+            "taskId": task_id,
+            "runId": run_id,
+            "dispatchId": dispatch_id,
+            "terminalHandle": term_handle,
+            "laneDir": str(lane_dir),
+            "worktree": planned_wt,
+        }
         now = time.time()
-        # 1. Claim the task FIRST: a losing concurrent caller must not touch any worktree.
+        # 1. Intent + claim (+ the pending request) in ONE transaction, before any external side
+        # effect: a losing concurrent caller touches no worktree, and a crash after this commit
+        # leaves an intent naming everything this launch is about to create.
+        raced = False
         with self.state._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'dispatched', updated_at = ? WHERE id = ? AND status = 'ready'",
-                (now, task_id),
-            )
-            if cur.rowcount != 1:
+            if retry_request and conn.execute("SELECT 1 FROM requests WHERE request_id = ?", (retry_request,)).fetchone():
                 conn.execute("ROLLBACK")
-                raise ProviderError("task_not_startable", f"task {task_id!r} was already claimed concurrently")
-            conn.execute("COMMIT")
-
-        def _release_claim() -> None:
-            with self.state._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'dispatched'",
-                    (time.time(), task_id),
+                raced = True
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'dispatched', updated_at = ? WHERE id = ? AND status = 'ready'",
+                    (now, task_id),
                 )
-                conn.execute("DELETE FROM dispatches WHERE dispatch_id = ?", (dispatch_id,))
-                conn.execute("DELETE FROM terminals WHERE handle = ?", (term_handle,))
+                if cur.rowcount != 1:
+                    conn.execute("ROLLBACK")
+                    raise ProviderError("task_not_startable", f"task {task_id!r} was already claimed concurrently")
+                conn.execute(
+                    """
+                    INSERT INTO launch_intents(intent_id, request_id, payload_sha256, task_id, run_id, dispatch_id, terminal_handle,
+                        lane_dir, worktree, backend, phase, owner_token, owner_pid, owner_host, epoch, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        intent_id, retry_request, payload_sha, task_id, run_id, dispatch_id, term_handle,
+                        str(lane_dir), planned_wt, self.backend, token, os.getpid(), socket.gethostname(), now, now,
+                    ),
+                )
+                if retry_request:
+                    conn.execute(
+                        "INSERT INTO requests(request_id, method, state, response_json, created_at, payload_sha256, intent_id) "
+                        "VALUES (?, 'worker-start', 'pending', NULL, ?, ?, ?)",
+                        (retry_request, now, payload_sha, intent_id),
+                    )
                 conn.execute("COMMIT")
+        if raced:
+            # The same request id is being (or was) launched by another call: its outcome, never a second launch.
+            return self._replay_worker_start(str(retry_request), payload_sha) or {}
+        self._boundary("intent_claimed", info)
 
         try:
-            wt_path = str(Path(self._resolve_worktree_path(worktree, name or task_id)).resolve())
+            wt_path = str(Path(self._resolve_worktree_path(worktree, wt_name)).resolve())
+            if wt_path != planned_wt:
+                raise ProviderError(
+                    "worktree_create_failed",
+                    f"created {wt_path} but the launch intent recorded {planned_wt}; refusing a worktree recovery could not name",
+                )
             Path(wt_path).mkdir(parents=True, exist_ok=True)
             lane_dir.mkdir(parents=True, exist_ok=True)
             sandbox_meta: dict[str, str] | None = None
@@ -1196,9 +1386,11 @@ if {repr(self.backend)} == "cmux":
                 deny_hook_path=hook_script,
                 bridge_dir=str(Path(wt_path) / ".open-fleet" / "bridges"),
             )
-        except BaseException:
-            _release_claim()
+        except BaseException as exc:
+            self._abort_launch(intent_id, token, exc, task_id=task_id, dispatch_id=dispatch_id, term_handle=term_handle)
             raise
+        info["worktree"] = wt_path
+        self._boundary("worktree_created", info)
 
         identity_env = {
             **harness_env,
@@ -1256,9 +1448,10 @@ if {repr(self.backend)} == "cmux":
             sort_keys=True,
         )
         # 2. Insert dispatch/terminal BEFORE spawning so fast-exiting workers and a concurrent
-        # fence always find the dispatch record (#591 review).
+        # fence always find the dispatch record (#591 review); the intent's phase moves with them.
         with self.state._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._check_owner(conn, intent_id, token)
             conn.execute(
                 """
                 INSERT INTO terminals(handle, worktree, title, command, pid, backend, log_path, state, created_at)
@@ -1268,14 +1461,21 @@ if {repr(self.backend)} == "cmux":
             )
             conn.execute(
                 """
-                INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, profile, terminal_handle, state, terminal_state, pid, backend, launch_effective, lane_dir, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'active', 0, ?, ?, ?, ?, ?)
+                INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, profile, terminal_handle, state, terminal_state, pid, backend, launch_effective, lane_dir, created_at, updated_at, intent_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'active', 0, ?, ?, ?, ?, ?, ?)
                 """,
-                (dispatch_id, task_id, run_id, wt_path, agent, profile, term_handle, self.backend, eff_json, str(lane_dir), now, now),
+                (dispatch_id, task_id, run_id, wt_path, agent, profile, term_handle, self.backend, eff_json, str(lane_dir), now, now, intent_id),
+            )
+            conn.execute(
+                "UPDATE launch_intents SET phase = 'registered', worktree = ?, backend = ?, updated_at = ? WHERE intent_id = ?",
+                (wt_path, self.backend, time.time(), intent_id),
             )
             conn.execute("COMMIT")
+        self._boundary("registered", info)
 
+        tmux_ref = f"openfleet-{term_handle}" if self.backend == "tmux" else None
         try:
+            self._assert_owner(intent_id, token)  # a taken-over coordinator never spawns
             spawn_info = self._spawn_process(
                 dispatch_id=dispatch_id,
                 term_handle=term_handle,
@@ -1287,19 +1487,19 @@ if {repr(self.backend)} == "cmux":
                 sandbox_meta=sandbox_meta,
                 ro_relay=relay_ro,
             )
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, ProviderError) and exc.code == "launch_fenced":
+                raise
             # The monitor may already be running (e.g. cmux id parse / launcher timeout /
             # Ctrl-C after tmux started): withdraw the dispatch FIRST so its launch gate
-            # refuses, tear down whatever started, then hand the task back.
-            _release_claim()
-            self._terminate_backend(
-                self.backend,
-                term_handle,
-                0,
-                backend_ref=f"openfleet-{term_handle}" if self.backend == "tmux" else None,
-                container=container,
-            )
+            # refuses, tear down whatever started, then hand the task back. A monitor that
+            # already passed the gate is stopped by the pid it recorded there (#597).
+            monitor_pid = self._abort_launch(intent_id, token, exc, task_id=task_id, dispatch_id=dispatch_id, term_handle=term_handle)
+            if monitor_pid is not None:
+                self._terminate_backend(self.backend, term_handle, monitor_pid, backend_ref=tmux_ref, container=container)
             raise
+        info["pid"] = int(spawn_info.get("pid", 0) or 0)
+        self._boundary("monitor_spawned", info)
 
         spawn_pid = int(spawn_info.get("pid", 0) or 0)
         spawn_backend = spawn_info.get("backend", self.backend)
@@ -1307,6 +1507,7 @@ if {repr(self.backend)} == "cmux":
         fenced_state: str | None = None
         with self.state._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._check_owner(conn, intent_id, token)
             cur_disp = conn.execute("SELECT state FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)).fetchone()
             if not cur_disp or cur_disp["state"] in FENCED_DISPATCH_STATES:
                 fenced_state = cur_disp["state"] if cur_disp else "deleted"
@@ -1318,45 +1519,813 @@ if {repr(self.backend)} == "cmux":
                 "UPDATE dispatches SET pid = ?, backend = ?, backend_ref = ?, updated_at = ? WHERE dispatch_id = ?",
                 (spawn_pid, spawn_backend, backend_ref, time.time(), dispatch_id),
             )
+            conn.execute(
+                "UPDATE launch_intents SET phase = 'published', backend = ?, updated_at = ? WHERE intent_id = ?",
+                (spawn_backend, time.time(), intent_id),
+            )
             conn.execute("COMMIT")
+        self._boundary("published", info)
         if fenced_state is not None:
             # Fenced while starting: the generated monitor's launch gate refuses to run the
             # agent, and anything that did start is torn down here.
             self._terminate_backend(spawn_backend, term_handle, spawn_pid, backend_ref=backend_ref, container=container)
-            with self.state._connect() as conn:
-                conn.execute(
-                    "UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'dispatched'",
-                    (time.time(), task_id),
-                )
-            raise ProviderError(
+            err = ProviderError(
                 "dispatch_fenced",
                 f"dispatch {dispatch_id!r} was fenced ({fenced_state}) during startup",
             )
+            self._finalize_launch(
+                intent_id,
+                token,
+                outcome="failed",
+                receipt={"state": "failed", "dispatchId": dispatch_id, "error": {"code": err.code, "message": err.message}},
+                request_state="failed",
+                response=self._failed_response(retry_request, dispatch_id, err),
+                release=(task_id, dispatch_id),
+            )
+            raise err
 
-        res = {
+        res = self._start_receipt(
+            dispatch_id=dispatch_id,
+            task_id=task_id,
+            term_handle=term_handle,
+            wt_path=wt_path,
+            # What actually ran — not the short human label (#591 review).
+            effective={"agent": agent, "args": launch["profile_flag"], "command": full_command},
+        )
+        # 6. The request's receipt and the intent's outcome, in one owner-checked transaction.
+        self._finalize_launch(
+            intent_id, token, outcome="completed", receipt=res, request_state="completed", response=res, phase="receipted"
+        )
+        self._boundary("receipted", info)
+        return res
+
+    @staticmethod
+    def _start_receipt(
+        *,
+        dispatch_id: str,
+        task_id: str,
+        term_handle: str,
+        wt_path: str,
+        effective: dict[str, Any],
+        worker_state: str = "ready",
+        terminal_state: str = "active",
+    ) -> dict[str, Any]:
+        return {
             "state": "ready",
             "dispatchId": dispatch_id,
             "agentTerminalHandle": term_handle,
             "effects": [{"kind": "terminal", "role": "agent", "id": term_handle}],
-            "launch": {
-                "effective": {
-                    "agent": agent,
-                    "args": launch["profile_flag"],
-                    # What actually ran — not the short human label (#591 review).
-                    "command": full_command,
-                }
-            },
+            "launch": {"effective": {k: effective.get(k) for k in ("agent", "args", "command")}},
             "worker": {
                 "dispatchId": dispatch_id,
                 "taskId": task_id,
-                "state": "ready",
-                "terminalState": "active",
+                "state": worker_state,
+                "terminalState": terminal_state,
                 "agentTerminalHandle": term_handle,
                 "worktree": wt_path,
             },
         }
-        self.state.save_request(retry_request, "worker-start", "completed", res)
-        return res
+
+    # --- #597: crash-recoverable launch (spec: docs/runtimes.md "posix launch crash recovery") ---
+    # Observer called right after each committed launch boundary (LAUNCH_BOUNDARIES) with the
+    # launch's recorded identity. Crash-injection tests SIGKILL a coordinator from it; nothing
+    # in the provider depends on it.
+    on_launch_boundary: Callable[[str, dict[str, Any]], None] | None = None
+
+    def _boundary(self, stage: str, info: dict[str, Any]) -> None:
+        if self.on_launch_boundary is not None:
+            self.on_launch_boundary(stage, dict(info))
+
+    def _intent_lock_path(self, intent_id: str) -> Path:
+        return self.state.db_path.parent / "intents" / f"{intent_id}.lock"
+
+    def _recovery_lock_path(self, intent_id: str) -> Path:
+        return self.state.db_path.parent / "intents" / f"{intent_id}.recovery.lock"
+
+    def _plan_worktree(self, worktree_sel: str, name: str) -> tuple[str, str]:
+        """The worktree name and path a launch uses, chosen ONCE, before its intent is recorded.
+
+        A name that sanitizes to nothing (`---`) gets `worktree_create`'s random fallback here,
+        not later: the intent records that path, and the launch creates exactly it (the name is
+        already a slug, so `worktree_create` keeps it, and its branch `fleet/<name>` with it).
+        Otherwise a coordinator that died before registering left recovery an empty worktree
+        path, unable to name or pin the worktree it had created (#597 review).
+        """
+        if worktree_sel in ("new-child", "new-top-level"):
+            slug = _worktree_slug(name) or f"wt-{uuid.uuid4().hex[:6]}"
+            return slug, str((self._worktree_base_dir() / slug).resolve())
+        return name, str(Path(self._resolve_worktree_path(worktree_sel, name)).resolve())
+
+    @staticmethod
+    def _check_owner(conn: Any, intent_id: str, token: str) -> None:
+        """Inside an open transaction: roll back and refuse a write by a coordinator that was taken over."""
+        row = conn.execute("SELECT owner_token, epoch FROM launch_intents WHERE intent_id = ?", (intent_id,)).fetchone()
+        if row is None or row["owner_token"] != token:
+            conn.execute("ROLLBACK")
+            raise ProviderError(
+                "launch_fenced",
+                f"launch intent {intent_id!r} was taken over by another coordinator; this one stops and leaves it to the new owner",
+                {"intentId": intent_id, "epoch": row["epoch"] if row else None},
+            )
+
+    def _assert_owner(self, intent_id: str, token: str) -> None:
+        with self.state._connect() as conn:
+            conn.execute("BEGIN")
+            self._check_owner(conn, intent_id, token)
+            conn.execute("COMMIT")
+
+    @staticmethod
+    def _release_task_claim(conn: Any, task_id: str, dispatch_id: str) -> None:
+        """Hand a claimed task back to `ready`, unless another live dispatch of it exists."""
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'dispatched' "
+            "AND NOT EXISTS (SELECT 1 FROM dispatches WHERE task_id = ? AND dispatch_id != ? "
+            "AND state IN ('ready', 'running', 'retained'))",
+            (time.time(), task_id, task_id, dispatch_id),
+        )
+
+    @staticmethod
+    def _failed_response(request_id: str | None, dispatch_id: str, err: ProviderError, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "state": "failed",
+            "requestId": request_id,
+            "dispatchId": dispatch_id,
+            "error": {"code": err.code, "message": err.message, "data": {**err.data, **(data or {})}},
+        }
+
+    def _finalize_launch(
+        self,
+        intent_id: str,
+        token: str,
+        *,
+        outcome: str | None,
+        receipt: dict[str, Any],
+        request_state: str,
+        response: dict[str, Any],
+        release: tuple[str, str] | None = None,
+        phase: str | None = None,
+    ) -> str | None:
+        """Owner-checked: the intent's outcome, its request's state and (optionally) the task
+        claim's release, in ONE transaction. Returns the task's status after it."""
+        with self.state._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._check_owner(conn, intent_id, token)
+            it = conn.execute("SELECT request_id, task_id FROM launch_intents WHERE intent_id = ?", (intent_id,)).fetchone()
+            if release is not None:
+                self._release_task_claim(conn, *release)
+            t = conn.execute("SELECT status FROM tasks WHERE id = ?", (it["task_id"],)).fetchone()
+            task_after = t["status"] if t else None
+            if isinstance(receipt.get("task"), dict):
+                receipt["task"]["after"] = task_after
+            conn.execute(
+                "UPDATE launch_intents SET outcome = ?, phase = COALESCE(?, phase), receipt_json = ?, updated_at = ? WHERE intent_id = ?",
+                (outcome, phase, json.dumps(receipt, sort_keys=True, default=str), time.time(), intent_id),
+            )
+            if it["request_id"]:
+                conn.execute(
+                    "UPDATE requests SET state = ?, response_json = ? WHERE request_id = ?",
+                    (request_state, json.dumps(response, sort_keys=True, default=str), it["request_id"]),
+                )
+            conn.execute("COMMIT")
+        return task_after
+
+    def _abort_launch(
+        self,
+        intent_id: str,
+        token: str,
+        exc: BaseException,
+        *,
+        task_id: str,
+        dispatch_id: str,
+        term_handle: str,
+    ) -> int | None:
+        """An in-process failure: withdraw what this attempt registered, hand the task back and
+        record the request `failed`, only while this coordinator still owns the intent.
+
+        Returns the pid a monitor recorded at the launch gate (0 when none passed it), or None
+        when the intent was taken over: the new owner settles it, so nothing is touched here.
+        """
+        err = exc if isinstance(exc, ProviderError) else ProviderError("launch_aborted", f"{type(exc).__name__}: {exc}"[:300])
+        try:
+            with self.state._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._check_owner(conn, intent_id, token)
+                d = conn.execute("SELECT monitor_pid FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)).fetchone()
+                monitor_pid = int((d["monitor_pid"] if d else 0) or 0)
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'dispatched'",
+                    (time.time(), task_id),
+                )
+                conn.execute("DELETE FROM dispatches WHERE dispatch_id = ?", (dispatch_id,))
+                conn.execute("DELETE FROM terminals WHERE handle = ?", (term_handle,))
+                receipt = {"state": "failed", "dispatchId": dispatch_id, "withdrawn": True, "error": {"code": err.code, "message": err.message}}
+                req = conn.execute("SELECT request_id FROM launch_intents WHERE intent_id = ?", (intent_id,)).fetchone()
+                conn.execute(
+                    "UPDATE launch_intents SET outcome = 'failed', receipt_json = ?, updated_at = ? WHERE intent_id = ?",
+                    (json.dumps(receipt, sort_keys=True), time.time(), intent_id),
+                )
+                if req and req["request_id"]:
+                    conn.execute(
+                        "UPDATE requests SET state = 'failed', response_json = ? WHERE request_id = ?",
+                        (json.dumps(self._failed_response(req["request_id"], dispatch_id, err), sort_keys=True, default=str), req["request_id"]),
+                    )
+                conn.execute("COMMIT")
+        except ProviderError as fenced:
+            if fenced.code != "launch_fenced":
+                raise
+            return None
+        return monitor_pid
+
+    def _not_startable(self, task_id: str, status: str) -> ProviderError:
+        """`task_not_startable`, naming the open launch that holds the task (if any) and how to settle it."""
+        data: dict[str, Any] = {}
+        held = self.state.open_launch_intents(task_id)
+        if held:
+            it = held[-1]
+            data = {
+                "openLaunch": {
+                    "intentId": it["intent_id"],
+                    "dispatchId": it["dispatch_id"],
+                    "phase": it["phase"],
+                    "outcome": it["outcome"],
+                    "ownerPid": it["owner_pid"],
+                    "ownerHost": it["owner_host"],
+                },
+                "nextSteps": [
+                    f"orchestration launch-reconcile --intent {it['intent_id']} (settles it once its coordinator is gone)",
+                    f"add --takeover only when coordinator pid {it['owner_pid']} on {it['owner_host']} is wedged: it fences that writer",
+                ],
+            }
+        return ProviderError("task_not_startable", f"task {task_id!r} has status {status!r} (must be 'ready')", data)
+
+    def _replay_worker_start(self, request_id: str, payload_sha: str) -> dict[str, Any] | None:
+        """A retried `--retry-request`: the recorded outcome, never a second launch (#597)."""
+        row = self.state.request_row(request_id)
+        if row is None:
+            return None
+        if row["method"] != "worker-start":
+            raise ProviderError("request_mismatch", f"retry-request {request_id!r} bound to {row['method']}, not worker-start")
+        self.state.check_request_payload(request_id, row.get("payload_sha256"), payload_sha)
+        if row["state"] == "pending" and row.get("intent_id"):
+            recovery = self._reconcile_intent(row["intent_id"], takeover=False)
+            row = self.state.request_row(request_id) or row
+            if row["state"] == "pending":
+                stage = "launch_recovery" if recovery.get("resolution") == "cleanup_pending" else "launch_in_progress"
+                return self._unknown_response(recovery, stage=stage)
+        response = json.loads(row["response_json"]) if row.get("response_json") else {}
+        if row["state"] == "failed":
+            err = response.get("error") or {}
+            raise ProviderError(
+                err.get("code") or "launch_failed",
+                err.get("message") or f"request {request_id!r} failed",
+                {**(err.get("data") or {}), "requestId": request_id, "replayed": True},
+            )
+        return response or {"state": row["state"], "requestId": request_id}
+
+    @staticmethod
+    def _unknown_response(recovery: dict[str, Any], *, stage: str) -> dict[str, Any]:
+        did = recovery.get("dispatchId")
+        return {
+            "state": "outcome_unknown",
+            "stage": stage,
+            "requestId": recovery.get("requestId"),
+            "dispatchId": did,
+            "nextCommands": [
+                f"orchestration worker-show --dispatch {did} --json",
+                f"orchestration launch-reconcile --intent {recovery.get('intentId')} --json",
+            ],
+            "recovery": recovery,
+        }
+
+    def launch_reconcile(
+        self,
+        *,
+        intent: str | None = None,
+        request: str | None = None,
+        takeover: bool = False,
+    ) -> dict[str, Any]:
+        """Settle launches a dead coordinator left open; `takeover` also fences a LIVE one (#597)."""
+        if request:
+            row = self.state.request_row(request)
+            if row is None:
+                raise ProviderError("request_not_found", f"request {request!r} not found")
+            if not row.get("intent_id"):
+                raise ProviderError("invalid_argument", f"request {request!r} names no launch intent")
+            if intent and intent != row["intent_id"]:
+                raise ProviderError("invalid_argument", f"request {request!r} names intent {row['intent_id']!r}, not {intent!r}")
+            intent = row["intent_id"]
+        ids = [intent] if intent else [r["intent_id"] for r in self.state.open_launch_intents()]
+        receipts = [self._reconcile_intent(i, takeover=takeover) for i in ids]
+        return {"reconciled": receipts, "count": len(receipts)}
+
+    def _reconcile_dead_intents(self, task_id: str | None = None) -> None:
+        """Settle every open launch on this host whose coordinator is provably gone.
+
+        An `unknown` launch is left to an explicit `launch-reconcile`: it waits on an inspection,
+        and re-deciding it on every poll would only rewrite the same receipt.
+        """
+        host = socket.gethostname()
+        for it in self.state.open_launch_intents(task_id):
+            if it["owner_host"] != host or it["outcome"] == "unknown":
+                continue
+            try:
+                self._reconcile_intent(it["intent_id"], takeover=False)
+            except ProviderError as exc:
+                if exc.code != "launch_fenced":  # another reconciler won the takeover race
+                    raise
+
+    def _recovery_receipt(self, it: dict[str, Any], *, resolution: str, previous: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "kind": "launch_recovery",
+            "intentId": it["intent_id"],
+            "requestId": it["request_id"],
+            "runId": it["run_id"],
+            "taskId": it["task_id"],
+            "dispatchId": it["dispatch_id"],
+            "terminalHandle": it["terminal_handle"],
+            "worktree": it["worktree"],
+            "phase": it["phase"],
+            "resolution": resolution,
+            "owner": {"previous": previous, "epoch": it["epoch"]},
+            "completionInferred": False,
+            "reconciledAt": time.time(),
+        }
+        out.update(extra)
+        return out
+
+    def _reconcile_intent(self, intent_id: str, *, takeover: bool) -> dict[str, Any]:
+        it = self.state.launch_intent(intent_id)
+        if it is None:
+            raise ProviderError("intent_not_found", f"launch intent {intent_id!r} not found")
+        previous = {"pid": it["owner_pid"], "host": it["owner_host"], "epoch": it["epoch"], "alive": None}
+        if it["outcome"] in LAUNCH_FINAL_OUTCOMES:
+            return self._recovery_receipt(
+                it, resolution="already_settled", previous=previous, outcome=it["outcome"], settled=json.loads(it["receipt_json"] or "{}")
+            )
+        lease = _IntentLease(self._intent_lock_path(intent_id))
+        recovery: _IntentLease | None = None
+        final = False
+        try:
+            owner_gone = lease.try_acquire()
+            same_host = it["owner_host"] == socket.gethostname()
+            previous["alive"] = (not owner_gone) if same_host else None
+            if not takeover and not (owner_gone and same_host):
+                # Never act for a coordinator that may still be launching: report, change nothing.
+                who = f"coordinator pid {it['owner_pid']} on {it['owner_host']}"
+                return self._recovery_receipt(
+                    it,
+                    resolution="pending" if same_host else "unknown",
+                    previous=previous,
+                    requestState="pending",
+                    nextSteps=[
+                        f"{who} still holds this launch: wait for its receipt (request-show / worker-show)"
+                        if same_host
+                        else f"{who} cannot be checked from this host: inspect there",
+                        f"only if it is wedged: orchestration launch-reconcile --intent {intent_id} --takeover (fences that writer)",
+                    ],
+                )
+            # One settler at a time, a takeover included (#597 review). A takeover cannot hold the
+            # launch lease (its live owner does, and drops it the moment it stops, letting a poll's
+            # reconcile in beside the takeover), so every settler first holds the recovery lock.
+            recovery = _IntentLease(self._recovery_lock_path(intent_id))
+            if not recovery.try_acquire():
+                return self._recovery_receipt(
+                    it,
+                    resolution="pending",
+                    previous=previous,
+                    requestState="pending",
+                    nextSteps=["another reconciler is settling this launch now: wait for its receipt (request-show / worker-show)"],
+                )
+            token = uuid.uuid4().hex
+            with self.state._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cur = conn.execute(
+                    "UPDATE launch_intents SET owner_token = ?, owner_pid = ?, owner_host = ?, epoch = epoch + 1, updated_at = ? "
+                    "WHERE intent_id = ? AND owner_token = ? AND (outcome IS NULL OR outcome = 'unknown')",
+                    (token, os.getpid(), socket.gethostname(), time.time(), intent_id, it["owner_token"]),
+                )
+                conn.execute("COMMIT")
+            if cur.rowcount != 1:
+                fresh = self.state.launch_intent(intent_id) or it
+                settled = fresh["outcome"] in LAUNCH_FINAL_OUTCOMES
+                return self._recovery_receipt(fresh, resolution="already_settled" if settled else "pending", previous=previous)
+            receipt = self._settle_intent(self.state.launch_intent(intent_id) or it, token, previous, takeover=takeover and not owner_gone)
+            final = receipt["resolution"] not in ("unknown", "cleanup_pending")
+            return receipt
+        finally:
+            if recovery is not None:
+                recovery.release(unlink=final)
+            lease.release(unlink=final)
+
+    def _settle_intent(self, it: dict[str, Any], token: str, previous: dict[str, Any], *, takeover: bool) -> dict[str, Any]:
+        """Decide an open launch by its recorded identity: adopt, roll back, or report unknown.
+
+        It never respawns, never deletes a worktree or branch, and never marks anything
+        completed: that is the worker's own terminal mail (`ensure_terminal_or_died`).
+        """
+        intent_id, task_id, disp_id, handle = it["intent_id"], it["task_id"], it["dispatch_id"], it["terminal_handle"]
+        lane = Path(it["lane_dir"])
+        exit_file = lane / "exit.json"
+        processes: list[dict[str, Any]] = [{"role": "coordinator", **previous, "action": "fenced"}]
+        cleanup: list[dict[str, Any]] = []
+        refs: list[dict[str, Any]] = []
+        with self.state._connect() as conn:
+            t = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        task_before = t["status"] if t else None
+        d = self._dispatch_row(disp_id)
+        disp_before = d["state"] if d else None
+        resolution = ""
+        err: ProviderError | None = None
+        release = False
+        if d is None:
+            # Phase `claimed`: with no dispatch row, no monitor can ever pass this launch's gate.
+            resolution, release = "failed", True
+            err = ProviderError(
+                "launch_interrupted",
+                "the coordinator stopped after claiming the task and before registering a dispatch; nothing was launched",
+            )
+        elif d["state"] in FENCED_DISPATCH_STATES:
+            # An operator fenced it while it was starting: finish that fence, as the live path would.
+            mon = self._monitor_process(d, lane)
+            never_ran = self._gate_proves_never_ran(d)
+            if never_ran:
+                mon["gate"] = "closed"
+            if mon["alive"] is False or (never_ran and mon["alive"] is None):
+                # Confirmed dead, or a gate closed before any claim (no monitor ever ran and none
+                # can): no exit.json can ever come, and waiting the sync grace for one stalled
+                # recovery (#597). Salvage as for any vanished monitor (container removal, then
+                # the sync) with its unknown exit; only the mux session is left to close.
+                vanished = self._report_vanished(d)
+                mon["action"] = "refused_at_gate" if never_ran else "reported_dead"
+                mon["termination"] = self._terminate_backend(d["backend"] or self.backend, handle, 0, backend_ref=d["backend_ref"])
+                self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
+                if vanished.get("retry"):
+                    resolution = "cleanup_pending"  # its container may still run: keep the task claimed
+            else:
+                mon["action"] = "terminated"
+                mon["termination"] = self._terminate_backend(
+                    d["backend"] or self.backend,
+                    handle,
+                    int(mon.get("pid") or 0) if mon.get("alive") else 0,
+                    backend_ref=d["backend_ref"],
+                    container=self._dispatch_container(d),
+                    # A live process under a closed gate is a refused monitor: it never syncs.
+                    lane_dir=None if never_ran else d["lane_dir"],
+                )
+            processes.append(mon)
+            if not resolution:
+                resolution, release = "failed", True
+                err = ProviderError("dispatch_fenced", f"dispatch {disp_id!r} was fenced ({d['state']}) during startup")
+        else:
+            gated = bool(_col(d, "monitor_started_at")) or exit_file.is_file() or d["state"] not in ("ready", "retained")
+            if it["phase"] == "registered" and not gated:
+                if self.runner is not None:
+                    resolution = "unknown"  # an injected runner's process is invisible here
+                elif self.state.abandon_unlaunched(disp_id):
+                    # Won against the gate: no monitor ever runs this dispatch. Close a mux
+                    # session the dead launch may have opened; its monitor refuses anyway.
+                    backend = d["backend"] or self.backend
+                    term = self._terminate_backend(
+                        backend, handle, 0, backend_ref=d["backend_ref"] or (f"openfleet-{handle}" if backend == "tmux" else None)
+                    )
+                    processes.append({"role": "monitor", "pid": None, "alive": False, "action": "refused_at_gate", "termination": term})
+                    cleanup.append({"kind": "dispatch", "target": disp_id, "action": "abandoned", "why": "kept for its identity; a late monitor is refused at the launch gate"})
+                    resolution, release = "failed", True
+                    err = ProviderError(
+                        "launch_interrupted",
+                        "the coordinator stopped before any monitor claimed the launch gate; the dispatch is abandoned and nothing ran",
+                    )
+                else:
+                    d = self._dispatch_row(disp_id) or d  # a monitor claimed the gate first: adopt it
+            if not resolution:
+                mon = self._monitor_process(d, lane)
+                recorded = None
+                if not mon["alive"] and d["state"] not in ("died", "completed") and exit_file.is_file():
+                    # Its monitor recorded the exit, then died before settling it (#597 review).
+                    recorded = self._settle_recorded_exit(d)
+                if mon["alive"]:
+                    self._publish_adopted(d, mon)
+                    mon["action"], resolution = "adopted", "live"
+                elif d["state"] in ("died", "completed"):
+                    mon["action"], resolution = "none", "exited"  # its own monitor already settled the dispatch
+                elif recorded is not None:
+                    mon["action"], mon["exit"], resolution = "settled_recorded_exit", recorded, "exited"
+                elif mon["alive"] is False:
+                    vanished = self._report_vanished(d)
+                    if vanished.get("retry"):
+                        # Its sandbox cleanup or sync failed: not dead yet, and recovery stays open (#597 review).
+                        mon["action"], resolution = "cleanup_pending", "cleanup_pending"
+                    else:
+                        mon["action"], resolution = "reported_dead", "exited"
+                    self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
+                else:
+                    resolution = "unknown"
+                processes.append(mon)
+
+        wt = (d["worktree"] if d else None) or it["worktree"]
+        pinned = self._preserve_head(wt, disp_id)
+        if pinned:
+            refs.insert(0, pinned)
+        if wt:
+            exists = Path(wt).is_dir()
+            cleanup.append(
+                {
+                    "kind": "worktree",
+                    "target": wt,
+                    "action": "kept" if exists else "absent",
+                    "why": "recovery never deletes a worktree or a branch" if exists else "never created",
+                }
+            )
+        if lane.is_dir():
+            cleanup.append({"kind": "lane", "target": str(lane), "action": "kept", "why": "logs, exit.json and this receipt"})
+        d_after = self._dispatch_row(disp_id)
+        request_state = {"live": "completed", "exited": "completed", "failed": "failed", "cleanup_pending": "pending"}.get(
+            resolution, "unknown"
+        )
+        # `cleanup_pending` leaves the outcome NULL: an open intent that every poll reconciles again.
+        outcome = {"completed": "completed", "failed": "failed", "pending": None}.get(request_state, "unknown")
+        if resolution == "live":
+            steps = ["the worker is live: supervise it (check --wait, worker-show); never start a second worker for this task"]
+        elif resolution == "exited":
+            steps = ["the worker already exited: read its terminal mail or its worker_died escalation (check) before any retry-of"]
+        elif resolution == "failed":
+            steps = ["nothing runs for this attempt and the task is back to ready: start a new attempt with a NEW --retry-request"]
+        elif resolution == "cleanup_pending" and d_after is not None and d_after["state"] in FENCED_DISPATCH_STATES:
+            steps = [
+                f"it is {d_after['state']} and its monitor is dead, but removing its container or syncing its commits failed: "
+                "worker-list, worker-show and launch-reconcile retry both, and only then hand the task back",
+            ]
+        elif resolution == "cleanup_pending":
+            steps = [
+                "its monitor vanished and removing its container or syncing its commits failed: worker-list, worker-show "
+                "and launch-reconcile retry both, and only then report its worker_died",
+                f"to give up instead: orchestration worker-abandon --dispatch {disp_id} (its sandbox git dir stays in {lane})",
+            ]
+        else:
+            steps = [
+                f"inspect: orchestration worker-show --dispatch {disp_id}",
+                "then worker-stop or worker-abandon explicitly; never respawn beside it",
+            ]
+        receipt = self._recovery_receipt(
+            self.state.launch_intent(intent_id) or it,
+            resolution=resolution,
+            previous=previous,
+            requestState=request_state,
+            takeover=takeover,
+            processes=processes,
+            preservedRefs=refs,
+            task={"id": task_id, "before": task_before, "after": task_before},
+            dispatch={"id": disp_id, "before": disp_before, "after": d_after["state"] if d_after else None},
+            cleanup=cleanup,
+            nextSteps=steps,
+        )
+        if err is not None:
+            receipt["error"] = {"code": err.code, "message": err.message}
+        if request_state == "completed" and d_after is not None:
+            try:
+                eff = json.loads(d_after["launch_effective"] or "{}")
+            except json.JSONDecodeError:
+                eff = {}
+            response = self._start_receipt(
+                dispatch_id=disp_id,
+                task_id=task_id,
+                term_handle=handle,
+                wt_path=d_after["worktree"],
+                effective=eff,
+                worker_state=d_after["state"],
+                terminal_state=d_after["terminal_state"],
+            )
+            response["recovery"] = receipt
+        elif request_state == "failed" and err is not None:
+            response = self._failed_response(it["request_id"], disp_id, err, {"nextSteps": steps, "recovery": receipt})
+        else:
+            response = self._unknown_response(receipt, stage="launch_recovery")
+        self._finalize_launch(
+            intent_id,
+            token,
+            outcome=outcome,
+            receipt=receipt,
+            request_state=request_state,
+            response=response,
+            release=(task_id, disp_id) if release else None,
+        )
+        if lane.is_dir():
+            (lane / "recovery.json").write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        return receipt
+
+    def _gate_proves_never_ran(self, d: Any) -> bool:
+        """Whether the launch gate proves no monitor ever ran this dispatch and none ever can (#597).
+
+        A fence before any claim closed the gate for good, and a `worker-start` dispatch (it
+        carries an intent) runs its worker only after its monitor passes that gate. An injected
+        runner or an injected dispatch starts work without the gate, so the gate proves nothing there.
+        """
+        return (
+            d is not None
+            and self.runner is None
+            and _col(d, "intent_id") is not None
+            and _col(d, "gate_closed_at") is not None
+            and _col(d, "monitor_started_at") is None
+        )
+
+    @staticmethod
+    def _record_salvage(
+        salvage: dict[str, Any] | None, mon: dict[str, Any], refs: list[dict[str, Any]], cleanup: list[dict[str, Any]]
+    ) -> None:
+        """What `_salvage_sandbox` did, in the recovery receipt: the synced ref and every cleanup step."""
+        if not salvage:
+            return
+        if salvage.get("sandboxRef"):
+            refs.append({"ref": salvage["sandboxRef"], "sha": salvage.get("head"), "source": "sandbox"})
+        if salvage.get("container"):
+            box = salvage["container"]
+            cleanup.append(
+                {"kind": "container", "target": box["name"], "action": box["action"], "rc": box["rc"]}
+                | ({"error": box["error"]} if box.get("error") else {})
+            )
+        if salvage.get("sync") in ("deferred", "failed", "refused"):
+            cleanup.append(
+                {"kind": "sandbox_sync", "target": salvage["sandboxGit"], "action": salvage["sync"]}
+                | ({"error": salvage["error"]} if salvage.get("error") else {})
+            )
+        if salvage.get("error"):
+            mon["salvageError"] = salvage["error"]
+
+    def _dispatch_row(self, dispatch_id: str) -> Any:
+        rows = self._dispatch_rows("WHERE dispatch_id = ?", (dispatch_id,))
+        return rows[0] if rows else None
+
+    @staticmethod
+    def _dispatch_container(row: Any) -> str:
+        try:
+            return json.loads(row["launch_effective"] or "{}").get("container") or ""
+        except json.JSONDecodeError:
+            return ""
+
+    def _monitor_process(self, d: Any, lane: Path) -> dict[str, Any]:
+        """The monitor a dispatch recorded, and whether THAT process (not a pid reuse) is alive."""
+        backend = d["backend"] or self.backend
+        pid = int(_col(d, "monitor_pid") or 0) or int(d["pid"] or 0)
+        out: dict[str, Any] = {"role": "monitor", "pid": pid or None, "backend": backend, "backendRef": d["backend_ref"] or None}
+        container = self._dispatch_container(d)
+        if container:
+            out["container"] = container
+        if self.runner is not None or backend == "dry-run":
+            out["alive"] = None
+        elif backend == "tmux":
+            ref = d["backend_ref"] or f"openfleet-{d['terminal_handle']}"
+            out["backendRef"] = ref
+            try:
+                out["alive"] = subprocess.run(["tmux", "has-session", "-t", ref], capture_output=True, timeout=15).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                out["alive"] = None  # no tmux to ask: cannot tell
+        elif pid > 0:
+            out["alive"] = _pid_runs_monitor(pid, lane)
+        else:
+            out["alive"] = None
+        return out
+
+    def _publish_adopted(self, d: Any, mon: dict[str, Any]) -> None:
+        """Publish what the dead coordinator never did: the adopted monitor's pid (and tmux session)."""
+        pid = int(mon.get("pid") or 0)
+        ref = mon.get("backendRef") or ""
+        with self.state._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE dispatches SET pid = CASE WHEN COALESCE(pid, 0) = 0 THEN ? ELSE pid END, "
+                "backend_ref = COALESCE(NULLIF(backend_ref, ''), ?), updated_at = ? WHERE dispatch_id = ?",
+                (pid, ref, time.time(), d["dispatch_id"]),
+            )
+            conn.execute(
+                "UPDATE terminals SET pid = CASE WHEN COALESCE(pid, 0) = 0 THEN ? ELSE pid END, "
+                "backend_ref = COALESCE(NULLIF(backend_ref, ''), ?) WHERE handle = ?",
+                (pid, ref, d["terminal_handle"]),
+            )
+            conn.execute("COMMIT")
+
+    @staticmethod
+    def _preserve_head(wt: str | None, dispatch_id: str) -> dict[str, Any] | None:
+        """Pin the worktree's HEAD at `refs/open-fleet/preserved/<dispatch>` (shared by every linked worktree)."""
+        if not wt or not (Path(wt) / ".git").exists():
+            return None
+        ref = f"refs/open-fleet/preserved/{dispatch_id}"
+        head = _git(["rev-parse", "--verify", "HEAD^{commit}"], cwd=wt)
+        if head.returncode != 0:
+            return {"ref": ref, "error": (head.stderr or "no HEAD").strip()[:200]}
+        sha = head.stdout.strip()
+        upd = _git(["update-ref", ref, sha], cwd=wt)
+        pinned: dict[str, Any] = {"ref": ref, "sha": sha, "source": "worktree", "worktree": wt}
+        if upd.returncode != 0:
+            pinned["error"] = (upd.stderr or "update-ref failed").strip()[:200]
+        return pinned
+
+    def _salvage_sandbox(self, r: Any) -> dict[str, Any] | None:
+        """A `danger` worker's commits live only in its lane's private git dir until its monitor
+        syncs them. When that monitor vanished, stop the container, then sync them here (#597).
+
+        `retry` marks a salvage that must run again (#597 review): a container not confirmed gone
+        (the sync waits for that, since a live container could still write the git dir) or a sync
+        that failed in git or the filesystem. A sandbox refused as tampered, or whose metadata is
+        unreadable, can never sync: that is final, and the receipt records it.
+        """
+        lane = r["lane_dir"]
+        meta_path = Path(lane) / "sandbox_git.json" if lane else None
+        if meta_path is None or not meta_path.is_file():
+            return None
+        out: dict[str, Any] = {"sandboxGit": str(Path(lane) / "sandbox.git")}
+        container = self._dispatch_container(r)
+        if container:
+            try:
+                proc = subprocess.run(["docker", "rm", "-f", container], capture_output=True, text=True, env=self.env, timeout=120)
+            except (OSError, subprocess.SubprocessError) as exc:
+                box: dict[str, Any] = {"name": container, "rc": None, "action": "removal_failed", "error": str(exc)[:200]}
+            else:
+                said = (proc.stderr or proc.stdout or "").strip()
+                if proc.returncode == 0:
+                    box = {"name": container, "rc": 0, "action": "removed"}
+                elif "no such container" in said.lower():
+                    box = {"name": container, "rc": proc.returncode, "action": "absent"}  # an older CLI's `rm -f`
+                else:
+                    box = {"name": container, "rc": proc.returncode, "action": "removal_failed", "error": said[:200] or "docker rm failed"}
+            out["container"] = box
+            if box["action"] == "removal_failed":
+                out["sync"], out["retry"] = "deferred", True
+                return out
+        try:
+            out.update(sync_sandbox_git(json.loads(meta_path.read_text(encoding="utf-8")), r["dispatch_id"]))
+            out["sync"] = "synced"
+        except ProviderError as exc:
+            out["error"] = str(exc)[:300]
+            out["sync"], out["retry"] = ("refused", False) if exc.code == "sandbox_git_tampered" else ("failed", True)
+        except ValueError as exc:
+            out["error"], out["sync"], out["retry"] = str(exc)[:300], "refused", False
+        except OSError as exc:
+            out["error"], out["sync"], out["retry"] = str(exc)[:300], "failed", True
+        return out
+
+    def _settle_recorded_exit(self, r: Any) -> dict[str, Any] | None:
+        """Finish what a monitor that died after writing `exit.json` never did (#597 review).
+
+        The monitor records the exit and only THEN settles the dispatch, so a death between the
+        two left it `ready` with no `worker_died`. The recorded exit code and head settle it through
+        `ensure_terminal_or_died` (atomic: a monitor still finishing and this call never both
+        report), so completion is still only ever the worker's own mail. None: no readable record.
+        """
+        lane = Path(r["lane_dir"]) if r["lane_dir"] else None
+        if lane is None:
+            return None
+        try:
+            rec = json.loads((lane / "exit.json").read_text(encoding="utf-8"))
+            rc = int(rec["rc"])
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        head = str(rec.get("headSha") or "")
+        if r["state"] == "retained":
+            reported = self.state.terminal_report(
+                dispatch_id=r["dispatch_id"], worker_handle=r["terminal_handle"], run_id=r["run_id"]
+            )
+            if reported:
+                # Its monitor DID settle it (that is the mail), and the coordinator retained it
+                # afterwards: settling again rewrote the retain to `completed`, a `died` one
+                # included, on the next show or list (#596 review of #641). Retain stays final.
+                return {"exitCode": rc, "headSha": head, "died": {"syntheticDied": False, "retained": reported}}
+        tail = ""
+        with contextlib.suppress(OSError):
+            tail = (lane / "events.jsonl").read_text(encoding="utf-8", errors="replace")[-500:]
+        with self.state._connect() as conn:
+            conn.execute("UPDATE terminals SET state = 'exited' WHERE handle = ? AND state = 'running'", (r["terminal_handle"],))
+        died = self.state.ensure_terminal_or_died(
+            dispatch_id=r["dispatch_id"],
+            worker_handle=r["terminal_handle"],
+            exit_code=rc,
+            last_tail=tail,
+            worktree_head_sha=head,
+            run_id=r["run_id"],
+        )
+        return {"exitCode": rc, "headSha": head, "died": died}
+
+    def _report_vanished(self, r: Any) -> dict[str, Any]:
+        """A monitor that died without reporting: salvage a sandbox's commits, then `worker_died`.
+
+        Not while the salvage must run again (#597 review): a `worker_died` invites a retry beside
+        a container that may still run, with a head that lacks the sandbox's commits. The dispatch
+        stays live instead, so the next liveness sweep or reconcile retries the salvage.
+        """
+        salvage = self._salvage_sandbox(r)
+        if salvage and salvage.get("retry"):
+            return {"salvage": salvage, "died": None, "headSha": "", "retry": True}
+        head = (salvage or {}).get("head") or ""
+        if not head and r["worktree"]:
+            head = _git(["rev-parse", "HEAD"], cwd=r["worktree"]).stdout.strip()
+        died = self.state.ensure_terminal_or_died(
+            dispatch_id=r["dispatch_id"],
+            worker_handle=r["terminal_handle"],
+            exit_code=-1,
+            last_tail="(monitor process vanished without reporting an exit)",
+            worktree_head_sha=head,
+            run_id=r["run_id"],
+        )
+        return {"salvage": salvage, "died": died, "headSha": head}
 
     def _terminate_backend(
         self,
@@ -1432,7 +2401,9 @@ if {repr(self.backend)} == "cmux":
     def _backend_alive(self, row: Any) -> bool | None:
         """Liveness of a dispatch's process (None = cannot tell, e.g. dry-run / injected runner)."""
         backend = row["backend"] or self.backend
-        pid = int(row["pid"] or 0)
+        # A monitor that passed the launch gate recorded its pid there even when the coordinator
+        # died before publishing one (#597).
+        pid = int(row["pid"] or 0) or int(_col(row, "monitor_pid") or 0)
         if self.runner is not None or backend == "dry-run":
             return None
         if pid <= 0 and not row["backend_ref"]:
@@ -1461,16 +2432,13 @@ if {repr(self.backend)} == "cmux":
         for r in rows:
             if r["state"] not in ("ready", "running", "retained") or r["task_id"] is None:
                 continue
-            if self._backend_alive(r) is False and not (Path(r["lane_dir"] or "/nonexistent") / "exit.json").is_file():
-                head = _git(["rev-parse", "HEAD"], cwd=r["worktree"]).stdout.strip() if r["worktree"] else ""
-                self.state.ensure_terminal_or_died(
-                    dispatch_id=r["dispatch_id"],
-                    worker_handle=r["terminal_handle"],
-                    exit_code=-1,
-                    last_tail="(monitor process vanished without reporting an exit)",
-                    worktree_head_sha=head,
-                    run_id=r["run_id"],
-                )
+            if self._backend_alive(r) is not False:
+                continue
+            # A monitor that died between recording its exit and settling it is settled from the
+            # record; skipping it left the dispatch live forever (#597 review).
+            exit_file = Path(r["lane_dir"] or "/nonexistent") / "exit.json"
+            if not exit_file.is_file() or self._settle_recorded_exit(r) is None:
+                self._report_vanished(r)
 
     def _dispatch_rows(self, where: str = "", params: tuple[Any, ...] = ()) -> list[Any]:
         with self.state._connect() as conn:
@@ -1495,6 +2463,7 @@ if {repr(self.backend)} == "cmux":
         q += " ORDER BY created_at DESC"
         if limit:
             q += f" LIMIT {int(limit)}"
+        self._reconcile_dead_intents()
         self._sweep_liveness(self._dispatch_rows(q, tuple(params)))
         rows = self._dispatch_rows(q, tuple(params))
         workers = [
@@ -1511,6 +2480,7 @@ if {repr(self.backend)} == "cmux":
         return {"workers": workers, "scope": {"source": "posix"}, "page": {"nextCursor": None}}
 
     def worker_show(self, dispatch_id: str) -> dict[str, Any]:
+        self._reconcile_dead_intents()
         rows = self._dispatch_rows("WHERE dispatch_id = ?", (dispatch_id,))
         if not rows:
             raise ProviderError("dispatch_not_found", f"dispatch {dispatch_id!r} not found")
@@ -1553,7 +2523,18 @@ if {repr(self.backend)} == "cmux":
                 "UPDATE dispatches SET state = ?, terminal_state = ?, updated_at = ? WHERE dispatch_id = ?",
                 (new_state, term_state, time.time(), dispatch_id),
             )
+            if verb != "retain":
+                # A fence before any monitor claimed closes the launch gate for good, in the
+                # same transaction: a later retain rewrites the state for inspection, but a
+                # late monitor from a dead coordinator's launcher never runs under it (#597).
+                conn.execute(
+                    "UPDATE dispatches SET gate_closed_at = COALESCE(gate_closed_at, ?) "
+                    "WHERE dispatch_id = ? AND monitor_started_at IS NULL",
+                    (time.time(), dispatch_id),
+                )
+            gated = conn.execute("SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)).fetchone()
             conn.execute("COMMIT")
+        never_ran = self._gate_proves_never_ran(gated)
         out: dict[str, Any] = {"dispatchId": dispatch_id, "state": new_state, "terminalState": term_state}
         finished = r["state"] in ("completed", "died", *FENCED_DISPATCH_STATES) or (
             bool(r["lane_dir"]) and (Path(r["lane_dir"]) / "exit.json").is_file()
@@ -1571,11 +2552,15 @@ if {repr(self.backend)} == "cmux":
             out["termination"] = self._terminate_backend(
                 r["backend"] or self.backend,
                 handle,
-                int(r["pid"] or 0),
+                # No published pid (its coordinator died first): the gate-recorded one (#597).
+                int(r["pid"] or 0) or int(_col(r, "monitor_pid") or 0),
                 backend_ref=r["backend_ref"],
                 container=container,
-                lane_dir=r["lane_dir"],
+                # A gate closed before any claim: no monitor ran or can, so no sync is coming (#597).
+                lane_dir=None if never_ran else r["lane_dir"],
             )
+            if never_ran:
+                out["termination"]["gate"] = "closed"
         return out
 
     def vm_recipe_doctor(self, recipe_id: str) -> dict[str, Any]:

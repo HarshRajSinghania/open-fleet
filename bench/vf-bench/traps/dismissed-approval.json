@@ -1,0 +1,90 @@
+{
+  "id": "dismissed-approval-1",
+  "class": "dismissed-approval",
+  "sound_expected": "RED",
+  "note": "#600: the reviewer APPROVED at head_sha and that approval was then superseded by the same reviewer's DISMISSED review at head_sha \u2014 dismissed and not replaced. The latest state per reviewer governs; an approval that was withdrawn is not counted from history.",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "gh_stub": true,
+  "repo": "vf-bench/dismissed-approval",
+  "gh_reviews": [
+    {
+      "user": {
+        "login": "vf-reviewer"
+      },
+      "state": "APPROVED",
+      "commit_id": "{{head_sha}}",
+      "author_association": "MEMBER"
+    },
+    {
+      "user": {
+        "login": "vf-reviewer"
+      },
+      "state": "DISMISSED",
+      "commit_id": "{{head_sha}}",
+      "author_association": "MEMBER"
+    }
+  ],
+  "manifest": {
+    "unit": "vf-bench-dismissed-approval",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  },
+  "expect_reason": "no INDEPENDENT APPROVED review at head_sha",
+  "neighbour": "reapproved-valid-control-1"
+}

@@ -31,8 +31,9 @@ Checks (evidence-manifest.md section 2), scope FIRST:
   6. redaction: the manifest and every named artifact are scanned for credential shapes (#14).
   7. ancestry (best-effort) · 8. symbol-on-base (best-effort).
   9. intent packet (mutation units) · 10. lighting legality · 11. reviewer_mode legality ·
-  12. Art-12/50 provenance presence (claims only) · 13. signed dispatch provenance (#135) ·
-  14. class downgrade measured against the actual diff (#310).
+  12. Art-12/50 provenance presence (claims only) · 12b. the provenance retention receipt bound
+  OFFLINE to its signed inventory and this manifest, when claimed (#608) · 13. signed dispatch
+  provenance (#135) · 14. class downgrade measured against the actual diff (#310).
 
 Every evidence path is repo-relative and bounded by the git toplevel; a manifest-named artifact is
 PINNED — tracked at head_sha, or hashed in the manifest's `artifacts[]` inventory (#267); a tracked
@@ -43,6 +44,7 @@ Usage:
               [--repo owner/name] [--unit-class mutation|report-only|planning]
               [--execute-nc --nc-command <cmd>] [--base <branch>] [--symbol <tok>]
               [--transcript-out <path> [--transcript-key <seed>]]
+              [--retention-pubkey <path|path@ref>]
     # exit 0 = all REQUIRED checks pass · 1 = usage/dependency · 2 = a REQUIRED invariant FAILED
     # --transcript-out writes the verdict as a machine-readable object; with --transcript-key it
     # is the coordinator-SIGNED envelope run_report.py requires against .orca/dispatch-pubkey
@@ -2592,10 +2594,6 @@ def _gitleaks_scan(path):
     return None
 
 
-def _scan_text(text):
-    return sorted({name for name, rx in REDACTION_PATTERNS if rx.search(text)})
-
-
 def check_redaction(m, manifest_path):
     """6. Redaction (audit §3 item 14). A manifest is SHA-pinned and permanent, and so is anything
     quoted into it or into an artifact it names. Scan the manifest JSON and every named artifact
@@ -2639,7 +2637,8 @@ def check_redaction(m, manifest_path):
     with tempfile.TemporaryDirectory(prefix="orca-redaction-") as folder:
         scan_path = Path(folder) / "evidence.txt"
         for label, raw in targets:
-            kinds = _scan_text(raw.decode("utf-8", "replace"))
+            text = raw.decode("utf-8", "replace")
+            kinds = sorted({name for name, rx in REDACTION_PATTERNS if rx.search(text)})
             scan_path.write_bytes(raw)
             if _gitleaks_scan(scan_path) is True and not kinds:
                 kinds = ["gitleaks-rule"]
@@ -2762,6 +2761,115 @@ def check_provenance(m):
             "(EU AI Act Art-12/50 record incomplete)"] if missing else []
 
 
+def check_retention_receipt(m, pubkey_ref=None):
+    """12b. #608: the OFFLINE binding of `provenance.retention` — the path of a v1 transparency-log
+    receipt (inventory.py RECEIPT_SCHEMA) — to the signed run-close inventory it names and to THIS
+    manifest. check_provenance above stays presence-only; this check is what makes it binding.
+
+    The binding is CLAIMED by the manifest (`provenance.retention_receipt`, the schema id) or by the
+    coordinator handing over trust material (--retention-pubkey: a path or path@ref, normally the
+    coordinator's .orca/dispatch-pubkey read at a ref the worker cannot move). Neither: [] — legacy
+    provenance keeps its documented presence-only check, and a run that never uploaded owes no
+    receipt. A manifest claim with no key supplied fails closed: a key inside a receipt never
+    establishes trust, so without the supplied one there is nothing to verify it against.
+
+    Claimed and keyed, every link must hold or the unit is refused: the receipt is read (a
+    repo-relative path, bounded like all evidence, #267) → its v1 shape → signer identity and
+    signature under the SUPPLIED key → its unit and source revision equal this manifest's `unit`
+    and `head_sha` (another run's receipt) → the document it names carries an inventory-signature
+    that verifies under the same key over exactly its entries → the receipt's digest is that
+    signed digest (another inventory's receipt) → that inventory pins this manifest's exact bytes.
+    Neither file is read through the artifacts[] pin: the inventory pins the manifest, so the
+    manifest cannot pin the receipt that binds the inventory — both are authenticated by signature.
+
+    Verified: exactly those links, offline; nothing here makes a network call. NOT verified, and
+    the NOTE says so: that the log entry exists or is included in any log (a live lookup the
+    maintainer runs out of band), any retention period, that the listed files still hash to the
+    inventory (inventory.py check / run_report.py), or any legal determination."""
+    prov = m.get("provenance") if isinstance(m.get("provenance"), dict) else {}
+    claim = prov.get("retention_receipt")
+    if claim is None and not pubkey_ref:
+        return []
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "inventory", Path(__file__).resolve().parent / "inventory.py")
+        inv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inv)
+    except Exception as exc:
+        return [f"retention receipt binding claimed, but inventory.py — which owns the receipt and "
+                f"inventory forms — is unavailable ({exc}); fail-closed (#608)"]
+    if claim is not None and claim != inv.RECEIPT_SCHEMA:
+        return [f"provenance.retention_receipt claims {claim!r}; this verifier binds "
+                f"{inv.RECEIPT_SCHEMA!r} only — fail-closed (#608)"]
+    if not pubkey_ref:
+        return [f"provenance claims the {claim} retention binding, but no trust material was supplied "
+                "(--retention-pubkey) — a key inside a receipt never establishes trust, so there is "
+                "nothing to verify it against; fail-closed (#608)"]
+    pub_text, err = read_source(pubkey_ref)
+    try:
+        pub = b"" if err else bytes.fromhex(pub_text.decode("utf-8").strip())
+    except (UnicodeDecodeError, ValueError) as exc:
+        pub, err = b"", str(exc)
+    if len(pub) != 32:
+        return [f"retention trust key {pubkey_ref} is unreadable or not a 32-byte Ed25519 public "
+                f"key ({err or 'wrong length'}) — fail-closed (#608)"]
+
+    def read(what, path):
+        """Bytes of a repo-relative file, bounded by _resolve (#267), or the reason why not."""
+        if not (isinstance(path, str) and path.strip()):
+            return None, f"no {what} path is named"
+        if "@" in path:
+            return None, f"{what} {path!r} must be a repo-relative path, not a path@ref (#267)"
+        full, why = _resolve(path)
+        if why:
+            return None, f"{what} {path!r} refused: {why}"
+        if not full.exists():
+            return None, f"{what} {path!r} is missing — no file at that path"
+        try:
+            return full.read_bytes(), None
+        except OSError as exc:
+            return None, f"{what} {path!r} is unreadable ({exc})"
+
+    receipt = prov.get("retention")
+    raw, err = read("retention receipt", receipt)
+    if err:
+        return [f"{err}; the retention binding is claimed, so it fails closed (#608)"]
+    try:
+        envelope = inv.parse_receipt(raw)
+    except inv.ReceiptRefused as why:
+        return [f"retention receipt {receipt} is unreadable as a v1 receipt ({inv.RECEIPT_SCHEMA}): "
+                f"{why} (#608)"]
+    try:
+        record = inv.verify_receipt(envelope, pub, m.get("unit"), m.get("head_sha"))
+    except inv.ReceiptRefused as why:
+        return [f"retention receipt {receipt} refused: {why} (#608)"]
+    doc, err = read("inventory document", record["inventory"])
+    if err:
+        return [f"retention receipt {receipt}: {err}; fail-closed (#608)"]
+    try:
+        digest, entries = inv.bind_receipt(record, doc.decode("utf-8").splitlines(), pub)
+    except UnicodeDecodeError as exc:
+        return [f"retention receipt {receipt}: {record['inventory']} is not UTF-8 text ({exc}); "
+                "fail-closed (#608)"]
+    except inv.ReceiptRefused as why:
+        return [f"retention receipt {receipt} refused: {why} (#608)"]
+    raw_manifest = getattr(m, "raw", None)
+    mine = hashlib.sha256(raw_manifest).hexdigest() if raw_manifest is not None else None
+    if mine is None or all(pinned != mine for _idx, _path, pinned, _shape in entries):
+        return [f"retention receipt {receipt} refused: {record['inventory']} does not pin this "
+                f"manifest's exact bytes (sha256 {mine}) — the receipt covers some other record of "
+                "this unit (#608)"]
+    return [f"NOTE: retention receipt {receipt} verified OFFLINE against the supplied key (#608): "
+            f"signed by {record['signer']} over the {inv.RECEIPT_SCHEMA} payload, binding unit "
+            f"{record['unit']!r} at source revision {record['source_revision'][:12]} to inventory "
+            f"digest {digest[:12]}… of {record['inventory']}, whose entries carry the same key's "
+            "signature and pin this manifest's bytes. NOT verified: that log entry "
+            f"{record['entry_uuid'][:16]}… (index {record['log_index']}) exists or is included in "
+            "any transparency log (a live lookup run out of band), any retention period or storage, "
+            "that the listed files still hash to the inventory (inventory.py check / run_report.py), "
+            "or any legal or regulatory determination"]
+
+
 # The dispatch fields the gate ENFORCES — a mirror of dispatch-sign.py's _RECORD_FIELDS pinned by
 # the parity test, never a canonical form: _canonical_dispatch signs through the signer itself, so
 # a record carrying the signer's _PROFILE_FIELDS (#590) verifies too (2026-10-23 review, P2-2).
@@ -2806,10 +2914,13 @@ class _Transcript:
     # per file into toolchain.files; run_report.py (TOOLCHAIN_FILES mirrors this) binds each to
     # the file at the graded pin, so a substituted sibling can no longer sign a byte-identical
     # envelope. This binds the verifier's identity, nothing more.
-    TOOLCHAIN = ("verify.py", "_verify_sig.py", "diff_scope.py", "ed25519.py", "dispatch-sign.py")
+    # #608: check_retention_receipt loads inventory.py (which loads gitexec.py), so both are part
+    # of what this verifier IS once a receipt is checked — hashed like every other sibling.
+    TOOLCHAIN = ("verify.py", "_verify_sig.py", "diff_scope.py", "ed25519.py", "dispatch-sign.py",
+                 "inventory.py", "gitexec.py")
     ARGS = ("contract_source", "contract_digest", "repo", "base", "symbol", "execute_nc",
             "unit_class", "no_gh", "lighting", "lane", "dispatch_record", "dispatch_pubkey",
-            "nc_command", "git_dir", "evidence_root", "provenance")
+            "nc_command", "git_dir", "evidence_root", "provenance", "retention_pubkey")
 
     @staticmethod
     @functools.lru_cache(maxsize=1)
@@ -3104,9 +3215,11 @@ def check_replay_request(m, is_mutation, execute_nc, nc_command):
 
 def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
            base=None, symbol=None, execute_nc=False, unit_class=None, no_gh=False, lighting=None,
-           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None, judged=None):
+           dispatch_record=None, dispatch_pubkey=None, nc_command=None, lane=None, judged=None,
+           retention_pubkey=None):
     """Return (fatal_errors, notes). fatal_errors non-empty => exit 2. A `judged` dict receives
-    the manifest bytes this run loaded (`judged["raw"]`), for the transcript to bind to."""
+    the manifest bytes this run loaded (`judged["raw"]`), for the transcript to bind to.
+    `retention_pubkey` is the coordinator's trust key for the retention receipt (#608)."""
     m, err = load_manifest(manifest_path)
     if err:
         return None, err
@@ -3169,6 +3282,7 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
         lambda: check_lighting(m, is_mut, lighting, lane),
         lambda: check_reviewer_mode(m, is_mut),
         lambda: check_provenance(m),
+        lambda: check_retention_receipt(m, retention_pubkey),
         lambda: check_replay_request(m, is_mut, execute_nc, nc_command),
     ))
     nc_executed = False
@@ -3274,6 +3388,14 @@ def main(argv=None):
                          "repo is never consulted for evidence bytes — a same-path blob there is "
                          "not this manifest's evidence — so cross-repo evidence passes only on "
                          "its artifacts[] sha256 pin, read from the evidence root")
+    ap.add_argument("--retention-pubkey", default=None, metavar="PATH[@REF]",
+                    help="the COORDINATOR's trust key for the provenance retention receipt (#608): "
+                         "a path or path@ref, normally .orca/dispatch-pubkey at a ref the worker "
+                         "cannot move. Supplied, provenance.retention must name a v1 receipt that "
+                         "verifies OFFLINE under THIS key and binds its signed inventory and this "
+                         "manifest — a key inside the receipt is never trusted. Absent, a manifest "
+                         "that claims the binding (provenance.retention_receipt) fails closed and "
+                         "unclaimed provenance stays presence-only")
     ap.add_argument("--transcript-out", default=None, metavar="PATH",
                     help="write the verdict as a machine-readable TRANSCRIPT object (#281/#386): "
                          "unit, manifest path+sha256, the full argument tuple, fatal/notes, exit, "
@@ -3329,7 +3451,7 @@ def main(argv=None):
                            repo, args.base, args.symbol, args.execute_nc,
                            args.unit_class, args.no_gh, args.lighting,
                            args.dispatch_record, args.dispatch_pubkey, args.nc_command,
-                           lane=args.lane, judged=judged)
+                           lane=args.lane, judged=judged, retention_pubkey=args.retention_pubkey)
     if load_err:
         print(f"FAIL: {load_err}", file=sys.stderr)
         print("verify: evidence manifest malformed/unreadable — unit is NOT done", file=sys.stderr)

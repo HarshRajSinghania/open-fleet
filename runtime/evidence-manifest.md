@@ -38,7 +38,7 @@ The worker writes it to the path the dispatcher passed as Orca's typed `--report
   "reviewer_mode": "<cross-vendor | same-vendor-fresh | instructed-isolation — how independent the review REALLY was>",
   "review": {"artifact": "docs/reports/<unit>/review.txt"},
   "toolchain": "<node 24 / python 3.12 / …>",
-  "provenance": {"spec_version": "<governing spec/policy@version>", "model": "<impl model+version>", "reviewer": "<identity+timestamp>", "retention": "<log-receipt path>", "standard": "<EU-AI-Act-Art-12 | SOC2 | SSDF | none>"},
+  "provenance": {"spec_version": "<governing spec/policy@version>", "model": "<impl model+version>", "reviewer": "<identity+timestamp>", "retention": "<log-receipt path>", "retention_receipt": "<optional v1 claim>", "standard": "<EU-AI-Act-Art-12 | SOC2 | SSDF | none>"},
   "metric_contract": {"metric": "<streak / benchmark / coverage>", "target": "<pre-declared target + confidence>", "method": "<how measured, e.g. 30 runs varied seed>"},
   "parked": [{"item": "<what>", "reason": "<one-way / no-safe-sandbox / needs-human>", "gate": "<gate id>"}],
   "claim": "<the worker's own summary — informational only, NEVER the completion oracle>"
@@ -93,9 +93,8 @@ head_sha). Rules:
   stop-list decision stays a human dispatch gate.
 - `provenance` (optional, any class) is supporting metadata; a named standard (not `none`) makes `spec_version`, `model`, `reviewer` and `retention` required non-empty —
   presence only: not truth, operational logging, disclosure, marking or conformance. `retention` names the run's Rekor-style transparency-log RECEIPT (`log_index`,
-  `entry_uuid`, `signature` over the signed inventory's digest) committed beside the inventory — an OPTIONAL coordinator upload with an egress.py receipt, never a gate;
-  the check owed is OFFLINE — its fields binding that digest (verify.py today: presence only) — and proves the receipt covers these bytes, not that the log is reachable
-  or trusted.
+  `entry_uuid`, signed inventory digest) beside the inventory — an OPTIONAL coordinator upload with an egress.py receipt, never a gate; claimed (`retention_receipt`
+  or `--retention-pubkey`), verify.py checks it OFFLINE under the supplied key: it covers these bytes, not that the log is reachable or trusted.
 - `claim` is the worker's narration — the verifier ignores it except as a hint.
 
 ## 2. Independent verification (the coordinator, or a fresh verifier worker)

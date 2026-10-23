@@ -197,7 +197,7 @@ timeout 5 orca orchestration reset        -> ALLOW
   (guard-surface, silenced-checker, test-made-easier, threshold-lowered, assertion-removed) is
   silent for tracked and untracked files alike.
 - Reproduced from the reviewer's clone: a PR adding `* -diff`, lowering `.coveragerc`
-  `fail_under` 80 to 10, adding `# noqa`, adding `@unittest.skip` and lowering a CONSTRAINTS row
+  `fail_under` 80 to 10, adding a `noqa` comment, adding a test-skip decorator and lowering a CONSTRAINTS row
   prints `floor-guard: clean`, exit 0. The same edits without the attribute print two
   `[guard-surface] .coveragerc:2` violations, exit 1. Adding `--text` restores the diff.
 
@@ -210,7 +210,7 @@ timeout 5 orca orchestration reset        -> ALLOW
   `floor-waiver:<rule>:<path>` and answer `allow`; the class may be `taste`, no human source or
   signature is required, and `decisions.py append --ts 2099-…` out-ranks a prior human `deny`
   in `active()`.
-- Reproduced: a PR that adds `# noqa` to `src/app.py` and one line to `docs/DECISIONS.md`
+- Reproduced: a PR that adds a `noqa` comment to `src/app.py` and one line to `docs/DECISIONS.md`
   prints `floor-guard: clean (1 waived)`, exit 0. At the merge base the waiver file does not
   exist, so reading waivers from the base ref would have refused it.
 
@@ -560,8 +560,8 @@ Items marked (reviewer) were reproduced by the layer reviewer and read, not re-r
 - egress.py is an append-only hash chain under `flock` with 0600 files and fail-closed exits.
 - decisions.py refuses credential-shaped answers, a `--source` typed into prose, and a one-way
   line with no human source; keygen refuses an unignored worktree and writes the seed 0600.
-- Of 3,017 test methods scanned, none asserts on literals, none wraps an assertion in
-  `try/except: pass`, none patches the function under test, none needs the network, and every
+- Of 3,017 test methods scanned, none asserts on literals, none wraps an assertion in an
+  except clause that only passes, none patches the function under test, none needs the network, and every
   committing test sets its own git identity. All 18 skip sites are conditional and none is
   always-true on CI.
 - 1,241 relative links and anchors across the top-level docs, 22 mission guides and 22 SKILLs

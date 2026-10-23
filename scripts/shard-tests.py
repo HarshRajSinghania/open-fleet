@@ -104,6 +104,7 @@ WEIGHTS = {
     "test_pins": 0.1,
     "test_pm": 0.1,
     "test_posix_crash_recovery": 23.7,
+    "test_posix_docker_crash": 0.3,
     "test_posix_provider": 10.7,
     "test_preflight": 5.4,
     "test_proof_status": 0.4,

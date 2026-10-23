@@ -6204,5 +6204,41 @@ class ConfigFilterEqualsNameNeverRunsInTheControl(ConfigFilterByteNameNeverRunsI
     NAME = b"a=b"
 
 
+class ConfigRequiredFilterNeverRunsInTheControl(ConfigFilterNeverRunsInTheControl):
+    """PR #649 review (PRRT_kwDOTWxN9c6vvon0): the planted filter is also `required=true`. With
+    only its command blanked, git dies `clean/smudge filter 'p' failed` in the control's
+    `worktree add`, so a worker could fail every unit it touched. The inherited cases require a
+    GREEN control that runs nothing, and a mutation control that still runs the filter."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("config", "filter.p.required", "true")
+
+
+class ConfigRequiredFilterWithNoCommandNeverStopsTheControl(MutationFixture):
+    """`filter.<driver>.required=true` with NO command declared: plain git dies on any matching
+    file, with no command to blank. The executed control must still run and go GREEN."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("config", "filter.r.required", "true")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=r\n", encoding="utf-8")
+
+    def test_a_required_filter_with_no_command_does_not_stop_the_control(self):
+        # Positive control: bare git dies cleaning a matching file. (git skips a smudge it has no
+        # command for, so the clean side is where a command-less required filter bites — and where
+        # a blanked-but-still-required smudge bit the control's `worktree add`.)
+        plain = subprocess.run(["git", "hash-object", "--path=app.py", "app.py"], cwd=self.repo,
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertNotEqual(plain.returncode, 0, "a required filter with no command did not stop git")
+        self.assertIn("filter 'r' failed", plain.stderr)
+        rc, out, err = self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                                      "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertEqual(rc, 0, out + err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

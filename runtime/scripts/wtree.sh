@@ -106,8 +106,21 @@ if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0'
   set -f
   for _k in $BLANK_KEYS; do
     case "$_k" in
-      filter.*.clean|filter.*.smudge|filter.*.process|diff.*.textconv|diff.*.command)
-        # `\$_k` stays literal in the eval'd text, so the key's bytes are assigned, never parsed.
+      filter.*.*)
+        # A filter is neutralised WHOLE: commands blank AND required=false, since git dies on a
+        # required filter that runs nothing — blanked, or with no command declared (PR #649).
+        # Repeats for a name's other keys are harmless (same pairs, last one wins).
+        _d=${_k#filter.}
+        _d=${_d%.*}
+        for _v in clean smudge process required; do
+          _key="filter.$_d.$_v"
+          _val=
+          [ "$_v" = required ] && _val=false
+          # `\$_key` stays literal in the eval'd text: the key's bytes are assigned, never parsed.
+          eval "GIT_CONFIG_KEY_$_n=\$_key; GIT_CONFIG_VALUE_$_n=\$_val; export GIT_CONFIG_KEY_$_n GIT_CONFIG_VALUE_$_n"
+          _n=$((_n + 1))
+        done ;;
+      diff.*.textconv|diff.*.command)
         eval "GIT_CONFIG_KEY_$_n=\$_k; GIT_CONFIG_VALUE_$_n=; export GIT_CONFIG_KEY_$_n GIT_CONFIG_VALUE_$_n"
         _n=$((_n + 1)) ;;
     esac

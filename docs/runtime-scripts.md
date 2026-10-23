@@ -819,8 +819,12 @@ transport, and — with the two object-rewrite env vars — a planted `refs/repl
 `filter.<driver>.clean/smudge/process` or `diff.<driver>.textconv`/`command` git runs when a
 `.gitattributes` (or `$GIT_DIR/info/attributes`, which outranks any `--attr-source`) line selects
 `<driver>`. `-c` cannot enumerate an unknown `<driver>`, so it reads the driver names the repo's
-OWN config declares — the only source of such a command — and returns `(key, "")` pairs blanking
-each (empty value = git runs no command, passing content through), which a caller passes as
+OWN config declares — the only source of such a command — and returns `(key, value)` pairs that
+neutralise each: a declared filter gets `clean`/`smudge`/`process` blank AND `required=false`
+(git dies on a required filter that runs nothing — blanked, or with no command declared — so
+blanking alone let a planted `required=true` stop every gate; PR #649 review), a `diff.<driver>`
+gets its `textconv`/`command` blank; git then runs no command and passes the working-tree bytes
+through as they are. A caller passes them as
 `env(blanks=...)`: appended GIT_CONFIG_KEY_n/VALUE_n pairs, never `-c <key>=` argv, which splits a
 name holding `=` at its first `=` and blanks a different key. The config is read as bytes and each
 key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any

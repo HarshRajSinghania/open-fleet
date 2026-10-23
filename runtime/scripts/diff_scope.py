@@ -193,10 +193,11 @@ def _git_env(blanks=()):
 
 # gitexec.driver_blanks, inlined (verify.py loads this file by path; see the module note on
 # _git_env). Blanks every filter/diff driver command the repo DECLARES — the attribute-selected
-# exec channel a fixed -c cannot name (#629). Bytes in, os.fsdecode'd keys out (PR #649).
-_DRIVER_KEY_RE = re.compile(
-    rb"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z",
-    re.S)
+# exec channel a fixed -c cannot name (#629). Bytes in, os.fsdecode'd keys out, and each declared
+# filter neutralised whole — commands blank AND required=false, or git dies on it (PR #649).
+_FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
+_DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
+_FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
 
 
 def _driver_blanks(repo):
@@ -207,8 +208,16 @@ def _driver_blanks(repo):
         return []
     if r.returncode != 0:
         return []
-    return [(os.fsdecode(key), "") for key in r.stdout.split(b"\0")
-            if _DRIVER_KEY_RE.match(key)]
+    pairs, named = [], set()
+    for key in r.stdout.split(b"\0"):
+        filt = _FILTER_KEY_RE.match(key)
+        if filt and filt.group(1) not in named:
+            named.add(filt.group(1))
+            pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                      for var, value in _FILTER_BLANKS]
+        elif not filt and _DIFF_COMMAND_KEY_RE.match(key):
+            pairs.append((os.fsdecode(key), ""))
+    return pairs
 
 
 def git(repo, *args, tolerate=False, blanks=()):

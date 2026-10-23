@@ -127,15 +127,23 @@ class GitexecDriverBlanks(unittest.TestCase):
         p._git("config", "filter.my.lfs.clean", "danger clean")
         # (key, value) pairs for gitexec.env(blanks=...), each key exactly as declared, each
         # value empty (git runs no command): an env pair, never a `-c` token (PR #649 review).
+        # A filter is neutralised WHOLE — every command blank and required=false (PR #649).
         self.assertEqual(set(gitexec.driver_blanks(p.repo)), {
             ("filter.media.clean", ""), ("filter.media.smudge", ""), ("filter.media.process", ""),
-            ("diff.jpg.textconv", ""), ("diff.jpg.command", ""), ("filter.my.lfs.clean", "")})
+            ("filter.media.required", "false"),
+            ("diff.jpg.textconv", ""), ("diff.jpg.command", ""),
+            ("filter.my.lfs.clean", ""), ("filter.my.lfs.smudge", ""),
+            ("filter.my.lfs.process", ""), ("filter.my.lfs.required", "false")})
 
     def test_a_non_command_key_is_not_blanked(self):
         p = self._repo()
         p._git("config", "filter.media.required", "true")
         p._git("config", "diff.jpg.binary", "true")
-        self.assertEqual(gitexec.driver_blanks(p.repo), [])
+        # PR #649 review (PRRT_kwDOTWxN9c6vvon0): a declared filter is neutralised whole even with
+        # no command (git dies on a required one), while a diff driver's non-command key is not.
+        self.assertEqual(gitexec.driver_blanks(p.repo), [
+            ("filter.media.clean", ""), ("filter.media.smudge", ""),
+            ("filter.media.process", ""), ("filter.media.required", "false")])
 
     def test_the_toolchain_copies_blank_exactly_what_gitexec_blanks(self):
         # diff_scope.py inlines driver_blanks and verify.py's _Authority mirrors it (each runs its
@@ -149,7 +157,7 @@ class GitexecDriverBlanks(unittest.TestCase):
             p._git("config", key, "danger")
         p._git("config", "filter.media.required", "true")
         want = gitexec.driver_blanks(p.repo)
-        self.assertEqual(len(want), 6)
+        self.assertEqual(len(want), 10)
         self.assertEqual(diff_scope._driver_blanks(p.repo), want)
         self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
 
@@ -264,13 +272,11 @@ class WtreeFingerprint(unittest.TestCase):
         # so the planted channels prove they were dormant only because of the hardening.
         p = self._repo()
         src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
-        # Drop the env belt so core.fsmonitor is honoured again, and the driver-blank arm so no
-        # filter key is ever appended (the blanks ride exported GIT_CONFIG_* pairs, PR #649).
-        stripped = src.replace("GIT_CONFIG_COUNT=3", "GIT_CONFIG_COUNT=0")
-        stripped = stripped.replace(
-            "filter.*.clean|filter.*.smudge|filter.*.process|diff.*.textconv|diff.*.command)",
-            "__never_a_config_key__)")
-        self.assertEqual(stripped.count("__never_a_config_key__"), 1, "the blank arm moved")
+        # Every hardening pair — the env belt and the driver blanks — rides the GIT_CONFIG_* pairs
+        # wtree.sh exports, counted by one final assignment (PR #649). Zero it: core.fsmonitor is
+        # honoured again and no filter key is blanked.
+        self.assertEqual(src.count("GIT_CONFIG_COUNT=$_n"), 1, "the count assignment moved")
+        stripped = src.replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0")
         self.assertNotEqual(stripped, src, "the control did not change wtree.sh")
         mutant = p.dir / "wtree_control.sh"
         mutant.write_text(stripped, encoding="utf-8")
@@ -364,6 +370,94 @@ class ByteExactDriverNames(unittest.TestCase):
         self.assertTrue(want)
         self.assertEqual(diff_scope._driver_blanks(p.repo), want)
         self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
+
+
+# PR #649 review (PRRT_kwDOTWxN9c6vvon0): `filter.<driver>.required=true` makes git DIE when the
+# filter does not run (`clean filter '<driver>' failed`) — with its command blanked, or with no
+# command declared at all. A worker could plant one and stop every gate that reads a matching
+# file: a denial of service on the coordinator. Each gate must override it to false, run
+# nothing, and still read the working-tree bytes exactly as they are.
+_RAW_LINE = "RAW-WORKTREE-LINE"
+
+
+class RequiredFilters(unittest.TestCase):
+
+    def _repo(self, with_command):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        p._git("config", "filter.req.required", "true")
+        if with_command:
+            for var in ("clean", "smudge"):
+                p._git("config", f"filter.req.{var}", f"{p.probe} {var}")
+        info = p.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.txt filter=req\n", encoding="utf-8")
+        (p.repo / "a.txt").write_text(f"line1\n{_RAW_LINE}\n", encoding="utf-8")
+        (p.repo / "b.txt").write_text("brand new\n", encoding="utf-8")
+        # Positive control: plain git honours the required filter — it runs the planted command,
+        # or, with none declared, dies — so a GREEN below is not vacuous.
+        plain = p._git("diff", "--no-ext-diff", "--no-textconv", "HEAD", "--")
+        if with_command:
+            self.assertIn("clean", p.fired(), "the planted required filter is not live")
+        else:
+            self.assertNotEqual(plain.returncode, 0, "a required filter with no command did not stop git")
+            self.assertIn("filter 'req' failed", plain.stderr)
+        return p, base
+
+    def _raw_tree(self, p):
+        """The tree of the working tree's RAW bytes (no filter), built in a throwaway index."""
+        idx = p.dir / "raw-index"
+        env = {**_CLEAN_ENV, "GIT_INDEX_FILE": str(idx)}
+
+        def run(*a):
+            return subprocess.run(["git", "-C", str(p.repo), *a], env=env, check=True,
+                                  capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        run("read-tree", "HEAD")
+        for name in ("a.txt", "b.txt"):
+            blob = run("hash-object", "--no-filters", "-w", name).stdout.strip()
+            run("update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
+        return run("write-tree").stdout.strip()
+
+    def test_floor_guard_reads_raw_bytes_and_neither_runs_nor_dies(self):
+        for with_command in (True, False):
+            with self.subTest(with_command=with_command):
+                p, base = self._repo(with_command)
+                text = floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))
+                self.assertIn("+" + _RAW_LINE, text)
+                self.assertIn("+brand new", text)
+                self.assertEqual(p.fired(), set(), "floor_guard ran the required filter")
+
+    def test_diff_scope_reads_the_change_and_neither_runs_nor_dies(self):
+        for with_command in (True, False):
+            with self.subTest(with_command=with_command):
+                p, base = self._repo(with_command)
+                self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
+                diff_scope.scope(p.repo, base)
+                self.assertEqual(p.fired(), set(), "diff_scope ran the required filter")
+
+    def test_the_wtree_fingerprint_is_the_raw_tree_and_neither_runs_nor_dies(self):
+        for with_command in (True, False):
+            with self.subTest(with_command=with_command):
+                p, _ = self._repo(with_command)
+                out, err = evidence_run.working_tree_fingerprint(str(p.repo))
+                self.assertIsNone(err, err)
+                self.assertEqual(p.fired(), set(), "wtree.sh ran the required filter")
+                self.assertEqual(out, self._raw_tree(p))
+
+    def test_the_enumeration_overrides_required_for_every_declared_filter(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        p._git("config", "filter.req.required", "true")      # no command at all
+        p._git("config", "diff.jpg.binary", "true")           # not a command: nothing to blank
+        blanks = dict(gitexec.driver_blanks(p.repo))
+        self.assertEqual(blanks.get("filter.req.required"), "false")
+        for var in ("clean", "smudge", "process"):
+            self.assertEqual(blanks.get(f"filter.req.{var}"), "")
+        self.assertFalse([k for k in blanks if k.startswith("diff.jpg.")], blanks)
 
 
 if __name__ == "__main__":

@@ -93,9 +93,13 @@ HARDENED = {
 # channel for driver names no fixed -c could have named (#629). Matched as BYTES: a driver
 # name is whatever bytes git accepts (0xff, an invalid UTF-8 sequence, a `.`, an `=`), and
 # a .gitattributes line selects that exact name (PR #649 review).
-_DRIVER_KEY_RE = re.compile(
-    rb"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z",
-    re.S)
+# A filter is neutralised WHOLE, once per declared name: commands blanked AND `required=false`,
+# because a required filter that runs nothing makes git die (`clean filter '<driver>' failed`) —
+# with its command blanked, or with none declared at all — and a worker could stop every gate
+# that reads a matching file (PR #649 review). A diff driver carries no `required`.
+_FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
+_DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
+_FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
 
 
 def argv(*args):
@@ -136,6 +140,11 @@ def driver_blanks(repo):
     content through — the raw bytes a scanner wants. A read that never materialises worktree
     content selects no filter and may skip this.
 
+    Every declared filter gets all four of clean/smudge/process blank and ``required=false``:
+    git dies on a required filter that runs nothing, so blanking the commands alone turned a
+    planted ``required=true`` into a gate that cannot run (PR #649 review). Git then passes the
+    working-tree bytes through untouched. A diff driver's non-command keys are left alone.
+
     Fail-closed to the EMPTY list only on a git error (never a reason to trust a planted
     driver): callers add these pairs on top of ``--no-ext-diff``/``--no-textconv`` and the
     static belt, so an empty list leaves those in force. The config is read as BYTES and each
@@ -150,5 +159,18 @@ def driver_blanks(repo):
         return []
     if out.returncode != 0:
         return []
-    return [(os.fsdecode(key), "") for key in out.stdout.split(b"\0")
-            if _DRIVER_KEY_RE.match(key)]
+    return _blank_pairs(out.stdout)
+
+
+def _blank_pairs(listing):
+    """``git config --list -z --name-only`` bytes -> driver_blanks pairs (see its docstring)."""
+    pairs, named = [], set()
+    for key in listing.split(b"\0"):
+        filt = _FILTER_KEY_RE.match(key)
+        if filt and filt.group(1) not in named:
+            named.add(filt.group(1))
+            pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                      for var, value in _FILTER_BLANKS]
+        elif not filt and _DIFF_COMMAND_KEY_RE.match(key):
+            pairs.append((os.fsdecode(key), ""))
+    return pairs

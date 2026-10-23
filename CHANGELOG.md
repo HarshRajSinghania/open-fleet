@@ -27,9 +27,11 @@ truth is `.claude-plugin/plugin.json`.
     diffs, and verify.py's negative-control `worktree add` / `checkout` / `write-tree`, pass its
     pairs as appended `GIT_CONFIG_KEY_n`/`VALUE_n` env entries, read from the config as BYTES so a
     name holding `0xff`, an invalid UTF-8 sequence or an `=` is blanked as itself (a text decode or
-    a `-c <key>=` token named a different driver; PR #649 review); reads of committed objects alone
-    (inventory, decisions `--pin-ref`) never select a
-    filter and skip it. `wtree.sh` gets the same env belt and driver blanks (its `add -A` and
+    a `-c <key>=` token named a different driver; PR #649 review). Each declared filter is
+    neutralised whole — commands blank and `required=false` — since git dies on a required filter
+    that runs nothing, which let a planted `required=true` (or a local Git LFS) stop every gate
+    (PR #649 review); the gate reads the working-tree bytes as they are. Reads of committed
+    objects alone (inventory, decisions `--pin-ref`) never select a filter and skip it. `wtree.sh` gets the same env belt and driver blanks (its `add -A` and
     `write-tree` ran a selected filter and `core.fsmonitor`); its attribute-selected filters are
     blanked, while global/system config stays in force so a committed tree still fingerprints
     faithfully.

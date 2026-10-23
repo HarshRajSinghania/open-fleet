@@ -964,10 +964,11 @@ class _Authority:
     # every verifier git leg runs the custody-pinned git_bin() under git_env() — so does this.
     # A config key named here is the ONLY source of a filter/diff-driver command, and `-c`
     # cannot wildcard the <driver>. tests/test_gitexec_config_commands.py holds it to gitexec's.
-    # BYTES: a driver name is any bytes git accepts, and the attribute selects exactly those.
-    _DRIVER_KEY_RE = re.compile(
-        rb"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z",
-        re.S)
+    # BYTES: a driver name is any bytes git accepts, and the attribute selects exactly those. A
+    # filter is neutralised whole — commands blank AND required=false, or git dies on it (#649).
+    _FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
+    _DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
+    _FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
 
     @classmethod
     def driver_blanks(cls, repo):
@@ -981,13 +982,23 @@ class _Authority:
         command. Fail-closed to the empty list on a git error — the fixed belt stays in force.
         Read as BYTES (_run_bytes: a text decode of a 0xff name either raises or names another
         driver) and each key handed back through os.fsdecode, which subprocess reverses, so git
-        gets exactly the bytes it declared (PR #649 review)."""
+        gets exactly the bytes it declared (PR #649 review). Each declared filter also gets
+        `required=false`: git dies on a required filter that runs nothing, which made a planted
+        `required=true` fail the control's `worktree add` or `checkout` (PR #649 review)."""
         code, out, _ = _run_bytes([cls.git_bin(), "-C", str(repo), "config", "--list", "-z",
                                    "--name-only"], env=cls.git_env())
         if code != 0:
             return []
-        return [(os.fsdecode(key), "") for key in out.split(b"\0")
-                if cls._DRIVER_KEY_RE.match(key)]
+        pairs, named = [], set()
+        for key in out.split(b"\0"):
+            filt = cls._FILTER_KEY_RE.match(key)
+            if filt and filt.group(1) not in named:
+                named.add(filt.group(1))
+                pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                          for var, value in cls._FILTER_BLANKS]
+            elif not filt and cls._DIFF_COMMAND_KEY_RE.match(key):
+                pairs.append((os.fsdecode(key), ""))
+        return pairs
 
     @classmethod
     def blanked_env(cls, blanks):

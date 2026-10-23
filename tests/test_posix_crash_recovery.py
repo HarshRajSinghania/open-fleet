@@ -872,6 +872,105 @@ class TestRecordedExitIsSettled(CrashRecoveryBase):
         self.assertEqual(len(self.died_payloads(prov, rows["dead"])), 1)
 
 
+class TestRecordedRoCompletionIsRelayed(CrashRecoveryBase):
+    """#596 review (PRRT_kwDOTWxN9c6vvwnc): a ro monitor wrote `exit.json`, then died BEFORE relaying
+    the completion line its worker printed. Recovery must re-read that line from the recorded
+    transcript, with the monitor's own final-answer reader, before any death message.
+
+    Staged as TestRecordedExitIsSettled stages its window: a real coordinator is SIGKILLed after
+    `registered`, a pid that has exited claims the launch gate as the monitor, and the lane gets
+    the transcript and exit record that monitor wrote, so the death falls exactly between the two.
+    """
+
+    def dead_pid(self):
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        return proc.pid
+
+    def transcript(self, disp, outcome, pid):
+        """What a ro claude prints: a rehearsed line in its reasoning, the real one ending its answer."""
+        rehearsed = "succeeded" if outcome == "failed" else "failed"
+        events = [
+            {"type": "turn_started", "dispatchId": disp, "monitorPid": pid},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": f"OPEN_FLEET_WORKER_DONE {disp} {rehearsed}"}]}},
+            {"type": "result", "subtype": "success", "result": f"REPORT: done.\nOPEN_FLEET_WORKER_DONE {disp} {outcome}"},
+        ]
+        return "\n".join(json.dumps(e) for e in events) + "\n"
+
+    def stage(self, outcome, *, rc=0, profile="ro"):
+        info = self.crash_at("registered", retry_request="req-1", profile=profile)
+        prov = self.restart()
+        pid = self.dead_pid()
+        self.assertTrue(prov.state.claim_monitor(info["dispatchId"], pid), "the monitor passed the launch gate")
+        head = _git("rev-parse", "HEAD", cwd=info["worktree"]).stdout.strip()
+        lane = Path(info["laneDir"])
+        lane.mkdir(parents=True, exist_ok=True)
+        (lane / "events.jsonl").write_text(self.transcript(info["dispatchId"], outcome, pid), encoding="utf-8")
+        (lane / "exit.json").write_text(json.dumps({"rc": rc, "ts": time.time(), "headSha": head, "monitorPid": pid}),
+                                        encoding="utf-8")
+        return info, prov, head
+
+    def mail(self, prov, disp):
+        return [m for m in prov.check_messages(terminal="coordinator", run="run-r04")["messages"] if disp in m["subject"]]
+
+    def reconcile(self, prov):
+        return prov.launch_reconcile(request="req-1")["reconciled"][0]
+
+    def test_recovery_relays_the_failure_the_worker_reported(self):
+        info, prov, head = self.stage("failed")
+        r = self.reconcile(prov)
+        self.assertEqual(r["dispatch"]["after"], "completed", "the worker reported; it did not die")
+        mail = self.mail(prov, info["dispatchId"])
+        self.assertEqual([(m["type"], m["outcome"]) for m in mail], [("worker_done", "failed")],
+                         "the worker's own `failed`, never a worker_died (exit=0) that drops it")
+        self.assertEqual(json.loads(mail[0]["payload"])["headSha"], head)
+
+    def test_recovery_relays_the_success_the_worker_reported(self):
+        info, prov, _ = self.stage("succeeded")
+        self.assertEqual(self.reconcile(prov)["dispatch"]["after"], "completed")
+        self.assertEqual([(m["type"], m["outcome"]) for m in self.mail(prov, info["dispatchId"])],
+                         [("worker_done", "succeeded")])
+
+    def test_the_liveness_sweep_relays_it_too(self):
+        info, prov, _ = self.stage("failed")
+        self.assertEqual({w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}[info["dispatchId"]],
+                         "completed")
+        self.assertEqual([(m["type"], m["outcome"]) for m in self.mail(prov, info["dispatchId"])],
+                         [("worker_done", "failed")])
+
+    def test_a_monitor_that_did_relay_is_never_doubled(self):
+        # It relayed, then died before settling: recovery settles on that mail and adds none.
+        info, prov, head = self.stage("failed")
+        relayed = self.posix.relay_ro_completion(
+            prov.state, dispatch_id=info["dispatchId"], worker_handle=info["terminalHandle"], agent="claude",
+            run_id="run-r04", log_path=Path(info["laneDir"]) / "events.jsonl", head_sha=head)
+        self.assertTrue(relayed["relayed"])
+        self.assertEqual(self.reconcile(prov)["dispatch"]["after"], "completed")
+        self.reconcile(prov)
+        self.assertEqual([(m["type"], m["outcome"]) for m in self.mail(prov, info["dispatchId"])],
+                         [("worker_done", "failed")], "exactly one report, whoever relayed it")
+
+    def test_a_crash_or_an_rw_worker_still_dies(self):
+        # The monitor relays only a ro worker's CLEAN exit; recovery reads no more than it would.
+        for profile, rc in (("ro", 3), ("rw", 0)):
+            with self.subTest(profile=profile, rc=rc):
+                info, prov, _ = self.stage("succeeded", rc=rc, profile=profile)
+                try:
+                    self.assertEqual(self.reconcile(prov)["dispatch"]["after"], "died")
+                    mail = self.mail(prov, info["dispatchId"])
+                    self.assertEqual([m["type"] for m in mail], ["escalation"])
+                    self.assertEqual(json.loads(mail[0]["payload"])["exitCode"], rc)
+                finally:
+                    self.tearDown_task(prov)
+
+    def tearDown_task(self, prov):
+        """Hand the task back so the next subtest's coordinator can claim it again."""
+        with prov.state._connect() as conn:
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (self.task,))
+            conn.execute("DELETE FROM requests WHERE request_id = 'req-1'")
+
+
 class TestSandboxSalvageIsRetried(CrashRecoveryBase):
     """A vanished `danger` monitor's cleanup that fails keeps recovery open (#597 review).
 

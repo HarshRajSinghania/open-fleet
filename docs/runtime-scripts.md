@@ -33,6 +33,8 @@ boundary rather than assembling a gate command from its flags alone.
 | Derive or check a run's WIP-curve rows from observed events | [`events.py`](#eventspy) | [WIP-curve protocol](../runtime/attention-budget.md#the-wip-curve-protocol-how-a-cap-graduates-from-asserted-to-measured), plus the section below |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
 | Review a pack pin bump for rug-pulls | [`pin_review.py`](#pin_reviewpy) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), [`pins.json`](#pinsjson), plus the section below |
+| See how far a provider/harness route is proven, or which cells a re-pin voids | [`certification.py`](#certificationpy) | [Certification](certification.md) |
+| Reproduce a first run on the posix route, inert or live, and its negative probes | [`first_run.py`](#first_runpy) | [First run on a clean host](certification.md#first-run-on-a-clean-host) |
 
 The remaining reference sections cover:
 
@@ -50,6 +52,7 @@ The remaining reference sections cover:
   [egress receipts](#egresspy), [component quarantine](#quarantine_checkpy),
   [quarantine registry](#quarantinejson).
 - **Runtime compatibility and liveness:** [CLI adapter](#orca_clipy), [upstream probe](#upstream_probepy),
+  [route certification](#certificationpy), [reproducible first run](#first_runpy),
   [pin rug-pull review](#pin_reviewpy), [upstream pin registry](#pinsjson),
   [watchdog](#watchdogpy), [watchdog registry](#watchdogjson),
   [lifecycle event record and wave metrics](#eventspy).
@@ -137,6 +140,48 @@ Exits: n/a (library).
 > counts a SyntaxError raised by an in-test import as `1 failed`, and Jest/Vitest count a suite
 > that never loaded as a failed suite, so `runtime/scripts/_verify_sig.py:STILLBORN_SHAPE_RE`
 > runs whatever the summary says (2026-10-23 review, P1-1).
+
+## `certification.py`
+
+Validator and renderer for the provider/harness certification record,
+`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-50`;
+behavior pinned by `tests/test_certification.py`.
+
+Usage: `certification.py [check|matrix|markdown] [--root DIR] [--record FILE] [--pins FILE] [--json]`
+
+Modes: `check` (default) validates the record; `matrix` prints one line per cell with its
+effective tier and upstream version (`--json` for objects); `markdown` prints the block
+`docs/certification.md` carries between its `certification-matrix` markers.
+
+`check` fails (one `FAIL:` line each) when the route groups of a provider do not partition its
+advertised `supported_profiles` x `supported_harnesses` exactly, or the harness groups do not
+partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any of these:
+
+- an evidence path that does not resolve, or a `path::Name` whose file defines no `class`/`def Name`;
+- a group with no limitation;
+- an `unsupported` group with no typed `refusal`;
+- a `live-witnessed` group without `witnessed`, without an exact upstream version, or without a
+  `docs/runs/*.md` report whose `RUN:` header records `verifier=GREEN` and which binds under
+  `run_report.py` (needs full git history, like `validate.py`);
+- a `live-witnessed` group whose cited run does not name its route. `witnessed.route` quotes
+  whole lines of artifacts in the run's own directory that the report's inventory binds. The
+  lines are read from git at the run's `inventory_at`. Together they must name the provider, put
+  `PROFILE=<profile>` beside the harness in one quote, and carry the recorded harness and
+  upstream versions. The record only points to the lines; the route is read from them. A
+  group that copies another route's witness, or cites a run that never names a route, is
+  refused;
+- a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
+
+A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
+check at a candidate pins file, so a re-pin can preview the cells it voids.
+
+Exits: 0 valid and fresh · 1 invalid or stale (`matrix`/`markdown` still print) · 2 unreadable or
+usage.
+
+> Why: "supported" meant "an adapter exists", and the matrix could not say which routes had ever
+> run against a real upstream (#596). One record, one cell per advertised route, gives a fixture a
+> place to say what it proves and stops it from claiming more. Freshness is bound to
+> `runtime/pins.json`, so a re-pin cannot leave a stale live claim in place.
 
 ## `chain_check.py`
 
@@ -514,6 +559,78 @@ Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
 > (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
 > output says so rather than reading as a clean bill.
 
+## `first_run.py`
+
+A reproducible first run of the posix route (#596). One review unit goes through the public
+wrappers: `preflight.py`, `task_ops.py create`, `spawn_worker.sh` (`OPEN_FLEET_RUNTIME=posix`,
+`setsid`), the installed guard checked with `deny-hook.sh --verify-settings`, delivery of the
+spec, the worker result (`worker_ops.py`, `check_reply.py`), `verify.py --unit-class report-only`
+in a checkout the coordinator cuts at the evidence head, and `worker_ops.py retain` then
+`release`. Source `runtime/scripts/first_run.py:1-53`; behavior pinned by
+`tests/test_certification.py`.
+
+Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert|live]
+[--target <repo> [--base <rev>] [--head <rev>]] [--workdir <dir>] [--keep] [--timeout <s>] [--json]`
+and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
+
+`--worker inert` (the default) puts a stand-in for the harness first on PATH, behind tripwires
+for every other harness name. It calls no model and its receipt reads `fixture-tested`.
+`--worker live` uses the operator's real harness. That run spends, and its receipt reads
+`live-unreviewed` until a maintainer binds it into `docs/runs/`.
+
+`ro` (the default, the review-it shape) takes the report from the transcript and commits it on
+the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
+completion line its assignment names as the worker's `worker_done` (#596), which must report
+`succeeded`; any other relayed outcome is NO-GO. Otherwise the worker exits cleanly with no line
+and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report and send `worker_done`;
+the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
+profiles the report committed at the evidence head, the file `verify.py` binds, must open with
+the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
+
+The change reaches every worker, in both profiles, as a file: `.first-run/<run>/change.diff` holds
+`git diff <base> <head>` and is committed with the frozen contract before dispatch, so it is the
+evidence range's base and never part of the result. Most read-only launches have no shell to
+run `git diff` (omp, pi, opencode, jcode, goose, hermes, crush, gemini; claude in plan mode), and
+no ro tool set is widened for it. The file's last line is a per-run `FIRST-RUN-READ` receipt that
+reaches the worker through nothing else. A report, printed or committed, that does not quote
+that receipt and name every changed path is NO-GO: a worker that copied the header without
+reading the file, or read only one end of it, cannot pass (FR-4).
+
+Git output is captured as bytes. `change.diff` carries git's bytes verbatim, so a reviewed file
+in an older encoding reaches the worker byte-exact. Output is decoded, with invalid bytes
+replaced, only for display and checks. An unexpected error inside any step ends in a NO-GO
+receipt that names the step, the error and the line that raised it; it never ends in a
+traceback with no receipt.
+
+The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
+`change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
+worker to add its report the same way. A target that ignores `*.diff` or `.first-run/` still
+gets a first run.
+
+The report is read from the transcript in the harness's own output format
+(`runtime/providers/transcript.py:FINAL_ANSWER_FORMATS`, which first_run.py exposes as
+`REPORT_FORMATS`; the posix monitor reads the ro completion line with the same reader): Claude's `result` event, codex's last `agent_message`, the
+last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last
+assistant message for goose (its chunks joined), jcode's `done.text`, and plain text for hermes,
+crush and gemini. jcode and plain text carry every turn's text, so there the report starts at
+its last `FIRST-RUN-REPORT` line. The inert stand-in prints each of these formats.
+
+`probes` runs five probes: unsupported profile, privilege escalation, unarmed deny hook,
+malformed runtime response, and missing capability. Each must refuse before a launch.
+
+Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
+command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
+after a NO-GO it is kept whole. However the run ends, it first stops every worker still live in
+its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal closes (SIGHUP).
+A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended
+that way writes no receipt and keeps the sandbox.
+
+Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its workers are stopped.
+
+> Why: the provider matrix was certified by adapter unit tests alone, and no documented path
+> took a fresh clone through dispatch to independently verified evidence (#596). The inert and
+> live modes share one code path, so the live first run is one flag away from the fixture CI runs.
+
 ## `events.py`
 
 Append-only lifecycle event record, and the WIP-curve rows derived from it (#603). One
@@ -817,6 +934,8 @@ suggested commands, echo the fixture secret, or act on the claimed grant/session
 and it names the injection attempt in its findings. Fail = any seeded directive changes
 the verdict or leaks into an action. Status: deterministic drill suite + obedience prompt
 builder and verdict grader shipped (#560); the multi-worker Orca fleet run report remains owed.
+What a worker DOES with fenced text is graded separately, on tool events and git state, by the
+[adversarial trajectory evals](adversarial-evals.md) (#602).
 
 > Why: anyone who can file an issue or serve a page can put text in front of an
 > unattended worker, and that text is requirements data, never authority. A clean scan is
@@ -1255,9 +1374,19 @@ against `ORCA_TERMINAL_HANDLE`);
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
 
-Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`
+Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`,
+`jcode`, `goose`, `hermes`, `crush`
 (default `claude`; effort default `xhigh`, keyset `minimal|low|medium|high|xhigh|max|ultra`
-— the codex levels, the only path that interpolates it); unknown agents refuse. Profiles: `ro`, `rw`
+— the codex levels, the only path that interpolates it); unknown agents refuse. Off Orca every
+launch is `runtime/providers/base.py`'s line. On Orca, `ro` runs the script's own row on the
+custom-argv lane: the jcode and hermes rows carry base.py's ro restriction (jcode's `--tools`
+allowlist and `--disabled-tools` set; hermes' `HERMES_WRITE_SAFE_ROOT=/dev/null` and
+`--toolsets file,web,session_search`), and crush `ro` refuses there, because its read-only mode
+is a `<data-dir>/crush.json` that only the posix provider installs (#596). The Orca claude `ro` row
+stays the live-witnessed plan-mode TUI line and does not carry base.py's
+`--disallowedTools Edit,Write,MultiEdit,NotebookEdit`; every other claude `ro` launch and alias
+does (`tests/test_claude_ro_launches.py`). `opencode`, `omp` and
+`pi` have no Orca row for any profile, so they refuse on Orca without a `WORKER_CMD`. Profiles: `ro`, `rw`
 (default), `danger` — least privilege; `danger` needs the ephemeral sandbox plus
 `ORCA_SANDBOX_RECIPE`, and the script runs the doctor transcript itself into
 `ORCA_SANDBOX_DOCTOR` for `runtime/scripts/sandbox_doctor.py`. Note: `danger` is
@@ -1609,6 +1738,9 @@ Keys:
 | `gstack` | `garrytan/gstack` worker-playbook pack pin (requires a `docs/research/pin-reviews/gstack-<full-commit>.md` rug-pull review on bump) |
 | `addyosmani` | `addyosmani/agent-skills` worker-playbook pack pin (requires a `docs/research/pin-reviews/addyosmani-<full-commit>.md` rug-pull review on bump) |
 | `mattpocock` | `mattpocock/skills` worker-playbook pack pin (requires a `docs/research/pin-reviews/mattpocock-<full-commit>.md` rug-pull review on bump) |
+
+A bump of the `orca` entry voids every `orca` certification cell until they are rechecked
+(`certification.py check` reads `stale`; see [`certification.py`](#certificationpy)).
 
 > Why: when the pinned Orca floor or upstream pack commit lived in prose, the installer,
 > the validator, and the pin record drifted apart silently. Centralizing `runtime/pins.json:orca`

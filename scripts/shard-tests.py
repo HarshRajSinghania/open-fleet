@@ -58,10 +58,15 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
+    "test_certification": 104.9,  # #596, re-measured 2026-10-24 (macOS arm64, mean of 109.6 and 100.2):
+    # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
+    # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
     "test_capability_harnesses": 0.5,
+    "test_capability_launch_agreement": 8.8,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
     "test_check_reply": 0.7,
+    "test_claude_ro_launches": 0.9,
     "test_cross_runtime_upgrades": 2.4,
     "test_decisions": 11.9,
     "test_deny_hook": 134.4,
@@ -107,7 +112,7 @@ WEIGHTS = {
     "test_pin_review": 1.0,
     "test_pins": 0.1,
     "test_pm": 0.1,
-    "test_posix_crash_recovery": 46.0,
+    "test_posix_crash_recovery": 47.3,  # +1.3 s: #596 review's recorded ro-relay window (5 tests)
     "test_posix_docker_crash": 0.3,
     "test_posix_provider": 10.7,
     "test_preflight": 5.4,
@@ -137,6 +142,7 @@ WEIGHTS = {
     "test_superset_provider": 0.8,
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,
+    "test_trajectory_evals": 70.0,  # #602/#644, measured 2026-10-23, macOS host at load average ~21
     "test_upstream_probe": 4.1,
     "test_validate": 9.6,
     "test_validate_catalog_grammar": 0.3,
@@ -149,6 +155,10 @@ WEIGHTS = {
     "test_vfbench": 20.1,
     "test_vfbench_gate": 0.1,
     "test_vfbench_guards": 11.6,
+    # #601: timed locally (6.9 s and 86.4 s, after the second round of PR #645 review tests) and
+    # scaled by the same 11.8 / 45.8 ratio as above.
+    "test_vfbench_heldout": 1.8,
+    "test_vfbench_replay": 22.3,
     "test_watchdog": 1.1,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,

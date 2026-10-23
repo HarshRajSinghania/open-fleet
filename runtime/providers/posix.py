@@ -21,10 +21,12 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import time
 import uuid
@@ -43,6 +45,7 @@ from .base import (
     normalize_show,
 )
 from .local_state import LocalStateStore
+from .transcript import final_answer
 
 OMP_PI_BRIDGE_TS = """// Auto-generated open-fleet PreToolUse bridge for oh-my-pi (omp) and pi-mono (pi)
 import { spawnSync } from "node:child_process";
@@ -301,6 +304,72 @@ def install_worktree_hooks(
 
 WORKER_ENV_DENYLIST = frozenset({"OPEN_FLEET_SIGNING_SEED", "ORCA_DISPATCH_SIGNING_SEED"})
 HERMES_HOOK_MATCHER = "terminal|write_file|patch|execute_code|process"
+
+# A PROFILE=ro launch strips every tool that could send mail (#596): no shell to run send_msg.py,
+# and codex's read-only sandbox and hermes' /dev/null write root deny the state-DB write besides.
+# So a ro assignment names a completion LINE, and the exit monitor, which already holds the
+# dispatch's identity and the state DB, relays it as that worker's worker_done. The line binds the
+# dispatch id, which exists only once worker_start runs: no spec text, echoed instruction or
+# other dispatch's output can speak for this one. The worker gains no tool and no writable path.
+RO_DONE_MARK = "OPEN_FLEET_WORKER_DONE"
+_RO_DONE_RE = re.compile(r"^\W*" + RO_DONE_MARK + r"\s+(\S+)\s+(succeeded|failed)\W*$")
+
+
+def ro_completion_footer(dispatch_id: str) -> str:
+    """The instruction worker_start appends to a ro worker's assignment. No line of it is itself
+    a completion line, so a harness that echoes its prompt cannot complete the dispatch."""
+    return (
+        "\n\n---\nopen-fleet: this read-only dispatch has no tool to send mail. When you finish, make "
+        f"the last line of your final answer the marker {RO_DONE_MARK} {dispatch_id} <outcome>, with "
+        "<outcome> replaced by succeeded or failed; the runtime relays it to the coordinator as "
+        "your worker_done."
+    )
+
+
+def ro_completion_outcome(transcript: str, dispatch_id: str, agent: str) -> str | None:
+    """The outcome on the completion line that ENDS `agent`'s final answer for `dispatch_id`.
+
+    Only the final answer counts, read with first_run.py's per-harness reader (transcript.py),
+    and only its last line that carries a word: the footer asks for exactly that line. A marker
+    rehearsed in reasoning, quoted from a tool result, echoed from the prompt, or said earlier in
+    the answer is not the worker's completion (#596 review); for jcode and plain-text launches,
+    whose answer carries every turn's text, the last line is what tells the two apart. A closing
+    fence after the line carries no word, so it does not hide it. None: no completion line.
+    """
+    answer = final_answer(agent, transcript.splitlines())
+    last = next((ln for ln in reversed(answer.splitlines()) if re.search(r"\w", ln)), "")
+    m = _RO_DONE_RE.match(last.strip())
+    if m and m.group(1).strip("`'\"*") == dispatch_id:
+        return m.group(2)
+    return None
+
+
+def relay_ro_completion(
+    store: LocalStateStore,
+    *,
+    dispatch_id: str,
+    worker_handle: str,
+    agent: str,
+    run_id: str,
+    log_path: str | Path,
+    head_sha: str = "",
+) -> dict[str, Any] | None:
+    """Relay the completion line a ro worker's final answer ends with, as its worker_done (#596).
+
+    The exit monitor's one reader, which recovery also uses when a monitor recorded its exit and
+    died before relaying. relay_worker_done is one idempotent transaction, so a worker is never
+    reported twice. None: no readable transcript, or no completion line in it.
+    """
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    outcome = ro_completion_outcome(text, dispatch_id, agent)
+    if not outcome:
+        return None
+    return store.relay_worker_done(dispatch_id=dispatch_id, worker_handle=worker_handle, outcome=outcome,
+                                   run_id=run_id, head_sha=head_sha)
+
 
 # The committed boundaries of a `worker_start`, in the order it crosses them (#597). The spec —
 # what is durable after each and what a restarted coordinator does — is docs/runtimes.md.
@@ -877,6 +946,7 @@ class PosixWorktreeProvider(RuntimeProvider):
         run_id: str,
         supervised: bool = True,
         sandbox_meta: dict[str, str] | None = None,
+        ro_relay: str = "",
     ) -> dict[str, Any]:
         log_file = lane_dir / "events.jsonl"
         log_file.touch()
@@ -921,6 +991,7 @@ from providers.local_state import LocalStateStore
 
 DISPATCH = {repr(dispatch_id)}
 SUPERVISED = {supervised!r}
+RO_RELAY = {ro_relay!r}
 SANDBOX_META = {repr(json.dumps(sandbox_meta) if sandbox_meta else "")}
 log_path = {repr(str(log_file))}
 store = LocalStateStore(db_path={repr(str(self.state.db_path))})
@@ -987,6 +1058,15 @@ try:
         tail = rf.read()[-500:]
 except Exception:
     pass
+if SUPERVISED and RO_RELAY and rc == 0:
+    # A ro worker has no tool to send mail; its completion line rides its own output (#596).
+    # A crash (rc != 0) stays a death whatever it printed.
+    try:
+        from providers.posix import relay_ro_completion
+        relay_ro_completion(store, dispatch_id=DISPATCH, worker_handle={repr(term_handle)}, agent=RO_RELAY,
+                            run_id={repr(run_id)}, log_path=log_path, head_sha=head)
+    except Exception as exc:
+        _log({{"type": "ro_relay_failed", "dispatchId": DISPATCH, "error": str(exc)[:500]}})
 with store._connect() as conn:
     conn.execute("UPDATE terminals SET state = 'exited' WHERE handle = ? AND state = 'running'", ({repr(term_handle)},))
     # Release the gate BEFORE the final state write (exit.json above already records the run;
@@ -1223,6 +1303,11 @@ if {repr(self.backend)} == "cmux":
         token = uuid.uuid4().hex
         dispatch_id = f"disp_{uuid.uuid4().hex[:10]}"
         term_handle = f"term_{uuid.uuid4().hex[:8]}"
+        # A ro worker's only completion channel (#596) is relayed by the exit monitor, so the
+        # footer promises it only where one runs: never on dry-run or an injected runner.
+        relay_ro = profile == "ro" and self.runner is None and self.backend != "dry-run"
+        if relay_ro:
+            spec_text += ro_completion_footer(dispatch_id)
         lane_dir = self.state.db_path.parent / "lanes" / dispatch_id
         wt_name, planned_wt = self._plan_worktree(worktree, name or task_id)
         info: dict[str, Any] = {
@@ -1411,6 +1496,7 @@ if {repr(self.backend)} == "cmux":
                 lane_dir=lane_dir,
                 run_id=run_id,
                 sandbox_meta=sandbox_meta,
+                ro_relay=agent if relay_ro else "",  # whose final answer the monitor reads
             )
         except BaseException as exc:
             if isinstance(exc, ProviderError) and exc.code == "launch_fenced":
@@ -2205,9 +2291,23 @@ if {repr(self.backend)} == "cmux":
         except (OSError, ValueError, TypeError, KeyError):
             return None
         head = str(rec.get("headSha") or "")
+        if r["state"] == "retained":
+            reported = self.state.terminal_report(
+                dispatch_id=r["dispatch_id"], worker_handle=r["terminal_handle"], run_id=r["run_id"]
+            )
+            if reported:
+                # Its monitor DID settle it (that is the mail), and the coordinator retained it
+                # afterwards: settling again rewrote the retain to `completed`, a `died` one
+                # included, on the next show or list (#596 review of #641). Retain stays final.
+                return {"exitCode": rc, "headSha": head, "died": {"syntheticDied": False, "retained": reported}}
         tail = ""
         with contextlib.suppress(OSError):
             tail = (lane / "events.jsonl").read_text(encoding="utf-8", errors="replace")[-500:]
+        if rc == 0 and _col(r, "profile") == "ro":
+            # The monitor relays a ro worker's completion line AFTER exit.json; one that died in
+            # between must not turn a printed `failed` into worker_died (exit=0) (#596 review). Same
+            # reader as the monitor's; idempotent, so a monitor that did relay is never doubled.
+            self._relay_recorded_completion(r, lane, head)
         with self.state._connect() as conn:
             conn.execute("UPDATE terminals SET state = 'exited' WHERE handle = ? AND state = 'running'", (r["terminal_handle"],))
         died = self.state.ensure_terminal_or_died(
@@ -2219,6 +2319,25 @@ if {repr(self.backend)} == "cmux":
             run_id=r["run_id"],
         )
         return {"exitCode": rc, "headSha": head, "died": died}
+
+    def _relay_recorded_completion(self, r: Any, lane: Path, head: str) -> dict[str, Any] | None:
+        """relay_ro_completion over a dead monitor's recorded transcript; a failure is logged, never
+        raised, so the exit still settles (as worker_died when no line could be read)."""
+        try:
+            return relay_ro_completion(
+                self.state,
+                dispatch_id=r["dispatch_id"],
+                worker_handle=r["terminal_handle"],
+                agent=str(_col(r, "agent") or ""),
+                run_id=r["run_id"],
+                log_path=lane / "events.jsonl",
+                head_sha=head,
+            )
+        except (ProviderError, sqlite3.Error, OSError) as exc:
+            with contextlib.suppress(OSError), open(lane / "events.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "ro_relay_failed", "dispatchId": r["dispatch_id"],
+                                     "error": str(exc)[:500], "by": "recovery"}) + "\n")
+            return None
 
     def _report_vanished(self, r: Any) -> dict[str, Any]:
         """A monitor that died without reporting: salvage a sandbox's commits, then `worker_died`.

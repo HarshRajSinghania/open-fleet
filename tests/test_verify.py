@@ -6118,5 +6118,61 @@ class VerifierDocsMatchTheCode(unittest.TestCase):
         self.assertIn("--nc-command", doc)
 
 
+class TrackedArtifactPinsAreChecked(RepoCase):
+    """#596 certification finding: a manifest whose `artifacts[]` sha256 was wrong for a file
+    TRACKED at head_sha verified clean. The tracked-at-head read returned the blob without ever
+    consulting the pin, so a manifest could inventory digests that bind nothing. A pin the
+    manifest declares is a claim about the bytes; for a tracked path those bytes are the blob."""
+
+    KILLED = b"mutant m#7 was KILLED\n"
+
+    def _tracked(self):
+        rel = self.artifact(self.KILLED)
+        return rel, self.commit("evidence")
+
+    def _nc(self, rel):
+        return {"tool": "mutmut", "mutant": "m#7", "result": "KILLED", "artifact": rel}
+
+    def test_a_tracked_artifact_with_a_wrong_pin_is_refused_at_every_reader(self):
+        rel, head = self._tracked()
+        m = {"unit": "ship-it", "head_sha": head, "negative_control": self._nc(rel),
+             "artifacts": [{"path": rel, "sha256": "0" * 64}]}
+        raw, err = verify.read_artifact(m, rel)
+        self.assertIsNone(raw)
+        self.assertIn("artifacts[] pins", err or "")
+        errs, _ = verify.check_negative_control(m, True, execute=False)
+        self.assertTrue(any("unreadable" in e for e in errs), errs)
+        with mock.patch.object(verify, "_gitleaks_scan", return_value=False):
+            self.assertTrue(any("artifacts[] pins" in e for e in verify.check_redaction(m, None)))
+
+    def test_a_pin_of_the_working_tree_overlay_does_not_bind_the_tracked_blob(self):
+        # The pin hashes bytes the verifier never reads: the overlay, not the blob at head_sha.
+        rel, head = self._tracked()
+        self.write(rel, "overlay written after the commit\n")
+        m = {"unit": "ship-it", "head_sha": head, "artifacts": [self.pin(rel)]}
+        raw, err = verify.read_artifact(m, rel)
+        self.assertIsNone(raw)
+        self.assertIn("head_sha", err or "")
+
+    def test_the_true_pin_of_the_tracked_blob_still_passes(self):
+        rel, head = self._tracked()
+        want = hashlib.sha256(self.KILLED).hexdigest()
+        self.write(rel, "overlay written after the commit\n")
+        for digest in (want, "sha256:" + want.upper()):
+            with self.subTest(digest=digest[:12]):
+                m = {"unit": "ship-it", "head_sha": head, "negative_control": self._nc(rel),
+                     "artifacts": [{"path": rel, "sha256": digest}]}
+                self.assertEqual(verify.read_artifact(m, rel), (self.KILLED, None))
+                self.assertEqual(verify.check_negative_control(m, True, execute=False)[0], [])
+
+    def test_a_tracked_artifact_named_without_a_pin_still_reads_the_blob(self):
+        # Naming a tracked path (bare string, or no entry) pins nothing extra: the blob is the pin.
+        rel, head = self._tracked()
+        for artifacts in ([], [rel]):
+            with self.subTest(artifacts=artifacts):
+                m = {"unit": "ship-it", "head_sha": head, "artifacts": artifacts}
+                self.assertEqual(verify.read_artifact(m, rel), (self.KILLED, None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

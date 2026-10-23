@@ -1303,6 +1303,28 @@ class LocalStateStore:
         }
 
     # --- #590: Synthetic `worker_died` Guarantee on Exit Without Terminal Mail (learned from Overstory) ---
+    @staticmethod
+    def _terminal_report(conn: sqlite3.Connection, run_id: str, senders: list[str]) -> Any:
+        """The worker's own terminal mail (or the worker_died already sent for it), if any."""
+        placeholders = ",".join("?" for _ in senders)
+        return conn.execute(
+            f"""
+            SELECT id, msg_type FROM messages
+            WHERE run_id = ? AND sender IN ({placeholders})
+              AND msg_type IN ('worker_done', 'merge_ready', 'escalation')
+              AND COALESCE(attrs_json, '') NOT LIKE '%"fileTouchConflict"%'
+            LIMIT 1
+            """,
+            [run_id, *senders],
+        ).fetchone()
+
+    def terminal_report(self, *, dispatch_id: str, worker_handle: str | None = None, run_id: str = "default") -> str | None:
+        """The id of the terminal mail this dispatch already reported, or None (#596)."""
+        senders = [s for s in {dispatch_id, worker_handle or ""} if s]
+        with self._connect() as conn:
+            row = self._terminal_report(conn, run_id, senders)
+        return row["id"] if row else None
+
     def ensure_terminal_or_died(
         self,
         *,
@@ -1341,17 +1363,7 @@ class LocalStateStore:
             if disp and disp["state"] == "died":
                 conn.execute("COMMIT")
                 return {"syntheticDied": False, "alreadyDied": True}
-            placeholders = ",".join("?" for _ in senders)
-            row = conn.execute(
-                f"""
-                SELECT id, msg_type FROM messages
-                WHERE run_id = ? AND sender IN ({placeholders})
-                  AND msg_type IN ('worker_done', 'merge_ready', 'escalation')
-                  AND COALESCE(attrs_json, '') NOT LIKE '%"fileTouchConflict"%'
-                LIMIT 1
-                """,
-                [run_id, *senders],
-            ).fetchone()
+            row = self._terminal_report(conn, run_id, senders)
             if row:
                 conn.execute(
                     "UPDATE dispatches SET state = 'completed', terminal_state = 'exited', head_sha = COALESCE(NULLIF(?, ''), head_sha), "
@@ -1388,3 +1400,51 @@ class LocalStateStore:
             )
             conn.execute("COMMIT")
         return {"syntheticDied": True, "messageId": msg_id, "deliveryId": deliv_id}
+
+    # --- #596: a PROFILE=ro worker's completion line, relayed as its `worker_done` ---
+    def relay_worker_done(
+        self,
+        *,
+        dispatch_id: str,
+        worker_handle: str,
+        outcome: str,
+        run_id: str = "default",
+        head_sha: str = "",
+    ) -> dict[str, Any]:
+        """Send the `worker_done` a PROFILE=ro worker reported in its own output (#596).
+
+        A ro launch has no tool that can run send_msg.py or write this database, so the exit
+        monitor relays the worker's completion line here, AS its terminal and only for its own
+        dispatch. One transaction, like ensure_terminal_or_died: a fenced or settled dispatch, or
+        one whose worker already sent terminal mail, gets nothing, so the relay never speaks twice
+        and never for a dispatch the coordinator stopped. It is the worker's claim, relayed; the
+        coordinator verifies it like any other `worker_done`.
+        """
+        if outcome not in ("succeeded", "failed"):
+            raise ProviderError("invalid_outcome", f"worker_done outcome must be succeeded|failed, got {outcome!r}")
+        senders = [s for s in {dispatch_id, worker_handle} if s]
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            disp = conn.execute("SELECT state FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)).fetchone()
+            if disp is None or disp["state"] in (*FENCED_DISPATCH_STATES, "died", "completed"):
+                conn.execute("COMMIT")
+                return {"relayed": False, "state": disp["state"] if disp else None}
+            row = self._terminal_report(conn, run_id, senders)
+            if row:
+                conn.execute("COMMIT")
+                return {"relayed": False, "existingMessageId": row["id"]}
+            msg_id, deliv_id = self._insert_message(
+                conn,
+                run_id=run_id,
+                sender=worker_handle,
+                recipient=COORDINATOR_ALIAS,
+                msg_type="worker_done",
+                subject=f"worker_done:{dispatch_id}",
+                outcome=outcome,
+                # The outcome rides the payload too: check_reply.py prints the payload, not the column.
+                payload=json.dumps({"dispatchId": dispatch_id, "headSha": head_sha, "outcome": outcome,
+                                    "via": "ro-completion-line"}, sort_keys=True),
+                attrs={"relayed": "ro-completion-line", "dispatchId": dispatch_id},
+            )
+            conn.execute("COMMIT")
+        return {"relayed": True, "messageId": msg_id, "deliveryId": deliv_id}

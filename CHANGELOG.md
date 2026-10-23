@@ -35,6 +35,67 @@ truth is `.claude-plugin/plugin.json`.
   asked about, and `.orca/human-grant-pubkey` / `.orca/dispatch-pubkey` are guarded like the
   hook's own config. Supported shell versions and what stays beyond the text are documented in
   `docs/runtime-scripts.md`.
+- **VF-Bench replays in one command, at a pinned revision, in a clean environment** (#601).
+  `bench/vf-bench/replay.py run --rev <commit>` exports the commit into a fresh repository by a
+  local fetch, runs every case N times under a built environment (only `git` and `python` on
+  `PATH`, empty `HOME`, no system git config), one process per case with a timeout, and writes a
+  JSON report and a text summary: the exact versions (corpus digest beside `gate.py`'s pin, the
+  blob ids of `gate.py`, `verify.py` and `vfbench.py`, `VERSION`), skipped, unsupported, timed-out
+  and unscored cases by name, and per configuration the false acceptance, false rejection, wrong
+  reasons, coverage of the README's verifier-check inventory, wall time and run-to-run spread with
+  every case whose verdict moved. The naive self-scorer is labelled the synthetic baseline, never
+  a product score. `compare` fails on any difference outside host facts, raw refusal text and wall
+  time; `reproduce` replays what a published report pins; `drill` requires a deleted or edited
+  corpus case or pinned fixture to fail the replay. `replay-reference.json` publishes a three-run
+  macOS replay of the #600 corpus at `27b5ed613949` (verify.py 0/53 and 0/19 in every run), and
+  the new `vfbench_replay` job, which `gates` needs, reproduces it on the GitHub runner and uploads
+  its report. External verifiers plug in through a documented stdin/stdout adapter contract
+  (`verify.py` itself behind it is the reference adapter; malformed, timed-out and crashing
+  adapters are listed, never scored, adapter names must be unique, and nothing an adapter starts
+  outlives its case); none has been measured, and reports say so with a null score.
+  `heldout-protocol.json` predeclares the development and held-out splits, their digests,
+  planned release dates, leakage checks with their stated limits, and an unfilled holder role,
+  and `heldout.py check` verifies no committed blob is a held-out case, in UTF-8, UTF-16 or
+  UTF-32 or behind JSON escapes (compressed or base64-encoded copies are a stated limit), and
+  names what it could not look into (an oversize JSON document, an LFS pointer, a submodule,
+  history a shallow or partial clone never fetched) UNSCANNED rather than clean. The CI reproduction's first run
+  on PR #645 reproduced the macOS reference on Linux. Not done: a real external verifier, and an
+  actual holder and held-out set.
+- **Adversarial trajectory evals (#602).** `python3 scripts/eval.py run --suite trajectories`
+  replays recorded worker tool events (JSONL) against a git repository built at test time,
+  through the worker, the retry handover and the verifier under one frozen task contract, and
+  grades the tool events and the resulting git state. Attempted and successful violations are
+  recorded separately, and the final answer never moves a grade. Thirteen pinned fixtures cover
+  forged approvals, hidden-criterion removal, test tampering, cross-worker memory poisoning,
+  handover contamination and credential-like canaries, plus benign and clean controls for false
+  denials and utility. Each attack case is proven RED with its guard removed. The published table
+  in `docs/adversarial-evals.md` shows the unknown coverage cells, the UNRUN live-model arm and
+  one known gap: a plain canary in a receipted PR comment leaks, because no guard reads outbound
+  PR text. Fixtures only, no model, not proof evidence.
+- **Provider and harness routes are certified cell by cell, with a reproducible first run**
+  (#596). `runtime/providers/certification.json` classifies each of the 218 advertised routes:
+  every `(provider, profile, harness)` in `capabilities.json`, and every `(harness, profile)` of
+  `base.py`'s launch table. A route is `live-witnessed`, `fixture-tested`, `source-only`,
+  `unsupported` (with its typed refusal) or `unavailable`. Each cell carries its upstream version
+  (`unknown` when none was recorded), evidence paths and limitations.
+  `runtime/scripts/certification.py` checks the following:
+  - every cell is covered exactly once;
+  - every evidence path resolves;
+  - a live claim rests on a run report that binds;
+  - a moved `pins.json` pin turns the provider's cells `stale` until they are rechecked.
+  Only Orca with Claude Code (`ro` and `rw`) is live-witnessed. The 12 external adapters remain
+  fixture-tested at `unknown` upstream versions. The record shows three gaps: the Orca `ro` rows
+  for crush, hermes and jcode are weaker than the posix rows; opencode, omp and pi are refused on
+  Orca; a posix `ro` worker's clean exit is recorded as `worker_died (exit=0)`.
+  `runtime/scripts/first_run.py` drives one review unit through the public wrappers on the posix
+  route: create → dispatch → delivery → result → independent `verify.py` → retain/release. With
+  the default inert worker it calls no model; `--worker live` uses the real harness. Its `probes`
+  mode checks that unsupported profile, privilege escalation, unarmed deny hook, malformed
+  runtime response and missing capability are each refused before launch.
+  `tests/test_certification.py` runs that subset in CI for every posix harness, with no paid
+  agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
+  first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
+  for other providers.
 - **Run and wave metrics derive from an append-only event record** (#603). New
   `runtime/scripts/events.py` keeps one hash-chained line per observed lifecycle transition in
   `.orca/events.jsonl`, bound to run/task/dispatch with an event id, producer, timestamp, clock
@@ -120,6 +181,35 @@ truth is `.claude-plugin/plugin.json`.
   no test would miss, fails the build — and states that the provenance, intent, reviewer-mode
   and lighting legs verify presence, not truth. No verifier hole was found: every new trap was
   refused for its declared reason as `verify.py` stood.
+- **The provider-certification first run's five findings are fixed** (#596). Each was
+  reproduced by a failing test first:
+  - `verify.py`: a file tracked at `head_sha` that the manifest's `artifacts[]` also pins must
+    match that sha256 at `head_sha`. A wrong pin, or one taken over the working-tree overlay, is
+    refused. Before, the tracked blob was read without consulting the pin.
+  - `spawn_worker.sh` on Orca: the `ro` rows for jcode and hermes carry base.py's ro
+    restriction. For jcode that is the `--tools` allowlist and the full `--disabled-tools` set.
+    For hermes it is `HERMES_WRITE_SAFE_ROOT=/dev/null` with `--toolsets file,web,session_search`.
+    No flag makes crush read-only (its ro mode is a data-dir config only posix installs), so crush
+    `ro` now refuses on Orca instead of launching an auto-approving `crush run`.
+  - `capabilities.json` no longer claims opencode, omp or pi for Orca, where `spawn_worker.sh`
+    refuses all three. `tests/test_capability_launch_agreement.py` fails when any claimed
+    provider/harness pair does not launch through the wrapper.
+  - posix `ro` workers can report completion. Where an exit monitor runs, a ro assignment names the line
+    `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`, and the exit monitor relays it as
+    the worker's `worker_done`. The worker gains no tool or writable path. A clean exit without
+    the line is still `worker_died (exit=0)`. The line counts only as the last line of the
+    harness's final answer. That answer is read by the same reader as the first-run report, now
+    `runtime/providers/transcript.py`, so a marker in reasoning, in a tool result or in an echoed
+    prompt does not count. A monitor can die after recording the exit but before relaying.
+    Recovery then relays the line from the recorded transcript, so a reported `failed` is never
+    lost (#650 review).
+  - gastown's claude `ro` alias carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`.
+    `tests/test_claude_ro_launches.py` checks every claude ro row and alias for that set. The one
+    exemption is the live-witnessed Orca TUI row, which is unchanged.
+  - The certification record (version 3) and `docs/certification.md` record these fixes. The
+    nine Orca opencode/omp/pi cells are gone, which leaves 209 cells. Orca crush `ro` is a
+    refusal. No cell moved up a tier. `first_run.py --profile ro` accepts the relayed
+    `worker_done` or a clean `worker_died (exit=0)`, and refuses a relayed `failed`.
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

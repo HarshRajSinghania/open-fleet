@@ -389,9 +389,9 @@ class Archive:
         return [] if self.top is not None else [(UNKNOWN, "artifact-unversioned")]
 
     def artifact_reasons(self, manifest_path, records):
-        """[(label, reason)] for the artifact's own integrity: a tracked manifest edited since its
-        commit, or an evidence file whose bytes no longer hash to the recorded sha256 (or cannot
-        be read at all: unknown, not fatal)."""
+        """[(label, reason)] for the artifact's own integrity: a tracked manifest whose bytes differ
+        from its blob at the archive's HEAD, or an evidence file whose bytes no longer hash to the
+        recorded sha256 (or cannot be read at all: unknown, not fatal)."""
         reasons = []
         if self.top is not None:
             rel = os.path.relpath(Path(manifest_path).resolve(), self.top.resolve())
@@ -399,9 +399,7 @@ class Archive:
             if not _ok(tracked):
                 reasons.append((UNKNOWN, "artifact-untracked"))
             else:
-                changed = git(self.top, "diff", "--no-ext-diff", "--name-only", "HEAD", "--", rel)
-                if _ok(changed) and changed.stdout.strip():
-                    reasons.append((STALE, "artifact-modified:manifest"))
+                reasons.extend(self._manifest_reasons(manifest_path, rel))
         seen = set()
         for record in records:
             for item in (record.get("artifacts") or []) if isinstance(record, dict) else []:
@@ -425,6 +423,29 @@ class Archive:
                 elif digest != item["sha256"].removeprefix("sha256:").lower():
                     reasons.append((STALE, f"artifact-modified:{os.path.basename(rel)}"))
         return reasons
+
+    def _manifest_reasons(self, manifest_path, rel):
+        """The manifest's bytes against its blob at HEAD, compared directly. An empty ``git diff``
+        is no evidence: an assume-unchanged or skip-worktree flag, or a stale stat cache, keeps git
+        from reading the file (PR #639 review: an edited manifest kept its hint CURRENT). Hashed
+        locally first; the blob is fetched only on a mismatch, and line endings alone are
+        checkout conversion. Not committed at HEAD at all is a modification too."""
+        committed = git(self.top, "rev-parse", f"HEAD:{rel}")
+        blob_id = committed.stdout.strip() if _ok(committed) else ""
+        if not blob_id:
+            return [(STALE, "artifact-modified:manifest")]
+        try:
+            data = Path(manifest_path).read_bytes()
+        except OSError:
+            return [(UNKNOWN, "artifact-unreadable:manifest")]
+        if _blob_id(data, len(blob_id)) == blob_id:
+            return []
+        blob = git(self.top, "cat-file", "-p", blob_id, text=False)
+        if not _ok(blob):
+            return [(UNKNOWN, "artifact-unreadable:manifest")]
+        if data.replace(b"\r\n", b"\n") != blob.stdout.replace(b"\r\n", b"\n"):
+            return [(STALE, "artifact-modified:manifest")]
+        return []
 
 
 class LiveSource:

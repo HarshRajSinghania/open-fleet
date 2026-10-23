@@ -1398,5 +1398,77 @@ class QuotedLessonsStayUsable(unittest.TestCase):
         self.assertEqual(sum("the injected phrase was rejected" in ln for ln in packet), 2)
 
 
+class HiddenManifestEdits(unittest.TestCase):
+    """PR #639 review: artifact_reasons() trusted an empty `git diff HEAD` for a tracked manifest, so
+    an assume-unchanged or skip-worktree flag -- or a stale stat cache -- on an edited manifest left
+    its hint CURRENT, and the edited historical claim reached workers as checked advice. The
+    manifest's bytes are now compared with its blob at the archive's HEAD."""
+
+    NOTE = "refresh is idempotent"
+    FORGED = "refresh is IDEMPOTENT"  # same length: the stale-stat case needs an equal size
+
+    def fixture(self):
+        return Fixture(scenario([{"name": "c0", "files": BASE}],
+                                [unit_run("2026-02-01-run-a", "AUTH-1", "@c0", ["src/auth.py"], note=self.NOTE)]))
+
+    @staticmethod
+    def rel():
+        return "docs/runs/2026-02-01-run-a/manifest.json"
+
+    def select(self, fx):
+        sel = fx.select()
+        return sel["entries"][0]["currency"], sel["entries"][0]["reasons"], "\n".join(sel["lines"])
+
+    def test_a_flagged_manifest_edit_is_stale(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                fx = self.fixture()
+                archive = fx.tmp / "archive"
+                try:
+                    replay_mod._git(archive, "update-index", flag, self.rel())
+                    manifest = archive / self.rel()
+                    manifest.write_text(manifest.read_text().replace(self.NOTE, self.FORGED))
+                    diff = hp.git(archive, "diff", "--name-only", "HEAD", "--").stdout
+                    currency, reasons, text = self.select(fx)
+                finally:
+                    fx.close()
+                self.assertEqual(diff, "")
+                self.assertEqual((currency, reasons), ("STALE", ["artifact-modified:manifest"]))
+                self.assertNotIn(self.FORGED, text)
+
+    def test_a_stale_stat_cache_hides_no_manifest_edit(self):
+        fx = self.fixture()
+        archive = fx.tmp / "archive"
+        manifest = archive / self.rel()
+        try:
+            replay_mod._git(archive, "config", "core.trustctime", "false")
+            os.utime(manifest, (1577836800, 1577836800))
+            replay_mod._git(archive, "update-index", "--refresh")
+            cached = manifest.stat()
+            with open(manifest, "r+b") as handle:  # same size, same inode, old mtime restored
+                handle.write(manifest.read_bytes().replace(self.NOTE.encode(), self.FORGED.encode()))
+            os.utime(manifest, ns=(cached.st_atime_ns, cached.st_mtime_ns))
+            diff = hp.git(archive, "diff", "--name-only", "HEAD", "--").stdout
+            currency, reasons, _text = self.select(fx)
+        finally:
+            fx.close()
+        self.assertEqual(diff, "")
+        self.assertEqual((currency, reasons), ("STALE", ["artifact-modified:manifest"]))
+
+    def test_an_unchanged_flagged_manifest_stays_current(self):
+        fx = self.fixture()
+        archive = fx.tmp / "archive"
+        try:
+            replay_mod._git(archive, "update-index", "--assume-unchanged", self.rel())
+            flagged = self.select(fx)[:2]
+            manifest = archive / self.rel()
+            manifest.write_bytes(manifest.read_bytes().replace(b"\n", b"\r\n"))  # checkout conversion
+            crlf = self.select(fx)[:2]
+        finally:
+            fx.close()
+        self.assertEqual(flagged, ("CURRENT", []))
+        self.assertEqual(crlf, ("CURRENT", []))
+
+
 if __name__ == "__main__":
     unittest.main()

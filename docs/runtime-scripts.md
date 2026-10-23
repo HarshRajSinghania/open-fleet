@@ -680,8 +680,10 @@ for byte — hashed locally against the blob ids one `rev-parse` per 200 files r
 fetched only on a mismatch, and a difference in line endings alone counted as checkout conversion,
 not an edit. A hidden edit marks the entry as a visible one would; a file that cannot be compared
 (unreadable, or absent from disk in a sparse checkout) is `scope-unverifiable`,
-`tests-unverifiable` or `dependencies-unverifiable`. An artifact is modified when its tracked manifest differs from the
-archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
+`tests-unverifiable` or `dependencies-unverifiable`. An artifact is modified when its tracked
+manifest's bytes differ from its blob at the archive's HEAD — compared directly, so an
+assume-unchanged or skip-worktree flag or a stale stat cache cannot hide an edit, and line endings
+alone are not one — or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
 to the archive root); an archive outside git has no committed bytes to check, so every entry it
 yields is `artifact-unversioned`, and an evidence file that cannot be read leaves only its own
 entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Newer means descendant by ancestry when the live repo has both revisions,

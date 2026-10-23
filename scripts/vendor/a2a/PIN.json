@@ -1,0 +1,38 @@
+{
+  "purpose": "The official A2A protocol schema and two upstream example AgentCards, vendored at one pinned commit so scripts/a2a_schema.py validates offline (#607). Tests never fetch; re-pinning is a reviewed change to this file, the vendored bytes and their tests.",
+  "upstream": {
+    "repository": "https://github.com/a2aproject/A2A",
+    "commit": "1205f45951ca97c209634ce6046180e38c5dfb30",
+    "commit_date": "2026-10-15T19:14:54Z",
+    "license": "Apache-2.0",
+    "retrieved": "2026-10-23",
+    "retrieved_with": "gh api repos/a2aproject/A2A/contents/<path>?ref=<commit> -H 'Accept: application/vnd.github.raw'",
+    "note": "specification/a2a.proto is upstream's normative source (package lf.a2a.v1); specification/json/README.md at this commit calls a2a.json a non-normative build artifact that is not committed, so the proto is what is pinned."
+  },
+  "files": [
+    {
+      "path": "scripts/vendor/a2a/a2a.proto",
+      "source": "https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/specification/a2a.proto",
+      "git_blob": "2814f0f9a8a3db0fa1976dd4aece8ce38700a0bf",
+      "sha256": "945df6e34001b2bfd0fd62d9484b63094dfad9d78705e41e2873441c419ae2d1"
+    },
+    {
+      "path": "scripts/vendor/a2a/LICENSE",
+      "source": "https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "tests/fixtures/a2a/upstream-sample-agent-card.json",
+      "source": "https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/docs/specification.md?plain=1#L2170-L2241",
+      "extracted": "lines 2170-2241 of docs/specification.md (git blob 415a2e1c025e0b2cf0d1dd0dd49c73317e3b8340): the body of the json block under '8.5. Sample Agent Card', byte for byte",
+      "sha256": "ad15d5482dccb7bc96211bcfb61b2ebd123f749b5fdfc8b910aae0825963959c"
+    },
+    {
+      "path": "tests/fixtures/a2a/upstream-canonicalization-agent-card.json",
+      "source": "https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/docs/specification.md?plain=1#L2040-L2066",
+      "extracted": "lines 2040-2066 of docs/specification.md (git blob 415a2e1c025e0b2cf0d1dd0dd49c73317e3b8340): the body of the 'Original Agent Card' json block under '8.4.1', byte for byte",
+      "sha256": "80f1906fc14c55f5cd7b0dc59143f48835d8beee0e423c3942b3d1ce7d96e443"
+    }
+  ]
+}

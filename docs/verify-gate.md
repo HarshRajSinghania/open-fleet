@@ -161,7 +161,10 @@ inherited `OPEN_FLEET_UNIT_CLASS` could downgrade a class the coordinator set as
   `core.fsmonitor`, an external diff, and a `filter.<driver>.clean/smudge`/`diff.<driver>.textconv`
   a `.gitattributes` selects are all neutralised before the control's `worktree add`/`checkout`/
   `write-tree` materialises worker content (#629), so the only worker code the verifier runs is
-  the bound command itself. The bind is re-read from the sealed control tree itself, the
+  the bound command itself. The drivers are read in the directory and ref state of each call that
+  could run them: the control worktree is created empty (`--no-checkout`) and populated only after
+  its OWN config is read, since an `includeIf "gitdir:"`/`"onbranch:"` can declare a filter only
+  in a linked worktree (PR #649 review). The bind is re-read from the sealed control tree itself, the
   object the control phase checks out. Fail-closed on anything
   else too: a tool with no replay, a missing command/paths, a git error, a control that changes
   nothing, or a command that passes under the control ("tautological — the proof does not go RED"). It is **REQUIRED** in the two review-waiver

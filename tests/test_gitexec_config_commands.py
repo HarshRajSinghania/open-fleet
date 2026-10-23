@@ -598,5 +598,61 @@ class FilteredFileFidelity(unittest.TestCase):
         self.assertNotIn("STALE", errs[0])
 
 
+# PR #649 review (PRRT_kwDOTWxN9c6vxaeq): an `includeIf` makes the effective config depend on WHERE
+# and in WHAT ref state git runs — `gitdir:` (a linked worktree's own git dir), `onbranch:` (the
+# checked-out branch), `hasconfig:remote.*.url:` (another key's value). The rule is to read the
+# drivers in the same directory and ref state as the git call that could run them. verify.py's
+# control worktree broke it (test_verify ConditionalIncludeFilterNeverRunsInTheControl); these pin
+# that every other gate holds it when it runs in a worker's LINKED worktree.
+_CONDITIONS = (
+    ("gitdir", "includeIf.gitdir:**/worktrees/**.path"),
+    ("onbranch", "includeIf.onbranch:work.path"),
+    ("hasconfig", "includeIf.hasconfig:remote.*.url:https://example.invalid/**.path"),
+)
+
+
+class ConditionalIncludesAreReadWhereGitRuns(unittest.TestCase):
+
+    def _linked(self, condition, key):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        include = p.dir / f"{condition}.gitconfig"
+        include.write_text(f'[filter "{condition}"]\n\tclean = {p.probe} clean\n'
+                           f'\tsmudge = {p.probe} smudge\n', encoding="utf-8")
+        p._git("remote", "add", "origin", "https://example.invalid/r.git")
+        p._git("config", key, str(include))
+        linked = p.dir / "linked"
+        r = p._git("worktree", "add", "-q", "-b", "work", str(linked), base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        info = p.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text(f"*.txt filter={condition}\n", encoding="utf-8")
+        (linked / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        p.fired()
+        # Positive control: plain git in the linked worktree runs the conditionally loaded filter.
+        p._git("diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", cwd=linked)
+        self.assertIn("clean", p.fired(), f"the {condition}: include is not live in the worktree")
+        return p, linked, base
+
+    def test_every_gate_in_a_linked_worktree_blanks_a_conditionally_included_filter(self):
+        for condition, key in _CONDITIONS:
+            with self.subTest(condition=condition):
+                p, linked, base = self._linked(condition, key)
+                floor_guard.collect_diff(linked, floor_guard.merge_base(linked, base))
+                self.assertEqual(p.fired(), set(), f"floor_guard ran the {condition}: filter")
+                diff_scope.scope(linked, base)
+                self.assertEqual(p.fired(), set(), f"diff_scope ran the {condition}: filter")
+                out, err = evidence_run.working_tree_fingerprint(str(linked))
+                self.assertEqual(p.fired(), set(), f"wtree.sh ran the {condition}: filter")
+                self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
+
+    def test_the_enumeration_in_the_linked_worktree_sees_what_the_source_does_not(self):
+        p, linked, _ = self._linked("gitdir", _CONDITIONS[0][1])
+        self.assertFalse([k for k, _ in gitexec.driver_blanks(p.repo) if k.startswith("filter.gitdir.")])
+        self.assertTrue([k for k, _ in gitexec.driver_blanks(linked) if k.startswith("filter.gitdir.")])
+
+
 if __name__ == "__main__":
     unittest.main()

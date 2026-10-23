@@ -31,7 +31,11 @@ truth is `.claude-plugin/plugin.json`.
     neutralised whole — commands blank and `required=false` — since git dies on a required filter
     that runs nothing, which let a planted `required=true` (or a local Git LFS) stop every gate
     (PR #649 review); the gate reads the working-tree bytes as they are. Reads of committed
-    objects alone (inventory, decisions `--pin-ref`) never select a filter and skip it.
+    objects alone (inventory, decisions `--pin-ref`) never select a filter and skip it. Every
+    gate reads the drivers in the same directory and ref state as the git call that could run
+    them: verify.py creates its control worktree `--no-checkout` and reads that worktree's own
+    config before populating it, because an `includeIf "gitdir:**/worktrees/**"` can declare a
+    filter only in a linked worktree (PR #649 review).
   - `wtree.sh` gets the same env belt and driver blanks (its `add -A` and `write-tree` ran a
     selected filter and `core.fsmonitor`), built as `env(1)` arguments rather than shell code. It
     blanks only drivers the REPOSITORY declares; global/system config stays in force, so the

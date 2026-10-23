@@ -6240,6 +6240,69 @@ class ConfigRequiredFilterWithNoCommandNeverStopsTheControl(MutationFixture):
         self.assertEqual(rc, 0, out + err)
 
 
+class ConditionalIncludeFilterNeverRunsInTheControl(MutationFixture):
+    """PR #649 review (PRRT_kwDOTWxN9c6vxaeq): a linked worktree's config is not its source's.
+    `[includeIf "gitdir:**/worktrees/**"]` loads a filter ONLY in a linked worktree, so a blank
+    list read in the source repo omits it, and the control's `worktree add` ran its smudge on the
+    verifier. The drivers must be read IN the new worktree, before anything is materialised."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.marker = Path(marks.name) / "cond-filter-fired"
+        probe = Path(marks.name) / "probe.sh"
+        probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\nexit 0\n",
+                         encoding="utf-8")
+        probe.chmod(0o755)
+        include = Path(marks.name) / "cond.gitconfig"
+        include.write_text(f'[filter "cond"]\n\tclean = {probe} clean\n\tsmudge = {probe} smudge\n',
+                           encoding="utf-8")
+        self.git("config", "includeIf.gitdir:**/worktrees/**.path", str(include))
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=cond\n", encoding="utf-8")
+
+    def _positive_control(self):
+        """The source repo's own config listing does NOT declare `cond`, yet bare git runs it in
+        a linked worktree — the gap the review found, live on this host."""
+        listing = subprocess.run(["git", "config", "--list", "--name-only"], cwd=self.repo,
+                                 capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+        self.assertNotIn("filter.cond.", listing)
+        holder = Path(tempfile.mkdtemp(prefix="orca-cond-probe-"))
+        self.addCleanup(shutil.rmtree, holder, True)
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(holder / "wt"),
+                        self.head_sha], cwd=self.repo, check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "worktree", "remove", "--force", str(holder / "wt")],
+                       cwd=self.repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        self.assertTrue(self.marker.exists(), "the conditionally included filter did not fire")
+        self.marker.unlink()
+
+    def _run(self):
+        return self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                              "--lighting", "dark-eligible",
+                              "--execute-nc", "--nc-command", self.proof_cmd)
+
+    def test_a_filter_only_a_linked_worktree_loads_never_runs_in_the_control(self):
+        self._positive_control()
+        rc, out, err = self._run()
+        self.assertEqual(rc, 0, out + err)
+        self.assertFalse(self.marker.exists(),
+                         "a conditionally included filter ran in the control worktree (#629)")
+
+    def test_mutation_control_drivers_read_in_the_source_repo_miss_it(self):
+        # Read the drivers where the old code read them — the source repo — whatever directory
+        # the call names: the conditional filter is missing from that list and runs again.
+        self._positive_control()
+        source, real = str(self.repo), verify._Authority.driver_blanks
+        with mock.patch.object(verify._Authority, "driver_blanks",
+                               classmethod(lambda cls, repo: real(source))):
+            self._run()
+        self.assertTrue(self.marker.exists(),
+                        "control: blanks read in the source repo must miss the linked-only filter")
+
+
 class TrackedArtifactPinsAreChecked(RepoCase):
     """#596 certification finding: a manifest whose `artifacts[]` sha256 was wrong for a file
     TRACKED at head_sha verified clean. The tracked-at-head read returned the blob without ever

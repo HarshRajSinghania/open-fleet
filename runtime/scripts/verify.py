@@ -2036,8 +2036,9 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
     """Apply the negative control inside the throwaway worktree `wt`. Returns an error string or
     None. Fail-closed on every git error: a control that did not apply is not a control."""
     # #629: checkout/revert/apply below materialise worker content and would run a repo-config
-    # clean/smudge filter a .gitattributes selects. Blank every declared driver command first.
-    blanks = _Authority.driver_blanks(wt)
+    # clean/smudge filter a .gitattributes selects. Each blanks every declared driver command,
+    # read in `wt` itself immediately before the call (PR #649 review: read the drivers in the
+    # same directory and ref state as the git call that could run them, as late as possible).
     if tool == "revert":
         base = m.get("base_sha")
         paths, err = _nc_paths(nc)
@@ -2052,7 +2053,7 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
                 return bind_err
             code, _, gerr = _run_at(wt, [_Authority.git_bin(), "--literal-pathspecs",
                                          "checkout", str(base), "--", *paths],
-                                    env=_Authority.blanked_env(blanks))
+                                    env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
             if code != 0:
                 return f"could not restore {paths} from base_sha in the control worktree: {gerr.strip()}"
             # --cached: the INDEX is what _seal_control's write-tree commits, so the check reads
@@ -2094,7 +2095,8 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
                     "restore (#280)")
         code, _, gerr = _run_at(wt, [_Authority.git_bin(), "revert", "--no-commit",
                                      f"{base}..{head}"],
-                                timeout=60, env=_Authority.blanked_env(blanks))
+                                timeout=60,
+                                env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
         if code != 0:
             return f"git revert of base_sha..head_sha failed in the control worktree: {gerr.strip()}"
         return None
@@ -2118,7 +2120,8 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
         return bind_err
     code, _, gerr = _run_at(wt, [_Authority.git_bin(), "apply", "--index",
                                  "--whitespace=nowarn", "-"],
-                            stdin_bytes=diff.encode("utf-8"), env=_Authority.blanked_env(blanks))
+                            stdin_bytes=diff.encode("utf-8"),
+                            env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
     if code != 0:
         return ("the hand mutant quoted in negative_control.artifact does not apply at head_sha "
                 f"({gerr.strip()}) — the quoted diff is not the diff that was run")
@@ -2217,14 +2220,22 @@ def execute_negative_control(m, nc_command=None):
         alter what the control phase checks out."""
         holder = tempfile.mkdtemp(prefix="orca-nc-")
         wt = str(Path(holder) / "wt")
-        # #629: `worktree add` populates the worktree from head_sha, running a repo-config
-        # smudge filter a tracked .gitattributes selects. Blank every declared driver command.
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add",
-                              "--detach", wt, str(head)], timeout=120,
-                             env=_Authority.blanked_env(_Authority.driver_blanks(top)))
+        # #629: populating the worktree from head_sha runs any repo-config smudge filter an
+        # attribute selects, so its drivers are blanked first — and they are read IN the new
+        # worktree, not in `top`. A linked worktree's config view is its own: an `includeIf
+        # "gitdir:**/worktrees/**"` (or `onbranch:`, or its own config.worktree) can declare a
+        # filter only there, which a list read in `top` missed (PR #649 review). So: create it
+        # EMPTY (--no-checkout materialises nothing), read its drivers, then check out under them.
+        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--no-checkout",
+                              "--detach", wt, str(head)], timeout=120, env=_Authority.git_env())
         try:
             if code != 0:
                 return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
+            code, _, gerr = _run_at(wt, [_Authority.git_bin(), "checkout", "-q", "--detach",
+                                         str(head)], timeout=120,
+                                    env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
+            if code != 0:
+                return None, f"could not populate the control worktree at head_sha: {gerr.strip()}"
             apply_err = _apply_control(wt, m, nc, tool, nc_command)
             if apply_err:
                 return None, apply_err

@@ -518,6 +518,13 @@ for every other harness name. It calls no model and its receipt reads `fixture-t
 the coordinator's evidence branch. `rw` has the worker commit the report and send `worker_done`;
 the coordinator re-reads its HEAD from git and refuses a claim that git contradicts.
 
+The report is read from the transcript in the harness's own output format
+(`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the
+last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last
+assistant message for goose (its chunks joined), jcode's `done.text`, and plain text for hermes,
+crush and gemini. jcode and plain text carry every turn's text, so there the report starts at
+its last `FIRST-RUN-REPORT` line. The inert stand-in prints each of these formats.
+
 `probes` runs five probes: unsupported profile, privilege escalation, unarmed deny hook,
 malformed runtime response, and missing capability. Each must refuse before a launch.
 

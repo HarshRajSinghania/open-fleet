@@ -579,5 +579,135 @@ class TestDocsCarryTheGeneratedMatrix(unittest.TestCase):
             self.assertIn(heading, text)
 
 
+# --- the live report, read in each harness's own output (#596 review) ---------------------------
+
+FR_HEADER = "FIRST-RUN-REPORT FR-NONCE:0123456789abcdef " + "c0ffee" + "0" * 34
+FR_BODY = " app.py | 2 ++"
+FR_REPORT = f"{FR_HEADER}\n{FR_BODY}\n"
+FR_NOTE = "I will read the diff first."
+FR_PROMPT = f"Review the change. Your report MUST start with this exact line: {FR_HEADER}"
+
+
+def _events(*events):
+    return [json.dumps(e) for e in events]
+
+
+def _goose(mid, role, *content):
+    return {"type": "message", "message": {"id": mid, "role": role, "created": 1, "content": list(content)}}
+
+
+# What each posix launch (runtime/providers/base.py) prints on stdout, as upstream source emits
+# it: claude `-p --output-format stream-json`; codex-rs exec/src/exec_events.rs (`exec --json`);
+# opencode `run --format json` events; pi/omp `--mode json` AgentSessionEvents; goose-cli
+# session/mod.rs StreamEvent (`--output-format stream-json`, one message streamed as chunks that
+# share its id); jcode src/cli/commands.rs `run --ndjson` (`done.text` is every text delta of the
+# run); hermes `-Q`, crush `run -q` and gemini `-p` print plain text (stderr is merged in).
+UPSTREAM_STDOUT = {
+    "claude": _events(
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": FR_NOTE}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": FR_REPORT}),
+    "codex": _events(
+        {"type": "thread.started", "thread_id": "t"}, {"type": "turn.started"},
+        {"type": "item.completed", "item": {"id": "item_0", "type": "reasoning", "text": FR_HEADER}},
+        {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": FR_NOTE}},
+        {"type": "item.completed", "item": {"id": "item_2", "type": "command_execution", "command": "git diff",
+                                            "aggregated_output": FR_HEADER, "exit_code": 0, "status": "completed"}},
+        {"type": "item.completed", "item": {"id": "item_3", "type": "agent_message", "text": FR_REPORT}},
+        {"type": "turn.completed", "usage": {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1}}),
+    "opencode": _events(
+        {"type": "step_start", "sessionID": "s", "part": {"id": "p0", "type": "step-start"}},
+        {"type": "text", "sessionID": "s", "part": {"id": "p1", "type": "text", "text": FR_NOTE}},
+        {"type": "tool_use", "sessionID": "s", "part": {"id": "p2", "type": "tool", "tool": "read"}},
+        {"type": "step_finish", "sessionID": "s", "part": {"id": "p3", "type": "step-finish", "reason": "tool-calls"}},
+        {"type": "step_start", "sessionID": "s", "part": {"id": "p4", "type": "step-start"}},
+        {"type": "text", "sessionID": "s", "part": {"id": "p5", "type": "text", "text": FR_REPORT}},
+        {"type": "step_finish", "sessionID": "s", "part": {"id": "p6", "type": "step-finish", "reason": "stop"}}),
+    "pi": _events(
+        {"type": "agent_start"},
+        {"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": FR_PROMPT}]}},
+        {"type": "message_end", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": FR_NOTE}, {"type": "toolCall", "id": "c1", "name": "read", "arguments": {}}]}},
+        {"type": "message_end", "message": {"role": "toolResult", "toolCallId": "c1",
+                                            "content": [{"type": "text", "text": FR_HEADER}]}},
+        {"type": "message_end", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "done"}, {"type": "text", "text": FR_REPORT}]}},
+        {"type": "agent_end", "messages": []}),
+    "goose": _events(
+        _goose("m1", "assistant", {"type": "text", "text": FR_NOTE}),
+        _goose("m2", "assistant", {"type": "toolRequest", "id": "r1"}),
+        _goose("m3", "user", {"type": "toolResponse", "id": "r1"}),
+        _goose("m4", "assistant", {"type": "text", "text": FR_HEADER + "\n"}),
+        _goose("m4", "assistant", {"type": "text", "text": FR_BODY + "\n"}),
+        {"type": "complete", "total_tokens": 42}),
+    "jcode": _events(
+        {"type": "start"}, {"type": "text_delta", "text": FR_NOTE + "\n"},
+        {"type": "tool_start", "id": "t1", "name": "read"}, {"type": "tool_done", "id": "t1"},
+        {"type": "text_delta", "text": FR_REPORT},
+        {"type": "done", "session_id": "s", "text": FR_NOTE + "\n" + FR_REPORT, "usage": {}}),
+    "hermes": [FR_HEADER, FR_BODY],
+    "crush": [FR_NOTE, FR_HEADER, FR_BODY],
+    "gemini": ["Loaded cached credentials.", FR_NOTE, FR_HEADER, FR_BODY],
+}
+UPSTREAM_STDOUT["omp"] = UPSTREAM_STDOUT["pi"]
+
+
+def read_report(agent, stdout_lines):
+    """FirstRun.transcript_report() over a posix worker-read of these stdout lines."""
+    fr = first_run.FirstRun(first_run.parse_args(["--agent", agent]), None)
+    fr.facts["dispatch"] = "disp_fixture"
+    monitor = json.dumps({"type": "turn_started", "dispatchId": "disp_fixture"})
+    read = {"ok": True, "result": base.normalize_read("transcript", lines=[monitor, *stdout_lines])}
+    fr.rec.run = lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, json.dumps(read), "")
+    return fr.transcript_report()
+
+
+class TestLiveReportFormats(Tripwired):
+    """A live worker's answer is read in its own harness's format, never only in Claude's."""
+
+    def test_every_posix_harness_names_its_output_format(self):
+        self.assertEqual(set(first_run.REPORT_FORMATS), set(CAPS["providers"]["posix"]["supported_harnesses"]))
+        self.assertEqual(set(UPSTREAM_STDOUT), set(first_run.REPORT_FORMATS))
+
+    def test_each_harness_report_is_read_from_its_own_output(self):
+        for agent, lines in UPSTREAM_STDOUT.items():
+            with self.subTest(harness=agent):
+                report = read_report(agent, lines)
+                self.assertEqual(report.splitlines()[:1], [FR_HEADER], f"{agent} report discarded: {report!r}")
+                self.assertIn(FR_BODY, report)
+
+    def test_a_header_only_echoed_inside_a_line_is_not_a_report(self):
+        for agent in ("gemini", "jcode"):
+            with self.subTest(harness=agent):
+                lines = ([FR_PROMPT, FR_NOTE] if agent == "gemini"
+                         else _events({"type": "done", "text": FR_PROMPT + "\n" + FR_NOTE}))
+                self.assertNotEqual(read_report(agent, lines).splitlines()[:1], [FR_HEADER])
+
+    def test_the_stand_in_answers_in_each_harness_own_format(self):
+        repo = self.tmp / "repo"
+        git = ["git", "-C", str(repo), "-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "a"], check=True)
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.run([*git, "add", "app.py"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "b"], check=True)
+        base_sha, head_sha = (subprocess.run([*git, "rev-parse", rev], capture_output=True, text=True,
+                                             check=True).stdout.strip() for rev in ("HEAD~1", "HEAD"))
+        header = f"FIRST-RUN-REPORT FR-NONCE:{'ab' * 8} {head_sha}"
+        spec = f"Review the change: git diff {base_sha} {head_sha}\nYour report MUST start with: {header}"
+        worker = self.tmp / "inert" / "worker.py"
+        worker.parent.mkdir()
+        worker.write_text(first_run.INERT_WORKER, encoding="utf-8")
+        for agent in CAPS["providers"]["posix"]["supported_harnesses"]:
+            with self.subTest(harness=agent):
+                p = subprocess.run([sys.executable, "-I", str(worker), agent, spec], cwd=str(repo), capture_output=True,
+                                   text=True, timeout=60, env={**self.env, "OPEN_FLEET_DISPATCH_ID": f"disp_{agent}"})
+                self.assertEqual(p.returncode, 0, p.stderr)
+                lines = p.stdout.splitlines()
+                self.assertEqual(read_report(agent, lines).splitlines()[:2], [header, "app.py | 1 +"])
+                if agent != "claude":
+                    self.assertEqual(read_report("claude", lines), "", f"the {agent} stand-in answered as Claude")
+
+
 if __name__ == "__main__":
     unittest.main()

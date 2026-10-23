@@ -56,7 +56,8 @@ All other cells that are not refusals use fixtures. They show that the fleet's s
 works. They do not show how the upstream build or the harness behaves:
 
 - **posix** (`ro` and `rw`, all 10 harnesses): `first_run.py` drives the whole route through the
-  public wrappers. An inert stand-in answers to each harness name. Every combination runs in CI.
+  public wrappers. An inert stand-in answers to each harness name, in that harness's own output
+  format as read from its source. Every combination runs in CI.
   `danger` uses a scripted fake `docker`. The provider is this repository's own code, so each CI
   run certifies the commit it runs at.
 - **the 12 external adapters**: they use scripted upstream transports. Nobody recorded which

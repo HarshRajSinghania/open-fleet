@@ -75,6 +75,26 @@ SCHEMA = "open-fleet-first-run/v1"
 # The launch names a harness by its binary; every one gets a tripwire in inert mode.
 HARNESS_BINARIES = {"antigravity": "agy"}
 LIVE_STATES = ("ready", "running", "retained")
+REPORT_HEAD = "FIRST-RUN-REPORT "
+# Where each posix launch (base.build_harness_command) prints its final answer on stdout, which
+# posix records line by line as the transcript. A Claude-only reader discarded every other
+# harness's report and turned a finished paid run into NO-GO (#596 review).
+REPORT_FORMATS = {
+    "claude": "claude-stream-json",  # -p --output-format stream-json: {"type":"result","result":...}
+    "codex": "codex-exec-json",      # exec --json: item.completed {"item":{"type":"agent_message","text":...}}
+    "opencode": "opencode-json",     # run --format json: {"type":"text","part":{"text":...}}; step_start resets
+    "omp": "pi-json",                # -p --mode json: message_end {"message":{"role":"assistant","content":[...]}}
+    "pi": "pi-json",
+    "goose": "goose-stream-json",    # {"type":"message","message":{"id":...,"role":"assistant","content":[...]}}
+    "jcode": "jcode-ndjson",         # run --ndjson: {"type":"done","text":<every text delta of the run>}
+    "hermes": "text",                # chat --oneshot -Q: plain text
+    "crush": "text",                 # run -q: plain text
+    "gemini": "text",                # -p with no --output-format: plain text
+}
+# These carry every turn's text, not only the last answer: the report starts at its own header.
+ANCHORED_FORMATS = ("jcode-ndjson", "text")
+# Lines the posix monitor itself writes into the transcript, around the worker's own output.
+MONITOR_EVENTS = ("turn_started", "launch_refused", "sandbox_git_synced", "sandbox_git_sync_failed", "injected_prompt")
 
 
 class StepFailed(Exception):
@@ -88,6 +108,65 @@ class StepFailed(Exception):
 def posix_harnesses() -> list[str]:
     caps = json.loads(CAPABILITIES.read_text(encoding="utf-8"))
     return list(caps["providers"]["posix"]["supported_harnesses"])
+
+
+def _text_blocks(content) -> str:
+    """The text blocks of a pi- or goose-style message content (a list, or pi's bare string)."""
+    if isinstance(content, str):
+        return content
+    blocks = content if isinstance(content, list) else []
+    return "".join(b["text"] for b in blocks
+                   if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
+
+
+def harness_report(agent: str, lines: list[str]) -> str:
+    """The worker's final answer, read from its transcript lines in its harness's own format."""
+    fmt = REPORT_FORMATS[agent]
+    answer, kept = "", []
+    parts: dict = {}  # opencode: the text parts of the current step
+    run_id, run = None, ""  # goose: the chunks of the message being streamed
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            event = None
+        if not isinstance(event, dict):
+            kept.append(line)
+            continue
+        kind = event.get("type")
+        if kind in MONITOR_EVENTS:
+            continue
+        kept.append(line)
+        item, message, part = event.get("item"), event.get("message"), event.get("part")
+        if fmt == "claude-stream-json" and kind == "result" and isinstance(event.get("result"), str):
+            answer = event["result"]
+        elif (fmt == "codex-exec-json" and kind == "item.completed" and isinstance(item, dict)
+              and item.get("type") == "agent_message" and isinstance(item.get("text"), str)):
+            answer = item["text"]
+        elif fmt == "opencode-json" and kind == "step_start":
+            parts = {}
+        elif fmt == "opencode-json" and kind == "text" and isinstance(part, dict) and isinstance(part.get("text"), str):
+            parts[part.get("id") or f"anon-{len(parts)}"] = part["text"]
+            answer = "\n".join(parts.values())
+        elif fmt == "jcode-ndjson" and kind == "done" and isinstance(event.get("text"), str):
+            answer = event["text"]
+        elif not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        elif fmt == "pi-json" and kind == "message_end":
+            answer = _text_blocks(message.get("content")) or answer
+        elif fmt == "goose-stream-json" and kind == "message":
+            # goose emits one message as chunks sharing its id; a new id starts a new message.
+            if message.get("id") is None or message.get("id") != run_id:
+                run_id, run = message.get("id"), ""
+            run += _text_blocks(message.get("content"))
+            answer = run or answer
+    if fmt == "text":
+        answer = "\n".join(kept)
+    if fmt in ANCHORED_FORMATS:
+        heads = [i for i, ln in enumerate(answer.splitlines()) if ln.startswith(REPORT_HEAD)]
+        if heads:
+            answer = "\n".join(answer.splitlines()[heads[-1]:]) + "\n"
+    return answer
 
 
 def all_harness_binaries() -> list[str]:
@@ -114,8 +193,39 @@ spec = next((a for a in argv if "FR-NONCE:" in a), "")
 m = re.search(r"FIRST-RUN-REPORT (FR-NONCE:[0-9a-f]{16}) ([0-9a-f]{40})", spec)
 rng = re.search(r"git diff ([0-9a-f]{40}) ([0-9a-f]{40})", spec)
 if not m or not rng:
-    print(json.dumps({"type": "result", "subtype": "error", "result": "no first-run spec in argv"}))
+    print("no first-run spec in argv", file=sys.stderr)
     sys.exit(3)
+
+
+def answer(text):
+    """Print the final answer the way this harness's launch prints it (first_run.REPORT_FORMATS)."""
+    note = "Reading the diff.\n"  # formats that keep every turn's text carry the earlier ones too
+    msg = {"role": "assistant", "content": [{"type": "text", "text": text}]}
+    head, _, rest = text.partition("\n")
+    events = {
+        "claude": [{"type": "system", "subtype": "init"},
+                   {"type": "result", "subtype": "success", "is_error": False, "result": text}],
+        "codex": [{"type": "thread.started", "thread_id": "inert"}, {"type": "turn.started"},
+                  {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": text}},
+                  {"type": "turn.completed", "usage": {"input_tokens": 0, "cached_input_tokens": 0,
+                                                       "output_tokens": 0}}],
+        "opencode": [{"type": "step_start", "part": {"id": "prt_0", "type": "step-start"}},
+                     {"type": "text", "part": {"id": "prt_1", "type": "text", "text": text}},
+                     {"type": "step_finish", "part": {"id": "prt_2", "type": "step-finish", "reason": "stop"}}],
+        "pi": [{"type": "agent_start"}, {"type": "message_end", "message": msg},
+               {"type": "agent_end", "messages": [msg]}],
+        "goose": [{"type": "message", "message": {"id": "msg_0", "role": "assistant",
+                                                  "content": [{"type": "text", "text": chunk}]}}
+                  for chunk in (head + "\n", rest)] + [{"type": "complete", "total_tokens": 0}],
+        "jcode": [{"type": "start"}, {"type": "text_delta", "text": note}, {"type": "text_delta", "text": text},
+                  {"type": "done", "text": note + text}],
+    }
+    events["omp"] = events["pi"]
+    if harness in events:
+        for event in events[harness]:
+            print(json.dumps(event))
+    else:  # hermes, crush, gemini print plain text
+        print(note + text, end="")
 stat = subprocess.run(["git", "diff", "--stat", rng.group(1), rng.group(2)],
                       capture_output=True, text=True).stdout.strip()
 report = f"FIRST-RUN-REPORT {m.group(1)} {m.group(2)}\n" + (stat or "(empty diff)") + "\n"
@@ -131,7 +241,7 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
                          "scripts", "send_msg.py"), "--type", "worker_done", "--outcome", "succeeded",
                          "--subject", f"worker_done:{dispatch}",
                          "--payload", json.dumps({"head": head, "report": rel})]).returncode
-print(json.dumps({"type": "result", "subtype": "success", "result": report}))
+answer(report)
 sys.exit(rc)
 '''
 
@@ -509,16 +619,8 @@ class FirstRun:
             messages = json.loads(proc.stdout)["result"]["transcript"]["messages"]
         except (ValueError, KeyError, TypeError):
             raise StepFailed(f"worker-read unreadable: {proc.stdout[:200]!r}") from None
-        result = ""
-        for msg in messages:
-            for block in msg.get("blocks") or []:
-                try:
-                    event = json.loads(block.get("text") or "")
-                except ValueError:
-                    continue
-                if isinstance(event, dict) and event.get("type") == "result" and isinstance(event.get("result"), str):
-                    result = event["result"]
-        return result
+        lines = [str(block.get("text") or "") for msg in messages for block in (msg.get("blocks") or [])]
+        return harness_report(self.args.agent, lines)
 
     def evidence(self) -> str:
         t, rel = self.sb.target, f"{self.unit_dir}/report.md"

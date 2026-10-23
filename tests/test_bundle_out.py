@@ -97,6 +97,28 @@ class UserContentSurvives(unittest.TestCase):
                 bundle.build(out)
             self.assertEqual(note.read_text(encoding="utf-8"), "mine\n")
 
+    def test_a_retired_missions_symlinked_directory_is_never_followed(self):
+        """PR #631 review, P1: a mission the catalog dropped stays in the marker. With its
+        directory swapped for a symlink into another checkout, the rebuild's unlink followed it
+        and deleted that checkout's SKILL.md. The rebuild must refuse and delete nothing."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            out, elsewhere = Path(tmp), Path(other)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            marker = out / bundle.MARKER
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            data["files"].append("skills/retired-mission/SKILL.md")
+            marker.write_text(json.dumps(data), encoding="utf-8")
+            (elsewhere / "SKILL.md").write_text("another checkout's mission\n", encoding="utf-8")
+            (out / "skills" / "retired-mission").symlink_to(elsewhere, target_is_directory=True)
+            before = snapshot(out)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("retired-mission", err)
+            self.assertEqual((elsewhere / "SKILL.md").read_text(encoding="utf-8"),
+                             "another checkout's mission\n")
+            self.assertEqual(snapshot(out), before, "a refused rebuild changed the tree")
+
     def test_a_malformed_marker_refuses(self):
         for contents in ("{", "[]", '{"files": "x"}', '{"files": ["../../etc/passwd"]}'):
             with self.subTest(contents=contents), tempfile.TemporaryDirectory() as tmp:

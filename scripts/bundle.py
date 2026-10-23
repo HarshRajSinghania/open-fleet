@@ -327,18 +327,22 @@ def _claim(out, planned):
         raise BundleRefused(f"--out {out} is not a directory")
     owned = _owned(out)
     foreign = []
-    for rel in planned:
+    # Parents are checked for every path this build DELETES as well as every path it writes: a
+    # retired mission stays in the marker after leaving `planned`, and a symlink swapped in for
+    # its directory would aim the unlink below at another checkout's files (PR #631 review, P1).
+    for rel in sorted(set(planned) | owned):
         parts = Path(rel).parts
         parents = [out.joinpath(*parts[:i]) for i in range(1, len(parts))]
         foreign += [p for p in parents if p.is_symlink() or (p.exists() and not p.is_dir())]
+    for rel in planned:
         foreign += [entry for entry in _entries_under(out / rel)
                     if entry.relative_to(out).as_posix() not in owned or entry.is_symlink()]
     if foreign:
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
         raise BundleRefused(
-            f"--out {out}: {len(set(foreign))} path(s) where the bundle writes were not written by "
-            f"bundle.py (not listed in {MARKER}): {shown} — move them away or choose an empty "
-            "--out; bundle.py never deletes what it did not write")
+            f"--out {out}: {len(set(foreign))} path(s) where the bundle writes or deletes were not "
+            f"written by bundle.py (not listed in {MARKER}, or behind a symlink): {shown} — move "
+            "them away or choose an empty --out; bundle.py never deletes what it did not write")
     for rel in sorted(owned):
         path = out / rel
         if path.is_symlink() or path.is_file():

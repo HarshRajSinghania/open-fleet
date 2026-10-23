@@ -5992,6 +5992,21 @@ class RunnerDiscoveryIsTheOracle(RepoCase):
                 self.assert_oracle(m, "checks/add_check.py", cmd)
                 self.assertIsNone(self.bind(m, "calc.py", cmd))
 
+    def test_a_unittest_class_or_method_operand_protects_its_module(self):
+        """PR #631 review, P1: `-m unittest checks.add_check.TestAdd.test_add` protected
+        `checks/add_check/TestAdd/test_add.py`, a file that does not exist, so the real test
+        module stayed revertible. The operand resolves to its deepest module at head_sha."""
+        m = self.unit(self.base(), head_files={
+            "checks/__init__.py": "",
+            "checks/add_check.py": "import unittest\n\nimport calc\n\n\nclass TestAdd(unittest.TestCase):\n"
+                                   "    def test_add(self):\n        self.assertEqual(calc.add(2, 2), 4)\n"})
+        for cmd in (f"{self.PY} -m unittest checks.add_check.TestAdd",
+                    f"{self.PY} -m unittest checks.add_check.TestAdd.test_add",
+                    f"{self.PY} -m unittest -v checks.add_check.TestAdd.test_add"):
+            with self.subTest(cmd=cmd):
+                self.assert_oracle(m, "checks/add_check.py", cmd)
+                self.assertIsNone(self.bind(m, "calc.py", cmd), "the production fix stays revertible")
+
     def test_testpaths_scope_discovery_and_operands_widen_it(self):
         m = self.unit({**self.base(),
                        "pytest.ini": "[pytest]\npython_files = *_check.py\ntestpaths = tests\n"})

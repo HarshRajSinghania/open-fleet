@@ -503,16 +503,23 @@ Derivation (`runtime/scripts/events.py:derive`). A unit is a task in a `wave.ope
 planned in several waves is measured in each, from the events in that wave's window — the latest
 planning wave whose `wave.open` the event does not precede, on one clock
 (`runtime/scripts/events.py:place`); an event no window can hold leaves the unit unavailable in
-all of them. Its outcome comes from the set of its events, never their order: verified-CLOSED
-(closed at a head a verdict passed), closed-unverified, parked, verified, completed
-(worker_done only) or open. Latency runs from the worker_done at a head to the first passing verdict at that same head (or
-to the park); review queue from that worker_done to the review starting on it. Throughput is
-verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share of units with
-a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a dispatch into a
-later wave); freshness counts approving reviews (one per reviewer dispatch and head) voided by
-a closing head that moved, unless both trees are recorded and equal. Retries count each dispatch
-of a task after its first, in the wave it is first seen in — so a replacement that carried the
-unit into a later wave is a retry there. An interval needs one clock, no
+all of them. The unit's events in its earlier planning waves are context for a later one, never
+a second measurement: which dispatches already ran and launched, the worker_done an interval
+starts from, the pass a close rests on and the approvals a close voids; each interval and void
+is measured once, in the wave its end is placed in. A unit a later wave re-plans is final in the
+earlier one (every later event of it is placed in the later wave), so it no longer leaves that
+wave pending; it has no latency there unless it verified or parked there. Its outcome comes from
+the set of its events, never their order: verified-CLOSED (closed at a head a verdict passed,
+in this wave or an earlier one), closed-unverified, parked, verified, completed (worker_done
+only) or open. Latency runs from the worker_done at a head to the first passing verdict at that
+same head (or to the park); review queue from that worker_done to the review starting on it.
+Throughput is verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share
+of units with a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a
+replacement dispatched into a later wave — a worker carried into it is neither); freshness counts
+approving reviews (one per reviewer dispatch and head) voided by a closing head that moved,
+unless both trees are recorded and equal. Retries count each dispatch of a task after its first,
+in the wave it is first seen in — so a replacement that carried the unit into a later wave is a
+retry there, and a worker carried into it is not. An interval needs one clock, no
 `recovered` endpoint and a non-negative difference. Coordinator history must be whole —
 `run.start` at epoch 1, then each `coordinator.resume` at the next epoch — or every metric of
 the run is unavailable. Events recorded under an epoch below the

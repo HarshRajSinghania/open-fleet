@@ -577,16 +577,35 @@ def screen(events):
     return screened, duplicates, conflicts, fenced, epochs, taints
 
 
-def derive_unit(task, wave, events, prior_dispatches=()):
-    """One planned unit's outcome and per-unit measurements, from the set of its events.
-    `prior_dispatches` are the task's dispatches in earlier waves that planned it."""
+def derive_unit(task, wave, events, history=(), carried_out=False):
+    """One planned unit's outcome and per-unit measurements in one wave, from the set of its
+    events placed there.
+
+    `history` is the unit's events placed in the earlier waves that planned it — context, never
+    a second measurement (PR #638 review, P1): which dispatches already ran and launched (a
+    carried worker is no replacement), the worker_done an interval ending here starts from, the
+    pass a close here rests on, and the approvals a close here voids. An interval or a void is
+    measured in the wave its END is placed in, so each is counted once. `carried_out`: a later
+    wave plans the unit again, so every later event is placed there and what it reached here
+    is final for this wave — it no longer leaves this wave pending."""
     by = {kind: [] for kind in KINDS}
     for event in events:
         by[event["kind"]].append(event)
+    past = {kind: [] for kind in KINDS}
+    for event in history:
+        past[event["kind"]].append(event)
     contested = []
     launched = {e["dispatch"] for e in by["dispatch.launched"]}
     seen = launched | {e["dispatch"] for e in by["task.done"] + by["dispatch.died"]}
+    past_launched = {e["dispatch"] for e in past["dispatch.launched"]}
+    past_seen = past_launched | {e["dispatch"] for e in past["task.done"] + past["dispatch.died"]}
     passes = [e for e in by["verify.verdict"] if e["data"]["exit"] == 0]
+    passed_before = {e["data"]["head_sha"] for e in past["verify.verdict"]
+                     if e["data"]["exit"] == 0 and e["data"]["head_sha"]}
+    # A head whose latency an earlier wave ended (a pass or a park at it) was measured there.
+    ended_before = passed_before | {e["data"]["head_sha"] for e in past["unit.parked"]
+                                    if e["data"]["head_sha"]}
+    dones, known_dones = by["task.done"], by["task.done"] + past["task.done"]
     closes = by["unit.closed"]
     close_heads = sorted({e["data"]["head_sha"] for e in closes})
     if len(close_heads) > 1:
@@ -597,7 +616,9 @@ def derive_unit(task, wave, events, prior_dispatches=()):
         contested.append(f"unit {task}: closed with {len(close_trees)} different trees")
     close_tree = close_trees.pop() if len(close_trees) == 1 else None
     if closes:
-        verified = close_head is not None and any(p["data"]["head_sha"] == close_head for p in passes)
+        # A head verified in an earlier wave and closed here reached verified-CLOSED here.
+        verified = close_head is not None and (
+            close_head in passed_before or any(p["data"]["head_sha"] == close_head for p in passes))
         outcome = "verified-closed" if verified else "closed-unverified"
     elif by["unit.parked"]:
         outcome = "parked"
@@ -611,16 +632,24 @@ def derive_unit(task, wave, events, prior_dispatches=()):
     # Verification latency: the worker_done at a head, to the first passing verdict AT THAT HEAD
     # (or to the park) — bound by SHA, so record order never picks the endpoints. A conductor's
     # content-identical rebase re-verifies a head no worker reported, so the close head is not
-    # the binding: the head a worker reported done and a verdict passed is.
+    # the binding: the head a worker reported done and a verdict passed is. The worker_done may
+    # be an earlier wave's; the end is this wave's, and a head an earlier wave already ended (a
+    # pass or a park at it) was measured there, so verifying it here is not a second latency.
     latency = {"seconds": None, "unavailable": None, "excluded": None}
+    ended_there = (f"unit {task}: its latency ended in an earlier wave (a pass or a park at its "
+                   "head), which measured it")
     head, ends = None, []
     if outcome in ("verified-closed", "verified"):
-        done_heads = {d["data"]["head_sha"] for d in by["task.done"] if d["data"]["head_sha"]}
-        heads = sorted({p["data"]["head_sha"] for p in passes} & done_heads)
+        done_heads = {d["data"]["head_sha"] for d in known_dones if d["data"]["head_sha"]}
+        bound_here = {p["data"]["head_sha"] for p in passes if p["data"]["head_sha"]}
+        heads = sorted((bound_here - ended_before) & done_heads)
         if len(heads) == 1:
             head = heads[0]
             ends = [p for p in passes if p["data"]["head_sha"] == head]
-        elif not by["task.done"]:
+        elif (bound_here or close_head in passed_before) and bound_here <= ended_before \
+                and all(p["data"]["head_sha"] for p in passes):
+            latency["excluded"] = ended_there
+        elif not known_dones:
             latency["unavailable"] = f"unit {task}: verified without an observed worker_done"
         else:
             latency["unavailable"] = (f"unit {task}: a passing verdict at {len(heads)} head(s) a "
@@ -629,12 +658,19 @@ def derive_unit(task, wave, events, prior_dispatches=()):
         ends = by["unit.parked"]
         park_heads = {p["data"]["head_sha"] for p in ends}
         head = park_heads.pop() if len(park_heads) == 1 else None
+        if head in ended_before:
+            latency["excluded"], ends = ended_there, []
+    elif carried_out:
+        latency["excluded"] = (f"unit {task}: carried into a later wave before it verified or "
+                               "parked here, so its latency is that wave's")
     else:
         latency["unavailable"] = f"unit {task}: no verified-or-parked observation ({outcome})"
     if ends and not latency["unavailable"]:
-        dones = by["task.done"]
-        starts = [d for d in dones if d["data"]["head_sha"] == head] if head else dones
-        if not starts and outcome == "parked" and not dones:
+        # A park naming no head ends this wave's worker_done, or else an earlier one not ended.
+        starts = ([d for d in known_dones if d["data"]["head_sha"] == head] if head
+                  else dones or [d for d in past["task.done"]
+                                 if d["data"]["head_sha"] not in ended_before])
+        if not starts and outcome == "parked" and not known_dones:
             latency["excluded"] = f"unit {task}: parked with no worker_done, so it has no latency"
         elif not starts:
             latency["unavailable"] = f"unit {task}: no worker_done observed at {_short(head)}"
@@ -649,18 +685,22 @@ def derive_unit(task, wave, events, prior_dispatches=()):
             else:
                 latency["seconds"], latency["unavailable"] = interval(start, end, f"unit {task} latency")
 
-    # Review queue: worker_done at a head -> the review of that head starting.
+    # Review queue: worker_done at a head -> the review of that head starting. A head whose
+    # review an earlier wave saw start was measured there; a re-review here is not a second.
     queue = []
     started = {}
+    started_before = {e["data"]["head_sha"] for e in past["review.started"]}
+    rereviewed = sorted({e["data"]["head_sha"] for e in by["review.started"]} & started_before)
     for event in by["review.started"]:
-        started.setdefault(event["data"]["head_sha"], []).append(event)
+        if event["data"]["head_sha"] not in started_before:
+            started.setdefault(event["data"]["head_sha"], []).append(event)
     for sha in sorted(started):
-        dones = [d for d in by["task.done"] if d["data"]["head_sha"] == sha]
-        if not dones:
+        at_head = [d for d in known_dones if d["data"]["head_sha"] == sha]
+        if not at_head:
             queue.append((None, f"unit {task}: review started at {_short(sha)} with no "
                                 "worker_done observed at that head"))
             continue
-        start, why = first(dones, f"unit {task} worker_done")
+        start, why = first(at_head, f"unit {task} worker_done")
         end, why_end = first(started[sha], f"unit {task} review.started")
         queue.append((None, why or why_end) if (why or why_end)
                      else interval(start, end, f"unit {task} review queue"))
@@ -670,7 +710,13 @@ def derive_unit(task, wave, events, prior_dispatches=()):
     # Counted per REVIEW, not per reviewed SHA: two reviews of one head, both voided, are two
     # (PR #638 review, P2). A review is its reviewer dispatch at a head, or its own event when
     # no reviewer is named, so a duplicate delivery or a re-observation still counts once.
+    # Approvals from earlier waves the unit did not close in are judged by a close here: the
+    # void happens at the close. One an earlier wave voided explicitly was counted there.
+    voided_before = {v["data"]["reviewed_sha"] for v in past["review.voided"]}
     approvals = [r for r in by["review.verdict"] if r["data"]["verdict"] == "approve"]
+    if not past["unit.closed"]:
+        approvals += [r for r in past["review.verdict"] if r["data"]["verdict"] == "approve"
+                      and r["data"]["reviewed_sha"] not in voided_before]
     reviews = {}
     for review in approvals:
         key = ((review["dispatch"], review["data"]["reviewed_sha"]) if review["dispatch"]
@@ -689,23 +735,25 @@ def derive_unit(task, wave, events, prior_dispatches=()):
     # Retries: a dispatch first seen in this wave that follows an earlier dispatch of the task,
     # in this wave or one that planned it before. This wave's dispatches minus one read d1 in
     # wave 1 and its replacement d2 in wave 2 as no retry at all (PR #638 review, P1); a
-    # dispatch already seen earlier is the same worker carried over, not a retry.
-    fresh = seen - set(prior_dispatches)
-    retries = max(len(fresh) - (0 if prior_dispatches else 1), 0)
+    # dispatch already seen earlier is the same worker carried over, not a retry, and its
+    # launch in that earlier window is its observed launch (PR #638 review, P1).
+    fresh = seen - past_seen
+    retries = max(len(fresh) - (0 if past_seen else 1), 0)
 
     return {
-        "task": task, "wave": wave, "outcome": outcome,
+        "task": task, "wave": wave, "outcome": outcome, "carried_out": carried_out,
         "task_completed": bool(by["task.done"]),
         "park_classes": sorted({p["data"]["park_class"] for p in by["unit.parked"]}),
-        "dispatches": sorted(seen), "unlaunched": sorted(seen - launched), "retries": retries,
+        "dispatches": sorted(seen), "dispatched_before": sorted(past_seen),
+        "unlaunched": sorted(seen - launched - past_launched), "retries": retries,
         # attention-budget.md: rework is 'bounced by evidence-manifest.md §2 (re-dispatch /
         # SUSPECT)'. A replaced worker is a re-dispatch whether or not a failing verdict was
-        # recorded, and so is a dispatch into a later wave (PR #638 review, P1).
-        "bounced": (bool(by["unit.suspect"]) or len(seen) > 1
-                    or bool(seen and prior_dispatches)
+        # recorded, and so is a replacement dispatched into a later wave (PR #638 review, P1)
+        # — a worker carried into it is neither.
+        "bounced": (bool(by["unit.suspect"]) or retries > 0
                     or any(v["data"]["exit"] == 2 for v in by["verify.verdict"])),
         "approvals": len(reviews), "voided_reviews": sorted(voided),
-        "latency": latency, "queue": queue, "contested": contested,
+        "latency": latency, "queue": queue, "rereviewed": rereviewed, "contested": contested,
         "revisions": {"closed_at": close_head, "closed_tree": close_tree,
                       "verified_at": sorted({p["data"]["head_sha"] for p in passes
                                              if p["data"]["head_sha"]}),
@@ -734,7 +782,9 @@ def wave_metrics(k, opened, closed, units):
             reasons.append(f"wave {k}: zero wall-clock")
     if not units:
         reasons.append(f"wave {k}: no planned unit")
-    pending = [u["task"] for u in units if u["outcome"] not in CLOSED_OR_PARKED]
+    # A unit a later wave re-plans is final here: every later event of it is placed there.
+    pending = [u["task"] for u in units
+               if u["outcome"] not in CLOSED_OR_PARKED and not u["carried_out"]]
     if pending:
         reasons.append(f"wave {k}: {pending} not observed CLOSED or parked — a pending or "
                        "unrecorded close would change the count")
@@ -761,7 +811,8 @@ def wave_metrics(k, opened, closed, units):
         metrics["latency_median"] = {"value": _minutes(_median(lat)), "units": len(lat)}
         metrics["latency_max"] = {"value": _minutes(max(lat)), "units": len(lat)}
 
-    open_units = [u["task"] for u in units if u["outcome"] not in LEFT_DISPATCHED]
+    open_units = [u["task"] for u in units
+                  if u["outcome"] not in LEFT_DISPATCHED and not u["carried_out"]]
     if not units:
         metrics["rework"] = _na([f"wave {k}: no planned unit"])
     elif open_units:
@@ -788,7 +839,9 @@ def wave_metrics(k, opened, closed, units):
     queue = [pair for u in units for pair in u["queue"]]
     queue_reasons = [why for secs, why in queue if secs is None]
     if not queue:
-        queue_reasons = [f"wave {k}: no review.started observed"]
+        queue_reasons = [f"wave {k}: no review.started observed" if not any(
+            u["rereviewed"] for u in units) else f"wave {k}: only re-reviews of heads an earlier "
+            "wave measured"]
     if queue_reasons:
         metrics["review_queue_median"] = metrics["review_queue_max"] = _na(queue_reasons)
     else:
@@ -796,7 +849,8 @@ def wave_metrics(k, opened, closed, units):
         metrics["review_queue_median"] = {"value": _minutes(_median(values)), "reviews": len(values)}
         metrics["review_queue_max"] = {"value": _minutes(max(values)), "reviews": len(values)}
 
-    retry_reasons = [f"unit {u['task']}: no dispatch observed" for u in units if not u["dispatches"]]
+    retry_reasons = [f"unit {u['task']}: no dispatch observed" for u in units
+                     if not u["dispatches"] and not u["dispatched_before"]]
     retry_reasons += [f"unit {u['task']}: dispatch(es) {u['unlaunched']} reported without an "
                       "observed launch" for u in units if u["unlaunched"]]
     if not units:
@@ -942,10 +996,10 @@ def derive(events, run=None, file_sha="", head=""):
                 taints.setdefault(("unit", task), []).append(why)
             else:
                 parts[k].append(event)
-        prior = set()
-        for k in ks:  # a planned unit never observed is open, not missing
-            units[(task, k)] = derive_unit(task, k, parts[k], prior)
-            prior |= set(units[(task, k)]["dispatches"])
+        history = []
+        for i, k in enumerate(ks):  # a planned unit never observed is open, not missing
+            units[(task, k)] = derive_unit(task, k, parts[k], history, carried_out=i < len(ks) - 1)
+            history = history + parts[k]
     unplanned = [{"task": t, "events": len(evs)} for t, evs in sorted(lifecycle.items())
                  if t not in plan]
     waves = []

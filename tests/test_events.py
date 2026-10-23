@@ -580,6 +580,154 @@ class TestCarriedUnits(Base):
             with self.subTest(wave=wave):
                 self.assertTrue(any("cannot be placed" in r for r in reasons), reasons)
 
+    def test_a_worker_carried_into_the_next_wave_is_not_a_replacement(self):
+        # PR #638 review (P1): d1 launched in wave 1 and finished in wave 2. Wave 2 saw d1 and
+        # the task's earlier dispatch d1, so it marked the unit bounced, and with d1's launch in
+        # wave 1's window its retries were "reported without an observed launch".
+        report = self.derive(inflight_stream())
+        self.assertEqual([self.metric(report, 2, m)["value"] for m in ("rework", "retries")],
+                         ["0/1", "0"])
+        self.assertEqual(report["waves"][1]["row"],
+                         "| `wave=2` | `builders=1 reviewers=1` | `throughput=2.00/h` | "
+                         "`latency_median=5.00m latency_max=5.00m` | `rework=0/1` | `freshness=0` |")
+
+    def test_a_unit_carried_out_in_flight_leaves_its_earlier_wave_measured(self):
+        # Sweep (cross-wave carry-over): t was still in flight when wave 1 closed and wave 2
+        # re-planned it, so every later event of t is placed in wave 2 — wave 1's view of it is
+        # final. "Not observed CLOSED or parked — a pending close would change the count" left
+        # wave 1 unavailable for good; t closed nothing there and has no latency there.
+        report = self.derive(inflight_stream())
+        self.assertEqual(report["waves"][0]["row"],
+                         "| `wave=1` | `builders=2 reviewers=1` | `throughput=3.00/h` | "
+                         "`latency_median=5.00m latency_max=5.00m` | `rework=0/2` | `freshness=0` |")
+        self.assertEqual(self.metric(report, 1, "retries")["value"], "0")
+
+    def test_a_done_in_one_wave_and_its_pass_in_the_next_measure_latency_there(self):
+        # Sweep: the worker_done is a fact at a head whichever wave saw it; the interval it
+        # starts belongs to the wave its end (the pass) is placed in. Wave 2 read "verified
+        # without an observed worker_done" and its retries "no dispatch observed".
+        # Hand calculation: done@A 10:10 (wave 1) -> pass@A 10:40 (wave 2) = 30 m; wave 2
+        # 10:30-11:00 (1800 s), one close -> 2.00/h.
+        a = sha("a1")
+        report = self.derive(two_wave_stream(
+            wave1=[("task.done", "10:10:00", {"dispatch": "d1", "data": {"head_sha": a}})],
+            wave2=[("review.verdict", "10:35:00", {"data": {"verdict": "approve", "reviewed_sha": a}}),
+                   ("verify.verdict", "10:40:00", {"data": {"exit": 0, "head_sha": a}}),
+                   ("unit.closed", "10:50:00", {"data": {"head_sha": a}})]))
+        self.assertEqual(report["waves"][1]["row"],
+                         "| `wave=2` | `builders=1 reviewers=1` | `throughput=2.00/h` | "
+                         "`latency_median=30.00m latency_max=30.00m` | `rework=0/1` | "
+                         "`freshness=0` |")
+        self.assertEqual(self.metric(report, 2, "retries")["value"], "0")
+        self.assertEqual(report["waves"][0]["units"][0]["latency"]["value"], None)
+        self.assertIn("excluded", report["waves"][0]["units"][0]["latency"])
+
+    def test_a_unit_verified_in_one_wave_and_closed_in_the_next_is_verified_closed_there(self):
+        # Sweep: wave 2 judged the close only by its own verdicts, so a head verified in wave 1
+        # and closed in wave 2 read closed-unverified and throughput counted 0 — a wrong number.
+        # Its latency ended in wave 1, which measures it; wave 2 never measures it again, not
+        # even when it re-verifies the same head.
+        a = sha("a1")
+        wave1 = [("task.done", "10:10:00", {"dispatch": "d1", "data": {"head_sha": a}}),
+                 ("review.verdict", "10:12:00", {"data": {"verdict": "approve", "reviewed_sha": a}}),
+                 ("verify.verdict", "10:15:00", {"data": {"exit": 0, "head_sha": a}})]
+        for again in ([], [("verify.verdict", "10:35:00", {"data": {"exit": 0, "head_sha": a}})]):
+            with self.subTest(reverified=bool(again)):
+                report = self.derive(two_wave_stream(
+                    wave1=wave1, wave2=again + [("unit.closed", "10:40:00", {"data": {"head_sha": a}})]))
+                self.assertEqual(report["waves"][0]["row"],
+                                 "| `wave=1` | `builders=1 reviewers=1` | `throughput=0.00/h` | "
+                                 "`latency_median=5.00m latency_max=5.00m` | `rework=0/1` | "
+                                 "`freshness=0` |")
+                self.assertEqual(report["waves"][1]["units"][0]["outcome"], "verified-closed")
+                self.assertEqual(self.metric(report, 2, "throughput")["value"], "2.00/h")
+                self.assertEqual(self.metric(report, 2, "freshness")["value"], "0")
+                self.assertIn("excluded", report["waves"][1]["units"][0]["latency"])
+
+    def test_an_approval_before_the_carry_is_voided_by_the_close_after_it(self):
+        # Sweep: freshness judged a close only against its own wave's approvals, so wave 1's
+        # approval of A, superseded when wave 2 closed at B, was counted in neither wave.
+        a, b = sha("a1"), sha("b1")
+        report = self.derive(two_wave_stream(
+            wave1=[("task.done", "10:10:00", {"dispatch": "d1", "data": {"head_sha": a}}),
+                   ("review.verdict", "10:12:00", {"data": {"verdict": "approve", "reviewed_sha": a}})],
+            wave2=[("task.done", "10:40:00", {"dispatch": "d1", "data": {"head_sha": b}}),
+                   ("review.verdict", "10:42:00", {"data": {"verdict": "approve", "reviewed_sha": b}}),
+                   ("verify.verdict", "10:45:00", {"data": {"exit": 0, "head_sha": b}}),
+                   ("unit.closed", "10:50:00", {"data": {"head_sha": b}})]))
+        self.assertEqual([self.metric(report, k, "freshness")["value"] for k in (1, 2)], ["0", "1"])
+        self.assertEqual(report["waves"][1]["units"][0]["voided_reviews"], [a])
+        self.assertEqual(self.metric(report, 2, "latency_max")["value"], "5.00m")
+
+    def test_an_interval_an_earlier_wave_ended_is_not_measured_again(self):
+        # Sweep guard: with earlier worker_done events as interval starts, a head parked in
+        # wave 1 and verified in wave 2 would get a second latency spanning the park, and a
+        # re-review a second queue time. Each is measured once, where its first end is placed.
+        a = sha("a1")
+        report = self.derive(two_wave_stream(
+            wave1=[("task.done", "10:10:00", {"dispatch": "d1", "data": {"head_sha": a}}),
+                   ("review.started", "10:11:00", {"dispatch": "r1", "data": {"head_sha": a}}),
+                   ("unit.parked", "10:15:00", {"data": {"park_class": "needs-human", "head_sha": a}})],
+            wave2=[("review.started", "10:35:00", {"dispatch": "r1", "data": {"head_sha": a}}),
+                   ("review.verdict", "10:36:00", {"data": {"verdict": "approve", "reviewed_sha": a}}),
+                   ("verify.verdict", "10:40:00", {"data": {"exit": 0, "head_sha": a}}),
+                   ("unit.closed", "10:50:00", {"data": {"head_sha": a}})]))
+        self.assertEqual(self.metric(report, 1, "latency_max")["value"], "5.00m")
+        self.assertEqual(self.metric(report, 1, "review_queue_max")["value"], "1.00m")
+        unit = report["waves"][1]["units"][0]
+        self.assertEqual((unit["outcome"], unit["latency"]["value"]), ("verified-closed", None))
+        self.assertIn("ended in an earlier wave", unit["latency"]["excluded"])
+        self.assertEqual(self.metric(report, 2, "review_queue_max")["unavailable"],
+                         ["wave 2: only re-reviews of heads an earlier wave measured"])
+
+
+def inflight_stream():
+    """Wave 1 plans t and u; t's worker d1 launches in wave 1 and is still running when wave 1
+    closes; wave 2 re-plans t, and d1 finishes it there. u closes in wave 1.
+
+    Hand calculation: wave 1 10:00-10:20 (1200 s), u closed -> 3.00/h; u done 10:10 -> pass
+    10:15 = 5 m; t carried with no latency there. Wave 2 10:30-11:00 (1800 s), t closed ->
+    2.00/h; t done 10:40 -> pass 10:45 = 5 m."""
+    c = ONE
+    t, u = sha("a1"), sha("c1")
+    return [
+        ev("run.start", "10:00:00", data={"coordinator": "c1"}, **c),
+        ev("wave.open", "10:00:00", data={"wave": 1, "builders": 2, "reviewers": 1,
+                                          "tasks": ["t", "u"]}, **c),
+        ev("dispatch.launched", "10:01:00", task="t", dispatch="d1", **c),
+        ev("dispatch.launched", "10:02:00", task="u", dispatch="e1", **c),
+        ev("task.done", "10:10:00", task="u", dispatch="e1", data={"head_sha": u}, **c),
+        ev("review.verdict", "10:12:00", task="u", data={"verdict": "approve", "reviewed_sha": u}, **c),
+        ev("verify.verdict", "10:15:00", task="u", data={"exit": 0, "head_sha": u}, **c),
+        ev("unit.closed", "10:18:00", task="u", data={"head_sha": u}, **c),
+        ev("wave.close", "10:20:00", data={"wave": 1}, **c),
+        ev("wave.open", "10:30:00", data={"wave": 2, "builders": 1, "reviewers": 1, "tasks": ["t"]}, **c),
+        ev("task.done", "10:40:00", task="t", dispatch="d1", data={"head_sha": t}, **c),
+        ev("review.verdict", "10:42:00", task="t", data={"verdict": "approve", "reviewed_sha": t}, **c),
+        ev("verify.verdict", "10:45:00", task="t", data={"exit": 0, "head_sha": t}, **c),
+        ev("unit.closed", "10:50:00", task="t", data={"head_sha": t}, **c),
+        ev("wave.close", "11:00:00", data={"wave": 2}, **c),
+    ]
+
+
+def two_wave_stream(wave1, wave2):
+    """Task t planned in wave 1 (10:00-10:20) and again in wave 2 (10:30-11:00), its worker d1
+    launched at 10:01; `wave1`/`wave2` are (kind, time, fields) placed inside each window."""
+    c = ONE
+
+    def placed(specs):
+        return [ev(kind, at, task="t", **fields, **c) for kind, at, fields in specs]
+    return ([ev("run.start", "10:00:00", data={"coordinator": "c1"}, **c),
+             ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                               "tasks": ["t"]}, **c),
+             ev("dispatch.launched", "10:01:00", task="t", dispatch="d1", **c)]
+            + placed(wave1)
+            + [ev("wave.close", "10:20:00", data={"wave": 1}, **c),
+               ev("wave.open", "10:30:00", data={"wave": 2, "builders": 1, "reviewers": 1,
+                                                 "tasks": ["t"]}, **c)]
+            + placed(wave2)
+            + [ev("wave.close", "11:00:00", data={"wave": 2}, **c)])
+
 
 class TestRedispatchIsRework(Base):
     """PR #638 review (P1): rework is the share of units bounced 'by evidence-manifest.md §2

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +31,9 @@ def _load(path, name):
 
 heldout = _load(HELDOUT, "vfbench_heldout")
 gate = _load(BENCH / "gate.py", "vfbench_gate_for_heldout")
-CANARY = "6c1d2e3f-4a5b-4c6d-8e7f-a0b1c2d3e601"
+# The synthetic split's canary is minted per run: a fixed one would be committed in this file,
+# and the leakage check run against this repository would rightly report it (#601).
+CANARY = str(uuid.uuid4())
 
 
 def _cli(*args):

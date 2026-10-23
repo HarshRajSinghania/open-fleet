@@ -82,7 +82,8 @@ the pin and never fetches anything. It checks:
   - every URL (interface, provider, documentation, icon) has a scheme and a host a client can
     dial: no whitespace or control character anywhere, an ASCII DNS name (an IDN in its
     `xn--` form), a dotted-quad IPv4 address or a bracketed IPv6 literal, and an explicit port
-    of 1-65535. The exporter's `--endpoint` check uses the same parser;
+    of 1-65535. A gRPC `host:port` address follows the same host and port rule, and the
+    exporter's `--endpoint` check uses the same parsers;
   - unique skill ids;
   - `type/subtype` media types, with optional `; name=value` parameters;
   - each security requirement names a declared scheme, and each scheme sets one variant;

@@ -95,8 +95,8 @@ _REG_NAME = re.compile("(?:[" + _UNRESERVED_SUB_DELIMS + "]|" + _PCT + ")*")
 _IPV_FUTURE = re.compile(r"v[0-9A-Fa-f]+\.[" + _UNRESERVED_SUB_DELIMS + ":]+")
 # Schemes whose URI names a network authority: for these an empty host is not a URI (RFC 9110 4.2).
 _HOST_SCHEMES = ("http", "https", "ws", "wss")
-# gRPC `host:port`: a DNS name or IPv4 address, or a bracketed IPv6 literal (#636).
-_HOST_PORT = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):([0-9]{1,5})")
+# gRPC `host:port`, split only: _dial_host judges the host, as it does a URL's (#636).
+_HOST_PORT = re.compile(r"(\[[^\]]*\]|[^\[\]:]*):([0-9]{1,5})")
 # One DNS label (RFC 1123 2.1): letters, digits and inner hyphens, 1-63 characters (#636).
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
@@ -716,20 +716,15 @@ def _absolute_uri(text):
 def grpc_address(text):
     """(host, port) of a gRPC `host:port` address, or None (a2a.proto AgentInterface.url).
 
-    The host is a DNS name, an IPv4 address or a bracketed IPv6 literal (`[2606:4700::1111]:443`);
-    an unbracketed IPv6 address is ambiguous and refused, and the port is 1-65535. The exporter's
-    endpoint check uses this same parser, so an address it accepts the card check accepts (#636).
+    The host is judged by _dial_host, the URL rule: a DNS name, an IPv4 address or a bracketed
+    IPv6 literal (`[2606:4700::1111]:443`); an unbracketed IPv6 address is ambiguous and refused,
+    and the port is 1-65535. The exporter's endpoint check uses this same parser, so an address
+    it accepts the card check accepts (#636).
     """
     m = _HOST_PORT.fullmatch(text) if isinstance(text, str) else None
-    if not m or not 0 < int(m.group(2)) < 65536:
+    if not m or not 0 < int(m.group(2)) < 65536 or not _dial_host(m.group(1)):
         return None
-    host = m.group(1)
-    if host.startswith("["):
-        try:
-            ipaddress.IPv6Address(host[1:-1])
-        except ValueError:
-            return None
-    return host, int(m.group(2))
+    return m.group(1), int(m.group(2))
 
 
 def _security_names(requirements):

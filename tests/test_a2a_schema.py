@@ -531,6 +531,48 @@ class TestReviewFindings(unittest.TestCase):
                 card = export.build_standard_card(good, "HTTP+JSON", mission="review-it")
                 self.assertEqual(self.mod.card_errors(card), [])
 
+    # A gRPC host:port address judges its host by the URL rule, so a host one path refuses the
+    # other refuses: the regex alone let `999.1.1.1:443` and `a..b:443` through (#636).
+    UNDIALABLE_HOSTS = (
+        "999.1.1.1", "a..b", "1.2.3.04", "192.0.2", "fleet-.corp.internal",
+        "-fleet.corp.internal", "fleet_1.corp.internal", "x" * 64 + ".corp.internal",
+        "[fe80::1%eth0]", "[v7.fe:1]", "[not-an-ip]", "",
+    )
+    DIALABLE_HOSTS = (
+        "fleet.corp.internal", "FLEET.Corp.Internal", "fleet.corp.internal.",
+        "xn--bcher-kva.corp.internal", "x" * 63 + ".corp.internal", "192.0.2.10",
+        "[2606:4700:4700::1111]",
+    )
+
+    def test_a_grpc_host_port_uses_the_url_host_rule(self):
+        export = load(EXPORT, "a2a_export_grpc_review")
+
+        def grpc(url):
+            return lambda c: c["supportedInterfaces"][1].update(url=url)
+
+        for host in self.UNDIALABLE_HOSTS + self.DIALABLE_HOSTS:
+            with self.subTest(same_rule=host):
+                self.assertEqual(self.mod.grpc_address(f"{host}:443") is not None,
+                                 self.mod._absolute_url(f"https://{host}:443/a2a"))
+        for host in self.UNDIALABLE_HOSTS:
+            with self.subTest(bad=host):
+                self.assertIsNone(self.mod.grpc_address(f"{host}:443"))
+                self.assertIn("$.supportedInterfaces[1].url: expected an absolute URL or host:port",
+                              self.errors_for(grpc(f"{host}:443")))
+                endpoint = export.endpoint_errors(f"{host}:443", "GRPC")
+                self.assertEqual(len(endpoint), 1, endpoint)
+                self.assertIn("a GRPC endpoint is host:port", endpoint[0])
+        for host in self.DIALABLE_HOSTS:
+            for port in (1, 443, 65535):
+                with self.subTest(good=host, port=port):
+                    address = f"{host}:{port}"
+                    self.assertEqual(self.mod.grpc_address(address), (host, port))
+                    self.assertEqual(self.errors_for(grpc(address)), [])
+                    self.assertEqual(export.endpoint_errors(address, "GRPC"), [])
+            with self.subTest(card=host):
+                card = export.build_standard_card(f"{host}:443", "GRPC", mission="review-it")
+                self.assertEqual(self.mod.card_errors(card), [])
+
 
 if __name__ == "__main__":
     unittest.main()

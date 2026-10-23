@@ -303,6 +303,7 @@ def grid():
             ("script-file-heredoc", "cat > s.sh <<'EOF'" + NL + CMD + NL + "EOF" + NL + "bash s.sh"),
             ("script-source", "echo " + sq(CMD) + " > s.sh && . ./s.sh"),
             ("script-written-only", "echo " + sq(CMD) + " > s.sh"),
+            ("script-dotslash-run", "printf '%s' " + sq(CMD) + " > ./s.sh; sh s.sh"),
             ("find-exec", "find . -maxdepth 0 -exec " + CMD + " " + BS + ";"),
             ("find-exec-plus", "find . -maxdepth 0 -exec " + CMD + " {} +"),
             ("coproc", "coproc " + CMD), ("time", "time " + CMD), ("negated", "! " + CMD),
@@ -311,9 +312,34 @@ def grid():
             ("while-body", "while :; do " + CMD + "; break; done"),
             ("until-cond", "until " + CMD + "; do :; done"),
             ("select-free", "echo " + sq(CMD)), ("colon-literal", ": " + sq(CMD)),
-            ("printf-literal", "printf '%s" + BS + "n' " + DQ + BS + "$(" + CMD + ")" + DQ)):
+            ("printf-literal", "printf '%s" + BS + "n' " + DQ + BS + "$(" + CMD + ")" + DQ),
+            ("xargs-append", "echo main | xargs " + HEAD + " push --force origin")):
         out.append(Case(f"launch:{name}", tpl))
     return out
+
+
+# parallel builds its command by replacing {} with, or appending, each ::: argument (PR #648
+# review PRRT_kwDOTWxN9c6vvZVr). The `parallel` binary is not on every host, so this family is
+# hook-only (judged, never executed); tests/test_deny_hook_conformance.py asserts each denies.
+def parallel_family():
+    heads = {"push": ("git", "push --force origin main", "--force"),
+             "send": ("gh", "issue close 34", "close")}
+    cases = []
+    for payload, (_h, _full, arg) in heads.items():
+        rest = PAYLOADS[payload][1]
+        before, _sep, after = rest.partition(arg)
+        variants = [
+            ("run", "parallel {HEAD} " + rest + " :::"),
+            ("placeholder", "parallel {HEAD} " + before + "{} " + after + " ::: " + arg),
+            ("jobs", "parallel -j2 {HEAD} " + before + "{} " + after + " ::: " + arg),
+            ("numbered", "parallel {HEAD} " + before + "{1} " + after + " ::: " + arg),
+            ("colsep", "parallel --colsep , {HEAD} " + before + "{1} " + after + " ::: " + arg)]
+        if payload == "push":   # a force flag appended at the end still forces the push
+            variants.append(("append", "parallel {HEAD} " + (before + after).strip()
+                             + " ::: " + arg))
+        for name, tpl in variants:
+            cases.append(Case(f"parallel:{name}", tpl, payload))
+    return cases
 
 
 # --- seeded compositions: the grid's contexts stacked two and three deep -------------------

@@ -142,12 +142,13 @@ class TestStoredFixtures(unittest.TestCase):
                 self.assertIn(f["kind"], ("miss", "downgrade", "false-deny"))
                 self.assertTrue(f["note"], "every fixture says why it is fixed or kept")
                 self.assertTrue(re.search(r"\{[A-Z0-9]+\}", f["template"])
-                                or f["payload"].startswith("guard:"), "a fixture keeps its hole")
+                                or f["payload"].startswith("guard:")
+                                or f["bash"].startswith("n/a"), "a fixture keeps its hole")
 
     def test_fixed_fixtures_now_agree_with_bash(self):
         state = _shared()
         cases = [corpus.Case(f["family"], f["template"], f["payload"])
-                 for f in _fixtures() if f["status"] == "fixed"]
+                 for f in _fixtures() if f["status"] == "fixed" and not f["bash"].startswith("n/a")]
         results = corpus.evaluate(cases, state["oracle"], HOOK, JOBS, state["cache"])
         bad = [r for r in results if r["verdict"] not in ("agree", "fail-closed")]
         self.assertEqual(bad, [], "a fixed mismatch is back:\n" + _render_all(bad))
@@ -162,6 +163,38 @@ class TestStoredFixtures(unittest.TestCase):
             with self.subTest(template=case.template):
                 self.assertNotEqual(decision, "allow", "a documented conservative refusal "
                                     "turned into an allow: re-check it against bash")
+
+
+class TestHookOnlyFixtures(unittest.TestCase):
+    """Fixtures whose construct the throwaway bash cannot run (egress receipts, a pinned-key
+    write, parallel): judged by the hook decision, in a worktree with the guarded keys present."""
+
+    def setUp(self):
+        self.wt = Path(tempfile.mkdtemp(prefix="dh-hookonly-"))
+        self.addCleanup(shutil.rmtree, self.wt, True)
+        for sub in (".orca", "docs", "scripts"):
+            (self.wt / sub).mkdir(parents=True, exist_ok=True)
+        for rel in (".orca/human-grant-pubkey", ".orca/dispatch-pubkey"):
+            (self.wt / rel).write_text("00\n", encoding="utf-8")
+
+    def test_each_hook_only_fixture_holds(self):
+        for f in _fixtures():
+            if f["status"] != "fixed" or not f["bash"].startswith("n/a"):
+                continue
+            command = (corpus.render(f["template"], f["payload"], False)
+                       if f["payload"] in corpus.PAYLOADS else f["template"])
+            want = "allow" if f["kind"] == "false-deny" else "deny"
+            with self.subTest(template=f["template"]):
+                got = corpus.hook_decision(command, HOOK, str(self.wt))
+                self.assertEqual(got, want, f"{command!r}: {got}")
+
+
+class TestParallelFamily(unittest.TestCase):
+    def test_every_completed_parallel_command_is_denied(self):
+        for case in corpus.parallel_family():
+            command = corpus.render(case.template, case.payload, False)
+            with self.subTest(command=command):
+                self.assertEqual(corpus.hook_decision(command, HOOK), "deny", command)
 
 
 # Each parser safeguard, switched off in a copy of the hook, must make the corpus disagree with
@@ -267,6 +300,64 @@ class TestEverySafeguardIsCaughtWhenSwitchedOff(unittest.TestCase):
                     if not caught and _decision(command, hook=mutant)[0] == "allow":
                         caught = [command]
                 self.assertTrue(caught, f"switching off '{name}' left the corpus green")
+
+
+# PR #648 review: safeguards whose constructs the throwaway bash cannot run (egress receipts, a
+# pinned-key write, parallel). Each is switched off in a copy of the hook and a pin command must
+# FLIP: a deny becomes allow (a hole reopened) or an allow becomes deny (a false denial returns).
+# (name, anchor, replacement, [(command, decision-with-the-safeguard, flipped-decision)]).
+HOOK_ONLY_MUTANTS = (
+    ("deferred sends reject an outer receipt (Ri)",
+     '    if head in ("trap", "alias"):\n        return True',
+     "    if False:\n        return True",
+     [("RCPT && trap 'gh issue close 34' EXIT", "deny", "allow"),
+      ("RCPT && alias a='gh issue close 34'", "deny", "allow")]),
+    ("a receipt arms a send fed to a shell (ZV5)",
+     "    if armed and pairs:", "    if False and pairs:",
+     [("RCPT && echo 'gh issue close 34' | sh", "allow", "deny")]),
+    ("interpreter stdin reaches the guard check (ZVy)",
+     "for _code in dict.fromkeys(_FED_INTERP):",
+     "for _code in dict.fromkeys(()):",
+     [("python3 <<XEOF\nopen('.orca/dispatch-pubkey','w').write('x')\nXEOF", "deny", "allow")]),
+    ("only exec-call literals are commands (Rm)",
+     "    for m in _EXEC_CALL.finditer(code):",
+     "    for m in re.finditer(r'()', code):",
+     [("python3 -c \"import subprocess; subprocess.run(['git','status']); "
+       "print('git push --force origin main')\"", "allow", "deny")]),
+    ("parallel completes its command before judging (ZVr)",
+     'filled = [re.sub(r"\\{[0-9./#%]*\\}", a, w) for w in tpl]',
+     "filled = list(tpl)",
+     [("parallel git push {} origin main ::: --force", "deny", "allow")]),
+)
+
+
+class TestHookOnlySafeguardsFlipWhenSwitchedOff(unittest.TestCase):
+    """The bash oracle cannot run these constructs, so each safeguard is pinned by a command whose
+    decision must flip when the safeguard is removed (PR #648 review)."""
+
+    def setUp(self):
+        self.wt = Path(tempfile.mkdtemp(prefix="dh-hmut-"))
+        self.addCleanup(shutil.rmtree, self.wt, True)
+        for sub in (".orca", "docs", "scripts"):
+            (self.wt / sub).mkdir(parents=True, exist_ok=True)
+        (self.wt / ".orca" / "dispatch-pubkey").write_text("00\n", encoding="utf-8")
+        self.rcpt = ("python3 runtime/scripts/egress.py write --payload-class pr-body "
+                     "--consent grant:x")
+        self.source = HOOK.read_text(encoding="utf-8")
+
+    def test_each_safeguard_flips_a_pin(self):
+        tmp = Path(tempfile.mkdtemp(prefix="dh-hmut2-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        for name, anchor, replacement, pins in HOOK_ONLY_MUTANTS:
+            with self.subTest(mutant=name):
+                self.assertEqual(self.source.count(anchor), 1, f"anchor moved: {anchor!r}")
+                mutant = tmp / "deny-hook.sh"
+                mutant.write_text(self.source.replace(anchor, replacement), encoding="utf-8")
+                for command, armed, flipped in pins:
+                    command = command.replace("RCPT", self.rcpt)
+                    self.assertEqual(_decision(command, cwd=self.wt)[0], armed, command)
+                    self.assertEqual(_decision(command, cwd=self.wt, hook=mutant)[0], flipped,
+                                     f"removing '{name}' did not flip: {command!r}")
 
 
 # --- hook-only pins: launchers and constructs the throwaway bash cannot run (#598) ----------

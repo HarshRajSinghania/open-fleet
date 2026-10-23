@@ -29,13 +29,18 @@
 # strace, command, builtin, ( { !, if/then/do/while and case patterns. A command
 # line run later or elsewhere is judged as segments of its own (#598): a `sh -c`
 # or `eval` body, a trap action, an alias value, a gh shell alias, the string or
-# command of flock, su, runuser, script, watch, parallel, ssh and find -exec,
-# interpreter code handing a literal to os.system/subprocess, a program fed to a
-# shell on stdin (pipe from echo/printf/cat, heredoc, here-string) or written to
-# a file and run in the same command, and a head built from a variable or a
-# substitution (its literal value on the line, what echo prints, else each refused
-# head). Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
-# refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10).
+# command of flock, su, runuser, script, watch, parallel (its template completed
+# with each ::: argument), ssh and find -exec, interpreter code handing a literal
+# to os.system/subprocess (from -c, stdin or a heredoc), a program fed to a shell
+# on stdin (pipe from echo/printf/cat, heredoc, here-string) or written to a file
+# and run in the same command, and a head built from a variable or a substitution
+# (its literal value on the line, what echo prints, else each refused head).
+# printf/echo escapes (\xHH, \NNN, \n …) are decoded before the fed program is
+# read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
+# refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10;
+# PR #648 review). An egress receipt &&-before a command arms the send it runs now
+# — including one fed to a shell by a pipe or heredoc — but never a DEFERRED send
+# (a trap, alias or gh alias set runs later, so its receipt must sit inside it).
 # The parser is differential-tested against real bash (scripts/deny_hook_corpus.py,
 # tests/test_deny_hook_conformance.py). Still string matching: a script already on
 # disk, a program a download or decoder produces, an alias or function defined in
@@ -1923,16 +1928,13 @@ _CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", r
 _CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
                           r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
                           r"|rmSync|>|open[^)]*[\x22\x27][rbt]*[wax+]")
-# A call that hands a string to the system to run (#598): os.system, subprocess.*, exec, spawn,
-# popen, a backtick. Interpreter code naming none of them only holds its literals as data.
-_CODE_EXEC = re.compile(r"system|popen|subprocess|spawn|exec|check_output|check_call|run\(|call\("
-                        r"|\x60")
 # Heads a command built from an expansion is judged as when its value cannot be read (#598).
 _REFUSED_HEADS = ("gh", "git", "rm", "orca")
 _ASSIGNED = {}   # NAME -> the literal values this command line assigns it, anywhere (#598)
 _SIMPLE_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly")
 _FED_SUB = []    # set when a substitution feeds a shell on stdin: echo "$(curl ...)" | sh
+_FED_INTERP = []  # interpreter programs fed on stdin (python3 <<EOF ...): judged for guard writes
 # Launchers outside the peel table: each runs a -c string, a vector after operands of its own,
 # or a string it hands to a shell (_launcher_bodies, #598).
 _BODY_LAUNCHERS = ("su", "runuser", "flock", "script", "watch", "parallel", "ssh", "find")
@@ -1972,18 +1974,46 @@ def _inline_code(head, rest):
     return codes
 
 
+_EXEC_CALL = re.compile(r"(?<![A-Za-z0-9_])(system|popen|spawn[A-Za-z]*|exec[A-Za-z]*|run|call"
+                        r"|check_output|check_call|Popen)[ \t]*\(")
+
+
+def _call_args(code, open_paren):
+    # The text inside the balanced (...) that starts at index open_paren, quotes respected.
+    depth, i, quote, n = 0, open_paren, "", len(code)
+    while i < n:
+        ch = code[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in (SQ, DQ):
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return code[open_paren + 1:i]
+        i += 1
+    return code[open_paren + 1:]
+
+
 def _code_commands(code):
-    """Command lines interpreter code hands to the system (#598): its string literals, and each
-    bracketed list of literals joined as one argv, when the code calls an exec-shaped API. A
-    literal the code only prints is data, so code naming no such call yields none."""
-    if not _CODE_EXEC.search(code):
-        return []
+    """Command lines interpreter code hands to the system (PR #648 review PRRT_kwDOTWxN9c6vu_Rm):
+    the string literals and the bracketed argv lists passed TO an exec-shaped call (system, popen,
+    spawn, exec, run, call, Popen, a backtick), not every literal in the program -- a literal that
+    is only printed, or built for another API, is data."""
     out = []
-    for m in re.finditer(r"\[([^\[\]]*)\]", code):
-        items = [a or b for a, b in _CODE_LITERAL.findall(m[1])]
-        if len(items) > 1:
-            out.append(shlex.join(items))
-    out += [m[1] if m[1] is not None else m[2] for m in _CODE_LITERAL.finditer(code)]
+    for m in _EXEC_CALL.finditer(code):
+        argtext = _call_args(code, m.end() - 1)
+        for lm in re.finditer(r"\[([^\[\]]*)\]", argtext):
+            items = [a or b for a, b in _CODE_LITERAL.findall(lm[1])]
+            if len(items) > 1:
+                out.append(shlex.join(items))
+        out += [lm[1] if lm[1] is not None else lm[2] for lm in _CODE_LITERAL.finditer(argtext)]
     out += re.findall(r"\x60([^\x60]*)\x60", code)
     return [line for line in out if line.strip()]
 
@@ -2103,7 +2133,19 @@ def _launcher_bodies(head, rest):
             if w in _PARALLEL_SEPS:
                 tpl, args = tpl[:k], [a for a in tpl[k + 1:] if a not in _PARALLEL_SEPS]
                 break
-        return [" ".join(tpl)] if tpl else args   # parallel ::: CMD... runs each argument
+        if not tpl:
+            return args   # parallel ::: CMD... runs each argument as a command
+        # parallel runs the template once per argument, replacing {} (and {1}, {.}, {/} …) with
+        # the argument, or APPENDING it when the template has no placeholder (PR #648 review
+        # PRRT_kwDOTWxN9c6vvZVr): `parallel git push {} origin main ::: --force` is a force push.
+        has_ph = any(re.search(r"\{[0-9./#%]*\}", w) for w in tpl)
+        out = []
+        for a in args or [""]:
+            filled = [re.sub(r"\{[0-9./#%]*\}", a, w) for w in tpl]
+            if not has_ph and a:
+                filled = filled + [a]
+            out.append(" ".join(filled))
+        return out
     if head == "ssh":
         takes = "BbcDEeFIiJLlmOoPpQRSWw"
         i = _opt_end(rest, takes)
@@ -2397,7 +2439,7 @@ def _fed_code(parts, docs):
             ws = _command_words(args)
             data = _echo_data(ws)
             for w in writes if data is not None else ():
-                written.setdefault(os.path.basename(w), []).append(data)
+                written.setdefault(os.path.normpath(w), []).append(data)
             kind = _stdin_kind(ws)
             if kind:
                 out += [(kind, hs.replace(_QNL, chr(10))) for hs in _herestrings(seg)]
@@ -2407,13 +2449,14 @@ def _fed_code(parts, docs):
                     out.append((kind, pdata))
                 elif prev[0][:1] and prev[0][0].rsplit("/", 1)[-1] == "cat":
                     out += [(kind, code) for f in prev[0][1:]
-                            for code in written.get(os.path.basename(f), [])]
+                            for code in written.get(os.path.normpath(f), [])]
                 if _SUB_MARK in prev[1]:
                     _FED_SUB.append(prev[1])
             script = _script_operand(ws)
             if script:
-                out += [("shell", code) for code in written.get(os.path.basename(script), [])]
+                out += [("shell", code) for code in written.get(os.path.normpath(script), [])]
             prev = (ws, seg)
+    _FED_INTERP.extend(prog for kind, prog in out if kind == "interp")
     return out
 
 
@@ -2471,12 +2514,10 @@ for _extra_p in target_paths[1:]:
 # assignment in a later segment, or inside a body, still names what `$c` may run.
 for _join, seg in _split(_judged):
     _views(_tokenize(seg)[0])
-_seg_args = []
 _guard_segs = []
 _all_views = []   # (words, writes, segment text) of every command in order, bodies included
 for _join, seg in _split(_judged):
     args, writes = _tokenize(seg)
-    _seg_args.append((_join, args))
     _guard_segs.append((args, writes))
     # C carries the peeled command, not the words as typed: the HIGH tier and the never list
     # anchor at its head (2026-10-23 review, P1-3). Assignments ride in front for git_redirected.
@@ -2492,29 +2533,97 @@ for _join, seg in _split(_judged):
                    for _k, (_va, _vw) in enumerate(_seg_views)]
 
 
+def _is_deferred_def(ws):
+    # A command that DEFINES an action to run later (maybe many times), not one that runs it
+    # now: a trap, an alias, a gh alias set. A receipt on the defining line is consumed now and
+    # cannot cover a send that fires later, so a send inside one of these needs a receipt INSIDE
+    # it (PR #648 review PRRT_kwDOTWxN9c6vu_Ri).
+    if not ws:
+        return False
+    head = ws[0].rsplit("/", 1)[-1]
+    if head in ("trap", "alias"):
+        return True
+    if head == "gh":
+        alias = _gh_alias(ws)
+        return bool(alias and alias[0] == "set")
+    return False
+
+
+def _receipt_pairs(surface, docs, depth=0):
+    """(join, args, fed_shell_body) per segment of a SURFACE (substitutions already lifted out).
+    fed_shell_body is the program a shell consumer runs from a heredoc, a here-string, or a
+    producer piped into it (echo SEND | sh), attached to the CONSUMER segment with the pipeline
+    leading join preserved, so an outer && receipt still arms a send fed that way (PR #648 review
+    PRRT_kwDOTWxN9c6vvZV5). The producer/consumer pair collapses to one entry."""
+    doc_bodies = []
+    for before, after, body in docs:
+        try:
+            owner, writes, pipe = _heredoc_owner(before, after)
+        except ValueError:
+            owner, writes, pipe = [], [], None
+        # A shell reads the heredoc on stdin, OR cat/tee of the heredoc pipes it into a shell;
+        # a redirected heredoc (cat > f <<EOF) is a WRITE, handled by _fed_detached, not here.
+        if not writes and (_stdin_kind(owner) == "shell"
+                           or (owner[:1] and owner[0].rsplit("/", 1)[-1] in ("cat", "tee")
+                               and _stdin_kind(pipe) == "shell")):
+            doc_bodies.append(body)
+    segs, out, i = _split(surface), [], 0
+    while i < len(segs):
+        join, seg = segs[i]
+        args = _tokenize(seg)[0]
+        ws = _command_words(args)
+        head = ws[0].rsplit("/", 1)[-1] if ws else ""
+        fed = None
+        feeds_shell = _stdin_kind(ws) == "shell" or (
+            head in ("cat", "tee") and i + 1 < len(segs) and segs[i + 1][0] == "|"
+            and _stdin_kind(_command_words(_tokenize(segs[i + 1][1])[0])) == "shell")
+        if feeds_shell and "<<" in seg and doc_bodies:
+            fed = doc_bodies.pop(0)
+            if head in ("cat", "tee"):
+                i += 1   # collapse the cat <<EOF | shell pipeline to one entry
+        elif _stdin_kind(ws) == "shell":
+            hs = _herestrings(seg)
+            fed = hs[0] if hs else None
+        if fed is None and i + 1 < len(segs) and segs[i + 1][0] == "|":
+            nxt = _command_words(_tokenize(segs[i + 1][1])[0])
+            if _stdin_kind(nxt) == "shell":
+                data = _echo_data(ws)
+                if data is not None:
+                    fed, i = data, i + 1   # the producer carries the join; skip the shell
+        out.append((join, args, fed))
+        i += 1
+    return out
+
+
 def _unreceipted(pairs, armed=False, depth=0):
     """True when an off-repo write in pairs has no receipt immediately &&-before it."""
-    for join, args in pairs:
+    if armed and pairs:
+        # The scope was entered right after a receipt on the success path, so its FIRST command
+        # is &&-armed however it is joined inside the body (receipt && sh -c SEND).
+        pairs = [("&&",) + tuple(pairs[0][1:])] + list(pairs[1:])
+    for item in pairs:
+        join, args = item[0], item[1]
+        fed = item[2] if len(item) > 2 else None
         if _is_receipt(args):
             armed = True
             continue
-        body = _inner_body(_command_words(args)) if depth < 3 else None
-        if body is not None:
-            # The body runs as one command of this line: an outer receipt &&-joined to the
-            # shell arms the first send inside it, and nothing else (P2-13).
-            lead = armed and join == "&&"
+        ws = _command_words(args)
+        deferred = _is_deferred_def(ws)
+        body = _inner_body(ws) if depth < 3 else None
+        # A body that runs NOW (sh -c, eval, a launcher, $c, or a program fed to a shell by a
+        # pipeline or heredoc) can be armed by an outer && receipt; a DEFERRED definition body
+        # cannot -- its send fires later, so the receipt must sit inside it (PR #648 review).
+        for run_body, defer in ([(body, deferred)] if body is not None else []) \
+                + ([(fed, False)] if fed is not None and depth < 3 else []):
+            lead = armed and join == "&&" and not defer
             try:
-                inner = _body_pairs(body)
+                if _unreceipted_scope(run_body, lead, depth + 1):
+                    return True
             except ValueError:
-                inner = None
-            if inner is None:
-                gh_word = re.search(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)", body)
+                gh_word = re.search(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)", run_body)
                 if gh_word and not lead:
                     return True
-            elif inner:
-                inner[0] = ("&&" if lead else "start", inner[0][1])
-                if _unreceipted(inner, lead, depth + 1):
-                    return True
+        if body is not None or fed is not None:
             armed = False
             continue
         if _is_send(args):
@@ -2526,7 +2635,62 @@ def _unreceipted(pairs, armed=False, depth=0):
     return False
 
 
-if _unreceipted(_seg_args):
+def _fed_detached(surface, docs=()):
+    """Shell programs fed by a construct an outer receipt CANNOT arm: a program written to a
+    file and then run (printf SEND > f; sh f, or cat > f <<EOF then sh f), or cat of such a file
+    piped to a shell. The receipt-to-send adjacency is broken by the intervening write, so each
+    is judged unarmed (PR #648 review). Pipelines and heredocs a receipt CAN arm: _receipt_pairs."""
+    written, out = {}, []
+    for before, after, body in docs:   # cat > f <<EOF writes body to f; python3 <<EOF runs it
+        try:
+            owner, writes, pipe = _heredoc_owner(before, after)
+        except ValueError:
+            owner, writes, pipe = [], [], None
+        for w in writes:
+            written.setdefault(os.path.normpath(w), []).append(body)
+        interp = owner if _stdin_kind(owner) == "interp" else (
+            pipe if _stdin_kind(pipe) == "interp" else None)
+        if interp is not None:
+            out += _code_commands(body)   # the shell commands the interpreter hands to the system
+    segs = _split(surface)
+    for i, (_join, seg) in enumerate(segs):
+        args = _tokenize(seg)[0]
+        ws = _command_words(args)
+        data = _echo_data(ws)
+        if data is not None:
+            for w in _tokenize(seg)[1]:
+                written.setdefault(os.path.normpath(w), []).append(data)
+            if i + 1 < len(segs) and segs[i + 1][0] == "|":   # echo CODE | python3
+                nxt = _command_words(_tokenize(segs[i + 1][1])[0])
+                if _stdin_kind(nxt) == "interp":
+                    out += _code_commands(data)
+        script = _script_operand(ws)
+        if script:
+            out += written.get(os.path.normpath(script), [])
+        if ws[:1] and ws[0].rsplit("/", 1)[-1] == "cat":   # cat f | shell, f written above
+            out += [c for f in ws[1:] for c in written.get(os.path.normpath(f), [])]
+    return out
+
+
+def _unreceipted_scope(text, armed=False, depth=0):
+    """One receipt scope: the SURFACE commands of text (armed by an incoming &&-receipt), then
+    each command substitution body as its OWN unarmed scope -- a send inside $(...) runs during
+    word expansion, so an outer receipt never arms it. substitution_bodies lifts every nested
+    body (at every depth) into subs as an analysed surface, so each is judged by _split alone;
+    re-parsing one would let a heredoc opener it still carries swallow the next command, which
+    the flat judge tolerated (PR #648 review PRRT_kwDOTWxN9c6vvZVy regression)."""
+    if depth > 4:
+        return False
+    subs, surface, _patch, docs = substitution_bodies(text)
+    if _unreceipted(_receipt_pairs(surface, docs, depth), armed, depth):
+        return True
+    if depth < 3 and any(_unreceipted_scope(prog, False, depth + 1)
+                         for prog in _fed_detached(surface, docs)):
+        return True
+    return any(_unreceipted(_receipt_pairs(sub, [], depth + 1), False, depth + 1) for sub in subs)
+
+
+if _unreceipted_scope(raw_command):
     record("E", "unreceipted")
 
 
@@ -2542,14 +2706,19 @@ def _alias_refusal(ws):
     if alias[0] == "import":
         return ("gh alias import loads alias expansions this hook cannot read; define each "
                 "alias with gh alias set so its expansion is judged.")
-    if alias[0] == "set" and not alias[3]:
+    if alias[0] == "set":
+        # A shell alias (! or --shell) expands to a command line; a plain alias to gh ARGS.
+        body = alias[2] if alias[3] else "gh " + alias[2]
         try:
-            words = shlex.split(alias[2])
+            pairs = _body_pairs(body)
         except ValueError:
-            words = alias[2].split()
-        if _is_send(["gh"] + words):
-            return ("a gh alias expanding to an off-repo write runs it later with no egress "
-                    "receipt (rule 5). Run the write itself, receipted.")
+            pairs = [("start", body.split())]
+        # The saved action is deferred, so an outer receipt cannot arm it: a send inside with
+        # no receipt INSIDE the expansion is refused outright (PR #648 review).
+        if _unreceipted(pairs):
+            return ("a gh alias whose expansion is an off-repo write runs it later; an outer "
+                    "egress receipt cannot cover a deferred send (rule 5). Put the receipt "
+                    "inside the alias, or run the write itself, receipted.")
     return None
 
 
@@ -3035,21 +3204,27 @@ def guard_targets(words, depth=0):
                     out += guard_targets(a2, depth + 1)
             except ValueError:
                 pass  # an inner string the tokenizer cannot read is judged as written
-    # Interpreter code from argv that names a guard path beside a write-shaped call --
-    # open(..., "w"), os.chmod, unlink, a shell-out -- is judged a write to that path (P1-4).
-    # A script file, stdin, or a path the code assembles at run time stays beyond the text.
+    # Interpreter code that names a guard path beside a write-shaped call -- open with a write
+    # mode, os.chmod, unlink, a shell-out -- is judged a write to that path (P1-4), whether it
+    # comes from argv (python -c) or is fed on stdin or a heredoc (PR #648 review ...ZVy).
     for code in _inline_code(head, rest):
-        if not _CODE_WRITES.search(code):
-            continue
-        for m in _CODE_LITERAL.finditer(code):
-            lit = m[1] if m[1] is not None else m[2]
-            out.append((lit, False))
-            if depth < 3 and " " in lit.strip():
-                try:
-                    for _j, seg2 in _split(lit):
-                        out += guard_targets(_tokenize(seg2)[0], depth + 1)
-                except ValueError:
-                    out += [(w, False) for w in lit.split()]
+        out += _code_guard_targets(code, depth)
+    return out
+
+
+def _code_guard_targets(code, depth=0):
+    out = []
+    if not _CODE_WRITES.search(code):
+        return out
+    for m in _CODE_LITERAL.finditer(code):
+        lit = m[1] if m[1] is not None else m[2]
+        out.append((lit, False))
+        if depth < 3 and " " in lit.strip():
+            try:
+                for _j, seg2 in _split(lit):
+                    out += guard_targets(_tokenize(seg2)[0], depth + 1)
+            except ValueError:
+                out += [(w, False) for w in lit.split()]
     return out
 
 
@@ -3057,6 +3232,9 @@ _guard_hits = []
 if norm_tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     _guard_hits += [p for p in target_paths if guarded(p, False)]
 _guard_hits += [p for p in heredoc_targets if guarded(p, False)]
+# An interpreter fed a guard-path write on stdin or a heredoc, not only via -c (review ...ZVy).
+for _code in dict.fromkeys(_FED_INTERP):
+    _guard_hits += [p for p, deleting in _code_guard_targets(_code) if guarded(p, deleting)]
 # A `cd` earlier in the line moves every later relative target: `cd .claude && rm
 # settings.local.json` deletes the guard although neither word names it (#592). A cd the
 # text cannot resolve ($VAR, -, a glob) leaves only the basename to judge by.

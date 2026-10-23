@@ -457,11 +457,12 @@ class TestEverySegmentIsJudged(HookBase):
 
         Both of these used to be denied by the HIGH tier, and both were wrong.
         `rm -rf "/;x"` deletes a file literally named `/;x` — not the root — so
-        it is an ordinary recursive delete and the Never list asks. `git commit`
-        is not a refused shape at all; the Never list still asks on it, because
-        that list scans the whole line by design and `rm -r` is in this one.
+        it is an ordinary recursive delete and the Never list asks. `git commit
+        -m "oops; rm -rf /"` is not a refused shape at all, and since #598 (the
+        #602 follow-up) the Never list no longer asks on a commit message either:
+        TestQuotedDataIsNotAsked pins that case now.
         """
-        for command in ('rm -rf "/;x"', 'git commit -m "oops; rm -rf /"'):
+        for command in ('rm -rf "/;x"',):
             with self.subTest(command=command):
                 block = self.decision(self.fire(event("Bash", command=command)))
                 self.assertIsNotNone(block)

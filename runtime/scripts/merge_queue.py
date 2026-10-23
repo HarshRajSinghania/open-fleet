@@ -1108,23 +1108,25 @@ class MergeQueue:
         """Finish every branch teardown still owed by a merged entry, inside the merge boundary (PR #647).
 
         The request was persisted with the merge intent, so a conductor that died after the remote
-        merge, or before its acknowledgement, leaves it for the next owner. Idempotent: an entry
-        whose teardown already has an outcome is not revisited, and a deletion is still a
-        compare-and-swap on the merged head in the PR's own head repository.
+        merge, or before its acknowledgement, leaves it for the next owner. Idempotent: the owed
+        entries are read only once the lock is held (a list read before it goes stale while
+        another command finishes the same deletion), and each deletion is claimed again in its
+        own transaction before it is sent (`_claim_deletion`), so one owed deletion leaves at most
+        once (PR #647).
         """
         q = ("SELECT * FROM mq_entries WHERE repo = ? AND base = ? AND state IN (?, ?) "
-             "AND teardown IN ('delete', 'keep')")
+             "AND teardown IN ('delete', 'keep', 'deleting')")
         params: list[Any] = [cfg["repo"], cfg["base"], MERGED, LANDED]
         if entry_id:
             q += " AND entry_id = ?"
             params.append(entry_id)
-        owed = self.store.read(q + " ORDER BY seq ASC", tuple(params))
-        if not owed:
-            return []
+        if not self.store.read(q + " LIMIT 1", tuple(params)):
+            return []  # nothing owed: no need to wait for the boundary
         lock = self._lock(cfg["repo"], cfg["base"])
         try:
             if not lock.acquire(30.0):
                 raise QueueError("merge_in_flight", "another process holds the merge boundary")
+            owed = self.store.read(q + " ORDER BY seq ASC", tuple(params))  # re-read under the lock
             return [{"entry": e["entry_id"], "outcome": self._teardown_branch(token, cfg, e, lock)} for e in owed]
         finally:
             lock.release()
@@ -1465,15 +1467,26 @@ class MergeQueue:
         request owed for `retry_teardowns`.
         """
         request = e.get("teardown")
-        if request not in ("delete", "keep"):
+        if request not in ("delete", "keep", "deleting"):
             return request or "retained: no teardown requested"
         d: dict[str, Any] = {"branch": e["branch"], "headRepository": None, "final": True,
                              "outcome": "kept: --keep-branch"}
-        if request == "delete":
+        if request == "deleting":
+            # Claimed by a command that never recorded the outcome (it died: the lock it shared with
+            # its push is free, so that push has ended). Whether it was sent is unknown, and a
+            # branch at the same commit may be a recreated one: it is never sent again.
+            try:
+                now = self.git.fetch(self._bound_remote(cfg), f"refs/heads/{e['branch']}", f"teardown/{e['branch']}")
+                d["outcome"] = ("gone: deleted elsewhere" if now is None
+                                else "retained: an earlier deletion's outcome is unknown and the branch exists")
+            except QueueError as exc:
+                d.update(final=False, outcome=f"pending: {exc.code}")
+        elif request == "delete":
             try:
                 d = self._teardown_decide(cfg, e)
                 if d["delete"]:
-                    d["outcome"], d["final"] = self._delete_branch(token, cfg, e, lock)
+                    d["outcome"], d["final"], claimed = self._delete_branch(token, cfg, e, lock)
+                    request = claimed or request
             except egress.EgressError as exc:
                 d.update(final=False, outcome=f"pending: no egress receipt ({exc})")
             except QueueError as exc:
@@ -1491,34 +1504,54 @@ class MergeQueue:
                 self._receipt(conn, cfg["repo"], cfg["base"], "branch_teardown", d, e["entry_id"], lease)
         return d["outcome"]
 
-    def _delete_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any], lock: EffectLock) -> tuple[str, bool]:
-        """(outcome, final) of the compare-and-swap deletion of the merged head branch.
+    def _claim_deletion(self, token: str, e: dict[str, Any], frm: str, to: str) -> bool:
+        """Move the entry's teardown from `frm` to `to` in ONE fenced transaction that re-reads it.
+
+        `delete` -> `deleting` is the claim before a send: only one command can win it, and only
+        while the entry is still merged or landed and the deletion still owed (PR #647).
+        """
+        with self.store.tx() as conn:
+            self._fence(conn, token)
+            cur = conn.execute("UPDATE mq_entries SET teardown = ?, updated_at = ? WHERE entry_id = ? AND teardown = ? "
+                               "AND state IN (?, ?)", (to, self.clock(), e["entry_id"], frm, MERGED, LANDED))
+        return cur.rowcount == 1
+
+    def _delete_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any],
+                       lock: EffectLock) -> tuple[str, bool, str | None]:
+        """(outcome, final, the teardown state to record it from) of the merged head's deletion.
 
         Called only with the effect lock held, and the push inherits it (`pass_fds`), as the
         merge's send does: a conductor killed mid-deletion holds the boundary until its push
-        ends, so no handoff completes under a deletion still in flight (PR #647). The next owner
-        then finds the branch gone and records that.
+        ends, so no handoff completes under a deletion still in flight. The deletion is claimed
+        (`delete` -> `deleting`, fenced) immediately before the receipt and the send; a command
+        that loses the claim sends nothing (PR #647).
         """
         remote = self._bound_remote(cfg)
-        self._owner(token)
+        if lock.fd is None:
+            raise QueueError("merge_in_flight", "a branch deletion needs the held merge boundary")
+        if not self._claim_deletion(token, e, "delete", "deleting"):
+            return "skipped: another command already owns or finished this deletion", False, None
         body = json.dumps({"repo": cfg["repo"], "branch": e["branch"], "head": e["accepted_head"]},
                           sort_keys=True).encode()
         explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
-        egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
-                             "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
-                             payload_sha256=hashlib.sha256(body).hexdigest())
-        if lock.fd is None:
-            raise QueueError("merge_in_flight", "a branch deletion needs the held merge boundary")
+        try:
+            egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
+                                 "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
+                                 payload_sha256=hashlib.sha256(body).hexdigest())
+        except egress.EgressError:
+            self._claim_deletion(token, e, "deleting", "delete")  # nothing was sent: still owed
+            raise
         proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
                             remote, f":refs/heads/{e['branch']}", check=False, pass_fds=(lock.fd,))
         if proc.returncode == 0:
-            return "deleted", True
+            return "deleted", True, "deleting"
         now = self.git.fetch(remote, f"refs/heads/{e['branch']}", f"teardown/{e['branch']}")
         if now is None:
-            return "gone: deleted elsewhere", True
+            return "gone: deleted elsewhere", True, "deleting"
         if now != e["accepted_head"]:
-            return f"retained: branch moved to {now}", True
-        return f"pending: deletion refused ({proc.stderr.strip()[-120:]})", False
+            return f"retained: branch moved to {now}", True, "deleting"
+        self._claim_deletion(token, e, "deleting", "delete")  # refused and still there: owed again
+        return f"pending: deletion refused ({proc.stderr.strip()[-120:]})", False, None
 
     def _refusal(self, cfg: dict[str, Any], e: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
         """A send that did not land: a moved head or BASE returns to plan; anything else freezes."""

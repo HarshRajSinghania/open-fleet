@@ -167,6 +167,15 @@ class World:
         hook.chmod(0o755)
         return marker
 
+    def recreate_first_deleted_branch(self) -> None:
+        """Someone recreates the first branch deleted on the bare repo, at the commit it had."""
+        once = self.tmp / "recreated.once"
+        hook = self.bare / "hooks" / "post-receive"
+        hook.write_text("#!/bin/sh\nwhile read old new ref; do\n  case \"$new\" in 0000000000000000000000000000000000000000)\n"
+                        f"    if [ ! -f {once} ]; then touch {once}; git update-ref \"$ref\" \"$old\"; fi;;\n  esac\ndone\n",
+                        encoding="utf-8")
+        hook.chmod(0o755)
+
     def external_base_write(self, rel: str = "external.txt") -> str:
         """A non-cooperating writer moves BASE directly (not through the queue)."""
         self.git(self.worker, "fetch", "-q", "origin")

@@ -243,6 +243,37 @@ class DeletionBoundary(DrillCase):
         self.assertEqual(outcomes, ["gone: deleted elsewhere"], "the next owner did not adopt the landed deletion")
 
 
+class OwedDeletionRace(DrillCase):
+    """Two commands of one owner racing on one owed deletion send it once (PR #647)."""
+
+    def test_two_reconciles_send_one_deletion_and_a_recreated_branch_survives(self):
+        (u,) = self.boarded("alpha")
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1")
+        token = out["token"]
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("branch")), (0, "pending: GitHub has not marked the PR merged yet"), out)
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        marker = self.w.slow_deletions(2)
+        self.w.recreate_first_deleted_branch()
+        cmd = [sys.executable, str(W.SCRIPT), "--repo-dir", str(self.w.conductor), "reconcile", "--token", token]
+        first = subprocess.Popen(cmd, env=self.w.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 60
+        while not (marker.exists() and "start" in marker.read_text()) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists(), "the first command never started its deletion")
+        second = subprocess.Popen(cmd, env=self.w.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        outs = [first.communicate(timeout=120), second.communicate(timeout=120)]
+        self.assertEqual([first.returncode, second.returncode], [0, 0], outs)
+        self.assertEqual(marker.read_text().split().count("start"), 1, "the owed deletion was sent twice")
+        alive = self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "rev-parse", "--verify", "-q", "refs/heads/alpha",
+                           check=False)
+        self.assertEqual(alive, u["reviewed_sha"], "a branch recreated after the deletion was deleted again")
+        outcomes = [r["body"]["outcome"] for r in self.receipts() if r["kind"] == "branch_teardown"]
+        self.assertEqual(outcomes, ["deleted"])
+
+
 class TwoConductors(DrillCase):
     def test_two_competing_conductors_merge_each_unit_exactly_once(self):
         units = self.boarded("alpha", "beta", "gamma")

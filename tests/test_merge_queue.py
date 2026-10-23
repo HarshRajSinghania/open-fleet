@@ -780,6 +780,30 @@ class BranchTeardown(QueueCase):
         rc, out = self.w.cli("reconcile", "--token", token)  # idempotent: nothing left to tear down
         self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
 
+    def test_a_deletion_whose_outcome_is_unknown_is_never_sent_twice(self):
+        token, u, entry = self._boarded()
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        mq = self.w.queue(mq_mod)
+        real_run = mq.git.run
+
+        def die_at_the_deletion(*args, **kw):
+            if args[:1] == ("push",) and any(a.startswith(":refs/heads/") for a in args):
+                raise SystemExit("conductor died as it sent the deletion")
+            return real_run(*args, **kw)
+        mq.git.run = die_at_the_deletion
+        with self.assertRaises(SystemExit):
+            mq.settle_in_flight(token)
+        # Whether that deletion left is unknown, and the branch is there (it never did, or was
+        # recreated at the same commit): a restart must not send a second one.
+        rc, out = self.w.cli("reconcile", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "a deletion of unknown outcome was sent again")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)],
+                         ["retained: an earlier deletion's outcome is unknown and the branch exists"])
+
     def test_a_stale_conductor_never_tears_a_branch_down(self):
         token, u, entry = self._boarded()
         self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))

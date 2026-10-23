@@ -33,7 +33,8 @@ truth is `.claude-plugin/plugin.json`.
     check cannot take the merge to the default branch. A merged head branch is deleted only from
     the queue's own repository, never a fork's, behind its own egress receipt. The request is
     persisted with the merge, so a restart finishes it and never overrides `--keep-branch`, and
-    the deletion holds the merge boundary as the merge does. A saved plan is
+    the deletion holds the merge boundary as the merge does and is claimed before it is sent, so
+    it leaves at most once. A saved plan is
     reused only for the gate it passed, so `drain --gate-cmd` never skips a requested gate.
   - What is tested: two competing conductor processes, pause-transfer-resume, and crash restarts
     before the merge, after the remote merge and before the acknowledgement, on the gh lane and

@@ -1119,7 +1119,12 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   repository behind a cross-repository PR, is never touched. The deletion is fenced and
   egress-receipted like the merge, and its push inherits the merge boundary's lock as the merge's
   send does, so a conductor killed mid-deletion holds the boundary until that push ends and the
-  next owner records the branch as gone. A `branch_teardown` receipt records each outcome
+  next owner records the branch as gone. Owed teardowns are read only once the boundary is held,
+  and each deletion is claimed (`deleting`) in a fenced transaction that re-reads the entry just
+  before its receipt and push, so one owed deletion leaves at most once, and a branch recreated at
+  the same commit after it survives. A claimed deletion whose outcome is unknown (its conductor
+  died) is never sent again: the branch is recorded gone, or retained if it exists. A
+  `branch_teardown` receipt records each outcome
   (`--keep-branch` keeps the branch). The request, delete or keep, is persisted with the merge
   intent, so a conductor that dies after the remote merge or before its `ack` leaves it owed. The
   next `reconcile`, `plan`, `merge`, `ack` or `drain` finishes it once, still as a compare-and-swap,

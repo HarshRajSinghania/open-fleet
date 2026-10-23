@@ -982,6 +982,10 @@ class _Authority:
     _FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
     _MERGE_DRIVER = "exit 1"
 
+    class DriverQueryFailed(OSError):
+        """driver_blanks could not read the config: never "no drivers", which would populate the
+        control with every planted driver live (PR #649 review, PRRT_kwDOTWxN9c6vzAIE)."""
+
     @classmethod
     def driver_blanks(cls, repo):
         """`(key, value)` config pairs blanking every filter/diff driver command `repo`'s config
@@ -997,12 +1001,20 @@ class _Authority:
         gets exactly the bytes it declared (PR #649 review). Each declared filter also gets
         `required=false`: git dies on a required filter that runs nothing, which made a planted
         `required=true` fail the control's `worktree add` or `checkout` (PR #649 review)."""
-        code, out, _ = _run_bytes([cls.git_bin(), "-C", str(repo), "config", "--list", "-z",
-                                   "--name-only"], env=cls.git_env())
+        code, out, err = _run_bytes([cls.git_bin(), "-C", str(repo), "config", "--list", "-z",
+                                     "--name-only"], env=cls.git_env())
+        # [] means exactly "none declared" (an empty valid config is exit 0, no output); a failed,
+        # timed-out (_run_bytes reports it as code 1) or unparseable query raises (PR #649 review).
         if code != 0:
-            return []
+            raise cls.DriverQueryFailed(f"git config --list exited {code}: {err.strip()[:200]}")
+        if out and not out.endswith(b"\0"):
+            raise cls.DriverQueryFailed("git config --list printed output that is not "
+                                        "NUL-terminated keys")
+        keys = out.split(b"\0")[:-1] if out else []
+        if any(not key for key in keys):
+            raise cls.DriverQueryFailed("git config --list printed an empty key")
         pairs, filt_seen, merge_seen = [], set(), set()
-        for key in out.split(b"\0"):
+        for key in keys:
             filt = cls._FILTER_KEY_RE.match(key)
             merge = cls._MERGE_KEY_RE.match(key)
             if filt:
@@ -2433,7 +2445,13 @@ def execute_negative_control(m, nc_command=None):
     argv, err = _nc_command(nc, nc_command)
     if err:
         return False, [f"--execute-nc: {err}"]
-    mutant, err = _prepare_control(top, head, m, nc, tool, nc_command)
+    try:
+        mutant, err = _prepare_control(top, head, m, nc, tool, nc_command)
+    except _Authority.DriverQueryFailed as fail:
+        # Every driver-reading leg (populate, checkout, revert, apply, seal) runs inside
+        # _prepare_control; an unreadable driver list stops the control there (PR #649 review).
+        return False, [f"--execute-nc: cannot read the control worktree's driver config, so its "
+                       f"filter and merge commands cannot be neutralised ({fail}); fail-closed"]
     if err:
         return False, [f"--execute-nc: {err}"]
     msgs = []

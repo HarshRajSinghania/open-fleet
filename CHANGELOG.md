@@ -45,6 +45,12 @@ truth is `.claude-plugin/plugin.json`.
     enumerated. verify.py's control revert/apply/checkout legs carry the override too, though a
     linear in-order range revert is trivial per step and verify refuses a non-linear range, so
     that leg cannot in fact be driven to a merge (PR #649 review).
+  - The driver list fails closed: an empty list means only "no driver declared" (git answers an
+    empty valid config with exit 0 and no output), while a config query that errors, times out,
+    exits non-zero or prints unparseable output stops the gate in its own terms — floor_guard
+    could-not-run, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` no
+    fingerprint — instead of running its content-reading git command with every planted driver
+    live (PR #649 review). wtree.sh's `$(git ... | tr ...)` had also hidden git's exit status.
   - `wtree.sh` gets the same env belt and driver blanks (its `add -A` and `write-tree` ran a
     selected filter and `core.fsmonitor`), built as `env(1)` arguments rather than shell code. It
     blanks only drivers the REPOSITORY declares; global/system config stays in force, so the

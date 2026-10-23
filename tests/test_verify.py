@@ -6332,6 +6332,54 @@ class ConfigMergeDriverNeutralisedInTheControl(MutationFixture):
         self.assertEqual(rc, 0, out + err)
 
 
+class DriverQueryFailureRefusesTheControl(MutationFixture):
+    """PR #649 review (PRRT_kwDOTWxN9c6vzAIE): when the control worktree's config query fails or
+    prints output that cannot be parsed, driver_blanks used to return [] — "no drivers" — and the
+    control populated the worktree with every planted filter live. The verifier must refuse
+    instead. A fake git, first on PATH so it is the one verify pins, misbehaves ONLY for
+    `config --list` and delegates every other call, so the planted filter really would run."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.dir = Path(marks.name)
+        self.marker = self.dir / "filter-fired"
+        probe = self.dir / "probe.sh"
+        probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\nexit 0\n",
+                         encoding="utf-8")
+        probe.chmod(0o755)
+        for key in ("filter.p.clean", "filter.p.smudge"):
+            self.git("config", key, f"{probe} {key}")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=p\n", encoding="utf-8")
+
+    def _fake_git_on_path(self, mode):
+        action = {"fail": 'echo "fatal: forced config failure" >&2; exit 128',
+                  "garbage": "printf 'filter.p.clean'; exit 0"}[mode]
+        bindir = self.dir / f"bin-{mode}"
+        bindir.mkdir()
+        script = bindir / "git"
+        script.write_text('#!/bin/sh\ncase " $* " in\n  *" config --list "*) ' + action + " ;;\nesac\n"
+                          "exec " + shlex.quote(shutil.which("git")) + ' "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+        return mock.patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]})
+
+    def test_a_failed_or_unparseable_query_refuses_and_runs_no_filter(self):
+        for mode in ("fail", "garbage"):
+            with self.subTest(mode=mode):
+                with self._fake_git_on_path(mode):
+                    rc, out, err = self._run_main(
+                        self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                        "--lighting", "dark-eligible", "--execute-nc", "--nc-command", self.proof_cmd)
+                self.assertEqual(rc, 2, out + err)
+                self.assertIn("cannot read the control worktree's driver config", err)
+                self.assertFalse(self.marker.exists(),
+                                 "the control ran a planted filter with no blanks (#629)")
+                verify._Authority.reset()
+
+
 class TrackedArtifactPinsAreChecked(RepoCase):
     """#596 certification finding: a manifest whose `artifacts[]` sha256 was wrong for a file
     TRACKED at head_sha verified clean. The tracked-at-head read returned the blob without ever

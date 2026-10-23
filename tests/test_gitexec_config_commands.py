@@ -20,6 +20,7 @@ was dormant. Stdlib only; no network.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -727,6 +728,137 @@ class MergeDriverNeutralised(unittest.TestCase):
                            stdin=subprocess.DEVNULL, timeout=120)
         self.assertEqual(p.fired(), set(), "wtree.sh predict-merge ran the merge driver")
         self.assertEqual(r.returncode, 1, "a divergent merge must predict a conflict (exit 1)")
+
+
+# PR #649 review (PRRT_kwDOTWxN9c6vzAIE): an empty blank list must mean "no driver declared",
+# never "could not tell". A config query that errors, times out, or prints output that cannot be
+# parsed used to return [] and let the gate run its content-reading git command with every planted
+# driver live. Each copy now stops the gate in its own vocabulary. git itself answers an EMPTY but
+# valid config with exit 0 and no output (pinned below), so exit 0 + nothing matching proceeds,
+# and anything else stops.
+_REAL_GIT = shutil.which("git")
+
+
+def _fake_git(dirpath, mode):
+    """A `git` that misbehaves ONLY for `config --list` — `fail` exits 128, `garbage` exits 0
+    with output no NUL terminates — and delegates every other call to the real git, so the gate's
+    content-reading command still runs (and would run any planted driver)."""
+    action = {"fail": 'echo "fatal: forced config failure" >&2; exit 128',
+              "garbage": "printf 'filter.x.clean'; exit 0"}[mode]
+    script = Path(dirpath) / "git"
+    script.write_text('#!/bin/sh\ncase " $* " in\n  *" config --list "*) ' + action + " ;;\nesac\n"
+                      "exec " + _sh(_REAL_GIT) + ' "$@"\n', encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+class DriverQueryFailsClosed(unittest.TestCase):
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        p.arm_filter()
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        return p, base
+
+    def test_git_answers_an_empty_valid_config_with_exit_0_and_no_output(self):
+        # The contract the copies lean on: NOT exit 1 (that is `git config --get`'s "missing").
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        subprocess.run(["git", "init", "-q", str(tmp / "r")], env=_CLEAN_ENV, check=True,
+                       stdin=subprocess.DEVNULL)
+        (tmp / "r" / ".git" / "config").write_text("", encoding="utf-8")
+        env = {k: v for k, v in _CLEAN_ENV.items() if not k.startswith("GIT_CONFIG_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        r = subprocess.run(["git", "-C", str(tmp / "r"), "config", "--list", "-z", "--name-only"],
+                           env=env, capture_output=True, stdin=subprocess.DEVNULL)
+        self.assertEqual((r.returncode, r.stdout), (0, b""))
+
+    def test_none_declared_proceeds_in_every_copy(self):
+        verify = _load("verify_failclosed_none", "verify.py")
+        verify._Authority.reset()
+        self.addCleanup(verify._Authority.reset)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        self.assertEqual(gitexec.driver_blanks(p.repo), [])
+        self.assertEqual(diff_scope._driver_blanks(p.repo), [])
+        self.assertEqual(verify._Authority.driver_blanks(p.repo), [])
+
+    def test_every_copy_refuses_a_failed_or_unparseable_query(self):
+        # The parity of the fail-closed contract: same failure, each copy refuses in its own terms.
+        verify = _load("verify_failclosed", "verify.py")
+        verify._Authority.reset()
+        self.addCleanup(verify._Authority.reset)
+        p, _ = self._repo()
+        for mode in ("fail", "garbage"):
+            with self.subTest(mode=mode):
+                fake = str(_fake_git(p.dir, mode))
+                with mock.patch.object(gitexec, "GIT", fake):
+                    with self.assertRaises(gitexec.DriverQueryFailed):
+                        gitexec.driver_blanks(p.repo)
+                with mock.patch.object(diff_scope, "GIT", fake):
+                    with self.assertRaises(diff_scope.ScopeError) as cm:
+                        diff_scope._driver_blanks(p.repo)
+                    self.assertEqual(cm.exception.kind, "diff_failed")
+                with mock.patch.object(verify._Authority, "git", fake):
+                    with self.assertRaises(verify._Authority.DriverQueryFailed):
+                        verify._Authority.driver_blanks(p.repo)
+
+    def test_a_timed_out_query_refuses(self):
+        p, _ = self._repo()
+        real_run = subprocess.run
+
+        def slow(argv, *a, **kw):
+            if "config" in argv and "--list" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 30))
+            return real_run(argv, *a, **kw)
+        with mock.patch.object(gitexec.subprocess, "run", side_effect=slow):
+            with self.assertRaises(gitexec.DriverQueryFailed):
+                gitexec.driver_blanks(p.repo)
+        with mock.patch.object(diff_scope.subprocess, "run", side_effect=slow):
+            with self.assertRaises(diff_scope.ScopeError):
+                diff_scope._driver_blanks(p.repo)
+
+    def test_floor_guard_stops_and_runs_no_filter(self):
+        for mode in ("fail", "garbage"):
+            with self.subTest(mode=mode):
+                p, base = self._repo()
+                mb = floor_guard.merge_base(p.repo, base)
+                # floor_guard loads its OWN gitexec (_sibling), so patch that module's GIT.
+                with mock.patch.object(floor_guard.gitexec, "GIT", str(_fake_git(p.dir, mode))):
+                    with self.assertRaises(floor_guard.GuardError) as cm:
+                        floor_guard.collect_diff(p.repo, mb)
+                self.assertIn("driver config", str(cm.exception))
+                self.assertEqual(p.fired(), set(), "floor_guard ran a filter with no blanks")
+
+    def test_diff_scope_stops_and_runs_no_filter(self):
+        for mode in ("fail", "garbage"):
+            with self.subTest(mode=mode):
+                p, base = self._repo()
+                with mock.patch.object(diff_scope, "GIT", str(_fake_git(p.dir, mode))):
+                    with self.assertRaises(diff_scope.ScopeError) as cm:
+                        diff_scope.changed_files(p.repo, base)
+                self.assertEqual(cm.exception.kind, "diff_failed")
+                self.assertEqual(p.fired(), set(), "diff_scope ran a filter with no blanks")
+
+    def test_wtree_stops_with_no_fingerprint_and_runs_no_filter(self):
+        for mode in ("fail", "garbage"):
+            with self.subTest(mode=mode):
+                p, _ = self._repo()
+                bindir = p.dir / f"bin-{mode}"
+                bindir.mkdir()
+                _fake_git(bindir, mode)
+                path = str(bindir) + os.pathsep + os.environ["PATH"]
+                with mock.patch.dict(os.environ, {"PATH": path}):
+                    out, err = evidence_run.working_tree_fingerprint(str(p.repo))
+                self.assertIsNone(out)
+                self.assertNotIsInstance(err, evidence_run.WtreeUnverifiable)
+                self.assertIn("config", err)
+                self.assertEqual(p.fired(), set(), "wtree.sh ran a filter with no blanks")
 
 
 if __name__ == "__main__":

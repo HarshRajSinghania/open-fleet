@@ -70,6 +70,13 @@ class GitAbsent(FileNotFoundError):
     """No git on PATH when this module was imported."""
 
 
+class DriverQueryFailed(OSError):
+    """driver_blanks could not read the repository's config: the query errored, timed out, or
+    printed output it cannot parse. An OSError, so a caller's could-not-run handler applies; it is
+    NEVER read as "no drivers declared" — that would run the content-reading git command with
+    every planted driver live (PR #649 review, PRRT_kwDOTWxN9c6vzAIE)."""
+
+
 _found = shutil.which("git")
 GIT = os.path.abspath(_found) if _found else None
 
@@ -163,9 +170,11 @@ def driver_blanks(repo):
     planted ``required=true`` into a gate that cannot run (PR #649 review). Git then passes the
     working-tree bytes through untouched. A diff driver's non-command keys are left alone.
 
-    Fail-closed to the EMPTY list only on a git error (never a reason to trust a planted
-    driver): callers add these pairs on top of ``--no-ext-diff``/``--no-textconv`` and the
-    static belt, so an empty list leaves those in force. The config is read as BYTES and each
+    An empty list means exactly "no driver declared": git answers an empty but valid config with
+    exit 0 and no output. Any other outcome — a git error, a timeout, a non-zero exit (git uses
+    128 for an unreadable or malformed config), or output that is not NUL-terminated keys —
+    raises DriverQueryFailed, so the caller stops instead of running with nothing blanked
+    (PR #649 review). The config is read as BYTES and each
     key is handed back through ``os.fsdecode``, which ``subprocess`` reverses with
     ``os.fsencode`` — so git receives exactly the bytes it declared, never a decoded stand-in
     that names a different driver (PR #649 review)."""
@@ -173,17 +182,25 @@ def driver_blanks(repo):
         out = subprocess.run(argv("-C", str(repo), "config", "--list", "-z", "--name-only"),
                              capture_output=True, timeout=30, env=env(),
                              stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as err:
+        raise DriverQueryFailed(f"git config --list could not run in {repo}: {err}") from err
     if out.returncode != 0:
-        return []
+        why = out.stderr.decode("utf-8", "replace").strip()[:200]
+        raise DriverQueryFailed(f"git config --list exited {out.returncode} in {repo}: {why}")
     return _blank_pairs(out.stdout)
 
 
 def _blank_pairs(listing):
-    """``git config --list -z --name-only`` bytes -> driver_blanks pairs (see its docstring)."""
+    """``git config --list -z --name-only`` bytes -> driver_blanks pairs (see its docstring).
+    The listing must be empty or a run of non-empty, NUL-terminated keys; anything else is a
+    query this cannot trust, so DriverQueryFailed rather than a guess."""
+    if listing and not listing.endswith(b"\0"):
+        raise DriverQueryFailed("git config --list printed output that is not NUL-terminated keys")
+    keys = listing.split(b"\0")[:-1] if listing else []
+    if any(not key for key in keys):
+        raise DriverQueryFailed("git config --list printed an empty key")
     pairs, filt_seen, merge_seen = [], set(), set()
-    for key in listing.split(b"\0"):
+    for key in keys:
         filt = _FILTER_KEY_RE.match(key)
         merge = _MERGE_KEY_RE.match(key)
         if filt:

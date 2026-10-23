@@ -205,15 +205,27 @@ _MERGE_DRIVER = "exit 1"
 
 
 def _driver_blanks(repo):
+    """gitexec.driver_blanks's pairs. [] means exactly "no driver declared" (git answers an empty
+    valid config with exit 0 and no output); a query that errors, times out, exits non-zero or
+    prints output that is not NUL-terminated keys raises ScopeError(diff_failed) — never [],
+    which would run the diff with every planted driver live (PR #649 review)."""
     try:
         r = subprocess.run([GIT, "-C", str(repo), "config", "--list", "-z", "--name-only"],
                            capture_output=True, timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as err:
+        raise ScopeError(f"cannot read {repo}'s driver config: {err}", kind="diff_failed") from err
     if r.returncode != 0:
-        return []
+        why = r.stderr.decode("utf-8", "replace").strip()[:200]
+        raise ScopeError(f"cannot read {repo}'s driver config (git config exited {r.returncode}: "
+                         f"{why})", kind="diff_failed")
+    if r.stdout and not r.stdout.endswith(b"\0"):
+        raise ScopeError(f"{repo}'s driver config listing is not NUL-terminated keys",
+                         kind="diff_failed")
+    keys = r.stdout.split(b"\0")[:-1] if r.stdout else []
+    if any(not key for key in keys):
+        raise ScopeError(f"{repo}'s driver config listing holds an empty key", kind="diff_failed")
     pairs, filt_seen, merge_seen = [], set(), set()
-    for key in r.stdout.split(b"\0"):
+    for key in keys:
         filt = _FILTER_KEY_RE.match(key)
         merge = _MERGE_KEY_RE.match(key)
         if filt:
@@ -455,15 +467,18 @@ def predict_merge(repo, base, branch):
                 repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}") is None:
             raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo}",
                              kind="no_base")
+    # #629 (PR #649 review): merge-tree 3-way-merges the two commits, running a repo-config merge
+    # driver a `merge=<driver>` attribute selects. Neutralise every declared driver, read in
+    # `repo` itself immediately before the call (same directory, same ref state) — and read
+    # OUTSIDE the subprocess-error catch below: an unreadable driver list raises diff_failed,
+    # never a merge-tree that "could not run" quietly read as no drivers (PR #649 review).
+    blanks = _driver_blanks(repo)
     try:
-        # #629 (PR #649 review): merge-tree 3-way-merges the two commits, running a repo-config
-        # merge driver a `merge=<driver>` attribute selects. Neutralise every declared driver,
-        # read in `repo` itself immediately before the call (same directory, same ref state).
         r = subprocess.run(
             [GIT, "-C", str(repo), "-c", "core.quotePath=false",
              "merge-tree", "--write-tree", base, branch],
             capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
-            timeout=60, env=_git_env(_driver_blanks(repo)), stdin=subprocess.DEVNULL,
+            timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         r = None

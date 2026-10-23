@@ -119,42 +119,62 @@ NL='
 '
 TAB=$(printf '\t')
 DECLARED=
+# PR #649 review (PRRT_kwDOTWxN9c6vzAIE): an unreadable driver list must stop the fingerprint,
+# never run with nothing blanked. `$(git ... | tr ...)` reported tr's exit status and hid git's,
+# so the listing goes to a temp file and git's own status decides. git answers an empty but valid
+# config with exit 0 and no output; anything else — a non-zero exit (128 for an unreadable or
+# malformed config), output that is not NUL-terminated, a scope without its key — is "no
+# fingerprint", exit 1 with the reason on stderr.
 set --
 _n=$GIT_CONFIG_COUNT
-if BLANK_KEYS=$(git -C "$TOP" config --list --show-scope -z --name-only 2>/dev/null | tr '\0' '\n'); then
-  OLDIFS=$IFS
-  IFS=$NL
-  set -f
+CFG=$(mktemp "${TMPDIR:-/tmp}/orca-wtree-cfg-XXXXXX") || exit 1
+trap 'rm -f "$CFG"' EXIT INT TERM
+if ! git -C "$TOP" config --list --show-scope -z --name-only >"$CFG" 2>/dev/null; then
+  echo "wtree: cannot read $TOP's config, so its filter drivers cannot be neutralised; no fingerprint (#629)" >&2
+  exit 1
+fi
+if [ -s "$CFG" ] && [ "$(tail -c 1 "$CFG" | od -An -tx1 | tr -d ' \n')" != 00 ]; then
+  echo "wtree: $TOP's config listing is not NUL-terminated keys; no fingerprint (#629)" >&2
+  exit 1
+fi
+BLANK_KEYS=$(tr '\0' '\n' <"$CFG")
+rm -f "$CFG"
+OLDIFS=$IFS
+IFS=$NL
+set -f
+_scope=
+for _k in $BLANK_KEYS; do
+  if [ -z "$_scope" ]; then
+    _scope=$_k
+    continue
+  fi
+  _from=$_scope
   _scope=
-  for _k in $BLANK_KEYS; do
-    if [ -z "$_scope" ]; then
-      _scope=$_k
-      continue
-    fi
-    _from=$_scope
-    _scope=
-    case "$_from" in system|global) continue ;; esac
-    case "$_k" in
-      filter.*.*)
-        # A filter is neutralised WHOLE: commands blank AND required=false, since git dies on a
-        # required filter that runs nothing — blanked, or with no command declared (PR #649).
-        # Repeats for a name's other keys are harmless (same pairs, last one wins).
-        _d=${_k#filter.}
-        _d=${_d%.*}
-        DECLARED="$DECLARED$_d$NL"
-        for _v in clean smudge process required; do
-          _val=
-          [ "$_v" = required ] && _val=false
-          set -- "$@" "GIT_CONFIG_KEY_$_n=filter.$_d.$_v" "GIT_CONFIG_VALUE_$_n=$_val"
-          _n=$((_n + 1))
-        done ;;
-      diff.*.textconv|diff.*.command)
-        set -- "$@" "GIT_CONFIG_KEY_$_n=$_k" "GIT_CONFIG_VALUE_$_n="
-        _n=$((_n + 1)) ;;
-    esac
-  done
-  set +f
-  IFS=$OLDIFS
+  case "$_from" in system|global) continue ;; esac
+  case "$_k" in
+    filter.*.*)
+      # A filter is neutralised WHOLE: commands blank AND required=false, since git dies on a
+      # required filter that runs nothing — blanked, or with no command declared (PR #649).
+      # Repeats for a name's other keys are harmless (same pairs, last one wins).
+      _d=${_k#filter.}
+      _d=${_d%.*}
+      DECLARED="$DECLARED$_d$NL"
+      for _v in clean smudge process required; do
+        _val=
+        [ "$_v" = required ] && _val=false
+        set -- "$@" "GIT_CONFIG_KEY_$_n=filter.$_d.$_v" "GIT_CONFIG_VALUE_$_n=$_val"
+        _n=$((_n + 1))
+      done ;;
+    diff.*.textconv|diff.*.command)
+      set -- "$@" "GIT_CONFIG_KEY_$_n=$_k" "GIT_CONFIG_VALUE_$_n="
+      _n=$((_n + 1)) ;;
+  esac
+done
+set +f
+IFS=$OLDIFS
+if [ -n "$_scope" ]; then
+  echo "wtree: $TOP's config listing has a scope without its key; no fingerprint (#629)" >&2
+  exit 1
 fi
 set -- "$@" "GIT_CONFIG_COUNT=$_n"
 

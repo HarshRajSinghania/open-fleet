@@ -317,7 +317,13 @@ def collect_diff(repo, mb):
     # line selects — the exec channel --no-ext-diff/--no-textconv do NOT close (#629). Blank
     # every filter/diff driver command the repo declares (the only place such a command lives)
     # before any diff that touches a worktree file.
-    blanks = gitexec.driver_blanks(repo)
+    try:
+        blanks = gitexec.driver_blanks(repo)
+    except gitexec.DriverQueryFailed as err:
+        # An unreadable driver list is could-not-run, never "no drivers": diffing with nothing
+        # blanked would run every planted filter (PR #649 review).
+        raise GuardError(f"cannot read the repository's driver config, so its filter commands "
+                         f"cannot be neutralised: {err}") from err
     tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--", blanks=blanks)
     if tracked is None:
         raise GuardError("tracked/staged diff acquisition failed")

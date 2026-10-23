@@ -429,7 +429,8 @@ class Git:
 class Gh:
     """The GitHub seam: the `gh` CLI, resolved once to an absolute path from the caller's PATH."""
 
-    FIELDS = "number,state,headRefOid,headRefName,baseRefName,mergeCommit,url"
+    FIELDS = ("number,state,headRefOid,headRefName,baseRefName,mergeCommit,url,"
+              "headRepository,headRepositoryOwner,isCrossRepository")
 
     def __init__(self, repo_dir: Path, env: dict[str, str]):
         found = shutil.which("gh", path=env.get("PATH"))
@@ -855,9 +856,15 @@ class MergeQueue:
                 if got != head and view.get("headRefName"):
                     self.git.fetch(remote, f"refs/heads/{view['headRefName']}", f"pr/{e['pr']}")
             merge = view.get("mergeCommit") or {}
+            # Where the head branch lives, as GitHub reports it: a cross-repository PR's head is in
+            # a fork, and a same-named branch in the queue's repository is someone else's (PR #647).
+            owner = (view.get("headRepositoryOwner") or {}).get("login")
+            name = (view.get("headRepository") or {}).get("name")
+            head_repo = f"{cfg['repo'].split('/', 1)[0]}/{owner}/{name}" if owner and name else None
             return {"head": head if self.git.has_commit(head) else None, "reported": head,
                     "state": str(view.get("state", "")).upper(), "baseRefName": view.get("baseRefName"),
-                    "headRefName": view.get("headRefName"),
+                    "headRefName": view.get("headRefName"), "headRepository": head_repo,
+                    "crossRepository": bool(view.get("isCrossRepository")),
                     "mergeCommit": merge.get("oid") if isinstance(merge, dict) else None}
         head = self.git.fetch(remote, f"refs/heads/{e['branch']}", f"branch/{e['branch']}")
         return {"head": head, "reported": head, "state": "OPEN" if head else "MISSING",
@@ -1241,7 +1248,7 @@ class MergeQueue:
                 self._clear_tested(conn, repo, base, 0 if decision["resolution"] == "requeued" else e["seq"])
         if decision["resolution"] == "merged":
             self._boundary("merged_recorded", info)
-            branch = self._teardown_branch(cfg, e) if delete_branch and cfg["mode"] == "gh" else "retained"
+            branch = self._teardown_branch(token, cfg, e) if delete_branch and cfg["mode"] == "gh" else "retained"
             return {"ok": True, "result": "merged", "entry": e["entry_id"], "unit": e["unit"], **decision,
                     "noGh": cfg["mode"] == "git", "branch": branch}
         if decision["resolution"] == "unknown":
@@ -1250,22 +1257,58 @@ class MergeQueue:
         raise QueueError("merge_refused" if decision["resolution"] == "failed" else "retest_required",
                          f"{e['entry_id']} did not merge: {decision.get('reason')}", decision)
 
-    def _teardown_branch(self, cfg: dict[str, Any], e: dict[str, Any]) -> str:
-        """Delete the merged unit's head branch, or say why it was kept. Best-effort, never a failure.
+    def _teardown_decide(self, cfg: dict[str, Any], e: dict[str, Any]) -> dict[str, Any]:
+        """Whether the merged unit's head branch may be deleted, from GitHub's own report. Writes nothing.
 
         Only when GitHub reports THIS PR merged into BASE (a PR retargeted elsewhere stays open,
-        and deleting its head would close it), and only while the branch still names the merged
-        head: the deletion is a compare-and-swap, so a branch moved since is kept for re-review.
+        and deleting its head would close it), only when its head branch lives in the queue's own
+        repository (a fork's branch is never touched, and a same-named branch in the queue's
+        repository is not the PR's: PR #647), and only that branch.
+        """
+        st = self._unit_state(cfg, e)
+        out = {"branch": e["branch"], "headRepository": st.get("headRepository"), "delete": False}
+        if st["state"] != "MERGED" or st["baseRefName"] != cfg["base"]:
+            return {**out, "outcome": f"retained: PR is {st['state'].lower()} on {st['baseRefName']}"}
+        head_repo = st.get("headRepository")
+        if head_repo is None:
+            return {**out, "outcome": "retained: GitHub reported no head repository"}
+        if st.get("crossRepository") or head_repo.casefold() != cfg["repo"].casefold():
+            return {**out, "outcome": "retained: head branch in a fork"}
+        if st.get("headRefName") != e["branch"]:
+            return {**out, "outcome": "retained: the PR's head branch is not the entry's branch"}
+        return {**out, "delete": True, "outcome": "delete"}
+
+    def _teardown_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any]) -> str:
+        """Delete the merged unit's head branch, or record why it was kept. Never fails the merge.
+
+        The deletion is an off-repo write like the merge: fenced first (a conductor taken over
+        never deletes), egress-receipted before it is sent, aimed at the bound remote, and a
+        compare-and-swap on the merged head, so a branch moved since is kept for re-review.
         """
         try:
-            st = self._unit_state(cfg, e)
-            if st["state"] != "MERGED" or st["baseRefName"] != cfg["base"]:
-                return f"retained: PR is {st['state'].lower()} on {st['baseRefName']}"
-            proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
-                                self._bound_remote(cfg), f":refs/heads/{e['branch']}", check=False)
-            return "deleted" if proc.returncode == 0 else "retained: branch moved or already gone"
+            d = self._teardown_decide(cfg, e)
+            if d["delete"]:
+                remote = self._bound_remote(cfg)
+                self._owner(token)
+                body = json.dumps({"repo": cfg["repo"], "branch": e["branch"], "head": e["accepted_head"]},
+                                  sort_keys=True).encode()
+                explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
+                egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
+                                     "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
+                                     payload_sha256=hashlib.sha256(body).hexdigest())
+                proc = self.git.run("push", "--porcelain",
+                                    f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
+                                    remote, f":refs/heads/{e['branch']}", check=False)
+                d["outcome"] = "deleted" if proc.returncode == 0 else "retained: branch moved or already gone"
+        except egress.EgressError as exc:
+            d = {"branch": e["branch"], "headRepository": None, "outcome": f"retained: no egress receipt ({exc})"}
         except QueueError as exc:
-            return f"retained: {exc.code}"
+            if exc.exit_code == EXIT_FENCED:
+                raise
+            d = {"branch": e["branch"], "headRepository": None, "outcome": f"retained: {exc.code}"}
+        d.pop("delete", None)
+        self._record(token, cfg, e, "branch_teardown", d)
+        return d["outcome"]
 
     def _refusal(self, cfg: dict[str, Any], e: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
         """A send that did not land: a moved head or BASE returns to plan; anything else freezes."""

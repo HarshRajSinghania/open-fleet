@@ -16,7 +16,10 @@ with the pid of the conductor that ran it, so a test can prove which conductor s
 $FAKE_GH_MERGE_DELAY holds a merge open for that many seconds (the killed-mid-call drill), and a
 state `race_base_write` makes a non-cooperating writer move the base just before one merge lands, and
 `retarget_before_merge` ({"pr": n, "to": branch}) retargets a PR as a merge request arrives: after
-every check a conductor could make, before GitHub acts (the PR #647 retarget race).
+every check a conductor could make, before GitHub acts (the PR #647 retarget race). A PR may name
+a `headRepo` (a fork): its head branch then lives in that fork, as a cross-repository PR's does, and
+`pr view` reports headRepository/headRepositoryOwner/isCrossRepository. `defer_merged_mark` makes
+GitHub slow to mark a merged PR merged (it stays OPEN until a test marks it).
 """
 import fcntl
 import json
@@ -50,13 +53,26 @@ def ref(bare, name):
     return proc.stdout.strip() or None
 
 
+STATE = {}
+
+
 def present(scope, num, pr, target):
     bare = scope["bare"]
-    head = ref(bare, f"refs/heads/{pr['headRefName']}") or pr.get("mergedHead") or pr.get("head")
-    if head and pr["state"] == "OPEN":
-        git(bare, "update-ref", f"refs/pull/{num}/head", head)
+    head_repo = pr.get("headRepo") or target
+    if head_repo != target:  # a cross-repository PR: GitHub mirrors the fork's head into refs/pull/<n>/head
+        fork_bare = STATE["forks"][head_repo]["bare"]
+        head = ref(fork_bare, f"refs/heads/{pr['headRefName']}") or pr.get("mergedHead")
+        if head and pr["state"] == "OPEN":
+            git(bare, "fetch", "-q", fork_bare, f"+refs/heads/{pr['headRefName']}:refs/pull/{num}/head")
+    else:
+        head = ref(bare, f"refs/heads/{pr['headRefName']}") or pr.get("mergedHead") or pr.get("head")
+        if head and pr["state"] == "OPEN":
+            git(bare, "update-ref", f"refs/pull/{num}/head", head)
+    _host, owner, name = head_repo.split("/")
     return {"number": int(num), "state": pr["state"], "headRefOid": head, "headRefName": pr["headRefName"],
             "baseRefName": pr["baseRefName"], "url": f"https://{pr.get('urlRepo') or target}/pull/{num}",
+            "headRepository": {"name": name}, "headRepositoryOwner": {"login": owner},
+            "isCrossRepository": head_repo != target,
             "mergeCommit": {"oid": pr["mergeCommit"]} if pr.get("mergeCommit") else None}
 
 
@@ -117,7 +133,7 @@ def api_merge(state, scope, argv, target):
                  "-m", fields.get("commit_message") or f"Merge {head} into {base}").stdout.strip()
     git(bare, "update-ref", f"refs/heads/{base}", commit, base_head)
     for _n, pr in by_head:
-        if pr["state"] == "OPEN" and pr["baseRefName"] == base:
+        if pr["state"] == "OPEN" and pr["baseRefName"] == base and not state.get("defer_merged_mark"):
             pr.update({"state": "MERGED", "mergeCommit": commit, "mergedHead": head})
     return 0, json.dumps({"sha": commit}), by_head
 
@@ -128,6 +144,7 @@ def main(argv):
         fcntl.flock(lock, fcntl.LOCK_EX)
         with open(path, encoding="utf-8") as fh:
             state = json.load(fh)
+        STATE.update(state)
         if state.get("offline"):
             print("error connecting to api.github.com", file=sys.stderr)
             return 1

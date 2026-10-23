@@ -510,10 +510,10 @@ class OfflineAndPromotion(QueueCase):
         self.w.cli("release", "--token", token)
         self.assertEqual(self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")[0], 0)
         ok, count, _line, _why = egress.verify_ledger(self.w.ledger)
-        self.assertEqual((ok, count), (True, 2))
+        self.assertEqual((ok, count), (True, 4))  # each merge, then its branch deletion: one receipt per send
         lines = [json.loads(x) for x in self.w.ledger.read_text().splitlines()]
-        self.assertEqual({(x["sink"], x["payload_class"], x["consent"]) for x in lines},
-                         {("merge-queue", "pr-merge", "grant:merge-to-integration")})
+        self.assertEqual([(x["sink"], x["payload_class"], x["consent"]) for x in lines],
+                         [("merge-queue", kind, "grant:merge-to-integration") for kind in ("pr-merge", "branch-delete") * 2])
 
     def test_no_receipt_means_no_send(self):
         token = self.acquire()
@@ -683,6 +683,47 @@ class MergeTargetBinding(QueueCase):
         self.assertEqual((decision["resolution"], decision["reason"]), ("failed", "merged_not_on_base"), decision)
         self.assertEqual(self.state_of(entry), "failed")
         self.assertEqual(self.w.merged_heads(), [])
+
+
+class BranchTeardown(QueueCase):
+    """The merged head branch is deleted from the right repository, once, even across a restart (PR #647)."""
+
+    FORK = "github.invalid/fork/repo"
+
+    def _branch_exists(self, bare, branch):
+        return self.w.git(self.w.tmp, "--git-dir", str(bare), "branch", "--list", branch) == branch
+
+    def _teardowns(self, entry):
+        return [r["body"] for r in self.receipts(entry) if r["kind"] == "branch_teardown"]
+
+    def _boarded(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        (entry,) = self.board(token, u)
+        return token, u, entry
+
+    def test_a_fork_head_branch_is_never_deleted_from_the_queues_repository(self):
+        token, u, entry = self._boarded()
+        fork = self.w.fork(self.FORK)  # the fork carries `alpha` at the same commit as upstream does
+        self.w.set_gh(lambda s: s["prs"][str(u["pr"])].__setitem__("headRepo", self.FORK))
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "an upstream branch was deleted for a fork's PR")
+        self.assertTrue(self._branch_exists(fork, "alpha"), "a fork's branch was touched")
+        (teardown,) = self._teardowns(entry)
+        self.assertEqual((teardown["outcome"], teardown["headRepository"]), ("retained: head branch in a fork", self.FORK))
+
+    def test_a_same_repository_head_branch_is_deleted_once_with_a_receipt(self):
+        token, u, entry = self._boarded()
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"))
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+        sends = [json.loads(x) for x in self.w.ledger.read_text().splitlines()]
+        self.assertEqual([x["payload_class"] for x in sends], ["pr-merge", "branch-delete"],
+                         "the branch deletion left the machine without an egress receipt")
 
 
 class GitLaneRepositoryBinding(QueueCase):

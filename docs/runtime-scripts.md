@@ -1100,7 +1100,11 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   lane pushes a `commit-tree` of the tested tree with `--force-with-lease=<BASE>:<expected>`.
   Ancestry on BASE verifies the result and is the only thing that adopts an in-flight merge: a PR
   GitHub reports merged into another branch is refused (`merged_not_on_base`). The head branch is
-  deleted, as a compare-and-swap, only when GitHub merged that PR into BASE (`--keep-branch` keeps it). Only the head of the train merges (`not_head`), and a merged entry must be
+  deleted, as a compare-and-swap, only when GitHub merged that PR into BASE and reports its head
+  branch in the queue's own repository: a fork's branch, or a same-named branch of the queue's
+  repository behind a cross-repository PR, is never touched. The deletion is fenced and
+  egress-receipted like the merge, and a `branch_teardown` receipt records each outcome
+  (`--keep-branch` keeps the branch). Only the head of the train merges (`not_head`), and a merged entry must be
   acknowledged (`ack`) before the next merge (`ack_owed`).
 - **One repository.** The lease, the entries and the receipts name one repository, the one the
   remote's configured URL names (`init` refuses any other `--repo`; the gh lane needs a

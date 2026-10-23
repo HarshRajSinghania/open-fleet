@@ -86,6 +86,7 @@ WEIGHTS = {
     "test_gen_badges_isolation": 3.8,
     "test_governance_commands": 1.6,
     "test_guard_text": 3.7,
+    "test_hint_provenance": 20.6,
     "test_hitl_ask": 0.5,
     "test_hitl_loop": 1.0,
     "test_injection_corpus": 0.4,

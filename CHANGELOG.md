@@ -20,8 +20,11 @@ truth is `.claude-plugin/plugin.json`.
   - A `--retry-request` replays its outcome, and a changed payload is refused as `request_mismatch`.
   - Every recovery writes a receipt naming processes, preserved refs, task and dispatch states and
     cleanup, with `completionInferred: false`.
-  - What is tested, as `docs/runtimes.md` records it: setsid is crash-tested at every boundary;
-    Docker `danger` only against a fake `docker` CLI; tmux and cmux are not crash-tested.
+  - What is tested, as `docs/runtimes.md` records it: setsid is crash-tested at every boundary.
+    Docker `danger` is crash-tested at every boundary, and through a host crash that orphans the
+    container, against a real daemon in the opt-in tier `tests/test_posix_docker_crash.py`
+    (`OPEN_FLEET_DOCKER_CRASH_TEST=1`, a digest-pinned fixture image with an inert `claude`). Any
+    other run reports that tier as NOT RUN. tmux and cmux are not crash-tested.
 
 ## [0.8.0] - 2026-10-23
 

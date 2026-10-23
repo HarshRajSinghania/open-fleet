@@ -168,11 +168,21 @@ only becomes `completed` through the worker's own terminal mail
 monitor ran a `danger` sandbox, its private git dir is first synced back (`docker rm -f`, then
 `sync_sandbox_git`), so the worker's commits survive.
 
-**What is tested** ([`tests/test_posix_crash_recovery.py`](../tests/test_posix_crash_recovery.py)):
+**What is tested** ([`tests/test_posix_crash_recovery.py`](../tests/test_posix_crash_recovery.py),
+[`tests/test_posix_docker_crash.py`](../tests/test_posix_docker_crash.py)):
 - **setsid**: a real coordinator subprocess is SIGKILLed at each boundary above, with an inert fake
   agent. The suite also covers takeover of a live owner, a late monitor and an uninterrupted control.
-- **Docker `danger`**: only with a fake `docker` CLI (the fixture tier). A crash on a real Docker
-  daemon is not tested.
+- **Docker `danger`**: crash-tested against a REAL daemon in an opt-in tier. Run it with
+  `OPEN_FLEET_DOCKER_CRASH_TEST=1 python3 -m unittest tests.test_posix_docker_crash`. The tier
+  SIGKILLs the coordinator at every boundary above. It also crashes the host after publication,
+  which leaves the container orphaned; recovery removes the container and syncs its commit back.
+  Its uninterrupted control runs one container and syncs its commit. The worker runs in the
+  [`tests/fixtures/posix-crash-docker`](../tests/fixtures/posix-crash-docker/Dockerfile) image:
+  alpine pinned by digest, plus git and an inert `claude`, built locally as
+  `open-fleet-test/posix-crash:<content hash>`. Without the opt-in, a reachable daemon or a
+  buildable image, its cases are not loaded and the run prints `real-docker crash tier: NOT RUN`.
+  It never counts as a pass. The default suite covers the same `danger` path only against a fake
+  `docker` CLI. Last real run: 2026-10-23, Docker 29.8.2 (OrbStack, linux/arm64), 12 of 12 passed.
 - **tmux and cmux**: they share the reconciliation code (tmux adoption fills the
   `openfleet-<handle>` session name; a cmux workspace id that was never published stays unknown),
   but neither is crash-tested.

@@ -113,7 +113,9 @@ def _run(cmd: list[str], timeout: float | None = None) -> tuple[int | None, str,
         # Every git leg reads the target repo: the absolute git, under the hardened env.
         cmd, env = gitexec.argv(*cmd[1:]), gitexec.env()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit, env=env)
+        # No stdin (#629): a git hook, or any leg, must never wait on an inherited pipe.
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit, env=env,
+                              stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return None, "", f"`{' '.join(cmd)}` timed out after {limit}s"
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()

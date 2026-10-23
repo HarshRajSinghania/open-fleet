@@ -6118,6 +6118,268 @@ class VerifierDocsMatchTheCode(unittest.TestCase):
         self.assertIn("--nc-command", doc)
 
 
+class ConfigFilterNeverRunsInTheControl(MutationFixture):
+    """#629: `worktree add` and `checkout <base> -- <paths>` MATERIALISE worker content, running a
+    repo-config clean/smudge filter a `.gitattributes` (or, as here, `$GIT_DIR/info/attributes`,
+    which `--attr-source` cannot override) selects — the one channel git_env's fixed belt and the
+    `--no-textconv`/`--no-ext-diff` flags cannot close. The negative control runs the worker's own
+    test, so this would be a command running on the verifier BEFORE that, out of a key git.py's
+    global/system scrub leaves in force. _Authority.driver_blanks closes it; this drives the full
+    `--execute-nc` flow and requires the planted filter never fires."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.marker = Path(marks.name) / "filter-fired"
+        self.probe = Path(marks.name) / "probe.sh"
+        # The probe ONLY touches its marker and never reads stdin, so it cannot block on an
+        # inherited pipe. A filter that fires is the failure under test; in the GREEN case the
+        # driver is blanked and never runs, so app.py still reads `return 2` at head.
+        self.probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\nexit 0\n",
+                             encoding="utf-8")
+        self.probe.chmod(0o755)
+        for key in ("filter.p.clean", "filter.p.smudge"):
+            self.git("config", key, f"{self.probe} {key}")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=p\n", encoding="utf-8")
+
+    def _positive_control(self):
+        """A bare `git worktree add` at head_sha: the planted filter fires for any git that does
+        not blank the driver command, so the GREEN assertion below is not vacuous."""
+        probe_dir = Path(tempfile.mkdtemp(prefix="orca-filter-probe-"))
+        self.addCleanup(shutil.rmtree, probe_dir, True)
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(probe_dir / "wt"),
+                        self.head_sha], cwd=self.repo, check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "worktree", "remove", "--force", str(probe_dir / "wt")],
+                       cwd=self.repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        self.assertTrue(self.marker.exists(),
+                        "the planted clean/smudge filter did not fire on bare git")
+        self.marker.unlink()
+
+    def test_the_executed_control_runs_no_planted_filter(self):
+        self._positive_control()
+        rc, out, err = self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                                      "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertEqual(rc, 0, out + err)
+        self.assertFalse(self.marker.exists(),
+                         "a repo-config filter ran inside a verifier git leg (#629)")
+
+    def test_mutation_control_without_the_blanks_the_filter_fires(self):
+        self._positive_control()
+        with mock.patch.object(verify._Authority, "driver_blanks",
+                               classmethod(lambda cls, repo: [])):
+            self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                           "--lighting", "dark-eligible",
+                           "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertTrue(self.marker.exists(),
+                        "control: with the driver blanks removed the filter must fire")
+
+
+class ConfigFilterByteNameNeverRunsInTheControl(ConfigFilterNeverRunsInTheControl):
+    """PR #649 review (PRRT_kwDOTWxN9c6vvony): the same two cases with the selected driver named
+    by a byte git accepts and a text decode cannot round-trip (0xff -> U+FFFD names another
+    driver; a strict locale decode raised inside _run instead). The planted command must still
+    never run in a verifier git leg, and its mutation control must still fire it."""
+
+    NAME = b"\xff"
+
+    def setUp(self):
+        super().setUp()
+        for var in (b"clean", b"smudge"):
+            subprocess.run([b"git", b"config", b"filter." + self.NAME + b"." + var,
+                            os.fsencode(str(self.probe)) + b" " + var],
+                           cwd=self.repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        (self.repo / ".git" / "info" / "attributes").write_bytes(
+            b"*.py filter=" + self.NAME + b"\n")
+
+
+class ConfigFilterEqualsNameNeverRunsInTheControl(ConfigFilterByteNameNeverRunsInTheControl):
+    """A driver name holding `=`: `-c filter.a=b.clean=` is split at its FIRST `=` and blanks a
+    different key, so only an env pair (key and value apart) blanks this driver."""
+
+    NAME = b"a=b"
+
+
+class ConfigRequiredFilterNeverRunsInTheControl(ConfigFilterNeverRunsInTheControl):
+    """PR #649 review (PRRT_kwDOTWxN9c6vvon0): the planted filter is also `required=true`. With
+    only its command blanked, git dies `clean/smudge filter 'p' failed` in the control's
+    `worktree add`, so a worker could fail every unit it touched. The inherited cases require a
+    GREEN control that runs nothing, and a mutation control that still runs the filter."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("config", "filter.p.required", "true")
+
+
+class ConfigRequiredFilterWithNoCommandNeverStopsTheControl(MutationFixture):
+    """`filter.<driver>.required=true` with NO command declared: plain git dies on any matching
+    file, with no command to blank. The executed control must still run and go GREEN."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("config", "filter.r.required", "true")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=r\n", encoding="utf-8")
+
+    def test_a_required_filter_with_no_command_does_not_stop_the_control(self):
+        # Positive control: bare git dies cleaning a matching file. (git skips a smudge it has no
+        # command for, so the clean side is where a command-less required filter bites — and where
+        # a blanked-but-still-required smudge bit the control's `worktree add`.)
+        plain = subprocess.run(["git", "hash-object", "--path=app.py", "app.py"], cwd=self.repo,
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertNotEqual(plain.returncode, 0, "a required filter with no command did not stop git")
+        self.assertIn("filter 'r' failed", plain.stderr)
+        rc, out, err = self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                                      "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertEqual(rc, 0, out + err)
+
+
+class ConditionalIncludeFilterNeverRunsInTheControl(MutationFixture):
+    """PR #649 review (PRRT_kwDOTWxN9c6vxaeq): a linked worktree's config is not its source's.
+    `[includeIf "gitdir:**/worktrees/**"]` loads a filter ONLY in a linked worktree, so a blank
+    list read in the source repo omits it, and the control's `worktree add` ran its smudge on the
+    verifier. The drivers must be read IN the new worktree, before anything is materialised."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.marker = Path(marks.name) / "cond-filter-fired"
+        probe = Path(marks.name) / "probe.sh"
+        probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\nexit 0\n",
+                         encoding="utf-8")
+        probe.chmod(0o755)
+        include = Path(marks.name) / "cond.gitconfig"
+        include.write_text(f'[filter "cond"]\n\tclean = {probe} clean\n\tsmudge = {probe} smudge\n',
+                           encoding="utf-8")
+        self.git("config", "includeIf.gitdir:**/worktrees/**.path", str(include))
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=cond\n", encoding="utf-8")
+
+    def _positive_control(self):
+        """The source repo's own config listing does NOT declare `cond`, yet bare git runs it in
+        a linked worktree — the gap the review found, live on this host."""
+        listing = subprocess.run(["git", "config", "--list", "--name-only"], cwd=self.repo,
+                                 capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+        self.assertNotIn("filter.cond.", listing)
+        holder = Path(tempfile.mkdtemp(prefix="orca-cond-probe-"))
+        self.addCleanup(shutil.rmtree, holder, True)
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(holder / "wt"),
+                        self.head_sha], cwd=self.repo, check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "worktree", "remove", "--force", str(holder / "wt")],
+                       cwd=self.repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        self.assertTrue(self.marker.exists(), "the conditionally included filter did not fire")
+        self.marker.unlink()
+
+    def _run(self):
+        return self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                              "--lighting", "dark-eligible",
+                              "--execute-nc", "--nc-command", self.proof_cmd)
+
+    def test_a_filter_only_a_linked_worktree_loads_never_runs_in_the_control(self):
+        self._positive_control()
+        rc, out, err = self._run()
+        self.assertEqual(rc, 0, out + err)
+        self.assertFalse(self.marker.exists(),
+                         "a conditionally included filter ran in the control worktree (#629)")
+
+    def test_mutation_control_drivers_read_in_the_source_repo_miss_it(self):
+        # Read the drivers where the old code read them — the source repo — whatever directory
+        # the call names: the conditional filter is missing from that list and runs again.
+        self._positive_control()
+        source, real = str(self.repo), verify._Authority.driver_blanks
+        with mock.patch.object(verify._Authority, "driver_blanks",
+                               classmethod(lambda cls, repo: real(source))):
+            self._run()
+        self.assertTrue(self.marker.exists(),
+                        "control: blanks read in the source repo must miss the linked-only filter")
+
+
+class ConfigMergeDriverNeutralisedInTheControl(MutationFixture):
+    """PR #649 review (merge-driver class): a repo `merge.<driver>.driver` runs when git 3-way-
+    merges a path. verify's control `revert`/`apply`/`checkout` legs now carry the override that
+    neutralises it, via driver_blanks. A linear in-order range revert is trivial at every step and
+    verify refuses a non-linear range, so the leg cannot in fact be driven to a merge (brute-forced
+    in tests/test_gitexec_config_commands.py); the override rides defensively, and the real live
+    site, `git merge-tree`, is covered there. This pins that the legs' env carries it and that a
+    full control run with a planted merge driver stays GREEN and runs nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("config", "merge.m.driver", "false %O %A %B")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py merge=m\n", encoding="utf-8")
+
+    def test_the_control_legs_env_overrides_the_merge_driver(self):
+        env = verify._Authority.blanked_env(verify._Authority.driver_blanks(str(self.repo)))
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs.get("merge.m.driver"), "exit 1")
+
+    def test_a_full_revert_control_runs_the_merge_driver_nowhere(self):
+        rc, out, err = self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                                      "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertEqual(rc, 0, out + err)
+
+
+class DriverQueryFailureRefusesTheControl(MutationFixture):
+    """PR #649 review (PRRT_kwDOTWxN9c6vzAIE): when the control worktree's config query fails or
+    prints output that cannot be parsed, driver_blanks used to return [] — "no drivers" — and the
+    control populated the worktree with every planted filter live. The verifier must refuse
+    instead. A fake git, first on PATH so it is the one verify pins, misbehaves ONLY for
+    `config --list` and delegates every other call, so the planted filter really would run."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.dir = Path(marks.name)
+        self.marker = self.dir / "filter-fired"
+        probe = self.dir / "probe.sh"
+        probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\nexit 0\n",
+                         encoding="utf-8")
+        probe.chmod(0o755)
+        for key in ("filter.p.clean", "filter.p.smudge"):
+            self.git("config", key, f"{probe} {key}")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=p\n", encoding="utf-8")
+
+    def _fake_git_on_path(self, mode):
+        action = {"fail": 'echo "fatal: forced config failure" >&2; exit 128',
+                  "garbage": "printf 'filter.p.clean'; exit 0"}[mode]
+        bindir = self.dir / f"bin-{mode}"
+        bindir.mkdir()
+        script = bindir / "git"
+        script.write_text('#!/bin/sh\ncase " $* " in\n  *" config --list "*) ' + action + " ;;\nesac\n"
+                          "exec " + shlex.quote(shutil.which("git")) + ' "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+        return mock.patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]})
+
+    def test_a_failed_or_unparseable_query_refuses_and_runs_no_filter(self):
+        for mode in ("fail", "garbage"):
+            with self.subTest(mode=mode):
+                with self._fake_git_on_path(mode):
+                    rc, out, err = self._run_main(
+                        self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                        "--lighting", "dark-eligible", "--execute-nc", "--nc-command", self.proof_cmd)
+                self.assertEqual(rc, 2, out + err)
+                self.assertIn("cannot read the control worktree's driver config", err)
+                self.assertFalse(self.marker.exists(),
+                                 "the control ran a planted filter with no blanks (#629)")
+                verify._Authority.reset()
+
+
 class TrackedArtifactPinsAreChecked(RepoCase):
     """#596 certification finding: a manifest whose `artifacts[]` sha256 was wrong for a file
     TRACKED at head_sha verified clean. The tracked-at-head read returned the blob without ever

@@ -52,6 +52,8 @@ DEFAULT_SHARDS = 4
 WEIGHTS = {
     "test_a2a_export": 0.9,
     "test_a2a_schema": 0.4,
+    "test_ablation": 0.7,  # #606, measured 2026-10-24 (macOS arm64, load average ~5): 0.66
+    "test_ablation_runner": 7.9,  # #606, measured 2026-10-24 (macOS arm64, load average ~5): 7.90
     "test_architecture": 37.5,
     "test_bind_check": 5.7,
     "test_bundle": 61.8,

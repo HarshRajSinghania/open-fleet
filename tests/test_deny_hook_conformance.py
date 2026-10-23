@@ -274,6 +274,9 @@ MUTANTS = (
      "        fed = list(_herestrings(seg)) if _stdin_kind(ws) == \"shell\" else []",
      "        fed = list(_herestrings(seg))[:1] if _stdin_kind(ws) == \"shell\" else []",
      ("receipt:herestring-two",)),
+    ("receipt: a launcher that may repeat its command is not armed by one outer receipt",
+     "def _repeats(args, ws):", "def _repeats(args, ws):\n    return False",
+     ("receipt:find-each", "receipt:xargs-file", "receipt:until-twice", "receipt:while-twice")),
     ("data arguments dropped on the never-list pass", "def _data_dropped(ws):",
      "def _data_dropped(ws):\n    return ws", ("launch:select-free", "launch:colon-literal",
                                                "quote:sq", "launch:script-written-only")),
@@ -344,6 +347,29 @@ HOOK_ONLY_MUTANTS = (
      'filled = [re.sub(r"\\{[0-9./#%]*\\}", a, w) for w in tpl]',
      "filled = list(tpl)",
      [("parallel git push {} origin main ::: --force", "deny", "allow")]),
+    ("watch, parallel, entr and repeat may run their command again (xmAh)",
+     '    if head in ("watch", "parallel", "entr", "repeat"):\n        return True',
+     "    if False:\n        return True",
+     [("RCPT && watch -n 1 gh issue close 34", "deny", "allow"),
+      ("RCPT && parallel -j1 gh issue close {} ::: 34", "deny", "allow"),
+      ("RCPT && entr gh issue close 34 < files.txt", "deny", "allow"),
+      ("RCPT && repeat 2 gh issue close 34", "deny", "allow")]),
+    ("fd -x/-X may run their command again (xmAh)",
+     '    if head in ("fd", "fdfind") and any(', "    if False and any(",
+     [("RCPT && fd . -x gh issue close 34", "deny", "allow"),
+      ("RCPT && fd -e md -X gh issue close 34", "deny", "allow")]),
+    ("fd -x/-X run their command vector (xmAh sweep)",
+     '    if head in ("fd", "fdfind"):\n        # fd -x/--exec', '    if False:\n        # fd -x/--exec',
+     [("fd . -x git push --force origin main", "deny", "allow"),
+      ("fd -e py -X gh issue close 34", "deny", "allow")]),
+    ("entr runs its utility (xmAh sweep)",
+     '    if head == "entr":\n        # entr', '    if False:\n        # entr',
+     [("ls | entr git push --force origin main", "deny", "allow"),
+      ("ls | entr -rs 'gh issue close 34'", "deny", "allow")]),
+    ("zsh repeat runs its command (xmAh sweep)",
+     "        return [shlex.join(rest[1:])] if rest[1:] else []   # zsh: repeat N COMMAND...",
+     "        return []",
+     [("repeat 2 git push --force origin main", "deny", "allow")]),
 )
 
 
@@ -461,6 +487,31 @@ class TestLaunchersOutsideThePeelTable(HookOnly):
             "find . -name '*.pyc' -delete", "parallel gzip ::: a b", "ssh host uptime", "ssh host",
         ))
 
+    def test_fan_out_launchers_run_the_refused_command(self):
+        # PR #648 review PRRT_kwDOTWxN9c6vxmAh sweep: fd and entr run a command per result or per
+        # change, and zsh repeat runs it N times; the hook read none of them as a launcher.
+        self.expect("deny", (
+            "fd . -x git push --force origin main",
+            "fd -e py --exec gh issue close 34",
+            "fd -e py -X gh issue close 34",
+            "fd . --exec-batch git push --force origin main \\; -E x",
+            "fd -Hx git push --force origin main",
+            "fd --exec=gh issue close 34",
+            "fdfind . -x git push --force origin main",
+            "ls | entr git push --force origin main",
+            "ls | entr -r -- gh issue close 34",
+            "ls | entr -rs 'git push --force origin main'",
+            "repeat 2 git push --force origin main",
+            "repeat 3 gh issue close 34",
+        ))
+
+    def test_benign_fan_out_commands_stay_allowed(self):
+        self.expect("allow", (
+            "fd -e py -x wc -l", "fd -e py -X ruff check", "fd -tx", "fd -t x .", "fd --hidden x",
+            "fd . -x echo {} \\; -x wc -l", "ls | entr -c make test",
+            "ls | entr -s 'make test && echo ok'", "repeat 3 echo hi",
+        ))
+
 
 class TestDeferredExecution(HookOnly):
     def test_deferred_and_relaunched_command_lines_are_judged(self):
@@ -519,6 +570,52 @@ class TestDeferredExecution(HookOnly):
             "cat <<'EOF' > doc.md\ngit push --force origin main\nEOF",
             "cat <<EOF # a comment after the opener\ngit push --force origin main\nEOF",
         ))
+
+
+class TestRepeatedSendsNeedTheirOwnReceipt(HookOnly):
+    """PR #648 review PRRT_kwDOTWxN9c6vxmAh: one receipt covers exactly one send, so a launcher
+    that may run its command more than once is never armed by a receipt outside it."""
+
+    RCPT = "python3 runtime/scripts/egress.py write --payload-class pr-body --consent grant:x"
+
+    def test_an_outer_receipt_does_not_arm_a_repeating_launcher(self):
+        self.expect("deny", [c.replace("RCPT", self.RCPT) for c in (
+            "RCPT && watch -n 1 gh issue close 34",
+            "RCPT && watch -x gh issue close 34",
+            "RCPT && watch 'gh issue close 34'",
+            "RCPT && timeout 5 watch gh issue close 34",
+            "RCPT && sudo -u x watch gh issue close 34",
+            "RCPT && find . -type f -exec gh issue close 34 \\;",
+            "RCPT && find . -type f -exec gh issue close 34 {} +",
+            "RCPT && find . -execdir gh issue close 34 \\;",
+            "RCPT && nice find . -ok gh issue close 34 \\;",
+            "RCPT && find . -exec sh -c 'gh issue close 34' \\;",
+            "RCPT && fd . -x gh issue close 34",
+            "RCPT && fd -e md -X gh issue close 34",
+            "RCPT && entr gh issue close 34 < files.txt",
+            "RCPT && xargs -n1 gh issue close < ids.txt",
+            "RCPT && env xargs -n1 gh issue close < ids.txt",
+            "RCPT && seq 2 | xargs -I{} gh issue close 34",
+            "RCPT && parallel gh issue close ::: 34 35",
+            "RCPT && parallel -j1 gh issue close {} ::: 34",
+            "RCPT && while gh issue close 34; do :; done",
+            "RCPT && until gh issue close 34; do :; done",
+            "RCPT && for i in 1 2; do gh issue close 34; done",
+            "RCPT && repeat 2 gh issue close 34",
+        )])
+
+    def test_a_receipt_inside_the_repeated_command_still_arms_it(self):
+        self.expect("allow", [c.replace("RCPT", self.RCPT) for c in (
+            "watch -n 1 'RCPT && gh issue close 34'",
+            "find . -type f -exec sh -c 'RCPT && gh issue close 34' \\;",
+            "fd . -x sh -c 'RCPT && gh issue close 34'",
+            "ls | entr -s 'RCPT && gh issue close 34'",
+            "xargs -n1 sh -c 'RCPT && gh issue close 34' < ids.txt",
+            "parallel 'RCPT && gh issue close {}' ::: 34 35",
+            "until RCPT && gh issue close 34; do :; done",
+            "for i in 1 2; do RCPT && gh issue close 34; done",
+            "RCPT && gh issue close 34",
+        )])
 
 
 class TestQuotedDataIsNotAsked(HookOnly):

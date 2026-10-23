@@ -1937,7 +1937,8 @@ _FED_SUB = []    # set when a substitution feeds a shell on stdin: echo "$(curl 
 _FED_INTERP = []  # interpreter programs fed on stdin (python3 <<EOF ...): judged for guard writes
 # Launchers outside the peel table: each runs a -c string, a vector after operands of its own,
 # or a string it hands to a shell (_launcher_bodies, #598).
-_BODY_LAUNCHERS = ("su", "runuser", "flock", "script", "watch", "parallel", "ssh", "find")
+_BODY_LAUNCHERS = ("su", "runuser", "flock", "script", "watch", "parallel", "ssh", "find", "fd",
+                   "fdfind", "entr", "repeat")
 _PARALLEL_LONG = ("--jobs", "--max-procs", "--sshlogin", "--sshloginfile", "--slf", "--arg-file",
                   "--delimiter", "--eof", "--max-args", "--max-lines", "--max-chars", "--colsep",
                   "--tmpdir", "--joblog", "--results", "--res", "--workdir", "--wd", "--timeout",
@@ -2098,6 +2099,10 @@ def _dash_c(rest, names):
     return None
 
 
+def _fd_exec(w):
+    return w in ("--exec", "--exec-batch") or bool(re.fullmatch(r"-[HIusigFalLp0q]*[xX]", w))
+
+
 def _launcher_bodies(head, rest):
     """Command lines a launcher outside the peel table runs (#598)."""
     if head in ("su", "runuser"):
@@ -2153,6 +2158,34 @@ def _launcher_bodies(head, rest):
             return []
         j = i + 1 + _opt_end(rest[i + 1:], takes)   # past the destination
         return [" ".join(rest[j:])] if rest[j:] else []   # the remote shell parses the join
+    if head in ("fd", "fdfind"):
+        # fd -x/--exec runs CMD per result, -X/--exec-batch once per batch; each vector runs
+        # to a ; or the end (a short-flag cluster may end in x or X: -Hx) (PR #648 review
+        # PRRT_kwDOTWxN9c6vxmAh sweep).
+        out, i = [], 0
+        while i < len(rest):
+            w = rest[i]
+            if w.startswith(("--exec=", "--exec-batch=")) or _fd_exec(w):
+                j = i + 1
+                while j < len(rest) and rest[j] != ";":
+                    j += 1
+                vec = ([w.split("=", 1)[1]] if "=" in w else []) + rest[i + 1:j]
+                if vec:
+                    out.append(shlex.join(vec))
+                i = j
+            i += 1
+        return out
+    if head == "entr":
+        # entr [-acdnprsz] UTILITY [ARG...] runs the vector on every change; -s hands its one
+        # operand to a shell instead.
+        i = 0
+        while i < len(rest) and re.fullmatch(r"-[acdnprsz]+", rest[i]):
+            i += 1
+        i += rest[i:i + 1] == ["--"]
+        shell = any("s" in w for w in rest[:i] if w != "--")
+        return ([rest[i]] if shell else [shlex.join(rest[i:])]) if rest[i:] else []
+    if head == "repeat":
+        return [shlex.join(rest[1:])] if rest[1:] else []   # zsh: repeat N COMMAND...
     if head == "find":
         out, i = [], 0
         while i < len(rest):
@@ -2193,8 +2226,9 @@ def _inner_body(ws):
     `bash -c "gh pr merge 12"` is that send (2026-10-23 review, P1-3, P2-13). #598 widened it
     to every place a command line is deferred or relaunched: a trap action, an alias value, a
     gh shell alias, the -c string or command vector of flock, su, runuser, script, watch,
-    parallel, ssh and find -exec, interpreter code handing a literal to the system, and a head
-    built from a variable (_head_bodies). Several bodies come back one per line.
+    parallel, ssh, find -exec, fd -x/-X, entr and zsh repeat, interpreter code handing a literal
+    to the system, and a head built from a variable (_head_bodies). Several bodies come back one
+    per line.
     """
     if not ws:
         return None
@@ -2550,6 +2584,26 @@ def _is_deferred_def(ws):
     return False
 
 
+def _repeats(args, ws):
+    # A launcher that can run its command MORE THAN ONCE: watch, find -exec/-execdir/-ok/-okdir
+    # (per match, or per batch with +), fd -x/-X, entr (per change), zsh repeat, parallel (per
+    # argument), xargs (per input batch), and a while/until condition (per iteration). One
+    # receipt covers exactly one send, so an outer receipt cannot arm what such a launcher runs;
+    # the receipt must sit inside it (PR #648 review PRRT_kwDOTWxN9c6vxmAh). A for/select or
+    # while body is already its own unarmed segment; xargs and the loop keywords are peeled off
+    # ws, so they are read from args.
+    head = ws[0].rsplit("/", 1)[-1] if ws else ""
+    if head in ("watch", "parallel", "entr", "repeat"):
+        return True
+    if head == "find" and any(w in ("-exec", "-execdir", "-ok", "-okdir") for w in ws[1:]):
+        return True
+    if head in ("fd", "fdfind") and any(_fd_exec(w) or w.startswith(("--exec=", "--exec-batch="))
+                                        for w in ws[1:]):
+        return True
+    return any(w.rsplit("/", 1)[-1] in ("xargs", "while", "until")
+               for w in args[:max(0, len(args) - len(ws))])
+
+
 def _receipt_pairs(surface):
     """(join, args, fed_programs) per segment of a SURFACE (substitutions already lifted out).
     fed_programs are what a shell consumer runs from its here-strings, or from echo/printf (or
@@ -2620,13 +2674,14 @@ def _unreceipted(pairs, armed=False, depth=0):
             continue
         ws = _command_words(args)
         deferred = _is_deferred_def(ws)
+        repeat = _repeats(args, ws)
         body = _inner_body(ws) if depth < 3 else None
         # A body that runs NOW (sh -c, eval, a launcher, $c, or a program fed to a shell by a
         # pipeline or heredoc) can be armed by an outer && receipt; a DEFERRED definition body
         # cannot -- its send fires later, so the receipt must sit inside it (PR #648 review).
         for run_body, defer in ([(body, deferred)] if body is not None else []) \
                 + [(program, False) for program in fed]:
-            lead = armed and join == "&&" and not defer
+            lead = armed and join == "&&" and not defer and not repeat
             try:
                 if _unreceipted_scope(run_body, lead, depth + 1):
                     return True
@@ -2638,8 +2693,8 @@ def _unreceipted(pairs, armed=False, depth=0):
             armed = False
             continue
         if _is_send(args):
-            if not (armed and join == "&&"):
-                return True
+            if repeat or not (armed and join == "&&"):
+                return True   # a send a launcher may repeat needs its receipt inside it
             armed = False  # one receipt covers exactly one send
             continue
         armed = False  # any other segment consumes the arming

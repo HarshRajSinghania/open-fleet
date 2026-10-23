@@ -478,8 +478,29 @@ RECEIPT_GRID = (
 )
 
 
+# Launchers that may run their command more than once (PR #648 review PRRT_kwDOTWxN9c6vxmAh):
+# find -exec per match, xargs per batch, loop conditions per iteration. One receipt, one send.
+REPEAT_GRID = (
+    ("find-each", "{R} && find . -type f -exec {SEND} \\;"),
+    ("find-each-dir", "{R} && find . -type f -execdir {SEND} \\;"),
+    ("find-batch", "{R} && find . -type f -exec {SEND} {} +"),
+    ("find-one", "{R} && find . -maxdepth 0 -exec {SEND} \\;"),
+    ("find-inner", "find . -type f -exec sh -c '{R} && {SEND}' \\;"),
+    ("xargs-file", "{R} && xargs -n1 {SEND} < list.txt"),
+    ("xargs-batch", "{R} && xargs {SEND} < list.txt"),
+    ("xargs-pipe", "{R} && printf '1\\n2\\n' | xargs -n1 {SEND}"),
+    ("xargs-inner", "xargs -n1 sh -c '{R} && {SEND}' < list.txt"),
+    ("until-once", "{R} && until {SEND}; do :; done"),
+    ("until-twice", "{R} && until {SEND} && [ -e stop ]; do : > stop; done"),
+    ("while-twice", "{R} && while {SEND} && [ ! -e stop ]; do : > stop; done"),
+    ("for", "{R} && for i in 1 2; do {SEND}; done"),
+    ("for-inner", "for i in 1 2; do {R} && {SEND}; done"),
+    ("while-inner", "i=0; while [ $i -lt 2 ]; do i=$((i+1)); {R} && {SEND}; done"),
+)
+
+
 def receipt_grid():
-    return [Case(f"receipt:{name}", tpl, "receipt") for name, tpl in RECEIPT_GRID]
+    return [Case(f"receipt:{name}", tpl, "receipt") for name, tpl in RECEIPT_GRID + REPEAT_GRID]
 
 
 def corpus(random_count=BOUNDED_RANDOM, seed=SEED, both=False):

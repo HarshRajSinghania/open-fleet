@@ -172,7 +172,7 @@ def redact(value):
     """Every string in a report, credential shapes replaced by their name (#603: logs written
     by hand or by an older producer reach the report too; emit refuses them up front)."""
     if isinstance(value, dict):
-        return {k: redact(v) for k, v in value.items()}
+        return {redact(k): redact(v) for k, v in value.items()}  # a model name is a key
     if isinstance(value, list):
         return [redact(v) for v in value]
     if not isinstance(value, str):

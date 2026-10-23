@@ -612,6 +612,29 @@ class TestRecordIntegrity(Base):
         self.assertNotIn(token, proc.stdout)
         self.assertIn("[REDACTED:github-token]", proc.stdout)
 
+    def test_report_redacts_a_credential_in_a_key(self):
+        token = "gh" + "p_" + "C" * 36
+        evs = unit_stream() + [ev("model.usage", "10:41:00", dispatch="d", **ONE,
+                                  data={"model": "m", "provenance": "p"})]
+        evs[-1]["data"]["model"] = token  # written by hand, past emit's refusal
+        self.write(evs)
+        proc = self.cli("report", "--json")
+        self.assertNotIn(token, proc.stdout)
+        self.assertIn('"[REDACTED:github-token]": {', proc.stdout)
+
+    def test_concurrent_emitters_keep_one_intact_chain(self):
+        procs = [subprocess.Popen([sys.executable, str(EVENTS), "--log", str(self.log), "emit",
+                                   "--kind", "unit.suspect", *self.BIND, "--task", f"t{i}",
+                                   "--source-ref", "ledger", "--observed-at",
+                                   "2026-10-20T10:00:00Z"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE) for i in range(12)]
+        self.assertEqual([p.wait() for p in procs], [0] * 12)
+        for p in procs:
+            p.stdout.close()
+            p.stderr.close()
+        recorded, _sha, _head = events.read_log(self.log)
+        self.assertEqual(sorted(e["task"] for e in recorded), sorted(f"t{i}" for i in range(12)))
+
     def test_an_edited_event_fails_closed(self):
         self.write(scenario_clean())
         lines = self.log.read_text(encoding="utf-8").splitlines()

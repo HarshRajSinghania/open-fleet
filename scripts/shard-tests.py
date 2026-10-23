@@ -99,6 +99,9 @@ WEIGHTS = {
     "test_install_workflow_triggers": 0.1,
     "test_inventory": 27.5,
     "test_local_state": 1.6,
+    "test_merge_queue": 124.0,
+    "test_merge_queue_drills": 61.0,
+    "test_local_state_open_race": 0.9,  # measured 2026-10-24 (macOS arm64): 0.90, 0.93, 0.79
     "test_migration_walkthrough": 0.1,
     "test_multi_harness_hooks_and_search": 3.2,
     "test_negative_control": 0.9,

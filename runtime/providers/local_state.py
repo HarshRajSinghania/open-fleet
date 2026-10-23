@@ -79,6 +79,50 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
+BUSY_SECONDS = 30.0
+
+
+def _ensure_wal(conn: sqlite3.Connection, seconds: float = BUSY_SECONDS) -> None:
+    """Put the store in WAL mode, once per database file, surviving concurrent openers.
+
+    The switch upgrades the switcher's read lock to a write lock, and SQLite refuses that upgrade
+    with `database is locked` at once, never through the busy handler, so when processes opened a
+    fresh (or older rollback-journal) store together, an opener that lost the switch died (PR
+    #647's race in #599's queue, here on main). WAL persists in the file: the first switch is every later
+    opener's no-op, so a loser backs off and re-reads the mode. Only a lock is retried; a mode
+    SQLite settles on without error (an in-memory database) ends the loop, as it always did.
+    """
+    deadline = time.monotonic() + seconds
+    delay = 0.005
+    while True:
+        try:
+            if str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower() == "wal":
+                return
+            conn.execute("PRAGMA journal_mode=WAL;").fetchone()
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.2)
+
+
+def _statements(script: str) -> list[str]:
+    """Split a DDL script into statements; a `;` inside a `--` comment ends none."""
+    out: list[str] = []
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            out.append(buf)
+            buf = ""
+    if buf.strip():  # a last statement with no `;` still runs (and fails loudly if malformed)
+        out.append(buf)
+    return out
+
+
 class LocalStateStore:
     """Thread-safe / process-safe SQLite WAL state engine for runs, tasks, dispatches, mailbox, and file touches."""
 
@@ -92,16 +136,27 @@ class LocalStateStore:
         # `with sqlite3.connect(...) as conn` only commits; it never closes, so every store
         # call leaked a connection until GC (a ResourceWarning on 3.13). _ClosingConnection
         # closes when its `with` block ends.
-        conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=None, factory=_ClosingConnection)
+        conn = sqlite3.connect(str(self.db_path), timeout=BUSY_SECONDS, isolation_level=None, factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
+        try:
+            # The busy timeout first (connect's `timeout` installs it too), so every statement
+            # below and after waits out a lock. It cannot save the WAL switch: see _ensure_wal.
+            conn.execute(f"PRAGMA busy_timeout={int(BUSY_SECONDS * 1000)};")
+            _ensure_wal(conn)
+            conn.execute("PRAGMA foreign_keys=ON;")
+        except BaseException:
+            conn.close()  # a setup that gave up must not leak the connection it opened
+            raise
         return conn
 
     def _init_db(self) -> None:
+        # Schema and migration in ONE `BEGIN IMMEDIATE` transaction: concurrent openers take
+        # turns, each re-reads the columns under the lock, and an upgrade that fails leaves the
+        # store as it found it. Not executescript, which COMMITs first and runs each statement
+        # in autocommit, letting another opener interleave and a failure half-upgrade the store.
         with self._connect() as conn:
-            conn.executescript(
+            conn.execute("BEGIN IMMEDIATE")
+            for statement in _statements(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY,
@@ -232,12 +287,15 @@ class LocalStateStore:
                     updated_at REAL NOT NULL
                 );
                 """
-            )
+            ):
+                conn.execute(statement)
             self._migrate(conn)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        """Additive column migrations for stores created by an older schema."""
+        """Additive column migrations for stores created by an older schema.
+
+        Runs inside `_init_db`'s `BEGIN IMMEDIATE`, so the columns read here are current."""
         wanted = {
             "gates": {"task_id": "TEXT", "message_id": "TEXT", "prev_status": "TEXT", "kind": "TEXT DEFAULT 'ask'"},
             "runs": {"objective": "TEXT"},

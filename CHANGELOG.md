@@ -46,6 +46,59 @@ truth is `.claude-plugin/plugin.json`.
   asked about, and `.orca/human-grant-pubkey` / `.orca/dispatch-pubkey` are guarded like the
   hook's own config. Supported shell versions and what stays beyond the text are documented in
   `docs/runtime-scripts.md`.
+- **One fenced conductor per BASE now merges, from a persisted queue** (#599). Merge serialization
+  was doctrine only: two coordinators could merge onto one BASE, and a conductor that crashed
+  mid-train left no record of what it had sent. `runtime/scripts/merge_queue.py` is now the merge
+  boundary that cooperating fleet writers route merges through.
+  - A SQLite lease issues a fencing token per repository and BASE. Every queue write checks it, so
+    a superseded conductor is refused `fenced` and cannot board, plan, merge, acknowledge or
+    release.
+  - The remote merge runs inside a per-queue `flock`, after a token-checked intent write. A
+    handoff needs the same lock, so a conductor paused after its lease check never merges once
+    ownership moves, and a merge still in flight blocks the handoff. A handoff reconciles every
+    in-flight merge from `gh pr view` or git ancestry first. A merged PR is adopted, never sent
+    again; an unreadable one (offline) blocks the handoff.
+  - Entries bind run, unit, PR, branch, reviewed SHA and tree, BASE and arrival order. A
+    duplicate `merge_ready` is a no-op.
+  - `plan` tests the prefix in memory with #590's merge engine, and optionally runs a gate per
+    prefix. `merge` revalidates the BASE tree, the tested merge tree and the head first. A changed
+    tree returns to review; a content-identical move keeps it. A conflict, failed gate or refused
+    merge freezes the train behind it until `resolve`.
+  - Promotion to the default branch stays human: the queue refuses it as a BASE or a target.
+  - Every GitHub and git call is bound to the queue's repository: `gh` gets an explicit `--repo`,
+    and the remote's fetch and push URLs must name the repository the lease does. Identities follow
+    git's own URL rules (a relative path resolves against the clone, not the working directory), so
+    one remote is one queue from any directory, and GitHub names fold case (one lock per
+    repository; an older store is respelled only under its locks; any spelling a payload or
+    caller gives is accepted). The gh lane
+    merges through GitHub's merges endpoint, which names BASE, so a PR retargeted after the last
+    check cannot take the merge to the default branch. A merged head branch is deleted only from
+    the queue's own repository, never a fork's, behind its own egress receipt. The request is
+    persisted with the merge, so a restart finishes it and never overrides `--keep-branch`, and
+    the deletion holds the merge boundary as the merge does and is claimed before it is sent, so
+    it leaves at most once. A saved plan is
+    reused only for the gate it passed, so `drain --gate-cmd` never skips a requested gate.
+  - What is tested: two competing conductor processes, pause-transfer-resume, and crash restarts
+    before the merge, after the remote merge and before the acknowledgement, on the gh lane and
+    the local no-gh lane. All of them run over disposable repositories with a fake `gh`. Mutation
+    controls that delete the fencing check or the freshness check make the drills fail. No live
+    GitHub run has exercised the gh lane, and the guarantee covers one host's cooperating writers,
+    not arbitrary GitHub users.
+- **Concurrent openers of one `posix` state store no longer die with `database is locked`.**
+  `LocalStateStore` switched every connection to WAL first, and SQLite refuses a contender for
+  that one-time switch at once rather than through the busy handler. So when several processes
+  opened a fresh store, or one an older schema wrote in rollback-journal mode, an opener that
+  lost the switch failed. On `main` at `4def361f69`, with eight openers per store, 35 of 160
+  fresh-store and 65 of 160 older-store openers failed, and 139 of 400 and 76 of 400 under CPU
+  load. Setting `busy_timeout` before the switch alone still lost 35 and 44 of 160, because
+  `connect(timeout=30)` already set it. Each connection now sets `busy_timeout` first, then backs
+  off and re-reads the mode until the first switch lands; schema creation and the column
+  migration run in one `BEGIN IMMEDIATE` transaction that re-reads the columns under the lock, so
+  a failed upgrade no longer leaves a half-upgraded store. This is PR #647's fix for the same race
+  in #599's queue. `tests/test_local_state_open_race.py` races eight barrier-released openers over
+  fresh and older-schema stores, round after round. The rest of `runtime/` opens SQLite read-only
+  (`events.py`, `watchdog.py`, `search_sessions.py`), through this store (the providers, and
+  `multiclaude.py`'s own table), or not at all (`egress.py`, `decisions.py`).
 - **VF-Bench replays in one command, at a pinned revision, in a clean environment** (#601).
   `bench/vf-bench/replay.py run --rev <commit>` exports the commit into a fresh repository by a
   local fetch, runs every case N times under a built environment (only `git` and `python` on

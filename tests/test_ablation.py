@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -48,6 +49,39 @@ def run_main(argv):
 
 def defer_for(prereg, mission):
     return prereg["reduction"]["missions"][mission]
+
+
+_COPIES = []
+
+
+def repo_copy(tmp):
+    """(root, ablation module) for a throwaway copy of everything generation reads, with the module
+    loaded FROM the copy: a destructive-path test can only ever destroy the copy (#652 review)."""
+    dest = Path(tmp) / "repo"
+    for rel in ("skills", "playbooks", "runtime", "scripts", "evals", "docs/experiments", ".claude-plugin"):
+        if (ROOT / rel).exists():
+            shutil.copytree(ROOT / rel, dest / rel, symlinks=True,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+    for doc in ROOT.glob("*.md"):
+        shutil.copyfile(doc, dest / doc.name)
+    _COPIES.append(dest)
+    spec = importlib.util.spec_from_file_location(f"ablation_copy_{len(_COPIES)}", dest / "scripts" / "ablation.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return dest, mod
+
+
+def tree_digest(root):
+    """{relative path: sha256} of every file under root: what 'nothing was deleted' means."""
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(Path(root).rglob("*")) if p.is_file()}
+
+
+def run_copy(mod, argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = mod.main(argv)
+    return code, out.getvalue(), err.getvalue()
 
 
 class TheRegistrationIsWellFormed(unittest.TestCase):
@@ -260,7 +294,7 @@ class GeneratedVariants(unittest.TestCase):
         for mission in MIX:
             self.assertEqual((ROOT / "skills" / mission / "SKILL.md").read_bytes(),
                              self.skill_bytes[mission], mission)
-            self.assertTrue(self.variant_dir(mission).is_relative_to(self.out))
+            self.assertTrue(self.variant_dir(mission).is_relative_to(self.out.resolve()))
 
     def test_the_minimal_contract_quotes_source_lines_verbatim(self):
         for mission, rec in self.records.items():
@@ -393,6 +427,70 @@ class TheObligationCheckFailsClosed(unittest.TestCase):
         with mock.patch.object(ablation, "_rewrite_clause", lambda clause, names: clause):
             with self.assertRaisesRegex(ablation.AblationError, "not the registered kept set"):
                 ablation.generate("review-it", PREREG, self.out)
+
+
+class OutputNeverOverlapsTheSources(unittest.TestCase):
+    """#652 review, P1: `generate --out skills` deleted the real skills/ship-it at its rmtree.
+
+    Every case runs against a throwaway repo copy with ablation.py loaded from it, and checks the
+    copy's source tree byte-for-byte afterwards: refused, and nothing deleted or written.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="of-ablation-overlap-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root, self.mod = repo_copy(self.tmp)
+        self.before = {d: tree_digest(self.root / d) for d in ("skills", "playbooks", "runtime", "evals")}
+
+    def assertRefusedAndUntouched(self, argv):
+        code, _out, err = run_copy(self.mod, argv)
+        self.assertEqual(code, 2, err)
+        self.assertIn("overlaps", err)
+        for d, digest in self.before.items():
+            self.assertEqual(tree_digest(self.root / d), digest, f"{d}/ changed")
+
+    def test_out_skills_is_refused_and_nothing_is_deleted(self):
+        self.assertRefusedAndUntouched(["generate", "--mission", "ship-it", "--out", str(self.root / "skills")])
+
+    def test_a_relative_out_skills_is_refused(self):
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        self.assertRefusedAndUntouched(["generate", "--mission", "ship-it", "--out", "skills"])
+
+    def test_inside_equal_or_containing_a_source_is_refused(self):
+        for out in (self.root / "skills" / "ship-it", self.root / "playbooks", self.root / "runtime" / "x",
+                    self.root / "evals", self.root, self.root / "docs" / "experiments"):
+            with self.subTest(out=str(out.relative_to(self.tmp))):
+                self.assertRefusedAndUntouched(["generate", "--mission", "ship-it", "--out", str(out)])
+
+    def test_a_symlinked_out_dir_pointing_into_skills_is_refused(self):
+        link = self.tmp / "out-link"
+        link.symlink_to(self.root / "skills", target_is_directory=True)
+        self.assertRefusedAndUntouched(["generate", "--mission", "ship-it", "--out", str(link)])
+
+    def test_a_symlinked_mission_dir_inside_a_safe_out_is_refused(self):
+        out = self.tmp / "out"
+        out.mkdir()
+        (out / "ship-it").symlink_to(self.root / "skills" / "ship-it", target_is_directory=True)
+        self.assertRefusedAndUntouched(["generate", "--mission", "ship-it", "--out", str(out)])
+
+    def test_a_run_into_skills_is_refused(self):
+        self.assertRefusedAndUntouched(["run", "--dry-run", "--cost-cap-usd", "0", "--mission", "review-it",
+                                        "--task", "behavioral-4", "--repeats", "1",
+                                        "--out", str(self.root / "skills")])
+
+    def test_a_refresh_never_writes_into_the_sources(self):
+        json_path, md_path = self.root / "skills" / "prereg.json", self.root / "skills" / "prereg.md"
+        shutil.copyfile(self.root / "docs" / "experiments" / "ablation-prereg.json", json_path)
+        shutil.copyfile(self.root / "docs" / "experiments" / "ablation-prereg.md", md_path)
+        self.before["skills"] = tree_digest(self.root / "skills")
+        self.assertRefusedAndUntouched(["--prereg", str(json_path), "prereg", "--md", str(md_path), "--refresh"])
+
+    def test_a_safe_out_still_generates(self):
+        code, out, err = run_copy(self.mod, ["generate", "--mission", "review-it", "--out", str(self.tmp / "ok")])
+        self.assertEqual(code, 0, out + err)
+        self.assertTrue((self.tmp / "ok" / "review-it" / "variant.json").is_file())
 
 
 class Parsing(unittest.TestCase):

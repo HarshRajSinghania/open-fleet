@@ -423,7 +423,7 @@ def grade_trajectory(case, recording):
 def run_cell(ctx, pair, arm):
     mission, task, repeat = pair["mission"], pair["task"], pair["repeat"]
     cell_id = f"{mission}.{task}.r{repeat}.{arm}"
-    cell_dir = ctx["out"] / "cells" / mission / task / f"r{repeat}" / arm
+    cell_dir = ctx["guard"](ctx["out"] / "cells" / mission / task / f"r{repeat}" / arm)
     if cell_dir.exists():
         shutil.rmtree(cell_dir)
     workspace = cell_dir / "workspace"
@@ -575,12 +575,18 @@ def run(args, api):
     repeats = args.repeats if args.repeats is not None else prereg["repeats"]
     if not 1 <= repeats <= len(prereg["seeds"]):
         raise Refused(f"--repeats must be 1..{len(prereg['seeds'])} (one registered seed each)")
-    out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="open-fleet-ablation-run-"))
+    # Refused before anything is created or deleted: the root and each directory a run writes
+    # (a symlink planted at any of them resolves into what it points at) (#652 review, P1).
+    out = api.safe_output(Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="open-fleet-ablation-run-")),
+                          prereg)
+    for sub in ("sandbox", "catalog", "variants", "cells", "results.json", "report.md"):
+        api.safe_output(out / sub, prereg)
     out.mkdir(parents=True, exist_ok=True)
     sandbox = Sandbox(out / "sandbox", tier)
     catalog = out / "catalog"
     _catalog(catalog)
     ctx = {"out": out, "tier": tier, "prereg": prereg, "sandbox": sandbox, "catalog": catalog,
+           "guard": lambda path: api.safe_output(path, prereg),
            "timeout": args.timeout or TIMEOUTS[tier], "payloads": {}, "cues": {},
            "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)})}
     if tier == "fixture":

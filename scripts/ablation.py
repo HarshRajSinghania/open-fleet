@@ -382,6 +382,45 @@ def _analysis_errors(analysis, prompt):
 
 
 # ---------------------------------------------------------------------------
+# output safety
+# ---------------------------------------------------------------------------
+# What generation and a run READ, and so must never write over (#652 review, P1:
+# `generate --out skills` deleted the real skills/ship-it at its rmtree). The registration's own
+# directory is here too: only `prereg --refresh` writes it, under the narrower SOURCE_ROOTS check.
+SOURCE_ROOTS = ("skills", "playbooks", "runtime", "evals")
+READ_ROOTS = SOURCE_ROOTS + ("docs/experiments",)
+
+
+def protected_paths(prereg=None, roots=READ_ROOTS):
+    paths = {ROOT / rel for rel in roots}
+    if roots is READ_ROOTS:
+        paths |= set(ROOT.glob("[A-Z]*.md"))  # root documents a mission may link
+        paths |= {ROOT / ob["source"] for ob in (prereg or {}).get("obligations") or []
+                  if isinstance(ob, dict) and isinstance(ob.get("source"), str)}
+    return {path.resolve() for path in paths}
+
+
+def output_overlap(path, prereg=None, roots=READ_ROOTS):
+    """The protected path `path` resolves inside, equals or contains, or None. Resolving follows
+    symlinks, so a link into skills/ is skills/."""
+    target = Path(path).resolve()
+    for guarded in sorted(protected_paths(prereg, roots)):
+        if target == guarded or guarded in target.parents or target in guarded.parents:
+            return guarded
+    return None
+
+
+def safe_output(path, prereg=None, roots=READ_ROOTS):
+    """`path` as an absolute, resolved path, or AblationError before anything is deleted or written."""
+    hit = output_overlap(path, prereg, roots)
+    if hit is not None:
+        where = hit.relative_to(ROOT.resolve()) if ROOT.resolve() in hit.parents else hit
+        raise AblationError(f"refusing to write at {path}: it overlaps the repository's {where} "
+                            "(inside, equal to, or containing it); choose an output outside the sources")
+    return Path(path).resolve()
+
+
+# ---------------------------------------------------------------------------
 # the generator
 # ---------------------------------------------------------------------------
 def _drop_section(text, title):
@@ -492,7 +531,9 @@ def generate(mission, prereg, out_root):
     """Write both arms of one mission under out_root/<mission>/ and return the variant record."""
     variant_text, defer, extracted = reduce_text(mission, prereg)
     base_dir = SKILLS_DIR / mission
-    mission_out = Path(out_root) / mission
+    # Both the root and the mission directory: a symlink planted at out/<mission> resolves too.
+    safe_output(out_root, prereg)
+    mission_out = safe_output(Path(out_root) / mission, prereg)
     if mission_out.exists():
         shutil.rmtree(mission_out)
     red_dir = mission_out / "reduced" / "skills" / mission
@@ -676,18 +717,20 @@ def refresh(json_path=PREREG, md_path=PREREG_MD):
     problems = [e for e in prereg_errors(prereg) if "registered_payloads" not in e]
     if problems:
         raise AblationError("refusing to re-pin a registration with errors: " + "; ".join(problems))
+    for path in (json_path, md_path):
+        safe_output(path, roots=SOURCE_ROOTS)
     prereg["registered_payloads"] = measure(prereg)
-    Path(json_path).write_text(json.dumps(prereg, indent=2, ensure_ascii=False) + "\n",
-                               encoding="utf-8")
-    md = read(md_path)
+    body = json.dumps(prereg, indent=2, ensure_ascii=False) + "\n"
     line = (f"Registration: **version {prereg['version']}**, `docs/experiments/ablation-prereg.json` "
-            f"sha256 `{file_sha256(json_path)}`.")
-    md, count = REGISTRATION_LINE.subn(line, md)
+            f"sha256 `{sha256_text(body)}`.")
+    md, count = REGISTRATION_LINE.subn(line, read(md_path))
     md, blocks = LOADS_BLOCK.subn(lambda m: m.group(1) + loads_table(prereg["registered_payloads"])
                                   + m.group(3), md)
     if count != 1 or blocks != 1:
         raise AblationError(f"{md_path}: expected exactly one registration line and one "
                             "ablation-loads block to re-pin")
+    # Both files are verified before either is written, so a failure leaves neither half-pinned.
+    Path(json_path).write_text(body, encoding="utf-8")
     Path(md_path).write_text(md, encoding="utf-8")
     return prereg["registered_payloads"]
 

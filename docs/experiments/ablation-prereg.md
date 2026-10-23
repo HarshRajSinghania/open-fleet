@@ -34,7 +34,9 @@ A variant that drops a registered obligation is rejected before any run, whateve
 
 [`scripts/ablation.py generate`](../../scripts/ablation.py) produces the reduced arm mechanically
 from the JSON's `reduction` table, and the same inputs give the same bytes. Variants are written to an
-output directory, never over `skills/`. The rules:
+output directory, never over `skills/`. An output path (for `generate` or `run`) that resolves
+inside, onto, or around `skills/`, `playbooks/`, `runtime/`, `evals/`, this registration or a
+registered source is refused before anything is deleted or written, symlinks included. The rules:
 
 - **R1** A document in the mission's `defer` table leaves activation. The Composes/rides clause names
   it in plain words (`<name> (deferred)`), a root-document link becomes its plain name, and a

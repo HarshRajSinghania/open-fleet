@@ -1063,7 +1063,11 @@ is stored in one spelling: the host lowercased (`www.github.com` is `github.com`
 and `.git` dropped, and on a GitHub host the owner and name lowercased too. GitHub hosts are
 `github.com`, any listed in `$OPEN_FLEET_GITHUB_HOSTS` (comma-separated), and any a gh-lane queue
 names. Another forge keeps its casing. A local path is spelled as the disk spells it: byte-exact
-on a case-sensitive filesystem. A store written with an older spelling is respelled when it opens.
+on a case-sensitive filesystem. The effect lock is keyed on that one spelling, so every spelling
+of a repository takes one lock. A store written with an older spelling is respelled when it opens,
+but only while the opener holds the effect lock of the old spelling and the new one; a conductor
+or child still holding either refuses the opening (`migration_blocked`), so no handoff begins under
+a send in flight.
 A store already holding one repository as two queues is refused (`queue_split`), never merged
 by guess. `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,

@@ -271,6 +271,15 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
+def lock_file(lock_dir: Path, identity: str, base: str) -> Path:
+    """The effect lock's file for a queue. Callers pass the NORMALIZED identity, so every spelling
+    of one repository maps to one lock (PR #647). The formula is the one earlier versions used,
+    so a lock held under a queue's stored, already-normal spelling is the same file on both sides
+    of an upgrade."""
+    name = hashlib.sha256(f"{identity}\0{base}".encode("utf-8")).hexdigest()[:24]
+    return lock_dir / f"{name}.lock"
+
+
 def _statements(script: str) -> list[str]:
     """Split a DDL script into statements by SQLite's own rule: a `;` inside a comment or a
     string ends nothing (`str.split(";")` did, so a commented schema broke the store's opening)."""
@@ -343,26 +352,36 @@ class Store:
         self.path = Path(path)
         self.github_hosts = frozenset(h.lower() for h in github_hosts) | DEFAULT_GITHUB_HOSTS
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.tx() as conn:
-            # Not executescript: it COMMITs first and runs each statement in autocommit, which
-            # would let another opener interleave between the CREATEs and the migration.
-            for statement in _statements(self.SCHEMA):
-                if statement.strip():
-                    conn.execute(statement)
-            self._migrate(conn)
-            self._normalize_identities(conn)
+        self.lock_dir = self.path.parent / "merge-queue-locks"
+        held: list[EffectLock] = []
+        try:
+            with self.tx() as conn:
+                # Not executescript: it COMMITs first and runs each statement in autocommit, which
+                # would let another opener interleave between the CREATEs and the migration.
+                for statement in _statements(self.SCHEMA):
+                    if statement.strip():
+                        conn.execute(statement)
+                self._migrate(conn)
+                self._normalize_identities(conn, held)
+        finally:
+            for lock in held:  # released only after the respelling committed (or rolled back)
+                lock.release()
 
     def hosts(self, conn: sqlite3.Connection) -> frozenset[str]:
         """The GitHub hosts: configured ones, plus every host a gh-lane queue already names."""
         named = {r["repo"].split("/", 1)[0] for r in conn.execute("SELECT repo FROM mq_queues WHERE mode = 'gh'")}
         return self.github_hosts | frozenset(named)
 
-    def _normalize_identities(self, conn: sqlite3.Connection) -> None:
+    def _normalize_identities(self, conn: sqlite3.Connection, held: list[EffectLock]) -> None:
         """Respell an identity an older store holds the way `normalize_identity` does (PR #647).
 
         Every table that carries the identity moves together, so a lease never splits from its
-        queue. When the normalized spelling is already a queue of its own, nothing is merged: the
-        store holds one repository as two queues, and `MergeQueue._config` refuses it by name.
+        queue. Renaming a queue changes its lock file, so it is renamed only while this opener
+        holds the effect lock of the old spelling AND the new one, until the rename commits. A
+        conductor (or its merge or deletion child) still holding either refuses the opening with
+        `migration_blocked`: no handoff can begin under a send still in flight. When the
+        normalized spelling is already a queue of its own, nothing is merged: the store holds
+        one repository as two queues, and `MergeQueue._config` refuses it by name.
         """
         hosts = self.hosts(conn)
         for row in conn.execute("SELECT repo, base FROM mq_queues").fetchall():
@@ -371,6 +390,17 @@ class Store:
                 continue
             if conn.execute("SELECT 1 FROM mq_queues WHERE repo = ? AND base = ?", (folded, row["base"])).fetchone():
                 continue
+            for spelling in (row["repo"], folded):
+                lock = EffectLock(lock_file(self.lock_dir, spelling, row["base"]))
+                held.append(lock)
+                if not lock.acquire(0.0):
+                    raise QueueError(
+                        "migration_blocked",
+                        f"the store respells {row['repo']} as {folded}, but a conductor or its child still holds "
+                        f"the merge boundary of {spelling!r} (BASE {row['base']!r}); nothing was renamed: retry once "
+                        "that send has ended",
+                        {"from": row["repo"], "to": folded, "base": row["base"], "lock": str(lock.path)},
+                    )
             for table in self.IDENTITY_TABLES:
                 conn.execute(f"UPDATE {table} SET repo = ? WHERE repo = ? AND base = ?", (folded, row["repo"], row["base"]))
 
@@ -704,8 +734,9 @@ class MergeQueue:
         )
 
     def _lock(self, repo: str, base: str) -> EffectLock:
-        name = hashlib.sha256(f"{repo}\0{base}".encode("utf-8")).hexdigest()[:24]
-        return EffectLock(self.db_path.parent / "merge-queue-locks" / f"{name}.lock")
+        """The effect lock of a queue, keyed on its NORMALIZED identity: one lock per repository,
+        whatever spelling a caller holds (PR #647)."""
+        return EffectLock(lock_file(self.store.lock_dir, self.normalize(repo), base))
 
     def _boundary(self, stage: str, info: dict[str, Any]) -> None:
         if self.on_boundary is not None:

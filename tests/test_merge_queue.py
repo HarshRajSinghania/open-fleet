@@ -9,6 +9,7 @@ mutation controls) are tests/test_merge_queue_drills.py.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -921,6 +922,48 @@ class IdentityNormalisation(QueueCase):
         rows = {t: conn.execute(f"SELECT repo FROM {t}").fetchall() for t in ("mq_queues", "mq_leases", "mq_tokens")}
         conn.close()
         self.assertEqual(rows, {t: [("github.com/team/repo",)] for t in rows}, "the lease would split from its queue")
+
+    def test_a_migration_waits_for_a_writer_holding_the_old_spellings_lock(self):
+        db = self.w.tmp / "held.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(mq_mod.Store.SCHEMA)
+        conn.execute("INSERT INTO mq_queues VALUES ('github.com/Team/Repo', 'integration', 'main', 'git', 'origin', "
+                     "'github.com', 'grant:x', 1, 0)")
+        conn.execute("INSERT INTO mq_leases VALUES ('github.com/Team/Repo', 'integration', 'c1', 'tok', 1, 1, 'h', 900, 0, "
+                     "9e12, NULL)")
+        conn.execute("INSERT INTO mq_tokens VALUES ('tok', 'github.com/Team/Repo', 'integration', 1, 'c1', 0)")
+        conn.commit()
+        conn.close()
+        # The lock an earlier conductor (or its still-running merge child) holds: the old spelling's.
+        name = hashlib.sha256("github.com/Team/Repo\0integration".encode()).hexdigest()[:24]
+        held = db.parent / "merge-queue-locks" / f"{name}.lock"
+        held.parent.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl,os,sys;fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT,0o600);"
+             "fcntl.flock(fd,fcntl.LOCK_EX);print('held',flush=True);sys.stdin.readline()", str(held)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        self.w.point(self.w.conductor, "origin", "github.com/team/repo", self.w.bare)
+        rc, out = self.w.cli("--db", str(db), "acquire", "--base", W.BASE, "--holder", "c2", "--takeover")
+        self.assertEqual((rc, out.get("code")), (1, "migration_blocked"), out)
+        conn = sqlite3.connect(db)
+        lease = conn.execute("SELECT repo, holder, epoch FROM mq_leases").fetchall()
+        conn.close()
+        self.assertEqual(lease, [("github.com/Team/Repo", "c1", 1)], "ownership moved under a held lock")
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        holder.wait(timeout=30)
+        holder.stdin.close()
+        holder.stdout.close()
+        rc, out = self.w.cli("--db", str(db), "acquire", "--base", W.BASE, "--holder", "c2", "--takeover")
+        self.assertEqual((rc, out.get("repo"), out.get("epoch")), (0, "github.com/team/repo", 2), out)
+
+    def test_every_spelling_of_one_repository_takes_one_lock(self):
+        mq = self.w.queue(mq_mod)
+        paths = {mq._lock(r, W.BASE).path for r in ("github.com/Team/Repo", "github.com/team/repo",
+                                                      "www.github.com/team/repo.git")}
+        self.assertEqual(len(paths), 1, paths)
 
     def test_a_store_already_split_by_casing_is_refused_not_guessed(self):
         db = self.w.tmp / "split.db"

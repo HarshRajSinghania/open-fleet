@@ -35,6 +35,9 @@ SUPPORTED_PROVIDERS = (
     "openhands",
 )
 
+# The tools every claude PROFILE=ro launch denies at the CLI, under plan mode (#596).
+CLAUDE_RO_DISALLOWED_TOOLS = "Edit,Write,MultiEdit,NotebookEdit"
+
 SUPPORTED_HARNESSES = (
     "claude",
     "codex",
@@ -116,7 +119,10 @@ def build_harness_command(
 
     `command` is a short human-readable label that omits the prompt and headless options;
     anything that executes a worker through a shell string must run `shell` (or `argv`),
-    never `command` (#591 review: workers launched from `command` never got their task).
+    never `command` (#591 review: workers launched from `command` never got their task). It
+    still carries every RESTRICTION flag of the line: gastown registers a ro label as a gt agent
+    alias, and a label without claude's disallowed-tools set left that alias on plan mode alone
+    (#596).
     """
     launch = _build_harness_command(
         agent,
@@ -186,11 +192,13 @@ def _build_harness_command(
         if profile == "ro":
             flag = "--permission-mode plan"
             argv = ["claude", "-p", "--permission-mode", "plan",
-                    "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit",
+                    "--disallowedTools", CLAUDE_RO_DISALLOWED_TOOLS,
                     "--output-format", "stream-json", "--verbose"]
             if prompt_str:
                 argv.append(prompt_str)
-            cmd = "claude --permission-mode plan"
+            # `=`-joined and ending on the fixed-arity plan flag: --disallowedTools is variadic,
+            # and a gt alias gets a prompt appended (emdash.py EMDASH_CLAUDE_RO_ARGS, #596).
+            cmd = f"claude --disallowedTools={CLAUDE_RO_DISALLOWED_TOOLS} --permission-mode plan"
         else:
             flag = "--dangerously-skip-permissions"
             argv = ["claude", "-p", "--dangerously-skip-permissions",

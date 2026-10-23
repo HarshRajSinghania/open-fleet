@@ -36,7 +36,8 @@ Checks (evidence-manifest.md section 2), scope FIRST:
   provenance (#135) · 14. class downgrade measured against the actual diff (#310).
 
 Every evidence path is repo-relative and bounded by the git toplevel; a manifest-named artifact is
-PINNED — tracked at head_sha, or hashed in the manifest's `artifacts[]` inventory (#267).
+PINNED — tracked at head_sha, or hashed in the manifest's `artifacts[]` inventory (#267); a tracked
+path the inventory also hashes must match that hash at head_sha (#596).
 
 Usage:
     verify.py --manifest <m.json> --contract-source <path@ref> --contract-digest <sha256:…>
@@ -328,7 +329,9 @@ def _read_artifact(m, path):
          (`git cat-file -e <head_sha>:<path>`; the blob at that commit is what gets read), or the
          working-tree file's sha256 matches an entry in the manifest's `artifacts[]` inventory.
     An untracked, unhashed file is a claim ABOUT a file, not evidence: it can be rewritten between
-    the run and the audit and nothing notices."""
+    the run and the audit and nothing notices. A tracked path the inventory ALSO pins must match
+    that pin against the blob it reads (#596): a declared digest that binds no bytes is a false
+    claim in a permanent record, and one taken over the overlay pins bytes nobody read."""
     if not path:
         return None, "missing"
     if "@" in path:
@@ -344,9 +347,14 @@ def _read_artifact(m, path):
     if typed[0] == 0 and typed[1] == "blob":  # a tracked DIRECTORY passes `cat-file -e`, and
         # `git show` would print its listing as if it were artifact bytes (reaudit-r2 P3)
         code, out, gerr = _git_bytes(["show", f"{head}:{spelled}"])
-        if code == 0:
-            return out, None
-        return None, (gerr.strip() or "cannot read the tracked artifact at head_sha")
+        if code != 0:
+            return None, (gerr.strip() or "cannot read the tracked artifact at head_sha")
+        pinned = artifact_inventory(m).get(path)  # tracked is pinned; a declared pin must agree
+        blob = hashlib.sha256(out).hexdigest()
+        if pinned and blob != pinned:
+            return None, (f"artifact '{path}' is tracked at head_sha as {blob} but artifacts[] pins "
+                          f"{pinned} — a declared pin must bind the blob the verifier reads (#596)")
+        return out, None
     try:
         raw = resolved.read_bytes()
     except OSError as oserr:

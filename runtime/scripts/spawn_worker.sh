@@ -71,7 +71,7 @@
 #
 # Usage:
 #   SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec <text> <worktree_selector>) <title> [agent] [effort]
-#   agent ∈ claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity (default claude)
+#   agent ∈ claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush (default claude)
 # Options:
 #   --mark-ready               opt-in: mark a pending task ready when deps are complete
 #   --timeout-ms <n>           worker-start timeout, positive int (supervised lane only)
@@ -125,6 +125,9 @@
 #   opencode/omp/pi     → WORKER_CMD. opencode AND kilo are actively STRIPPED of
 #                         `--dangerously-skip-permissions` (`tui-agent-launch-defaults.ts:5-8`);
 #                         kilo stays off this roster for the same reason opencode fails closed.
+#   jcode/goose/hermes  → ro + rw + danger; the ro rows are this script's own, carrying base.py's
+#                         ro restriction (#596). crush → rw + danger; ro → WORKER_CMD (its
+#                         read-only mode is a data-dir config no Orca lane installs).
 # rw and danger use the SAME non-blocking flag; danger only adds the ALLOW_DANGER gate + the
 # ephemeral-sandbox requirement (sandbox-policy.md). worker-start's `--effort` requires `--model`
 # (a provider model id the fleet does not pin) — the validated `effort` arg applies on the
@@ -702,13 +705,19 @@ case "$agent:$PROFILE" in
   antigravity:rw|antigravity:danger) cmd_default="agy --dangerously-skip-permissions" ;;
   grok:rw|grok:danger)       cmd_default="grok --permission-mode bypassPermissions" ;;
   droid:rw|droid:danger)     cmd_default="droid --auto high" ;;
-  jcode:ro)                  cmd_default="jcode --no-session --disabled-tools write,edit,multiedit,patch,apply_patch,bash,shell,terminal" ;;
+  # jcode/hermes ro carry base.py's source-audited ro restriction (_build_harness_command;
+  # docs/runtimes.md harness table) as TUI lines that dispatch --inject can reach (#596): jcode's
+  # --tools allowlist + --disabled-tools set (`--profile minimal` keeps bash/write/edit/replace),
+  # hermes' /dev/null write root + a toolset with no terminal (its `file` toolset bundles writes).
+  # crush has NO ro row: no flag makes it read-only — base.py's ro is `<data-dir>/crush.json`
+  # disabled_tools, which only posix's install_worktree_hooks writes, and `crush run` auto-approves
+  # every tool — so crush ro fails closed to WORKER_CMD on Orca.
+  jcode:ro)                  cmd_default="jcode --no-session --no-update --tools read,agentgrep,ls,session_search,conversation_search,memory,web_search --disabled-tools bash,write,edit,replace,apply_patch,swarm,selfdev,desktop_selfdev,bg,codemode,mcp" ;;
   jcode:rw|jcode:danger)     cmd_default="jcode --no-session" ;;
   goose:ro)                  cmd_default="GOOSE_MODE=chat goose run --no-session" ;;
   goose:rw|goose:danger)     cmd_default="GOOSE_MODE=auto goose run --no-session" ;;
-  hermes:ro)                 cmd_default="hermes chat --Continue" ;;
+  hermes:ro)                 cmd_default="HERMES_WRITE_SAFE_ROOT=/dev/null hermes chat --toolsets file,web,session_search" ;;
   hermes:rw|hermes:danger)   cmd_default="hermes chat --yolo" ;;
-  crush:ro)                  cmd_default="crush run --quiet" ;;
   crush:rw|crush:danger)     cmd_default="crush run --yolo" ;;
   # Non-Orca RPI providers support opencode, omp, and pi natively without Orca's launch-arg stripping:
   opencode:ro)               if [ "$ACTIVE_RUNTIME" != "orca" ]; then cmd_default='OPENCODE_PERMISSION={"edit":"deny","bash":"deny"} opencode run'; fi ;;

@@ -54,9 +54,6 @@
       "supported_harnesses": [
         "claude",
         "codex",
-        "opencode",
-        "omp",
-        "pi",
         "jcode",
         "goose",
         "hermes",

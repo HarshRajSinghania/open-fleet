@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -736,6 +737,48 @@ class TestCommittedReportIsChecked(Tripwired):
     def test_the_committed_report_itself_passes(self):
         rc, receipt = self.run_rw("report", "control")
         self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+
+
+class TestInterruptedRunStopsItsWorker(Tripwired):
+    """Ctrl-C mid-run: the setsid worker is in its own session, so the terminal's SIGINT never
+    reaches it; the run itself must stop it before exiting, or it keeps running and spending."""
+
+    RECORDED = """(log_dir / f"{dispatch or 'unknown'}.argv.json").write_text(json.dumps(argv), encoding="utf-8")"""
+
+    @staticmethod
+    def alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def reap(self, pid_file: Path):
+        """Never leave a hung stand-in behind, even when the run under test did."""
+        if pid_file.is_file() and self.alive(pid := int(pid_file.read_text())):
+            pgid = os.getpgid(pid)
+            if pgid != os.getpgrp():
+                os.killpg(pgid, 9)
+
+    def test_ctrl_c_while_waiting_on_the_worker_stops_it(self):
+        hung = first_run.INERT_WORKER.replace(
+            self.RECORDED, '(log_dir / "pid").write_text(str(os.getpid()))\n' + self.RECORDED + "\nimport time; time.sleep(120)")
+        self.assertNotEqual(hung, first_run.INERT_WORKER, "the mutant must change the stand-in")
+        wd = self.tmp / "interrupted"
+        self.addCleanup(self.reap, wd / "inert" / "pid")
+        with mock.patch.object(first_run, "INERT_WORKER", hung), \
+                mock.patch.object(first_run.FirstRun, "result", side_effect=KeyboardInterrupt), \
+                mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                first_run.main(["--workdir", str(wd), "--json"])
+        pid = int((wd / "inert" / "pid").read_text())
+        dispatch = json.loads((wd / "inert" / "runs.log").read_text().splitlines()[0])["dispatch"]
+        deadline = time.monotonic() + 15
+        while self.alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertFalse(self.alive(pid), "the interrupted run left its worker running")
+        store = LocalStateStore(db_path=wd / "state" / "runtime.db")
+        self.assertEqual(store.dispatch_state(dispatch), "stopped")
 
 
 if __name__ == "__main__":

@@ -922,8 +922,12 @@ def main(argv: list[str] | None = None) -> int:
     workdir = make_workdir(args.workdir)
     agent = "claude" if args.mode == "probes" else args.agent
     sb = Sandbox(workdir, "inert" if args.mode == "probes" else args.worker, agent)
-    receipt = probes(sb) if args.mode == "probes" else FirstRun(args, sb).execute()
-    stop_workers(sb)
+    try:
+        receipt = probes(sb) if args.mode == "probes" else FirstRun(args, sb).execute()
+    finally:
+        # Ctrl-C or any error mid-run too: setsid puts the worker in its own session, out of
+        # reach of the terminal's SIGINT, so it would keep running and spending (#596 review).
+        stop_workers(sb)
     if receipt["verdict"] == "GO" and not args.keep:
         # Everything but the receipt goes: state store, clone, worktrees, verifier checkout.
         for child in workdir.iterdir():

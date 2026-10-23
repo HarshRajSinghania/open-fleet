@@ -532,7 +532,9 @@ malformed runtime response, and missing capability. Each must refuse before a la
 
 Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
 command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
-after a NO-GO it is kept whole.
+after a NO-GO it is kept whole. However the run ends, Ctrl-C and errors included, it first stops
+every worker still live in its sandbox: a `setsid` worker runs in its own session, where the
+terminal's interrupt never reaches it. An interrupted run writes no receipt and keeps the sandbox.
 
 Exits: 0 GO · 1 NO-GO · 2 usage.
 

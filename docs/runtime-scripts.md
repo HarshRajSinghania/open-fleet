@@ -463,7 +463,7 @@ Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
 
 Append-only lifecycle event record, and the WIP-curve rows derived from it (#603). One
 hash-chained JSON object per observed transition in `.orca/events.jsonl` (mode 0600). Source
-`runtime/scripts/events.py:1-59`; behavior pinned by `tests/test_events.py`, over the fixture
+`runtime/scripts/events.py:1-60`; behavior pinned by `tests/test_events.py`, over the fixture
 streams and golden reports in `tests/fixtures/events/`.
 
 Status: local evidence tooling, not telemetry — no network, no daemon. Existing observations

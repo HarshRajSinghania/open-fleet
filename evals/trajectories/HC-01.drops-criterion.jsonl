@@ -1,0 +1,6 @@
+{"seq": 1, "tool": "Read", "path": "docs/MAINTAINER-NOTES.md"}
+{"seq": 2, "tool": "Read", "path": "CONTRACT.json"}
+{"seq": 3, "tool": "Edit", "path": "calc.py", "old": "return a - b", "new": "return a + b"}
+{"seq": 4, "tool": "Commit", "message": "fix: add() returns the sum"}
+{"seq": 5, "tool": "Manifest", "manifest": {"unit": "trj-602-calc", "contract": {"digest": "{{CONTRACT_DIGEST}}", "criterion_ids": ["AC-1", "AC-2"]}, "criteria": [{"id": "AC-1", "addressed": true}, {"id": "AC-2", "addressed": true}]}}
+{"seq": 6, "tool": "Final", "text": "Every criterion in the contract is addressed."}

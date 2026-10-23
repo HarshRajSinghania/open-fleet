@@ -1995,6 +1995,8 @@ def _note_assigns(assigns, ws):
     words = list(assigns)
     if ws and ws[0] in _DECLARERS:
         words += [w for w in ws[1:] if not w.startswith("-")]
+    if len(ws) > 3 and ws[0] == "printf" and ws[1] == "-v":   # printf -v NAME FORMAT ARGS
+        words.append(ws[2] + "=" + _printf_text(ws[3], ws[4:]).replace(chr(10), " "))
     for w in words:
         m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", w, re.DOTALL)
         if m and len(_ASSIGNED.get(m[1], ())) < 8:
@@ -2245,9 +2247,54 @@ def _script_operand(ws):
     return ws[0] if "/" in ws[0] else None
 
 
+_ECHO_ESCAPES = {"a": chr(7), "b": chr(8), "e": chr(27), "E": chr(27), "f": chr(12),
+                 "n": chr(10), "r": chr(13), "t": chr(9), "v": chr(11), "\\": "\\", DQ: DQ,
+                 SQ: SQ, "?": "?"}
+
+
+def _decode_escapes(text, percent_b=False):
+    # The backslash escapes printf decodes in its FORMAT, in a %b argument and in echo -e (and
+    # in every echo under zsh, dash and POSIX sh): \n \t \\ ..., \NNN and \0NNN octal, \xHH.
+    # printf "\x67it push --force origin main" | sh runs that push; the escapes were read as
+    # text and it was allowed (PR #648 review). \u/\U are NOT decoded: no shell printf or echo
+    # builtin decodes them. A %b \c ends the output.
+    out, i, n = [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        nxt = text[i + 1]
+        m = None
+        if nxt in _ECHO_ESCAPES:
+            out.append(_ECHO_ESCAPES[nxt])
+            i += 2
+        elif nxt in "01234567":
+            m = re.match(r"0[0-7]{0,3}" if (percent_b and nxt == "0") else r"[0-7]{1,3}", text[i + 1:])
+            digits = m[0][1:] if (percent_b and nxt == "0") else m[0]
+            out.append(chr(int(digits or "0", 8) & 255))
+            i += 1 + len(m[0])
+        elif nxt == "x":
+            m = re.match(r"[0-9A-Fa-f]{1,2}", text[i + 2:])
+            if m:
+                out.append(chr(int(m[0], 16)))
+                i += 2 + len(m[0])
+            else:
+                out.append(ch + nxt)
+                i += 2
+        elif nxt == "c" and percent_b:
+            break
+        else:
+            out.append(ch + nxt)
+            i += 2
+    return "".join(out)
+
+
 def _printf_text(fmt, args):
     # What printf FORMAT ARGS writes, conversions filled in order and the format reused while
     # arguments remain: printf "%s%s" gh " issue close 34" prints one command (#598 corpus).
+    # The format escapes are decoded, and so is a %b argument (PR #648 review).
     out, state = [], {"next": 0, "used": 0}
 
     def fill(m):
@@ -2255,29 +2302,34 @@ def _printf_text(fmt, args):
             return "%"
         state["used"] += 1
         state["next"] += 1
-        return args[state["next"] - 1] if state["next"] <= len(args) else ""
+        arg = args[state["next"] - 1] if state["next"] <= len(args) else ""
+        return _decode_escapes(arg, percent_b=True) if m[0].endswith("b") else arg
     while True:
         state["used"] = 0
-        out.append(re.sub(r"%(%|[-+ #0]*[0-9*]*(\.[0-9*]*)?[A-Za-z])", fill, fmt))
+        out.append(re.sub(r"%(%|[-+ #0]*[0-9*]*(\.[0-9*]*)?[A-Za-z])", fill, _decode_escapes(fmt)))
         if not state["used"] or state["next"] >= len(args):
             return "".join(out)
 
 
 def _echo_data(ws):
-    """The text echo or printf writes (escapes read loosely), or None for any other command."""
+    """The text echo or printf writes, or None for any other command. Echo text comes back as
+    written and, when it holds escapes, decoded too: bash decodes them only under -e, but zsh,
+    dash and POSIX sh decode them always, and the host shell is not known here."""
     head = ws[0].rsplit("/", 1)[-1] if ws else ""
     rest = ws[1:]
     if head == "echo":
         while rest and re.fullmatch(r"-[neE]+", rest[0]):
             rest = rest[1:]
-        text = " ".join(rest)
+        raw = " ".join(rest)
+        decoded = _decode_escapes(raw)
+        text = decoded if decoded == raw else decoded + chr(10) + raw
     elif head == "printf":
         rest = rest[1:] if rest[:1] == ["--"] else rest
         rest = rest[2:] if rest[:1] == ["-v"] else rest
         text = _printf_text(rest[0], rest[1:]) if rest else ""
     else:
         return None
-    return text.replace("\\n", chr(10)).replace(_QNL, chr(10))
+    return text.replace(_QNL, chr(10))
 
 
 def _printed(body):

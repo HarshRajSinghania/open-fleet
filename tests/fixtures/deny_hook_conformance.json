@@ -1620,6 +1620,54 @@
       "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_RV)",
       "status": "fixed",
       "note": "find -delete and -exec CMD {} spare a guard file only when the AND-chain of tests before the action proves it unmatched; negation, -o, groups and -regex prove nothing, -iname/-ipath compare case-insensitively, -path matches the path as find prints it (_find_may_match)."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "printf '%b' '{HX} {ARGS}' | sh",
+      "original": "printf '%b' '{HX} {ARGS}' | sh",
+      "family": "review:PRRT_kwDOTWxN9c6vu_Rc",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_Rc)",
+      "status": "fixed",
+      "note": "printf and echo decode backslash escapes before the shell runs their output: the FORMAT and a %b argument decode \\n \\t \\NNN \\0NNN \\xHH (not \\u/\\U, which no shell builtin decodes), and echo text is judged both as written and decoded since bash needs -e but zsh/dash/sh decode always (_decode_escapes)."
+    },
+    {
+      "kind": "miss",
+      "payload": "send",
+      "template": "printf '{HOF} {ARGS}' | sh",
+      "original": "printf '{HOF} {ARGS}' | sh",
+      "family": "review:PRRT_kwDOTWxN9c6vu_Rc",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_Rc)",
+      "status": "fixed",
+      "note": "printf and echo decode backslash escapes before the shell runs their output: the FORMAT and a %b argument decode \\n \\t \\NNN \\0NNN \\xHH (not \\u/\\U, which no shell builtin decodes), and echo text is judged both as written and decoded since bash needs -e but zsh/dash/sh decode always (_decode_escapes)."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "echo -e '{HX} {ARGS}' | sh",
+      "original": "echo -e '{HX} {ARGS}' | sh",
+      "family": "review:PRRT_kwDOTWxN9c6vu_Rc",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_Rc)",
+      "status": "fixed",
+      "note": "printf and echo decode backslash escapes before the shell runs their output: the FORMAT and a %b argument decode \\n \\t \\NNN \\0NNN \\xHH (not \\u/\\U, which no shell builtin decodes), and echo text is judged both as written and decoded since bash needs -e but zsh/dash/sh decode always (_decode_escapes)."
+    },
+    {
+      "kind": "false-deny",
+      "payload": "push",
+      "template": "echo '{HX} {ARGS}' | sh",
+      "original": "echo '{HX} {ARGS}' | sh",
+      "family": "launch:esc-echo-plain-hex",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "claude/r05-deny-hook-conformance (PR #648 review PRRT_kwDOTWxN9c6vu_Rc)",
+      "status": "boundary",
+      "note": "echo with an escape and no -e: bash prints it literally and runs nothing, but zsh, dash and POSIX sh echo decode it and run the command, so the hook refuses (the host shell is not known here)."
     }
   ]
 }

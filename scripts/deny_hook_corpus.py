@@ -136,7 +136,13 @@ def render(template, payload, safe, root=None):
         return text if root is None else text.replace("{ROOT}", root)
     head, args = PAYLOADS[payload]
     head = SENTINEL if safe else head
-    return template.replace(CMD, head + " " + args).replace(HEAD, head).replace(ARGS, args)
+    c = head[0]
+    esc = {"{HX}": "\\x%02x" % ord(c), "{HO}": "\\0%03o" % ord(c),   # \x67it / \0147it (%b octal)
+           "{HOF}": "\\%03o" % ord(c), "{HU}": "\\u%04x" % ord(c)}   # \147it (printf FORMAT)
+    text = template
+    for token, enc in esc.items():
+        text = text.replace(token, enc + head[1:])
+    return text.replace(CMD, head + " " + args).replace(HEAD, head).replace(ARGS, args)
 
 
 def sq(text):
@@ -279,6 +285,15 @@ def grid():
             ("stdin-printf", "printf '%s" + BS + "n' " + sq(CMD) + " | bash"),
             ("stdin-printf-fmt", "printf " + sq("%s" + CMD) + " | bash"),
             ("stdin-printf-split", "printf '%s %s" + BS + "n' " + HEAD + " " + sq(ARGS) + " | bash"),
+            # escaped command words fed to a shell (PR #648 review): printf/echo decode these.
+            ("esc-printf-fmt-hex", "printf " + sq("{HX} " + ARGS) + " | sh"),
+            ("esc-printf-fmt-oct", "printf " + sq("{HOF} " + ARGS) + " | sh"),
+            ("esc-printf-b-hex", "printf '%b' " + sq("{HX} " + ARGS) + " | bash"),
+            ("esc-printf-b-oct", "printf '%b' " + sq("{HO} " + ARGS) + " | bash"),
+            ("esc-printf-b-split", "printf '%b %s" + BS + "n' " + sq("{HX}") + " " + sq(ARGS) + " | sh"),
+            ("esc-echo-e-hex", "echo -e " + sq("{HX} " + ARGS) + " | sh"),
+            ("esc-printf-head-sub", "$(printf " + sq("{HX}") + ") " + ARGS),
+            ("esc-printf-v-head", "printf -v c " + sq("{HX}") + "; $c " + ARGS),
             ("stdin-heredoc", "bash <<'EOF'" + NL + CMD + NL + "EOF"),
             ("stdin-heredoc-live", "bash <<EOF" + NL + CMD + NL + "EOF"),
             ("stdin-herestring", "bash <<< " + sq(CMD)),

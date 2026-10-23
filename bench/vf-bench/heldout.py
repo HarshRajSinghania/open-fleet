@@ -39,7 +39,12 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # A role is filled by a person or left empty; these are what an empty role looks like in disguise.
 PLACEHOLDERS = {"", "tbd", "tba", "n/a", "na", "none", "null", "unknown", "someone", "anyone",
                 "nobody", "john doe", "jane doe", "evaluation maintainer", "holder"}
+# A JSON document larger than this is not parsed; the check names it UNSCANNED and fails rather
+# than passing it (PR #645 review). `check --max-json-bytes` raises it.
 JSON_PARSE_LIMIT = 20 * 1024 * 1024
+JSON_START = re.compile(r"\s*[\[{]")
+JSON_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+LFS_POINTER = b"version https://git-lfs.github.com/spec/v1"
 
 
 class UsageError(Exception):
@@ -280,12 +285,22 @@ def scan(blob, digests):
     hits = []
     if sha256(blob) in raw_set:
         hits.append(("verbatim", sha256(blob)[:16]))
+    if blob.startswith(LFS_POINTER):
+        # The content lives in an LFS store this repository does not hold (PR #645 review).
+        hits.append(("unscanned", "a Git LFS pointer: its content is not in this repository"))
     text = decoded_text(blob)
     guids = {g.decode("ascii").lower() for g in GUID_RE.findall(blob)}
-    guids |= {g.lower() for g in GUID_TEXT_RE.findall(text)} if text else set()
+    if text:
+        guids |= {g.lower() for g in GUID_TEXT_RE.findall(text)}
+        if "\\u" in text:  # a canary written with JSON escapes is still the canary
+            unescaped = JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+            guids |= {g.lower() for g in GUID_TEXT_RE.findall(unescaped)}
     if any(sha256(g.encode("ascii")) == digests["canary_sha256"] for g in guids):
         hits.append(("canary", digests["canary_sha256"][:16]))
-    if text is not None and len(blob) <= JSON_PARSE_LIMIT and text.lstrip()[:1] in ("{", "["):
+    if text is not None and JSON_START.match(text) and len(blob) > JSON_PARSE_LIMIT:
+        hits.append(("unscanned", f"a {len(blob)}-byte JSON document over the {JSON_PARSE_LIMIT}-"
+                                  "byte parse limit: the canonical and embedded checks did not run"))
+    elif text is not None and JSON_START.match(text):
         try:
             doc = json.loads(text)
         except ValueError:
@@ -297,18 +312,37 @@ def scan(blob, digests):
     return sorted(set(hits))
 
 
+def submodules(repo, rev="HEAD"):
+    """[(commit, path)] of the gitlinks at REV: content another repository holds."""
+    out = []
+    for entry in _git(repo, "ls-tree", "-r", "-z", "--full-tree", rev).split(b"\0"):
+        if entry:
+            meta, path = entry.split(b"\t", 1)
+            _mode, kind, sha = meta.decode().split()
+            if kind == "commit":
+                out.append((sha, path.decode("utf-8", "replace")))
+    return out
+
+
 def check(repo, digests, rev="HEAD", all_history=False):
-    """(leaks, blobs scanned): every committed blob that IS, or carries, a held-out case."""
+    """(findings, blobs scanned): every committed blob that IS, or carries, a held-out case, and
+    every place the scan could not look — a JSON document over the parse limit, an LFS pointer,
+    a submodule at REV — as kind `unscanned`. Either kind fails the check: a scan that could not
+    look is never reported clean (PR #645 review)."""
     blobs = committed_blobs(repo, rev, all_history)
     contents = read_blobs(repo, [s for s, _ in blobs])
     leaks = []
     for sha, path in blobs:
         for kind, prefix in scan(contents[sha], digests):
             leaks.append({"path": path, "blob": sha, "kind": kind, "digest": prefix})
+    for sha, path in submodules(repo, rev):
+        leaks.append({"path": path, "blob": sha, "kind": "unscanned",
+                      "digest": "a submodule: its content is another repository's"})
     return leaks, len(blobs)
 
 
 def main(argv=None):
+    global JSON_PARSE_LIMIT
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_val = sub.add_parser("validate", help="the committed protocol is complete and pinned")
@@ -322,6 +356,8 @@ def main(argv=None):
     p_chk.add_argument("--repo", default=str(ROOT))
     p_chk.add_argument("--rev", default="HEAD")
     p_chk.add_argument("--all-history", action="store_true")
+    p_chk.add_argument("--max-json-bytes", type=int, default=JSON_PARSE_LIMIT,
+                       help="parse JSON documents up to this size; a larger one is UNSCANNED")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "validate":
@@ -353,13 +389,22 @@ def main(argv=None):
             print(f"{len(doc['cases'])} case digest(s) written to {a.out}; no case content included")
             return 0
         digests = load_digests(a.digests)
-        leaks, scanned = check(a.repo, digests, a.rev, a.all_history)
+        JSON_PARSE_LIMIT = a.max_json_bytes
+        findings, scanned = check(a.repo, digests, a.rev, a.all_history)
         where = "every blob reachable from any ref" if a.all_history else f"the tree at {a.rev}"
+        leaks = [f for f in findings if f["kind"] != "unscanned"]
+        unscanned = [f for f in findings if f["kind"] == "unscanned"]
         for leak in leaks:
             print(f"LEAK {leak['kind']}: {leak['path'] or leak['blob']} "
                   f"(blob {leak['blob'][:12]}, held-out digest {leak['digest']}…)")
+        for gap in unscanned:
+            print(f"UNSCANNED: {gap['path'] or gap['blob']} ({gap['blob'][:12]}): {gap['digest']}")
         if leaks:
             print(f"{len(leaks)} leak(s) in {where}: held-out content is committed beside the solver")
+        if unscanned:
+            print(f"{len(unscanned)} place(s) in {where} the scan could not look, so it is not "
+                  "clean (raise --max-json-bytes for a large JSON document)")
+        if findings:
             return 1
         print(f"clean: {scanned} committed blob(s) in {where} checked against "
               f"{len(digests['cases'])} held-out case digest(s) and the held-out canary")

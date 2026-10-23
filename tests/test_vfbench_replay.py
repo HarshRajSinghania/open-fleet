@@ -1062,5 +1062,28 @@ class CompareExcludesFieldsNotNames(_FakeBench):
         self.assertEqual(replay.compare(self.report, other), [])
 
 
+
+class AMalformedInventoryRowStaysInTheDenominator(unittest.TestCase):
+    """PR #645 review sweep (the class of P1 PRRT_kwDOTWxN9c6vtYDH: part of a check skipped in
+    silence): an inventory row the parser could not split into four cells was dropped, which
+    shrank the coverage denominator and flattered the rate. It is now counted, never sampled."""
+
+    README = FAKE_README.replace(
+        "| `check_b` | refuses b | deferred |",
+        "| `check_c` | refuses c | trap | `planted` | a stray fifth cell |\n| `check_b` | refuses b | deferred |")
+
+    def test_the_row_is_counted_as_unparsed(self):
+        rows = replay.inventory_rows(self.README)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([r["status"] for r in rows], ["trap", "unparsed", "deferred"])
+        cov = replay._coverage(rows, {"planted"})
+        self.assertEqual((cov["sampled_rows"], cov["inventory_rows"]), (1, 3))
+        self.assertEqual(cov["by_status"].get("unparsed"), 1)
+
+    def test_a_well_formed_inventory_reports_no_unparsed_status(self):
+        cov = replay._coverage(replay.inventory_rows(FAKE_README), {"planted"})
+        self.assertNotIn("unparsed", cov["by_status"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

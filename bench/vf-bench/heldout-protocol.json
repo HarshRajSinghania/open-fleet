@@ -44,13 +44,13 @@
       "id": "digest-scan",
       "command": "python3 bench/vf-bench/heldout.py check --digests DIGESTS.json",
       "detects": "a held-out case committed verbatim (raw sha256), re-serialized with other indentation, key order or escapes (canonical JSON sha256), or embedded as an object inside a larger committed JSON document, in any of UTF-8 with or without a BOM, UTF-16 or UTF-32 in either byte order (a BOM, or the null-byte pattern of an ASCII first character: the encodings json.loads reads)",
-      "limits": "it decodes text, not containers: a gzip, zip or otherwise compressed or archived copy, a base64- or hex-encoded copy (inside a JSON string too), an encrypted copy, a case split across files or with any value edited, and a case inside a non-JSON file (JSON Lines, a string in source code) are not matched by digest; those are found only when the canary GUID survives as text, by the canary scan",
+      "limits": "it decodes text, not containers: a gzip, zip or otherwise compressed or archived copy, a base64- or hex-encoded copy (inside a JSON string too), an encrypted copy, a case split across files or with any value edited, and a case inside a non-JSON file (JSON Lines, a string in source code) are not matched by digest; those are found only when the canary GUID survives as text, by the canary scan; and a JSON document over the parse limit (20 MiB unless `check --max-json-bytes` raises it), a Git LFS pointer, or a submodule at the revision is not looked into: the check names each UNSCANNED and fails instead of reporting clean",
       "when": "on every pull request once digests are published, and immediately before each held-out evaluation"
     },
     {
       "id": "canary-scan",
       "command": "python3 bench/vf-bench/heldout.py check --digests DIGESTS.json",
-      "detects": "the held-out split's canary GUID, in either letter case, in a committed file's raw bytes or in its text decoded as UTF-8 with or without a BOM, UTF-16 or UTF-32 in either byte order (a BOM, or the null-byte pattern of an ASCII first character: the encodings json.loads reads); the digests file publishes only the GUID's sha256",
+      "detects": "the held-out split's canary GUID, in either letter case, in a committed file's raw bytes or in its text (JSON \\uXXXX escapes read as the characters they stand for) decoded as UTF-8 with or without a BOM, UTF-16 or UTF-32 in either byte order (a BOM, or the null-byte pattern of an ASCII first character: the encodings json.loads reads); the digests file publishes only the GUID's sha256",
       "limits": "a canary inside a gzip, zip or otherwise compressed file, base64- or hex-encoded, encrypted, split or altered is not found, and neither is a copy of a case whose canary field was removed",
       "when": "with the digest scan"
     },
@@ -58,7 +58,7 @@
       "id": "history-scan",
       "command": "python3 bench/vf-bench/heldout.py check --digests DIGESTS.json --all-history",
       "detects": "a held-out case committed and later deleted, which history still carries beside the solver",
-      "limits": "the digest and canary scans' limits (no gzip or other decompression, no base64 or hex decoding; UTF-16 and UTF-32 text is decoded), over every blob reachable from a ref; unreachable objects and other clones or forks are outside it",
+      "limits": "the digest and canary scans' limits (no gzip or other decompression, no base64 or hex decoding; UTF-16 and UTF-32 text is decoded), over every blob reachable from a ref, with submodules named UNSCANNED only at the revision; unreachable objects and other clones or forks are outside it",
       "when": "immediately before each held-out evaluation"
     },
     {

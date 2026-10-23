@@ -515,8 +515,11 @@ as text in every encoding `json.loads` reads (UTF-8 with or without a BOM, UTF-1
 either byte order), so re-saving a case in another encoding does not hide it (PR #645 review). It
 decodes text, not containers: a gzip or otherwise compressed copy, a base64- or hex-encoded one
 (inside a JSON string too), an encrypted one, or a case with a value edited is not matched, and is
-found only if its canary survives as text. The protocol states these limits beside each check, and
-`validate` refuses a scan that states none. The tests run it against a synthetic holder built in a
+found only if its canary survives as text (a canary written with JSON `\uXXXX` escapes counts as
+text). What the scan cannot look into is never reported clean: a JSON document over the parse limit
+(20 MiB; `--max-json-bytes` raises it), a Git LFS pointer and a submodule are each named
+`UNSCANNED` and fail the check (PR #645 review). The protocol states these limits beside each
+check, and `validate` refuses a scan that states none. The tests run it against a synthetic holder built in a
 temp directory; no held-out content is committed anywhere.
 
 ## Add a gate

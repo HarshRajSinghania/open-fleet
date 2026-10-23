@@ -378,5 +378,86 @@ class TheScanStatesWhatItDoesNotCatch(unittest.TestCase):
                                  "the scan now decodes this: update the protocol's limits")
 
 
+
+def _escaped(text):
+    """The canary written the way json.dumps(ensure_ascii) could write any character: every one
+    as a \\uXXXX escape. The parsed value is the same GUID; the bytes no longer contain it."""
+    return text.replace(CANARY, "".join(f"\\u{ord(c):04x}" for c in CANARY))
+
+
+class NoBlobIsPassedUnscanned(unittest.TestCase):
+    """PR #645 review (P1): a JSON document over the parse limit skipped the canonical and
+    embedded checks and still reported clean, so a case inside it whose canary was written with
+    JSON escapes escaped every check. A blob the scan cannot fully check is now reported, never
+    passed — and an escaped canary is read as the GUID it is."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        _holder_cases(self.tmp / "holder", n=1)
+        self.digests, problems = heldout.digest_cases(self.tmp / "holder", CANARY)
+        self.assertEqual(problems, [])
+        self.case = json.loads(next((self.tmp / "holder").glob("*.json")).read_text(encoding="utf-8"))
+        (self.tmp / "digests.json").write_text(json.dumps(self.digests), encoding="utf-8")
+        self.repo = self.tmp / "solver"
+        self.repo.mkdir()
+        _git(self.repo, "init", "-q", "-b", "main")
+        (self.repo / "README.md").write_text("a solver\n", encoding="utf-8")
+        _commit(self.repo, "base")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _plant(self, name, data):
+        (self.repo / name).write_bytes(data)
+        _commit(self.repo, f"plant {name}")
+
+    def test_a_document_over_the_parse_limit_is_unscanned_not_clean(self):
+        big = _escaped(json.dumps({"padding": "x" * 4096, "cases": [self.case]}, ensure_ascii=True))
+        self._plant("bulk.json", big.encode("utf-8"))
+        r = _cli("check", "--digests", str(self.tmp / "digests.json"), "--repo", str(self.repo),
+                 "--max-json-bytes", "1024")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("UNSCANNED: bulk.json", r.stdout)
+        # Raised past the document, the same check parses it and names the embedded case.
+        r = _cli("check", "--digests", str(self.tmp / "digests.json"), "--repo", str(self.repo),
+                 "--max-json-bytes", str(1 << 20))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("LEAK embedded: bulk.json", r.stdout)
+        self.assertNotIn("UNSCANNED", r.stdout)
+
+    def test_an_escaped_canary_is_read_as_the_guid(self):
+        edited = dict(self.case, sound_expected="GREEN")  # no digest matches an edited case
+        for name, text in (
+                ("lines.jsonl", json.dumps(edited) + "\n" + json.dumps({"other": 1}) + "\n"),
+                ("source.py", "CASE = " + json.dumps(json.dumps(edited)) + "\n")):
+            with self.subTest(file=name):
+                kinds = {k for k, _ in heldout.scan(_escaped(text).encode("utf-8"), self.digests)}
+                self.assertEqual(kinds, {"canary"})
+
+    def test_content_kept_outside_the_repository_is_unscanned_not_clean(self):
+        pointer = ("version https://git-lfs.github.com/spec/v1\n"
+                   "oid sha256:" + "a" * 64 + "\nsize 4096\n")
+        self._plant("heldout.json", pointer.encode("utf-8"))
+        sub = self.tmp / "sub"
+        sub.mkdir()
+        _git(sub, "init", "-q", "-b", "main")
+        _commit(sub, "empty")
+        _git(self.repo, "update-index", "--add", "--cacheinfo",
+             f"160000,{_git(sub, 'rev-parse', 'HEAD')},vendored")
+        # Committed from the index as is: `add -A` would drop a gitlink with no working tree.
+        _git(self.repo, "-c", "user.name=vf", "-c", "user.email=vf@vf.invalid", "-c",
+             "commit.gpgsign=false", "commit", "-qm", "a submodule entry", "--no-verify")
+        findings, _ = heldout.check(self.repo, self.digests)
+        got = {(f["path"], f["kind"]) for f in findings}
+        self.assertIn(("heldout.json", "unscanned"), got)
+        self.assertIn(("vendored", "unscanned"), got)
+
+    def test_the_protocol_states_the_parse_limit(self):
+        digest_scan = next(c for c in _protocol()["leakage_checks"] if c["id"] == "digest-scan")
+        self.assertIn("--max-json-bytes", digest_scan["limits"])
+        self.assertIn("UNSCANNED", digest_scan["limits"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

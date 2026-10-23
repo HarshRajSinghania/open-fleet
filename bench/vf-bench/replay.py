@@ -480,6 +480,10 @@ def inventory_rows(readme):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) != 4:
+            # Counted, never sampled: dropping it would shrink the denominator and flatter the
+            # coverage rate (PR #645 review, the silent-skip class).
+            rows.append({"checks": re.findall(r"`([\w.]+)`", cells[0]), "status": "unparsed",
+                         "cases": []})
             continue
         rows.append({"checks": re.findall(r"`([\w.]+)`", cells[0]), "status": cells[2],
                      "cases": re.findall(r"`([^`]+)`", cells[3]) if cells[2] == "trap" else []})

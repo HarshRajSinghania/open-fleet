@@ -196,9 +196,9 @@ is a fixture timing, not a clean-host record.
 `receipt.json` records each step with its exit, elapsed seconds and, on failure, a recovery
 hint. It also records every command's argv and exit, the host (platform, Python, Git, bash), the
 catalog commit, and whether the catalog tree was dirty. After a GO, the sandbox is pruned down to
-`receipt.json`. After a NO-GO, the whole sandbox is kept for inspection. Ctrl-C stops the
-run's worker before the command exits; the interrupted run keeps its sandbox and writes no
-receipt.
+`receipt.json`. After a NO-GO, the whole sandbox is kept for inspection. Ctrl-C, `kill`
+(SIGTERM) or a closed terminal (SIGHUP) stops the run's worker before the command exits; a run
+ended that way keeps its sandbox and writes no receipt.
 
 ### 2. Negative probes
 

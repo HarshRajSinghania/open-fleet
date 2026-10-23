@@ -48,7 +48,7 @@ Usage:
                [--timeout <s>] [--json]
   first_run.py probes [--workdir <dir>] [--keep] [--json]
 
-Exit: 0 GO (every step / every probe held) · 1 NO-GO (receipt names the step) · 2 usage.
+Exit: 0 GO · 1 NO-GO (receipt names the step) · 2 usage · 143/129 SIGTERM/SIGHUP (workers stopped).
 """
 from __future__ import annotations
 
@@ -62,9 +62,11 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -922,12 +924,20 @@ def main(argv: list[str] | None = None) -> int:
     workdir = make_workdir(args.workdir)
     agent = "claude" if args.mode == "probes" else args.agent
     sb = Sandbox(workdir, "inert" if args.mode == "probes" else args.worker, agent)
+    previous = trap_termination()
     try:
         receipt = probes(sb) if args.mode == "probes" else FirstRun(args, sb).execute()
     finally:
-        # Ctrl-C or any error mid-run too: setsid puts the worker in its own session, out of
-        # reach of the terminal's SIGINT, so it would keep running and spending (#596 review).
-        stop_workers(sb)
+        # Ctrl-C, `kill`, a closed terminal or any error mid-run too: setsid puts the worker in
+        # its own session, out of reach of the signal that ended the run, so it would keep
+        # running and spending (#596 review). A second signal is held off until it is stopped:
+        # the run is ending either way.
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            stop_workers(sb)
+        finally:
+            restore_signals(previous)
     if receipt["verdict"] == "GO" and not args.keep:
         # Everything but the receipt goes: state store, clone, worktrees, verifier checkout.
         for child in workdir.iterdir():
@@ -938,6 +948,26 @@ def main(argv: list[str] | None = None) -> int:
         receipt["sandbox_pruned"] = True
     emit(receipt, workdir / "receipt.json", args.json)
     return 0 if receipt["verdict"] == "GO" else 1
+
+
+TRAPPED_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+def _terminated(signum, _frame):
+    """SIGTERM/SIGHUP unwind like Ctrl-C does, so main()'s `finally` stops the workers."""
+    raise SystemExit(128 + signum)
+
+
+def trap_termination() -> dict:
+    """Install _terminated for TRAPPED_SIGNALS; return the handlers it replaced, to restore."""
+    if threading.current_thread() is not threading.main_thread():
+        return {}  # signal.signal works only on the main thread; nothing to restore
+    return {sig: signal.signal(sig, _terminated) for sig in TRAPPED_SIGNALS}
+
+
+def restore_signals(previous: dict) -> None:
+    for sig, handler in previous.items():
+        signal.signal(sig, signal.SIG_DFL if handler is None else handler)
 
 
 def stop_workers(sb: Sandbox) -> None:

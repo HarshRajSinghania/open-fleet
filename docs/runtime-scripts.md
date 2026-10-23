@@ -532,11 +532,12 @@ malformed runtime response, and missing capability. Each must refuse before a la
 
 Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
 command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
-after a NO-GO it is kept whole. However the run ends, Ctrl-C and errors included, it first stops
-every worker still live in its sandbox: a `setsid` worker runs in its own session, where the
-terminal's interrupt never reaches it. An interrupted run writes no receipt and keeps the sandbox.
+after a NO-GO it is kept whole. However the run ends, it first stops every worker still live in
+its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal closes (SIGHUP).
+A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended
+that way writes no receipt and keeps the sandbox.
 
-Exits: 0 GO · 1 NO-GO · 2 usage.
+Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its workers are stopped.
 
 > Why: the provider matrix was certified by adapter unit tests alone, and no documented path
 > took a fresh clone through dispatch to independently verified evidence (#596). The inert and

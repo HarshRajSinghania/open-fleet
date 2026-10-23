@@ -27,6 +27,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -779,6 +780,68 @@ class TestInterruptedRunStopsItsWorker(Tripwired):
         self.assertFalse(self.alive(pid), "the interrupted run left its worker running")
         store = LocalStateStore(db_path=wd / "state" / "runtime.db")
         self.assertEqual(store.dispatch_state(dispatch), "stopped")
+
+    DRIVER = (
+        "import importlib.util, sys\n"
+        "from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('first_run_driven', sys.argv[1])\n"
+        "fr = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(fr)\n"
+        "fr.INERT_WORKER = Path(sys.argv[2]).read_text(encoding='utf-8')\n"
+        "sys.exit(fr.main(sys.argv[3:]))\n"
+    )
+
+    def test_sigterm_or_sighup_to_the_run_stops_its_worker(self):
+        # A plain `kill`, or the terminal closing, ends the first_run.py PROCESS: its worker must
+        # not outlive it any more than it outlives Ctrl-C.
+        hung = first_run.INERT_WORKER.replace(
+            self.RECORDED, '(log_dir / "pid").write_text(str(os.getpid()))\n' + self.RECORDED + "\nimport time; time.sleep(120)")
+        self.assertNotEqual(hung, first_run.INERT_WORKER, "the mutant must change the stand-in")
+        (self.tmp / "hung_worker.py").write_text(hung, encoding="utf-8")
+        (self.tmp / "driver.py").write_text(self.DRIVER, encoding="utf-8")
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=sig.name):
+                wd = self.tmp / f"killed-{sig.name}"
+                self.addCleanup(self.reap, wd / "inert" / "pid")
+                run = subprocess.Popen([sys.executable, "-I", str(self.tmp / "driver.py"), str(SCRIPTS / "first_run.py"),
+                                        str(self.tmp / "hung_worker.py"), "--workdir", str(wd), "--json"],
+                                       env=self.env, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True)
+                deadline = time.monotonic() + 60
+                while not (wd / "inert" / "pid").is_file() and run.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertTrue((wd / "inert" / "pid").is_file(), "the hung stand-in never started")
+                run.send_signal(sig)
+                _out, err = run.communicate(timeout=120)
+                pid = int((wd / "inert" / "pid").read_text())
+                dispatch = json.loads((wd / "inert" / "runs.log").read_text().splitlines()[0])["dispatch"]
+                deadline = time.monotonic() + 15
+                while self.alive(pid) and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                self.assertFalse(self.alive(pid), f"{sig.name} to the run left its worker running")
+                store = LocalStateStore(db_path=wd / "state" / "runtime.db")
+                self.assertEqual(store.dispatch_state(dispatch), "stopped")
+                self.assertEqual(run.returncode, 128 + sig, err[-500:])
+
+    def test_the_run_restores_the_signal_handlers_it_replaced(self):
+        trapped = (signal.SIGTERM, signal.SIGHUP)
+        seen = {}
+
+        def mine(*_a):
+            return None
+
+        def interrupted(*_a):
+            seen.update({s: signal.getsignal(s) for s in trapped})
+            raise KeyboardInterrupt
+
+        before = {s: signal.signal(s, mine) for s in trapped}
+        self.addCleanup(lambda: [signal.signal(s, signal.SIG_DFL if h is None else h) for s, h in before.items()])
+        with mock.patch.object(first_run.FirstRun, "execute", interrupted), \
+                mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                first_run.main(["--workdir", str(self.tmp / "restored"), "--json"])
+        self.assertEqual(seen, {s: first_run._terminated for s in trapped}, "the run did not trap TERM/HUP")
+        self.assertEqual({s: signal.getsignal(s) for s in trapped}, {s: mine for s in trapped})
 
 
 if __name__ == "__main__":

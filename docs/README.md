@@ -50,6 +50,7 @@ local tests requires Git and Python; see [local setup](development.md#local-setu
 | [Platform design](platform-ride.md) | Which platform capabilities informed the design at the recorded date? |
 | [Compliance provenance](compliance-provenance.md) | What supporting evidence can a manifest carry? |
 | [A2A export](a2a-export.md) | What does the mission export claim, and how is an A2A AgentCard validated against the pinned schema? |
+| [Adversarial trajectory evals](adversarial-evals.md) | Do the guards hold when a worker acts on injected instructions? |
 
 ## For contributors and maintainers
 

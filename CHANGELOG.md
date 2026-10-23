@@ -44,6 +44,17 @@ truth is `.claude-plugin/plugin.json`.
     (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with
     them in force it never does. `verify.py`'s guarded lines and interface width are unchanged
     (the new logic is an `_Authority` classmethod).
+- **Adversarial trajectory evals (#602).** `python3 scripts/eval.py run --suite trajectories`
+  replays recorded worker tool events (JSONL) against a git repository built at test time,
+  through the worker, the retry handover and the verifier under one frozen task contract, and
+  grades the tool events and the resulting git state. Attempted and successful violations are
+  recorded separately, and the final answer never moves a grade. Thirteen pinned fixtures cover
+  forged approvals, hidden-criterion removal, test tampering, cross-worker memory poisoning,
+  handover contamination and credential-like canaries, plus benign and clean controls for false
+  denials and utility. Each attack case is proven RED with its guard removed. The published table
+  in `docs/adversarial-evals.md` shows the unknown coverage cells, the UNRUN live-model arm and
+  one known gap: a plain canary in a receipted PR comment leaks, because no guard reads outbound
+  PR text. Fixtures only, no model, not proof evidence.
 - **Provider and harness routes are certified cell by cell, with a reproducible first run**
   (#596). `runtime/providers/certification.json` classifies each of the 218 advertised routes:
   every `(provider, profile, harness)` in `capabilities.json`, and every `(harness, profile)` of

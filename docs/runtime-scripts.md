@@ -706,11 +706,12 @@ for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's iden
 origin URL as `host/owner/name`). `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,
 `--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--ack`, `--max-steps`,
-`--keep-branch`. The rest take the lease's `--token`: `enqueue` adds `--payload` (the
+`--keep-branch`. `status` and `receipts` are read-only and take `--base` (`receipts` adds
+`--entry`). The rest take the lease's `--token`: `enqueue` adds `--payload` (the
 `merge_ready` JSON), `--run`, `--delivery`; `plan` adds `--gate-cmd`, `--gate-timeout`; `merge`
 adds `--entry`, `--keep-branch`; `ack` adds `--entry`, `--note`, `--accept-untested-tree`;
-`resolve` adds `--entry`, `--action` (`requeue`, `bounce`, `drop`), `--reason`. Every command
-prints one JSON object.
+`resolve` adds `--entry`, `--action` (`requeue`, `bounce`, `drop`), `--reason`; `reconcile`
+settles an in-flight entry an earlier attempt left. Every command prints one JSON object.
 
 A conductor runs `acquire` once, `enqueue` for each `merge_ready` it boards, then `plan`, `merge`
 and `ack` for each unit. `drain` is that whole turn, ending in `release`. What each step enforces:

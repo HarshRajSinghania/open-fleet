@@ -335,7 +335,10 @@ class TestCrashMatrixSetsid(CrashRecoveryBase):
         prov = self.restart()
         before = self.dispatch(prov, info["dispatchId"])
         self.assertEqual((before["state"], before["pid"]), ("ready", 0))
-        r = prov.launch_reconcile()["reconciled"][0]
+        # Through the CLI verb a coordinator runs (`orchestration launch-reconcile`).
+        out = prov.dispatch(["orchestration", "launch-reconcile", "--request", "req-1", "--json"])
+        self.assertEqual(out["count"], 1)
+        r = out["reconciled"][0]
         self.assertEqual(r["resolution"], "failed")
         self.assertEqual(r["dispatch"], {"id": info["dispatchId"], "before": "ready", "after": "abandoned"})
         self.assertIn({"kind": "dispatch", "target": info["dispatchId"], "action": "abandoned",
@@ -514,6 +517,46 @@ class TestLaunchGateAndFencing(CrashRecoveryBase):
         self.assertEqual(json.loads((lane / "recovery.json").read_text())["resolution"], "failed")
 
 
+class TestInspectableUnknown(CrashRecoveryBase):
+    """When recovery cannot prove what happened, it says so and changes nothing (#597)."""
+
+    def test_owner_on_another_host_is_reported_and_left_untouched(self):
+        info = self.crash_at("registered", retry_request="req-1")
+        prov = self.restart()
+        with prov.state._connect() as conn:  # a state dir shared with another host
+            conn.execute("UPDATE launch_intents SET owner_host = 'elsewhere' WHERE intent_id = ?", (info["intentId"],))
+        r = prov.launch_reconcile()["reconciled"][0]
+        self.assertEqual((r["resolution"], r["requestState"]), ("unknown", "pending"))
+        self.assertIsNone(r["owner"]["previous"]["alive"], "another host's coordinator cannot be checked from here")
+        self.assertEqual(prov.state.dispatch_state(info["dispatchId"]), "ready")
+        res = prov.worker_start(**self.start_kwargs(retry_request="req-1"))
+        self.assertEqual((res["state"], res["dispatchId"]), ("outcome_unknown", info["dispatchId"]))
+        self.assertIn(f"orchestration worker-show --dispatch {info['dispatchId']} --json", res["nextCommands"])
+        self.assertEqual(prov.request_show("req-1")["state"], "pending")
+        settled = prov.launch_reconcile(intent=info["intentId"], takeover=True)["reconciled"][0]
+        self.assertEqual(settled["resolution"], "failed")
+        self.assert_no_worker_ran()
+
+    def test_unprovable_liveness_is_recorded_unknown_and_never_redecided_by_polling(self):
+        self.env = {**self.env, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}  # no process to observe
+        info = self.crash_at("published", retry_request="req-1")
+        prov = self.restart()
+        r = prov.launch_reconcile()["reconciled"][0]
+        self.assertEqual((r["resolution"], r["requestState"]), ("unknown", "unknown"))
+        self.assertEqual(prov.request_show("req-1")["state"], "unknown")
+        epoch = prov.state.launch_intent(info["intentId"])["epoch"]
+        prov.worker_list()
+        prov.worker_show(info["dispatchId"])
+        self.assertEqual(prov.state.launch_intent(info["intentId"])["epoch"], epoch, "polling never re-decides an unknown launch")
+        replay = prov.worker_start(**self.start_kwargs(retry_request="req-1"))
+        self.assertEqual((replay["state"], replay["dispatchId"]), ("outcome_unknown", info["dispatchId"]))
+        self.assertEqual(replay["recovery"]["resolution"], "unknown")
+        again = prov.launch_reconcile(intent=info["intentId"])["reconciled"][0]
+        self.assertEqual(again["resolution"], "unknown")
+        self.assertEqual(again["owner"]["epoch"], epoch + 1, "an explicit reconcile does visit it again")
+        self.assertEqual((prov.state.dispatch_state(info["dispatchId"]), self.task_status(prov)), ("ready", "dispatched"))
+
+
 class TestTakeoverFencesOldWriters(CrashRecoveryBase):
     def test_live_owner_is_left_alone_without_takeover_and_new_starts_name_it(self):
         c = self.coordinator("registered", retry_request="req-1")
@@ -598,6 +641,15 @@ class TestRequestPayloadBinding(CrashRecoveryBase):
             prov.worker_start(**self.start_kwargs(retry_request="req-1", prompt="a different assignment"))
         self.assertEqual(ctx.exception.code, "request_mismatch")
         self.assertEqual(prov.request_show("req-1")["state"], "pending", "a mismatched retry settles nothing")
+
+    def test_launch_reconcile_is_refused_where_there_is_no_intent_store(self):
+        base = importlib.import_module("runtime.providers.base")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            base.RuntimeProvider().dispatch(["orchestration", "launch-reconcile", "--takeover"])
+        self.assertEqual(ctx.exception.code, "unsupported_operation")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            self.restart().dispatch(["orchestration", "launch-reconcile", "--request", "nope"])
+        self.assertEqual(ctx.exception.code, "request_not_found")
 
     def test_store_binds_payload_for_other_methods_that_pass_one(self):
         store = self.restart().state

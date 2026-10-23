@@ -18,7 +18,7 @@ truth is `.claude-plugin/plugin.json`.
   null with provenance — never estimated, never 0. It reads the local-state DB (read-only),
   verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
   are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
-  the R04/R06 receipts (#597, #599) are later sources.
+  it reads the R04 (#597) launch gate, and its receipts and R06's (#599) are later sources.
 - **Provenance retention receipts are verified offline against the signed inventory** (#608).
   `provenance.retention` names a v1 receipt (`open-fleet/retention-receipt/v1`): a
   `{record, sig_b64}` envelope whose eight fields — schema, unit, source revision, inventory

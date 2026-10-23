@@ -134,7 +134,7 @@ WEIGHTS = {
     "test_superset_provider": 0.8,
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,
-    "test_trajectory_evals": 45.2,  # #602/#644, measured 2026-10-23 on a shared, loaded macOS host
+    "test_trajectory_evals": 70.0,  # #602/#644, measured 2026-10-23, macOS host at load average ~21
     "test_upstream_probe": 4.1,
     "test_validate": 9.6,
     "test_validate_catalog_grammar": 0.3,

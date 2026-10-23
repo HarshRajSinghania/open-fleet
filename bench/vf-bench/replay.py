@@ -34,7 +34,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import platform
 import re
 import shlex
 import shutil
@@ -124,6 +123,28 @@ def choose_git(explicit=None):
     if not found:
         raise ReplayError("no git on this host")
     return found
+
+
+# Asked of the SELECTED interpreter: it runs every case, so it is the one a report names (PR #645
+# review: the launcher's version was reported beside the selected executable). It is asked under
+# the HOST environment, isolated by -I: the platform string is a host fact, and under the replay's
+# one-directory PATH platform cannot run `uname` or `file` and reports less.
+_FACTS = ("import json, platform; print(json.dumps({'python': platform.python_version(), "
+          "'python_implementation': platform.python_implementation(), "
+          "'platform': platform.platform()}))")
+
+
+def interpreter_facts(python):
+    """{python, python_implementation, platform} as the selected interpreter reports them."""
+    r = subprocess.run([python, "-I", "-c", _FACTS], capture_output=True, text=True)
+    try:
+        facts = json.loads(r.stdout) if r.returncode == 0 else None
+    except ValueError:
+        facts = None
+    if not isinstance(facts, dict) or set(facts) != {"python", "python_implementation", "platform"}:
+        raise ReplayError(f"--python {python} did not run as a Python interpreter (exit "
+                          f"{r.returncode}): {(r.stderr or r.stdout).strip()[-300:]}")
+    return facts
 
 
 def resolve_executable(path, flag):
@@ -667,6 +688,7 @@ def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
         for name, target in (("git", git), ("python3", python), ("python", python)):
             (run_dir / "bin" / name).symlink_to(target)
         env = scrubbed_env(run_dir)
+        facts = interpreter_facts(python)
         gitbin = str(run_dir / "bin" / "git")
         export = run_dir / "export"
         export_revision(source, commit, export, env, gitbin)
@@ -675,10 +697,8 @@ def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
         report["environment"].update({
             "git": _home_relative(git),
             "git_version": _git(["--version"], env=env, git=gitbin),
-            "python": platform.python_version(),
-            "python_implementation": platform.python_implementation(),
+            **facts,
             "python_executable": _home_relative(python),
-            "platform": platform.platform(),
             "env_keys": sorted(env),
             "path": {n: _home_relative(os.readlink(run_dir / "bin" / n))
                      for n in sorted(os.listdir(run_dir / "bin"))},

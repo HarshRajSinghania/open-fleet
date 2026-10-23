@@ -1193,5 +1193,38 @@ class DeepJsonNeverStopsTheReplay(unittest.TestCase):
         self.assertEqual([f["kind"] for f in failures], ["fixture-missing"])
 
 
+
+class TheReportNamesTheInterpreterThatRan(_FakeBench):
+    """PR #645 review (P2): with --python selecting another interpreter, the report still read
+    `python`, `python_implementation` and `platform` from the interpreter running replay.py — a
+    3.13 launcher replaying with 3.11 reported 3.13 beside the 3.11 executable. The facts now come
+    from the selected interpreter itself. The launcher's own answers are replaced by sentinels
+    here, so a fact read from the launcher shows up as one."""
+
+    def _facts(self, expr):
+        return subprocess.run([sys.executable, "-I", "-c", f"import platform; print({expr})"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_python_facts_come_from_the_selected_interpreter(self):
+        # The platform MODULE is patched, so any read the launcher makes, through any import,
+        # returns a sentinel.
+        with mock.patch("platform.python_version", return_value="0.0.launcher"), \
+                mock.patch("platform.python_implementation", return_value="LauncherPython"), \
+                mock.patch("platform.platform", return_value="launcher-os"):
+            env = self.replay(runs=1, python=sys.executable)["environment"]
+        self.assertEqual(env["python"], self._facts("platform.python_version()"))
+        self.assertEqual(env["python_implementation"],
+                         self._facts("platform.python_implementation()"))
+        self.assertEqual(env["platform"], self._facts("platform.platform()"))
+
+    def test_an_interpreter_that_cannot_run_is_a_usage_error(self):
+        broken = self.tmp / "broken-python"
+        broken.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+        broken.chmod(0o755)
+        with self.assertRaises(replay.ReplayError) as ctx:
+            self.replay(runs=1, python=str(broken))
+        self.assertIn("--python", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

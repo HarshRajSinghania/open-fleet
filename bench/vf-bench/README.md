@@ -435,7 +435,8 @@ FAIL the replay's preflight with its own kind (`corpus-drift`, `fixture-missing`
 every fixture file a case names and every pin it carries (the coordinator's contract digest, the
 manifest's `artifacts[]`); without that, a deleted fixture would replay as a different corpus under
 the same pin. `tests/test_vfbench_replay.py` removes each guard in turn and requires the drills it
-covers to stop holding, so a drill that passes is not passing by default.
+covers to stop holding, so a drill that passes is not passing by default. A drill that cannot even
+make its mutation is reported as not held, and the others still run.
 
 ## External adapter contract (#601)
 
@@ -521,8 +522,9 @@ decodes text, not containers: a gzip or otherwise compressed copy, a base64- or 
 found only if its canary survives as text (a canary written with JSON `\uXXXX` escapes counts as
 text). What the scan cannot look into is never reported clean: a JSON document over the parse limit
 (20 MiB; `--max-json-bytes` raises it) or nested too deep to parse, a Git LFS pointer and a
-submodule are each named `UNSCANNED` and fail the check, and the other files are still reported
-(PR #645 review). The protocol states these limits beside each
+submodule are each named `UNSCANNED` and fail the check, and so is any file the scan fails on (a
+string with an unpaired surrogate the canonical form cannot encode, JSON the parser cannot convert,
+an object a partial clone lacks); the other files are still reported (PR #645 review). The protocol states these limits beside each
 check, and `validate` refuses a scan that states none. The tests run it against a synthetic holder built in a
 temp directory; no held-out content is committed anywhere.
 

@@ -83,7 +83,13 @@ def validate(protocol, gate=None, traps_dir=None):
     dev, held = splits.get("development") or {}, splits.get("heldout") or {}
     if not dev or not held:
         errors.append("the protocol must declare both a development and a heldout split")
-    traps = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(traps_dir.glob("*.json"))]
+    traps = []
+    for path in sorted(traps_dir.glob("*.json")):
+        try:
+            traps.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, RecursionError) as exc:
+            # One unreadable case is named; the rest of the protocol is still checked (PR #645).
+            errors.append(f"cannot read corpus case {path.name}: {type(exc).__name__}: {exc}"[:300])
     expect = {
         "version": gate.EXPECTED_VERSION,
         "canary_guid": gate.EXPECTED_CANARY_GUID,
@@ -97,7 +103,12 @@ def validate(protocol, gate=None, traps_dir=None):
         if dev and dev.get(key) != want:
             errors.append(f"development split {key} is {dev.get(key)!r}; the shipped corpus and "
                           f"gate.py say {want!r} — a corpus change updates the protocol in the same PR")
-    if dev and gate.corpus_digest(traps_dir) != dev.get("corpus_sha256"):
+    try:
+        digest = gate.corpus_digest(traps_dir)
+    except OSError as exc:
+        digest = None
+        errors.append(f"cannot compute the corpus digest: {exc}")
+    if dev and digest is not None and digest != dev.get("corpus_sha256"):
         errors.append("development split corpus_sha256 is not the digest of traps/*.json")
     if held:
         if held.get("committed") is not False:
@@ -193,14 +204,19 @@ def digest_cases(case_dir, canary):
         raise UsageError(f"{case_dir} holds no *.json cases")
     problems, entries = [], []
     for f in files:
-        raw = f.read_bytes()
+        try:
+            raw = f.read_bytes()
+        except OSError as exc:  # unreadable, a directory, a symlink loop (PR #645 review)
+            problems.append(f"{f.name}: cannot be read ({exc.strerror or exc})")
+            continue
         try:
             obj = json.loads(raw)
-        except ValueError:
+        except json.JSONDecodeError:
             problems.append(f"{f.name}: not JSON")
             continue
-        except RecursionError:
-            problems.append(f"{f.name}: nested too deep to read")
+        except (ValueError, RecursionError) as exc:  # valid JSON json cannot convert, or too deep
+            problems.append(f"{f.name}: JSON that cannot be read: {type(exc).__name__}"
+                            + (" (nested too deep to read)" if isinstance(exc, RecursionError) else ""))
             continue
         if not isinstance(obj, dict):
             problems.append(f"{f.name}: not a JSON object; the scan matches objects, so it could "
@@ -210,8 +226,9 @@ def digest_cases(case_dir, canary):
             problems.append(f"{f.name}: does not carry the split's canary GUID")
         try:
             entries.append({"raw_sha256": sha256(raw), "canonical_sha256": sha256(canonical(obj))})
-        except RecursionError:
-            problems.append(f"{f.name}: nested too deep to put in canonical form")
+        except (RecursionError, UnicodeEncodeError) as exc:
+            problems.append(f"{f.name}: cannot be put in canonical form ({type(exc).__name__}: "
+                            "nested too deep, or a string with an unpaired surrogate)")
     doc = {"kind": DIGESTS_KIND, "protocol": PROTOCOL_ID,
            "canary_sha256": sha256(canary.encode("utf-8")),
            "cases": sorted(entries, key=lambda e: e["raw_sha256"])}
@@ -253,7 +270,9 @@ def committed_blobs(repo, rev="HEAD", all_history=False):
                  for ln in listing.splitlines() if ln]
         kinds = _git(repo, "cat-file", "--batch-check=%(objectname) %(objecttype)",
                      data="".join(f"{s}\n" for s, _ in pairs).encode()).decode().split("\n")
-        blobs = {ln.split()[0] for ln in kinds if ln.endswith(" blob")}
+        # A missing object (a shallow or partial clone) is listed too, so check can name it
+        # UNSCANNED rather than leave it out unseen (PR #645 review).
+        blobs = {ln.split()[0] for ln in kinds if ln.endswith((" blob", " missing"))}
         seen, out = set(), []
         for sha, path in pairs:
             if sha in blobs and sha not in seen:
@@ -273,14 +292,20 @@ def committed_blobs(repo, rev="HEAD", all_history=False):
 
 
 def read_blobs(repo, shas):
-    """{sha: bytes} through one `git cat-file --batch`."""
+    """{sha: bytes} through one `git cat-file --batch`; None for an object this repository does
+    not have (`<sha> missing`, a shallow or partial clone), which crashed the parse (PR #645)."""
     if not shas:
         return {}
     raw = _git(repo, "cat-file", "--batch", data="".join(f"{s}\n" for s in shas).encode())
     out, pos = {}, 0
     for _ in shas:
         nl = raw.index(b"\n", pos)
-        sha, _kind, size = raw[pos:nl].decode().split()
+        header = raw[pos:nl].decode().split()
+        if len(header) != 3:
+            out[header[0]] = None
+            pos = nl + 1
+            continue
+        sha, _kind, size = header
         start = nl + 1
         out[sha] = raw[start:start + int(size)]
         pos = start + int(size) + 1
@@ -342,24 +367,33 @@ def scan(blob, digests):
         # named UNSCANNED; everything else in the document is still checked.
         try:
             doc = json.loads(text)
-        except ValueError:
-            doc = None
+        except json.JSONDecodeError:
+            doc = None  # not a JSON document (JSON Lines, a prose file): a stated limit
         except RecursionError:
             doc = None
             hits.append(("unscanned", "a JSON document nested too deep to parse: the canonical "
                                       "and embedded checks did not run"))
-        too_deep = False
+        except ValueError as exc:
+            # Valid JSON json.loads cannot convert (an integer past the int-conversion limit): a
+            # case beside it was passed as clean (PR #645 review sweep).
+            doc = None
+            hits.append(("unscanned", f"JSON the parser cannot convert ({str(exc)[:80]}): the "
+                                      "canonical and embedded checks did not run"))
+        uncovered = False
         for node, depth in _objects(doc) if doc is not None else ():
             try:
                 h = sha256(canonical(node))
-            except RecursionError:
-                too_deep = True
+            except (RecursionError, UnicodeEncodeError):
+                # Too deep, or an unpaired surrogate UTF-8 cannot encode (`"\ud800"` is valid
+                # JSON): that object is skipped, and the rest of the document is still checked.
+                uncovered = True
                 continue
             if h in canon_set:
                 hits.append(("canonical" if depth == 0 else "embedded", h[:16]))
-        if too_deep:
-            hits.append(("unscanned", "objects nested too deep to put in canonical form: the "
-                                      "canonical and embedded checks did not cover them"))
+        if uncovered:
+            hits.append(("unscanned", "objects with no canonical form (nested too deep, or an "
+                                      "unpaired surrogate): the canonical and embedded checks did "
+                                      "not cover them"))
     return sorted(set(hits))
 
 
@@ -384,7 +418,16 @@ def check(repo, digests, rev="HEAD", all_history=False):
     contents = read_blobs(repo, [s for s, _ in blobs])
     leaks = []
     for sha, path in blobs:
-        for kind, prefix in scan(contents[sha], digests):
+        if contents.get(sha) is None:
+            leaks.append({"path": path, "blob": sha, "kind": "unscanned",
+                          "digest": "the object is missing from this repository (a shallow or "
+                                    "partial clone)"})
+            continue
+        try:
+            hits = scan(contents[sha], digests)
+        except Exception as exc:  # one file never stops the check (PR #645 review)
+            hits = [("unscanned", f"the scan failed on it: {type(exc).__name__}: {exc}"[:200])]
+        for kind, prefix in hits:
             leaks.append({"path": path, "blob": sha, "kind": kind, "digest": prefix})
     for sha, path in submodules(repo, rev):
         leaks.append({"path": path, "blob": sha, "kind": "unscanned",

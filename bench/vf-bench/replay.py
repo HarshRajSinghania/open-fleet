@@ -241,8 +241,18 @@ def driver_probe(bench):
     out["system_custody_git_dir"] = probe() if probe else None
     out["cases"] = [{"id": t["id"], "class": t["class"], "sound_expected": t["sound_expected"],
                      "expect_reason": t.get("expect_reason"), "fixture": t.get("fixture"),
-                     "skip": vf.skip_reason(t)} for t in vf.load_traps()]
+                     "skip": _skip(vf, t)} for t in vf.load_traps()]
     _emit(out)
+
+
+def _skip(vf, trap):
+    """The bench's own skip reason for one case. If deciding it raises, that case is skipped BY
+    NAME with the error, and every other case is still scored: one case's failure never fails the
+    whole probe (PR #645 review). A skip still fails the replay."""
+    try:
+        return vf.skip_reason(trap)
+    except Exception as exc:
+        return f"the skip check raised {type(exc).__name__}: {exc}"[:300]
 
 
 def case_token(case_id):
@@ -426,7 +436,11 @@ def driver_case(bench, case_id, adapters, adapter_timeout):
     for adapter in adapters:
         _emit({"start": adapter["name"]})
         t0 = time.monotonic()
-        rec = run_adapter(vf, trap, adapter, adapter_timeout)
+        try:
+            rec = run_adapter(vf, trap, adapter, adapter_timeout)
+        except Exception as exc:  # e.g. the case's fixture cannot be built: this adapter's error,
+            # never the end of the case for the adapters after it (PR #645 review)
+            rec = {"status": "error", "error": f"{type(exc).__name__}: {exc}"[:600]}
         rec.update(done=adapter["name"], wall_seconds=round(time.monotonic() - t0, 3))
         _emit(rec)
 
@@ -493,11 +507,17 @@ def fixture_failures(export, traps, builders):
                 pins[art["path"]] = "sha256:" + art["sha256"]
         for path, digest in sorted(pins.items()):
             f = export / path
-            if not f.is_file():
+            try:
+                present = f.is_file()
+                got = "sha256:" + hashlib.sha256(f.read_bytes()).hexdigest() if present else None
+            except OSError as exc:  # named, and the other pins are still checked (PR #645)
+                failures.append({"kind": "fixture-unreadable", "case": t["id"],
+                                 "detail": f"names {path}, which cannot be read ({exc.strerror or exc})"})
+                continue
+            if not present:
                 failures.append({"kind": "fixture-missing", "case": t["id"],
                                  "detail": f"names {path}, which the exported revision lacks"})
                 continue
-            got = "sha256:" + hashlib.sha256(f.read_bytes()).hexdigest()
             if digest and got != digest:
                 failures.append({"kind": "fixture-changed", "case": t["id"],
                                  "detail": f"pins {path} at {digest[:23]}…, the exported file "
@@ -538,6 +558,8 @@ def _ratio(count, of):
 def _coverage(rows, scored_classes):
     if rows is None:
         return {"state": "this revision carries no verifier-check inventory", "rate": None}
+    if isinstance(rows, str):  # why the inventory could not be read
+        return {"state": rows, "rate": None}
     by_status = {}
     for r in rows:
         by_status[r["status"]] = by_status.get(r["status"], 0) + 1
@@ -784,8 +806,16 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         "selected": len(cases),
         "cases": [{k: c[k] for k in ("id", "class", "sound_expected", "expect_reason")}
                   for c in cases]}
-    traps = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((bench / "traps").glob("*.json"))]
-    failures = [{"kind": "corpus-drift", "case": None, "detail": e} for e in probe["corpus_errors"]]
+    traps, failures = [], []
+    for path in sorted((bench / "traps").glob("*.json")):
+        try:
+            traps.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, RecursionError) as exc:
+            # The pinned bench loaded it, this reader cannot: named, and every other case is
+            # still checked (PR #645 review).
+            failures.append({"kind": "corpus-unreadable", "case": None,
+                             "detail": f"{path.name}: {type(exc).__name__}: {exc}"[:300]})
+    failures += [{"kind": "corpus-drift", "case": None, "detail": e} for e in probe["corpus_errors"]]
     failures += fixture_failures(export, [t for t in traps if not selection or t["id"] in selection],
                                  set(probe["fixtures"]))
     protocol_file = bench / "heldout-protocol.json"
@@ -794,9 +824,10 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
             held = json.loads(protocol_file.read_text(encoding="utf-8"))
             report["heldout"] = {"protocol": held.get("protocol"), "status": held.get("status"),
                                  "holder": (held.get("holder") or {}).get("state")}
-        except ValueError:
+        except (OSError, ValueError, RecursionError) as exc:
             failures.append({"kind": "heldout-protocol-unreadable", "case": None,
-                             "detail": "bench/vf-bench/heldout-protocol.json is not JSON"})
+                             "detail": "bench/vf-bench/heldout-protocol.json cannot be read: "
+                                       f"{type(exc).__name__}"})
     else:
         report["heldout"] = {"protocol": None, "status": "no held-out protocol at this revision",
                              "holder": None}
@@ -838,8 +869,13 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
                                                 for r in rec.get("reasons") or [])
                 results[n][c["id"]].append(rec)
 
-    rows = inventory_rows((bench / "README.md").read_text(encoding="utf-8")
-                          if (bench / "README.md").is_file() else "")
+    try:
+        rows = inventory_rows((bench / "README.md").read_text(encoding="utf-8")
+                              if (bench / "README.md").is_file() else "")
+    except (OSError, UnicodeDecodeError) as exc:
+        # Read after every case is scored: an unreadable README costs the coverage figure, never
+        # the scored run (PR #645 review).
+        rows = f"the README's verifier-check inventory is unreadable ({type(exc).__name__})"
     for cfg in configs:
         n = cfg["name"]
         per_run = [score_run(live, {cid: results[n][cid][i] for cid in results[n]}, rows)
@@ -1119,14 +1155,22 @@ def drill(source, rev, git=None, python=None):
         copy = tmp / "copy"
         export_revision(source, commit, copy, env, gitpath)
         for name, kind, what in DRILLS:
-            _git(["reset", "--quiet", "--hard", commit], cwd=copy, env=env, git=gitpath)
-            path = _mutate(copy, name)
-            _git(["add", "-A"], cwd=copy, env=env, git=gitpath)
-            _git(["-c", "user.name=vf-drill", "-c", "user.email=drill@vf-bench.invalid",
-                  "-c", "commit.gpgsign=false", "commit", "--quiet", "--no-verify", "-m",
-                  f"drill: {name}"], cwd=copy, env=env, git=gitpath)
-            mutated = _git(["rev-parse", "HEAD"], cwd=copy, env=env, git=gitpath)
-            report = replay(copy, mutated, runs=1, git=git, python=python)
+            try:
+                _git(["reset", "--quiet", "--hard", commit], cwd=copy, env=env, git=gitpath)
+                path = _mutate(copy, name)
+                _git(["add", "-A"], cwd=copy, env=env, git=gitpath)
+                _git(["-c", "user.name=vf-drill", "-c", "user.email=drill@vf-bench.invalid",
+                      "-c", "commit.gpgsign=false", "commit", "--quiet", "--no-verify", "-m",
+                      f"drill: {name}"], cwd=copy, env=env, git=gitpath)
+                mutated = _git(["rev-parse", "HEAD"], cwd=copy, env=env, git=gitpath)
+                report = replay(copy, mutated, runs=1, git=git, python=python)
+            except ReplayError as exc:
+                # A drill that cannot run proves nothing: it is reported as not held, and the
+                # other drills still run (PR #645 review).
+                outcomes.append({"drill": name, "what": what, "path": None, "expected": kind,
+                                 "replay_failed": False, "kinds": [], "held": False,
+                                 "first_failure": f"the drill could not run: {exc}"})
+                continue
             kinds = [f["kind"] for f in report["preflight"]["failures"]]
             held = (not report["verdict"]["ok"]) and kind in kinds
             outcomes.append({"drill": name, "what": what, "path": path, "expected": kind,
@@ -1198,7 +1242,8 @@ def main(argv=None):
             outcomes = drill(a.repo, a.rev, git=a.git, python=a.python)
             for o in outcomes:
                 state = "FAILED the replay, as required" if o["held"] else "DID NOT fail as required"
-                print(f"[{'ok' if o['held'] else 'BROKEN'}] {o['drill']}: {o['what']} ({o['path']}) — "
+                print(f"[{'ok' if o['held'] else 'BROKEN'}] {o['drill']}: {o['what']} "
+                      f"({o['path'] or 'no mutation made'}) — "
                       f"{state}; wanted {o['expected']}, got {o['kinds'] or 'no preflight failure'}")
             return 0 if all(o["held"] for o in outcomes) else 1
         adapters = ([parse_adapter_spec(s, "external-adapter") for s in a.adapter]

@@ -8,6 +8,7 @@ SYNTHETIC holder made at test time in a temp dir: held-out cases are generated, 
 planted into throwaway repositories, and nothing held-out ever touches this checkout.
 """
 import base64
+import contextlib
 import gzip
 import importlib.util
 import json
@@ -17,6 +18,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "bench" / "vf-bench"
@@ -569,6 +571,111 @@ class DeepJsonNeverStopsTheTools(unittest.TestCase):
                 r = _cli(*args)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertNotIn("Traceback", r.stderr)
+
+
+
+class NoOneFileStopsTheCheck(unittest.TestCase):
+    """PR #645 review (P2): `{"note":"\\ud800"}` is JSON json.loads accepts, but its lone surrogate
+    cannot be encoded as UTF-8, so the canonical form raised UnicodeEncodeError, which nothing
+    caught, and the check died before reporting the files after it. Any failure on one file now
+    names that file UNSCANNED and the scan goes on; the siblings found in the sweep are pinned too."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.cases = _holder_cases(self.tmp / "holder", n=1)
+        self.digests, _ = heldout.digest_cases(self.tmp / "holder", CANARY)
+        self.digests_file = self.tmp / "digests.json"
+        self.digests_file.write_text(json.dumps(self.digests), encoding="utf-8")
+        self.case_text = self.cases[0].read_text(encoding="utf-8")
+        self.repo = self.tmp / "solver"
+        self.repo.mkdir()
+        _git(self.repo, "init", "-q", "-b", "main")
+
+    def tearDown(self):
+        for p in self.tmp.rglob("*"):
+            with contextlib.suppress(OSError):
+                p.chmod(0o755)
+        self._tmp.cleanup()
+
+    def _check(self):
+        return _cli("check", "--digests", str(self.digests_file), "--repo", str(self.repo))
+
+    def _assert_reported(self, r, unscanned):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn(f"UNSCANNED: {unscanned}", r.stdout)
+        self.assertIn("LEAK verbatim: zz-leak.json", r.stdout)
+
+    def test_an_unencodable_document_beside_a_leak(self):
+        (self.repo / "bad.json").write_text('{"note":"\\ud800"}', encoding="utf-8")
+        (self.repo / "zz-leak.json").write_text(self.case_text, encoding="utf-8")
+        _commit(self.repo, "an unencodable file beside a leak")
+        self._assert_reported(self._check(), "bad.json")
+
+    def test_an_unencodable_value_beside_an_embedded_case(self):
+        case = json.loads(self.case_text)
+        blob = json.dumps({"note": "\ud800", "cases": [case]}).encode("utf-8")
+        kinds = {k for k, _ in heldout.scan(blob, self.digests)}
+        self.assertIn("embedded", kinds)
+        self.assertIn("unscanned", kinds)
+
+    def test_valid_json_the_parser_cannot_convert_is_unscanned_not_clean(self):
+        # A 5000-digit integer is valid JSON that json.loads refuses with a plain ValueError (the
+        # int-conversion limit), unlike malformed text: the case beside it was passed as clean.
+        case = json.loads(self.case_text)
+        blob = ('{"n": ' + "1" * 5000 + ', "cases": [' + json.dumps(case) + "]}").encode()
+        self.assertIn("unscanned", {k for k, _ in heldout.scan(blob, self.digests)})
+
+    def test_a_missing_object_beside_a_leak(self):
+        (self.repo / "gone.txt").write_text("an object a partial clone never fetched\n",
+                                            encoding="utf-8")
+        (self.repo / "zz-leak.json").write_text(self.case_text, encoding="utf-8")
+        _commit(self.repo, "a blob to lose")
+        sha = _git(self.repo, "rev-parse", "HEAD:gone.txt")
+        (self.repo / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+        self._assert_reported(self._check(), "gone.txt")
+
+    def test_a_scan_that_raises_on_one_blob_names_it_and_goes_on(self):
+        (self.repo / "boom.json").write_text("{}", encoding="utf-8")
+        (self.repo / "zz-leak.json").write_text(self.case_text, encoding="utf-8")
+        _commit(self.repo, "two files")
+        original = heldout.scan
+
+        def flaky(blob, digests):
+            if blob == b"{}":
+                raise OSError("the disk said no")
+            return original(blob, digests)
+        with mock.patch.object(heldout, "scan", flaky):
+            findings, _ = heldout.check(self.repo, self.digests)
+        got = {(f["path"], f["kind"]) for f in findings}
+        self.assertIn(("boom.json", "unscanned"), got)
+        self.assertIn(("zz-leak.json", "verbatim"), got)
+
+    def test_the_holder_tool_names_an_unreadable_case_and_goes_on(self):
+        where = self.tmp / "holder2"
+        where.mkdir()
+        (where / "good.json").write_text(self.case_text, encoding="utf-8")
+        (where / "locked.json").write_text(self.case_text, encoding="utf-8")
+        (where / "locked.json").chmod(0)
+        (where / "dir.json").mkdir()
+        (where / "loop-a.json").symlink_to(where / "loop-b.json")
+        (where / "loop-b.json").symlink_to(where / "loop-a.json")
+        (where / "surrogate.json").write_text('{"canary": "%s", "x": "\\ud800"}' % CANARY,
+                                              encoding="utf-8")
+        doc, problems = heldout.digest_cases(where, CANARY)
+        for name in ("locked.json", "dir.json", "loop-a.json", "loop-b.json", "surrogate.json"):
+            with self.subTest(file=name):
+                self.assertTrue(any(p.startswith(name + ":") for p in problems), problems)
+        self.assertEqual(len(doc["cases"]), 1)
+
+    def test_validate_names_an_unreadable_trap_and_goes_on(self):
+        traps = self.tmp / "traps"
+        traps.mkdir()
+        (traps / "good.json").write_text('{"sound_expected": "RED"}', encoding="utf-8")
+        (traps / "broken.json").write_text("{not json", encoding="utf-8")
+        errors = heldout.validate(_protocol(), traps_dir=traps)
+        self.assertTrue(any("broken.json" in e for e in errors), errors)
 
 
 if __name__ == "__main__":

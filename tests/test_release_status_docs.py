@@ -152,7 +152,7 @@ class OpsRollbackNamesThePublishingWorkflows(unittest.TestCase):
 
     def test_external_monitor_claims_bind_to_source_and_drill(self):
         step = self.step(1)
-        for token in ("outside Actions", "paused", "scripts/external-ci-monitor.py",
+        for token in ("outside Actions", "unverified backup", "scripts/external-ci-monitor.py",
                       "24 hours", "T-13-external-monitor-drill.txt", "#537"):
             with self.subTest(token=token):
                 self.assertIn(token, step)
@@ -162,6 +162,10 @@ class OpsRollbackNamesThePublishingWorkflows(unittest.TestCase):
         self.assertIn("36146072394", receipt)
         self.assertIn("https://github.com/ravidsrk/orca-fleet/issues/537", receipt)
         self.assertIn("scheduled heartbeat firing are not claimed", receipt)
+        # #528: the always-on cloud routine and its first scheduled firing, bound to the receipt.
+        self.assertIn("trig_01LHVNVyoRrPFtKPwYzTPBoP", step)
+        self.assertIn("Scheduled heartbeat observed (#528, H-09)", receipt)
+        self.assertIn("cse_015URvHfDuWv4mRggZg6JWCa", receipt)
 
 
 class DispatchLifecycleNamesTheCurrentPin(unittest.TestCase):

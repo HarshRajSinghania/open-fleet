@@ -26,6 +26,11 @@ truth is `.claude-plugin/plugin.json`.
   that the provenance, intent, reviewer-mode and lighting legs verify presence, not truth. No
   verifier hole was found: every new trap was refused for its declared reason as `verify.py`
   stood.
+- **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
+  key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
+  a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it
+  signed itself. floor_guard.py already read the pin at its base ref; this gives the CLI the same
+  anchor. Without the flag, behaviour is unchanged.
 
 ## [0.8.0] - 2026-10-23
 

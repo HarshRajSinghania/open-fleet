@@ -31,7 +31,9 @@ Unlike verify.py the rest of the environment passes: these tools are not a verif
 stating facts against a worker, and a coordinator's locale, HOME and PATH stay theirs.
 diff_scope.py inlines the same floor rather than importing this module: verify.py loads
 diff_scope by path, so a sibling it imported would join the signed verifier toolchain
-(verify._Transcript.TOOLCHAIN and run_report.TOOLCHAIN_FILES).
+(verify._Transcript.TOOLCHAIN and run_report.TOOLCHAIN_FILES). This module is in that
+toolchain since #608 all the same: verify.py loads inventory.py to check a retention
+receipt, and inventory.py loads this module at import.
 
 Library only: no CLI, no exit codes.
 """

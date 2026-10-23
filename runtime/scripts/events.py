@@ -1183,6 +1183,15 @@ def _db_time(value):
     return datetime.fromtimestamp(float(value), timezone.utc).isoformat(timespec="microseconds")
 
 
+def _attrs(msg):
+    """A message row's attrs object, or {} when it is absent or not a JSON object."""
+    try:
+        attrs = json.loads(msg["attrs_json"] or "{}")
+    except ValueError:
+        return {}
+    return attrs if isinstance(attrs, dict) else {}
+
+
 def launch_proof(row):
     """What the store proves about whether this dispatch's worker ran (#597, PR #638 review P1).
 
@@ -1234,13 +1243,21 @@ def cmd_ingest_state(args):
             mail = conn.execute("SELECT id, sender, attrs_json, created_at FROM messages "
                                 "WHERE run_id = ? AND msg_type = 'worker_done' "
                                 "ORDER BY created_at, id", (args.run,)).fetchall()
+            escalations = conn.execute("SELECT id, attrs_json, created_at FROM messages "
+                                       "WHERE run_id = ? AND msg_type = 'escalation' "
+                                       "ORDER BY created_at, id", (args.run,)).fetchall()
         finally:
             conn.close()
     except sqlite3.Error as err:
         raise EventsError(f"{db} is not a readable local-state DB: {err}") from err
     events, by_id, by_handle, skipped, deferred = [], {}, {}, [], []
-    never, unresolved, held = [], [], []
+    never, unresolved, held, earlier = [], [], [], []
     common = {"producer": "local_state", "basis": "occurred"}
+    deaths = {}  # dispatch id -> its synthetic worker_died messages (local_state.py)
+    for msg in escalations:
+        attrs = _attrs(msg)
+        if attrs.get("synthetic") == "worker_died" and isinstance(attrs.get("dispatchId"), str):
+            deaths.setdefault(attrs["dispatchId"], []).append(msg)
     for row in rows:
         keys = row.keys()
         by_handle.setdefault(row["terminal_handle"], []).append(row)
@@ -1251,17 +1268,31 @@ def cmd_ingest_state(args):
             (never if proof == "never" else unresolved).append(row["dispatch_id"])
             continue
         agent = row["agent"] if ID_RE.fullmatch(row["agent"] or "") else None
-        events.append(_build(args, "dispatch.launched", task=row["task_id"],
-                             dispatch=row["dispatch_id"], observed_at=_db_time(row["created_at"]),
-                             source_ref=f"local-state:dispatches/{row['dispatch_id']}",
-                             data={"agent": agent},
-                             event_id=f"local-state:dispatch:{row['dispatch_id']}", **common))
-        if row["state"] == "died":
-            events.append(_build(args, "dispatch.died", task=row["task_id"],
-                                 dispatch=row["dispatch_id"],
-                                 observed_at=_db_time(row["updated_at"]),
-                                 source_ref=f"local-state:dispatches/{row['dispatch_id']}",
-                                 event_id=f"local-state:died:{row['dispatch_id']}", **common))
+        did, created = row["dispatch_id"], _db_time(row["created_at"])
+        # The launch is bound to the row's creation: an external provider records rows with
+        # INSERT OR REPLACE under upstream ids (paperclip's agent id), so one id recorded again
+        # for another task is a second launch, never a conflict with the first (PR #638 review).
+        events.append(_build(args, "dispatch.launched", task=row["task_id"], dispatch=did,
+                             observed_at=created, source_ref=f"local-state:dispatches/{did}",
+                             data={"agent": agent}, event_id=f"local-state:dispatch:{did}@{created}",
+                             **common))
+        # A death is its synthetic worker_died message, written in the transaction that marked
+        # the row died: the row's updated_at moves after it (posix publishes a fast worker's
+        # launch after it died), so it is not the death's time (PR #638 review, P1). A message
+        # older than the row is an earlier holder's of a re-recorded id.
+        died = [m for m in deaths.get(did, []) if m["created_at"] >= row["created_at"]]
+        for msg in died:
+            events.append(_build(args, "dispatch.died", task=row["task_id"], dispatch=did,
+                                 observed_at=_db_time(msg["created_at"]),
+                                 source_ref=f"local-state:messages/{msg['id']}",
+                                 event_id=f"local-state:died:{did}:{msg['id']}", **common))
+        if not died and row["state"] == "died":
+            # No death record (a store written by hand): the row's last write is all there is,
+            # bound into the id, so a later rewrite is a second observation, not a conflict.
+            at = _db_time(row["updated_at"])
+            events.append(_build(args, "dispatch.died", task=row["task_id"], dispatch=did,
+                                 observed_at=at, source_ref=f"local-state:dispatches/{did}",
+                                 event_id=f"local-state:died:{did}@{at}", **common))
     for msg in mail:
         match = by_id.get(msg["sender"])
         handles = by_handle.get(msg["sender"], [])
@@ -1271,14 +1302,21 @@ def cmd_ingest_state(args):
             skipped.append(msg["id"])
             continue
         row, row_head = match
+        attrs = _attrs(msg)
+        named = next((attrs[k] for k in ("task-id", "task_id", "taskId")
+                      if isinstance(attrs.get(k), str)), None)
+        # Mail naming another task, or (naming none) older than the row it names, came from an
+        # earlier holder of a re-recorded dispatch id: never re-read as this row's task's.
+        if named is not None:
+            stale = named != row["task_id"]
+        else:
+            stale = msg["created_at"] < row["created_at"]
+        if stale:
+            earlier.append(msg["id"])
+            continue
         if row["dispatch_id"] in unresolved:
             held.append(msg["id"])  # its dispatch's launch is not resolved yet
             continue
-        try:
-            attrs = json.loads(msg["attrs_json"] or "{}")
-        except ValueError:
-            attrs = {}
-        attrs = attrs if isinstance(attrs, dict) else {}
         heads = [attrs.get("headSha"), attrs.get("head_sha")]
         event_id = f"local-state:message:{msg['id']}"
         from_row = not any(isinstance(h, str) and SHA_RE.fullmatch(h) for h in heads)
@@ -1306,6 +1344,11 @@ def cmd_ingest_state(args):
         print(f"events: {len(unresolved)} dispatch row(s) have no monitor claim and an open launch "
               "gate; each is deferred until the store shows whether it ran: "
               f"{unresolved}", file=sys.stderr)
+    if earlier:
+        print(f"events: {len(earlier)} worker_done message(s) name another task, or are older than "
+              "the dispatch row they name — sent by an earlier holder of a re-recorded dispatch "
+              f"id, or before the provider recorded the dispatch — and were not attributed: "
+              f"{earlier}", file=sys.stderr)
     if held:
         print(f"events: {len(held)} worker_done message(s) name a dispatch whose launch is "
               f"unresolved; each is deferred with it: {held}", file=sys.stderr)
@@ -1315,7 +1358,7 @@ def cmd_ingest_state(args):
               f"{deferred}", file=sys.stderr)
     if not events:
         print(f"events: nothing to record for run {args.run}" + (
-            " yet" if never or unresolved or held or deferred else
+            " yet" if never or unresolved or held or deferred or earlier else
             ": the DB holds no dispatch or worker_done for it"), file=sys.stderr)
         return EXIT_INCOMPLETE
     return _record(args, events)

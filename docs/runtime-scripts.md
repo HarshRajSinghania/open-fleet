@@ -549,7 +549,12 @@ fence, or recovery's `abandon_unlaunched`) is no launch, no retry and no usage t
 no claim and an open gate is deferred with its mail (listed on stderr) until the store resolves
 it, so each import records exactly one launch for it, or none. A row with no launch intent (an
 injected dispatch, another provider, a pre-#597 store) carries no such proof and is recorded as
-a launch, as before. `ingest-state` binds a worker_done to the head its message names; one that names none takes its dispatch's head, which
+a launch, as before. A launch is bound to its row's creation time, so a dispatch id an external
+provider records again (`INSERT OR REPLACE` under an upstream id) is a second launch, not a
+conflict; a death's time is its synthetic `worker_died` message, not the row's `updated_at`,
+which moves after it; and mail naming another task, or older than the row it names, came from
+an earlier holder of the id and is not attributed (listed on stderr).
+`ingest-state` binds a worker_done to the head its message names; one that names none takes its dispatch's head, which
 the store writes when the worker exits, so the message is deferred (and listed on stderr) until
 the dispatch is terminal — imports before and after exit then record one `task.done`, not a
 conflict. A provider that rewrites a terminal dispatch's head later (multiclaude's

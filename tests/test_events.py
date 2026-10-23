@@ -1468,6 +1468,63 @@ class TestIngest(Base):
         self.assertEqual(done, ["disp_c"])
         self.assertEqual(third.stdout.split()[::2], ["duplicate", "duplicate"], third.stdout)
 
+    def test_a_death_keeps_its_time_when_the_row_is_touched_after_it(self):
+        # PR #638 review (P1): dispatch.died took the row's updated_at as its time. A fast worker
+        # can die before worker_start publishes the launch, and publication rewrites updated_at
+        # on the dead row; imports before and after it recorded two times under one death id —
+        # a conflict that left the unit's wave unavailable. The death's own record is the
+        # synthetic worker_died message written in the same transaction.
+        store, db = self.gated_store(("disp_a", "term_a", 1))
+        self.worker_runs(store, "disp_a", "term_a")  # claims the gate, then dies with no mail
+        with store._connect() as conn:
+            conn.execute("UPDATE messages SET created_at = ? WHERE msg_type = 'escalation'",
+                         (self.TEN + 300,))  # died at 10:05
+        before = self.ingest(db)
+        with store._connect() as conn:  # posix.py's publication step, after the death
+            conn.execute("UPDATE dispatches SET pid = 77, backend = 'tmux', updated_at = ? "
+                         "WHERE dispatch_id = 'disp_a'", (self.TEN + 900,))
+        after = self.ingest(db)
+        self.assertEqual((before.returncode, after.returncode), (0, 0), after.stdout)
+        self.assertEqual(after.stdout.split()[::2], ["duplicate", "duplicate"], after.stdout)
+        died = [e for e in events.read_log(self.log)[0] if e["kind"] == "dispatch.died"]
+        self.assertEqual([d["observed_at"] for d in died], ["2026-10-20T10:05:00.000000+00:00"])
+
+    def test_a_dispatch_id_recorded_again_is_a_new_launch_not_a_conflict(self):
+        # Sweep (identity drift): external providers record dispatch rows with INSERT OR
+        # REPLACE under upstream ids (paperclip's agent id, multiclaude's agent name), so one id
+        # can be recorded again for another task. The launch was keyed by the id alone, so the
+        # second import conflicted with the first; and mail the first holder sent was re-read
+        # as the second task's. A launch is bound to its row's creation time, and mail older
+        # than the row it names belongs to an earlier holder of the id.
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        LocalStateStore = importlib.import_module("runtime.providers.local_state").LocalStateStore
+        db = self.tmp / "runtime.db"
+        store = LocalStateStore(db, env={})
+
+        def record(task, minute):
+            at = self.TEN + 60 * minute
+            with store._connect() as conn:
+                conn.execute("INSERT OR REPLACE INTO dispatches(dispatch_id, task_id, run_id, "
+                             "worktree, agent, terminal_handle, state, created_at, updated_at) VALUES "
+                             "('agent-7', ?, 'run_x', '/w', 'claude', 'agent-7', 'ready', ?, ?)",
+                             (task, at, at))
+        record("task_1", 1)
+        store.send_message(subject="done", msg_type="worker_done", sender="agent-7", run="run_x",
+                           attrs={"headSha": sha("c4")})
+        with store._connect() as conn:
+            conn.execute("UPDATE messages SET created_at = ?", (self.TEN + 600,))
+        first = self.ingest(db)
+        record("task_2", 30)  # the same agent id, now working task_2
+        second = self.ingest(db)
+        self.assertEqual((first.returncode, second.returncode), (0, 0), second.stdout)
+        self.assertNotIn("conflict", second.stdout)
+        recorded = events.read_log(self.log)[0]
+        self.assertEqual(sorted((e["kind"], e["task"]) for e in recorded),
+                         [("dispatch.launched", "task_1"), ("dispatch.launched", "task_2"),
+                          ("task.done", "task_1")])
+        self.assertIn("earlier holder", second.stderr)
+
     def test_a_head_the_message_carries_is_recorded_at_once_and_kept(self):
         # Control: a worker_done that names its head is stable evidence in itself — recorded
         # on the first import, and a duplicate after exit even if the store's row head differs.

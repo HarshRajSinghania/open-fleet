@@ -2582,8 +2582,8 @@ def _guarded_exact(p, deleting, base=None):
             if deleting or any(ch in rel for ch in "*?["):
                 if any(_glob_segments(segs, g.split("/"), deleting) for g in GUARD_SAMPLES):
                     return True
-        elif GUARD_ANY.search(cand):
-            return True
+        elif GUARD_ANY.search(cand) or (deleting and re.search(r"(^|/)\.orca/?$", cand)):
+            return True   # outside the unit too: deleting an .orca dir deletes its anchors
     if not norm.startswith("/") and GUARD_REL.search(norm):
         return True
     for me in _GSELF:
@@ -2820,6 +2820,55 @@ def _fetch_outputs(head, rest):
     return [o for o in outs if o and o != "-"]
 
 
+_FIND_NAME_TESTS = ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename")
+# Tokens after which a chain of tests can no longer be read as a plain conjunction.
+_FIND_UNPROVABLE = ("!", "-not", "-o", "-or", ",", "(", ")", "-regex", "-iregex")
+
+
+def _find_split(rest):
+    """(starting points, expression) of a find command, past -H/-L/-P/-D/-O options."""
+    i = 0
+    while i < len(rest) and rest[i] in ("-H", "-L", "-P") or (i < len(rest) and rest[i][:2] in ("-D", "-O")):
+        i += 2 if rest[i] == "-D" else 1
+    roots = []
+    while i < len(rest) and not rest[i].startswith(("-", "(", "!", ")", ",")):
+        roots.append(rest[i])
+        i += 1
+    return roots, rest[i:]
+
+
+def _find_spots(root):
+    """(path as find prints it, basename) of every known guard file under one starting point."""
+    rabs = os.path.normpath(os.path.join(os.getcwd(), os.path.expanduser(root)))
+    out = []
+    for g in tuple(GUARD_SAMPLES) + tuple(_GSELF):
+        gabs = os.path.normpath(os.path.join(_GROOT, g))
+        if gabs == rabs or gabs.startswith(rabs.rstrip("/") + "/"):
+            rel = os.path.relpath(gabs, rabs)
+            shown = root if rel == "." else (root.rstrip("/") or "") + "/" + rel
+            out.append((shown, os.path.basename(gabs)))
+    return out
+
+
+def _find_may_match(tests, shown, name):
+    """False only when one test of a plain AND-chain cannot match this path."""
+    if any(t in _FIND_UNPROVABLE for t in tests):
+        return True
+    i = 0
+    while i < len(tests):
+        t = tests[i]
+        if t in _FIND_NAME_TESTS and i + 1 < len(tests):
+            subject, pat = (name if t in ("-name", "-iname") else shown), tests[i + 1]
+            if t[1] == "i":
+                subject, pat = subject.lower(), pat.lower()
+            if not fnmatch.fnmatchcase(subject, pat):
+                return False
+            i += 2
+            continue
+        i += 1
+    return True
+
+
 def guard_targets(words, depth=0):
     """(path, deleting) pairs a shell command writes or removes, as far as text shows.
 
@@ -2830,24 +2879,28 @@ def guard_targets(words, depth=0):
     if not ws:
         return []
     head, rest, out = ws[0].rsplit("/", 1)[-1], ws[1:], []
-    if head == "find" and "-delete" in rest:
-        # find ROOT... -delete removes what it walks (#598): each starting point counts as
-        # deleted unless a -name/-path filter rules every guard file out. Its -exec commands
-        # are judged below, as bodies of their own.
-        roots = rest[_opt_end(rest, "D"):]
-        for k, w in enumerate(roots):
-            if w.startswith(("-", "(", "!")):
-                roots = roots[:k]
-                break
-        pats = [(rest[k], rest[k + 1]) for k in range(len(rest) - 1)
-                if rest[k] in ("-name", "-iname", "-path", "-ipath", "-wholename")]
-        spots = []
-        for opt, pat in pats:
-            for g in GUARD_SAMPLES:
-                names = (g.rsplit("/", 1)[-1],) if opt in ("-name", "-iname") else (g, "./" + g)
-                spots += [(name, pat) for name in names]
-        if not pats or any(fnmatch.fnmatch(name, pat) for name, pat in spots):
-            out += [(w, True) for w in roots or ["."]]
+    if head == "find":
+        # find ROOT... -delete, or -exec CMD {} (#598, PR #648 review): each guard file under a
+        # starting point is deleted unless the AND-chain of tests before the action PROVES it
+        # unmatched. A negation, -o, a group or -regex proves nothing; -iname/-ipath compare
+        # case-insensitively; -path is matched against the path as find prints it, absolute
+        # roots included. A -exec command is judged once per guard file it may receive as {}.
+        roots, expr = _find_split(rest)
+        for k, word in enumerate(expr):
+            if word not in ("-delete", "-exec", "-execdir", "-ok", "-okdir"):
+                continue
+            for root in roots or ["."]:
+                spots = _find_spots(root)
+                hits = [shown for shown, name in spots if _find_may_match(expr[:k], shown, name)]
+                if not spots and guarded(root, True):
+                    hits = [root]   # a guard this hook cannot enumerate: judge the root itself
+                if word == "-delete":
+                    out += [(shown, True) for shown in hits]
+                    continue
+                end = next((j for j in range(k + 1, len(expr)) if expr[j] in (";", "+")), len(expr))
+                for shown in hits:
+                    cmd = [w.replace("{}", shown) for w in expr[k + 1:end]]
+                    out += guard_targets(cmd, depth + 1) if depth < 3 else []
     if head == "git":
         sub = _git_sub(rest)
         if sub and sub[0] in ("rm", "mv"):

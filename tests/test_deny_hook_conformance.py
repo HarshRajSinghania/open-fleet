@@ -19,6 +19,7 @@ these RED (`git show <base>:runtime/scripts/deny-hook.sh > /tmp/h.sh`).
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -115,6 +116,20 @@ class TestBoundedCorpus(unittest.TestCase):
         self.assertLess(_shared()["seconds"], BUDGET_SECONDS)
 
 
+class TestGuardFamily(unittest.TestCase):
+    def test_the_corpus_decoys_every_path_the_hook_guards(self):
+        text = corpus.HOOK.read_text(encoding="utf-8")
+        start = text.index("GUARD_SAMPLES = (")
+        hook_samples = re.findall(r"\x22([^\x22]+)\x22", text[start:text.index(")", start)])
+        self.assertEqual(tuple(hook_samples), corpus.GUARD_SAMPLES)
+        for sample in corpus.GUARD_SAMPLES:
+            decoy = corpus._decoy(sample)
+            self.assertNotEqual(decoy, sample)
+            self.assertTrue(corpus.safe_form_ok(decoy), decoy)
+            self.assertEqual(os.path.basename(decoy).replace("xxxx", "orca"),
+                             os.path.basename(sample))
+
+
 class TestStoredFixtures(unittest.TestCase):
     def test_every_fixture_names_its_bash_version_seed_and_status(self):
         fixtures = _fixtures()
@@ -126,7 +141,8 @@ class TestStoredFixtures(unittest.TestCase):
                 self.assertIn(f["status"], ("fixed", "boundary"))
                 self.assertIn(f["kind"], ("miss", "downgrade", "false-deny"))
                 self.assertTrue(f["note"], "every fixture says why it is fixed or kept")
-                self.assertTrue(any(p in f["template"] for p in (corpus.CMD, corpus.HEAD)))
+                self.assertTrue(re.search(r"\{[A-Z0-9]+\}", f["template"])
+                                or f["payload"].startswith("guard:"), "a fixture keeps its hole")
 
     def test_fixed_fixtures_now_agree_with_bash(self):
         state = _shared()
@@ -211,6 +227,9 @@ MUTANTS = (
      ("launch:printed",)),
     ("find -exec judged", 'if head == "find":\n        out, i = [], 0',
      'if False:\n        out, i = [], 0', ("launch:find",)),
+    ("find: a guard file is spared only when the tests prove it unmatched",
+     "def _find_may_match(tests, shown, name):", "def _find_may_match(tests, shown, name):\n    return False",
+     ("guard-find:",)),
     ("data arguments dropped on the never-list pass", "def _data_dropped(ws):",
      "def _data_dropped(ws):\n    return ws", ("launch:select-free", "launch:colon-literal",
                                                "quote:sq", "launch:script-written-only")),
@@ -233,7 +252,7 @@ class TestEverySafeguardIsCaughtWhenSwitchedOff(unittest.TestCase):
                 focus = [c for c in every if c.family.startswith(families)]
                 # Every payload on the focus cases: a safeguard may matter on one judging path.
                 focus = [corpus.Case(c.family, c.template, p) for c in focus
-                         for p in corpus.PAYLOADS]
+                         for p in (corpus.PAYLOADS if c.payload in corpus.PAYLOADS else (c.payload,))]
                 self.assertTrue(focus, f"no corpus case exercises {name}")
                 caught, step = [], JOBS * 2
                 for start in range(0, len(focus), step):   # stop at the first disagreement
@@ -414,6 +433,11 @@ class TestTrustAnchorsAreGuarded(HookOnly):
                     f"truncate -s 0 {rel}", f"chmod 000 {rel}", f"dd if=/dev/zero of={rel}",
                     f"python3 -c \"open('{rel}','w').write('x')\"", f"echo 00 > {absolute}",
                     "rm -rf .orca", "find .orca -delete", f"cd .orca && rm {rel.split('/')[1]}",
+                    # PR #648 review: a filter proves nothing unless the whole chain excludes it.
+                    "find .orca ! -name xxx -delete", "find .orca -not -name x -delete",
+                    f"find .orca -iname {rel.split('/')[1].upper()} -delete",
+                    f"find {self.wt.resolve()}/.orca -path '{self.wt.resolve()}/.orca/*' -delete",
+                    "find . -delete -name nothing", f"find .orca -name {rel.split('/')[1]} -exec rm {{}} +",
                 ), env=env, cwd=self.wt, reason="own guard")
         for tool, field in (("Write", "file_path"), ("Edit", "file_path")):
             for rel in self.ANCHORS:
@@ -434,6 +458,8 @@ class TestTrustAnchorsAreGuarded(HookOnly):
             "cat .orca/human-grant-pubkey", "git show origin/main:.orca/dispatch-pubkey",
             "cp .orca/dispatch-pubkey /tmp/pub.copy", "sha256sum .orca/human-grant-pubkey",
             "echo '{}' > .orca/watchdog-state.json", "rm -f .orca/dispatch-record.json",
+            "find .orca -name 'watchdog*' -delete", "find . -name '*.pyc' -exec rm {} +",
+            "find .orca -name DISPATCH-PUBKEY -delete",
         ), env=self.env, cwd=self.wt)
 
 

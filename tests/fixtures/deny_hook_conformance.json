@@ -1572,6 +1572,54 @@
       "hook": "claude/r05-deny-hook-conformance (extended run)",
       "status": "boundary",
       "note": "A trap action is judged as if its condition fired; signals, and whether an exit trap set while the shell is already exiting ever runs, are runtime facts the text cannot settle."
+    },
+    {
+      "kind": "miss",
+      "payload": "guard:.orca/human-grant-pubkey",
+      "template": "find {GD} ! -name xxx -delete",
+      "original": "find {GD} ! -name xxx -delete",
+      "family": "review:PRRT_kwDOTWxN9c6vu_RV",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_RV)",
+      "status": "fixed",
+      "note": "find -delete and -exec CMD {} spare a guard file only when the AND-chain of tests before the action proves it unmatched; negation, -o, groups and -regex prove nothing, -iname/-ipath compare case-insensitively, -path matches the path as find prints it (_find_may_match)."
+    },
+    {
+      "kind": "miss",
+      "payload": "guard:.orca/dispatch-pubkey",
+      "template": "find {GD} ! -name xxx -delete",
+      "original": "find {GD} ! -name xxx -delete",
+      "family": "review:PRRT_kwDOTWxN9c6vu_RV",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_RV)",
+      "status": "fixed",
+      "note": "find -delete and -exec CMD {} spare a guard file only when the AND-chain of tests before the action proves it unmatched; negation, -o, groups and -regex prove nothing, -iname/-ipath compare case-insensitively, -path matches the path as find prints it (_find_may_match)."
+    },
+    {
+      "kind": "miss",
+      "payload": "guard:.orca/dispatch-pubkey",
+      "template": "find {GD} -iname {GNU} -delete",
+      "original": "find {GD} -iname {GNU} -delete",
+      "family": "review:PRRT_kwDOTWxN9c6vu_RV",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_RV)",
+      "status": "fixed",
+      "note": "find -delete and -exec CMD {} spare a guard file only when the AND-chain of tests before the action proves it unmatched; negation, -o, groups and -regex prove nothing, -iname/-ipath compare case-insensitively, -path matches the path as find prints it (_find_may_match)."
+    },
+    {
+      "kind": "miss",
+      "payload": "guard:.orca/dispatch-pubkey",
+      "template": "find {ROOT}/{GD} -path '{ROOT}/{GD}/*' -delete",
+      "original": "find {ROOT}/{GD} -path '{ROOT}/{GD}/*' -delete",
+      "family": "review:PRRT_kwDOTWxN9c6vu_RV",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_RV)",
+      "status": "fixed",
+      "note": "find -delete and -exec CMD {} spare a guard file only when the AND-chain of tests before the action proves it unmatched; negation, -o, groups and -regex prove nothing, -iname/-ipath compare case-insensitively, -path matches the path as find prints it (_find_may_match)."
     }
   ]
 }

@@ -72,6 +72,18 @@ PAYLOADS = {"push": ("git", "push --force origin main"), "send": ("gh", "issue c
             "wipe": ("rm", "-r -f ./build")}
 EXPECT = {"push": "deny", "send": "deny", "wipe": "ask"}
 CMD, HEAD, ARGS = "{CMD}", "{HEAD}", "{ARGS}"
+# Guard mode (PR #648 review): the hole is a guarded FILE, not a command. The safe form names a
+# decoy copy of it (_decoy) inside the throwaway directory, and "ran" means bash deleted or
+# changed that decoy; the forbidden form names the real path and is only ever judged. Payload
+# "guard:<path>". Mirrors GUARD_SAMPLES in the hook (a test keeps the two equal).
+GUARD_SAMPLES = (".claude/settings.json", ".claude/settings.local.json", ".codex/hooks.json",
+                 ".openhands/hooks.json", ".agents/plugins/orca-deny-hook/hooks/hooks.json",
+                 ".opencode/plugin/orca-deny-hook.ts", ".open-fleet/hooks/deny-hook.sh",
+                 ".open-fleet/bridges/omp_pi_deny_bridge.ts", ".crush/crush.json",
+                 ".crush-orca-ro/crush.json", ".hermes-open-fleet/config.yaml",
+                 ".orca/human-grant-pubkey", ".orca/dispatch-pubkey")
+GUARD_FIND_SAMPLES = (".orca/human-grant-pubkey", ".orca/dispatch-pubkey", ".claude/settings.json")
+DELETER = "dcoy_unlink"   # the safe form's rm: deletes only inside the throwaway directory
 NL, BS, TAB, SQ, DQ, BT = "\n", "\\", "\t", "'", '"', "`"
 # Words a safe form must never contain: the oracle runs it, so it may only reach the sentinel.
 _REAL_TOOLS = re.compile(r"(^|[^A-Za-z0-9_])(git|gh|rm|curl|wget|ssh|sudo|scp|nc|python[0-9.]*)"
@@ -96,7 +108,32 @@ class Case:
         return hashlib.sha256(f"{self.payload}\0{self.template}".encode()).hexdigest()[:12]
 
 
-def render(template, payload, safe):
+def payload_kind(payload):
+    return "guard" if payload.startswith("guard:") else "cmd"
+
+
+def expect(payload):
+    """The refusal a live hole earns: deny, or ask for a Never-list shape."""
+    return EXPECT.get(payload, "deny")
+
+
+def _decoy(path):
+    """The throwaway twin of a guarded path: same shape, first segment and any orca renamed."""
+    first, _sep, rest = path.partition("/")
+    first = ("." + "x" * (len(first) - 1)) if first.startswith(".") else "x" * len(first)
+    return (first + "/" + rest).replace("orca", "xxxx")
+
+
+def render(template, payload, safe, root=None):
+    """The safe (oracle) or forbidden (hook) form of a template. {ROOT} stays for the caller
+    unless root is given: the oracle fills in its own directory, the hook side its cwd."""
+    if payload_kind(payload) == "guard":
+        path = _decoy(payload[6:]) if safe else payload[6:]
+        folder, name = os.path.split(path)
+        text = (template.replace("{GPU}", path.upper()).replace("{GP}", path)
+                .replace("{GD}", folder).replace("{GNU}", name.upper()).replace("{GN}", name)
+                .replace("{DEL}", DELETER if safe else "rm"))
+        return text if root is None else text.replace("{ROOT}", root)
     head, args = PAYLOADS[payload]
     head = SENTINEL if safe else head
     return template.replace(CMD, head + " " + args).replace(HEAD, head).replace(ARGS, args)
@@ -318,8 +355,38 @@ def compositions(count, seed=SEED):
     return out
 
 
+# find predicates (PR #648 review, P1): which spellings PROVE a guard file is not deleted. Case,
+# negation, -o, grouping, absolute and relative -path forms, -delete position, -exec rm {}.
+GUARD_FIND = (
+    "find {GD} -delete", "find {GD} -name {GN} -delete", "find {GD} -name other.txt -delete",
+    "find {GD} ! -name other.txt -delete", "find {GD} -not -name other.txt -delete",
+    "find {GD} -name other.txt -o -name {GN} -delete",
+    "find {GD} \\( -name other.txt -o -name {GN} \\) -delete",
+    "find {GD} -iname {GNU} -delete", "find {GD} -iname 'OTHER*' -delete",
+    "find {GD} -name {GNU} -delete", "find {ROOT} -iwholename '{ROOT}/{GPU}' -delete",
+    "find {GD} ! -name xxx -delete",
+    "find {GD} -path '{GD}/*' -delete", "find {GD} -path './{GD}/*' -delete",
+    "find ./{GD} -path './{GD}/*' -delete", "find {ROOT}/{GD} -path '{ROOT}/{GD}/*' -delete",
+    "find {ROOT} -path '{ROOT}/{GP}' -delete", "find {ROOT} -ipath '{ROOT}/{GPU}' -delete",
+    "find {ROOT} -path '{ROOT}/notes/*' -delete", "find . -wholename './{GP}' -delete",
+    "find . -name '*.txt' -delete", "find . -type f -delete", "find . -type f -name {GN} -delete",
+    "find . -delete -name nothing", "find {GD} -name {GN} -exec {DEL} {} \\;",
+    "find {GD} -name {GN} -exec {DEL} {} +", "find {GD} -name other.txt -exec {DEL} {} +",
+    "find {GD} -type f -exec {DEL} -f {} +", "find {GD} -iname {GNU} -execdir {DEL} {} \\;",
+    "find {GD} -maxdepth 1 -name {GN} -delete", "find {GD} -regex '.*{GN}' -delete",
+    "find {ROOT}/notes -delete", "find notes {GD} -name keep.txt -delete",
+)
+
+
+def guard_grid(every=False):
+    """Guard-mode cases: every find spelling over the anchors (every guarded path if asked)."""
+    samples = GUARD_SAMPLES if every else GUARD_FIND_SAMPLES
+    return [Case(f"guard-find:{k}", tpl, "guard:" + s)
+            for k, tpl in enumerate(GUARD_FIND) for s in samples]
+
+
 def corpus(random_count=BOUNDED_RANDOM, seed=SEED, both=False):
-    cases = []
+    cases = list(guard_grid(every=both))
     for k, case in enumerate(grid()):
         payloads = tuple(PAYLOADS) if both else (tuple(PAYLOADS)[k % len(PAYLOADS)],)
         cases += [Case(case.family, case.template, p) for p in payloads]
@@ -337,16 +404,29 @@ class BashOracle:
         self.bindir = self.root / "bin"
         self.bindir.mkdir()
         sentinel = self.bindir / SENTINEL
-        # It records its own argv: the hole RAN only when the sentinel got the payload's words,
-        # so `{HEAD};{ARGS}` (the head alone, then a stray command) is not a run of the payload.
-        sentinel.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ORCA_SENTINEL_MARK\"\n",
-                            encoding="utf-8")
+        # It records its own argv, one word per unit separator: the hole RAN only when the
+        # sentinel got exactly the payload's words, so `{HEAD};{ARGS}` (the head alone, then a
+        # stray command) or one quoted word holding them all is not a run of the payload.
+        sentinel.write_text("#!/bin/sh\nIFS=$(printf '\\037')\n"
+                            "printf '%s\\n' \"$*\" >> \"$ORCA_SENTINEL_MARK\"\n", encoding="utf-8")
         sentinel.chmod(0o755)
-        # Harmless helpers only: the templates call bash -c, cat and find. Nothing else resolves.
-        for tool in ("bash", "cat", "find"):
+        # The guard mode's rm: removes its operands only when they resolve inside the case dir.
+        deleter = self.bindir / DELETER
+        deleter.write_text(
+            "#!/bin/sh\nfor f; do\n  case \"$f\" in -*) continue ;; esac\n"
+            "  d=$(cd \"$(dirname -- \"$f\")\" 2>/dev/null && pwd -P) || continue\n"
+            "  case \"$d/\" in \"$DCOY_HOME\"/*) /bin/rm -f -- \"$f\" ;; esac\ndone\n",
+            encoding="utf-8")
+        deleter.chmod(0o755)
+        # Harmless helpers only: the templates call bash/sh -c, cat, find, tee and xargs.
+        for tool in ("bash", "sh", "cat", "find", "tee", "xargs"):
             real = self.bash if tool == "bash" else shutil.which(tool)
             if real:
                 (self.bindir / tool).symlink_to(real)
+        # The hook side of every case runs in this empty directory; {ROOT} there is its path.
+        self.hook_root = self.root / "hook-cwd"
+        self.hook_root.mkdir()
+        self.hook_root = str(self.hook_root.resolve())
         self._n = 0
         self._lock = threading.Lock()
         self.version = subprocess.run([self.bash, "-c", "printf %s \"$BASH_VERSION\""],
@@ -355,21 +435,31 @@ class BashOracle:
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def run(self, text, args=""):
-        """(sentinel ran with args leading its argv, bash reported a parse error) for a safe form."""
-        return self.observe(text, args)[:2]
+    def run(self, text, payload="push"):
+        """(the hole ran, bash reported a parse error) for one safe form of a payload."""
+        return self.observe(text, payload)[:2]
 
-    def observe(self, text, args=""):
-        """run(), plus whether the sentinel ran at all (with any argv)."""
+    def observe(self, text, payload="push"):
+        """run(), plus whether the hole was touched at all (the sentinel with any argv)."""
         if not safe_form_ok(text):
             raise ValueError(f"a safe form may reach only the sentinel: {text!r}")
         with self._lock:
             self._n += 1
             work = self.root / f"case-{self._n}"
         work.mkdir()
+        home = str(work.resolve())
+        decoy = None
+        if payload_kind(payload) == "guard":
+            decoy = work / _decoy(payload[6:])
+            decoy.parent.mkdir(parents=True)
+            decoy.write_text("pin\n", encoding="utf-8")
+            (decoy.parent / "other.txt").write_text("x\n", encoding="utf-8")
+            (work / "notes").mkdir()
+            (work / "notes" / "keep.txt").write_text("x\n", encoding="utf-8")
+            text = text.replace("{ROOT}", home)
         mark = work / ".sentinel"
         env = {"PATH": str(self.bindir), "HOME": str(work), "TMPDIR": str(work), "LC_ALL": "C",
-               "ORCA_SENTINEL_MARK": str(mark)}
+               "ORCA_SENTINEL_MARK": str(mark), "DCOY_HOME": home}
         # CPU seconds, file size and core limits are set by the parent sh before bash starts:
         # preexec_fn is not safe beside the worker threads.
         limited = ['/bin/sh', '-c', 'ulimit -t 5 2>/dev/null; ulimit -f 2048 2>/dev/null; '
@@ -388,10 +478,16 @@ class BashOracle:
         syntax = bool(re.search(r"syntax error|unexpected EOF|unexpected end of file|"
                                 r"bad substitution|here-document .* delimited by end-of-file",
                                 err))
-        want = args.split()
-        touched = mark.exists()
-        ran = touched and any(line.split()[:len(want)] == want
-                              for line in mark.read_text(encoding="utf-8").splitlines())
+        if decoy is not None:
+            ran = touched = decoy.is_symlink() or not decoy.is_file() \
+                or decoy.read_text(encoding="utf-8", errors="replace") != "pin\n"
+        else:
+            want = PAYLOADS[payload][1].split()
+            lines = mark.read_text(encoding="utf-8").splitlines() if mark.exists() else []
+            touched = bool(lines)
+            # The payload's words leading its argv: arguments a launcher appends (find -exec
+            # {} +, xargs) keep the command what it is.
+            ran = any(line.split("\x1f")[:len(want)] == want for line in lines)
         shutil.rmtree(work, ignore_errors=True)
         return ran, syntax, touched
 
@@ -420,7 +516,7 @@ def classify(ran, syntax, decision, payload="push"):
     if ran:
         if decision == "allow":
             return "miss"
-        return "downgrade" if decision == "ask" and EXPECT[payload] == "deny" else "agree"
+        return "downgrade" if decision == "ask" and expect(payload) == "deny" else "agree"
     if decision == "allow":
         return "agree"
     return "fail-closed" if syntax else "false-deny"
@@ -432,10 +528,11 @@ def evaluate(cases, oracle, hook=HOOK, jobs=4, bash_cache=None):
 
     def one(case):
         safe = render(case.template, case.payload, True)
-        if safe not in cache:
-            cache[safe] = oracle.run(safe, PAYLOADS[case.payload][1])
-        ran, syntax = cache[safe]
-        decision = hook_decision(render(case.template, case.payload, False), hook)
+        if (case.payload, safe) not in cache:
+            cache[(case.payload, safe)] = oracle.run(safe, case.payload)
+        ran, syntax = cache[(case.payload, safe)]
+        decision = hook_decision(render(case.template, case.payload, False, oracle.hook_root),
+                                 hook, oracle.hook_root)
         return {"id": case.id, "family": case.family, "payload": case.payload,
                 "template": case.template, "ran": ran, "syntax": syntax, "decision": decision,
                 "verdict": classify(ran, syntax, decision, case.payload)}
@@ -459,7 +556,7 @@ def mismatches(results):
 
 # --- minimization: ddmin over the template, placeholders atomic ----------------------------
 def _atoms(template):
-    return re.findall(r"\{CMD\}|\{HEAD\}|\{ARGS\}|.", template, re.DOTALL)
+    return re.findall(r"\{[A-Z0-9]+\}|.", template, re.DOTALL)
 
 
 # A shrink may not glue a word character onto the payload: `{CMD}i` names another command.
@@ -469,13 +566,14 @@ _GLUED = re.compile(r"(\{CMD\}|\{ARGS\})[A-Za-z0-9_./-]|[A-Za-z0-9_./-]\{(CMD|HE
 def ddmin(template, keeps):
     """The smallest template (by ddmin) for which keeps(template) still holds."""
     atoms, n = _atoms(template), 2
+    holed = re.search(r"\{[A-Z0-9]+\}", template)   # a template with a hole keeps one
     while len(atoms) >= 2:
         chunk = max(1, len(atoms) // n)
         reduced = False
         for start in range(0, len(atoms), chunk):
             trial = atoms[:start] + atoms[start + chunk:]
             text = "".join(trial)
-            if trial and any(p in text for p in (CMD, HEAD)) and keeps(text):
+            if trial and (not holed or re.search(r"\{[A-Z0-9]+\}", text)) and keeps(text):
                 atoms, n, reduced = trial, max(n - 1, 2), True
                 break
         if not reduced:
@@ -490,15 +588,19 @@ def minimize(result, oracle, hook=HOOK):
     want = result["verdict"]
 
     def keeps(template):
-        safe = render(template, result["payload"], True)
+        payload = result["payload"]
+        safe = render(template, payload, True)
+        if payload_kind(payload) == "cmd" and not any(p in template for p in (CMD, HEAD)):
+            return False   # the payload must still be in the hole
         if (HEAD in template and ARGS not in template) or not safe_form_ok(safe) \
                 or _GLUED.search(template):
             return False   # never run a real tool name; never glue text onto the payload words
-        ran, syntax, touched = oracle.observe(safe, PAYLOADS[result["payload"]][1])
+        ran, syntax, touched = oracle.observe(safe, payload)
         if want == "false-deny" and touched:
-            return False   # the sentinel ran with other words: a shrink that changed the command
-        decision = hook_decision(render(template, result["payload"], False), hook)
-        return classify(ran, syntax, decision, result["payload"]) == want
+            return False   # the hole ran with other words: a shrink that changed the command
+        decision = hook_decision(render(template, payload, False, oracle.hook_root), hook,
+                                 oracle.hook_root)
+        return classify(ran, syntax, decision, payload) == want
 
     return ddmin(result["template"], keeps)
 

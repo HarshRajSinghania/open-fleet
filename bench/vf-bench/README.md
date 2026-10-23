@@ -509,7 +509,9 @@ python3 bench/vf-bench/heldout.py check --digests digests.json [--all-history]  
 
 A holder publishes digests, never content: each case's raw sha256, its canonical-JSON sha256, and
 the sha256 of the split's canary GUID, which every held-out case must carry (`digest` refuses one
-that does not). `check` fails if any committed blob at the revision (or reachable from any ref,
+that does not). `digest` reads a case the way the scanner does: parsed in any encoding `json.loads`
+reads, with the GUID found in its strings in either letter case or behind JSON escapes; a case that
+is not a JSON object, which the scanner could never match, is refused (PR #645 review). `check` fails if any committed blob at the revision (or reachable from any ref,
 with `--all-history`) is a held-out case verbatim, the same case reformatted, the case embedded as
 an object in a larger JSON document, or a file carrying the held-out canary. Each blob is checked
 as text in every encoding `json.loads` reads (UTF-8 with or without a BOM, UTF-16 and UTF-32 in

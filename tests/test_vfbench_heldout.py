@@ -459,5 +459,54 @@ class NoBlobIsPassedUnscanned(unittest.TestCase):
         self.assertIn("UNSCANNED", digest_scan["limits"])
 
 
+
+class TheHolderToolAcceptsWhatTheScannerFinds(unittest.TestCase):
+    """PR #645 review (P2): `digest` looked for the lowercase canary's UTF-8 bytes, so a valid case
+    carrying its GUID in uppercase, in UTF-16 or behind JSON escapes was refused, though the scanner
+    finds every one of those. The canary is now looked for in the PARSED case, normalized. And the
+    reverse (sweep): a case the scanner could never find is refused instead of digested."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.case = {"id": "heldout-x", "class": "unseen", "sound_expected": "RED",
+                     "canary": CANARY, "manifest": {"unit": "ship-it"}}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _digest(self, name, data):
+        where = self.tmp / name
+        where.mkdir()
+        (where / "case.json").write_bytes(data)
+        return heldout.digest_cases(where, CANARY)
+
+    def test_each_representation_the_scanner_finds_is_accepted(self):
+        text = json.dumps(self.case)
+        forms = {
+            "uppercase GUID": text.replace(CANARY, CANARY.upper()).encode("utf-8"),
+            "UTF-16": text.encode("utf-16"),
+            "UTF-8 with a BOM": b"\xef\xbb\xbf" + text.encode("utf-8"),
+            "JSON escapes": _escaped(text).encode("utf-8"),
+        }
+        for label, data in forms.items():
+            with self.subTest(form=label):
+                doc, problems = self._digest(label.replace(" ", "-"), data)
+                self.assertEqual(problems, [])
+                # ...and the scanner finds that very file once it is committed.
+                kinds = {k for k, _ in heldout.scan(data, doc)}
+                self.assertIn("verbatim", kinds)
+                self.assertIn("canonical", kinds)
+
+    def test_a_case_without_its_canary_is_still_refused(self):
+        bare = dict(self.case, canary="none")
+        _, problems = self._digest("bare", json.dumps(bare).encode("utf-8"))
+        self.assertTrue(any("canary" in p for p in problems), problems)
+
+    def test_a_case_the_scanner_cannot_match_is_refused(self):
+        _, problems = self._digest("array", json.dumps([self.case]).encode("utf-8"))
+        self.assertTrue(any("JSON object" in p for p in problems), problems)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

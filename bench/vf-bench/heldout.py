@@ -163,9 +163,27 @@ def validate(protocol, gate=None, traps_dir=None):
 # digest (holder side)
 # ---------------------------------------------------------------------------------------------
 
+def _strings(node):
+    """Every string in a parsed JSON value, keys included."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
 def digest_cases(case_dir, canary):
-    """(digests document, problems). Each case must carry the split's canary GUID, so any copy of
-    it — in any format, in any file — is findable without publishing the case itself."""
+    """(digests document, problems). Each case must carry the split's canary GUID, so a copy of
+    it that keeps the canary as text is findable without publishing the case itself (the limits
+    are in heldout-protocol.json). The holder's tool accepts exactly what the scanner finds: the
+    case is PARSED in any encoding json.loads reads and the GUID is looked for, case-insensitively,
+    in its strings, so uppercase, UTF-16 and JSON-escaped canaries all count; and a case the
+    scanner could never match, anything but a JSON object, is refused (PR #645 review)."""
+    canary = canary.lower()
     files = sorted(Path(case_dir).glob("*.json"))
     if not files:
         raise UsageError(f"{case_dir} holds no *.json cases")
@@ -177,7 +195,11 @@ def digest_cases(case_dir, canary):
         except ValueError:
             problems.append(f"{f.name}: not JSON")
             continue
-        if canary.encode("utf-8") not in raw:
+        if not isinstance(obj, dict):
+            problems.append(f"{f.name}: not a JSON object; the scan matches objects, so it could "
+                            "never find this case")
+            continue
+        if not any(canary in s.lower() for s in _strings(obj)):
             problems.append(f"{f.name}: does not carry the split's canary GUID")
         entries.append({"raw_sha256": sha256(raw), "canonical_sha256": sha256(canonical(obj))})
     doc = {"kind": DIGESTS_KIND, "protocol": PROTOCOL_ID,

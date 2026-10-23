@@ -207,6 +207,30 @@ class LocalStateStore:
                     op TEXT NOT NULL DEFAULT 'write',
                     created_at REAL NOT NULL
                 );
+                -- A worker launch's identity, written BEFORE its first external side effect
+                -- (#597). `phase` is the last committed launch boundary; `outcome` is NULL while
+                -- the launch is open. `owner_token`/`epoch` fence a coordinator that was taken over.
+                CREATE TABLE IF NOT EXISTS launch_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    request_id TEXT,
+                    payload_sha256 TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL DEFAULT 'default',
+                    dispatch_id TEXT NOT NULL,
+                    terminal_handle TEXT NOT NULL,
+                    lane_dir TEXT NOT NULL,
+                    worktree TEXT,
+                    backend TEXT,
+                    phase TEXT NOT NULL,
+                    outcome TEXT,
+                    owner_token TEXT NOT NULL,
+                    owner_pid INTEGER,
+                    owner_host TEXT,
+                    epoch INTEGER NOT NULL DEFAULT 1,
+                    receipt_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 """
             )
             self._migrate(conn)
@@ -218,7 +242,16 @@ class LocalStateStore:
             "gates": {"task_id": "TEXT", "message_id": "TEXT", "prev_status": "TEXT", "kind": "TEXT DEFAULT 'ask'"},
             "runs": {"objective": "TEXT"},
             "terminals": {"backend_ref": "TEXT"},
-            "dispatches": {"backend_ref": "TEXT", "head_sha": "TEXT"},
+            # monitor_pid: the monitor that holds the launch gate (cleared when it exits);
+            # monitor_started_at: set by the FIRST gate claim and never cleared (#597).
+            "dispatches": {
+                "backend_ref": "TEXT",
+                "head_sha": "TEXT",
+                "monitor_pid": "INTEGER",
+                "monitor_started_at": "REAL",
+                "intent_id": "TEXT",
+            },
+            "requests": {"payload_sha256": "TEXT", "intent_id": "TEXT"},
         }
         for table, cols in wanted.items():
             have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -231,21 +264,44 @@ class LocalStateStore:
                             raise
 
     # --- Idempotent request tracking ---
-    def get_or_record_request(self, request_id: str | None, method: str) -> dict[str, Any] | None:
+    def get_or_record_request(
+        self,
+        request_id: str | None,
+        method: str,
+        payload_sha256: str | None = None,
+    ) -> dict[str, Any] | None:
         if not request_id:
             return None
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT method, state, response_json FROM requests WHERE request_id = ?",
+                "SELECT method, state, response_json, payload_sha256 FROM requests WHERE request_id = ?",
                 (request_id,),
             ).fetchone()
             if not row:
                 return None
             if row["method"] != method:
                 raise ProviderError("request_mismatch", f"retry-request {request_id!r} bound to {row['method']}, not {method}")
+            self.check_request_payload(request_id, row["payload_sha256"], payload_sha256)
             if row["response_json"]:
                 return json.loads(row["response_json"])
             return {"state": row["state"], "requestId": request_id}
+
+    @staticmethod
+    def check_request_payload(request_id: str, recorded: str | None, offered: str | None) -> None:
+        """A request id binds its payload: a changed payload never reuses a result (#597)."""
+        if recorded and offered and recorded != offered:
+            raise ProviderError(
+                "request_mismatch",
+                f"retry-request {request_id!r} was recorded with a different payload; use a new request id",
+                {"requestId": request_id},
+            )
+
+    def request_row(self, request_id: str | None) -> dict[str, Any] | None:
+        if not request_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM requests WHERE request_id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
 
     def save_request(self, request_id: str | None, method: str, state: str, response: dict[str, Any]) -> None:
         if not request_id:
@@ -259,12 +315,82 @@ class LocalStateStore:
     def request_show(self, request_id: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT state, response_json FROM requests WHERE request_id = ?",
+                "SELECT state, response_json, intent_id FROM requests WHERE request_id = ?",
                 (request_id,),
             ).fetchone()
             if not row:
                 return {"requestId": request_id, "state": "absent"}
-            return {"requestId": request_id, "state": row["state"]}
+            out: dict[str, Any] = {"requestId": request_id, "state": row["state"]}
+            intent = conn.execute(
+                "SELECT intent_id, phase, outcome, dispatch_id, task_id FROM launch_intents WHERE intent_id = ?",
+                (row["intent_id"],),
+            ).fetchone() if row["intent_id"] else None
+            if intent:
+                # Read-only triage: which launch attempt this request names, and how far it got.
+                out["intent"] = {
+                    "id": intent["intent_id"],
+                    "phase": intent["phase"],
+                    "outcome": intent["outcome"],
+                    "dispatchId": intent["dispatch_id"],
+                    "taskId": intent["task_id"],
+                }
+            return out
+
+    # --- #597: launch intents (crash-recoverable worker launch) ---
+    def launch_intent(self, intent_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM launch_intents WHERE intent_id = ?", (intent_id,)).fetchone()
+        return dict(row) if row else None
+
+    def open_launch_intents(self, task_id: str | None = None) -> list[dict[str, Any]]:
+        """Launches with no final outcome yet (`unknown` stays open: reconcile visits it again)."""
+        q = "SELECT * FROM launch_intents WHERE (outcome IS NULL OR outcome = 'unknown')"
+        params: list[Any] = []
+        if task_id:
+            q += " AND task_id = ?"
+            params.append(task_id)
+        with self._connect() as conn:
+            rows = conn.execute(q + " ORDER BY created_at ASC", params).fetchall()
+        return [dict(r) for r in rows]
+
+    def claim_monitor(self, dispatch_id: str, pid: int) -> bool:
+        """The launch gate as a compare-and-set: one monitor, and only for a live dispatch (#597).
+
+        Refuses a dispatch that is fenced or withdrawn (#591 review) AND one another monitor
+        holds, so a monitor that a dead coordinator's launcher starts late can never run the
+        agent beside the one recovery adopted, nor after recovery abandoned the dispatch.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "UPDATE dispatches SET monitor_pid = ?, monitor_started_at = COALESCE(monitor_started_at, ?) "
+                "WHERE dispatch_id = ? AND state IN ('ready', 'running', 'retained') AND COALESCE(monitor_pid, 0) = 0",
+                (int(pid), time.time(), dispatch_id),
+            )
+            conn.execute("COMMIT")
+        return cur.rowcount == 1
+
+    def abandon_unlaunched(self, dispatch_id: str) -> bool:
+        """Recovery's side of the gate: abandon a dispatch no monitor has EVER claimed (#597).
+
+        Exactly one of this and `claim_monitor` wins; the loser sees rowcount 0.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "UPDATE dispatches SET state = 'abandoned', terminal_state = 'abandoned', updated_at = ? "
+                "WHERE dispatch_id = ? AND state IN ('ready', 'retained') AND COALESCE(monitor_pid, 0) = 0 "
+                "AND monitor_started_at IS NULL",
+                (time.time(), dispatch_id),
+            )
+            if cur.rowcount == 1:
+                conn.execute(
+                    "UPDATE terminals SET state = 'abandoned' WHERE handle = "
+                    "(SELECT terminal_handle FROM dispatches WHERE dispatch_id = ?)",
+                    (dispatch_id,),
+                )
+            conn.execute("COMMIT")
+        return cur.rowcount == 1
 
     # --- Run & Task DAG ---
     def task_create(

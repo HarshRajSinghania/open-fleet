@@ -1,0 +1,71 @@
+{
+  "id": "mutmut-valid-control-1",
+  "class": "control-not-a-trap",
+  "sound_expected": "GREEN",
+  "note": "#600: the neighbour of surviving-mutant-1 and zero-kill-artifact-1. A mutation-tool control pinned to mutant m7 whose artifact reports m7 KILLED while ANOTHER mutant (m3) survived \u2014 a multi-mutant run in which the pinned one died is a kill, so survival must be scoped to the pinned id. Must stay GREEN.",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "gh_stub": true,
+  "repo": "vf-bench/mutmut-valid-control",
+  "manifest": {
+    "unit": "vf-bench-mutmut-control",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/nc-mutmut-killed.txt",
+        "sha256": "{{nc_mutmut_killed_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "ran mutmut over mod.py at head_sha",
+      "tool": "mutmut",
+      "mutant": "m7",
+      "result": "the pinned mutant m7 was KILLED (the suite went RED)",
+      "artifact": "docs/reports/vf/nc-mutmut-killed.txt"
+    }
+  }
+}

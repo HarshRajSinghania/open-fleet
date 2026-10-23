@@ -135,8 +135,11 @@ WEIGHTS = {
     "test_verdict_check": 0.1,
     "test_verify": 64.4,
     "test_verify_gate": 7.6,
-    "test_vfbench": 11.8,
+    # #600: the corpus grew 33 -> 72 cases. Both re-timed locally and scaled by the ratio of
+    # test_vfbench's old weight to its old local time (11.8 / 45.8 s), so the ratios still steer.
+    "test_vfbench": 20.1,
     "test_vfbench_gate": 0.1,
+    "test_vfbench_guards": 11.6,
     "test_watchdog": 1.1,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,

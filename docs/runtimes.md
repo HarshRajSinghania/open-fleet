@@ -136,8 +136,9 @@ coordinator killed after the spawn left `pid 0`, and a stop recorded `stopped` w
 every later commit. The kernel drops the lock when the process dies. A free lock on an open intent
 on the same host therefore proves that its owner is gone. `orchestration launch-reconcile [--intent <id> | --request <id>]`
 settles such intents. `worker-list`, `worker-show` and a `worker-start` for the same task settle
-them automatically. When the owner is alive, or on another host, the intent is reported `pending`
-or `unknown` and left untouched, unless `--takeover` is passed. A takeover swaps the owner token
+them automatically, except an `unknown` one, which waits for an explicit `launch-reconcile`.
+When the owner is alive, or on another host, the intent is reported `pending` or `unknown` and
+left untouched, unless `--takeover` is passed. A takeover swaps the owner token
 and bumps the epoch, so the old writer's next commit fails with `launch_fenced`. A fenced writer
 releases nothing, deletes nothing and terminates nothing; the new owner decides. Reconciliation
 never mints ids, so the run, task, dispatch and terminal ids the worker was launched with are the

@@ -1724,10 +1724,14 @@ if {repr(self.backend)} == "cmux":
         return {"reconciled": receipts, "count": len(receipts)}
 
     def _reconcile_dead_intents(self, task_id: str | None = None) -> None:
-        """Settle every open launch on this host whose coordinator is provably gone."""
+        """Settle every open launch on this host whose coordinator is provably gone.
+
+        An `unknown` launch is left to an explicit `launch-reconcile`: it waits on an inspection,
+        and re-deciding it on every poll would only rewrite the same receipt.
+        """
         host = socket.gethostname()
         for it in self.state.open_launch_intents(task_id):
-            if it["owner_host"] != host:
+            if it["owner_host"] != host or it["outcome"] == "unknown":
                 continue
             try:
                 self._reconcile_intent(it["intent_id"], takeover=False)
@@ -1989,7 +1993,10 @@ if {repr(self.backend)} == "cmux":
         elif backend == "tmux":
             ref = d["backend_ref"] or f"openfleet-{d['terminal_handle']}"
             out["backendRef"] = ref
-            out["alive"] = subprocess.run(["tmux", "has-session", "-t", ref], capture_output=True).returncode == 0
+            try:
+                out["alive"] = subprocess.run(["tmux", "has-session", "-t", ref], capture_output=True, timeout=15).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                out["alive"] = None  # no tmux to ask: cannot tell
         elif pid > 0:
             out["alive"] = _pid_runs_monitor(pid, lane)
         else:

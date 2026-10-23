@@ -489,7 +489,7 @@ def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
     BOOL_FLAGS = {
         "--brief", "--wait", "--format", "--unread", "--peek", "--all",
         "--screen", "--focus", "--include-visual-layouts", "--fresh",
-        "--debug", "--inject", "--json", "--force", "--takeover-legacy",
+        "--debug", "--inject", "--json", "--force", "--takeover-legacy", "--takeover",
     }
     i = 0
     while i < len(tokens):
@@ -771,6 +771,12 @@ class RuntimeProvider:
                 )
             if sub == "request-show":
                 return self.request_show(request_id=flags.get("request", ""))
+            if sub == "launch-reconcile":
+                return self.launch_reconcile(
+                    intent=flags.get("intent"),
+                    request=flags.get("request"),
+                    takeover=bool(flags.get("takeover")),
+                )
             if sub == "send":
                 reserved = {"subject", "type", "to", "outcome", "from", "payload", "run", "environment", "pairing-code"}
                 attrs = {k: v for k, v in flags.items() if k not in reserved}
@@ -935,6 +941,10 @@ class RuntimeProvider:
 
     def dispatch_inject(self, **kwargs: Any) -> dict[str, Any]:
         return self._unsupported("dispatch_inject", kwargs)
+
+    def launch_reconcile(self, **kwargs: Any) -> dict[str, Any]:
+        """Settle worker launches a crashed coordinator left open (`posix` only, #597)."""
+        return self._unsupported("launch_reconcile", kwargs)
 
     def request_show(self, **kwargs: Any) -> dict[str, Any]:
         return self._unsupported("request_show", kwargs)

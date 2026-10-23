@@ -71,8 +71,8 @@ DETECT: read the stack (manifests, CI, existing gates) and DRAFT the dimension s
   wire the smallest harness that measures the dimension on a unit branch off BASE; then, BEFORE
   review, the coordinator (never a worker) injects the violation on a THROWAWAY branch off the
   unit branch — coverage: delete a covered test file · security: a fixture lockfile with a
-  known-bad pinned version the scanner reads WITHOUT installing (installing a known-bad dep is a
-  networked supply-chain action: ephemeral sandbox lane only, sandbox-policy) · perf: an injected
+  known-bad pinned version the scanner reads WITHOUT installing (installing one is a networked
+  supply-chain action: the danger lane, BLOCKED on Orca per sandbox-policy — never install) · perf: an injected
   sleep/fixture on a throwaway commit · a11y: an alt/label stripped on a throwaway branch ·
   architecture: a forbidden import on a throwaway branch. The harness MUST go RED on the
   injection and GREEN after revert — that transcript is the unit's failing-first proof

@@ -326,7 +326,7 @@ class SharedDoctrineLivesOnce(unittest.TestCase):
 class TheSoloRunLessonIsWhereItIsNeeded(unittest.TestCase):
     """#291. The flagship ship-it run learned that a solo fleet cannot manufacture an independent
     approver, so a mutation unit cannot close: it recorded RED and stopped, which is why ship-it
-    sits at doctrine-only. That lesson was written into the run report, the run template, the
+    sat at doctrine-only then. That lesson was written into the run report, the run template, the
     binder and the binder's test — and into none of the documents a coordinator running ship-it
     actually reads. A fresh coordinator would hit the same wall with no instruction for it.
     """

@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel evidence workers, one obligation each, re-derived independently; the human/legal owner's disposition of gaps and the conformance verdict are one-way gates, not a lower rung.
-> **Activation load:** ~25,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~26,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at a standard (EU AI Act Art-12/50, SOC 2, NIST SSDF) and a codebase. Come back to an
@@ -85,7 +85,10 @@ flowchart TD
 
 ## Human gates
 
-The conformance verdict and any accepted residual gap are **one-way doors** under
+**FREEZE is yours.** You confirm the standard@version catalog
+([`decide-and-freeze`](../../playbooks/decide-and-freeze.md)); a catalog you already named at a
+digest — say, in a scheduled run's prompt — is validated, not re-asked, and a headless run with
+neither parks at the freeze. The conformance verdict and any accepted residual gap are **one-way doors** under
 [`gate-classification`](../../runtime/gate-classification.md) — a fleet never signs off a standard on a
 human/legal owner's behalf. Evidence gathering runs `PROFILE=ro`; remediation that lands code is a
 separately authorized `ship-it` / `clean-sweep` run.
@@ -132,6 +135,7 @@ door, and remediation that lands code is a separate `ship-it` or `clean-sweep` r
 
 ## Composes
 Playbooks:
+[`decide-and-freeze`](../../playbooks/decide-and-freeze.md) (FREEZE is the one-way gate) ·
 [`decompose-dag`](../../playbooks/decompose-dag.md) ·
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·
 [`research-brief`](../../playbooks/research-brief.md) ·

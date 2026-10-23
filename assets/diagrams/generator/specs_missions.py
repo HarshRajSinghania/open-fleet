@@ -53,7 +53,7 @@ m("harden-it", "a threat model closed, the fix re-attacked",
   "one-way remediations you perform yourself, like a secret rotation · the danger-sandbox grant",
   [("CLEAN", G), ("HARDENED-WITH-OPEN-ITEMS", A)],
   "exploit tests · class-wide fixes on BASE · re-attack transcripts · a fresh full audit",
-  "parked P0/P1 named per item — no PoC ever runs on your machine",
+  "parked P0/P1 named per item — no host-unsafe PoC ever runs on your machine",
   "THREAT-MODEL → AUDIT → FIX → LAND → RE-ATTACK → RE-AUDIT"),
 
 m("speed-it", "every journey within budget, on a declared contract",

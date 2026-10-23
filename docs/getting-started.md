@@ -60,16 +60,28 @@ Per-mission tooling on top of that — each mission declares its own in `SKILL.m
 | If you plan to run | Also install |
 |---|---|
 | any mission | `git` + `gh`, or a tracker reachable via `orca linear` / `orca jira` |
-| harden-it | `gitleaks`, plus an ephemeral per-workspace sandbox for exploit PoCs |
-| speed-it | a real measurement path: Lighthouse/DevTools access, or a load/profiler harness |
-| modernize-it | the project's package manager; CI must be green at baseline |
-| prove-it | a runnable suite plus a coverage tool it already supports |
+| absorb-it | merge rights on the target and permission to comment on and close inbound PRs; a runnable suite; the repo's DCO/CLA policy |
+| access-it | a deterministic a11y oracle (axe-core / Lighthouse) and a runnable surface |
+| attest-it | the standard's own text (or a human-supplied obligation catalog) at a digest |
+| clean-sweep | nothing beyond the base |
 | deflake-it | a runnable suite; CI history is read via `gh run list` |
-| ship-it | your deploy tooling and a canary surface, if you want the states past `RELEASED` |
-| pin-it | the installed Orca CLI itself (`orca skills get` is the re-witness oracle) |
+| document-it | an extractor for the public surface (or the run writes one) and a runnable claim check; a docs framework's local build, if the docs use one |
+| field-test-it | the target its tier needs — an Orca emulator skill (`orca-emulator` / `orca-emulator-android`) or a paired device, a browser, `orca computer`, or a workspace recipe — plus the app's build toolchain |
 | floor-it | the repo's own counters per dimension (coverage runner, scanner, harness, linter) and CI write access on BASE |
+| harden-it | `gitleaks`; a host-unsafe exploit PoC parks on Orca (the danger lane is blocked there) and needs a placement-bound sandbox off it |
+| map-it | nothing beyond the base |
+| migrate-it | the project's migration runner, a database it can migrate and dump, a deploy path per phase (each deploy is your grant), read/write telemetry for the zero-use windows |
+| modernize-it | the project's package manager; CI must be green at baseline |
+| offload-it | a provider account + CLI with a sandbox/VM plan, Orca's `vm recipe doctor`, and an agent CLI + account for the auth snapshot |
+| oncall-it | the target's logging/metrics/tracing libraries with a queryable backend, a staging environment whose failures can be induced, an observable alert destination |
+| oss-contribute | a fork you can push to and read access to the upstream repo |
+| pin-it | the installed Orca CLI itself (`orca skills get` is the re-witness oracle) |
+| prove-it | a runnable suite plus a coverage tool it already supports |
 | reshape-it | the repo's mutation tooling (or the hand-mutant fallback) plus a runnable suite |
-| field-test-it | an Orca emulator skill (`orca-emulator` / `orca-emulator-android`) or a paired device, plus the app's build toolchain |
+| review-it | nothing beyond the base |
+| root-cause | nothing beyond the base |
+| ship-it | your deploy tooling and a canary surface, if you want the states past `RELEASED` |
+| speed-it | a real measurement path: Lighthouse/DevTools access, or a load/profiler harness |
 
 This table is the single home of the per-mission list; the README links here rather than
 repeating it.
@@ -303,14 +315,21 @@ SHA — not that a worker said so. (The clean-env run is the coordinator's job, 
 
 Fleets classify every decision as **mechanical** (auto-resolved, audited), **taste**
 (recommendation picked, batched for your veto, work continues), or **one-way** (yours, always).
-You will be interrupted only for:
+You will be interrupted only at one-way gates and human parks — these are the ones the missions name:
 
 | Gate                             | When                       | What a good answer looks like |
 |----------------------------------|----------------------------|-------------------------------|
-| Freeze the spec                  | ship-it/map-it, intent entry | Read the acceptance criteria, not the prose. If a criterion is untestable, say so now — it is cheap here and expensive later. |
-| Promotion to the default branch  | end of ship-it / clean-sweep | Review the traceability table and the `accountable:` line, then merge it yourself. |
-| Refuted/duplicate closes (batch) | clean-sweep                | Skim the refutation evidence; approve as a batch or pull items out. |
+| Freeze the target                | ship-it/map-it intent entry; the scope, surface, or catalog of access-it, attest-it, document-it, floor-it, migrate-it, oncall-it, prove-it, reshape-it, speed-it | Read the acceptance criteria or the frozen list, not the prose. If a criterion is untestable, say so now — it is cheap here and expensive later. |
+| Promotion to the default branch  | the end of every mission that lands code; every migrate-it phase | Review the traceability table and the `accountable:` line, then merge it yourself. |
+| Deploy and rollback              | ship-it past `RELEASED`; every migrate-it phase | Deploy it yourself or record the grant (`decisions.py append --source human:<you>`) — the fleet never self-authorizes one. |
+| The destructive drop             | migrate-it CONTRACT        | Check the archived parity and both zero-use windows before you grant it. |
+| Refuted/duplicate closes (batch) | clean-sweep, absorb-it, oss-contribute | Skim the refutation evidence; approve as a batch or pull items out. |
 | One-way remediations             | harden-it (e.g. secret rotation) | Do the action, then confirm — the mission counts it done only when *verified*, not when acknowledged. |
+| Posting the verdict              | review-it                  | Read the verdict that will be posted; your grant covers that one post. |
+| Paid steps and the agent login   | offload-it                 | OK each paid checkpoint; run the device-auth login in your own terminal. |
+| Device and permission grants     | field-test-it              | Pair or grant on your device; nothing outside the paired set is touched. |
+| Human-owed parks                 | access-it human-AT review, attest-it GAPs, oncall-it cost and channel items, root-cause's fix handoff, map-it decision tickets | Each park names its artifact, its recipient, and the observation that closes it. |
+| Lane B product forks             | any mission                | Pick one of the two drafted options; the fleet never picks for you. |
 
 Here is what an actual gate looks like when it reaches you — a question from a freeze
 session, recommendation attached, one question at a time:

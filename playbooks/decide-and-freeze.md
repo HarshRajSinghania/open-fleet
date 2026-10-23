@@ -7,7 +7,7 @@ canonical fixed point for every downstream ticket, review, and acceptance test.
 
 - **Input already frozen** (docs/spec handed in): VALIDATE it — load-bearing external deps are real
   and installable (research, don't assume), acceptance criteria are testable, boundaries explicit —
-  then skip to `decompose-dag`. No grill.
+  then skip to the next phase. No grill.
 - **Input is intent/draft**: run the grill below, then freeze.
 
 ## The grill (interactive; HITL leak if fanned to a worker)
@@ -18,8 +18,8 @@ frozen spec is the round-1 record. Alongside it, publish a **Verified Current St
 what the code ACTUALLY does today, read from the tree, not recalled — so the grill sharpens
 against facts. State the **premises** the scope rests on as flat statements the human agrees or
 disagrees with (`PREMISE n: … — agree / disagree`) before scoping proceeds; a disagreed premise
-loops, it is never overridden. Where the grill reaches an ADR-worthy decision, `record-decision`
-writes it.
+loops, it is never overridden. Where the grill reaches an ADR-worthy decision, read
+record-decision.md and write it.
 
 On the coordinator terminal, run `grilling` + `domain-modeling` — **round by round**, not
 question-by-question: ask the WHOLE frontier in one round, one bold-titled question + a

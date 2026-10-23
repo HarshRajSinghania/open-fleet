@@ -81,7 +81,7 @@ python3 runtime/scripts/run_report.py         # every claimed tier binds to arti
 ## Gate 3 — verifier moat held by CI (epic DoD 3)
 
 ```bash
-python3 bench/vf-bench/gate.py               # exit 0: corpus pinned, no trap skipped, verify.py false-done 0/20, controls green
+python3 bench/vf-bench/gate.py               # exit 0: corpus pinned, no trap skipped, verify.py false-done 0/25, controls green
 sh demo/negative-control/run.sh | tail -2    # PASS: self-scorer GREEN ... RED (exit 0 overall)
 grep -rlE 'vfbench\.py|vf-bench/gate\.py' .github/workflows/   # non-empty: #412 landed
 grep -rl 'negative-control' .github/workflows/                 # non-empty: #413 landed
@@ -100,12 +100,13 @@ RELEASE_SHA=$(git rev-parse HEAD) gh run list --workflow install --branch main -
 
 ## Gate 5 — runtime re-pinned, chaining exercised (epic DoD 5)
 
-The pin must be a *fresh live* witness, not the 2026-09-13 one #416 replaced,
-and the chaining exercise's report must be published where a reader is sent to
+The pin must be a *fresh live* witness, not the 2026-09-13 one #416 replaced, or a source-delta
+re-pin carrying fresh live receipts recorded under `docs/runs/` (`live_receipts`; 2026-10-23 review,
+P2-41), and the chaining exercise's report must be published where a reader is sent to
 it: the protocol under test names it (the run-archive index may too).
 
 ```bash
-python3 -c 'import json; e=json.load(open("runtime/pins.json"))["orca"]; assert e["witness"]=="live" and e["witnessed"]>="2026-09-16", e; print("orca", e["version"], e["witnessed"], "live OK")'
+python3 -c 'import json,os; e=json.load(open("runtime/pins.json"))["orca"]; c=e.get("live_receipts") or {}; r=str(c.get("run","")); ok=(e["witness"]=="live" and e["witnessed"]>="2026-09-16") or (e["witness"]=="source" and "2026-09-16"<=c.get("witnessed","")<=e["witnessed"] and r.startswith("docs/runs/") and os.path.isfile(r)); assert ok, e; print("orca", e["version"], e["witnessed"], e["witness"], "OK")'
 ls -d docs/reports/chaining-*                # the published chaining report (non-empty)
 grep -l 'docs/reports/chaining-' runtime/mission-chaining.md docs/runs/README.md   # non-empty: a navigable doc names it
 gh issue view 416 --json state -q .state    # CLOSED (re-pin run)

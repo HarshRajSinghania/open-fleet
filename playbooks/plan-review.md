@@ -3,7 +3,7 @@
 Recipe: gstack `plan-ceo-review` scope challenge, `plan-design-review` / `plan-devex-review`,
 `plan-eng-review`'s terminal-report exit gate, `autoplan`'s decision classification, and
 `office-hours` alternatives generation. A plan is cheap to change and expensive to have been wrong
-about. This reviews the PLAN — `acceptance-review` reviews the diff, `risk-review` reviews the
+about. This reviews the PLAN — acceptance-review reviews the diff, risk-review reviews the
 change surface.
 
 ## Lens order is the mechanism
@@ -22,7 +22,7 @@ before the next one reads it:
    scope has not survived challenge yet, and the scope amendment then invalidates the engineering.
 
 Each lens states, before it reads, what a strong plan on its axis would look like — the expectation
-is written before the artifact, as in `acceptance-review`.
+is written before the artifact, as in acceptance-review.
 
 ## Premise statements
 

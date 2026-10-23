@@ -37,15 +37,20 @@ money and the login are the human's: each paid checkpoint proceeds only on an ex
 the interactive agent login runs in the human's own terminal. Composes `human-handoff` (paid
 checkpoints and the interactive login are human grants with verify-complete observations),
 `research-brief` (the provider's exact create/exec/snapshot/remove verbs are read from its own
-docs before scaffolding); rides `evidence-manifest` (each recipe carries its doctor transcript,
-snapshot ids, and provision transcript), `gate-classification` (paid steps are one-way doors),
-`sandbox-policy` (PROFILE=rw; secrets never land in scripts, userData, state, or commits).
-Worker TASK pack: one of matt | addy — never co-mount.
+docs before scaffolding), `acceptance-review` (build-blind review of the recipe PR); rides
+`evidence-manifest` (each recipe carries its doctor transcript, snapshot ids, and provision
+transcript), `dispatch-lifecycle` (the recipe is written on a unit worktree off BASE, never the
+primary checkout), `reviewed-sha-freshness`, `ledger-contract`, `gate-classification` (paid steps
+and the promotion are one-way doors), `sandbox-policy` (PROFILE=rw; secrets never land in
+scripts, userData, state, or commits). Worker TASK pack: one of matt | addy — never co-mount.
+
+DEFERRED READS, never at activation: liveness-resume.md on a stall or resume.
 
 ## Terminal outcomes
 
 - **OFFLOADED** — the doctor is clear (no fail AND no warn) and the provision loop is green end
-  to end; state holds the AUTHENTICATED snapshot id; destroy is implemented and tested.
+  to end; state holds the AUTHENTICATED snapshot id; destroy is implemented and tested; the recipe
+  is merged to BASE with its promotion PR open (Run-on appears once the human merges it).
 - **OFFLOADED-WITH-PARKED** (degraded) — ≥1 park, each naming its checkpoint: a provider quota or plan cap
   (with the upgrade or smaller-scope ask), an unauthenticated agent login (the human re-runs
   device-auth), or an interactive step the human has not run yet.
@@ -53,8 +58,9 @@ Worker TASK pack: one of matt | addy — never co-mount.
 ## Pipeline
 
 ```
-REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission offload-it) → INSPECT the repo for an existing entry, scripts, state, or setup notes — a working recipe goes
-  straight to the doctor loop, never a rebuild.
+BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission offload-it --base <BASE> --fork-point <sha>
+  --require-gitleaks; BASE ≠ default — dispatch-lifecycle.md) → INSPECT the repo for an existing entry, scripts, state,
+  or setup notes — a working recipe goes straight to the doctor loop, never a rebuild.
 → INTERVIEW, settled FIRST and confirmed back, never picked by the fleet: connection mode
   (Orca-server vs SSH — it changes the create output and half the templates), provider plus
   scope/project/region/plan, agent CLI plus account, git token source. Load `orca skills get
@@ -62,8 +68,8 @@ REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission of
   `docker-ssh`, `windows-scripts`, `failure-modes`).
 → PREREQUISITES: provider CLI installed and authed, caps recorded (a 45-minute sandbox cap
   limits the base build AND the per-workspace runtime); each item marked verified or asserted.
-→ SCAFFOLD scripts + state under scripts/orca-vm/, executable, stdout reserved for the final
-  JSON object; every script resolves values env → state → fallback and merges outputs back.
+→ SCAFFOLD scripts + state under scripts/orca-vm/ on the unit's worktree off BASE, executable, stdout
+  reserved for the final JSON object; every script resolves values env → state → fallback.
 → BASE-SNAPSHOT [CHECKPOINT: explicit OK — paid and slow]: build headless main only, clone via
   a GIT_ASKPASS helper with escaped `\$1`/`\$GH_TOKEN` under `set -u` (rm'd after), trap errors
   so a crash removes the half-built environment, snapshot the STOPPED machine, parse the id into
@@ -76,15 +82,19 @@ REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission of
   [CHECKPOINT: explicit OK — the re-snapshot is paid, and the login words above do not cover
   it]: re-snapshot, overwrite snapshotId, record authSourceSnapshotId, remove the auth
   environment.
-→ WIRE orca.yaml create/suspend/resume/destroy at the scripts. The composer reads recipes from
-  the PRIMARY checkout — a recipe that lives only on a branch never appears as Run-on.
+→ WIRE orca.yaml create/suspend/resume/destroy at the scripts, on the same worktree. The doctor and
+  `--provision` work on any branch (`--repo-path <unit worktree>`); only the picker needs the primary.
 → DOCTOR dry-run: free and static. Clear means NO fail AND NO warn (`ok` alone proves nothing);
   resolve each warn or record why it is accepted before spending on provision.
 → PROVISION loop [CHECKPOINT: one OK covers the whole fix-and-rerun loop]: read the
   provisionTranscript, fix the script, re-run to ok. Confirm separately that destroy really
   tears down (destroy:none means hand-cleanup, recorded, human-accepted).
-→ optional WORKSPACE-TEST [CHECKPOINT, only if asked]: create via the picker, verify
-  sleep/wake/delete.
+→ PR against BASE (the integrator opens it; gitleaks-scanned) → build-blind REVIEW (acceptance-review:
+  no secret anywhere, destroy real) → LAND (the conductor merges to BASE, ancestry-verified)
+→ PROMOTE [ONE-WAY]: open the BASE→default promotion PR and stop — the composer reads recipes from
+  the PRIMARY checkout, so Run-on appears only after the human merges it; never commit to default.
+→ optional WORKSPACE-TEST [CHECKPOINT, only if asked, after that merge]: create via the picker,
+  verify sleep/wake/delete.
 → VERDICT: OFFLOADED, or OFFLOADED-WITH-PARKED with the checkpoint register.
 ```
 
@@ -92,24 +102,29 @@ REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission of
 
 Each recipe carries: a doctor result with zero fail and zero warn; a provision transcript with
 ok:true across create→validate→destroy; state holding the AUTHENTICATED snapshotId plus the
-authSourceSnapshotId it superseded; destroy enacted, not assumed. The verifier re-runs the
-FREE doctor dry-run and re-derives the transcript's resource ids through provider read-only
-verbs — it never re-provisions (a re-provision is a paid step, and paid steps are the human's).
+authSourceSnapshotId it superseded; destroy enacted, not assumed; the PR merged to BASE,
+ancestry-verified, at its reviewed SHA. Negative control (evidence-manifest §1, executed per §2):
+revert the unit's orca.yaml recipe entry and the free doctor dry-run fails — the recipe id no longer
+resolves. The verifier re-runs that FREE dry-run and re-derives the transcript's resource ids through
+provider read-only verbs — it never re-provisions (a re-provision is a paid step, and paid steps are
+the human's).
 
 ## Ledger + supervision
 
-Header at T0 per ledger-contract.md: `RUN · COORDINATOR · BASE · FORK_POINT · T0 · SOURCE ·
-WIP` (SOURCE = provider + recipe id; WIP = 1 — snapshots are serial and paid). Header per liveness-resume.md: `RUN · COORDINATOR · BASE · FORK_POINT · T0 · SOURCE · WIP`. One row per
+Header at T0 per liveness-resume.md: `RUN · COORDINATOR · BASE · FORK_POINT · T0 · SOURCE · WIP` (SOURCE =
+provider + recipe id; WIP = 1 — snapshots are serial and paid); rows per ledger-contract.md. One row per
 recipe: `| task_id | recipe | INTERVIEW | SCAFFOLD | BASE_SNAP | AUTH_SNAP | WIRED | DOCTOR |
-PROVISION | destroy_tested | lighting | park | evidence |`. Paid checkpoints and the interactive
-login are OPS-queue items with verify-complete observations; stalls → liveness-resume.md WATCH.
+PROVISION | destroy_tested | PR_OPEN | REVIEWED | MERGED | WT_CLEAN | lighting | park | evidence |`.
+Paid checkpoints, the interactive login, and the promotion PR are OPS-queue items with
+verify-complete observations; stalls → liveness-resume.md WATCH.
 
 ## Anti-patterns
 
 Picking a provider, region, plan, or scope for the human (asked, never invented). Plain agent
 login on a headless box (device-auth or hang). Grep-for-logged-in (matches "not logged in").
 Snapshotting post-runtime state (every workspace from that image shares one pairing identity).
-Secrets in scripts, userData, state, comments, docs, or commits. `provisioned-root` without an
+Secrets in scripts, userData, state, comments, docs, or commits. Writing the recipe on the primary
+checkout or committing it to default (it reaches default only through the promotion PR). `provisioned-root` without an
 explicit ask (and then only direct SSH + schema 2). Treating `ok:true` with warns as clear.
 Bind-mounting a host agent home into the runtime (sqlite state and host config break there).
 

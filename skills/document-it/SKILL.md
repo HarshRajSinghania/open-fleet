@@ -9,7 +9,7 @@ description: >-
   project", "our docs have huge gaps", "write the reference docs", "the API is undocumented", "new
   hires cannot find anything", "docs coverage". Not for docs that already exist and have gone
   stale or out of date: false claims in docs are clean-sweep (source=doc-claims), syncing docs to
-  one wave's diff is ship-it's doc-sync unit, and stale runtime doctrine is pin-it.
+  a wave ship-it built is that run's own doc-sync unit, and stale runtime doctrine is pin-it.
 license: MIT
 compatibility: >-
   HARD dependency: open-fleet RPI runtime (Orca, posix, t3code, ao+). git + gh. A machine-derivable

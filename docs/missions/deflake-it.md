@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel diagnose/fix workers, one flake each, ratcheted to a streak; you own the one-way doors.
-> **Activation load:** ~28,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 14% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~28,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 14% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Give it a suite nobody trusts. Come back to one that has passed a declared consecutive-green
@@ -115,7 +115,8 @@ Phase by phase:
    p ≤ 1 − 0.05^(1/N) with 95% confidence, so 10 only proves p ≲ 26% and 30 proves p ≲ 9.5%),
    local **and** verified in CI via `gh run list`, all at one SHA — the BASE head after the last
    fix lands; a new commit restarts the streak, and CI re-runs are triggered with `gh run rerun`
-   or `gh workflow run`, never empty commits. Any flake anywhere resets the streak to zero and
+   or `gh workflow run` (each a send the deny-hook receipts: `egress.py write … &&` first), never
+   empty commits. Any flake anywhere resets the streak to zero and
    re-enters detection. The streak is the contract; one green run is an anecdote.
 
 ## Terminal states

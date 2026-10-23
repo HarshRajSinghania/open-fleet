@@ -28,15 +28,17 @@ Version bump: a deterministic classifier reads state (FRESH / ALREADY_BUMPED / D
 version collisions. Changelog + bisectable dependency-ordered commits. **Fresh-evidence verification
 gate:** if ANY code changed since the last test run, re-run — "should work now → RUN IT".
 **Doc-sync unit (before the promotion PR):** a named subagent pass syncs the docs to what the wave
-actually shipped — README claims, guides, and diagrams re-read against the merged tree; drift is
-fixed as its own unit (never clobber CHANGELOG history, never bump VERSION silently). Skipping it
-lets drift accumulate into the next clean-sweep.
+actually shipped, running doc-coverage over the wave's diff (read doc-coverage.md here) — README
+claims, guides, and diagrams re-read against the merged tree; drift is fixed as its own unit (never
+clobber CHANGELOG history, never bump VERSION silently). Skipping it lets drift accumulate into the
+next clean-sweep.
 **Error-budget gate:** where the target declares an SLO, read the budget REMAINING before claiming
 this state — >20% ships normally; 0-20% is slow-rollout-only, no high-risk change; exhausted freezes
 feature promotion until reliability work recovers it. No SLO means no gate, recorded as absent, never
-assumed green. **Operability gate:** at least ONE symptom-based alert exists for this surface, its
-runbook is written and linked, and the alert has been TEST-FIRED with the receipt in the ledger —
-an alert nobody has ever seen fire is not an alert. Open the
+assumed green. **Operability gate** (read instrument.md — its ALERT, RUNBOOK and TEST-FIRE steps are
+this gate's protocol): at least ONE symptom-based alert exists for this surface, its runbook is
+written and linked, and the alert has been TEST-FIRED with the receipt in the ledger — an alert
+nobody has ever seen fire is not an alert. Open the
 BASE→default promotion PR with the traceability table and an `accountable: <human>` line naming
 who owns the Verdict (gate-classification.md one-way). STOP here unless that human authorizes
 promotion.
@@ -47,7 +49,7 @@ The human merges the promotion PR. Verify state=MERGED on default + greppable. M
 
 ## DEPLOYED_AND_VERIFIED (OPS/authorized)
 
-FIRST capture observe.md's baseline (its step 1 runs BEFORE the deploy — change-vs-baseline is
+FIRST read observe.md and capture its baseline (its step 1 runs BEFORE the deploy — change-vs-baseline is
 impossible afterwards). Record the **deploy-config digest** (the deploy target's effective
 configuration, hashed) in the ledger next to the released SHA: a digest that differs from the last
 deployed one means the target moved underneath the release, so the dry run RE-RUNS and its result
@@ -58,7 +60,7 @@ rate. Then: deploy-strategy auto-detect (fly/render/vercel/netlify/heroku/railwa
 Actions); staging-first option (same health checks on staging before prod); a REVERT option offered at
 EVERY failure point (deploy fail, canary fail: `git revert -m 1 <merge-sha>` or a revert-PR if
 branch-protected). The DEPLOYED revision must equal the RELEASED SHA (evidence-manifest.md). Then hand
-to `observe`'s canary loop; this state is claimed only after the window is green.
+to observe's canary loop; this state is claimed only after the window is green.
 
 ## Completion
 

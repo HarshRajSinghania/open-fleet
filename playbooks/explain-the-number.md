@@ -1,7 +1,7 @@
 # Playbook — explain-the-number  (MEASURE: a number is not evidence until it is explained)
 
-Recipe: pstack `benchmark-checklist` and `principle-explain-the-number` (Lauren Tan, cursor/plugins
-pstack 0.15.20, MIT), after Brendan Gregg's benchmarking checklist. speed-it's metric contract
+Recipe: pstack `benchmark-checklist` and `principle-explain-the-number` (Lauren Tan, cursor/plugins,
+MIT), after Brendan Gregg's checklist — restated as fleet rules; no worker loads pstack, so no pin. speed-it's metric contract
 already fixes sample size, spread, and pinned conditions. This playbook is the rest. A number
 the contract accepts can still be the wrong work.
 
@@ -40,7 +40,7 @@ Answer from a run. A guess from reading the code is not an answer.
 speed-it's contract still owns repeatability: median, spread, alternating sides, and a gap
 inside the noise band is no difference. Do not restate it here.
 
-## Verdict
+## Completion — the verdict
 
 - **faster / slower / no measurable difference** — the limiter is named, the sides are tuned or
   the untuned side is disqualified, the limits were checked, errors were counted, and the work

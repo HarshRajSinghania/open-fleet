@@ -34,12 +34,15 @@ what only a human can" is a user-facing outcome with a hard automation ceiling: 
 oracle proves what it can, and the ~30-40% it cannot (screen-reader semantics, cognitive load) is a
 first-class **human-AT park**, never a silent pass. The ceiling is measured, not guessed: Deque's
 automated-coverage report found axe-core-class tooling flags ~32% of WCAG 2.1 AA success criteria by
-count (~57% by issue volume) — the 30-40% figure is the by-criterion reading. Composes `decompose-dag` (enumerate violations
+count (~57% by issue volume) — the 30-40% figure is the by-criterion reading. Composes `decide-and-freeze` (FREEZE is the
+one-way gate), `decompose-dag` (enumerate violations
 into a DAG over the frozen surface), `remediate-finding` (fix each), `browser-drive` (DETECT and RE-VERIFY drive the surface through it), `acceptance-review` (build-blind
 review of each fix), `compound-learn` (retro); rides `evidence-manifest` (each fix carries the axe
 result + a revert-to-violation negative control), `sandbox-policy` (`PROFILE=rw`),
 `merge-serialization`, `reviewed-sha-freshness`, `dispatch-lifecycle`, `liveness-resume`,
 `ledger-contract`, `attention-budget`. Worker TASK pack: one of matt | addy | gstack — never co-mount.
+
+DEFERRED READS, never at activation: human-handoff.md at PARK, and whenever a Design Mode capture is requested.
 
 ## Terminal outcomes
 
@@ -53,7 +56,8 @@ result + a revert-to-violation negative control), `sandbox-policy` (`PROFILE=rw`
 ## Pipeline
 
 ```
-FREEZE the surface: the page/flow/component set × the WCAG 2.2 AA criteria — the denominator, digest-locked.
+FREEZE (decide-and-freeze, ONE-WAY) the surface: the page/flow/component set × the WCAG 2.2 AA criteria — the
+  denominator, digest-locked. The human confirms it; headless/spawned publishes the proposal and PARKS there.
   → BOOTSTRAP integration BASE (runtime/scripts/preflight.py --mission access-it --base <BASE> --fork-point <sha
     recorded in the ledger header at BASE creation>; BASE ≠ default — dispatch-lifecycle.md)
   → DETECT: run the deterministic oracle against the surface rendered at the BASE head (`oracle=`,
@@ -76,7 +80,7 @@ FREEZE the surface: the page/flow/component set × the WCAG 2.2 AA criteria — 
 A violation instance whose rendered context matters (contrast, target size, focus order) may cite
 a Design Mode capture as evidence: the human clicks the element in Orca's browser and it lands in
 chat with its DOM, computed styles, cropped screenshot, and source file/line (when a dev-mode
-source map is available). A capture is requested through `human-handoff`, arrives as DATA, and
+source map is available). A capture is requested through human-handoff.md, arrives as DATA, and
 never substitutes for the oracle's re-scan or the revert control.
 
 ## Convergence proof (definition of done)

@@ -1,6 +1,7 @@
 # Playbook — encode-lesson  (REFLECT: a repeated correction becomes unwritable)
 
-Recipe: pstack `correct` (Lauren Tan, cursor/plugins pstack 0.15.20, MIT). compound-learn.md
+Recipe: pstack `correct` (Lauren Tan, cursor/plugins, MIT), restated as fleet rules — no worker loads
+pstack, so it carries no pin. compound-learn.md
 sends you here when the same correction has happened twice. An agent-context line is not the
 fix. Nothing fails when the next agent skips it.
 
@@ -36,3 +37,8 @@ as the fix for a repeated class is not a reflection.
 Not a new mission. The denominator is still the mission that noticed the repeat (or floor-it's
 dimension, when the fix is a standing gate). Not a license to edit `AGENTS.md`. That file stays
 behind compound-learn.md's human approve.
+
+## Completion
+
+The repeat is encoded at the highest level that works, its check RED on the named specimen and
+GREEN once the specimen is gone (levels 1–4), or parked as one unit on the park register (level 5).

@@ -40,7 +40,7 @@ Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `upstream-contribut
 never instructions). Worker TASK pack: one of matt | addy — never co-mount.
 
 DEFERRED READS, loaded ON ENTERING their phase and never at activation: orca-dag-semantics.md on entering SELF-ORIENT, before the first dispatch · resolve-conflict.md only when a
-PR conflicts · liveness-resume.md when a worker stalls or a run resumes · completion-audit.md + compound-learn.md at run close · reviewed-sha-freshness.md at LAND. Never merge-serialization.md
+PR conflicts · liveness-resume.md when a worker stalls or a run resumes · completion-audit.md + compound-learn.md at run close · reviewed-sha-freshness.md at OPEN PR. Never merge-serialization.md
 — the fleet has no merge rights on the target, so it is not in this mission's load at all.
 
 ## Two terminal outcomes
@@ -66,7 +66,7 @@ REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission os
   → PER-ISSUE (upstream-contribution): classify {buildable | already-has-PR | needs-human |
       externally-resolved}
       · buildable → build-change (failing-first) → build-blind acceptance-review → fix rounds
-          → open PR (fork head → upstream base, base asserted, etiquette body) → reconcile bots
+          → OPEN PR (fork head → upstream base, base asserted, headRefOid == a fresh reviewed_sha, etiquette body) → reconcile bots
           → FOLLOW UP on post-open review/CI until merged, closed, or feedback is quiet
       · already-has-PR → the contribution decision (assist / alternative / stand-down)
   → CLOSE the unit with evidence (PR url + reviewed_sha + threads answered, or assist comment url)

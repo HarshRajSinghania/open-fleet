@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel audit, PoC, and fix workers on isolated findings; PoC routing and the promotion are your one-way gates.
-> **Activation load:** ~33,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~33,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** self-run — the 2026-09-21 run against the catalog's own verification stack (#409) closed CLEAN: six rounds, 11 confirmed findings (3 P0, 1 CI-caught P0-class, 1 P1, residual classes), final re-audit zero unrefuted P0/P1; binding report [`docs/runs/2026-09-21-harden-it-self-run.md`](../runs/2026-09-21-harden-it-self-run.md).
 
 > Fix it, then try to break the fix. Give it a system to harden and come back to a closed threat
@@ -17,7 +17,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/harden-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/harden-it-light.jpg">
-    <img src="../../assets/diagrams/missions/harden-it-light.jpg" alt="Mission contract for harden-it: you give it a system and its trust boundaries; it interrupts you for one-way remediations you perform yourself, like a secret rotation; the danger-sandbox grant; you get back CLEAN or HARDENED-WITH-OPEN-ITEMS, plus exploit tests; class-wide fixes on BASE; re-attack transcripts; a fresh full audit; it stops at parked P0/P1 named per item — no PoC ever runs on your machine; phases THREAT-MODEL, AUDIT, FIX, LAND, RE-ATTACK, RE-AUDIT" width="820">
+    <img src="../../assets/diagrams/missions/harden-it-light.jpg" alt="Mission contract for harden-it: you give it a system and its trust boundaries; it interrupts you for one-way remediations you perform yourself, like a secret rotation; the danger-sandbox grant; you get back CLEAN or HARDENED-WITH-OPEN-ITEMS, plus exploit tests; class-wide fixes on BASE; re-attack transcripts; a fresh full audit; it stops at parked P0/P1 named per item — no host-unsafe PoC ever runs on your machine; phases THREAT-MODEL, AUDIT, FIX, LAND, RE-ATTACK, RE-AUDIT" width="820">
   </picture>
 </p>
 
@@ -29,7 +29,7 @@
 > harden this: <the system and its trust boundaries>
 ```
 
-**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). git + gh; gitleaks. A security worker playbook (addyosmani security-and-hardening or gstack /cso — v3 runs only through its compiled launcher, and --comprehensive also needs Docker) — one router per worker. An ephemeral per-workspace sandbox (sandbox-policy) for exploit PoCs that can't run safely on the host.
+**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). git + gh; gitleaks. A security worker playbook (addyosmani security-and-hardening or gstack /cso — v3 runs only through its compiled launcher, and --comprehensive also needs Docker) — one router per worker. A host-unsafe exploit PoC needs the danger lane: BLOCKED on Orca, where it parks; off Orca, a placement-bound sandbox (sandbox-policy).
 
 ## What to provide
 
@@ -102,8 +102,9 @@ Phase by phase:
    variants.
 3. **PoC routing** ([`sandbox-policy`](../../runtime/sandbox-policy.md)) — before any PoC is
    executed. Static analysis runs read-only (`ro`); a safe local exploit runs under the autonomous
-   write profile (`rw`); networked, destructive, or supply-chain PoCs run under the danger profile
-   inside an **ephemeral per-workspace sandbox** — work harvested by pushing the lane's own branch
+   write profile (`rw`); networked, destructive, or supply-chain PoCs need the danger profile, which
+   on Orca is BLOCKED (every danger spawn is refused until a prelaunch placement binding exists), so
+   there they PARK. Off Orca they run inside a placement-bound **ephemeral sandbox** — work harvested by pushing the lane's own branch
    *before* teardown, the sandbox destroyed and verified, everything entering BASE through the
    normal PR pipeline. A finding with no safe sandbox becomes evidence-backed PARKED; its PoC is
    never executed on the host.
@@ -139,7 +140,9 @@ exists to prevent.
 
 - **One-way remediations.** Secret rotation, auth-flow changes — classified one-way, executed by
   you, and verified done before they count toward CLEAN.
-- **The danger sandbox.** A danger-profile PoC lane requires `ORCA_COORD_ALLOW_DANGER=1`; under
+- **The danger sandbox.** On Orca the danger lane is BLOCKED — every danger spawn is refused until a
+  prelaunch placement binding exists — so a PoC that needs it PARKS with its evidence. Off Orca it
+  requires `ORCA_COORD_ALLOW_DANGER=1` and a `--require-placement` pass; under
   an active careful/freeze governance policy, even sandboxed danger needs an explicit recorded
   human grant.
 - **Promotion.** As everywhere, merging BASE to the default branch is a one-way human gate; the
@@ -163,8 +166,10 @@ The ask: harden a multi-tenant SaaS API before an enterprise pilot.
 
 **Threat model → audit.** STRIDE over the tenant-isolation boundary. The audit wave lands a P1:
 `GET /api/export?tenant_id=…` trusts the query parameter — any authenticated user can export
-any tenant. A PoC is mandatory for a P1, and it is exploit code, so it routes to the ephemeral
-sandbox under a recorded `ORCA_COORD_ALLOW_DANGER=1` grant — never your machine.
+any tenant. A PoC is mandatory for a P1. This one is a safe local exploit — two fixture tenants on
+a local instance, one cross-tenant request — so it routes to an `rw` worker. Had it needed the
+network or destroyed data it would route to the danger lane, which on Orca is BLOCKED: it would
+PARK with its evidence rather than run on the host.
 
 **Quorum verify.** A second worker tries to refute the finding before anyone fixes it (false
 positives are cheaper to kill here than after a fix wave). It reproduces instead: confirmed.

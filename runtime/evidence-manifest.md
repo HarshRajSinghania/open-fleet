@@ -102,7 +102,7 @@ head_sha). Rules:
 
 A DIFFERENT process/session — never a teammate (whose messages are in-band and self-certifying) — re-derives the manifest against authoritative state that lives OUTSIDE
 it: the coordinator's frozen contract (scope), GitHub (review), git, and the EXECUTED negative control — deterministically, before any LLM judgment (impl: `verify.py`;
-the runnable command line, lane flags included, is in build-change.md "The invocation" — a CHAINED-RUN manifest, evidence and commits in different clones, names both
+read build-change.md "The invocation" for its command line, lane flags included — a CHAINED-RUN manifest, evidence and commits in different clones, names both
 `--git-dir` (the SHAs) and `--evidence-root` (#267's bound, escapes refused; split, evidence passes only on its `artifacts[]` pin, never the SHA clone's bytes)). Manifest
 = claim; these are facts:
 
@@ -149,7 +149,7 @@ and any later audit reject a changed hash.
 A unit is done only when its own acceptance criteria AND this floor hold. It is scoped by MISSION CLASS — a negative control is always required; what one IS differs:
 
 - **Mutation units** (ship-it, clean-sweep, oss-contribute, harden-it, speed-it, modernize-it, prove-it, deflake-it, access-it, pin-it, floor-it, reshape-it,
-  field-test-it, migrate-it, oncall-it, absorb-it, document-it): runtime-verified, not just compiled/typechecked; no new red at head SHA; the negative control is the §1
+  field-test-it, migrate-it, oncall-it, absorb-it, document-it, offload-it): runtime-verified, not just compiled/typechecked; no new red at head SHA; the negative control is the §1
   proof, EXECUTED per §2. Sampling audits (revert-audit, pinned-mutant re-run, probe re-witness) run on **≥10% of the unit set, rounded UP** — this is the authoritative
   floor the missions cite, and a mission claiming a sample it did not take fails the unit (#358).
 - **Report-only units** (review-it, attest-it): no code is touched (that IS a checked invariant — a dirty worktree fails the unit); the negative-control analogue is

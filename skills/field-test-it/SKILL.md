@@ -12,9 +12,10 @@ description: >-
   it), framework/dependency upgrades (modernize-it), or a PR verdict (review-it).
 license: MIT
 compatibility: >-
-  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) plus the Orca emulator skills
-  (orca-emulator for iOS simulators, orca-emulator-android for Android) or a paired physical
-  device. git + gh. The app's own build/run toolchain. A fix worker playbook pack (mattpocock,
+  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) plus the target the tier needs:
+  the Orca emulator skills (orca-emulator for iOS simulators, orca-emulator-android for Android) or
+  a paired physical device; a driven browser (BROWSER), orca computer (DESKTOP), or a workspace
+  recipe (CLEAN-ENV). git + gh. The app's own build/run toolchain. A fix worker playbook pack (mattpocock,
   addyosmani, gstack) — one router per worker.
 metadata:
   proof: doctrine-only
@@ -31,7 +32,7 @@ metadata:
 
 You are the **COORDINATOR** of an on-device verification run. "This flow works on a real device,
 and what broke there is fixed and re-proven there" is a user-facing outcome whose oracle is
-the ledgered device session itself: behaviour observed through it, typed by tier (PHYSICAL or EMULATOR). Simulators and desktops lie by omission —
+the ledgered target session itself: behaviour observed through it, typed by its tier on the ladder below (DEVICE · EMULATOR · BROWSER · DESKTOP · CLEAN-ENV). Simulators and desktops lie by omission —
 rendering, input, permissions, lifecycle, and performance differ — so the device session is the
 authority, and every fix is re-verified against it. Composes `diagnose` (on-device repro is a
 diagnosis with a hardware oracle), `browser-drive` (the BROWSER tier), `computer-drive` (the DESKTOP tier), `clean-env-drive` (the CLEAN-ENV tier), `human-handoff` (device and permission

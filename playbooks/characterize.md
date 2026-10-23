@@ -52,3 +52,8 @@ nothing else. The mutation is the proof; the coverage number is context.
 Landing characterization tests is its OWN mutation unit — own SHA, own negative control, own
 review. Never one ledger row binding both the net and the change it was built to protect: that is
 the coupling the net exists to break.
+
+## Completion
+
+Every seam in scope has a landed net that KILLS its recorded behaviour-changing mutant (no
+stillborn kill), the `negative_control` fields above filled, and no survivor left unparked.

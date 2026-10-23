@@ -35,3 +35,10 @@ the recolor prompt forbids new text after hex codes once leaked into a card. Kee
 and spell out exact text when you add a diagram.
 
 The key is read from the environment only. It is never written into this tree.
+
+A one-line text correction can be made as an edit of the committed render instead of a full
+regeneration, which keeps the rest of the card exactly as reviewed: on 2026-10-23 the harden-it
+card's IT STOPS AT line (and its `-light` variant, edited from its own render) was corrected that
+way through the Antigravity CLI's image generator (`agy -p`, the existing JPEG passed as the image
+to edit, 16:9), then fitted to the spec's `dims` with `gen.fit` and saved exactly as `gen.py`
+saves. Update the spec in the same change, so a later full regeneration renders the same text.

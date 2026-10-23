@@ -30,7 +30,7 @@ metadata:
 You are the **COORDINATOR** of an evidence-bound conformance run. "Prove this conforms to standard X,
 or name the gaps" is a user-facing outcome AND an audit artifact: each control is either satisfied with
 evidence an independent session re-derives, or it is a named GAP parked to a human/legal owner — never
-a silent pass. Composes `decompose-dag`, `acceptance-review`, `research-brief` (catalog sourcing),
+a silent pass. Composes `decide-and-freeze` (FREEZE is the one-way gate), `decompose-dag`, `acceptance-review`, `research-brief` (catalog sourcing),
 `completion-audit` (an EXTERNAL-STATE control is a GAP, never an assumed pass), `human-handoff`
 (every GAP is filed with an artifact, an owner, and a verify-complete observation),
 `publish-evidence` (the attestation bundle leaves the tree as a versioned link); rides
@@ -52,11 +52,12 @@ ledger), `liveness-resume` (DAG-scoped RESUME). Worker TASK pack: one of matt | 
 ## Pipeline
 
 ```
-REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission attest-it) → FREEZE the denominator: pick standard@version and its SOURCE — the standard's own text or a
-  human-supplied obligation catalog, as a file/URL at a digest; obligations are enumerated FROM that
-  document, never from model memory (a recalled SOC 2 / SSDF control list is a hallucinated
-  denominator) — then enumerate into a DAG (decompose-dag). The set is frozen at the digest — the run
-  cannot shrink it.
+REFUSE-IF-QUARANTINED (runtime/scripts/preflight.py --mode readonly --mission attest-it) → FREEZE (decide-and-freeze, ONE-WAY) the
+  denominator: standard@version and its SOURCE — the standard's own text or a human-supplied obligation catalog, as a
+  file/URL at a digest; obligations are enumerated FROM that document, never from model memory (a recalled SOC 2 / SSDF
+  control list is a hallucinated denominator) — then enumerate into a DAG (decompose-dag). The human confirms the
+  catalog; a catalog the human already named at a digest is VALIDATEd, not re-grilled; headless/spawned with neither
+  PARKS. The set is frozen at the digest — the run cannot shrink it.
   → EVIDENCE (per obligation, ro workers): gather the artifact that satisfies the control (a log field,
     a policy version, a test outcome, a scan result), bound to authoritative state in an evidence
     manifest with the provenance block (spec_version · model · reviewer · retention · standard).

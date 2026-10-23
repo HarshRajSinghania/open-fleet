@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus isolated per-phase workers; phases of one table are strictly serial, and the destructive CONTRACT step is your one-way door.
-> **Activation load:** ~31,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~32,000 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at "we need to rename this column and we cannot take downtime." Come back to a table
@@ -39,8 +39,8 @@
 
 ## What it does
 
-`migrate-it` is the migration fleet. A **coordinator** freezes the table set and the phase list,
-then dispatches **one phase at a time per table** through the release machine: expand, dual-write,
+`migrate-it` is the migration fleet. A **coordinator** plans the table set and the phase list,
+you freeze them, and it dispatches **one phase at a time per table** through the release machine: expand, dual-write,
 backfill, switch reads, a zero-reader window, retiring the old writers, a zero-writer window, and
 finally contract. Each phase is its own
 deployable change with its own bake, its own review, and its own evidence.
@@ -71,7 +71,8 @@ each phase merged.
 
 ```mermaid
 flowchart TD
-    A[PLAN: freeze the table set<br/>+ the phase list, each with its down path] --> B[BOOTSTRAP BASE<br/>preflight guards BASE ≠ default]
+    A[PLAN the table set<br/>+ the phase list, each with its down path] --> A2[[FREEZE<br/>one-way human gate]]
+    A2 --> B[Per phase: BOOTSTRAP BASE<br/>preflight guards BASE ≠ default]
     B --> C[EXPAND · deploy + bake]
     C --> D[DUAL-WRITE · deploy + bake]
     D --> E[BACKFILL<br/>batched · throttled · resumable]
@@ -88,26 +89,32 @@ flowchart TD
     C -.->|down path exercised| L{{ABANDONED}}
 ```
 
-Every phase inside that ladder runs the same per-unit loop: build one PR against BASE, run `up`
-then `down` and diff the dumped schema against the pre-`up` dump (it must be **empty**), prove
-old-code-vs-new-schema and new-code-vs-old-schema, build-blind review, land through the merge
-conductor, deploy, bake. Only then is the next phase dispatched.
+Every phase inside that ladder runs the same per-unit loop: bootstrap a BASE off the current
+default, build one PR against it, run `up` then `down` and diff the dumped schema against the
+pre-`up` dump (it must be **empty**), prove old-code-vs-new-schema and new-code-vs-old-schema,
+build-blind review, land through the merge conductor, then open that phase's promotion PR
+([`release`](../../playbooks/release.md)) and **park**: you merge it and record the deploy grant,
+the phase deploys under that grant, and it bakes. Only then is the next phase dispatched. A run
+that winds down at a grant reports `PARKED <table>:<phase>` — not a terminal — and resumes from the
+ledger, the dumped schema and the deploy record once your grant is in DECISIONS.
 
 ## Terminal states
 
 | State | Meaning | Who acts on it |
 |---|---|---|
-| `MIGRATED` | Complete pre-drop parity archived, zero old readers/writers over the declared window, removal verified, contract merged, down-path evidence retained | terminal — the promotion PR is yours |
+| `MIGRATED` | Complete pre-drop parity archived, zero old readers/writers over the declared window, removal verified, contract merged and deployed under your grant, down-path evidence retained | terminal |
 | `MIGRATED-WITH-PARKED` | The ladder is complete up to a phase whose bake or zero-reader evidence the fleet cannot reach (`CODE_CLOSED` + `VERIFY_AT_SCALE`, or `needs-human`) | a human or OPS clears the named park |
 | `ABANDONED` | The migration was walked back down the ladder using the exercised down paths, and the state it returned to is receipted | terminal, and honest — a half-expanded table is not |
 
 ## Human gates
 
-**CONTRACT is always a human gate.** Dropping a column is one-way, and so is any phase declared
-irreversible in its PR body ([`gate-classification`](../../runtime/gate-classification.md)). Bake
-and zero-reader windows that need production telemetry the fleet cannot query become
-`CODE_CLOSED` + `VERIFY_AT_SCALE` items naming the exact query and window — never an assumed pass.
-BASE → default promotion stays yours, as always.
+**FREEZE, every phase's promotion and deploy, and CONTRACT are human gates.** You confirm the
+table set and ladder; each phase reaches the default branch only when you merge its promotion PR
+and deploys only under your recorded grant — the fleet never self-authorizes either. Dropping a
+column is one-way, and so is any phase declared irreversible in its PR body
+([`gate-classification`](../../runtime/gate-classification.md)). Bake and zero-reader windows that
+need production telemetry the fleet cannot query become `CODE_CLOSED` + `VERIFY_AT_SCALE` items
+naming the exact query and window — never an assumed pass.
 
 ## Convergence proof
 
@@ -209,7 +216,10 @@ ALTER TABLE users DROP COLUMN name;
 
 **Plan.** One table, the phase ladder, a down path per phase; the integration BASE is bootstrapped.
 
-**Expand → dual-write.** `full_name` is added; deploy, bake. Every insert and update path writes
+**Freeze.** You confirm the one-table set and its ladder.
+
+**Expand → dual-write.** `full_name` is added; you merge the phase's promotion PR and grant the
+deploy; deploy, bake. Every insert and update path writes
 both shapes; deploy, bake. Each phase's `up` then `down` leaves an empty schema diff, pasted.
 
 **Backfill.** Batched and resumable. The full parity probe finds three mismatches — a
@@ -239,11 +249,10 @@ removal is verified. The run ends `MIGRATED`, with every phase's down-path evide
 
 ## Composes
 Playbooks:
+[`decide-and-freeze`](../../playbooks/decide-and-freeze.md) (FREEZE is the one-way gate) ·
 [`data-migration`](../../playbooks/data-migration.md) ·
 [`remediate-finding`](../../playbooks/remediate-finding.md) ·
-[`acceptance-review`](../../playbooks/acceptance-review.md) ·
-[`completion-audit`](../../playbooks/completion-audit.md) ·
-[`compound-learn`](../../playbooks/compound-learn.md)
+[`acceptance-review`](../../playbooks/acceptance-review.md)
 
 Runtime policies:
 [`evidence-manifest`](../../runtime/evidence-manifest.md) ·
@@ -254,6 +263,8 @@ Runtime policies:
 [`attention-budget`](../../runtime/attention-budget.md) ·
 [`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`gate-classification`](../../runtime/gate-classification.md)
+
+Deferred reads, loaded on entering their phase and never at activation: [`release`](../../playbooks/release.md) at the first PROMOTE (its states, once per phase) · [`completion-audit`](../../playbooks/completion-audit.md) at the first BAKE · [`compound-learn`](../../playbooks/compound-learn.md) at VERDICT · [`liveness-resume`](../../runtime/liveness-resume.md) on a stall or resume.
 
 ## Related missions
 

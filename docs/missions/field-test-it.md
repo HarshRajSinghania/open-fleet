@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel fix workers per device-observed defect, each re-verified on the target; device pairing and anything outside the paired device set are your one-way gates.
-> **Activation load:** ~31,800 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~32,000 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at "works on my machine, breaks on my phone." Come back to each on-device defect
@@ -28,11 +28,12 @@
 > test on a real device: <the flow or defect>
 ```
 
-**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) plus the Orca emulator skills (orca-emulator for iOS simulators, orca-emulator-android for Android) or a paired physical device. git + gh. The app's own build/run toolchain. A fix worker playbook pack (mattpocock, addyosmani, gstack) — one router per worker.
+**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) plus the target the tier needs: the Orca emulator skills (orca-emulator for iOS simulators, orca-emulator-android for Android) or a paired physical device; a driven browser (BROWSER), orca computer (DESKTOP), or a workspace recipe (CLEAN-ENV). git + gh. The app's own build/run toolchain. A fix worker playbook pack (mattpocock, addyosmani, gstack) — one router per worker.
 
 ## What to provide
 
-- The target device or emulator, OS version, app build and reproduction steps.
+- The target — a device or emulator, a browser surface, a desktop window, or a fresh-box recipe —
+  with its OS/version, the app build and reproduction steps.
 - The data, account state and permissions needed to exercise the flow.
 - Access to repeat the check on that target and retain its session evidence.
 
@@ -43,14 +44,17 @@ guides (`orca skills get orca-emulator` / `orca-emulator-android`) and pairs a s
 Android via adb (accessibility tree + logcat are the command surface; emulator or adb-visible
 physical), iOS via the Simulator pane (the app's own xcodebuild/simctl builds and installs first;
 physical iOS is not a command surface of either skill and parks) — records the session's **oracle
-tier** (EMULATOR vs PHYSICAL — a hardware-only defect class can never be proven on an emulator),
+tier** from a five-tier ladder: DEVICE (physical hardware), EMULATOR, BROWSER (a web surface driven
+through `browser-drive`), DESKTOP (an OS window driven through `computer-drive`) and CLEAN-ENV (a
+disposable box with no prior state, through `clean-env-drive`) — a defect class that only exists a
+tier up is never proven a tier down,
 and captures a **pre-change baseline** of the target flows. Each defect is reproduced on-device (recording / accessibility
 tree / logs), fixed by an rw worker, and **re-verified on-device at the head SHA** — plus the
 negative control: revert the fix and the on-device failure returns. The post-change baseline is
 ledgered for the next run.
 
 The unit of work is **one device-observed defect** (or one device QA pass over a flow). The
-defining property: the oracle is the ledgered device session — typed by tier (PHYSICAL or EMULATOR),
+defining property: the oracle is the ledgered target session — typed by its tier (DEVICE, EMULATOR, BROWSER, DESKTOP or CLEAN-ENV),
 never upgraded silently — so a green desktop run is never accepted as device evidence.
 
 ## When to reach for it
@@ -58,6 +62,8 @@ never upgraded silently — so a green desktop run is never accepted as device e
 - "Works on desktop, breaks on mobile — verify on a real device and fix it."
 - "Run the onboarding flow on an emulator and prove the fix there."
 - "Mobile regression: reproduce, fix, re-verify on hardware."
+- "Prove the checkout journey in a real browser" or "prove first-run install on a fresh box" — the
+  BROWSER and CLEAN-ENV tiers.
 
 **When NOT to reach for it:**
 

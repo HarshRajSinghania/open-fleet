@@ -6,8 +6,8 @@ description: >-
   PR-per-hotspot with a mandatory before/after → re-benchmark to the metric's statistical contract
   → add CI regression guards, looping until every journey is within budget or parked. Use when
   "the app is slow", "perf sweep", "Core Web Vitals", "LCP regression on mobile", "get under
-  budget", or an unattended perf-hardening run. Not for a per-diff perf opinion (review-it) or
-  post-deploy watch alone (observe via ship-it).
+  budget", or an unattended perf-hardening run. Not for a per-diff perf opinion (review-it) or a
+  post-deploy watch alone (no mission: the canary runs only inside ship-it's release states).
 license: MIT
 compatibility: >-
   HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). git + gh. A real MEASUREMENT path

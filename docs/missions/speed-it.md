@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel hotspot workers under a pre-declared measurement contract; you own the one-way doors.
-> **Activation load:** ~31,200 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~31,300 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Declare the journeys and their budgets. Come back to every one of them measured within budget
@@ -76,7 +76,7 @@ in its [evidence manifest](../concepts.md#the-evidence-manifest).
 - A general findings backlog — [`clean-sweep`](clean-sweep.md); its proof is an empty list, not
   a met budget.
 - Watching production after a release — that is the [`observe`](../../playbooks/observe.md)
-  playbook inside a release run, not a campaign.
+  playbook, which runs only inside a ship-it release run; no mission runs a standalone watch.
 
 ## The pipeline
 

@@ -32,7 +32,8 @@ and mutation require SEPARATE authorization, so this mission never silently beco
 clean-sweep. Composes `diagnose`, `agent-brief` (the DIAGNOSED-WITH-HANDOFF contract); rides `evidence-manifest`, `liveness-resume`, `ledger-contract` (the row schema RESUME reads),
 `gate-classification` (the fix handoff is a separately authorized gate), `sandbox-policy` (investigation workers run
 PROFILE=rw in a THROWAWAY worktree — nothing from it lands on BASE or default; a networked,
-destructive, or otherwise host-unsafe repro goes to an ephemeral sandbox). Worker TASK pack: one of
+destructive, or otherwise host-unsafe repro needs the danger lane: BLOCKED on Orca, so it parks there;
+off Orca, a placement-bound sandbox). Worker TASK pack: one of
 matt | addy — never co-mount. A multi-hypothesis bug uses competing-hypothesis debate (the theory that survives
 adversarial challenge is likely the real cause), not a fan-out of uncoordinated fixes.
 

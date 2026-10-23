@@ -558,6 +558,28 @@ class TestCarriedUnits(Base):
                 self.assertTrue(any("cannot be placed" in r for r in reasons), reasons)
 
 
+class TestRedispatchIsRework(Base):
+    """PR #638 review (P1): rework is the share of units bounced 'by evidence-manifest.md §2
+    (re-dispatch / SUSPECT)' — a replaced worker is a re-dispatch, verdict or not."""
+
+    def test_a_worker_that_died_and_was_replaced_counts_as_rework(self):
+        evs = unit_stream()
+        evs.insert(3, ev("dispatch.died", "10:05:00", task="t", dispatch="d", **ONE))
+        evs.insert(4, ev("dispatch.launched", "10:06:00", task="t", dispatch="d2", **ONE))
+        evs[5]["dispatch"] = "d2"
+        report = self.derive(evs)
+        self.assertEqual(self.metric(report, 1, "rework")["value"], "1/1")
+        self.assertEqual(self.metric(report, 1, "retries")["value"], "1")
+
+    def test_control_a_single_dispatch_is_not_rework(self):
+        self.assertEqual(self.metric(self.derive(unit_stream()), 1, "rework")["value"], "0/1")
+
+    def test_a_unit_re_dispatched_into_a_later_wave_is_rework_there(self):
+        report = self.derive(carried_stream())
+        self.assertEqual(self.metric(report, 1, "rework")["value"], "0/1")
+        self.assertEqual(self.metric(report, 2, "rework")["value"], "1/1")
+
+
 class TestUsage(Base):
     def test_unknown_cost_stays_null_with_provenance_never_zero(self):
         report = self.derive(scenario_clean())

@@ -542,8 +542,9 @@ def screen(events):
     return screened, duplicates, conflicts, fenced, epochs, taints
 
 
-def derive_unit(task, wave, events):
-    """One planned unit's outcome and per-unit measurements, from the set of its events."""
+def derive_unit(task, wave, events, prior_dispatches=()):
+    """One planned unit's outcome and per-unit measurements, from the set of its events.
+    `prior_dispatches` are the task's dispatches in earlier waves that planned it."""
     by = {kind: [] for kind in KINDS}
     for event in events:
         by[event["kind"]].append(event)
@@ -644,8 +645,12 @@ def derive_unit(task, wave, events):
         "task_completed": bool(by["task.done"]),
         "park_classes": sorted({p["data"]["park_class"] for p in by["unit.parked"]}),
         "dispatches": sorted(seen), "unlaunched": sorted(seen - launched),
-        "bounced": bool(by["unit.suspect"]) or any(v["data"]["exit"] == 2
-                                                    for v in by["verify.verdict"]),
+        # attention-budget.md: rework is 'bounced by evidence-manifest.md §2 (re-dispatch /
+        # SUSPECT)'. A replaced worker is a re-dispatch whether or not a failing verdict was
+        # recorded, and so is a dispatch into a later wave (PR #638 review, P1).
+        "bounced": (bool(by["unit.suspect"]) or len(seen) > 1
+                    or bool(seen and prior_dispatches)
+                    or any(v["data"]["exit"] == 2 for v in by["verify.verdict"])),
         "approvals": len(approvals), "voided_reviews": sorted(voided),
         "latency": latency, "queue": queue, "contested": contested,
         "revisions": {"closed_at": close_head, "closed_tree": close_tree,
@@ -884,8 +889,10 @@ def derive(events, run=None, file_sha="", head=""):
                 taints.setdefault(("unit", task), []).append(why)
             else:
                 parts[k].append(event)
+        prior = set()
         for k in ks:  # a planned unit never observed is open, not missing
-            units[(task, k)] = derive_unit(task, k, parts[k])
+            units[(task, k)] = derive_unit(task, k, parts[k], prior)
+            prior |= set(units[(task, k)]["dispatches"])
     unplanned = [{"task": t, "events": len(evs)} for t, evs in sorted(lifecycle.items())
                  if t not in plan]
     waves = []

@@ -508,7 +508,8 @@ all of them. Its outcome comes from the set of its events, never their order: ve
 (worker_done only) or open. Latency runs from the worker_done at a head to the first passing verdict at that same head (or
 to the park); review queue from that worker_done to the review starting on it. Throughput is
 verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share of units with
-a failing verdict (exit 2) or a SUSPECT; freshness counts approvals voided by a closing head
+a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a dispatch into a
+later wave); freshness counts approvals voided by a closing head
 that moved, unless both trees are recorded and equal. An interval needs one clock, no
 `recovered` endpoint and a non-negative difference. Events recorded under an epoch below the
 declared one (a fenced coordinator) or above it (undeclared) are excluded, as is a reused

@@ -26,6 +26,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -696,7 +697,9 @@ class TestLiveReportFormats(Tripwired):
         base_sha, head_sha = (subprocess.run([*git, "rev-parse", rev], capture_output=True, text=True,
                                              check=True).stdout.strip() for rev in ("HEAD~1", "HEAD"))
         header = f"FIRST-RUN-REPORT FR-NONCE:{'ab' * 8} {head_sha}"
-        spec = f"Review the change: git diff {base_sha} {head_sha}\nYour report MUST start with: {header}"
+        diff = subprocess.run([*git, "diff", base_sha, head_sha], capture_output=True, text=True, check=True).stdout
+        (repo / "change.diff").write_text(diff + "FIRST-RUN-READ 00ff00ff00ff00ff\n", encoding="utf-8")
+        spec = f"Its diff is written to change.diff in your working tree.\nYour report MUST start with: {header}"
         worker = self.tmp / "inert" / "worker.py"
         worker.parent.mkdir()
         worker.write_text(first_run.INERT_WORKER, encoding="utf-8")
@@ -842,6 +845,85 @@ class TestInterruptedRunStopsItsWorker(Tripwired):
                 first_run.main(["--workdir", str(self.tmp / "restored"), "--json"])
         self.assertEqual(seen, {s: first_run._terminated for s in trapped}, "the run did not trap TERM/HUP")
         self.assertEqual({s: signal.getsignal(s) for s in trapped}, {s: mine for s in trapped})
+
+
+# A stand-in that echoes the spec's header and shows only what SEEN says it read. It opens a file
+# only through read(): the first spec token naming a file in its working tree.
+SKIMMER = r'''
+import json, os, re, sys
+from pathlib import Path
+here = Path(sys.argv[0]).resolve().parent
+dispatch = os.environ.get("OPEN_FLEET_DISPATCH_ID", "")
+with open(here / "runs.log", "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({"harness": sys.argv[1], "dispatch": dispatch}) + "\n")
+(here / f"{dispatch}.argv.json").write_text(json.dumps(sys.argv[2:]), encoding="utf-8")
+spec = next((a for a in sys.argv[2:] if "FR-NONCE:" in a), "")
+header = re.search(r"FIRST-RUN-REPORT FR-NONCE:[0-9a-f]{16} [0-9a-f]{40}", spec).group(0)
+files = [Path(t) for t in (w.rstrip(".:,;") for w in re.split(r"[\s`'\"()]+", spec)) if t and Path(t).is_file()]
+def read():
+    return files[0].read_text(encoding="utf-8") if files else ""
+seen = SEEN
+print(json.dumps({"type": "result", "subtype": "success", "result": header + "\n" + seen + "\n"}))
+'''
+
+
+class TestWorkerReadsTheChange(Tripwired):
+    """Most ro launches have no shell to run `git diff` (omp, pi, opencode, jcode, goose, hermes,
+    crush, gemini; claude plan mode): the change reaches every worker as a file in its tree, and
+    a report that copies the header without reading it is NO-GO (#596 review)."""
+
+    def run_with(self, seen: str, name: str, *args):
+        worker = SKIMMER.replace("SEEN", seen)
+        buf = io.StringIO()
+        with mock.patch.object(first_run, "INERT_WORKER", worker), \
+                mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main([*args, "--workdir", str(self.tmp / name), "--json"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_a_worker_that_does_not_read_the_change_is_no_go(self):
+        for name, seen in {
+            "copies the header, opens nothing": '"I reviewed the change; it looks fine."',
+            "reads only the last line": '"\\n".join(read().splitlines()[-1:])',
+            "reads only the top half": '"\\n".join(read().splitlines()[: len(read().splitlines()) // 2])',
+        }.items():
+            with self.subTest(worker=name):
+                rc, receipt = self.run_with(seen, name.split()[0] + name.split()[-1])
+                self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"), name)
+                self.assertEqual(receipt["failure"]["step"], "result")
+                self.assertIn("does not show the worker read", receipt["failure"]["detail"])
+
+    def test_a_worker_that_reads_the_whole_change_is_go(self):
+        rc, receipt = self.run_with("read()", "reader")
+        self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+
+    def test_every_profile_gets_the_change_as_a_file_in_the_worker_tree(self):
+        for profile in ("ro", "rw"):
+            with self.subTest(profile=profile):
+                wd = self.tmp / f"keep-{profile}"
+                buf = io.StringIO()
+                with mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+                    rc = first_run.main(["--profile", profile, "--workdir", str(wd), "--keep", "--json"])
+                receipt = json.loads(buf.getvalue())
+                self.assertEqual(rc, 0, json.dumps(receipt.get("failure"), indent=1))
+                facts = receipt["facts"]
+                argv = json.loads((wd / "inert" / f"{facts['dispatch']}.argv.json").read_text(encoding="utf-8"))
+                spec = next(a for a in argv if "FR-NONCE:" in a)
+                wt = Path(facts["worktree"])
+                named = [wt / t for t in (w.rstrip(".:,;") for w in re.split(r"[\s`'\"()]+", spec)) if t]
+                inputs = [p for p in named if p.is_file()]
+                self.assertTrue(inputs, f"the spec names no file in the worker's tree: {spec!r}")
+                change = inputs[0].read_text(encoding="utf-8")
+                rev = facts["reviewed"]
+                diff = subprocess.run(["git", "-C", str(wt), "diff", rev["base_sha"], rev["head_sha"]],
+                                      capture_output=True, text=True, check=True).stdout
+                self.assertIn(diff, change, "the input file must carry the whole reviewed diff")
+                receipt_line = change.splitlines()[-1]
+                self.assertNotIn(receipt_line, spec, "the read receipt may reach the worker only through the file")
+                self.assertNotIn(receipt_line, json.dumps(facts["launch_effective"]))
+                ev = facts["evidence"]
+                range_files = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", ev["base_sha"], ev["head_sha"]],
+                                             capture_output=True, text=True, check=True).stdout.split()
+                self.assertNotIn(str(inputs[0].relative_to(wt)), range_files, "the input is not part of the result")
 
 
 if __name__ == "__main__":

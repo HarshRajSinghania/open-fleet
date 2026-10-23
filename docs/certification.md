@@ -185,7 +185,9 @@ RECEIPT=/tmp/open-fleet-first-run-<x>/receipt.json
 ```
 
 `REVIEWED` is the reviewed range. `EVIDENCE` is the commit range that `verify.py` re-derived. It
-contains only the report, with the frozen contract as its base. Add `--profile rw` to have the
+contains only the report, with the frozen contract as its base. The worker gets the reviewed
+diff as a file frozen with the contract, because most read-only launches cannot run `git`. Its
+report must quote the read receipt that ends the file and name every changed path. Add `--profile rw` to have the
 worker commit the report and send `worker_done`; the coordinator re-reads the worker's HEAD from
 git and refuses a committed report that does not open with the required line. Add
 `--agent <harness>` to run another posix harness name, `--keep` to keep the sandbox, and

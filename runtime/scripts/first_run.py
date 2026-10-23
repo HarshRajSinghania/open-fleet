@@ -20,7 +20,7 @@ ONE code path, two kinds of worker:
 
   --worker inert (default)  an inert stand-in answers to the harness name from a private bin
       directory first on PATH, behind tripwires for every other harness name. It reads the
-      spec, diffs the reviewed range and answers in the harness's own result shape. No model
+      spec and the change file it names, and answers in the harness's own result shape. No model
       is called and nothing is spent. A GO here is a FIXTURE result: it proves the fleet's
       route, never the harness.
   --worker live             the operator's real harness on PATH does the review. The receipt
@@ -78,6 +78,7 @@ SCHEMA = "open-fleet-first-run/v1"
 HARNESS_BINARIES = {"antigravity": "agy"}
 LIVE_STATES = ("ready", "running", "retained")
 REPORT_HEAD = "FIRST-RUN-REPORT "
+READ_HEAD = "FIRST-RUN-READ "
 # Where each posix launch (base.build_harness_command) prints its final answer on stdout, which
 # posix records line by line as the transcript. A Claude-only reader discarded every other
 # harness's report and turned a finished paid run into NO-GO (#596 review).
@@ -193,8 +194,8 @@ with open(log_dir / "runs.log", "a", encoding="utf-8") as fh:
 (log_dir / f"{dispatch or 'unknown'}.argv.json").write_text(json.dumps(argv), encoding="utf-8")
 spec = next((a for a in argv if "FR-NONCE:" in a), "")
 m = re.search(r"FIRST-RUN-REPORT (FR-NONCE:[0-9a-f]{16}) ([0-9a-f]{40})", spec)
-rng = re.search(r"git diff ([0-9a-f]{40}) ([0-9a-f]{40})", spec)
-if not m or not rng:
+inp = re.search(r"diff is written to (\S+) in your working tree", spec)
+if not m or not inp:
     print("no first-run spec in argv", file=sys.stderr)
     sys.exit(3)
 
@@ -228,9 +229,15 @@ def answer(text):
             print(json.dumps(event))
     else:  # hermes, crush, gemini print plain text
         print(note + text, end="")
-stat = subprocess.run(["git", "diff", "--stat", rng.group(1), rng.group(2)],
-                      capture_output=True, text=True).stdout.strip()
-report = f"FIRST-RUN-REPORT {m.group(1)} {m.group(2)}\n" + (stat or "(empty diff)") + "\n"
+# Like an ro harness with no shell, it learns the change only by reading the file it was given.
+change = Path(inp.group(1)).read_text(encoding="utf-8")
+lines = change.splitlines()
+stat = subprocess.run(["git", "apply", "--stat", "-"], input=change, capture_output=True, text=True).stdout.strip()
+stat = re.sub(r" [|] +", " | ", stat)
+paths = [d.group(1) for d in map(re.compile(r"^diff --git a/.* b/(.*)$").match, lines) if d]
+read = [ln for ln in lines if ln.startswith("FIRST-RUN-READ ")][-1:]
+report = f"FIRST-RUN-REPORT {m.group(1)} {m.group(2)}\n" + (stat or "(empty diff)") + "\n" + "".join(
+    f"changed: {p}\n" for p in paths) + "".join(f"{ln}\n" for ln in read)
 rc = 0
 if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
     rel = re.search(r"write the report to (\S+)", spec).group(1)
@@ -410,6 +417,9 @@ class FirstRun:
         self.run_id = f"fr-{secrets.token_hex(3)}"
         self.nonce = f"FR-NONCE:{secrets.token_hex(8)}"
         self.unit_dir = f".first-run/{self.run_id}"
+        self.change_rel = f"{self.unit_dir}/change.diff"
+        # Only the change file carries this: quoting it shows the worker read that file (FR-4).
+        self.read_receipt = f"{READ_HEAD}{secrets.token_hex(8)}"
         self.facts: dict = {"run_id": self.run_id, "nonce": self.nonce}
 
     # Each method is one step; it returns its detail string or raises StepFailed.
@@ -460,22 +470,38 @@ class FirstRun:
         # The coordinator's evidence branch starts at the reviewed head; its first commit is the
         # frozen contract, so the contract exists in git BEFORE any worker is dispatched.
         git(self.rec, "checkout", "-q", "-b", f"first-run/{self.run_id}", head, cwd=t)
+        # The change reaches the worker as a FILE in its tree: most ro launches have no shell to
+        # run `git diff` (omp, pi, opencode, jcode, goose, hermes, crush, gemini; claude in plan
+        # mode), and the spec alone let a worker that never saw the change copy the header to a
+        # GO (#596 review). It is frozen with the contract, so it is the evidence range's BASE and
+        # never part of the result; its last line is the read receipt no other channel carries.
+        diff = self.rec.run(["git", "-c", "core.quotePath=false", "diff", base, head], cwd=t)
+        names = self.rec.run(["git", "-c", "core.quotePath=false", "diff", "--name-only", base, head], cwd=t)
+        if diff.returncode != 0 or names.returncode != 0:
+            raise StepFailed(f"git diff {base} {head} failed: {(diff.stderr or names.stderr).strip()[:300]}")
+        body = diff.stdout if not diff.stdout or diff.stdout.endswith("\n") else diff.stdout + "\n"
+        change = (f"# first-run {self.run_id}: the change under review, `git diff {base} {head}`.\n"
+                  "# Written before dispatch. Read it to the end: its last line is the read receipt.\n"
+                  f"{body}{self.read_receipt}\n")
+        (t / self.unit_dir).mkdir(parents=True)
+        (t / self.change_rel).write_text(change, encoding="utf-8")
+        self.facts["change"] = {"input": self.change_rel, "paths": names.stdout.splitlines()}
         contract = (
             f"# First-run contract {self.run_id}\n\n"
             f"Frozen by first_run.py before dispatch. Reviewed change: `{base}..{head}`.\n\n"
             f"- FR-1: the worker receives this unit's frozen spec ({self.nonce}) through the posix route.\n"
             f"- FR-2: the worker's report opens with `FIRST-RUN-REPORT {self.nonce} {head}`.\n"
             "- FR-3: the report is bound to a commit the coordinator reads from git and verify.py re-derives.\n"
+            f"- FR-4: the report quotes the read receipt that ends `{self.change_rel}` and names every changed path.\n"
         )
         path = t / self.unit_dir / "contract.md"
-        path.parent.mkdir(parents=True)
         path.write_text(contract, encoding="utf-8")
-        git(self.rec, "add", f"{self.unit_dir}/contract.md", cwd=t)
+        git(self.rec, "add", f"{self.unit_dir}/contract.md", self.change_rel, cwd=t)
         git(self.rec, "commit", "-q", "-m", f"first-run {self.run_id}: freeze contract", cwd=t)
         self.facts["contract"] = {
             "source": f"{self.unit_dir}/contract.md@{git(self.rec, 'rev-parse', 'HEAD', cwd=t)}",
             "digest": "sha256:" + hashlib.sha256(contract.encode("utf-8")).hexdigest(),
-            "criterion_ids": ["FR-1", "FR-2", "FR-3"],
+            "criterion_ids": ["FR-1", "FR-2", "FR-3", "FR-4"],
             "text": contract,
         }
         return f"reviewed {base[:12]}..{head[:12]}; contract frozen"
@@ -491,9 +517,11 @@ class FirstRun:
         r = self.facts["reviewed"]
         lines = [
             f"open-fleet first-run review unit {self.run_id} ({self.nonce}).",
-            f"Review the change: git diff {r['base_sha']} {r['head_sha']}",
-            "Report what the change does and any problem you see, one line each.",
+            f"Review the change {r['base_sha']}..{r['head_sha']}. Its diff is written to {self.change_rel} in your "
+            "working tree: read that file to its end. You need no shell for this, and must not change it.",
+            "Report what the change does and any problem you see, one line each, naming every changed path.",
             f"Your report MUST start with this exact line: FIRST-RUN-REPORT {self.nonce} {r['head_sha']}",
+            "The file's last line is a read receipt: copy that line, verbatim, into your report.",
         ]
         if self.args.profile == "rw":
             lines += [
@@ -611,12 +639,27 @@ class FirstRun:
         if first.strip() != want:
             raise StepFailed(f"report does not open with {want!r}: {first[:200]!r}",
                              "the worker did not follow the spec; read its transcript")
+        self.check_read(report, "report")
         self.facts["report"] = report
         return f"settled {state['v']}; report names the reviewed head"
 
     def report_header(self) -> str:
         """FR-2: the exact line every report opens with, printed and committed alike."""
         return f"{REPORT_HEAD}{self.nonce} {self.facts['reviewed']['head_sha']}"
+
+    def check_read(self, report: str, what: str) -> None:
+        """FR-4: the report shows its worker read the change file, not only the spec (#596 review).
+
+        The receipt is the file's LAST line and appears nowhere else the worker sees, and the
+        changed paths come from the diff itself: a worker that copied the header, read no file,
+        or read only one end of it cannot meet both.
+        """
+        missing = [] if self.read_receipt in report else ["the read receipt"]
+        missing += [p for p in self.facts["change"]["paths"]
+                    if not re.search(rf"(?<![\w.-]){re.escape(p)}(?![\w/-])", report)]  # `b/<path>` counts
+        if missing:
+            raise StepFailed(f"the {what} does not show the worker read {self.change_rel}: missing {missing}",
+                             f"the worker must read {self.change_rel} to its end; read its transcript")
 
     def transcript_report(self) -> str:
         proc = self.rec.run(py("orca_cli.py", "orchestration", "worker-read", "--dispatch", self.facts["dispatch"],
@@ -653,6 +696,7 @@ class FirstRun:
         if committed.returncode != 0 or first.strip() != want:
             raise StepFailed(f"the committed report does not open with {want!r}: {first[:200]!r}",
                              f"git show {head}:{rel}; the report the worker printed is not the one it committed")
+        self.check_read(committed.stdout, "committed report")
         self.facts["evidence"] = {"base_sha": contract_sha, "head_sha": head}
         return f"{contract_sha[:12]}..{head[:12]} carries only {rel}"
 

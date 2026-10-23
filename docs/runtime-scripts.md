@@ -520,6 +520,15 @@ the coordinator re-reads its HEAD from git and refuses a claim that git contradi
 profiles the report committed at the evidence head, the file `verify.py` binds, must open with
 the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
 
+The change reaches every worker, in both profiles, as a file: `.first-run/<run>/change.diff` holds
+`git diff <base> <head>` and is committed with the frozen contract before dispatch, so it is the
+evidence range's base and never part of the result. Most read-only launches have no shell to
+run `git diff` (omp, pi, opencode, jcode, goose, hermes, crush, gemini; claude in plan mode), and
+no ro tool set is widened for it. The file's last line is a per-run `FIRST-RUN-READ` receipt that
+reaches the worker through nothing else. A report, printed or committed, that does not quote
+that receipt and name every changed path is NO-GO: a worker that copied the header without
+reading the file, or read only one end of it, cannot pass (FR-4).
+
 The report is read from the transcript in the harness's own output format
 (`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the
 last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last

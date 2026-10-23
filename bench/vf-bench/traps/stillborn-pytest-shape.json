@@ -1,0 +1,73 @@
+{
+  "id": "stillborn-pytest-shape-1",
+  "class": "stillborn-pytest-shape",
+  "sound_expected": "RED",
+  "note": "#612 / 2026-10-23 review P1-1, the reviewer's reproduction. The test imports mod INSIDE the test body and the hand mutant breaks mod.py's syntax on the changed line, so pytest reports the SyntaxError as `1 failed` (with `E   SyntaxError` and the `FAILED ... -   File` summary line). The stillborn check ran only when the runner counted ZERO failures, so the counted failure plus the word `failed` read as an assertion that ran. Runner output shape captured from pytest 9; neighbour: pytest-shape-valid-control-1.",
+  "unit_class": "mutation",
+  "fixture": "pytest-shaped",
+  "execute_nc": true,
+  "nc_command": "{{proof_cmd}}",
+  "lighting": "lit",
+  "gh_stub": true,
+  "repo": "vf-bench/stillborn-pytest-shape",
+  "manifest": {
+    "unit": "vf-bench-stillborn-pytest-shape",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc-stillborn.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc-stillborn.txt",
+        "sha256": "{{nc_stillborn_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "replaced the fixed line of mod.py with a syntax error at head_sha",
+      "tool": "hand",
+      "result": "the run exited non-zero (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc-stillborn.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  }
+}

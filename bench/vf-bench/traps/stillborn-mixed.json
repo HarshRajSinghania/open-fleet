@@ -1,0 +1,73 @@
+{
+  "id": "stillborn-mixed-1",
+  "class": "stillborn-mixed",
+  "sound_expected": "RED",
+  "note": "#612 / P1-1, the fail-closed decision. The unit fixes add() and adds sub(); reverting the whole of mod.py fails test_add on a REAL assertion and test_sub on `ImportError: cannot import name 'sub'` in one run (`2 failed`). Which failing test is the criterion's oracle is not knowable from the output, and a guarded import turns a stillborn module into an AssertionError, so a reported load failure refuses the control even beside an assertion that did fail. Neighbour: mixed-shape-valid-control-1.",
+  "unit_class": "mutation",
+  "fixture": "mixed-shaped",
+  "execute_nc": true,
+  "nc_command": "{{proof_cmd}}",
+  "lighting": "lit",
+  "gh_stub": true,
+  "repo": "vf-bench/stillborn-mixed",
+  "manifest": {
+    "unit": "vf-bench-stillborn-mixed",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  }
+}

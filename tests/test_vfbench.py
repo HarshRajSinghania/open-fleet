@@ -383,6 +383,13 @@ class TheRefusedControlClassesAreSampled(unittest.TestCase):
         # (#14/#267) and the negative half of the content-bound commands ledger.
         "credential-in-evidence": "credential shape(s)",
         "stale-wtree": "STALE evidence",
+        # #612 / #613 (2026-10-23 review, P1-1 / P1-2): runners that COUNT a load failure as a
+        # failed test, and a hook in the graded repo's .git that supplies the RED.
+        "stillborn-pytest-shape": "beside 1 counted failure(s)",
+        "stillborn-jest-shape": "test suite failed to run",
+        "stillborn-vitest-shape": "failed suites 1",
+        "stillborn-mixed": "beside 2 counted failure(s)",
+        "hook-staged-kill": "TAUTOLOGICAL",
     }
 
     def test_each_trap_is_refused_for_the_reason_it_exists_to_test(self):
@@ -414,7 +421,7 @@ class TheRefusedControlClassesAreSampled(unittest.TestCase):
         holder = Path(tempfile.mkdtemp(prefix="vfbench-reason-"))
         try:
             repo = holder / "repo"
-            facts = vb.build_mutation_fixture(repo)
+            facts = vb.FIXTURES[trap.get("fixture", "mutation-revert")](repo)
             (repo / "vf-manifest.json").write_text(
                 json.dumps(vb._render(trap["manifest"], facts)), encoding="utf-8")
             cmd = [sys.executable, str(vb.VERIFY), "--manifest", str(repo / "vf-manifest.json"),
@@ -452,6 +459,50 @@ class TheRefusedControlClassesAreSampled(unittest.TestCase):
         vf = (ROOT / "bench" / "vf-bench" / "vfbench.py").read_text(encoding="utf-8")
         self.assertIn("FIXTURE_NC_STILLBORN", vf, "the fixture no longer writes that artifact")
         self.assertIn("nc_stillborn_sha256", vf, "the artifact's digest is not exposed as a fact")
+
+
+class CountingRunnersAndHooksAreSampled(unittest.TestCase):
+    """#612 / #613 (2026-10-23 review, P1-1 / P1-2). The stillborn trap above runs `unittest`,
+    whose summary says `errors=1` — the one runner the old reading handled. pytest counts an
+    in-test import's SyntaxError as `1 failed`, Jest and Vitest count a suite that never loaded
+    as a failed suite, and a run can fail an assertion AND a load in one go; a post-checkout hook
+    in the graded repo could also stage the kill. Each trap is EXECUTED and sits beside a valid
+    control on the same fixture and runner shape, whose genuine assertion kill must stay GREEN —
+    so the traps cannot be cleared by refusing everything that runner prints."""
+
+    PAIRS = {"stillborn-pytest-shape": "pytest-shape-valid-control-1",
+             "stillborn-jest-shape": "jest-shape-valid-control-1",
+             "stillborn-vitest-shape": "vitest-shape-valid-control-1",
+             "stillborn-mixed": "mixed-shape-valid-control-1",
+             "hook-staged-kill": "hook-valid-control-1"}
+
+    def setUp(self):
+        self.traps = [json.loads(p.read_text(encoding="utf-8"))
+                      for p in (ROOT / "bench" / "vf-bench" / "traps").glob("*.json")]
+        self.by_class = {t["class"]: t for t in self.traps}
+        self.by_id = {t["id"]: t for t in self.traps}
+
+    def test_each_trap_is_executed_and_expected_red(self):
+        for name in self.PAIRS:
+            with self.subTest(trap=name):
+                trap = self.by_class[name]
+                self.assertEqual(trap["sound_expected"], "RED")
+                self.assertTrue(trap.get("execute_nc"), "narrated, the runner never prints a thing")
+                self.assertIn(trap["fixture"], vfbench.SHAPES)
+
+    def test_each_trap_has_a_green_neighbour_on_the_same_runner(self):
+        for name, control_id in self.PAIRS.items():
+            with self.subTest(trap=name):
+                trap, control = self.by_class[name], self.by_id[control_id]
+                self.assertEqual(control["sound_expected"], "GREEN")
+                self.assertEqual(control["fixture"], trap["fixture"])
+                self.assertTrue(control.get("execute_nc"))
+
+    def test_the_vitest_shape_never_says_syntaxerror(self):
+        # The point of that trap: only the runner's suite-level verdict marks the load failure.
+        runner = vfbench.SHAPES["vitest-shaped"][0]
+        self.assertIn("Failed Suites 1", runner)
+        self.assertNotIn("SyntaxError:", runner.split("except SyntaxError")[1])
 
 
 if __name__ == "__main__":

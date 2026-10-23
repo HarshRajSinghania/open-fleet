@@ -887,7 +887,7 @@ class ControlPhasesAreIndistinguishable(RepoCase):
         subprocess.run(
             ["git", "-c", "user.name=t", "-c", "user.email=t@t",
              "-c", "gpg.format=ssh", "-c", f"user.signingkey={key}",
-             "tag", "-s", "v1", "-m", "orca-fleet 0.7.1"],
+             "tag", "-s", "v1", "-m", "open-fleet 0.7.1"],
             cwd=self.repo, check=True, capture_output=True)
         pre = subprocess.run(
             ["git", "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile=signers",

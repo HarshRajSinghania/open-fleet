@@ -48,7 +48,7 @@ class TestMultiHarnessDenyHook(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_hook(self, payload, extra_env=None):
+    def run_hook(self, payload, extra_env=None, hook=DENY_HOOK):
         env = dict(os.environ)
         for k in (
             "ORCA_UNIT_WORKTREE",
@@ -57,6 +57,8 @@ class TestMultiHarnessDenyHook(unittest.TestCase):
             "OPEN_FLEET_EGRESS_LEDGER",
             "OPEN_FLEET_STATE_DB",
             "ORCA_FLEET_STATE_DB",
+            "OPEN_FLEET_ROOT",
+            "ORCA_FLEET_ROOT",
             "JCODE_HOOK_TOOL_NAME",
             "GOOSE_MODE",
             "CODEX_CI",
@@ -70,7 +72,7 @@ class TestMultiHarnessDenyHook(unittest.TestCase):
             env.update(extra_env)
         text = payload if isinstance(payload, str) else json.dumps(payload)
         return subprocess.run(
-            ["sh", str(DENY_HOOK)],
+            ["sh", str(hook)],
             input=text,
             capture_output=True,
             text=True,
@@ -293,6 +295,36 @@ class TestMultiHarnessDenyHook(unittest.TestCase):
         # collide across worktrees (#590).
         self.assertEqual(touched_paths, ["a.py", "b.py"])
         self.assertNotIn(outside_c, touched_paths)
+
+    def test_pre_rename_env_names_still_record_touches(self):
+        # A coordinator may still export the pre-rename ORCA_FLEET_STATE_DB / ORCA_FLEET_ROOT.
+        # A hook copied away from its catalog finds local_state.py only through the root
+        # variable, so the legacy spellings alone must still record an allowed touch.
+        copy = self.tmp / "copied" / "runtime" / "scripts" / "deny-hook.sh"
+        copy.parent.mkdir(parents=True)
+        copy.write_bytes(DENY_HOOK.read_bytes())
+        db_file = self.tmp / "legacy-state.db"
+        payload = {"tool_name": "Write", "tool_input": {"file_path": str(self.wt / "a.py")}}
+        env = {
+            "OPEN_FLEET_UNIT_WORKTREE": str(self.wt),
+            "ORCA_FLEET_STATE_DB": str(db_file),
+            "OPEN_FLEET_WORKER_ID": "w-legacy",
+            "OPEN_FLEET_RUN_ID": "run-legacy",
+        }
+        # Negative control: no root under either name, so the copy cannot reach the store.
+        res = self.run_hook(payload, env, hook=copy)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("file touch not recorded", res.stderr)
+        self.assertFalse(db_file.exists())
+
+        res = self.run_hook(payload, {**env, "ORCA_FLEET_ROOT": str(ROOT)}, hook=copy)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn("not recorded", res.stderr)
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
+            rows = conn.execute(
+                "SELECT file_path FROM file_touches WHERE run_id = 'run-legacy'"
+            ).fetchall()
+        self.assertEqual([r[0] for r in rows], ["a.py"])
 
     def test_verify_settings_multi_harness_configs(self):
         # 1. Codex .codex/hooks.json

@@ -584,7 +584,7 @@ class MachineOutputAndExitContract(unittest.TestCase):
             self.assertEqual(skips["gate1/gh-issue-408-closed"], "--skip-github")
 
     def test_a_repo_that_is_not_a_directory_is_could_not_run(self):
-        proc = run_script("--repo", "/nonexistent/orca-fleet-checkout")
+        proc = run_script("--repo", "/nonexistent/open-fleet-checkout")
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("not a directory", proc.stderr)
 

@@ -160,7 +160,7 @@ class TestFetchPolarity(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "", "failed is not data — nothing may reach stdout")
 
     def test_unlaunchable_fetch_exits_three(self):
-        r = run(["--source", "pr", "--fetch", "orca-fleet-no-such-binary-xyz"])
+        r = run(["--source", "pr", "--fetch", "open-fleet-no-such-binary-xyz"])
         self.assertEqual(r.returncode, 3)
         self.assertEqual(r.stdout.strip(), "")
 
@@ -182,10 +182,10 @@ class TestFetchPolarity(unittest.TestCase):
 
     def test_fetch_is_argv_never_a_shell(self):
         # If the guard went through a shell, the redirect would create a file.
-        marker = "; touch /tmp/orca-fleet-guard-text-should-not-exist"
+        marker = "; touch /tmp/open-fleet-guard-text-should-not-exist"
         r = run(["--source", "issue", "--fetch", sys.executable, "-c", f"print('ok'){marker}"])
         self.assertEqual(r.returncode, 3, "argv is passed verbatim; a shell metacharacter is not a shell")
-        self.assertFalse(Path("/tmp/orca-fleet-guard-text-should-not-exist").exists())
+        self.assertFalse(Path("/tmp/open-fleet-guard-text-should-not-exist").exists())
 
 
 class TestScriptShape(unittest.TestCase):
@@ -340,7 +340,7 @@ class TestFetchUnits(unittest.TestCase):
 
     def test_an_unlaunchable_command_is_a_runtime_error(self):
         with self.assertRaises(RuntimeError) as ctx:
-            guard_text.fetch(["orca-fleet-no-such-binary-xyz"], 60)
+            guard_text.fetch(["open-fleet-no-such-binary-xyz"], 60)
         self.assertIn("could not be launched", str(ctx.exception))
 
     def test_a_timeout_names_the_command_and_the_budget(self):

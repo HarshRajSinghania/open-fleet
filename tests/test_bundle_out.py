@@ -4,7 +4,7 @@
 build() used to rmtree <out>/.claude-plugin, hooks, runtime and skills whenever they were not
 the source's own tree, so `--out ~/.claude` deleted the user's own skills/ (where the README's
 symlink install puts missions), hooks/ and runtime/ with exit 0. A build now records what it
-writes in <out>/.orca-fleet-bundle.json, a rebuild deletes only those files, and anything else
+writes in <out>/.open-fleet-bundle.json, a rebuild deletes only those files, and anything else
 where the build would write makes it refuse — exit 2, nothing deleted, nothing written.
 """
 import contextlib

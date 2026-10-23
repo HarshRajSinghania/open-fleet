@@ -388,7 +388,8 @@ killed when it expires. The environment is built, not inherited: `PATH` is one d
 only `git`, `python3` and `python`; `HOME` is empty, the system git config is off, and no token or
 `PYTHONPATH` crosses (the loader's `LD_LIBRARY_PATH` is the one variable kept, for a
 shared-library Python). The git it links is the system-owned one (`/usr/bin/git` on macOS and on
-the GitHub runners). The signed-dispatch cases still need a git that `verify.py`'s own custody
+the GitHub runners) unless `--git` names another; `--git` and `--python` may be relative, and are
+resolved from the caller's directory before anything is linked or started (PR #645 review). The signed-dispatch cases still need a git that `verify.py`'s own custody
 probe classes `system`; the report records which one they ran under as an environment fact, and
 a host with none skips them by name, which fails the replay.
 

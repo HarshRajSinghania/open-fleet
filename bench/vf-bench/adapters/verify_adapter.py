@@ -41,11 +41,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     ap.add_argument("--verify", default=str(VERIFY))
     args = ap.parse_args(argv)
+    # verify.py runs from the case's workdir, so a relative --verify is resolved from HERE first;
+    # and a verifier that is not there is a crash, never a verdict — python exits 2 for a missing
+    # script, which would otherwise read as RED (PR #645 review).
+    verify = Path(args.verify).resolve()
+    if not verify.is_file():
+        print(f"--verify {args.verify}: no such file", file=sys.stderr)
+        return 3
     request = json.load(sys.stdin)
     if request.get("contract") != CONTRACT:
         print(f"unsupported contract {request.get('contract')!r}", file=sys.stderr)
         return 3
-    r = subprocess.run(verify_argv(request, args.verify), cwd=request["workdir"],
+    r = subprocess.run(verify_argv(request, verify), cwd=request["workdir"],
                        capture_output=True, text=True)
     if r.returncode not in (0, 2):
         # verify.py's 0/2 are verdicts; anything else is a broken run, which the contract
@@ -53,7 +60,7 @@ def main(argv=None):
         print((r.stderr or r.stdout).strip()[-400:], file=sys.stderr)
         return 3
     reasons = [ln.strip() for ln in (r.stdout + r.stderr).splitlines() if ln.startswith("FAIL:")]
-    version = hashlib.sha256(Path(args.verify).read_bytes()).hexdigest()[:12]
+    version = hashlib.sha256(verify.read_bytes()).hexdigest()[:12]
     print(json.dumps({"contract": CONTRACT, "verdict": "GREEN" if r.returncode == 0 else "RED",
                       "reasons": reasons,
                       "verifier": {"name": "open-fleet verify.py (reference adapter)",

@@ -116,9 +116,7 @@ def choose_git(explicit=None):
     and on the GitHub runners): verify.py fails closed on a worker-writable git on a lane that
     claims soundness (h409 R2), and the same binary on every host keeps the export identical."""
     if explicit:
-        if not (os.path.isfile(explicit) and os.access(explicit, os.X_OK)):
-            raise ReplayError(f"--git {explicit} is not an executable file")
-        return explicit
+        return resolve_executable(explicit, "--git")
     for candidate in ("/usr/bin/git", "/bin/git"):
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
@@ -126,6 +124,16 @@ def choose_git(explicit=None):
     if not found:
         raise ReplayError("no git on this host")
     return found
+
+
+def resolve_executable(path, flag):
+    """An operator-given executable as an ABSOLUTE path, resolved from the caller's directory:
+    it becomes a symlink target inside the replay's bin directory and the driver's argv[0] under
+    the export, where a relative path would point somewhere else (PR #645 review)."""
+    full = os.path.abspath(path)
+    if not (os.path.isfile(full) and os.access(full, os.X_OK)):
+        raise ReplayError(f"{flag} {path} is not an executable file")
+    return full
 
 
 def _home_relative(path):
@@ -642,7 +650,7 @@ def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
     source = Path(source).resolve()
     commit, tree = resolve_revision(source, rev)
     git = choose_git(git)
-    python = python or sys.executable
+    python = resolve_executable(python, "--python") if python else sys.executable
     started = time.monotonic()
     run_dir = Path(tempfile.mkdtemp(prefix="vfbench-replay-")).resolve()
     try:

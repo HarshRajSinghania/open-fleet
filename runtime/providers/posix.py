@@ -44,6 +44,7 @@ from .base import (
     normalize_show,
 )
 from .local_state import LocalStateStore
+from .transcript import final_answer
 
 OMP_PI_BRIDGE_TS = """// Auto-generated open-fleet PreToolUse bridge for oh-my-pi (omp) and pi-mono (pi)
 import { spawnSync } from "node:child_process";
@@ -324,37 +325,49 @@ def ro_completion_footer(dispatch_id: str) -> str:
     )
 
 
-def _strings(node: Any):
-    """Every string a decoded JSON event carries, in document order."""
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for value in node.values():
-            yield from _strings(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _strings(value)
+def ro_completion_outcome(transcript: str, dispatch_id: str, agent: str) -> str | None:
+    """The outcome on the completion line that ENDS `agent`'s final answer for `dispatch_id`.
+
+    Only the final answer counts, read with first_run.py's per-harness reader (transcript.py),
+    and only its last line that carries a word: the footer asks for exactly that line. A marker
+    rehearsed in reasoning, quoted from a tool result, echoed from the prompt, or said earlier in
+    the answer is not the worker's completion (#596 review); for jcode and plain-text launches,
+    whose answer carries every turn's text, the last line is what tells the two apart. A closing
+    fence after the line carries no word, so it does not hide it. None: no completion line.
+    """
+    answer = final_answer(agent, transcript.splitlines())
+    last = next((ln for ln in reversed(answer.splitlines()) if re.search(r"\w", ln)), "")
+    m = _RO_DONE_RE.match(last.strip())
+    if m and m.group(1).strip("`'\"*") == dispatch_id:
+        return m.group(2)
+    return None
 
 
-def ro_completion_outcome(transcript: str, dispatch_id: str) -> str | None:
-    """The outcome on the LAST whole completion line naming `dispatch_id`, else None.
+def relay_ro_completion(
+    store: LocalStateStore,
+    *,
+    dispatch_id: str,
+    worker_handle: str,
+    agent: str,
+    run_id: str,
+    log_path: str | Path,
+    head_sha: str = "",
+) -> dict[str, Any] | None:
+    """Relay the completion line a ro worker's final answer ends with, as its worker_done (#596).
 
-    Harness transcripts are mostly JSON lines whose text fields escape the newline a completion
-    line needs, so each line is read raw AND through every string its JSON carries."""
-    found = None
-    for raw in transcript.splitlines():
-        texts = [raw]
-        if raw.lstrip().startswith(("{", "[")):
-            try:
-                texts += list(_strings(json.loads(raw)))
-            except (ValueError, RecursionError):
-                texts = [raw]
-        for text in texts:
-            for line in text.splitlines():
-                m = _RO_DONE_RE.match(line.strip())
-                if m and m.group(1).strip("`'\"*") == dispatch_id:
-                    found = m.group(2)
-    return found
+    The exit monitor's one reader, which recovery also uses when a monitor recorded its exit and
+    died before relaying. relay_worker_done is one idempotent transaction, so a worker is never
+    reported twice. None: no readable transcript, or no completion line in it.
+    """
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    outcome = ro_completion_outcome(text, dispatch_id, agent)
+    if not outcome:
+        return None
+    return store.relay_worker_done(dispatch_id=dispatch_id, worker_handle=worker_handle, outcome=outcome,
+                                   run_id=run_id, head_sha=head_sha)
 
 
 # The committed boundaries of a `worker_start`, in the order it crosses them (#597). The spec —
@@ -932,7 +945,7 @@ class PosixWorktreeProvider(RuntimeProvider):
         run_id: str,
         supervised: bool = True,
         sandbox_meta: dict[str, str] | None = None,
-        ro_relay: bool = False,
+        ro_relay: str = "",
     ) -> dict[str, Any]:
         log_file = lane_dir / "events.jsonl"
         log_file.touch()
@@ -1048,12 +1061,9 @@ if SUPERVISED and RO_RELAY and rc == 0:
     # A ro worker has no tool to send mail; its completion line rides its own output (#596).
     # A crash (rc != 0) stays a death whatever it printed.
     try:
-        from providers.posix import ro_completion_outcome
-        with open(log_path, "r", encoding="utf-8", errors="replace") as rf:
-            outcome = ro_completion_outcome(rf.read(), DISPATCH)
-        if outcome:
-            store.relay_worker_done(dispatch_id=DISPATCH, worker_handle={repr(term_handle)},
-                                    outcome=outcome, run_id={repr(run_id)}, head_sha=head)
+        from providers.posix import relay_ro_completion
+        relay_ro_completion(store, dispatch_id=DISPATCH, worker_handle={repr(term_handle)}, agent=RO_RELAY,
+                            run_id={repr(run_id)}, log_path=log_path, head_sha=head)
     except Exception as exc:
         _log({{"type": "ro_relay_failed", "dispatchId": DISPATCH, "error": str(exc)[:500]}})
 with store._connect() as conn:
@@ -1485,7 +1495,7 @@ if {repr(self.backend)} == "cmux":
                 lane_dir=lane_dir,
                 run_id=run_id,
                 sandbox_meta=sandbox_meta,
-                ro_relay=relay_ro,
+                ro_relay=agent if relay_ro else "",  # whose final answer the monitor reads
             )
         except BaseException as exc:
             if isinstance(exc, ProviderError) and exc.code == "launch_fenced":

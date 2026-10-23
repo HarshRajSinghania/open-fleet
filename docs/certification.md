@@ -133,8 +133,10 @@ not move up: every changed cell is still `source-only` or `fixture-tested`, or i
   record. `tests/test_capability_launch_agreement.py` fails if a claimed provider/harness pair
   does not launch through the wrapper.
 - **A posix `ro` worker can report completion.** Where an exit monitor runs, its assignment
-  names the line `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`. The monitor relays
-  that line as the worker's `worker_done`. The inert stand-in prints the line in each harness's
+  names the line `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`. When that line ends
+  the worker's final answer, the monitor relays it as the worker's `worker_done`. The final
+  answer is read per harness by the same reader as the first-run report, so a marker in
+  reasoning, in a tool result or in an echoed prompt does not count. The inert stand-in prints the line in each harness's
   own output shape, so `first_run.py --profile ro` settles `completed`. A worker that does not
   print it still settles `worker_died (exit=0)`, and the run accepts either. Only the stand-in
   has printed the line; no real harness has.

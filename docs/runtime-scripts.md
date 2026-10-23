@@ -555,7 +555,8 @@ worker to add its report the same way. A target that ignores `*.diff` or `.first
 gets a first run.
 
 The report is read from the transcript in the harness's own output format
-(`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the
+(`runtime/providers/transcript.py:FINAL_ANSWER_FORMATS`, which first_run.py exposes as
+`REPORT_FORMATS`; the posix monitor reads the ro completion line with the same reader): Claude's `result` event, codex's last `agent_message`, the
 last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last
 assistant message for goose (its chunks joined), jcode's `done.text`, and plain text for hermes,
 crush and gemini. jcode and plain text carry every turn's text, so there the report starts at

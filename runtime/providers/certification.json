@@ -207,7 +207,7 @@
             "The provider is this repository's code, so each CI run certifies the commit it runs at; the first_run.py fixture drives create, dispatch, delivery, result, independent verify and retain/release through the public wrappers for every cell here.",
             "The worker is an inert stand-in answering to each harness name: no real harness binary runs, and the launch flags themselves are source-read (see the harness cells).",
             "CI runs the setsid backend only; tmux is exercised by tests/test_posix_provider.py on hosts that have it, and cmux by no test.",
-            "A ro worker has no tool to send mail. Where an exit monitor runs, its assignment names the line OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed> and the monitor relays it as the worker's worker_done; the stand-in prints it in each harness's own output shape. A clean exit without the line is still worker_died (exit=0). Either way the coordinator takes the report from the transcript.",
+            "A ro worker has no tool to send mail. Where an exit monitor runs, its assignment names the line OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>, and when that line ends the harness's final answer (runtime/providers/transcript.py, the first-run report's reader) the monitor relays it as the worker's worker_done; the stand-in prints it in each harness's own output shape. A clean exit without the line is still worker_died (exit=0). Either way the coordinator takes the report from the transcript.",
             "No live first run is recorded yet: `first_run.py --worker live` is the one-command path and stays REMAINING until a maintainer binds its receipt."
           ]
         },

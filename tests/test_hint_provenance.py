@@ -1037,5 +1037,44 @@ class PythonDefinitionsUseTheParser(unittest.TestCase):
         self.assertEqual(got["JS-1"], ("CURRENT", []))
 
 
+class WholeFileScopeOutranksASymbol(unittest.TestCase):
+    """PR #639 review: _prior_hints() narrowed a path to every symbol the record named for it, so
+    `files_touched: ["src/auth.py"]` plus a claim mentioning `src/auth.py::refresh` checked only
+    refresh, and a change elsewhere in the explicitly scoped file left the hint CURRENT."""
+
+    BEFORE = "def refresh(t):\n    return t\n\n\ndef other():\n    return 1\n"
+    AFTER = BEFORE.replace("return 1", "return 2")
+
+    def select(self, runs):
+        fx = Fixture(scenario([{"name": "c0", "files": dict(BASE, **{"src/auth.py": self.BEFORE})},
+                               {"name": "c1", "files": {"src/auth.py": self.AFTER}}], runs))
+        try:
+            return {e["unit"]: (e["currency"], e["reasons"], e["scope"]) for e in fx.select()["entries"]}
+        finally:
+            fx.close()
+
+    def test_a_whole_file_entry_outranks_a_symbol_named_beside_it(self):
+        got = self.select([unit_run("2026-02-01-run-a", "WHOLE-1", "@c0", ["src/auth.py"], note="whole one",
+                                    claim="only src/auth.py::refresh changed"),
+                           unit_run("2026-02-01-run-b", "WHOLE-2", "@c0", ["src/auth.py", "src/auth.py::refresh"],
+                                    note="whole two")])
+        for unit in ("WHOLE-1", "WHOLE-2"):
+            with self.subTest(unit=unit):
+                self.assertEqual(got[unit], ("STALE", ["path-changed:src/auth.py"],
+                                             {"paths": ["src/auth.py"], "symbols": {}}))
+
+    def test_a_symbol_scope_still_narrows_without_a_whole_file_entry(self):
+        # A loose prose mention of the bare path does not widen a structured symbol scope, and a
+        # unit's own `symbols` list still qualifies its bare paths (the documented narrowing).
+        got = self.select([unit_run("2026-02-01-run-c", "SYM-1", "@c0", ["src/auth.py::refresh"], note="sym one",
+                                    claim="refresh in src/auth.py now caches"),
+                           unit_run("2026-02-01-run-d", "SYM-2", "@c0", ["src/auth.py"], note="sym two",
+                                    symbols=["refresh"])])
+        for unit in ("SYM-1", "SYM-2"):
+            with self.subTest(unit=unit):
+                self.assertEqual(got[unit], ("CURRENT", [], {"paths": ["src/auth.py"],
+                                                             "symbols": {"src/auth.py": ["refresh"]}}))
+
+
 if __name__ == "__main__":
     unittest.main()

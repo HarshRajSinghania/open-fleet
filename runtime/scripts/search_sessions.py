@@ -328,14 +328,21 @@ def _prior_hints(clean_paths, rdir):
                         matches.append(((_KIND_RANK[kind], field == "prose"), field, path, sym, query, kind))
             if not matches:
                 continue
-            paths, symbols = [], {}
+            paths, symbols, whole = [], {}, set()
             declared = [s for s in unit.get("symbols") or [] if isinstance(s, str) and s.strip()]
-            for _rank, _field, path, sym, query, kind in matches:
+            for _rank, field, path, sym, query, kind in matches:
                 checked = hp.checked_path(path, query, kind)
                 if checked and checked not in paths:
                     paths.append(checked)
                 if checked and (sym or declared):
                     symbols.setdefault(checked, set()).update([sym] if sym else declared)
+                elif checked and field != "prose":
+                    whole.add(checked)
+            # A structured whole-file entry outranks a narrower symbol named for the same path
+            # anywhere else in the record (PR #639 review: files_touched ["src/a.py"] plus a claim
+            # naming src/a.py::foo checked only foo, and the rest of the file went unwatched).
+            for checked in whole:
+                symbols.pop(checked, None)
             best = min(matches, key=lambda m: m[0])
             head = unit.get("head_sha") if "head_sha" in unit else data.get("head_sha")
             rev = head.strip().lower() if isinstance(head, str) and hp.REV.match(head.strip().lower()) else None

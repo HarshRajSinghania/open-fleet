@@ -662,7 +662,10 @@ bounded by its parser (`ast`): the first decorator's row through the definition'
 name its shallowest definition; a `.py` file that does not parse, or a name defined twice at that
 depth, compares the whole file instead, so it can only fail toward `STALE`. Other files use an
 indentation heuristic (a def/class/function line through the next line indented no deeper, in
-columns, a tab reaching the next multiple of eight) — a heuristic, not a parse. Related tests are the tests the record named plus tests sharing a
+columns, a tab reaching the next multiple of eight) — a heuristic, not a parse. A whole-file entry
+in a structured field (`files_touched`, `scope_allow`, `oracle_scope`) keeps the whole file in
+scope even when the record also names a symbol in it; a bare path mentioned only in prose does not
+widen a symbol scope. Related tests are the tests the record named plus tests sharing a
 scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are manifests and
 lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the
 archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined

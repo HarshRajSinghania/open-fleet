@@ -1,11 +1,24 @@
 # Changelog
 
-All notable changes to orca-fleet are documented here. The format follows
+All notable changes to open-fleet are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version source of
 truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The project is renamed orca-fleet → open-fleet.** The repository is `ravidsrk/open-fleet`
+  (old `ravidsrk/orca-fleet` URLs redirect), and the Claude Code plugin and its marketplace are
+  `open-fleet`: an existing plugin install reinstalls as `open-fleet@open-fleet`. A2A card ids
+  are `open-fleet:<mission>`. The `ORCA_FLEET_*` environment variables are now `OPEN_FLEET_*`
+  (`OPEN_FLEET_ROOT`, `OPEN_FLEET_RUNTIME`, `OPEN_FLEET_STATE_DB`, `OPEN_FLEET_STATE_DIR`):
+  every reader still accepts the old name when the new one is unset, and `preflight.py` refuses
+  when `OPEN_FLEET_ROOT` and `ORCA_FLEET_ROOT` name different catalogs; snippets, docs, the
+  bundle and the `posix` spawn environment emit only the new names. Example key paths moved
+  from `~/.orca-fleet/` to `~/.open-fleet/` (no script defaults to either — keep passing the
+  path your key lives at), and the bundle ownership marker is `.open-fleet-bundle.json`. Orca
+  itself — the runtime, the `orca` CLI and its `ORCA_*` variables — is unchanged. Archival run
+  reports, reviews, research, completion evidence and the decisions ledger keep the old name:
+  they are hash-bound, dated evidence.
 - **The 2026-10-23 end-to-end review's findings are closed** (#629; children #612–#628). The
   review found a bypass in each mechanism the thesis stands on; each now fails where it passed:
   - Verifier: a stillborn mutant is refused even when the runner prints `N failed` (pytest,

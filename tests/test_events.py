@@ -602,6 +602,18 @@ class TestRedispatchIsRework(Base):
         self.assertEqual(self.metric(report, 1, "rework")["value"], "0/1")
         self.assertEqual(self.metric(report, 2, "rework")["value"], "1/1")
 
+    def test_a_retry_into_a_later_wave_is_counted_there(self):
+        # PR #638 review (P1): retries were each wave's dispatches minus one, so d1 in wave 1
+        # and its replacement d2 in wave 2 read as 0 and 0, hiding the retry that carried the
+        # unit into wave 2. Counted against the task's earlier dispatches, wave 2 has one; a
+        # second replacement inside wave 2 is a second.
+        report = self.derive(carried_stream())
+        self.assertEqual([self.metric(report, k, "retries")["value"] for k in (1, 2)], ["0", "1"])
+        evs = carried_stream()
+        evs.insert(8, ev("dispatch.launched", "10:35:00", task="t", dispatch="d3", **ONE))
+        report = self.derive(evs)
+        self.assertEqual([self.metric(report, k, "retries")["value"] for k in (1, 2)], ["0", "2"])
+
 
 class TestFreshnessCountsReviews(Base):
     def test_two_approvals_of_one_head_voided_count_twice(self):

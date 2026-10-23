@@ -669,11 +669,18 @@ def derive_unit(task, wave, events, prior_dispatches=()):
     # A void observed without the approval it voided is still one voided review.
     voided += sorted(explicit - {r["data"]["reviewed_sha"] for r in approvals})
 
+    # Retries: a dispatch first seen in this wave that follows an earlier dispatch of the task,
+    # in this wave or one that planned it before. This wave's dispatches minus one read d1 in
+    # wave 1 and its replacement d2 in wave 2 as no retry at all (PR #638 review, P1); a
+    # dispatch already seen earlier is the same worker carried over, not a retry.
+    fresh = seen - set(prior_dispatches)
+    retries = max(len(fresh) - (0 if prior_dispatches else 1), 0)
+
     return {
         "task": task, "wave": wave, "outcome": outcome,
         "task_completed": bool(by["task.done"]),
         "park_classes": sorted({p["data"]["park_class"] for p in by["unit.parked"]}),
-        "dispatches": sorted(seen), "unlaunched": sorted(seen - launched),
+        "dispatches": sorted(seen), "unlaunched": sorted(seen - launched), "retries": retries,
         # attention-budget.md: rework is 'bounced by evidence-manifest.md §2 (re-dispatch /
         # SUSPECT)'. A replaced worker is a re-dispatch whether or not a failing verdict was
         # recorded, and so is a dispatch into a later wave (PR #638 review, P1).
@@ -778,7 +785,7 @@ def wave_metrics(k, opened, closed, units):
     if not units:
         retry_reasons = [f"wave {k}: no planned unit"]
     metrics["retries"] = _na(retry_reasons) if retry_reasons else {
-        "value": str(sum(len(u["dispatches"]) - 1 for u in units))}
+        "value": str(sum(u["retries"] for u in units))}
     return metrics
 
 

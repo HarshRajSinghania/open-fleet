@@ -510,7 +510,9 @@ to the park); review queue from that worker_done to the review starting on it. T
 verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share of units with
 a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a dispatch into a
 later wave); freshness counts approving reviews (one per reviewer dispatch and head) voided by
-a closing head that moved, unless both trees are recorded and equal. An interval needs one clock, no
+a closing head that moved, unless both trees are recorded and equal. Retries count each dispatch
+of a task after its first, in the wave it is first seen in — so a replacement that carried the
+unit into a later wave is a retry there. An interval needs one clock, no
 `recovered` endpoint and a non-negative difference. Coordinator history must be whole —
 `run.start` at epoch 1, then each `coordinator.resume` at the next epoch — or every metric of
 the run is unavailable. Events recorded under an epoch below the

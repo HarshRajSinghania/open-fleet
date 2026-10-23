@@ -10,7 +10,8 @@ This runner pins the revision instead of trusting the checkout:
              built (not inherited) environment, one process per case with a timeout, and write
              one JSON report plus a short text summary.
   compare    diff two reports. Anything outside the host facts (`environment`), the raw refusal
-             text (`diagnostics`) and wall time (`*wall_seconds`) must match, or it fails.
+             text (`diagnostics`) and wall time (`wall_seconds`, at the top level and in each
+             configuration's metrics and runs) must match, or it fails.
   reproduce  replay the revision and protocol a published report pins, then compare against it:
              the second-environment check CI runs (#601).
   drill      the deliberate negative controls: a revision with a corpus case deleted, one edited,
@@ -63,8 +64,10 @@ PINNED_BLOBS = ("bench/vf-bench/VERSION", "bench/vf-bench/CANARY", "bench/vf-ben
 PINNED_TREES = ("bench/vf-bench/traps", "bench/vf-bench/fixtures", "runtime/scripts")
 FIXTURE_PREFIX = "bench/vf-bench/fixtures/"
 # Never compared: what varies by host, the raw refusal text (fixture SHAs and temp paths move
-# every run), and wall time. Everything else in two reports of one revision must be equal.
-COMPARE_EXCLUDED = ("environment", "diagnostics")
+# every run), and wall time. Everything else in two reports of one revision must be equal. These
+# are report FIELDS, excluded at their paths only — a configuration or case that shares one of
+# these names is compared like any other (PR #645 review).
+COMPARE_EXCLUDED = ("environment", "diagnostics", "wall_seconds")
 UNSCORED = ("timeout", "crash", "malformed", "error", "not-run")
 DEFAULT_RUNS = 3
 DEFAULT_CASE_TIMEOUT = 300
@@ -952,14 +955,24 @@ def render_summary(report):
     return "\n".join(lines) + "\n"
 
 
-def comparable(obj):
-    """The report minus what may differ between environments (COMPARE_EXCLUDED and wall time)."""
-    if isinstance(obj, dict):
-        return {k: comparable(v) for k, v in obj.items()
-                if k not in COMPARE_EXCLUDED and not k.endswith("wall_seconds")}
-    if isinstance(obj, list):
-        return [comparable(v) for v in obj]
-    return obj
+def comparable(report):
+    """The report minus what may differ between environments, by PATH: the top-level
+    COMPARE_EXCLUDED fields, and `wall_seconds` in each configuration's metrics and runs. Names
+    are data — an adapter called `environment` or a case id ending in `wall_seconds` keeps every
+    result it carries (PR #645 review)."""
+    out = {k: v for k, v in report.items() if k not in COMPARE_EXCLUDED}
+    if isinstance(report.get("configurations"), dict):
+        configs = {}
+        for name, cfg in report["configurations"].items():
+            cfg = dict(cfg)
+            if isinstance(cfg.get("metrics"), dict):
+                cfg["metrics"] = {k: v for k, v in cfg["metrics"].items() if k != "wall_seconds"}
+            if isinstance(cfg.get("runs"), list):
+                cfg["runs"] = [{k: v for k, v in run.items() if k != "wall_seconds"}
+                               for run in cfg["runs"]]
+            configs[name] = cfg
+        out["configurations"] = configs
+    return out
 
 
 def diff(a, b, path="$"):

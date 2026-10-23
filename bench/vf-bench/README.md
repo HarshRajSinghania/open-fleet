@@ -411,7 +411,10 @@ Each configuration is reported on its own, never as a pass rate:
 A case that timed out, crashed, raised or answered malformed is never scored as a catch: it leaves
 the denominator, is listed by kind, and fails the replay. `compare` ignores exactly three things:
 `environment` (the host facts), `diagnostics` (raw refusal text, which carries per-run fixture SHAs
-and temp paths) and every `*wall_seconds` field; anything else that differs is a mismatch.
+and temp paths) and `wall_seconds` (at the top level and in each configuration's metrics and runs);
+anything else that differs is a mismatch. The three are excluded at those paths only: an adapter or
+a case whose name happens to be `environment` or end in `wall_seconds` is compared in full (PR #645
+review).
 
 **The published report.** `replay-reference.json` is a three-run replay of the full corpus at
 `27b5ed613949` (the #600 corpus: `277f594ca6e1…`), made on macOS: verify.py 0/53 false

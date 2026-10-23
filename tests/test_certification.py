@@ -709,5 +709,34 @@ class TestLiveReportFormats(Tripwired):
                     self.assertEqual(read_report("claude", lines), "", f"the {agent} stand-in answered as Claude")
 
 
+class TestCommittedReportIsChecked(Tripwired):
+    """rw: the report the worker COMMITS is what verify.py binds, so it is what must open with
+    the frozen header; a correct printed report cannot carry a different committed one."""
+
+    WRITE = 'Path(rel).write_text(report, encoding="utf-8")'
+
+    def run_rw(self, committed: str, name: str):
+        mutant = first_run.INERT_WORKER.replace(self.WRITE, f"Path(rel).write_text({committed}, encoding='utf-8')")
+        self.assertNotEqual(mutant, first_run.INERT_WORKER, "the mutant must change the stand-in")
+        buf = io.StringIO()
+        with mock.patch.object(first_run, "INERT_WORKER", mutant), \
+                mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main(["--profile", "rw", "--workdir", str(self.tmp / name), "--json"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_a_committed_report_that_differs_from_the_printed_one_is_no_go(self):
+        for name, committed in {"tampered": '"I reviewed something else\\n"', "empty": '""'}.items():
+            with self.subTest(committed=name):
+                rc, receipt = self.run_rw(committed, name)
+                self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"))
+                self.assertEqual(receipt["failure"]["step"], "evidence")
+                self.assertIn("the committed report does not open with", receipt["failure"]["detail"])
+                self.assertNotIn("verify", [s["step"] for s in receipt["steps"]], "nothing may bind the wrong report")
+
+    def test_the_committed_report_itself_passes(self):
+        rc, receipt = self.run_rw("report", "control")
+        self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+
+
 if __name__ == "__main__":
     unittest.main()

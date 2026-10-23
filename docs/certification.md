@@ -187,7 +187,8 @@ RECEIPT=/tmp/open-fleet-first-run-<x>/receipt.json
 `REVIEWED` is the reviewed range. `EVIDENCE` is the commit range that `verify.py` re-derived. It
 contains only the report, with the frozen contract as its base. Add `--profile rw` to have the
 worker commit the report and send `worker_done`; the coordinator re-reads the worker's HEAD from
-git. Add `--agent <harness>` to run another posix harness name, `--keep` to keep the sandbox, and
+git and refuses a committed report that does not open with the required line. Add
+`--agent <harness>` to run another posix harness name, `--keep` to keep the sandbox, and
 `--target <repo> --base <rev> --head <rev>` to review your own range. The target is cloned and
 never modified. On a 2026 macOS arm64 development host, one inert run took about 2 seconds. That
 is a fixture timing, not a clean-host record.

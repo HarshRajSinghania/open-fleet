@@ -605,12 +605,16 @@ class FirstRun:
             raise StepFailed(f"transcript read not certified: {(read.stderr or read.stdout).strip()[:200]}")
         report = self.transcript_report()
         first = report.splitlines()[0] if report else ""
-        want = f"FIRST-RUN-REPORT {self.nonce} {self.facts['reviewed']['head_sha']}"
+        want = self.report_header()
         if first.strip() != want:
             raise StepFailed(f"report does not open with {want!r}: {first[:200]!r}",
                              "the worker did not follow the spec; read its transcript")
         self.facts["report"] = report
         return f"settled {state['v']}; report names the reviewed head"
+
+    def report_header(self) -> str:
+        """FR-2: the exact line every report opens with, printed and committed alike."""
+        return f"{REPORT_HEAD}{self.nonce} {self.facts['reviewed']['head_sha']}"
 
     def transcript_report(self) -> str:
         proc = self.rec.run(py("orca_cli.py", "orchestration", "worker-read", "--dispatch", self.facts["dispatch"],
@@ -640,6 +644,13 @@ class FirstRun:
         if changed != [rel]:
             raise StepFailed(f"the evidence range changes more than the report: {changed}",
                              "a review unit may not change code")
+        # verify.py binds the COMMITTED bytes, so they are what must meet FR-2: an rw worker could
+        # print the right report and commit another (#596 review). Read from git, never the tree.
+        committed = self.rec.run(["git", "show", f"{head}:{rel}"], cwd=t)
+        first, want = (committed.stdout.splitlines() or [""])[0], self.report_header()
+        if committed.returncode != 0 or first.strip() != want:
+            raise StepFailed(f"the committed report does not open with {want!r}: {first[:200]!r}",
+                             f"git show {head}:{rel}; the report the worker printed is not the one it committed")
         self.facts["evidence"] = {"base_sha": contract_sha, "head_sha": head}
         return f"{contract_sha[:12]}..{head[:12]} carries only {rel}"
 

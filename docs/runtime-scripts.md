@@ -516,7 +516,9 @@ for every other harness name. It calls no model and its receipt reads `fixture-t
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. `rw` has the worker commit the report and send `worker_done`;
-the coordinator re-reads its HEAD from git and refuses a claim that git contradicts.
+the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
+profiles the report committed at the evidence head, the file `verify.py` binds, must open with
+the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
 
 The report is read from the transcript in the harness's own output format
 (`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the

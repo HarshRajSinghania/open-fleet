@@ -1166,6 +1166,29 @@ def _db_time(value):
     return datetime.fromtimestamp(float(value), timezone.utc).isoformat(timespec="microseconds")
 
 
+def launch_proof(row):
+    """What the store proves about whether this dispatch's worker ran (#597, PR #638 review P1).
+
+    A worker-start dispatch carries a launch intent and is registered `ready` BEFORE anything
+    spawns; its worker runs only after a monitor claims the launch gate, and the first claim
+    sets `monitor_started_at` for good. So, in the store's own terms (posix.py's
+    `_gate_proves_never_ran`):
+      launched    a monitor claimed the gate, or the worker's terminal mail settled it
+                  `completed` (an exit it recorded);
+      never       no claim and the gate closed for good — a fence or recovery's
+                  `abandon_unlaunched` landed first — so no worker ran and none ever can;
+      unresolved  no claim and the gate still open (or a death the liveness sweep inferred for a
+                  monitor that never claimed): it may yet run, so it is deferred;
+      ungated     no intent — an injected dispatch, another provider's row, a store from before
+                  #597. The gate proves nothing there, and the row is recorded as before."""
+    keys = row.keys()
+    if "intent_id" not in keys or not row["intent_id"]:
+        return "ungated"
+    if row["monitor_started_at"] is not None or row["state"] == "completed":
+        return "launched"
+    return "never" if row["gate_closed_at"] is not None else "unresolved"
+
+
 def cmd_ingest_state(args):
     """Launches, worker_done mail and deaths of one run, read from the local-state DB through
     watchdog.py's strictly read-only connection. Ids are the rows' own, so re-ingesting the same
@@ -1176,7 +1199,11 @@ def cmd_ingest_state(args):
     until its dispatch is terminal: recorded before, the same message id would say null now and
     the head after exit — a conflict that contests the unit for good (PR #638 review, P1). Its
     time is the message's own, so recording it later records the same fact. A head taken from
-    the row is bound into the event id (`bound_id`): providers rewrite that column later."""
+    the row is bound into the event id (`bound_id`): providers rewrite that column later.
+
+    A dispatch the launch gate proves never ran is not a launch, and one whose launch is still
+    unresolved is deferred with its mail until the store resolves it (`launch_proof`): a row
+    first deferred then resolved records exactly one launch, or none (PR #638 review, P1)."""
     import sqlite3
     db = Path(args.db)
     if not db.is_file():
@@ -1195,10 +1222,17 @@ def cmd_ingest_state(args):
     except sqlite3.Error as err:
         raise EventsError(f"{db} is not a readable local-state DB: {err}") from err
     events, by_id, by_handle, skipped, deferred = [], {}, {}, [], []
+    never, unresolved, held = [], [], []
     common = {"producer": "local_state", "basis": "occurred"}
     for row in rows:
         keys = row.keys()
         by_handle.setdefault(row["terminal_handle"], []).append(row)
+        row_head = row["head_sha"] if "head_sha" in keys else None
+        by_id[row["dispatch_id"]] = (row, row_head)
+        proof = launch_proof(row)
+        if proof in ("never", "unresolved"):
+            (never if proof == "never" else unresolved).append(row["dispatch_id"])
+            continue
         agent = row["agent"] if ID_RE.fullmatch(row["agent"] or "") else None
         events.append(_build(args, "dispatch.launched", task=row["task_id"],
                              dispatch=row["dispatch_id"], observed_at=_db_time(row["created_at"]),
@@ -1211,8 +1245,6 @@ def cmd_ingest_state(args):
                                  observed_at=_db_time(row["updated_at"]),
                                  source_ref=f"local-state:dispatches/{row['dispatch_id']}",
                                  event_id=f"local-state:died:{row['dispatch_id']}", **common))
-        row_head = row["head_sha"] if "head_sha" in keys else None
-        by_id[row["dispatch_id"]] = (row, row_head)
     for msg in mail:
         match = by_id.get(msg["sender"])
         handles = by_handle.get(msg["sender"], [])
@@ -1222,6 +1254,9 @@ def cmd_ingest_state(args):
             skipped.append(msg["id"])
             continue
         row, row_head = match
+        if row["dispatch_id"] in unresolved:
+            held.append(msg["id"])  # its dispatch's launch is not resolved yet
+            continue
         try:
             attrs = json.loads(msg["attrs_json"] or "{}")
         except ValueError:
@@ -1247,12 +1282,24 @@ def cmd_ingest_state(args):
     if skipped:
         print(f"events: {len(skipped)} worker_done message(s) name no single dispatch of run "
               f"{args.run} and were not recorded: {skipped}", file=sys.stderr)
+    if never:
+        print(f"events: {len(never)} dispatch row(s) never launched — the launch gate closed before "
+              f"any monitor claimed it (#597) — and are not recorded: {never}", file=sys.stderr)
+    if unresolved:
+        print(f"events: {len(unresolved)} dispatch row(s) have no monitor claim and an open launch "
+              "gate; each is deferred until the store shows whether it ran: "
+              f"{unresolved}", file=sys.stderr)
+    if held:
+        print(f"events: {len(held)} worker_done message(s) name a dispatch whose launch is "
+              f"unresolved; each is deferred with it: {held}", file=sys.stderr)
     if deferred:
         print(f"events: {len(deferred)} worker_done message(s) name no head and the store has not "
               "written their dispatch's yet; each is deferred until its dispatch exits: "
               f"{deferred}", file=sys.stderr)
     if not events:
-        print(f"events: the DB holds no dispatch or worker_done for run {args.run}", file=sys.stderr)
+        print(f"events: nothing to record for run {args.run}" + (
+            " yet" if never or unresolved or held or deferred else
+            ": the DB holds no dispatch or worker_done for it"), file=sys.stderr)
         return EXIT_INCOMPLETE
     return _record(args, events)
 

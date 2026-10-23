@@ -534,8 +534,14 @@ dispatch row — is bound into the event id (`runtime/scripts/events.py:bound_id
 derives another head, or none (the manifest changed or vanished), records its own observation
 beside the first, which SHA binding then sorts out. `ingest-usage` binds each result line to the
 stream's bytes through that line (its id and `source.sha256`), so a stream re-ingested after
-the worker or monitor appended to it adds only its new result lines. `ingest-state` binds a
-worker_done to the head its message names; one that names none takes its dispatch's head, which
+the worker or monitor appended to it adds only its new result lines. `ingest-state` records a
+launch only when the store proves its worker ran (`runtime/scripts/events.py:launch_proof`, the
+#597 launch gate): a worker-start dispatch whose gate closed before any monitor claimed it (a
+fence, or recovery's `abandon_unlaunched`) is no launch, no retry and no usage to cover; one with
+no claim and an open gate is deferred with its mail (listed on stderr) until the store resolves
+it, so each import records exactly one launch for it, or none. A row with no launch intent (an
+injected dispatch, another provider, a pre-#597 store) carries no such proof and is recorded as
+a launch, as before. `ingest-state` binds a worker_done to the head its message names; one that names none takes its dispatch's head, which
 the store writes when the worker exits, so the message is deferred (and listed on stderr) until
 the dispatch is terminal — imports before and after exit then record one `task.done`, not a
 conflict. A provider that rewrites a terminal dispatch's head later (multiclaude's

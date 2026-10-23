@@ -1298,6 +1298,116 @@ class TestIngest(Base):
         self.assertIn("deferred until its dispatch exits", before.stderr)
         self.assertNotIn("local-state:message:", before.stdout, "nothing recorded before exit")
 
+    TEN = calendar.timegm((2026, 10, 20, 10, 0, 0))  # 2026-10-20T10:00:00Z as the DB stores it
+
+    def gated_store(self, *dispatches):
+        """#597's launch gate: worker-start dispatch rows that carry a launch intent, registered
+        `ready` before any spawn, each (dispatch, terminal, minute after 10:00) of task_1."""
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        LocalStateStore = importlib.import_module("runtime.providers.local_state").LocalStateStore
+        db = self.tmp / "runtime.db"
+        store = LocalStateStore(db, env={})
+        with store._connect() as conn:
+            for disp, handle, minute in dispatches:
+                at = self.TEN + 60 * minute
+                conn.execute("INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, "
+                             "terminal_handle, state, created_at, updated_at, intent_id) VALUES "
+                             "(?, 'task_1', 'run_x', '/w', 'claude', ?, 'ready', ?, ?, ?)",
+                             (disp, handle, at, at, f"intent_{disp}"))
+        return store, db
+
+    def worker_runs(self, store, disp, handle, head=None, minute=10):
+        """A monitor claims the gate; with a head the worker reports done and exits, without one
+        it dies before reporting."""
+        self.assertTrue(store.claim_monitor(disp, 4242))
+        if head:
+            store.send_message(subject="done", msg_type="worker_done", sender=handle, run="run_x",
+                               attrs={"headSha": head})
+            with store._connect() as conn:
+                conn.execute("UPDATE messages SET created_at = ? WHERE sender = ?",
+                             (self.TEN + 60 * minute, handle))
+        store.ensure_terminal_or_died(dispatch_id=disp, worker_handle=handle, exit_code=0 if head else 1,
+                                      worktree_head_sha=head or "", run_id="run_x")
+
+    def launches(self):
+        return sorted(e["dispatch"] for e in events.read_log(self.log)[0]
+                      if e["kind"] == "dispatch.launched")
+
+    def test_a_dispatch_the_gate_proves_never_ran_is_not_a_launch(self):
+        # PR #638 review (P1): ingest-state recorded every dispatch row as launched, including
+        # one recovery abandoned at the launch gate before any monitor claimed it (#597). Beside
+        # the replacement that did run, the unit read one retry and rework 1/1, and run usage
+        # stayed unavailable for a dispatch that can never spend anything.
+        # Hand calculation: wave 10:00-10:40 (2400 s), one close -> 1.50/h; done@C4 10:10 ->
+        # pass 10:20 = 10 m.
+        c4 = sha("c4")
+        store, db = self.gated_store(("disp_a", "term_a", 1), ("disp_b", "term_b", 2))
+        self.assertTrue(store.abandon_unlaunched("disp_a"))  # recovery won the gate: nothing ran
+        self.worker_runs(store, "disp_b", "term_b", c4)
+        c = {"run": "run_x", "epoch": 1, "clock": "host-a"}
+        events.append_events(self.log, [
+            ev("run.start", "09:59:00", data={"coordinator": "c1"}, **c),
+            ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                              "tasks": ["task_1"]}, **c)])
+        proc = self.ingest(db)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        events.append_events(self.log, [
+            ev("model.usage", "10:11:00", task="task_1", dispatch="disp_b",
+               data={"model": "m", "input_tokens": 9, "provenance": "p"}, **c),
+            ev("review.verdict", "10:15:00", task="task_1",
+               data={"verdict": "approve", "reviewed_sha": c4}, **c),
+            ev("verify.verdict", "10:20:00", task="task_1", data={"exit": 0, "head_sha": c4}, **c),
+            ev("unit.closed", "10:30:00", task="task_1", data={"head_sha": c4}, **c),
+            ev("wave.close", "10:40:00", data={"wave": 1}, **c)])
+        recorded, file_sha, digest = events.read_log(self.log)
+        report = events.derive(recorded, "run_x", file_sha, digest)
+        self.assertEqual([self.metric(report, 1, m)["value"] for m in ("retries", "rework")], ["0", "0/1"])
+        self.assertEqual(report["usage"]["run_total"]["input_tokens"], {"value": 9})
+        self.assertEqual(report["waves"][0]["row"],
+                         "| `wave=1` | `builders=1 reviewers=1` | `throughput=1.50/h` | "
+                         "`latency_median=10.00m latency_max=10.00m` | `rework=0/1` | `freshness=0` |")
+        self.assertEqual(self.launches(), ["disp_b"])
+        self.assertIn("never launched", proc.stderr)
+
+    def test_a_replacement_after_a_worker_that_ran_is_still_a_retry(self):
+        # Control: both dispatches passed the gate, the first died — a genuine retry.
+        store, db = self.gated_store(("disp_a", "term_a", 1), ("disp_b", "term_b", 2))
+        self.worker_runs(store, "disp_a", "term_a")
+        self.worker_runs(store, "disp_b", "term_b", sha("c4"))
+        events.append_events(self.log, [
+            ev("run.start", "09:59:00", data={"coordinator": "c1"}, run="run_x", epoch=1, clock="host-a"),
+            ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                              "tasks": ["task_1"]}, run="run_x", epoch=1, clock="host-a")])
+        self.assertEqual(self.ingest(db).returncode, 0)
+        self.assertEqual(self.launches(), ["disp_a", "disp_b"])
+        recorded, file_sha, digest = events.read_log(self.log)
+        units = events.derive(recorded, "run_x", file_sha, digest)["waves"][0]["units"]
+        self.assertEqual((units[0]["dispatches"], units[0]["bounced"]), (["disp_a", "disp_b"], True))
+
+    def test_an_unresolved_launch_is_deferred_and_recorded_once_it_resolves(self):
+        # Control: a registered dispatch no monitor has claimed and no fence has closed may
+        # still run. It is deferred, not counted, and each later import records it exactly
+        # once if a monitor claims it, or never if the gate closes on it.
+        store, db = self.gated_store(("disp_c", "term_c", 1), ("disp_d", "term_d", 2))
+        # The rows and the mail are two reads: a worker can claim and report between them, so
+        # mail can name a row this import saw unclaimed. It waits with its dispatch.
+        store.send_message(subject="done", msg_type="worker_done", sender="term_c", run="run_x",
+                           attrs={"headSha": sha("c4")})
+        first = self.ingest(db)
+        self.assertEqual(self.launches() if self.log.exists() else [], [])
+        self.assertIn("deferred until the store shows whether it ran", first.stderr)
+        self.assertIn("disp_c", first.stderr)
+        self.assertIn("deferred with it", first.stderr)
+        self.assertTrue(store.claim_monitor("disp_c", 4242))
+        self.assertTrue(store.abandon_unlaunched("disp_d"))
+        second, third = self.ingest(db), self.ingest(db)
+        self.assertEqual([p.returncode for p in (second, third)], [0, 0], second.stderr)
+        self.assertEqual(self.launches(), ["disp_c"])
+        done = [e["dispatch"] for e in events.read_log(self.log)[0] if e["kind"] == "task.done"]
+        self.assertEqual(done, ["disp_c"])
+        self.assertEqual(third.stdout.split()[::2], ["duplicate", "duplicate"], third.stdout)
+
     def test_a_head_the_message_carries_is_recorded_at_once_and_kept(self):
         # Control: a worker_done that names its head is stable evidence in itself — recorded
         # on the first import, and a duplicate after exit even if the store's row head differs.

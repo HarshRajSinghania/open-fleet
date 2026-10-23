@@ -493,55 +493,81 @@ class LiveSource:
         """Working-tree mode: do the bytes on disk for ``path`` -- a file, or every tracked file under
         a directory -- differ from ``rev``? ``git diff`` answers from the index, and an
         assume-unchanged or skip-worktree flag, or a stale stat cache, keeps it from looking at the
-        file at all (PR #639 review), so an empty diff is never trusted for a scoped path. True or
-        False; None when no direct comparison is possible (unreadable, or nothing on disk: a
-        sparse-checkout hole). A difference in line endings alone is checkout conversion, not an
-        edit. Submodules are left to the diff."""
+        file at all (PR #639 review), so an empty diff is never trusted for a path a hint depends
+        on. True or False; None when no direct comparison is possible (unreadable, or nothing on
+        disk: a sparse-checkout hole). A changed file outranks an unverifiable one in a directory.
+        Submodules are left to the diff."""
         def compute():
-            kind = git(self.root, "cat-file", "-t", f"{rev}:{path}")
-            kind = kind.stdout.strip() if _ok(kind) else None
+            if path in self.tracked():
+                kind = "blob"  # a tracked file the diff leaves out is the same blob at rev
+            else:
+                proc = git(self.root, "cat-file", "-t", f"{rev}:{path}")
+                kind = proc.stdout.strip() if _ok(proc) else None
             if kind == "blob":
                 files = [path]
             elif kind == "tree":
-                listed = git(self.root, "ls-files", "-s", "-z", "--", path)
-                if not _ok(listed):
-                    return None
-                files = [entry.split("\t", 1)[1] for entry in listed.stdout.split("\0")
-                         if "\t" in entry and not entry.startswith("160000 ")]
+                prefix = path.rstrip("/") + "/"
+                files = [rel for rel in self.tracked() if rel.startswith(prefix)]
             else:
                 return False if kind == "commit" else None
-            ids = self._blob_ids(rev, files)
-            if ids is None:
-                return None
-            for rel in files:
-                try:
-                    data = self._disk_bytes(rel)
-                except OSError:
-                    return None
-                if data is None:
-                    return None
-                if _blob_id(data, len(ids[rel])) == ids[rel]:
-                    continue
-                blob = git(self.root, "cat-file", "-p", ids[rel], text=False)
-                if not _ok(blob):
-                    return None
-                if data.replace(b"\r\n", b"\n") != blob.stdout.replace(b"\r\n", b"\n"):
-                    return True
-            return False
+            verdicts = set(self.files_differ(rev, files).values())
+            return True if True in verdicts else (None if None in verdicts else False)
         return self._memo(("disk", rev, path), compute)
 
+    def tracked(self):
+        """Every tracked file in the index, submodules left out, listed once (ls-files -s): an
+        ordered mapping, so it iterates in index order and answers membership directly."""
+        def compute():
+            listed = git(self.root, "ls-files", "-s", "-z")
+            if not _ok(listed):
+                raise ProvenanceError("cannot list tracked files in the live source")
+            return dict.fromkeys(entry.split("\t", 1)[1] for entry in listed.stdout.split("\0")
+                                 if "\t" in entry and not entry.startswith("160000 "))
+        return self._memo(("tracked",), compute)
+
+    def files_differ(self, rev, files):
+        """{file: True | False | None} for tracked files against ``rev``, each memoized: the bytes on
+        disk are hashed locally against the blob ids one rev-parse per 200 files reports, and the
+        blob is fetched only on a mismatch, where a difference in line endings alone is checkout
+        conversion, not an edit."""
+        todo = [rel for rel in dict.fromkeys(files) if ("file", rev, rel) not in self._cache]
+        ids = self._blob_ids(rev, todo)
+        for rel in todo:
+            self._cache[("file", rev, rel)] = self._file_differs(rel, ids.get(rel))
+        return {rel: self._cache[("file", rev, rel)] for rel in files}
+
+    def _file_differs(self, rel, blob_id):
+        if blob_id is None:
+            return None
+        try:
+            data = self._disk_bytes(rel)
+        except OSError:
+            return None
+        if data is None:
+            return None
+        if _blob_id(data, len(blob_id)) == blob_id:
+            return False
+        blob = git(self.root, "cat-file", "-p", blob_id, text=False)
+        if not _ok(blob):
+            return None
+        return data.replace(b"\r\n", b"\n") != blob.stdout.replace(b"\r\n", b"\n")
+
     def _blob_ids(self, rev, files):
-        """{path: blob id at rev}, from rev-parse in chunks; None when any path cannot be resolved."""
+        """{path: blob id at rev} for the paths rev-parse resolves; a chunk that fails is retried
+        one path at a time, so one unresolvable path costs only itself."""
         ids = {}
+        files = [rel for rel in files if "\n" not in rel]
         for start in range(0, len(files), 200):
             chunk = files[start:start + 200]
-            if any("\n" in rel for rel in chunk):
-                return None
             proc = git(self.root, "rev-parse", *[f"{rev}:{rel}" for rel in chunk])
             found = proc.stdout.split() if _ok(proc) else []
-            if len(found) != len(chunk):
-                return None
-            ids.update(zip(chunk, found, strict=True))
+            if len(found) == len(chunk):
+                ids.update(zip(chunk, found, strict=True))
+                continue
+            for rel in chunk:
+                one = git(self.root, "rev-parse", f"{rev}:{rel}")
+                if _ok(one) and one.stdout.strip():
+                    ids[rel] = one.stdout.strip()
         return ids
 
     def _disk_bytes(self, rel):
@@ -556,8 +582,9 @@ class LiveSource:
         return leaf.read_bytes() if leaf.is_file() else None
 
     def watch(self, rev, paths):
-        """Name the paths a hint is scoped to: in working-tree mode changes_since(rev) compares
-        each with the disk itself instead of trusting an empty diff for it."""
+        """Name the paths a hint depends on -- its scope, its related tests, the dependency files: in
+        working-tree mode changes_since(rev) compares each with the disk itself instead of trusting
+        an empty diff for it."""
         self._watched.setdefault(rev, set()).update(paths)
 
     def changes_since(self, rev):
@@ -600,8 +627,11 @@ class LiveSource:
         if not self.worktree:
             return changes
         out = dict(changes)
-        for path in sorted(self._watched.get(rev, ())):
-            if _changed_under(changes, path) is None:
+        pending = [path for path in sorted(self._watched.get(rev, ())) if _changed_under(changes, path) is None]
+        if pending:
+            # One batched pass fills the per-file memo; worktree_differs() then reads it.
+            self.files_differ(rev, [path for path in pending if path in self.tracked()])
+            for path in pending:
                 differs = self.worktree_differs(rev, path)
                 if differs is not False:
                     out[path] = ("M" if differs else "?", None)
@@ -674,24 +704,46 @@ def _symbol_reasons(live, rev, path, names):
     return reasons
 
 
-def _related_test_reasons(changes, paths, record_tokens):
-    """Tests the record named, or tests sharing a scoped file's stem, that changed since."""
+def _related_test(paths, record_tokens):
+    """The related-test matcher: a test path (diff_scope's rule) outside the scope that the record
+    named, or whose name contains a scoped file's stem. One definition for the diff-based check
+    and the direct comparison of tracked files."""
     named = {normalize_path(t) for t in record_tokens if TEST_PATH.search(normalize_path(t))}
     stems = {os.path.splitext(os.path.basename(p))[0].lower() for p in paths}
     stems = {s for s in stems if len(s) >= 3}
-    hits = []
-    for changed in sorted(changes):
-        if changed in paths or not TEST_PATH.search(changed):
-            continue
-        base = os.path.basename(changed).lower()
-        if changed in named or any(stem in base for stem in stems):
-            hits.append(changed)
-    return [(STALE, f"tests-changed:{hits[0]}" + (f"+{len(hits) - 1}" if len(hits) > 1 else ""))] if hits else []
+
+    def matches(path):
+        if path in paths or not TEST_PATH.search(path):
+            return False
+        return path in named or any(stem in os.path.basename(path).lower() for stem in stems)
+    return matches
+
+
+def _is_dependency(path):
+    return os.path.basename(path).lower() in DEPENDENCY_FILES
+
+
+def _named(kind, hits):
+    return f"{kind}:{hits[0]}" + (f"+{len(hits) - 1}" if len(hits) > 1 else "")
+
+
+def _related_test_reasons(changes, paths, record_tokens):
+    """Tests the record named, or tests sharing a scoped file's stem, that changed since -- or that
+    could not be compared with it (unknown, never fresh)."""
+    related = _related_test(paths, record_tokens)
+    hits = [p for p in sorted(changes) if related(p)]
+    changed = [p for p in hits if changes[p][0] != "?"]
+    unverifiable = [p for p in hits if changes[p][0] == "?"]
+    return ([(STALE, _named("tests-changed", changed))] if changed else []) + \
+        ([(UNKNOWN, _named("tests-unverifiable", unverifiable))] if unverifiable else [])
 
 
 def _dependency_reasons(changes):
-    hits = sorted(p for p in changes if os.path.basename(p).lower() in DEPENDENCY_FILES)
-    return [(UNKNOWN, f"dependencies-changed:{hits[0]}" + (f"+{len(hits) - 1}" if len(hits) > 1 else ""))] if hits else []
+    hits = sorted(p for p in changes if _is_dependency(p))
+    changed = [p for p in hits if changes[p][0] != "?"]
+    unverifiable = [p for p in hits if changes[p][0] == "?"]
+    return ([(UNKNOWN, _named("dependencies-changed", changed))] if changed else []) + \
+        ([(UNKNOWN, _named("dependencies-unverifiable", unverifiable))] if unverifiable else [])
 
 
 def assess(hint, live, archive=None):
@@ -722,6 +774,11 @@ def assess(hint, live, archive=None):
         reasons.append((UNKNOWN, "scope-unresolved"))
     else:
         reasons.extend(_scope_reasons(live, rev, paths, hint.get("symbols") or {}))
+    if live.worktree:
+        # The related tests and dependency files git tracks get the same direct comparison as the
+        # scope: a flagged or stat-hidden edit to them is missing from the diff too.
+        related = _related_test(set(paths), hint.get("tokens") or [])
+        live.watch(rev, [rel for rel in live.tracked() if _is_dependency(rel) or related(rel)])
     changes = live.changes_since(rev)
     reasons.extend(_related_test_reasons(changes, set(paths), hint.get("tokens") or []))
     reasons.extend(_dependency_reasons(changes))

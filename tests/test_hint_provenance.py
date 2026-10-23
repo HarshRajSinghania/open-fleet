@@ -1192,5 +1192,101 @@ class HiddenWorktreeChanges(unittest.TestCase):
         self.assertEqual(blind["FILE-1"], ("CURRENT", []))
 
 
+class HiddenRelatedAndDependencyChanges(unittest.TestCase):
+    """The same index blind spot for what a scoped hint depends on: a flagged or stat-hidden edit to
+    a related test or a lockfile is missing from `git diff`, and the related-test and dependency
+    checks read only the diff and the untracked listing. Those files are compared directly too."""
+
+    TEST = "tests/test_auth.py"
+    LOCK = "requirements.txt"
+
+    def fixture(self):
+        files = dict(BASE, **{self.LOCK: "requests==2.31.0\n", "tests/test_other.py": "import unittest\n",
+                              "docs/notes.md": "notes\n"})
+        return Fixture(scenario([{"name": "c0", "files": files}],
+                                [unit_run("2026-02-01-run-a", "AUTH-1", "@c0", ["src/auth.py"], note="auth note")]))
+
+    @staticmethod
+    def entry(fx):
+        sel = fx.select()
+        return sel["entries"][0]["currency"], sel["entries"][0]["reasons"]
+
+    @staticmethod
+    def edit_same_size(path, old, new):
+        path.write_text(path.read_text().replace(old, new))
+
+    def test_a_flagged_test_or_lockfile_edit_is_seen(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            for rel, old, new, want in ((self.TEST, "unittest", "unittess", ("STALE", [f"tests-changed:{self.TEST}"])),
+                                        (self.LOCK, "2.31.0", "2.32.0",
+                                         ("UNKNOWN", [f"dependencies-changed:{self.LOCK}"]))):
+                with self.subTest(flag=flag, file=rel):
+                    fx = self.fixture()
+                    try:
+                        replay_mod._git(fx.repo, "update-index", flag, rel)
+                        self.edit_same_size(fx.repo / rel, old, new)
+                        diff = hp.git(fx.repo, "diff", "--name-only", "HEAD", "--").stdout
+                        got = self.entry(fx)
+                    finally:
+                        fx.close()
+                    self.assertEqual(diff, "")
+                    self.assertEqual(got, want)
+
+    def test_a_stale_stat_cache_hides_no_test_or_lockfile_edit(self):
+        fx = self.fixture()
+        try:
+            replay_mod._git(fx.repo, "config", "core.trustctime", "false")
+            targets = [fx.repo / self.TEST, fx.repo / self.LOCK]
+            for target in targets:
+                os.utime(target, (1577836800, 1577836800))
+            replay_mod._git(fx.repo, "update-index", "--refresh")
+            for target, (old, new) in zip(targets, (("unittest", "unittess"), ("2.31.0", "2.32.0")), strict=True):
+                cached = target.stat()
+                with open(target, "r+b") as handle:  # same size, same inode, old mtime restored
+                    handle.write(target.read_bytes().replace(old.encode(), new.encode()))
+                os.utime(target, ns=(cached.st_atime_ns, cached.st_mtime_ns))
+            diff = hp.git(fx.repo, "diff", "--name-only", "HEAD", "--").stdout
+            got = self.entry(fx)
+        finally:
+            fx.close()
+        self.assertEqual(diff, "")
+        self.assertEqual(got, ("STALE", [f"tests-changed:{self.TEST}", f"dependencies-changed:{self.LOCK}"]))
+
+    def test_a_test_or_lockfile_that_cannot_be_compared_is_unknown(self):
+        original = Path.read_bytes
+
+        def unreadable(path):
+            if path.name == "test_auth.py":
+                raise PermissionError(13, "Permission denied", str(path))
+            return original(path)
+        fx = self.fixture()
+        try:
+            with mock.patch.object(Path, "read_bytes", unreadable):
+                denied = self.entry(fx)
+            replay_mod._git(fx.repo, "update-index", "--skip-worktree", self.LOCK)
+            (fx.repo / self.LOCK).unlink()
+            hole = self.entry(fx)
+        finally:
+            fx.close()
+        self.assertEqual(denied, ("UNKNOWN", [f"tests-unverifiable:{self.TEST}"]))
+        self.assertEqual(hole, ("UNKNOWN", [f"dependencies-unverifiable:{self.LOCK}"]))
+
+    def test_unchanged_or_unrelated_flagged_files_stay_current(self):
+        fx = self.fixture()
+        try:
+            for rel in (self.TEST, self.LOCK, "tests/test_other.py", "docs/notes.md"):
+                replay_mod._git(fx.repo, "update-index", "--assume-unchanged", rel)
+            flagged = self.entry(fx)
+            # A hidden edit to a test that shares no stem, or to a file that is no dependency, is
+            # outside what the hint depends on -- the same matchers as the diff-based checks.
+            self.edit_same_size(fx.repo / "tests/test_other.py", "unittest", "unittess")
+            self.edit_same_size(fx.repo / "docs/notes.md", "notes", "NOTES")
+            unrelated = self.entry(fx)
+        finally:
+            fx.close()
+        self.assertEqual(flagged, ("CURRENT", []))
+        self.assertEqual(unrelated, ("CURRENT", []))
+
+
 if __name__ == "__main__":
     unittest.main()

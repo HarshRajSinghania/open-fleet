@@ -50,7 +50,8 @@ DEFAULT_SHARDS = 4
 # Module -> seconds. Single-pass `python3 -m unittest tests.<mod>` walls,
 # repo root cwd, 2026-10-14. Balance-only: correctness never reads this.
 WEIGHTS = {
-    "test_a2a_export": 0.2,
+    "test_a2a_export": 0.9,
+    "test_a2a_schema": 0.4,
     "test_architecture": 37.5,
     "test_bind_check": 5.7,
     "test_bundle": 61.8,
@@ -83,6 +84,7 @@ WEIGHTS = {
     "test_gen_badges_isolation": 3.8,
     "test_governance_commands": 1.6,
     "test_guard_text": 3.7,
+    "test_hint_provenance": 20.6,
     "test_hitl_ask": 0.5,
     "test_hitl_loop": 1.0,
     "test_injection_corpus": 0.4,
@@ -104,6 +106,8 @@ WEIGHTS = {
     "test_pin_review": 1.0,
     "test_pins": 0.1,
     "test_pm": 0.1,
+    "test_posix_crash_recovery": 46.0,
+    "test_posix_docker_crash": 0.3,
     "test_posix_provider": 10.7,
     "test_preflight": 5.4,
     "test_proof_status": 0.4,
@@ -116,6 +120,9 @@ WEIGHTS = {
     "test_reshape_net_verify": 0.3,
     "test_reshape_width_validate": 0.2,
     "test_reshape_width_verify": 0.3,
+    # #608: 34.5 s locally, scaled by test_dispatch_sign and test_ed25519 (the other
+    # pure-Python Ed25519 modules: 8.1 / 4.3 s and 2.5 / 1.3 s, ~1.9x) to this table's clock.
+    "test_retention_receipt": 65.6,
     "test_run_report": 70.1,
     "test_runtime_providers": 1.3,
     "test_runtime_providers_core": 0.8,
@@ -136,8 +143,11 @@ WEIGHTS = {
     "test_verdict_check": 0.1,
     "test_verify": 64.4,
     "test_verify_gate": 7.6,
-    "test_vfbench": 11.8,
+    # #600: the corpus grew 33 -> 72 cases. Both re-timed locally and scaled by the ratio of
+    # test_vfbench's old weight to its old local time (11.8 / 45.8 s), so the ratios still steer.
+    "test_vfbench": 20.1,
     "test_vfbench_gate": 0.1,
+    "test_vfbench_guards": 11.6,
     "test_watchdog": 1.1,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,

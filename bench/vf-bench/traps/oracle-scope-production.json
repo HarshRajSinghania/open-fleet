@@ -1,0 +1,84 @@
+{
+  "id": "oracle-scope-production-1",
+  "class": "oracle-scope-production",
+  "sound_expected": "RED",
+  "note": "#600: the same characterization unit after it ALSO changed production code (sub() added to mod.py), under a coordinator contract that authorizes the reviewed mutant for this range. The exception would let the mutant target mod.py line 2, which this range never changed \u2014 the decoy the default bind exists to refuse \u2014 so a unit that changes production code keeps the default binding.",
+  "unit_class": "mutation",
+  "fixture": "characterization",
+  "gh_stub": true,
+  "repo": "vf-bench/oracle-scope-production",
+  "coordinator_contract": "contract-code.json",
+  "gh_reviews": [
+    {
+      "user": {
+        "login": "vf-reviewer"
+      },
+      "state": "APPROVED",
+      "commit_id": "{{head_code_sha}}",
+      "author_association": "MEMBER"
+    }
+  ],
+  "manifest": {
+    "unit": "vf-bench-oracle-scope-production",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_code_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract-code.json",
+      "digest": "{{contract_code_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_code_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/nc-scope.txt",
+        "sha256": "{{nc_scope_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_code_sha}}"
+    },
+    "negative_control": {
+      "did": "flipped add()'s operator at mod.py line 2, the coordinator-authorized mutant",
+      "tool": "hand",
+      "result": "the characterization test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc-scope.txt",
+      "command": "{{proof_cmd}}"
+    }
+  },
+  "expect_reason": "oracle scope: this unit changes production code",
+  "neighbour": "oracle-scope-valid-control-1"
+}

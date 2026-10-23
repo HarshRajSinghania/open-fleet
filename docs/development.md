@@ -54,6 +54,7 @@ when one does not.
 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | Check description-based mission routing |
 | `python3 scripts/eval.py run --suite injection` | Run the deterministic VAL-01 prompt-injection and trust-fence drills ([`evals/injection-drills.json`](../evals/injection-drills.json), #560) |
 | `python3 scripts/deny_hook_corpus.py` | Differential-test the deny-hook's shell parsing against real bash; `--minimize --write` stores new mismatches as fixtures ([`runtime-scripts.md`](runtime-scripts.md#deny-hooksh), #598) |
+| `python3 scripts/hint_replay.py --check` | Replay the fixed episodic-hint corpus ([`tests/fixtures/hint-replay.json`](../tests/fixtures/hint-replay.json), #605) with hints off, unchecked and checked; fails unless provenance checks retrieve every useful note and leak no stale or poisoned one |
 | `python3 scripts/bundle.py --check` | Build in a temporary directory and check bundled references |
 | `python3 scripts/release_check.py --fast --skip-github` | Verify the local [Release 1.0 checklist](release-1.0-checklist.md) gates |
 | `python3 -m unittest discover -s tests -v` | Run the complete contract and fixture suite |

@@ -1,0 +1,41 @@
+{
+  "id": "dispatch-replay-1",
+  "class": "dispatch-replay",
+  "sound_expected": "RED",
+  "note": "#600 / #135: a genuinely signed record for ANOTHER unit, replayed against this manifest. Every other signed field matches, so only the identity binding can refuse it.",
+  "unit_class": "report-only",
+  "fixture": "report-only",
+  "dispatch": {
+    "record": {
+      "manifest_id": "some-other-unit",
+      "contract_digest": "{{contract_digest}}",
+      "unit_class": "report-only",
+      "profile": "ro",
+      "parent_profile": "rw"
+    }
+  },
+  "manifest": {
+    "unit": "review-it",
+    "unit_class": "report-only",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "addressed": true
+      }
+    ],
+    "pr": {
+      "reviewed_sha": "{{head_sha}}"
+    }
+  },
+  "expect_reason": "dispatch record identity 'some-other-unit' does not bind this manifest 'review-it'",
+  "neighbour": "dispatch-valid-control-1"
+}

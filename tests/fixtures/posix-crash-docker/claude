@@ -1,0 +1,13 @@
+#!/bin/sh
+# INERT stand-in for the `claude` CLI inside the posix crash-test image (#597). It never contacts
+# a model: it records that it ran, commits one file into the sandbox's PRIVATE git dir (the
+# launch sets GIT_DIR/GIT_WORK_TREE), then sleeps until the container is removed.
+set -eu
+wt="${OPEN_FLEET_UNIT_WORKTREE:?launched without OPEN_FLEET_UNIT_WORKTREE}"
+mkdir -p "$wt/.open-fleet"
+printf 'sandboxed work by %s\n' "${OPEN_FLEET_DISPATCH_ID:-?}" > "$wt/sandbox-work.txt"
+g() { git -c safe.directory='*' -c user.name=inert -c user.email=inert@open-fleet.invalid "$@"; }
+g add sandbox-work.txt
+g commit -q -m "inert sandboxed work"
+echo "${OPEN_FLEET_DISPATCH_ID:-?} ${OPEN_FLEET_RUN_ID:-?} $(g rev-parse HEAD)" >> "$wt/.open-fleet/inert-claude.log"
+exec sleep 600

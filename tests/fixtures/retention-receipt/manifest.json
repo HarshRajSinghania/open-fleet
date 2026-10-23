@@ -1,0 +1,12 @@
+{
+  "unit": "r15-receipt-fixture",
+  "head_sha": "6080608060806080608060806080608060806080",
+  "provenance": {
+    "standard": "EU-AI-Act-Art-12",
+    "spec_version": "runtime/evidence-manifest.md@fixture",
+    "model": "fixture-model",
+    "reviewer": "fixture-reviewer",
+    "retention": "tests/fixtures/retention-receipt/retention-receipt.json",
+    "retention_receipt": "open-fleet/retention-receipt/v1"
+  }
+}

@@ -1139,6 +1139,95 @@ class TestIngest(Base):
         self.assertEqual(self._ingest_transcript(path).returncode, 2)
         self.assertFalse(self.log.exists())
 
+    def test_a_manifest_changed_or_gone_on_a_later_import_does_not_contest_the_verdict(self):
+        # PR #638 review (P1): the verdict's id was the transcript digest alone, so a first
+        # import that bound the judged head and a later one that found the manifest changed or
+        # gone (no head) were the same id with two bodies — a conflict that left the unit's
+        # wave unmeasurable. The head binding is part of the observation's identity now: the
+        # unbound re-import is its own observation, and the bound one stands.
+        # Hand calculation: wave 10:00-10:50 (3000 s), one close -> 1.20/h; done at D9 10:10 ->
+        # the transcript's pass at D9 10:40 = 30 m.
+        d9 = sha("d9")
+        events.append_events(self.log, [
+            ev("run.start", "10:00:00", data={"coordinator": "c1"}, **ONE),
+            ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                              "tasks": ["t"]}, **ONE),
+            ev("dispatch.launched", "10:01:00", task="t", dispatch="d", **ONE),
+            ev("task.done", "10:10:00", task="t", dispatch="d", data={"head_sha": d9}, **ONE),
+            ev("review.verdict", "10:15:00", task="t", data={"verdict": "approve", "reviewed_sha": d9},
+               **ONE)])
+        path, manifest = self._transcript()
+        codes = [self._ingest_transcript(path).returncode]
+        manifest.write_text(json.dumps({"unit": "u", "head_sha": sha("ee")}), encoding="utf-8")
+        codes.append(self._ingest_transcript(path).returncode)
+        manifest.unlink()
+        codes.append(self._ingest_transcript(path).returncode)
+        self.assertEqual(codes, [0, 0, 0])
+        events.append_events(self.log, [
+            ev("unit.closed", "10:45:00", task="t", data={"head_sha": d9}, **ONE),
+            ev("wave.close", "10:50:00", data={"wave": 1}, **ONE)])
+        recorded, file_sha, head = events.read_log(self.log)
+        verdicts = [e["data"]["head_sha"] for e in recorded if e["kind"] == "verify.verdict"]
+        self.assertEqual(verdicts, [d9, None], "the changed and the missing manifest bind no head")
+        report = events.derive(recorded, "r", file_sha, head)
+        self.assertEqual(report["record"]["conflicts"], 0)
+        self.assertEqual(report["waves"][0]["row"],
+                         "| `wave=1` | `builders=1 reviewers=1` | `throughput=1.20/h` | "
+                         "`latency_median=30.00m latency_max=30.00m` | `rework=0/1` | "
+                         "`freshness=0` |")
+
+    def test_the_same_source_bytes_read_from_another_path_are_a_duplicate(self):
+        # Sweep (PR #638 review, identity drift): source.ref is the path as typed, so the same
+        # transcript or stream imported from another working directory, or from a copy, said
+        # something "different" under the same id. A source with a digest is its bytes.
+        path, _manifest = self._transcript()
+        self._ingest_transcript(path)
+        relative = self.cli("ingest-transcript", "--transcript", path.name, "--task", "t",
+                            "--run", "r", "--epoch", "1", "--clock", "host-a")  # cwd is self.tmp
+        stream = self.tmp / "worker.jsonl"
+        stream.write_text(json.dumps({"type": "result", "usage": {"input_tokens": 5}}) + "\n",
+                          encoding="utf-8")
+        copy = self.tmp / "copy-of-worker.jsonl"
+        shutil.copyfile(stream, copy)
+        bind = ("--run", "r", "--epoch", "1", "--clock", "host-a", "--dispatch", "d")
+        usage = [self.cli("ingest-usage", "--stream", str(p), *bind) for p in (stream, copy)]
+        self.assertEqual([p.stdout.split()[0] for p in (relative, *usage)],
+                         ["duplicate", "appended", "duplicate"],
+                         [p.stdout + p.stderr for p in (relative, *usage)])
+
+    def test_a_head_the_store_rewrites_after_exit_is_a_second_observation_not_a_conflict(self):
+        # Sweep (PR #638 review, identity drift): a worker_done naming no head takes the
+        # dispatch row's, and multiclaude's worker_verify and ao's head preservation rewrite
+        # dispatches.head_sha after exit. The row-derived head is part of the done's identity,
+        # so the rewrite is a second observation that SHA binding sorts out, not a conflict.
+        store, db = self.running_store()
+        c4, d5 = sha("c4"), sha("d5")
+        c = {"run": "run_x", "epoch": 1, "clock": "host-a"}
+        events.append_events(self.log, [
+            ev("run.start", "09:59:00", data={"coordinator": "c1"}, **c),
+            ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                              "tasks": ["task_1"]}, **c)])
+        self.exit_worker(store, c4)
+        first = self.ingest(db)
+        with store._connect() as conn:
+            conn.execute("UPDATE dispatches SET head_sha = ? WHERE dispatch_id = 'disp_1'", (d5,))
+        rewritten = self.ingest(db)
+        self.assertEqual((first.returncode, rewritten.returncode), (0, 0), rewritten.stdout)
+        self.assertNotIn("conflict", rewritten.stdout)
+        events.append_events(self.log, [
+            ev("review.verdict", "10:15:00", task="task_1",
+               data={"verdict": "approve", "reviewed_sha": c4}, **c),
+            ev("verify.verdict", "10:20:00", task="task_1", data={"exit": 0, "head_sha": c4}, **c),
+            ev("unit.closed", "10:30:00", task="task_1", data={"head_sha": c4}, **c),
+            ev("wave.close", "10:40:00", data={"wave": 1}, **c)])
+        recorded, file_sha, digest = events.read_log(self.log)
+        done = sorted(e["data"]["head_sha"] for e in recorded if e["kind"] == "task.done")
+        self.assertEqual(done, [c4, d5])
+        report = events.derive(recorded, "run_x", file_sha, digest)
+        self.assertEqual(report["record"]["conflicts"], 0)
+        self.assertEqual(self.metric(report, 1, "latency_max")["value"], "10.00m")
+        self.assertTrue(report["complete"], report["waves"][0]["metrics"])
+
 
 class TestStateDBNotTouched(unittest.TestCase):
     def test_a_db_that_is_not_local_state_fails_closed(self):

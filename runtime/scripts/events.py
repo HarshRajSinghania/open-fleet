@@ -23,8 +23,9 @@ Record (keys sorted on the line)::
   artifact or store row the observation came from. ``event_id`` is the producer's idempotency key
   (content-derived when omitted): a re-delivery is skipped at append and collapsed at read, so a
   duplicate never double-counts; the same id saying something different is a CONFLICT and
-  contests every metric it touches. Who recorded it (``epoch``) and — unless ``basis`` is
-  ``occurred`` — when it was recorded are not what it says, so a re-ingest is a duplicate.
+  contests every metric it touches. Who recorded it (``epoch``), where a digested source was
+  read from, and — unless ``basis`` is ``occurred`` — when it was recorded are not what it says,
+  so a re-ingest is a duplicate; a head derived from outside it is part of its id (``bound_id``).
 * **Clocks.** ``observed_at`` is ISO-8601 with an offset, read on the ``clock`` it names. An
   interval is computed only between two events on the SAME clock; ``basis`` says what the time
   means — ``occurred`` (the store's own time of the fact), ``observed`` (seen live), or
@@ -310,10 +311,22 @@ def identity(event):
     Recording metadata is left out: `epoch` names the coordinator that recorded it, and a
     resumed coordinator re-ingesting the same DB rows is not contesting them; `observed_at`
     is when it was recorded unless `basis` is `occurred` (the store's own time of the fact),
-    so re-ingesting an unchanged stream later is a duplicate, not a conflict."""
+    so re-ingesting an unchanged stream later is a duplicate, not a conflict. A source with a
+    digest is its bytes — its ref is only where they were read — so the same transcript or
+    stream imported from another directory or a copy is a duplicate too (PR #638 review)."""
     said = {k: event[k] for k in FIELDS if k not in ("epoch", "observed_at", "basis")}
     said["occurred_at"] = event["observed_at"] if event["basis"] == "occurred" else None
+    if said["source"]["sha256"] is not None:
+        said["source"] = {"ref": None, "sha256": said["source"]["sha256"]}
     return _canonical(said)
+
+
+def bound_id(base, head):
+    """The id of an observation whose head is DERIVED from something outside it — the judged
+    manifest, the store's dispatch row — which can change or vanish after a first import. The
+    head is part of what it says, so a later import that derives another head (or none) is its
+    own observation, never a conflict that contests the first (PR #638 review, P1)."""
+    return f"{base}@{head or 'no-head'}"
 
 
 def content_id(event):
@@ -1088,7 +1101,8 @@ def cmd_ingest_state(args):
     row's head, which the store writes only when the worker exits, so the message is deferred
     until its dispatch is terminal: recorded before, the same message id would say null now and
     the head after exit — a conflict that contests the unit for good (PR #638 review, P1). Its
-    time is the message's own, so recording it later records the same fact."""
+    time is the message's own, so recording it later records the same fact. A head taken from
+    the row is bound into the event id (`bound_id`): providers rewrite that column later."""
     import sqlite3
     db = Path(args.db)
     if not db.is_file():
@@ -1140,17 +1154,22 @@ def cmd_ingest_state(args):
             attrs = {}
         attrs = attrs if isinstance(attrs, dict) else {}
         heads = [attrs.get("headSha"), attrs.get("head_sha")]
-        if not any(isinstance(h, str) and SHA_RE.fullmatch(h) for h in heads):
+        event_id = f"local-state:message:{msg['id']}"
+        from_row = not any(isinstance(h, str) and SHA_RE.fullmatch(h) for h in heads)
+        if from_row:
             if row["state"] not in TERMINAL_DISPATCH_STATES:
                 deferred.append(msg["id"])
                 continue
             heads.append(row_head)
         head = next((h for h in heads if isinstance(h, str) and SHA_RE.fullmatch(h)), None)
+        if from_row:
+            # The row's head, which multiclaude's worker_verify and ao's head preservation can
+            # rewrite after exit: bound into the id, so a rewrite is a second observation.
+            event_id = bound_id(event_id, head)
         events.append(_build(args, "task.done", task=row["task_id"], dispatch=row["dispatch_id"],
                              observed_at=_db_time(msg["created_at"]),
                              source_ref=f"local-state:messages/{msg['id']}",
-                             data={"head_sha": head},
-                             event_id=f"local-state:message:{msg['id']}", **common))
+                             data={"head_sha": head}, event_id=event_id, **common))
     if skipped:
         print(f"events: {len(skipped)} worker_done message(s) name no single dispatch of run "
               f"{args.run} and were not recorded: {skipped}", file=sys.stderr)
@@ -1167,7 +1186,10 @@ def cmd_ingest_state(args):
 def cmd_ingest_transcript(args):
     """verify.py's verdict object (or its signed envelope) as a verify.verdict event. The head
     comes from the manifest the verdict judged — and only when its bytes still hash to the
-    transcript's manifest_sha256; otherwise the verdict binds no head."""
+    transcript's manifest_sha256; otherwise the verdict binds no head. The manifest can change
+    or vanish between imports, so the head is bound into the event id (`bound_id`): an import
+    that no longer finds those bytes records its own unbound observation and leaves the bound
+    one standing, never a conflict on one id (PR #638 review, P1)."""
     path = Path(args.transcript)
     try:
         raw = path.read_bytes()
@@ -1198,7 +1220,7 @@ def cmd_ingest_transcript(args):
     event = _build(args, "verify.verdict", producer="verify.py", task=args.task, basis="occurred",
                    observed_at=record["timestamp"], source_ref=args.transcript,
                    source_sha256=digest, data={"exit": record["exit"], "head_sha": head},
-                   event_id=f"verify-transcript:{digest}")
+                   event_id=bound_id(f"verify-transcript:{digest}", head))
     return _record(args, [event])
 
 

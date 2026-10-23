@@ -22,6 +22,22 @@ truth is `.claude-plugin/plugin.json`.
   A fixed 27-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
   suppression and poisoned-note propagation with hints off/unchecked/checked; the live
   repeated-failure arm is wired but has not been run (it needs a declared model budget).
+- **Provenance retention receipts are verified offline against the signed inventory** (#608).
+  `provenance.retention` names a v1 receipt (`open-fleet/retention-receipt/v1`): a
+  `{record, sig_b64}` envelope whose eight fields — schema, unit, source revision, inventory
+  path, the inventory's signed digest, log index, entry UUID, signer — are all signed over
+  dispatch-sign.py's canonical form. `inventory.py receipt` writes one for an inventory the same
+  key signed. `verify.py` checks it when the binding is claimed (`provenance.retention_receipt` in
+  the manifest, or `--retention-pubkey` from the coordinator) and only against that supplied key:
+  a key declared in the receipt is refused. It refuses a missing, unreadable or path-escaping
+  receipt, the wrong key or signer, a signature mismatch, a replay from another unit, revision,
+  run or inventory, an unsigned or altered inventory, and a manifest the inventory does not pin.
+  The NOTE says what was not verified: log inclusion, retention, the inventoried files, any legal
+  determination. Unclaimed provenance keeps its presence-only check. `inventory.py` and
+  `gitexec.py` join the signed verifier toolchain, and the transcript's argument tuple gains
+  `retention_pubkey`; run_report.py mirrors both. `tests/test_retention_receipt.py` deletes each
+  refusal's guard from a copy of the verifier and requires the case to pass there.
+
 - **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
   first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
   a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry

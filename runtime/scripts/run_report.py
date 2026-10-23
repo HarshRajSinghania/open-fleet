@@ -509,13 +509,14 @@ def verifier_ran(manifest_path, rev, root):
 # compared. Two are switches; the rest take a value and are None when unset.
 SIGNED_ARGS = ("contract_source", "contract_digest", "repo", "base", "symbol", "execute_nc",
                "unit_class", "no_gh", "lighting", "lane", "dispatch_record", "dispatch_pubkey",
-               "nc_command", "git_dir", "evidence_root", "provenance")
+               "nc_command", "git_dir", "evidence_root", "provenance", "retention_pubkey")
 _SWITCH_ARGS = ("execute_nc", "no_gh")
 # h409 F-5: the verifier TOOLCHAIN a signed transcript names — verify.py and every sibling it
 # loads by path (verify.py _Transcript.TOOLCHAIN mirrors this). The transcript hashes each file;
 # the binding below checks every hash against the file at the graded pin, so a transcript proves
 # WHICH verifier ran (a substituted sibling fails to bind) — the verifier's identity, nothing more.
-TOOLCHAIN_FILES = ("verify.py", "_verify_sig.py", "diff_scope.py", "ed25519.py", "dispatch-sign.py")
+TOOLCHAIN_FILES = ("verify.py", "_verify_sig.py", "diff_scope.py", "ed25519.py", "dispatch-sign.py",
+                   "inventory.py", "gitexec.py")
 
 
 def invocation_args(text, manifest):

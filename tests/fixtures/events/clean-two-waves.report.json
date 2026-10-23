@@ -6,7 +6,7 @@
     {
       "clock": "host-a",
       "coordinator": "coord-1",
-      "digest": "7e709f56b03153f213063e7f61f3ce278a5f25bdc4686c989e8aa61e57550f9a",
+      "digest": "8d51f0037741d20256ca5842f9c971385460d579c458dc730103b718d710fe3a",
       "epoch": 1,
       "kind": "run.start"
     }
@@ -16,9 +16,9 @@
     "conflicts": 0,
     "duplicates": 2,
     "fenced": 0,
-    "head": "4223dbcbd75487a738ba6c9173269fd012dc984cb00207160220b084b39d61ab",
+    "head": "3618702b3330710e733b69331416fb2f1adeca1f2a59ae288b800265525a9e63",
     "lines": 40,
-    "log_sha256": "8739f2b8138bd7ca0cd3281d8cfaa22a777ac0ed3acf00aafb90a6abee65a7e6",
+    "log_sha256": "a26ce8a719d6808126643e8f03e4f4f106f92f088457e497485771b8579c937e",
     "other_run_events": 0,
     "run_events": 38
   },
@@ -143,7 +143,7 @@
           ],
           "events": [
             {
-              "digest": "400f29c53014905bc1f8fe0fc668504d4d8c91929c3fcb7adb0b62c4e7a725d1",
+              "digest": "1a787ca348ce1f0e991d941ee1b781d3c942014f431b0b81fae193ee809dea5c",
               "kind": "dispatch.launched",
               "source": {
                 "ref": "fixture:dispatch.launched",
@@ -151,7 +151,7 @@
               }
             },
             {
-              "digest": "b10cff0e0a57b59159294f542bd7e79b40f41953089a31b5b8a698cc68722c8b",
+              "digest": "a2d1a0ed11766c5886806fb30cdd2cf8dd0d496702e5806904d84f5d347b2ded",
               "kind": "verify.verdict",
               "source": {
                 "ref": "fixture:verify.verdict",
@@ -159,7 +159,7 @@
               }
             },
             {
-              "digest": "e68cd07c6aa9db2ff17a463a4ac5fc389bd54ebfd85e535b95b5a9c6e7c82d24",
+              "digest": "e5eab533920a191cb654ebfbded628c273024483b72dec222d705d6baf286f0f",
               "kind": "task.done",
               "source": {
                 "ref": "fixture:task.done",
@@ -167,7 +167,7 @@
               }
             },
             {
-              "digest": "4db2b931ef8c59bbb94d6055214aca5ab2f190b0292960d6e02feb0b854c07c1",
+              "digest": "e16598558f5066c4298c59a8c0d224748e2b3e2babed274affc72e51b2d6ce8f",
               "kind": "review.started",
               "source": {
                 "ref": "fixture:review.started",
@@ -175,7 +175,7 @@
               }
             },
             {
-              "digest": "c705e90d26f29ea114c5a4d04edd8aac0901db7241bcedfb2c7e10defc6710c1",
+              "digest": "72dbe0c6567e7891a72d4f9dbc716bc3e1fe4c44a0258fcb78ca02b6a3de2441",
               "kind": "review.verdict",
               "source": {
                 "ref": "fixture:review.verdict",
@@ -183,7 +183,7 @@
               }
             },
             {
-              "digest": "d63dcfb12a6ce7ee5ad579f992fa42ba1d4141d52605e61c64a64c377f2976ec",
+              "digest": "782bf570bd62c6d881fe5003659b5fd981cc926d21a9993a069720d27ea2e453",
               "kind": "task.done",
               "source": {
                 "ref": "fixture:task.done",
@@ -191,7 +191,7 @@
               }
             },
             {
-              "digest": "e2e11a73dbc389b38d8a51976f3fc3e2d2a0d32968f325d6727402d2c4a54809",
+              "digest": "82fb41530393f5f20a590941b727cd0e8d91afc89b50c9755cb990c769c071be",
               "kind": "unit.closed",
               "source": {
                 "ref": "fixture:unit.closed",
@@ -230,7 +230,7 @@
           ],
           "events": [
             {
-              "digest": "a6634dfb1c274f247ee57aa74a2f623c04669e9c2b03bc70c7e747eca41ed244",
+              "digest": "1e85f91a1214e31d08510909f7381233edf90f3a8a6b6318d3f6614c55f807bb",
               "kind": "dispatch.launched",
               "source": {
                 "ref": "fixture:dispatch.launched",
@@ -238,7 +238,7 @@
               }
             },
             {
-              "digest": "12ac8890dec72eefcce603a33a05d59b2e4a02aa4bac1a1c2d7af89c86a34dfa",
+              "digest": "78c7400f1724b9ea9a66323b93213cc0859003264e4c4e6a935c01349bbd2143",
               "kind": "task.done",
               "source": {
                 "ref": "fixture:task.done",
@@ -246,7 +246,7 @@
               }
             },
             {
-              "digest": "0b940ce4c59bd97c52bba659da0efac84b82423d03f97163802be1b62b041eef",
+              "digest": "cdd68575d599339faf1b64d0204b95884717d8cc5e26c69c0ebfefcae9e7156a",
               "kind": "review.started",
               "source": {
                 "ref": "fixture:review.started",
@@ -254,7 +254,7 @@
               }
             },
             {
-              "digest": "5c13d22784c13655dac9ab81a6a3638758bfde5927d16731b88c26036561406f",
+              "digest": "66f8a6e71bbfce317054e4a1d50fb63bb8f5576d67b947be144b0d430ecbbf58",
               "kind": "review.verdict",
               "source": {
                 "ref": "fixture:review.verdict",
@@ -262,7 +262,7 @@
               }
             },
             {
-              "digest": "881c64df6c9fcdab9651ab598671bd04983e3250063e0238563a054342a346ce",
+              "digest": "7e9f1e39a0de8bbffe1bf83f932585ef339154e11df3c69991ab9087aeafdf9e",
               "kind": "verify.verdict",
               "source": {
                 "ref": "fixture:verify.verdict",
@@ -270,7 +270,7 @@
               }
             },
             {
-              "digest": "d32dff3dd8da0c88a6d75117fb1402993d16dc424f0106c2db2c1865589eed73",
+              "digest": "e736c9bb7d4c42932e513cf79c1665c526a12fa4cbdbbd8e9339f4dee1b52a8f",
               "kind": "dispatch.launched",
               "source": {
                 "ref": "fixture:dispatch.launched",
@@ -278,7 +278,7 @@
               }
             },
             {
-              "digest": "259c2fd6002dc69214f786be65f38e8a476998ade7de777390f4e4f696de6757",
+              "digest": "e7c684080e5900ba25cf289606157a7e32692ef5877908819fbede3f229f5a15",
               "kind": "unit.closed",
               "source": {
                 "ref": "fixture:unit.closed",
@@ -286,7 +286,7 @@
               }
             },
             {
-              "digest": "50b334183c7e9f7576591aaf823b4a90380e091480832bd65c3857e4b533bca4",
+              "digest": "2897c78ee9c702d1f95f62cdc8547fb96f8e511074f3cd1306a69e9dee0cd1bf",
               "kind": "task.done",
               "source": {
                 "ref": "fixture:task.done",
@@ -294,7 +294,7 @@
               }
             },
             {
-              "digest": "f90822aa5a5c0626731032ec8dd90bb23ee9ea1e18270f8fd501c223b95deb31",
+              "digest": "d6b367f9c85da12bba8d214bf7775a127010f5c809e2f3e1137d5a266adf4784",
               "kind": "review.started",
               "source": {
                 "ref": "fixture:review.started",
@@ -302,7 +302,7 @@
               }
             },
             {
-              "digest": "d9accf0664c36e224192a83ead1a2682622e5750f095fe48bfad58ad72b2bf97",
+              "digest": "94bc4b00863ea601ebe6559a2ed28a8d703f976d1f9fa5db69f22c60693bc738",
               "kind": "review.verdict",
               "source": {
                 "ref": "fixture:review.verdict",
@@ -310,7 +310,7 @@
               }
             },
             {
-              "digest": "a448d9bea89b7fd8a6c5949b5144c82bb144cc998b9b0e7274e5b908203a935b",
+              "digest": "37bd031262d365199dcda2cf97b03fc134c7c9f20c0675e2e31685c64f3b2c2a",
               "kind": "verify.verdict",
               "source": {
                 "ref": "fixture:verify.verdict",
@@ -403,7 +403,7 @@
           ],
           "events": [
             {
-              "digest": "ced144e6d4ba82467ac01349863de79e44124a7bfcb5d4fde952595968cb63ba",
+              "digest": "84e014c4572c730ca0820b1f2fbc9e65dab0e5e61f5ec25fd3d46bd71b357cbd",
               "kind": "dispatch.launched",
               "source": {
                 "ref": "fixture:dispatch.launched",
@@ -411,7 +411,7 @@
               }
             },
             {
-              "digest": "3ecc9cd30935fedcba990e86c48ab0b0eab9ec732aeda7a276059a57640e8c91",
+              "digest": "f82d19ffd2e286db8c847a6e542e466ef4cb3b7283bdd53155c366d0f9f22832",
               "kind": "unit.parked",
               "source": {
                 "ref": "fixture:unit.parked",
@@ -419,7 +419,7 @@
               }
             },
             {
-              "digest": "0e139a0de59a564bb63d73f904d27f554e4d3ee5f6c0b3f968ef55551b756cb9",
+              "digest": "93ed63b63637d2f1c26d89a3dc20a2c3c428a7c87977ed7863875966b01d80f6",
               "kind": "task.done",
               "source": {
                 "ref": "fixture:task.done",
@@ -455,7 +455,7 @@
           ],
           "events": [
             {
-              "digest": "d118463b35eb77708f6cdc48f1493cd0dd06184d2aa41f39cb8cd748f7fe9c44",
+              "digest": "71335a570b266bdef994482fb83beba27b1e7eb10924225ebb79ecf298db6c17",
               "kind": "dispatch.launched",
               "source": {
                 "ref": "fixture:dispatch.launched",
@@ -463,7 +463,7 @@
               }
             },
             {
-              "digest": "f293547f355c30b829ea749ed1389bd7c90bb2171c9e8a7876f69f5118c75655",
+              "digest": "dd7377bb47b33fde1ea005cf61355ebd47c0ad62dd8a1e965bc95803b4114529",
               "kind": "task.done",
               "source": {
                 "ref": "fixture:task.done",
@@ -471,7 +471,7 @@
               }
             },
             {
-              "digest": "acf76c7141c4aa06c8f47b2b2149a63348783b6605f646b33d3e605d929e322c",
+              "digest": "8c37d441e879beb7326719bcb6297df69f91d35eb67c13dcb841418811e081fa",
               "kind": "review.started",
               "source": {
                 "ref": "fixture:review.started",
@@ -479,7 +479,7 @@
               }
             },
             {
-              "digest": "a1c8f67278779518aa0f2132b9ef9304101cad256d96b5b3e2aec73aef50dd69",
+              "digest": "c7dabb425ca14ef508449967000a2b0b1c9d3af30473ee0ea6663e384042b341",
               "kind": "review.verdict",
               "source": {
                 "ref": "fixture:review.verdict",
@@ -487,7 +487,7 @@
               }
             },
             {
-              "digest": "e5b861564d03cde0abefad1ac233c5718039c1631bbe51d9ba7f92261cc203db",
+              "digest": "06f144d0b84652677f52e189b284c9502896294155ab98f5e2bf01ad9bd506e8",
               "kind": "verify.verdict",
               "source": {
                 "ref": "fixture:verify.verdict",
@@ -495,7 +495,7 @@
               }
             },
             {
-              "digest": "f8a7958053879f67b176c1cebf307f4ac85a69ded3f43bc3443fbf38f973969c",
+              "digest": "2ff5813c9860489bc0a00880cee4ab0dce8d7df37dc4f496a88e4f337d297532",
               "kind": "verify.verdict",
               "source": {
                 "ref": "fixture:verify.verdict",
@@ -503,7 +503,7 @@
               }
             },
             {
-              "digest": "b92bfb63af07d414c3e0c3e19203572f1b24fc80eff11d8c99b76e20c210fa15",
+              "digest": "f12de0cce7bd5d0e1de475f7a2399cbb3b49aab5950c6e707a2a51129b601328",
               "kind": "unit.closed",
               "source": {
                 "ref": "fixture:unit.closed",

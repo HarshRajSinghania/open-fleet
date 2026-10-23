@@ -4,7 +4,7 @@
 | `wave=2` | `builders=1 reviewers=1` | `throughput=unavailable` | `latency_median=unavailable latency_max=unavailable` | `rework=unavailable` | `freshness=unavailable` |
 | `wave=3` | `builders=1 reviewers=0` | `throughput=unavailable` | `latency_median=unavailable latency_max=unavailable` | `rework=unavailable` | `freshness=unavailable` |
 
-Derived by `events.py report` for run `run-b` from 30 admitted event(s) of 34 line(s) (0 duplicate(s) collapsed, 1 conflict(s), 2 fenced) — record sha256 `430ed3b1955da50b0eb7443efc9527012f13aeb42f5bfd9970ce70f5fb0b108c`, head `58b1a405eb8d799e8270548b5aec5945bd0905dc922b7cbc1ad14848a344ad85`.
+Derived by `events.py report` for run `run-b` from 30 admitted event(s) of 34 line(s) (0 duplicate(s) collapsed, 1 conflict(s), 2 fenced) — record sha256 `5d4641e13ce05df2c7bdc1e3811be908c84233d8f441d54b99f5f8ea2c7c060a`, head `5309f90b7d6996d113f24f327c387e69ceab6e1ff3c78647a64515613619ac56`.
 
 Unavailable — the record does not support a measured value, and none was estimated:
 - wave 1 `throughput`: wave 1 wall-clock: wave.open and wave.close are on different clocks (host-a, host-b); no common clock, no interval

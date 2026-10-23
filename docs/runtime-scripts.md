@@ -509,7 +509,10 @@ a failing verdict (exit 2) or a SUSPECT; freshness counts approvals voided by a 
 that moved, unless both trees are recorded and equal. An interval needs one clock, no
 `recovered` endpoint and a non-negative difference. Events recorded under an epoch below the
 declared one (a fenced coordinator) or above it (undeclared) are excluded, as is a reused
-`event_id` with a different body; the metrics they touch report unavailable. Model usage keeps
+`event_id` that says something different; the metrics they touch report unavailable. What an
+event says (`runtime/scripts/events.py:identity`) leaves out who recorded it (`epoch`) and,
+unless `basis` is `occurred`, when, so re-ingesting the same rows or stream after a resume or
+later in time is a duplicate, never a conflict. Model usage keeps
 any field an observation did not report null — with its provenance — in the model's sum and in
 the run total; it is never 0.
 

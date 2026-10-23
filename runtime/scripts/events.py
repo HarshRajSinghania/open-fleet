@@ -22,8 +22,9 @@ Record (keys sorted on the line)::
 * **Binding.** ``run``/``task``/``dispatch`` reuse the runtime's own ids; ``source`` names the
   artifact or store row the observation came from. ``event_id`` is the producer's idempotency key
   (content-derived when omitted): a re-delivery is skipped at append and collapsed at read, so a
-  duplicate never double-counts; the same id with a different body is a CONFLICT and contests
-  every metric it touches.
+  duplicate never double-counts; the same id saying something different is a CONFLICT and
+  contests every metric it touches. Who recorded it (``epoch``) and — unless ``basis`` is
+  ``occurred`` — when it was recorded are not what it says, so a re-ingest is a duplicate.
 * **Clocks.** ``observed_at`` is ISO-8601 with an offset, read on the ``clock`` it names. An
   interval is computed only between two events on the SAME clock; ``basis`` says what the time
   means — ``occurred`` (the store's own time of the fact), ``observed`` (seen live), or
@@ -292,16 +293,28 @@ def normalize(event, strict=True):
     return out
 
 
-def body(event):
-    """The canonical bytes an event is compared by: every field but the chain link."""
-    return json.dumps({k: event[k] for k in FIELDS}, sort_keys=True, separators=(",", ":"))
+def _canonical(fields):
+    return json.dumps(fields, sort_keys=True, separators=(",", ":"))
+
+
+def identity(event):
+    """What an observation SAYS — the bytes a re-delivery is compared by (PR #638 review, P1).
+
+    Recording metadata is left out: `epoch` names the coordinator that recorded it, and a
+    resumed coordinator re-ingesting the same DB rows is not contesting them; `observed_at`
+    is when it was recorded unless `basis` is `occurred` (the store's own time of the fact),
+    so re-ingesting an unchanged stream later is a duplicate, not a conflict."""
+    said = {k: event[k] for k in FIELDS if k not in ("epoch", "observed_at", "basis")}
+    said["occurred_at"] = event["observed_at"] if event["basis"] == "occurred" else None
+    return _canonical(said)
 
 
 def content_id(event):
     """A deterministic event_id for a producer that supplies none: the same observation
-    re-emitted gets the same id, so it dedups."""
-    draft = dict(event, event_id="x")
-    return "content:" + sha256_hex(body(draft))
+    re-emitted — by any coordinator epoch — gets the same id, so it dedups. Its time stays in
+    the id: without an id, the time is all that tells two genuinely repeated facts apart."""
+    return "content:" + sha256_hex(_canonical({k: event[k] for k in FIELDS
+                                               if k not in ("epoch", "event_id")}))
 
 
 def build_event(kind, run, *, epoch, producer, clock, observed_at, basis="observed",
@@ -336,21 +349,21 @@ def append_events(path, events):
             for raw in lines:
                 try:
                     rec = json.loads(raw)
-                    known.setdefault(rec["event_id"], body({k: rec.get(k) for k in FIELDS}))
+                    known.setdefault(rec["event_id"], identity({k: rec.get(k) for k in FIELDS}))
                 except (ValueError, TypeError, KeyError):
                     continue  # verify/report fail such a line closed; it cannot dedup anything
             previous = lines[-1] if lines else None
             out = []
             for event in events:
                 seen = known.get(event["event_id"])
-                if seen == body(event):
+                if seen == identity(event):
                     out.append((event["event_id"], "duplicate"))
                     continue
                 record = dict(event, prev="" if previous is None else sha256_hex(previous))
                 raw = json.dumps(record, sort_keys=True, separators=(",", ":"))
                 fh.write(raw + "\n")
                 previous = raw
-                known.setdefault(event["event_id"], body(event))
+                known.setdefault(event["event_id"], identity(event))
                 out.append((event["event_id"], "appended" if seen is None else "conflict"))
             fh.flush()
     except UnicodeDecodeError as err:
@@ -489,7 +502,7 @@ def screen(events):
         if seen is None:
             by_id[event["event_id"]] = event
             kept.append(event)
-        elif body(seen) == body(event):
+        elif identity(seen) == identity(event):
             duplicates += 1
         else:
             conflicts.append({"event_id": event["event_id"], "kept": seen["_digest"],

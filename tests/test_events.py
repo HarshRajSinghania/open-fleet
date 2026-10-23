@@ -11,7 +11,9 @@ The two committed fixture streams (tests/fixtures/events/) are built by `scenari
 timestamps in those functions, not by running the tool.
 """
 import calendar
+import contextlib
 import importlib
+import io
 import importlib.util
 import json
 import os
@@ -24,6 +26,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 EVENTS = ROOT / "runtime" / "scripts" / "events.py"
@@ -770,6 +773,52 @@ class TestIngest(Base):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout.count("duplicate"), 4)
         self.assertEqual(self.log.stat().st_size, size)
+
+    def test_re_ingesting_the_db_after_a_resume_is_a_duplicate_not_a_conflict(self):
+        # PR #638 review (P1): the ingesting coordinator's epoch is who RECORDED a row, not what
+        # the row says; a resumed coordinator re-reading the same DB must not contest it.
+        db = self.store()
+        bind = ("--run", "run_x", "--clock", "host-a", "--source-ref", "ledger",
+                "--observed-at", "2026-10-20T09:59:00Z")
+        self.cli("emit", "--kind", "run.start", "--epoch", "1", *bind,
+                 "--data", '{"coordinator": "c1"}')
+        self.ingest(db)
+        self.cli("emit", "--kind", "coordinator.resume", "--epoch", "2", *bind,
+                 "--data", '{"coordinator": "c2"}')
+        proc = self.cli("ingest-state", "--db", str(db), "--run", "run_x", "--epoch", "2",
+                        "--clock", "host-a")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.count("duplicate"), 4, proc.stdout)
+        recorded, file_sha, head = events.read_log(self.log)
+        self.assertEqual(events.derive(recorded, "run_x", file_sha, head)["record"]["conflicts"], 0)
+
+    def test_re_ingesting_usage_later_is_a_duplicate_not_a_conflict(self):
+        # PR #638 review (P1): without --observed-at the time is the ingest's own clock; a second
+        # ingest of the same unchanged stream must not turn the observation into a conflict.
+        path = self.tmp / "worker.jsonl"
+        path.write_text(json.dumps({"type": "result", "usage": {"input_tokens": 5}}) + "\n",
+                        encoding="utf-8")
+        argv = ["--log", str(self.log), "ingest-usage", "--stream", str(path), "--run", "r",
+                "--epoch", "1", "--clock", "host-a", "--dispatch", "d"]
+        codes, out = [], io.StringIO()
+        for now in ("2026-10-20T10:00:00+00:00", "2026-10-20T11:00:00+00:00"):
+            with mock.patch.object(events, "_now", return_value=now), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                codes.append(events.main(argv))
+        self.assertEqual(codes, [0, 0], out.getvalue())
+        self.assertIn("duplicate", out.getvalue())
+        self.assertEqual(len(events.read_log(self.log)[0]), 1)
+
+    def test_a_copy_recorded_again_after_a_resume_does_not_contest_the_unit(self):
+        evs = unit_stream()
+        evs.insert(4, ev("coordinator.resume", "10:12:00", data={"coordinator": "c2"},
+                         run="r", epoch=2, clock="host-a"))
+        for event in evs[5:]:
+            event["epoch"] = 2
+        evs.append(dict(evs[3], epoch=2))  # the epoch-1 worker_done, re-recorded by epoch 2
+        report = self.derive(evs)
+        self.assertEqual((report["record"]["conflicts"], report["record"]["duplicates"]), (0, 1))
+        self.assertEqual(self.metric(report, 1, "latency_max")["value"], "10.00m")
 
     def _transcript(self, exit_code=0, signed=False, manifest_bytes=None):
         manifest = self.tmp / "manifest.json"

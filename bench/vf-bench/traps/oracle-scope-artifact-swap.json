@@ -1,0 +1,73 @@
+{
+  "id": "oracle-scope-artifact-swap-1",
+  "class": "oracle-scope-artifact-swap",
+  "sound_expected": "RED",
+  "note": "#600: the coordinator authorized ONE reviewed mutant by its bytes; the unit carries a DIFFERENT mutant at the same coordinates (nc-scope-swap.txt), which nobody reviewed. The exception exists only for the authorized control.",
+  "unit_class": "mutation",
+  "fixture": "characterization",
+  "gh_stub": true,
+  "repo": "vf-bench/oracle-scope-artifact-swap",
+  "manifest": {
+    "unit": "vf-bench-oracle-scope-swap",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.json",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/nc-scope-swap.txt",
+        "sha256": "{{nc_scope_swap_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "replaced add()'s return at mod.py line 2 with a constant",
+      "tool": "hand",
+      "result": "the characterization test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc-scope-swap.txt",
+      "command": "{{proof_cmd}}"
+    }
+  },
+  "expect_reason": "oracle scope: mutant artifact differs from coordinator authorization",
+  "neighbour": "oracle-scope-valid-control-1"
+}

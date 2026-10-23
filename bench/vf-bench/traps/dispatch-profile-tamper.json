@@ -1,0 +1,44 @@
+{
+  "id": "dispatch-profile-tamper-1",
+  "class": "dispatch-profile-tamper",
+  "sound_expected": "RED",
+  "note": "#600 / #135 / #590: a genuine profile-signed record whose `profile` was edited AFTER signing, ro -> danger \u2014 the worker widening its own sandbox. verify.py enforces no profile semantics, so only the signature can see the edit.",
+  "unit_class": "report-only",
+  "fixture": "report-only",
+  "dispatch": {
+    "record": {
+      "manifest_id": "review-it",
+      "contract_digest": "{{contract_digest}}",
+      "unit_class": "report-only",
+      "profile": "ro",
+      "parent_profile": "rw"
+    },
+    "tamper": {
+      "profile": "danger"
+    }
+  },
+  "manifest": {
+    "unit": "review-it",
+    "unit_class": "report-only",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "addressed": true
+      }
+    ],
+    "pr": {
+      "reviewed_sha": "{{head_sha}}"
+    }
+  },
+  "expect_reason": "dispatch record signature INVALID",
+  "neighbour": "dispatch-valid-control-1"
+}

@@ -25,6 +25,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -854,6 +855,133 @@ class TestRecordedExitIsSettled(CrashRecoveryBase):
         self.assertEqual(self.died_payloads(prov, rows["finishing"]), [])
         self.assertEqual(prov.worker_show(rows["dead"])["worker"]["state"], "died")
         self.assertEqual(len(self.died_payloads(prov, rows["dead"])), 1)
+
+
+class TestSandboxSalvageIsRetried(CrashRecoveryBase):
+    """A vanished `danger` monitor's cleanup that fails keeps recovery open (#597 review).
+
+    Fixture tier: a FAKE `docker` CLI whose `rm` fails while `docker-down` exists, and a seam on
+    `sync_sandbox_git` for the sync failures. No daemon is ever contacted.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.docker_log = self.base / "docker.log"
+        self.docker_down = self.base / "docker-down"
+        fake = self.bin / "docker"
+        fake.write_text(
+            f"#!{sys.executable}\n"
+            "import os, subprocess, sys, time\n"
+            "args = sys.argv[1:]\n"
+            f"open({str(self.docker_log)!r}, 'a').write(' '.join(args) + '\\n')\n"
+            f"if args[:1] == ['rm'] and os.path.exists({str(self.docker_down)!r}):\n"
+            "    sys.stderr.write('Cannot connect to the Docker daemon. Is the docker daemon running?\\n')\n"
+            "    sys.exit(1)\n"
+            "if args[:1] == ['run']:\n"
+            "    mount = ':/open-fleet/sandbox.git'\n"
+            "    sb = next(a[: -len(mount)] for a in args if a.endswith(mount))\n"
+            "    wt = args[args.index('-w') + 1]\n"
+            "    env = {**os.environ, 'GIT_DIR': sb, 'GIT_WORK_TREE': wt}\n"
+            "    subprocess.run(['git', '-c', 'user.email=w@x', '-c', 'user.name=w', 'commit', '--allow-empty', '-qm',\n"
+            "                    'sandboxed-work'], cwd=wt, env=env, check=True)\n"
+            f"    open({str(self.agent_log)!r}, 'a').write('sandbox run ' + str(os.getpid()) + '\\n')\n"
+            "    time.sleep(60)\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+
+    def vanished_sandbox(self):
+        """A host crash after publication: coordinator, monitor and container client die unsynced."""
+        info = self.crash_at("published", retry_request="req-1", profile="danger", on_env="sandbox-img")
+        self.assertTrue(_wait_for(lambda: len(self.agent_lines()) == 1), "the fake sandbox never ran")
+        prov = self.restart()
+        pid = self.dispatch(prov, info["dispatchId"])["pid"]
+        os.killpg(pid, signal.SIGKILL)
+        self.assertTrue(_wait_for(lambda: not _alive(pid)))
+        lane = Path(info["laneDir"])
+        info["sandboxHead"] = _git("--git-dir", str(lane / "sandbox.git"), "rev-parse", "HEAD", cwd=self.repo).stdout.strip()
+        info["branch"] = f"refs/heads/fleet/{self.task}"
+        info["baseHead"] = _git("rev-parse", info["branch"], cwd=self.repo).stdout.strip()
+        self.assertNotEqual(info["baseHead"], info["sandboxHead"], "not synced yet")
+        return prov, info
+
+    def died_payloads(self, prov, dispatch_id):
+        return [json.loads(m["payload"]) for m in prov.check_messages(terminal="coordinator", run="run-r04")["messages"]
+                if m["subject"].startswith(f"worker_died:{dispatch_id}")]
+
+    def sandbox_ref(self, dispatch_id):
+        return _git("rev-parse", "--verify", "--quiet", f"refs/open-fleet/sandbox/{dispatch_id}", cwd=self.repo, check=False).stdout.strip()
+
+    def assert_still_open(self, prov, info, r):
+        disp = info["dispatchId"]
+        self.assertEqual((r["resolution"], r["requestState"]), ("cleanup_pending", "pending"), r)
+        self.assertEqual(r["dispatch"]["after"], "ready", "never declared dead before its cleanup succeeded")
+        self.assertEqual(self.died_payloads(prov, disp), [], "no worker_died invites a retry beside a live container")
+        self.assertIsNone(prov.state.launch_intent(info["intentId"])["outcome"], "recovery stays open")
+        self.assertEqual(prov.request_show("req-1")["state"], "pending")
+        self.assertEqual(self.task_status(prov), "dispatched")
+
+    def assert_settled(self, prov, info):
+        disp = info["dispatchId"]
+        self.assertEqual(prov.state.dispatch_state(disp), "died")
+        self.assertEqual([d["headSha"] for d in self.died_payloads(prov, disp)], [info["sandboxHead"]], "worker_died carries the synced head")
+        self.assertEqual(_git("rev-parse", info["branch"], cwd=self.repo).stdout.strip(), info["sandboxHead"], "the commit reached the host branch")
+        self.assertEqual(prov.state.launch_intent(info["intentId"])["outcome"], "completed")
+        self.assertEqual(prov.request_show("req-1")["state"], "completed")
+        receipt = json.loads((Path(info["laneDir"]) / "recovery.json").read_text())
+        self.assertEqual(receipt["resolution"], "exited")
+        self.assertIn({"kind": "container", "target": f"openfleet-{disp}", "action": "removed", "rc": 0}, receipt["cleanup"])
+        self.assertEqual(prov.launch_reconcile()["count"], 0)
+
+    def test_failed_container_removal_is_never_reported_removed_and_is_retried(self):
+        prov, info = self.vanished_sandbox()
+        disp = info["dispatchId"]
+        self.docker_down.touch()
+        r = prov.launch_reconcile()["reconciled"][0]
+        self.assert_still_open(prov, info, r)
+        container = [c for c in r["cleanup"] if c["kind"] == "container"]
+        self.assertEqual([(c["action"], c["rc"]) for c in container], [("removal_failed", 1)], "a failed removal is never `removed`")
+        self.assertIn("Cannot connect to the Docker daemon", container[0]["error"])
+        sync = [c for c in r["cleanup"] if c["kind"] == "sandbox_sync"]
+        self.assertEqual([c["action"] for c in sync], ["deferred"], "no sync while the container may still write")
+        self.assertEqual(self.sandbox_ref(disp), "")
+        self.assertEqual(_git("rev-parse", info["branch"], cwd=self.repo).stdout.strip(), info["baseHead"])
+        # The automatic paths retry it too, and refuse the same way while Docker is down.
+        self.assertEqual({w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}, {disp: "ready"})
+        self.assertEqual(self.died_payloads(prov, disp), [])
+        self.docker_down.unlink()  # Docker is back: the next poll removes, syncs and settles
+        self.assertEqual({w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}, {disp: "died"})
+        self.assert_settled(prov, info)
+        self.assertGreaterEqual(self.docker_log.read_text().count(f"rm -f openfleet-{disp}"), 3)
+
+    def test_failed_sandbox_sync_keeps_recovery_open_and_is_retried(self):
+        prov, info = self.vanished_sandbox()
+        err = self.providers.ProviderError("sandbox_git_failed", "fetch sandbox commits: unable to lock packed-refs")
+        with mock.patch.object(self.posix, "sync_sandbox_git", side_effect=err):
+            r = prov.launch_reconcile()["reconciled"][0]
+            replay = prov.worker_start(**self.start_kwargs(retry_request="req-1", profile="danger", on_env="sandbox-img"))
+        self.assert_still_open(prov, info, r)
+        self.assertEqual((replay["state"], replay["stage"], replay["dispatchId"]), ("outcome_unknown", "launch_recovery", info["dispatchId"]))
+        self.assertEqual(replay["recovery"]["resolution"], "cleanup_pending", "a retried request retries the salvage")
+        self.assertEqual(len(self.agent_lines()), 1, "and never starts a second worker")
+        self.assertIn({"kind": "container", "target": f"openfleet-{info['dispatchId']}", "action": "removed", "rc": 0}, r["cleanup"])
+        sync = [c for c in r["cleanup"] if c["kind"] == "sandbox_sync"]
+        self.assertEqual([(c["action"], c["error"]) for c in sync], [("failed", str(err))])
+        self.assertEqual(self.sandbox_ref(info["dispatchId"]), "", "the commits are still only in the sandbox")
+        self.assertEqual(prov.worker_show(info["dispatchId"])["worker"]["state"], "died", "worker-show retries and settles")
+        self.assert_settled(prov, info)
+
+    def test_tampered_sandbox_is_refused_once_and_never_retried(self):
+        prov, info = self.vanished_sandbox()
+        err = self.providers.ProviderError("sandbox_git_tampered", "sandbox git dir contains a symlink (hooks); refusing to sync")
+        with mock.patch.object(self.posix, "sync_sandbox_git", side_effect=err):
+            r = prov.launch_reconcile()["reconciled"][0]
+        self.assertEqual((r["resolution"], r["dispatch"]["after"]), ("exited", "died"), "a refusal is final: retrying cannot pass")
+        sync = [c for c in r["cleanup"] if c["kind"] == "sandbox_sync"]
+        self.assertEqual([(c["action"], c["error"]) for c in sync], [("refused", str(err))])
+        self.assertEqual(len(self.died_payloads(prov, info["dispatchId"])), 1)
+        self.assertEqual(prov.launch_reconcile()["count"], 0)
+        self.assertTrue((Path(info["laneDir"]) / "sandbox.git").is_dir(), "the refused sandbox stays in the lane")
 
 
 if __name__ == "__main__":

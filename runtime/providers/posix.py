@@ -1570,7 +1570,7 @@ if {repr(self.backend)} == "cmux":
         intent_id: str,
         token: str,
         *,
-        outcome: str,
+        outcome: str | None,
         receipt: dict[str, Any],
         request_state: str,
         response: dict[str, Any],
@@ -1682,7 +1682,8 @@ if {repr(self.backend)} == "cmux":
             recovery = self._reconcile_intent(row["intent_id"], takeover=False)
             row = self.state.request_row(request_id) or row
             if row["state"] == "pending":
-                return self._unknown_response(recovery, stage="launch_in_progress")
+                stage = "launch_recovery" if recovery.get("resolution") == "cleanup_pending" else "launch_in_progress"
+                return self._unknown_response(recovery, stage=stage)
         response = json.loads(row["response_json"]) if row.get("response_json") else {}
         if row["state"] == "failed":
             err = response.get("error") or {}
@@ -1821,7 +1822,7 @@ if {repr(self.backend)} == "cmux":
                 settled = fresh["outcome"] in LAUNCH_FINAL_OUTCOMES
                 return self._recovery_receipt(fresh, resolution="already_settled" if settled else "pending", previous=previous)
             receipt = self._settle_intent(self.state.launch_intent(intent_id) or it, token, previous, takeover=takeover and not owner_gone)
-            final = receipt["resolution"] != "unknown"
+            final = receipt["resolution"] not in ("unknown", "cleanup_pending")
             return receipt
         finally:
             if recovery is not None:
@@ -1906,13 +1907,26 @@ if {repr(self.backend)} == "cmux":
                     mon["action"], mon["exit"], resolution = "settled_recorded_exit", recorded, "exited"
                 elif mon["alive"] is False:
                     vanished = self._report_vanished(d)
-                    mon["action"], resolution = "reported_dead", "exited"
+                    if vanished.get("retry"):
+                        # Its sandbox cleanup or sync failed: not dead yet, and recovery stays open (#597 review).
+                        mon["action"], resolution = "cleanup_pending", "cleanup_pending"
+                    else:
+                        mon["action"], resolution = "reported_dead", "exited"
                     if vanished.get("salvage"):
                         salvage = vanished["salvage"]
                         if salvage.get("sandboxRef"):
                             refs.append({"ref": salvage["sandboxRef"], "sha": salvage.get("head"), "source": "sandbox"})
                         if salvage.get("container"):
-                            cleanup.append({"kind": "container", "target": salvage["container"]["name"], "action": "removed", "rc": salvage["container"]["rc"]})
+                            box = salvage["container"]
+                            cleanup.append(
+                                {"kind": "container", "target": box["name"], "action": box["action"], "rc": box["rc"]}
+                                | ({"error": box["error"]} if box.get("error") else {})
+                            )
+                        if salvage.get("sync") in ("deferred", "failed", "refused"):
+                            cleanup.append(
+                                {"kind": "sandbox_sync", "target": salvage["sandboxGit"], "action": salvage["sync"]}
+                                | ({"error": salvage["error"]} if salvage.get("error") else {})
+                            )
                         if salvage.get("error"):
                             mon["salvageError"] = salvage["error"]
                 else:
@@ -1936,14 +1950,23 @@ if {repr(self.backend)} == "cmux":
         if lane.is_dir():
             cleanup.append({"kind": "lane", "target": str(lane), "action": "kept", "why": "logs, exit.json and this receipt"})
         d_after = self._dispatch_row(disp_id)
-        request_state = {"live": "completed", "exited": "completed", "failed": "failed"}.get(resolution, "unknown")
-        outcome = {"completed": "completed", "failed": "failed"}.get(request_state, "unknown")
+        request_state = {"live": "completed", "exited": "completed", "failed": "failed", "cleanup_pending": "pending"}.get(
+            resolution, "unknown"
+        )
+        # `cleanup_pending` leaves the outcome NULL: an open intent that every poll reconciles again.
+        outcome = {"completed": "completed", "failed": "failed", "pending": None}.get(request_state, "unknown")
         if resolution == "live":
             steps = ["the worker is live: supervise it (check --wait, worker-show); never start a second worker for this task"]
         elif resolution == "exited":
             steps = ["the worker already exited: read its terminal mail or its worker_died escalation (check) before any retry-of"]
         elif resolution == "failed":
             steps = ["nothing runs for this attempt and the task is back to ready: start a new attempt with a NEW --retry-request"]
+        elif resolution == "cleanup_pending":
+            steps = [
+                "its monitor vanished and removing its container or syncing its commits failed: worker-list, worker-show "
+                "and launch-reconcile retry both, and only then report its worker_died",
+                f"to give up instead: orchestration worker-abandon --dispatch {disp_id} (its sandbox git dir stays in {lane})",
+            ]
         else:
             steps = [
                 f"inspect: orchestration worker-show --dispatch {disp_id}",
@@ -2066,23 +2089,46 @@ if {repr(self.backend)} == "cmux":
 
     def _salvage_sandbox(self, r: Any) -> dict[str, Any] | None:
         """A `danger` worker's commits live only in its lane's private git dir until its monitor
-        syncs them. When that monitor vanished, stop the container, then sync them here (#597)."""
+        syncs them. When that monitor vanished, stop the container, then sync them here (#597).
+
+        `retry` marks a salvage that must run again (#597 review): a container not confirmed gone
+        (the sync waits for that, since a live container could still write the git dir) or a sync
+        that failed in git or the filesystem. A sandbox refused as tampered, or whose metadata is
+        unreadable, can never sync: that is final, and the receipt records it.
+        """
         lane = r["lane_dir"]
         meta_path = Path(lane) / "sandbox_git.json" if lane else None
         if meta_path is None or not meta_path.is_file():
             return None
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"sandboxGit": str(Path(lane) / "sandbox.git")}
         container = self._dispatch_container(r)
         if container:
             try:
                 proc = subprocess.run(["docker", "rm", "-f", container], capture_output=True, text=True, env=self.env, timeout=120)
-                out["container"] = {"name": container, "rc": proc.returncode}
             except (OSError, subprocess.SubprocessError) as exc:
-                out["container"] = {"name": container, "rc": None, "error": str(exc)[:200]}
+                box: dict[str, Any] = {"name": container, "rc": None, "action": "removal_failed", "error": str(exc)[:200]}
+            else:
+                said = (proc.stderr or proc.stdout or "").strip()
+                if proc.returncode == 0:
+                    box = {"name": container, "rc": 0, "action": "removed"}
+                elif "no such container" in said.lower():
+                    box = {"name": container, "rc": proc.returncode, "action": "absent"}  # an older CLI's `rm -f`
+                else:
+                    box = {"name": container, "rc": proc.returncode, "action": "removal_failed", "error": said[:200] or "docker rm failed"}
+            out["container"] = box
+            if box["action"] == "removal_failed":
+                out["sync"], out["retry"] = "deferred", True
+                return out
         try:
             out.update(sync_sandbox_git(json.loads(meta_path.read_text(encoding="utf-8")), r["dispatch_id"]))
-        except (OSError, ValueError, ProviderError) as exc:
+            out["sync"] = "synced"
+        except ProviderError as exc:
             out["error"] = str(exc)[:300]
+            out["sync"], out["retry"] = ("refused", False) if exc.code == "sandbox_git_tampered" else ("failed", True)
+        except ValueError as exc:
+            out["error"], out["sync"], out["retry"] = str(exc)[:300], "refused", False
+        except OSError as exc:
+            out["error"], out["sync"], out["retry"] = str(exc)[:300], "failed", True
         return out
 
     def _settle_recorded_exit(self, r: Any) -> dict[str, Any] | None:
@@ -2118,8 +2164,15 @@ if {repr(self.backend)} == "cmux":
         return {"exitCode": rc, "headSha": head, "died": died}
 
     def _report_vanished(self, r: Any) -> dict[str, Any]:
-        """A monitor that died without reporting: salvage a sandbox's commits, then `worker_died`."""
+        """A monitor that died without reporting: salvage a sandbox's commits, then `worker_died`.
+
+        Not while the salvage must run again (#597 review): a `worker_died` invites a retry beside
+        a container that may still run, with a head that lacks the sandbox's commits. The dispatch
+        stays live instead, so the next liveness sweep or reconcile retries the salvage.
+        """
         salvage = self._salvage_sandbox(r)
+        if salvage and salvage.get("retry"):
+            return {"salvage": salvage, "died": None, "headSha": "", "retry": True}
         head = (salvage or {}).get("head") or ""
         if not head and r["worktree"]:
             head = _git(["rev-parse", "HEAD"], cwd=r["worktree"]).stdout.strip()

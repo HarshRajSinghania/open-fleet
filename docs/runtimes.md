@@ -150,8 +150,9 @@ never mints ids, so the run, task, dispatch and terminal ids the worker was laun
 ones that the receipt and the dispatch row keep. Launch fencing is per intent, and it is separate
 from the mailbox fencing of `run-use --takeover-legacy`.
 
-**Requests.** A `--retry-request` id names one launch attempt. Its state is `pending`, then one
-of `completed` (an owned dispatch: live, or already settled by its own monitor), `failed` (an
+**Requests.** A `--retry-request` id names one launch attempt. Its state is `pending` (also while
+recovery retries a vanished sandbox's cleanup), then one of `completed` (an owned dispatch: live,
+or already settled by its own monitor or by recovery), `failed` (an
 explicitly failed attempt that launched nothing or was fenced) or `unknown` (an inspectable state
 with `nextCommands`; reconcile visits it again). A retry with the same id and payload replays the
 outcome. It never starts a second worker: `failed` re-raises the recorded error, and a pending
@@ -171,7 +172,13 @@ deletes a worktree or a branch. Its receipt always carries `completionInferred: 
 only becomes `completed` through the worker's own terminal mail
 (`ensure_terminal_or_died`). A monitor that vanished gets the synthetic `worker_died`. When that
 monitor ran a `danger` sandbox, its private git dir is first synced back (`docker rm -f`, then
-`sync_sandbox_git`), so the worker's commits survive. A monitor writes `<lane>/exit.json` before it
+`sync_sandbox_git`), so the worker's commits survive. Until the removal succeeds (or finds no such
+container) and the sync succeeds, the dispatch is not declared dead and the launch stays open. Its
+resolution is `cleanup_pending`, the request stays `pending`, and every `worker-list`,
+`worker-show` and `launch-reconcile` retries both steps. No sync runs while the container may
+still be running. A failed removal is recorded `removal_failed`, never `removed`. A sandbox
+refused as tampered, or with unreadable metadata, is not retried: the death is recorded with
+the refusal, and the sandbox git dir stays in the lane. A monitor writes `<lane>/exit.json` before it
 settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
 exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
 recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a

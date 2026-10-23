@@ -37,6 +37,34 @@ def write(repo, rel, text):
     return p
 
 
+def land_on_base(repo, files, branch="main"):
+    """Commit {rel: text} onto `branch` without touching the checkout or the work branch.
+
+    Waivers are read at the base ref (2026-10-23 review, P1-7), so a fixture waiver has to
+    land THERE, the way a real one lands on the base branch before the change it waives."""
+    index = Path(repo).parent / f"{Path(repo).name}-base-index"
+    env = dict(os.environ, GIT_INDEX_FILE=str(index))
+
+    def plumb(*args, data=None):
+        return subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True,
+                              text=True, check=True, env=env).stdout.strip()
+    plumb("read-tree", branch)
+    for rel, text in files.items():
+        blob = plumb("hash-object", "-w", "--stdin", data=text)
+        plumb("update-index", "--add", "--cacheinfo", f"100644,{blob},{rel}")
+    tree = plumb("write-tree")
+    commit = plumb("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                   "commit-tree", tree, "-p", branch, "-m", "land on base")
+    plumb("update-ref", f"refs/heads/{branch}", commit)
+    index.unlink(missing_ok=True)
+
+
+def grant_row(ident, answer="allow", ts="2026-09-10T00:00:00Z", why="while the parser lands",
+              klass="one-way", source="[source=human:lia]"):
+    """A DECISIONS line shaped as a one-way human grant — the only waiver that grants (P1-7)."""
+    return f"{ts} · {ident} · {klass} · {answer} · {why} {source} · t-1".replace("  ·", " ·")
+
+
 def run_guard(repo, *args):
     return subprocess.run(
         [sys.executable, str(GUARD), "--repo", str(repo), *args],
@@ -404,11 +432,11 @@ class TestUntrackedAndWaivers(FloorGuardBase):
 
     def _decisions(self, *lines):
         write(self.repo, "src/new.py", "value = 1  # noqa\n")
-        write(self.repo, "docs/DECISIONS.md", "".join(l + "\n" for l in lines))
+        land_on_base(self.repo, {"docs/DECISIONS.md": "".join(line + "\n" for line in lines)})
         return run_guard(self.repo, "--base", "main")
 
     def _row(self, ident, answer="allow", ts="2026-09-10T00:00:00Z", why="while the parser lands"):
-        return f"{ts} · {ident} · taste · {answer} · {why} · t-1"
+        return grant_row(ident, answer=answer, ts=ts, why=why)
 
     def test_a_granting_waiver_exempts_the_finding(self):
         r = self._decisions(self._row(self.ID))
@@ -679,9 +707,9 @@ class TestGuardSurfaceEndToEnd(FloorGuardBase):
 
     def test_a_granting_waiver_exempts_a_surface_touch(self):
         repo = self._lowered_floor()
-        write(repo, "docs/DECISIONS.md",
-              "2026-09-10T00:00:00Z · floor-waiver:guard-surface:tests/test_evals.py · taste · "
-              "allow · the floor moves with the eval · t-1\n")
+        land_on_base(repo, {"docs/DECISIONS.md": grant_row(
+            "floor-waiver:guard-surface:tests/test_evals.py",
+            why="the floor moves with the eval") + "\n"})
         code, out, err = run_main(repo, "--base", "main")
         self.assertEqual(code, 0, err)
         self.assertIn("waived", out)
@@ -749,8 +777,11 @@ class TestScanUnits(FloorGuardBase):
         raised = self._scan(added=[("CONSTRAINTS.md", 4, "| D1 | coverage | 95 |")],
                             removed=[("CONSTRAINTS.md", 4, "| D1 | coverage | 85 |")])
         self.assertEqual(raised, [])
+        # An ADDED row with no predecessor is a new floor. A removed numbered row with no
+        # same-key partner used to sit here too; it is the deleted/re-keyed row P2-5 named,
+        # and TestThresholdRowsP25 pins that it now flags.
         unmatched = self._scan(added=[("CONSTRAINTS.md", 9, "| D9 | other | 1 |")],
-                               removed=[("CONSTRAINTS.md", 4, "| D1 | coverage | 85 |")])
+                               removed=[])
         self.assertEqual(unmatched, [])
         keyless = self._scan(added=[("CONSTRAINTS.md", 4, "|||")],
                              removed=[("CONSTRAINTS.md", 4, "|||")])
@@ -889,7 +920,7 @@ class TestDiffParsingUnits(unittest.TestCase):
 
 class TestWaiverUnits(unittest.TestCase):
     def _row(self, ident, answer="allow", ts="2026-09-10T00:00:00Z"):
-        return f"{ts} · {ident} · taste · {answer} · why · t-1"
+        return grant_row(ident, answer=answer, ts=ts, why="why")
 
     def _finding(self, rule="silenced-checker", path="src/new.py"):
         return {"rule": rule, "path": path, "line": 1, "detail": "noqa"}
@@ -999,9 +1030,9 @@ class TestMainInProc(FloorGuardBase):
         write(self.repo, "CONSTRAINTS.md",
               BASE_CONSTRAINTS.replace("| D1 | coverage | 85 |", "| D1 | coverage | 60 |"))
         self.commit("lower")
-        write(self.repo, "docs/DECISIONS.md",
-              "2026-09-10T00:00:00Z · floor-waiver:threshold-lowered:CONSTRAINTS.md · taste · "
-              "allow · the bar moves deliberately · t-1\n")
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(
+            "floor-waiver:threshold-lowered:CONSTRAINTS.md",
+            why="the bar moves deliberately") + "\n"})
         code, out, err = run_main(self.repo, "--base", "main")
         self.assertEqual(code, 0, err)
         self.assertIn("(1 waived)", out)
@@ -1083,8 +1114,8 @@ class TestMainInProc(FloorGuardBase):
         write(self.repo, "CONSTRAINTS.md",
               BASE_CONSTRAINTS.replace("| D1 | coverage | 85 |", "| D1 | coverage | 60 |"))
         self.commit("lower")
-        write(self.repo, "docs/DECISIONS.md",
-              "2026-09-10T00:00:00Z · floor-waiver · taste · allow · the old shape · t-1\n")
+        land_on_base(self.repo, {"docs/DECISIONS.md": (
+            "2026-09-10T00:00:00Z · floor-waiver · taste · allow · the old shape · t-1\n")})
         code, _out, err = run_main(self.repo, "--base", "main")
         self.assertEqual(code, 1)
         self.assertIn("NOT a usable waiver", err)
@@ -1111,6 +1142,479 @@ class TestMainInProc(FloorGuardBase):
                     runpy.run_path(str(GUARD), run_name="__main__")
         self.assertEqual(ctx.exception.code, 0)
         self.assertIn("floor-guard: clean", out.getvalue())
+
+
+
+# ---- 2026-10-23 end-to-end review (#620, #621) ----------------------------------------------
+#
+# Marker fixtures are split across literals for the reason TestScanUnits gives: this file is
+# itself diff-scanned by the guard in CI, and a contiguous marker would be a self-finding.
+SUPPRESSED = "value = 1  # " + "no" + "qa"
+SKIP_DECORATOR = "@pytest.mark.sk" + "ip"
+
+
+class ReviewRepo(unittest.TestCase):
+    """A fresh hermetic repo per case: base files on `main`, the change on `work`."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="floorguard-review-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def repo(self, files, name="repo"):
+        repo = Path(self.tmp) / name
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.email", "t@example.invalid")
+        git(repo, "config", "user.name", "t")
+        for rel, text in files.items():
+            write(repo, rel, text)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "base")
+        git(repo, "checkout", "-q", "-b", "work")
+        return repo
+
+    @staticmethod
+    def commit(repo, message="change"):
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", message)
+
+
+class TestTextDiffP16(ReviewRepo):
+    """P1-6: a `.gitattributes` the change adds must not blank the rules it is judged by."""
+
+    BASE = {
+        ".coveragerc": "[report]\nfail_under = 80\n",
+        "CONSTRAINTS.md": BASE_CONSTRAINTS,
+        "src/app.py": "def compute():\n    return 4\n",
+        "tests/test_thing.py": BASE_TEST,
+    }
+
+    def test_a_minus_diff_attribute_does_not_blank_tracked_or_untracked_files(self):
+        # The review's reproduction: `* -diff` plus a lowered fail_under, a suppression, a skip
+        # decorator and a lowered CONSTRAINTS row printed `floor-guard: clean`, exit 0.
+        repo = self.repo(self.BASE)
+        write(repo, ".gitattributes", "* -diff\n")
+        write(repo, ".coveragerc", "[report]\nfail_under = 10\n")
+        write(repo, "src/app.py", "def compute():\n    return 4\n" + SUPPRESSED + "\n")
+        write(repo, "tests/test_thing.py", BASE_TEST + SKIP_DECORATOR + "\n")
+        write(repo, "CONSTRAINTS.md",
+              BASE_CONSTRAINTS.replace("| D1 | coverage | 85 |", "| D1 | coverage | 60 |"))
+        self.commit(repo, "lower the bar under a -diff attribute")
+        write(repo, "src/untracked.py", SUPPRESSED + "\n")
+        code, out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, f"-diff blanked the guard: {out}{err}")
+        self.assertRegex(err, r"\[guard-surface\] \.coveragerc:\d+")
+        self.assertRegex(err, r"\[silenced-checker\] src/app\.py:\d+")
+        self.assertRegex(err, r"\[silenced-checker\] src/untracked\.py:\d+")
+        self.assertRegex(err, r"\[test-made-easier\] tests/test_thing\.py:\d+")
+        self.assertIn("[threshold-lowered] CONSTRAINTS.md", err)
+
+    def test_a_binary_diff_driver_does_not_blank_a_file(self):
+        repo = self.repo(self.BASE)
+        write(repo, ".gitattributes", "*.py diff=opaque\n")
+        git(repo, "config", "diff.opaque.binary", "true")
+        write(repo, "src/app.py", "def compute():\n    return 4\n" + SUPPRESSED + "\n")
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(err, r"\[silenced-checker\] src/app\.py:\d+")
+
+    def test_a_nul_byte_does_not_make_a_text_file_binary(self):
+        # Content sniffing is the same hole as the attribute: one NUL byte and git prints
+        # `Binary files … differ` for a file whose other lines a tool still reads.
+        repo = self.repo(self.BASE)
+        (repo / "src" / "app.js").write_bytes(
+            b"const a = 1;\n// eslint-" + b"disable-next-line\nconst b = '\x00';\n")
+        self.commit(repo)
+        (repo / "src" / "fresh.js").write_bytes(b"// eslint-" + b"disable\nconst c = '\x00';\n")
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(err, r"\[silenced-checker\] src/app\.js:\d+")
+        self.assertRegex(err, r"\[silenced-checker\] src/fresh\.js:\d+")
+
+    def test_every_diff_the_guard_takes_passes_text(self):
+        seen = []
+        real_run = subprocess.run
+
+        def record(argv, **kwargs):
+            if "diff" in argv:
+                seen.append(list(argv))
+            return real_run(argv, **kwargs)
+
+        repo = self.repo(self.BASE)
+        write(repo, "src/untracked.py", "value = 1\n")
+        with mock.patch.object(floor_guard.subprocess, "run", side_effect=record):
+            run_main(repo, "--base", "main")
+        self.assertEqual(len(seen), 2, seen)
+        for argv in seen:
+            self.assertIn("--text", argv)
+            self.assertIn("--no-color", argv)
+
+
+class TestDiffRenderingPinsP24(ReviewRepo):
+    """P2-4: the guarded repo's own config must not relabel or colour the diff it parses."""
+
+    BASE = {".coveragerc": "[report]\nfail_under = 80\n", "README.md": "base\n"}
+
+    def _lowered(self, *config):
+        repo = self.repo(self.BASE, name="repo-" + "-".join(k for k, _v in config))
+        for key, value in config:
+            git(repo, "config", key, value)
+        write(repo, ".coveragerc", "[report]\nfail_under = 70\n")
+        self.commit(repo, "lower fail_under")
+        return run_main(repo, "--base", "main")
+
+    def test_repo_local_prefix_and_colour_settings_cannot_hide_a_surface_touch(self):
+        for config in ((("diff.mnemonicPrefix", "true"),),
+                       (("diff.srcPrefix", "x/"), ("diff.dstPrefix", "y/")),
+                       (("diff.noprefix", "true"),),
+                       (("color.diff", "always"),),
+                       (("color.ui", "always"),)):
+            with self.subTest(config=config):
+                code, out, err = self._lowered(*config)
+                self.assertEqual(code, 1, f"{config} hid the touch: {out}{err}")
+                self.assertRegex(err, r"\[guard-surface\] \.coveragerc:\d+")
+
+    def test_a_noprefix_path_starting_with_a_prefix_letter_keeps_its_directory(self):
+        # With no prefix, `b/.gitleaksignore` would lose its `b/` to strip_prefix and become a
+        # surface file it is not; with the pin it keeps its real path.
+        repo = self.repo({"b/.gitleaksignore": "x\n"}, name="noprefix-dir")
+        git(repo, "config", "diff.noprefix", "true")
+        write(repo, "b/.gitleaksignore", "y\n")
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 0, err)
+
+    def test_both_diffs_pin_the_rendering_keys_at_command_line_precedence(self):
+        seen = []
+        real_run = subprocess.run
+
+        def record(argv, **kwargs):
+            if "diff" in argv:
+                seen.append(list(argv))
+            return real_run(argv, **kwargs)
+
+        repo = self.repo(self.BASE, name="argv")
+        write(repo, "untracked.txt", "x\n")
+        with mock.patch.object(floor_guard.subprocess, "run", side_effect=record):
+            run_main(repo, "--base", "main")
+        self.assertEqual(len(seen), 2, seen)
+        for argv in seen:
+            pins = [argv[i + 1] for i, arg in enumerate(argv[:argv.index("diff")]) if arg == "-c"]
+            for pin in ("diff.noprefix=false", "diff.mnemonicPrefix=false", "diff.srcPrefix=a/",
+                        "diff.dstPrefix=b/", "diff.relative=false", "color.diff=false"):
+                self.assertIn(pin, pins, argv)
+
+
+class TestThresholdRowsP25(ReviewRepo):
+    """P2-5: a numbered CONSTRAINTS row cannot lose its number by any route but the edit."""
+
+    def _scan(self, added=(), removed=()):
+        return floor_guard.scan(list(added), list(removed), "CONSTRAINTS.md", Path(self.tmp))
+
+    def test_a_deleted_numbered_row_flags(self):
+        findings = self._scan(removed=[("CONSTRAINTS.md", 4, "| D1 | coverage | 85 |")])
+        self.assertEqual([(f["rule"], f["detail"]) for f in findings],
+                         [("threshold-lowered", "row removed or re-keyed")])
+
+    def test_a_rekeyed_row_flags(self):
+        findings = self._scan(added=[("CONSTRAINTS.md", 4, "| D1b | coverage | 85 |")],
+                              removed=[("CONSTRAINTS.md", 4, "| D1 | coverage | 85 |")])
+        self.assertEqual([f["rule"] for f in findings], ["threshold-lowered"])
+        self.assertEqual(findings[0]["detail"], "row removed or re-keyed")
+
+    def test_a_number_replaced_with_a_word_flags(self):
+        findings = self._scan(added=[("CONSTRAINTS.md", 4, "| D1 | coverage | high |")],
+                              removed=[("CONSTRAINTS.md", 4, "| D1 | coverage | 85 |")])
+        self.assertEqual([(f["rule"], f["detail"]) for f in findings],
+                         [("threshold-lowered", "85 -> (no number)")])
+
+    def test_rows_pair_in_order_within_a_key(self):
+        # Two rows share a key (a table row and its bullet note); the second loses its number.
+        findings = self._scan(
+            added=[("CONSTRAINTS.md", 4, "| D9 | coverage | 80 |"),
+                   ("CONSTRAINTS.md", 9, "- D9: measured eighty")],
+            removed=[("CONSTRAINTS.md", 4, "| D9 | coverage | 80 |"),
+                     ("CONSTRAINTS.md", 9, "- D9: measured 80")])
+        self.assertEqual([(f["line"], f["detail"]) for f in findings], [(9, "80 -> (no number)")])
+
+    def test_a_moved_or_unnumbered_row_stays_silent(self):
+        moved = self._scan(added=[("CONSTRAINTS.md", 12, "| D1 | coverage | 85 |")],
+                           removed=[("CONSTRAINTS.md", 4, "| D1 | coverage | 85 |")])
+        self.assertEqual(moved, [])
+        prose = self._scan(removed=[("CONSTRAINTS.md", 2, "Status: frozen by the human.")])
+        self.assertEqual(prose, [])
+
+    def test_a_row_deleted_from_the_real_file_flags_end_to_end(self):
+        for name, after in (("deleted", BASE_CONSTRAINTS.replace("| D2 | latency-ms | 250 |\n", "")),
+                            ("rekeyed", BASE_CONSTRAINTS.replace("| D1 |", "| D1b |")),
+                            ("worded", BASE_CONSTRAINTS.replace("| 85 |", "| eighty-five |"))):
+            with self.subTest(case=name):
+                repo = self.repo({"CONSTRAINTS.md": BASE_CONSTRAINTS}, name=f"rows-{name}")
+                write(repo, "CONSTRAINTS.md", after)
+                self.commit(repo)
+                code, _out, err = run_main(repo, "--base", "main")
+                self.assertEqual(code, 1, f"{name}: {err}")
+                self.assertIn("[threshold-lowered] CONSTRAINTS.md", err)
+
+    def test_an_added_note_beside_a_frozen_row_stays_silent(self):
+        # The shape of this PR's own D9 note: evidence added, nothing removed.
+        repo = self.repo({"CONSTRAINTS.md": BASE_CONSTRAINTS}, name="rows-note")
+        write(repo, "CONSTRAINTS.md", BASE_CONSTRAINTS.replace(
+            "| D2 | latency-ms | 250 |\n",
+            "| D2 | latency-ms | 250 |\n\nD1 re-measured at 91 (run 123, 2026-10-23).\n"))
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 0, err)
+
+
+class TestMovedAndQuotedTestFilesP26(ReviewRepo):
+    """P2-6: a moved test file still lost the assertion it dropped; a quoted path is a path."""
+
+    BASE = {"tests/test_thing.py": BASE_TEST, "src/app.py": "def compute():\n    return 4\n"}
+    WEAKER = "def test_thing():\n    assert compute() == 4\n"
+
+    def test_a_rename_that_drops_an_assertion_is_charged_to_the_destination(self):
+        repo = self.repo(self.BASE)
+        git(repo, "mv", "tests/test_thing.py", "tests/test_moved.py")
+        write(repo, "tests/test_moved.py", self.WEAKER)
+        self.commit(repo, "rename and weaken")
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(err, r"\[assertion-removed\] tests/test_moved\.py:\d+ "
+                              r"\(dropped moving from tests/test_thing\.py:\d+\)")
+
+    def test_a_rename_to_an_untracked_destination_is_charged_too(self):
+        repo = self.repo(self.BASE)
+        git(repo, "rm", "-q", "tests/test_thing.py")
+        git(repo, "commit", "-qm", "delete; the successor is not added yet")
+        write(repo, "tests/test_moved.py", self.WEAKER)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertIn("[assertion-removed] tests/test_moved.py", err)
+
+    def test_a_move_out_of_the_test_tree_is_charged(self):
+        # The assertions survive as text in a file no runner collects.
+        repo = self.repo(self.BASE)
+        git(repo, "mv", "tests/test_thing.py", "src/thing_checks.py")
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertIn("[assertion-removed] src/thing_checks.py", err)
+
+    def test_a_faithful_rename_and_a_true_deletion_stay_silent(self):
+        repo = self.repo(self.BASE, name="faithful")
+        git(repo, "mv", "tests/test_thing.py", "tests/test_moved.py")
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 0, err)
+        repo = self.repo(self.BASE, name="deleted")
+        git(repo, "rm", "-q", "tests/test_thing.py")
+        write(repo, "tests/test_other.py", "def test_other():\n    assert other_thing() is None\n")
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 0, f"a deleted file with no successor is not this rule: {err}")
+
+    def test_a_non_ascii_test_path_keeps_its_assertion_rule(self):
+        name = "tests/tést_thing.py"
+        repo = self.repo({name: BASE_TEST})
+        write(repo, name, self.WEAKER)
+        self.commit(repo)
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertIn(f"[assertion-removed] {name}:", err)
+
+    def test_c_quoted_headers_decode(self):
+        self.assertEqual(floor_guard.strip_prefix('"a/tests/t\\303\\251st x.py"\t'),
+                         "tests/tést x.py")
+        self.assertEqual(floor_guard.unquote_c('"b/q\\"uote\\\\back\\tt"'), 'b/q"uote\\back\tt')
+        self.assertEqual(floor_guard.unquote_c("plain/path.py"), "plain/path.py")
+        added, removed = floor_guard.parse_diff(
+            '--- "a/tests/t\\303\\251st.py"\n+++ "b/tests/t\\303\\251st.py"\n@@ -1 +1 @@\n-x\n+y\n')
+        self.assertEqual(removed, [("tests/tést.py", 1, "x")])
+        self.assertEqual(added, [("tests/tést.py", 1, "y")])
+
+    def test_a_malformed_quoted_header_cannot_run(self):
+        with self.assertRaises(floor_guard.GuardError):
+            floor_guard.parse_diff('--- "a/x\\q"\n+++ b/x\n@@ -1 +1 @@\n-x\n+y\n')
+
+
+class TestImperativeSkipsSection5(FloorGuardBase):
+    """Section 5: skips written as calls, and tests renamed out of discovery."""
+
+    CALLS = (
+        ("    self.skip" + "Test('flaky on CI')", "skiptest-call"),
+        ("    rai" + "se unittest.SkipTest('later')", "raise-skiptest"),
+        ("    rai" + "se SkipTest", "raise-skiptest"),
+        ("    t.Skip" + "f(\"needs %s\", host)", "go-skip"),
+        ("    b.Skip" + "Now()", "go-skip"),
+        ("    pytest.sk" + "ip('later')", "pytest-skip-call"),
+        ("    pytest.xf" + "ail('known bug')", "pytest-skip-call"),
+    )
+
+    def test_each_call_form_is_test_made_easier(self):
+        for text, name in self.CALLS:
+            with self.subTest(text=text):
+                findings = floor_guard.scan([("tests/test_thing.py", 3, text)], [],
+                                            "CONSTRAINTS.md", self.repo)
+                self.assertEqual([(f["rule"], f["detail"]) for f in findings],
+                                 [("test-made-easier", name)])
+
+    def test_a_skip_call_fails_the_guard_end_to_end(self):
+        write(self.repo, "tests/test_thing.py",
+              "def test_thing(self):\n    self.skip" + "Test('later')\n"
+              "    assert compute() == 4\n    assert other() == 5\n")
+        self.commit()
+        code, _out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertIn("(skiptest-call)", err)
+
+    def _renamed(self, before, after, path="tests/test_thing.py"):
+        removed = [(path, 1, before)]
+        added = [(path, 1, after)]
+        return floor_guard.scan(added, removed, "CONSTRAINTS.md", self.repo)
+
+    def test_a_test_renamed_out_of_discovery_flags(self):
+        for before, after in (("def test_thing():", "def _test_thing():"),
+                              ("def test_thing():", "def disabled_test_thing():"),
+                              ("    async def test_io(self):", "    async def xtest_io(self):"),
+                              ("class TestThing(unittest.TestCase):",
+                               "class DisabledTestThing(unittest.TestCase):"),
+                              ("func TestParse(t *testing.T) {", "func testParse(t *testing.T) {")):
+            with self.subTest(after=after):
+                findings = self._renamed(before, after)
+                self.assertEqual([(f["rule"], f["detail"]) for f in findings],
+                                 [("test-made-easier", "renamed-out-of-discovery")])
+
+    def test_a_rename_that_stays_discoverable_or_a_move_stays_silent(self):
+        for before, after in (("def test_thing():", "def test_thing_again():"),
+                              ("def test_thing():", "def test_thing():"),
+                              ("def helper_thing():", "def _helper_thing():")):
+            with self.subTest(after=after):
+                self.assertEqual(self._renamed(before, after), [])
+        self.assertEqual(self._renamed("def test_thing():", "def _test_thing():",
+                                       path="src/app.py"), [])
+
+    def test_a_rename_out_of_discovery_fails_end_to_end(self):
+        write(self.repo, "tests/test_thing.py", BASE_TEST.replace("def test_thing", "def _test_thing"))
+        self.commit()
+        code, _out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(
+            err, r"\[test-made-easier\] tests/test_thing\.py:1 \(renamed-out-of-discovery\)")
+
+
+class TestWaiversFromTheBaseRefP17(FloorGuardBase):
+    """P1-7: a waiver is a one-way human grant on the BASE ref, never the change's own line."""
+
+    ID = "floor-waiver:silenced-checker:src/new.py"
+
+    def setUp(self):
+        super().setUp()
+        self.decisions = floor_guard._load_decisions()
+        write(self.repo, "src/new.py", SUPPRESSED + "\n")
+
+    def _signed_row(self, seed, ts="2026-09-10T00:00:00Z", signed_ts=None, answer="allow"):
+        ed = self.decisions._ed25519()
+        payload = self.decisions.grant_payload(self.ID, answer, "reviewed by the maintainer", "t-1",
+                                               ts=signed_ts or ts, klass="one-way")
+        sig = ed.signature(payload, seed, ed.publickey(seed)).hex()
+        return (f"{ts} · {self.ID} · one-way · {answer} · reviewed by the maintainer "
+                f"[source=human:lia sig={sig}] · t-1")
+
+    def _pin(self, seed):
+        return {".orca/human-grant-pubkey": self.decisions._ed25519().publickey(seed).hex() + "\n"}
+
+    def test_a_waiver_the_change_writes_for_itself_is_not_honoured(self):
+        # The review's reproduction printed `clean (1 waived)`, exit 0.
+        for committed in (True, False):
+            with self.subTest(committed=committed):
+                write(self.repo, "docs/DECISIONS.md", grant_row(self.ID) + "\n")
+                if committed:
+                    self.commit("suppress and waive it in the same change")
+                code, out, err = run_main(self.repo, "--base", "main")
+                self.assertEqual(code, 1, f"a self-written waiver granted: {out}")
+                self.assertIn("[silenced-checker] src/new.py", err)
+                self.assertNotIn("waived", out)
+
+    def test_a_one_way_human_grant_on_the_base_is_honoured(self):
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.ID) + "\n"})
+        code, out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 0, err)
+        self.assertIn("(1 waived)", out)
+
+    def test_a_taste_or_unsourced_allow_on_the_base_does_not_grant_and_is_named(self):
+        for klass, source, why in (("taste", "", "not one-way"),
+                                   ("mechanical", "", "not one-way"),
+                                   ("one-way", "", "human source")):
+            with self.subTest(klass=klass, source=source):
+                land_on_base(self.repo, {"docs/DECISIONS.md":
+                                         grant_row(self.ID, klass=klass, source=source) + "\n"})
+                code, out, err = run_main(self.repo, "--base", "main")
+                self.assertEqual(code, 1, f"a {klass} allow granted: {out}")
+                self.assertIn("not honoured", err)
+                self.assertIn(why, err)
+
+    def test_a_later_superseded_line_on_the_base_retires_the_grant(self):
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.ID) + "\n" + grant_row(
+            self.ID, answer="superseded", ts="2026-09-11T00:00:00Z", klass="mechanical",
+            source="", why="the parser landed") + "\n"})
+        code, out, _err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 1, out)
+
+    def test_a_pinned_base_key_requires_a_signature_that_verifies(self):
+        seed = os.urandom(32)
+        cases = (("unsigned", grant_row(self.ID), 1),
+                 ("signed", self._signed_row(seed), 0),
+                 ("replayed under a later ts",
+                  self._signed_row(seed, ts="2026-09-12T00:00:00Z",
+                                   signed_ts="2026-09-10T00:00:00Z"), 1),
+                 ("signed by another key", self._signed_row(os.urandom(32)), 1))
+        for name, row, expected in cases:
+            with self.subTest(case=name):
+                land_on_base(self.repo, {**self._pin(seed), "docs/DECISIONS.md": row + "\n"})
+                code, out, err = run_main(self.repo, "--base", "main")
+                self.assertEqual(code, expected, f"{name}: {out}{err}")
+
+    def test_a_key_and_signature_the_change_brings_are_not_trusted(self):
+        seed = os.urandom(32)
+        for rel, text in {**self._pin(seed), "docs/DECISIONS.md": self._signed_row(seed) + "\n"}.items():
+            write(self.repo, rel, text)
+        self.commit("pin my own key and sign my own waiver")
+        code, out, _err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 1, out)
+
+    def test_a_malformed_base_key_cannot_run(self):
+        land_on_base(self.repo, {".orca/human-grant-pubkey": "not-hex\n",
+                                 "docs/DECISIONS.md": grant_row(self.ID) + "\n"})
+        code, _out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 2, err)
+        self.assertIn("not a hex public key", err)
+
+    def test_a_ledger_outside_the_repository_cannot_run(self):
+        outside = Path(self.tmp) / "elsewhere.md"
+        outside.write_text(grant_row(self.ID) + "\n", encoding="utf-8")
+        code, _out, err = run_main(self.repo, "--base", "main", "--waivers", str(outside))
+        self.assertEqual(code, 2, err)
+        self.assertIn("outside the repository", err)
+
+    def test_an_absolute_ledger_path_inside_the_repository_is_still_read_at_the_base(self):
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.ID) + "\n"})
+        ledger = str(self.repo / "docs" / "DECISIONS.md")
+        code, out, err = run_main(self.repo, "--base", "main", "--waivers", ledger)
+        self.assertEqual(code, 0, err)
+        self.assertIn("(1 waived)", out)
+        write(self.repo, "docs/DECISIONS.md", "")  # the checked-out copy says nothing
+        code, out, err = run_main(self.repo, "--base", "main", "--waivers", ledger)
+        self.assertEqual(code, 0, err)
+
+    def test_the_violation_footer_says_where_a_waiver_must_land(self):
+        code, _out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 1)
+        self.assertIn("land a waiver on main FIRST", err)
+        self.assertIn("class `one-way`", err)
 
 
 if __name__ == "__main__":

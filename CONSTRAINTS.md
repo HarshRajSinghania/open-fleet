@@ -41,7 +41,7 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
 | D5 | routing-eval | score >= 1.0 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | validate.yml `gates`: "Routing eval gate (description-based router)" | 94/94 (100%) | FROZEN+PROVEN |
 | D6 | proof-honesty | `proof_status.py --check` AND `run_report.py` exit 0 | both scripts (see row notes) | validate.yml `gates`: "Check proof-evidence honesty" + "Proof tiers bind to artifacts, not filenames" | exit 0; 19 doctrine-only / 2 self-run; 2 bound | FROZEN+PROVEN |
 | D7 | bundle-self-contained | `bundle.py --check` exit 0 | `python3 scripts/bundle.py --check` | validate.yml `gates`: "Bundle builds self-contained missions" | 21/21 | FROZEN+PROVEN |
-| D8 | verifier-soundness | vf-bench gate PASS: false-done 0, skipped 0 | `python3 bench/vf-bench/gate.py` | validate.yml job `vfbench` | false-done 0/20, valid 3/3, skipped 0 | FROZEN+PROVEN |
+| D8 | verifier-soundness | vf-bench gate PASS: false-done 0, skipped 0 | `python3 bench/vf-bench/gate.py` | validate.yml job `vfbench` | false-done 0/25, valid 8/8, skipped 0 | FROZEN+PROVEN |
 | D9 | coverage | line >= 80% on `runtime/scripts` + `scripts`, ratchet-only | `coverage run -m unittest discover -s tests` then `coverage report` (config: .coveragerc) | NEW validate.yml step (WIRE): hash-pinned coverage install + run + report | **75% (6058 stmts, 1541 missed) — BELOW BAR** | FROZEN-BELOW-BAR |
 
 ## Row notes (part of the freeze)
@@ -73,6 +73,11 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
   coverage to >= 80% with real tests, then re-proves GREEN plus the canary-PR
   RED. `ratchet-only`: once green, the number moves up only. `fail_under = 80`
   in .coveragerc mirrors this row; the guard must cover it (flagged for GUARD).
+  Re-measured 2026-10-23: CI's `coverage report` step on main (validate.yml
+  run 39924594540, job `gates`, commit `ebc9dab658`) combined the four shards
+  to 81% (12423 stmts, 2355 missed), above the 80% bar. The table's 75% and
+  FROZEN-BELOW-BAR status are the 2026-09-16 snapshot and stay as written;
+  every validate run re-measures, and the build fails below fail_under.
 - D12 folded into D2: the `agentskills validate` CI step stays as
   defense-in-depth under catalog-valid; it is not a separate dimension and
   carries no separate threshold.
@@ -91,7 +96,14 @@ Any diff touching these fails CI without a recorded DECISIONS waiver
 `.gitleaksignore`, the `ruff.toml` select, `ROUTING_MIN_SCORE`, the eval suite
 (evals/routing.json), the vf-bench corpus (traps + pins), and — flagged for the
 GUARD phase, mirroring this file's D9 number — the `.coveragerc` fail_under.
-Waivers live in docs/DECISIONS.md.
+Waivers live in docs/DECISIONS.md and are read at the base ref, never from the
+change under review, and grant only as a one-way human decision: class
+`one-way`, a `[source=human:<name>]` suffix, and a signature that verifies when
+.orca/human-grant-pubkey is pinned at the base — the change policy below,
+enforced (2026-10-23 review, #621). The `taste` and `mechanical` waivers
+recorded before that no longer grant. The numbers in this file are guarded row
+by row: a numbered row lowered, deleted, re-keyed or with its number worded
+away trips `threshold-lowered` (#620).
 
 ## Change policy
 

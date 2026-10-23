@@ -8,6 +8,10 @@
 # the ruff select, ROUTING_MIN_SCORE, evals/routing.json, the vf-bench corpus +
 # pins, the .coveragerc fail_under). Each fails without a recorded DECISIONS
 # waiver whose id is `floor-waiver:<rule>:<path>` and whose answer is `allow`.
+# The waiver is read from the BASE ref's docs/DECISIONS.md (the PR cannot
+# write its own) and grants only as a one-way human grant, signed when the
+# base pins .orca/human-grant-pubkey (2026-10-23 review, #621): land it on the
+# base branch before the PR that needs it.
 #
 # PR-only: on a push there is no base to diff, so there is nothing to guard.
 name: floor-guard

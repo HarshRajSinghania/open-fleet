@@ -173,5 +173,53 @@ class TestNetBehaviour(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class TestTeardownIsNotTheDeletionDoorP236(unittest.TestCase):
+    """P2-36 (2026-10-23 review): the deletion net caught routine post-merge teardown.
+
+    merge-serialization.md merges with `gh pr merge --merge --delete-branch` and
+    dispatch-lifecycle.md retires the merged unit's clean worktree, both as ungated conductor
+    steps; "delete the branch"/"delete the worktree" made the ledger line for them a one-way
+    door. The narrowed net leaves that teardown mechanical and still nets the deletions that
+    lose work or a shared ref."""
+
+    setUp = TestNetBehaviour.setUp
+    tearDown = TestNetBehaviour.tearDown
+    _append = TestNetBehaviour._append
+
+    ROUTINE = (
+        "gh pr merge --merge --delete-branch succeeded; worktree retired",
+        "gh pr merge 41 --merge --delete-branch --match-head-commit 3f9c2a1",
+        "deleted the merged unit branch after the PR merged",
+        "retired the merged unit worktree with worktree rm",
+        "git worktree remove ../repo-unit-7 after the unit merged",
+        "removed the clean worktree of a merged unit",
+    )
+    STILL_ONE_WAY = (
+        "delete the unmerged unit branch to start over",
+        "delete the default branch",
+        "delete the main branch and recreate it",
+        "force-delete the feature branch",
+        "git branch --delete --force unit-7",
+        "git push origin --delete main",
+        "delete the dirty worktree",
+        "git worktree remove --force ../repo-unit-7",
+        "delete the repository",
+        "drop the table users",
+    )
+
+    def test_routine_post_merge_teardown_is_not_netted(self):
+        for why in self.ROUTINE:
+            with self.subTest(why=why):
+                r = self._append(self.log, why)
+                self.assertEqual(r.returncode, 0, f"routine teardown netted: {why!r}\n{r.stderr}")
+
+    def test_deletion_that_loses_work_or_a_shared_ref_stays_one_way(self):
+        for why in self.STILL_ONE_WAY:
+            with self.subTest(why=why):
+                r = self._append(self.log, why)
+                self.assertEqual(r.returncode, 1, f"{why!r} slipped the deletion net")
+                self.assertIn("deletion", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

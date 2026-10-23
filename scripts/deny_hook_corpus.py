@@ -12,15 +12,17 @@ context. It is rendered twice:
   * the SAFE form puts an inert sentinel in the hole (`orca_sentinel push --force origin main`)
     and runs it in real bash, in a throwaway directory, with PATH holding only the sentinel and
     a few harmless tools, no credentials, no network tool, CPU/file-size limits and a timeout.
-    The sentinel appends one line to a marker file, so "bash ran the hole" is an observation;
+    The sentinel appends its argv to a marker file, so "bash ran the hole with the payload's
+    words" is an observation, not an inference;
   * the FORBIDDEN form puts a refused command in the same hole (`git push --force origin main`,
-    HIGH tier; `gh issue close 34`, rule 5) and is fed ONLY to the hook as a PreToolUse payload.
-    It is never executed, and no safe form may name git, gh or another real tool (checked).
+    HIGH tier; `gh issue close 34`, rule 5; `rm -r -f ./build`, a Never-list ask) and is fed
+    ONLY to the hook as a PreToolUse payload. It is never executed, and no safe form may name
+    git, gh, rm or another real tool (checked before every run, minimizer shrinks included).
 
 Scoring keeps the two error directions apart:
 
   * MISS       -- bash ran the sentinel and the hook allowed the forbidden form (a hole);
-  * DOWNGRADE  -- bash ran it and the hook only asked (a HIGH shape must deny);
+  * DOWNGRADE  -- bash ran it and the hook only asked a HIGH or rule 5 shape (they must deny);
   * FALSE-DENY -- bash ran nothing and the hook refused. Literal documentation examples
                   (quoted heredocs, single quotes, comments, escaped openers) are the allow
                   controls; a refusal of text bash treats as a syntax error is counted as
@@ -32,10 +34,11 @@ tests/test_deny_hook_conformance.py runs the bounded corpus in CI and replays th
 
 Usage:
   python3 scripts/deny_hook_corpus.py                      bounded corpus (the CI one), report
-  python3 scripts/deny_hook_corpus.py --random 2000 --both larger corpus, both payloads per case
+  python3 scripts/deny_hook_corpus.py --random 2000 --both larger corpus, every payload per case
   python3 scripts/deny_hook_corpus.py --minimize --write   minimize mismatches into the fixtures
   python3 scripts/deny_hook_corpus.py --list               print the rendered forbidden forms
   --hook PATH   judge another copy of the hook (a mutant, or `git show <base>:...`)
+  --both        judge every case with every payload (default: one payload per case, rotating)
   --bash PATH   the bash to use as the oracle (default: bash on PATH)
   --seed N      the generator seed (default 598)
 """

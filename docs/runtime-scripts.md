@@ -324,8 +324,9 @@ seed 598 stacks those contexts. A miss fails CI outright; a false denial is scor
 must be a minimized boundary in `tests/fixtures/deny_hook_conformance.json` (pinned exactly on
 bash 3.2, the recording host; held to a small slack on bash 5.x, where CI runs). Switching off
 each parser safeguard in a copy of the hook must make the corpus disagree with bash (the
-mutation control in the same test module). Supported: POSIX sh and bash 3.2–5.2 command
-grammar, plus bash 5.3 `${ cmd; }` read as a substitution. Deliberately conservative (refused,
+mutation control in the same test module). Supported: POSIX sh and bash 3.2 through 5.x
+command grammar — the fixtures were recorded on bash 3.2.57 and CI runs the corpus on its bash
+5.x — plus bash 5.3 `${ cmd; }` read as a substitution. Deliberately conservative (refused,
 recorded as boundaries): a function body or trap action judged as if called or fired, an alias
 value judged where aliases are not expanded, a quoted `"$c"` head judged by its split value,
 `coproc` read as bash 4+ reads it, a heredoc delimiter word holding `$(`, a delimiter followed

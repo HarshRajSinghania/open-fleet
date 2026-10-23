@@ -119,6 +119,22 @@ class UserContentSurvives(unittest.TestCase):
                              "another checkout's mission\n")
             self.assertEqual(snapshot(out), before, "a refused rebuild changed the tree")
 
+    def test_a_tree_marked_before_the_rename_still_rebuilds(self):
+        """PR #633 review, P2: a bundle an earlier build marked with the pre-rename marker name
+        must rebuild, not read as foreign; the rebuild migrates it to the new marker."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            (out / bundle.MARKER).rename(out / bundle.LEGACY_MARKER)
+            (out / "notes.txt").write_text("mine\n", encoding="utf-8")
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertTrue((out / bundle.MARKER).is_file())
+            self.assertFalse((out / bundle.LEGACY_MARKER).exists())
+            self.assertEqual((out / "notes.txt").read_text(encoding="utf-8"), "mine\n")
+            self.assertTrue((out / "skills" / "ship-it" / "SKILL.md").is_file())
+
     def test_a_malformed_marker_refuses(self):
         for contents in ("{", "[]", '{"files": "x"}', '{"files": ["../../etc/passwd"]}'):
             with self.subTest(contents=contents), tempfile.TemporaryDirectory() as tmp:

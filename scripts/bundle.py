@@ -289,6 +289,9 @@ def plugin_files():
 # Anything else where the build would write — a file the marker does not list, a symlink, a
 # symlinked parent — is a collision, and the build refuses before deleting or writing anything.
 MARKER = ".open-fleet-bundle.json"
+# The marker's pre-rename name: read when MARKER is absent and replaced by MARKER on the next
+# build, so a tree an earlier build wrote keeps rebuilding (PR #633 review, P2).
+LEGACY_MARKER = ".orca-fleet-bundle.json"
 
 
 class BundleRefused(Exception):
@@ -311,6 +314,8 @@ def _entries_under(path):
 def _owned(out):
     """The out-relative files a previous build recorded (empty when there is no marker)."""
     marker = out / MARKER
+    if not os.path.lexists(marker):
+        marker = out / LEGACY_MARKER
     if not os.path.lexists(marker):
         return set()
     try:
@@ -367,6 +372,8 @@ def _record(out, planned):
                    for rel in planned for entry in _entries_under(out / rel))
     (out / MARKER).write_text(json.dumps({"generator": "scripts/bundle.py", "files": files},
                                          indent=2) + "\n", encoding="utf-8")
+    if os.path.lexists(out / LEGACY_MARKER):
+        (out / LEGACY_MARKER).unlink()  # migrated: MARKER now lists everything this build owns
 
 
 def build(out_dir):

@@ -105,7 +105,7 @@ skipped, every git-based BASE invariant still runs — and the conductor works P
 
 ## Rules
 
-- ONE conductor per BASE. `merge_queue.py` (#599) enforces it: a fenced lease, durable FIFO
-  entries, steps 2-4 rechecked before each merge, in-flight merges reconciled before a handoff.
+- ONE conductor per BASE: run steps 1-4 through `merge_queue.py` (#599), a fenced lease over
+  durable FIFO entries that rechecks step 2 before each merge and reconciles before a handoff.
 - Arrival order only; no priority lanes without a human gate.
 - Merge to the DEFAULT branch is out of scope here — that promotion is a one-way human gate.

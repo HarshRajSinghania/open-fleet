@@ -98,6 +98,8 @@ MODES = ("gh", "git")
 RESOLVE_ACTIONS = {"requeue": QUEUED, "bounce": BOUNCED, "drop": DROPPED}
 DEFAULT_TTL = 900.0
 OBJECT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# A branch name that is safe inside a refspec: no `:`, whitespace, `..`, glob or revision syntax.
+BRANCH_RE = re.compile(r"(?!-)(?!refs/)(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9._/-]+")
 PRIVATE_REFS = "refs/open-fleet/merge-queue"
 # Prefix commits exist only to give a gate a checkout. A fixed identity and date make them
 # reproducible, and they are never pushed.
@@ -461,7 +463,7 @@ class MergeQueue:
 
     @staticmethod
     def _check_branch(name: str, flag: str) -> str:
-        if not name or name.startswith("-") or any(c.isspace() for c in name) or ".." in name or name.startswith("refs/"):
+        if not isinstance(name, str) or not BRANCH_RE.fullmatch(name):
             raise QueueError("usage", f"{flag} {name!r} is not a plain branch name", exit_code=EXIT_USAGE)
         return name
 
@@ -638,10 +640,10 @@ class MergeQueue:
         sha, tree, pr = p.get("reviewed_sha"), p.get("reviewed_wtree"), p.get("pr")
         if not isinstance(unit, str) or not unit.strip():
             bad.append("unit")
-        if not isinstance(branch, str) or not branch.strip():
-            bad.append("branch")
-        if not isinstance(base, str) or not base.strip():
-            bad.append("base")
+        if not isinstance(branch, str) or not BRANCH_RE.fullmatch(branch):
+            bad.append("branch (a plain branch name)")
+        if not isinstance(base, str) or not BRANCH_RE.fullmatch(base):
+            bad.append("base (a plain branch name)")
         if not isinstance(sha, str) or not OBJECT_RE.fullmatch(sha):
             bad.append("reviewed_sha (a full commit id)")
         if tree is not None and not (isinstance(tree, str) and OBJECT_RE.fullmatch(tree)):

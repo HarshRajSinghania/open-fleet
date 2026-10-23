@@ -8,6 +8,7 @@ mutation controls) are tests/test_merge_queue_drills.py.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import sqlite3
 import subprocess
@@ -17,8 +18,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "merge_queue"))
-import world as W  # the fixture module sits beside its fake gh
+# The fixture harness sits beside its fake gh, loaded by path (it is not a package CI installs).
+_spec = importlib.util.spec_from_file_location("mq_world", ROOT / "tests" / "fixtures" / "merge_queue" / "world.py")
+W = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(W)
 
 mq_mod = W.load_module()
 egress = mq_mod.egress
@@ -203,7 +206,9 @@ class Boarding(QueueCase):
         a = self.w.unit("alpha")
         bad = {"not json": "{", "no unit": json.dumps({**a, "unit": ""}),
                "short sha": json.dumps({**a, "reviewed_sha": "abc"}),
-               "bool pr": json.dumps({**a, "pr": True}), "no pr on gh lane": json.dumps({**a, "pr": None})}
+               "bool pr": json.dumps({**a, "pr": True}), "no pr on gh lane": json.dumps({**a, "pr": None}),
+               "refspec in branch": json.dumps({**a, "branch": "alpha:refs/heads/integration"}),
+               "option as branch": json.dumps({**a, "branch": "--upload-pack=x"})}
         for name, payload in bad.items():
             with self.subTest(name):
                 rc, out = self.w.cli("enqueue", "--token", token, "--payload", payload)

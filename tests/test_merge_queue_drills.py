@@ -19,6 +19,7 @@ the fixture tier: nothing touches the network.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import queue
@@ -33,8 +34,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "merge_queue"))
-import world as W  # the fixture module sits beside its fake gh
+# The fixture harness sits beside its fake gh, loaded by path (it is not a package CI installs).
+_spec = importlib.util.spec_from_file_location("mq_world", ROOT / "tests" / "fixtures" / "merge_queue" / "world.py")
+W = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(W)
 
 SCRIPTS = ROOT / "runtime" / "scripts"
 # The two guards, as exact text: each recipe must match the script exactly once, so a refactor

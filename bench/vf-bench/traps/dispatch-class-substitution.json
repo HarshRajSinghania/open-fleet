@@ -1,0 +1,41 @@
+{
+  "id": "dispatch-class-substitution-1",
+  "class": "dispatch-class-substitution",
+  "sound_expected": "RED",
+  "note": "#600 / #135 / #310: the coordinator signed unit_class `mutation`; the run arrives with --unit-class report-only (on the native lane ORCA_UNIT_CLASS, which the worker owns). The signed record is what makes the class a fact, so the substitution is refused.",
+  "unit_class": "report-only",
+  "fixture": "report-only",
+  "dispatch": {
+    "record": {
+      "manifest_id": "review-it",
+      "contract_digest": "{{contract_digest}}",
+      "unit_class": "mutation",
+      "profile": "ro",
+      "parent_profile": "rw"
+    }
+  },
+  "manifest": {
+    "unit": "review-it",
+    "unit_class": "report-only",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "addressed": true
+      }
+    ],
+    "pr": {
+      "reviewed_sha": "{{head_sha}}"
+    }
+  },
+  "expect_reason": "dispatch substitution: the run used unit_class='report-only' but the coordinator signed 'mutation'",
+  "neighbour": "dispatch-valid-control-1"
+}

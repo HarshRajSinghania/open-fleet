@@ -1,0 +1,75 @@
+{
+  "id": "lighting-swap-1",
+  "class": "lighting-swap",
+  "sound_expected": "RED",
+  "note": "#600: the worker's manifest records `dark-eligible` \u2014 the lighting that waives the independent review \u2014 while the coordinator dispatched the unit `lit`. verify.py takes the waiver from the dispatch value, so the lie buys no waiver, but a manifest that misstates its own lighting is a false audit record; the swap leg refuses it. Otherwise mutation-valid-control-1 exactly (executed, reviewed), so only the swap guard can redden it.",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "execute_nc": true,
+  "nc_command": "{{proof_cmd}}",
+  "lighting": "lit",
+  "gh_stub": true,
+  "repo": "vf-bench/lighting-swap",
+  "manifest": {
+    "unit": "vf-bench-lighting-swap",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "dark-eligible",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  },
+  "expect_reason": "lighting swap: manifest says 'dark-eligible' but dispatch classed the unit 'lit'",
+  "neighbour": "mutation-valid-control-1"
+}

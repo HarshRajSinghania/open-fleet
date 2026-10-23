@@ -19,6 +19,27 @@ truth is `.claude-plugin/plugin.json`.
   verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
   are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
   the R04/R06 receipts (#597, #599) are later sources.
+- **VF-Bench samples the verifier invariants it used to name as unsampled** (#600). Twenty-eight
+  isolated traps join the corpus — signed-dispatch tamper on a profile-signed record, class
+  substitution and replay; hidden criteria in a table and in JSON; unaddressed and dropped
+  criteria; a swapped manifest digest; a stale reviewed SHA; illegal and swapped lighting; an
+  empty intent packet; an illegal reviewer mode; incomplete Art-12/50 provenance; a surviving
+  pinned mutant and a zero-kill tally; a revert, a production change and a swapped mutant under
+  the oracle-scope exception; three `pr.number` shapes; the author's own approval, a non-member's,
+  and a dismissed one; a negative-control artifact symlinked out of the clone, an unpinned one,
+  and a named run log that does not exist — each beside a named valid neighbour on the same
+  fixture (eleven new controls) and each declaring the refusal it exists to earn.
+  `tests/test_vfbench_guards.py` deletes each trap's one guard from a copy of `verify.py` and
+  requires the trap to pass and its neighbour to stay green. The bench now scores false
+  REJECTION beside false acceptance, a fixture control going RED is scored instead of raised, and
+  the CI gate also fails on a trap refused for the wrong reason or a corpus case neither scored
+  nor skipped by name. Result: false-done 0/53, false-reject 0/19 (corpus digest
+  `277f594ca6e1…`; `VERSION` unchanged). The README carries a guard-by-guard inventory of every
+  verifier check — trap, justified unsupported, or deferred with its unit-test pin — each row
+  citing the `verify.py` refusal sites it owns, so a site read from source with no row, or a row
+  no test would miss, fails the build — and states that the provenance, intent, reviewer-mode
+  and lighting legs verify presence, not truth. No verifier hole was found: every new trap was
+  refused for its declared reason as `verify.py` stood.
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

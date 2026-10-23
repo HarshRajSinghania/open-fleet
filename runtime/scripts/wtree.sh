@@ -94,10 +94,14 @@ TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
 # The names are BYTES (PR #649 review): git accepts 0xff, an invalid UTF-8 sequence, `.` or `=` in
 # one, and an attribute selects that exact name. So the keys are handled under LC_ALL=C (a UTF-8
 # `tr` aborts at the first invalid byte and drops every key after it), split on newline with
-# globbing off, and appended as GIT_CONFIG_KEY_n/VALUE_n pairs: an env pair keeps key and value
+# globbing off, and collected as GIT_CONFIG_KEY_n/VALUE_n pairs: an env pair keeps key and value
 # apart, where `-c <key>=` splits a name holding `=` at its first `=` and blanks another key.
+# The pairs are POSITIONAL `NAME=value` arguments that `env "$@" git ...` applies to each call
+# that can run a filter: env(1) splits each one at its first `=` (the variable name holds none),
+# so the key's bytes reach git intact and no shell text is ever built from them and re-parsed.
 LC_ALL=C
 export LC_ALL
+set --
 _n=$GIT_CONFIG_COUNT
 if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0' '\n'); then
   OLDIFS=$IFS
@@ -113,23 +117,20 @@ if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0'
         _d=${_k#filter.}
         _d=${_d%.*}
         for _v in clean smudge process required; do
-          _key="filter.$_d.$_v"
           _val=
           [ "$_v" = required ] && _val=false
-          # `\$_key` stays literal in the eval'd text: the key's bytes are assigned, never parsed.
-          eval "GIT_CONFIG_KEY_$_n=\$_key; GIT_CONFIG_VALUE_$_n=\$_val; export GIT_CONFIG_KEY_$_n GIT_CONFIG_VALUE_$_n"
+          set -- "$@" "GIT_CONFIG_KEY_$_n=filter.$_d.$_v" "GIT_CONFIG_VALUE_$_n=$_val"
           _n=$((_n + 1))
         done ;;
       diff.*.textconv|diff.*.command)
-        eval "GIT_CONFIG_KEY_$_n=\$_k; GIT_CONFIG_VALUE_$_n=; export GIT_CONFIG_KEY_$_n GIT_CONFIG_VALUE_$_n"
+        set -- "$@" "GIT_CONFIG_KEY_$_n=$_k" "GIT_CONFIG_VALUE_$_n="
         _n=$((_n + 1)) ;;
     esac
   done
   set +f
   IFS=$OLDIFS
 fi
-GIT_CONFIG_COUNT=$_n
-export GIT_CONFIG_COUNT
+set -- "$@" "GIT_CONFIG_COUNT=$_n"
 
 # Resolve the REAL index path BEFORE exporting GIT_INDEX_FILE: with the variable set,
 # `rev-parse --git-path index` returns the temp index itself and the stat-cache seed self-copies.
@@ -157,8 +158,8 @@ else
   seed_from_head || exit 1
 fi
 
-git -C "$TOP" add -A 2>/dev/null || exit 1
+env "$@" git -C "$TOP" add -A 2>/dev/null || exit 1
 # write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
-# above makes likely) is re-hashed here, which re-runs the clean filter — the blanks (#629) ride
-# every git call from here on in the exported GIT_CONFIG_* pairs, this one included.
-git -C "$TOP" write-tree 2>/dev/null || exit 1
+# above makes likely) is re-hashed here, which re-runs the clean filter — so the blanks (#629)
+# ride this call as well, not only `add -A`.
+env "$@" git -C "$TOP" write-tree 2>/dev/null || exit 1

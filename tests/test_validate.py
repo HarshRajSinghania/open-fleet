@@ -1381,6 +1381,92 @@ class ActivationLoad(unittest.TestCase):
         )
 
 
+class PerMissionLoadBudgets(unittest.TestCase):
+    """2026-10-23 review, section 5: one catalog-wide cap bounded only the heaviest mission. Each
+    mission now has a budget in scripts/mission-load-budgets.json, and check_load_budgets()
+    refuses growth past it, slack above it, a mission without one and a budget without a mission."""
+
+    def _catalog(self, tmp, budgets, step=500, slack=1000):
+        root = Path(tmp)
+        skills = root / "skills"
+        skills.mkdir()
+        make_skill(skills, "Composes `diagnose`.\n", name="alpha")
+        make_skill(skills, "Composes `diagnose`.\n", name="beta")
+        (root / "scripts").mkdir()
+        (root / "scripts" / "mission-load-budgets.json").write_text(
+            json.dumps({"step": step, "max_slack": slack, "budgets": budgets}), encoding="utf-8")
+        return root
+
+    def _loads(self, root):
+        return dict(validate.load_report(root))
+
+    def test_the_live_catalog_fits_its_budgets(self):
+        self.assertEqual(validate.check_load_budgets(), [])
+
+    def test_a_budget_that_fits_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            fitted = {name: load + 10 for name, load in loads.items()}
+            self._catalog_rewrite(root, fitted)
+            self.assertEqual(validate.check_load_budgets(root), [])
+
+    def _catalog_rewrite(self, root, budgets, step=500, slack=1000):
+        (root / "scripts" / "mission-load-budgets.json").write_text(
+            json.dumps({"step": step, "max_slack": slack, "budgets": budgets}), encoding="utf-8")
+
+    def test_growth_past_a_budget_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._catalog_rewrite(root, {"alpha": loads["alpha"] - 1, "beta": loads["beta"]})
+            failures = validate.check_load_budgets(root)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("alpha: activation load", failures[0])
+
+    def test_slack_above_the_limit_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._catalog_rewrite(root, {"alpha": loads["alpha"] + 1001, "beta": loads["beta"]})
+            failures = validate.check_load_budgets(root)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("alpha: budget", failures[0])
+            self.assertIn("lower it", failures[0])
+
+    def test_a_mission_without_a_budget_and_a_budget_without_a_mission_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._catalog_rewrite(root, {"alpha": loads["alpha"], "gamma": 100})
+            failures = validate.check_load_budgets(root)
+            self.assertTrue(any(f.startswith("beta: no integer budget") for f in failures), failures)
+            self.assertTrue(any(f.startswith("gamma: a budget for a mission") for f in failures),
+                            failures)
+
+    def test_a_budget_above_the_catalog_cap_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            over = validate.MISSION_MAX_LOAD_TOKENS + 1
+            self._catalog_rewrite(root, {"alpha": over, "beta": loads["beta"]}, slack=over)
+            failures = validate.check_load_budgets(root)
+            self.assertTrue(any("above the" in f for f in failures), failures)
+
+    def test_a_missing_or_malformed_budget_file_fails_closed(self):
+        for text in (None, "{ not json", '{"budgets": []}', '{"step": 0, "max_slack": 1, "budgets": {}}'):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = self._catalog(tmp, {})
+                path = root / "scripts" / "mission-load-budgets.json"
+                if text is None:
+                    path.unlink()
+                else:
+                    path.write_text(text, encoding="utf-8")
+                failures = validate.check_load_budgets(root)
+                self.assertEqual(len(failures), 1, failures)
+                self.assertIn("unreadable", failures[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

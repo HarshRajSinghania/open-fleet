@@ -770,6 +770,46 @@ def load_report(root=None):
     return rows
 
 
+def check_load_budgets(root=None):
+    """Failures against scripts/mission-load-budgets.json, the per-mission ratchet under the cap.
+
+    One catalog-wide cap bounded only the heaviest mission; the other 21 could grow by thousands
+    of tokens with nothing noticing (2026-10-23 review, section 5). Each mission now carries its
+    own budget: over it fails, and so does a budget more than `max_slack` above the measured load,
+    so a shrink is banked by lowering the budget instead of becoming silent headroom. A missing or
+    malformed file fails closed: no budgets must never read as no limits.
+    """
+    path = (root or ROOT) / "scripts" / "mission-load-budgets.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        budgets, step, slack = data["budgets"], int(data["step"]), int(data["max_slack"])
+        if not isinstance(budgets, dict) or step <= 0 or slack < 0:
+            raise ValueError("budgets must be an object, step positive, max_slack non-negative")
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        return [f"{_repo_rel(path)}: unreadable ({type(err).__name__}: {err}) — every mission "
+                "needs a budget; a missing file is not 'no limits'"]
+    failures = []
+    measured = dict(load_report(root))
+    for name, load in sorted(measured.items()):
+        budget = budgets.get(name)
+        suggested = min(-(-load // step) * step, MISSION_MAX_LOAD_TOKENS)
+        if not isinstance(budget, int) or isinstance(budget, bool):
+            failures.append(f"{name}: no integer budget (measured ~{load} tokens; add {suggested})")
+        elif budget > MISSION_MAX_LOAD_TOKENS:
+            failures.append(f"{name}: budget {budget} is above the {MISSION_MAX_LOAD_TOKENS} cap")
+        elif load > budget:
+            failures.append(
+                f"{name}: activation load ~{load} tokens > its budget {budget} — move a phase's "
+                "doc behind a 'read <doc> when entering <phase>' cue, or raise the budget in a "
+                "commit that says why")
+        elif budget - load > slack:
+            failures.append(f"{name}: budget {budget} sits {budget - load} tokens above the "
+                            f"measured ~{load} (max slack {slack}) — lower it to {suggested}")
+    for name in sorted(set(budgets) - set(measured)):
+        failures.append(f"{name}: a budget for a mission that is not in skills/")
+    return failures
+
+
 # Identity-tuple comparison (#288). The similarity engine — tokenizer hookup, concept table,
 # negation polarity, containment — lives in scripts/_identity.py (pushed down like the count-lint
 # engine, RV-D1); this module keeps the gate POLICY below and re-exports the three functions it
@@ -1218,6 +1258,13 @@ def main():
         all_passed = False
         print("\nFAIL pin-version claims — a hand-typed Orca version drifted from runtime/pins.json:")
         for failure in pin_failures:
+            print(f"   - {failure}")
+
+    budget_failures = check_load_budgets()
+    if budget_failures:
+        all_passed = False
+        print("\nFAIL activation-load budgets — a mission outgrew, or no longer fills, its budget:")
+        for failure in budget_failures:
             print(f"   - {failure}")
 
     keyword_failures = check_manifest_keywords()

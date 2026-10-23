@@ -618,3 +618,52 @@ Branch protection, rulesets and tag protection were read with `gh api`; GitHub's
 semantics were read from docs.github.com (troubleshooting-required-status-checks); the runner
 image inventory from actions/runner-images (Ubuntu 24.04 README). No tracked file other than
 this document was added or modified.
+
+## 9. Resolution (2026-10-23, the #629 fix set)
+
+Every finding was tracked under #629 (children #612–#628) and fixed in one PR. Each fix carries
+the negative-path test its reproduction describes, proved red against the pre-fix code. The P1
+list re-read against the fix set:
+
+| P1 | Fixed | Pinned by |
+|---|---|---|
+| P1-1 stillborn mutant under counting runners | `28ddb4a25e` | `StillbornBesideCountedFailures`, `StillbornUnderCountingRunnersEndToEnd`; vf-bench traps `c3ebe98687` (false-done 0/25) |
+| P1-2 source-repo hooks during `--execute-nc` | `28ddb4a25e` | `SourceRepoHooksNeverRun`; vf-bench `hook-staged-kill` |
+| P1-3 wrapper prefixes defeat the HIGH tier | `77720a1c71` | `TestLaunchWrappersCannotLaunderTheHighTier` |
+| P1-4 the hook can be disarmed | `77720a1c71` | `TestSelfGuardCoversEveryWriteVerb` |
+| P1-5 a red shard leaves `gates` skipped | `c487edeff8` | `test_gates_runs_whatever_its_needs_did`, `test_gates_first_step_fails_unless_every_need_succeeded` |
+| P1-6 `.gitattributes` blanks the floor guard | `e3fa17e3e1` | `TestTextDiffP16` |
+| P1-7 a PR writes its own waiver | `e3fa17e3e1` | `TestWaiversFromTheBaseRefP17` |
+| P1-8 unsigned one-way grant under a pinned key | `e3fa17e3e1` | `TestPinnedKeyRequiresEverySignatureP18` |
+| P1-9 block-scalar identity points | `45f6166a4d` | `OneFrontmatterReader`, `test_folded_identity_points_cannot_restate_another_mission` |
+| P1-10 quarantine sees a smaller composition set | `45f6166a4d` | `test_quarantine_closure`, `test_a_clause_respelled_name_md_is_quarantined_like_the_cli_sees_it` |
+| P1-11 the suite launches the real `claude` | `2d784b3d38` | the tmux lifecycle tests' tripwire; a full suite run with a stub `claude` first on PATH never invoked it |
+| P1-12 missions walk through one-way doors | `186d0dac44` | `tests/test_doctrine_consistency.py` (FREEZE gating, evidence classes, deferred reads) |
+
+The section-5 catalog-wide load cap is now a per-mission ratchet too: every mission carries a
+budget in `scripts/mission-load-budgets.json`, and `validate.py` fails growth past it or slack
+above it (`PerMissionLoadBudgets`, `test_main_runs_the_load_budget_gate`).
+
+P2 and section-5 items, by child issue: #612–#614 `28ddb4a25e`; #615–#617 `77720a1c71`; #618–#619
+`c487edeff8`; #620–#621 `e3fa17e3e1`; #622–#623 `45f6166a4d`; #624–#625 `2d784b3d38`;
+#626–#627 `186d0dac44` (P2-41's pin record: `186d0dac44` and gate 5 in `45f6166a4d`); #628
+`af2a9d41cc` (the showreel moved to the v0.7.1 Release assets) with the D8/D9 notes in
+`e3fa17e3e1` and the trailer check in `c487edeff8`.
+
+Settings changed on the owner's instruction (not in the tree): a `v*` tag ruleset restricting
+creation, moves and deletion to the admin role (ruleset 25710508), and `pinned-demo` added to
+`main`'s required checks. The vf-bench guard surface and one count assertion were waived on
+`main` by one-way human grants first (#630), because the fixed floor guard reads waivers only
+from the base ref; the fix set retires those twelve waivers as it lands.
+
+Not closed here, each with its reason:
+
+- `verdict` is still satisfied by a skipped run until the dedicated-app `verdict-gate` identity
+  is activated (#594): that needs a GitHub App created in the web UI and its private key stored
+  as an environment secret, which is the owner's step.
+- No approving review is required on `main`: the owner is the sole collaborator and GitHub
+  does not let an author approve their own PR, so requiring one would block every merge.
+- The deny-hook still parses rather than executes shell (#598): launchers outside the peeled
+  set, deferred execution (`trap`, aliases, variables as commands) and script files remain.
+- vf-bench samples the counting runners and the hook now; the rest of section 5's unsampled
+  list stays with #600.

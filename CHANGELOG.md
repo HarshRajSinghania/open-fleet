@@ -26,7 +26,8 @@ truth is `.claude-plugin/plugin.json`.
     one-way line, signed over `ts` and class; routine post-merge teardown is not the deletion door.
   - Validator: one frontmatter reader (block scalars, full-length caps); one composition set for
     quarantine across validate, preflight and the CLI; misspelt clause tokens, hidden mission
-    dirs and one-point paraphrases fail; `bundle.py --out` never deletes what it did not write.
+    dirs and one-point paraphrases fail; each mission has its own activation-load budget under
+    the 34,000 cap; `bundle.py --out` never deletes what it did not write.
   - Suite and scripts: tmux workers carry the spawner's `PATH`, and the lifecycle test fails
     closed on any real agent; the suite runs green on macOS; watchdog fails loud on missing
     timestamps and skips pending CI; diff_scope counts both sides of a rename; chain_check

@@ -87,6 +87,17 @@ class ValidatePyRunsEveryGate(unittest.TestCase):
         self.assert_reported(run, "FAIL quarantine",
                              "composes quarantined playbook build-change")
 
+    def test_main_runs_the_load_budget_gate(self):
+        def squeeze(text):
+            data = json.loads(text)
+            data["budgets"]["root-cause"] = 1000
+            return json.dumps(data)
+
+        with self.edited("scripts/mission-load-budgets.json", squeeze):
+            run = self._validate()
+        self.assert_reported(run, "FAIL activation-load budgets",
+                             "root-cause: activation load")
+
     def test_main_runs_the_eval_gate(self):
         with self.edited("evals/routing.json", lambda _old: "{ not json"):
             run = self._validate()

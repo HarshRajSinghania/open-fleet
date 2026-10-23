@@ -30,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WIDTH_RE = re.compile(r"(?:def |class |async def |[A-Z_]+ =)")
 BASELINE_WIDTH = 73
-PINNED_WIDTH = 69  # 64 after RV-D1, +4 #512, +3 full-review, +1 #558, -3 identity engine to _identity.py
+PINNED_WIDTH = 70  # 64 after RV-D1, +4 #512, +3 full-review, +1 #558, -3 identity engine to _identity.py, +1 #622 load budgets
 
 
 def interface_width(path):

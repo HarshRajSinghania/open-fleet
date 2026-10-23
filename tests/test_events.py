@@ -11,6 +11,7 @@ The two committed fixture streams (tests/fixtures/events/) are built by `scenari
 timestamps in those functions, not by running the tool.
 """
 import calendar
+import importlib
 import importlib.util
 import json
 import os
@@ -720,7 +721,7 @@ class TestIngest(Base):
     def store(self):
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
-        from runtime.providers.local_state import LocalStateStore
+        LocalStateStore = importlib.import_module("runtime.providers.local_state").LocalStateStore
         db = self.tmp / "runtime.db"
         store = LocalStateStore(db, env={})
         ten = calendar.timegm((2026, 10, 20, 10, 0, 0))  # 2026-10-20T10:00:00Z as the DB stores it

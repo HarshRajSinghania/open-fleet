@@ -6,6 +6,33 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Coordinator git reads neutralise repository-config command execution** (#629). Global and
+  system config were already off, but a worker that can write its worktree's `.git/config` (and
+  `.git/info/attributes`) could still get a command run on the COORDINATOR the next time a gate
+  diffed or read its work: a `filter.<driver>.clean/smudge/process` selected through
+  `.gitattributes`, a `diff.<driver>.textconv`/`command`, `diff.external`, `core.fsmonitor`, a
+  hook, or a `refs/replace`/graft rewriting what a read resolves. The fix hardens the one shared
+  git executor and the two gates that inline it:
+  - `gitexec.env()` (floor_guard, decisions, inventory, evidence-run, preflight) now pins
+    `core.hooksPath=/dev/null`, `diff.external=` and `GIT_GRAFT_FILE=/dev/null` on top of the
+    existing `core.fsmonitor=false` / `protocol.ext.allow=never` / replace-objects-off belt, at
+    command-line precedence over repo config. `diff_scope.py`'s and `verify.py`'s inlined copies
+    mirror it (they load into the signed verifier toolchain, so they cannot import the sibling).
+  - `gitexec.driver_blanks(repo)` closes the attribute-selected filter/textconv channel a fixed
+    `-c` cannot name — `-c` cannot enumerate an unknown `<driver>`, and `$GIT_DIR/info/attributes`
+    outranks any `--attr-source`. It reads the driver names the repo's OWN config declares (the
+    only source of such a command) and blanks each. floor_guard's and diff_scope's working-tree
+    diffs, and verify.py's negative-control `worktree add` / `checkout` / `write-tree`, pass its
+    tokens; reads of committed objects alone (inventory, decisions `--pin-ref`) never select a
+    filter and skip it. `wtree.sh` gets the same env belt and driver blanks (its `add -A` and
+    `write-tree` ran a selected filter and `core.fsmonitor`); its attribute-selected filters are
+    blanked, while global/system config stays in force so a committed tree still fingerprints
+    faithfully.
+  - RED-before / GREEN-after with a mutation control per gate in
+    `tests/test_gitexec_config_commands.py` and `tests/test_verify.py`
+    (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with
+    them in force it never does. `verify.py`'s guarded lines and interface width are unchanged
+    (the new logic is an `_Authority` classmethod).
 - **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
   first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
   a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry

@@ -343,9 +343,11 @@ Changed set = committed diff vs merge base + working tree + untracked files, eve
 with `--no-renames` so a move counts as its delete AND its add (a file moved out of
 `db/migrate/` still earns `MIGRATIONS`). git is resolved once to an absolute path and run under
 `runtime/scripts/gitexec.py`'s whole floor, inlined (no global or system config,
-`safe.directory=*`, fsmonitor, `ext::` and replacement objects off), plus the diff-rendering
-pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert under `-z --name-only`);
-`tests/test_diff_scope.py` pins the copy to `runtime/scripts/gitexec.py:HARDENED`. Twelve
+`safe.directory=*`, fsmonitor, hooks, external diff, `ext::`, replacement objects and grafts
+off), plus the diff-rendering pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert
+under `-z --name-only`) and, on the working-tree diff, the declared filter/diff driver commands
+blanked (`_driver_blanks`, #629); `tests/test_diff_scope.py` pins the copy to
+`runtime/scripts/gitexec.py:HARDENED`. Twelve
 independent flags: `FRONTEND`, `BACKEND`, `PROMPTS`, `TESTS`, `DOCS`, `CONFIG`,
 `MIGRATIONS`, `API`, `AUTH`, `SECURITY`, `A11Y`, `PERF` — path signals plus working-tree
 content signals (capped at 256 KiB per file; deleted files contribute path signals only).
@@ -544,32 +546,51 @@ differs from the store) · 2 usage or store error.
 Single git resolution rule and hardened git environment for the read-side tools
 (`runtime/scripts/inventory.py`, `runtime/scripts/evidence-run.py`,
 `runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`). Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-37`; behavior pinned by `tests/test_inventory.py`,
-`tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`, and
-`tests/test_diff_scope.py`.
+Source `runtime/scripts/gitexec.py:1-137`; behavior pinned by `tests/test_inventory.py`,
+`tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`,
+`tests/test_diff_scope.py`, and `tests/test_gitexec_config_commands.py`.
 
-API: `argv`, `env`.
+API: `argv`, `env`, `driver_blanks`.
 
 `argv(*args)` prepends the absolute path resolved once at import (`GIT`) and raises `GitAbsent`
 (a `FileNotFoundError`) when no `git` binary was on `PATH`; `env()` returns the caller's
-environment hardened with `GIT_NO_REPLACE_OBJECTS=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
-`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, and command-line config overrides
-(`core.fsmonitor=false`, `protocol.ext.allow=never`, `safe.directory=*`) while stripping
-`GIT_EXTERNAL_DIFF` and inherited `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs. It pins no
-diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that parses a diff, passes
-`diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its own argv
-(`runtime/scripts/floor_guard.py:DIFF_RENDERING`). `runtime/scripts/diff_scope.py` inlines this
-floor rather than importing the module, and `tests/test_diff_scope.py` holds the copy to
+environment hardened with `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, and command-line
+config overrides (`core.fsmonitor=false`, `protocol.ext.allow=never`, `safe.directory=*`,
+`core.hooksPath=/dev/null`, `diff.external=`) while stripping `GIT_EXTERNAL_DIFF` and inherited
+`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs. Those command-line overrides close every
+command-bearing repository-config key that has a FIXED name: a worker's own `.git/config`
+`core.fsmonitor` (a program git runs on `status`/`add`), its hooks (`post-checkout` on a
+`worktree add` / `checkout <paths>` among them), its external-diff program, the `ext::`
+transport, and — with the two object-rewrite env vars — a planted `refs/replace`/graft (#629).
+
+`driver_blanks(repo)` closes the remaining channel a fixed `-c` cannot: a
+`filter.<driver>.clean/smudge/process` or `diff.<driver>.textconv`/`command` git runs when a
+`.gitattributes` (or `$GIT_DIR/info/attributes`, which outranks any `--attr-source`) line selects
+`<driver>`. `-c` cannot enumerate an unknown `<driver>`, so it reads the driver names the repo's
+OWN config declares — the only source of such a command — and returns `-c <key>=` tokens blanking
+each (empty value = git runs no command, passing content through). A read that MATERIALISES
+working-tree content passes its tokens; a read of committed objects alone selects no filter and
+skips it. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
+parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
+own argv (`runtime/scripts/floor_guard.py:DIFF_RENDERING`). `runtime/scripts/diff_scope.py`
+inlines this floor (`_git_env` and `_driver_blanks`) rather than importing the module, and
+`runtime/scripts/verify.py`'s `_Authority` mirrors it — both load into the signed verifier
+toolchain, so they copy rather than import; `tests/test_diff_scope.py` holds the copy to
 `runtime/scripts/gitexec.py:HARDENED`.
 
 Exits: n/a (library).
 
 > Why: read-side tools inspect repositories they do not own, where a worker-planted `./bin/git`,
-> a repo-local `core.fsmonitor` hook, or a `refs/replace/` ref could hijack a bare `git` call.
-> Resolving `runtime/scripts/gitexec.py:GIT` once at import (and raising
-> `runtime/scripts/gitexec.py:GitAbsent` when missing) plus overriding repo-local config via
-> `runtime/scripts/gitexec.py:env` keeps read-side git queries deterministic without joining the
-> signed verifier toolchain.
+> a repo-local `core.fsmonitor` hook, a selected clean/smudge filter, or a `refs/replace/` ref
+> could hijack a bare `git` call or run a command on the coordinator. Resolving
+> `runtime/scripts/gitexec.py:GIT` once at import (and raising
+> `runtime/scripts/gitexec.py:GitAbsent` when missing), overriding repo-local config via
+> `runtime/scripts/gitexec.py:env`, and blanking attribute-selected driver commands via
+> `runtime/scripts/gitexec.py:driver_blanks` keeps read-side git queries deterministic without
+> joining the signed verifier toolchain. `runtime/scripts/wtree.sh` carries the same belt and
+> blanks for its `add -A`/`write-tree` fingerprint, leaving global/system config in force so a
+> commit's tree still fingerprints faithfully (#629).
 
 ## `guard_text.py`
 

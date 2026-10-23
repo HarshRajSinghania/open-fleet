@@ -157,7 +157,11 @@ inherited `OPEN_FLEET_UNIT_CLASS` could downgrade a class the coordinator set as
   failed to run", Vitest's "Failed Suites") is a stillborn mutant even when the summary counts
   it as `N failed`, and even beside an assertion failing in another test: the control must leave
   the code loadable. The source repository's git hooks never run (`core.hooksPath=/dev/null` on
-  every verifier git leg), and the bind is re-read from the sealed control tree itself, the
+  every verifier git leg), and no repository-config command the worker planted runs either: a
+  `core.fsmonitor`, an external diff, and a `filter.<driver>.clean/smudge`/`diff.<driver>.textconv`
+  a `.gitattributes` selects are all neutralised before the control's `worktree add`/`checkout`/
+  `write-tree` materialises worker content (#629), so the only worker code the verifier runs is
+  the bound command itself. The bind is re-read from the sealed control tree itself, the
   object the control phase checks out. Fail-closed on anything
   else too: a tool with no replay, a missing command/paths, a git error, a control that changes
   nothing, or a command that passes under the control ("tautological — the proof does not go RED"). It is **REQUIRED** in the two review-waiver

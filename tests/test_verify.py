@@ -6118,5 +6118,64 @@ class VerifierDocsMatchTheCode(unittest.TestCase):
         self.assertIn("--nc-command", doc)
 
 
+class ConfigFilterNeverRunsInTheControl(MutationFixture):
+    """#629: `worktree add` and `checkout <base> -- <paths>` MATERIALISE worker content, running a
+    repo-config clean/smudge filter a `.gitattributes` (or, as here, `$GIT_DIR/info/attributes`,
+    which `--attr-source` cannot override) selects — the one channel git_env's fixed belt and the
+    `--no-textconv`/`--no-ext-diff` flags cannot close. The negative control runs the worker's own
+    test, so this would be a command running on the verifier BEFORE that, out of a key git.py's
+    global/system scrub leaves in force. _Authority.driver_blanks closes it; this drives the full
+    `--execute-nc` flow and requires the planted filter never fires."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.marker = Path(marks.name) / "filter-fired"
+        self.probe = Path(marks.name) / "probe.sh"
+        # `cat` passthrough: the smudged content is unchanged, so app.py still reads `return 2` at
+        # head and the proof passes; the revert control still goes RED. The probe only records.
+        self.probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\ncat\n",
+                             encoding="utf-8")
+        self.probe.chmod(0o755)
+        for key in ("filter.p.clean", "filter.p.smudge"):
+            self.git("config", key, f"{self.probe} {key}")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py filter=p\n", encoding="utf-8")
+
+    def _positive_control(self):
+        """A bare `git worktree add` at head_sha: the planted filter fires for any git that does
+        not blank the driver command, so the GREEN assertion below is not vacuous."""
+        probe_dir = Path(tempfile.mkdtemp(prefix="orca-filter-probe-"))
+        self.addCleanup(shutil.rmtree, probe_dir, True)
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(probe_dir / "wt"),
+                        self.head_sha], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "worktree", "remove", "--force", str(probe_dir / "wt")],
+                       cwd=self.repo, check=True, capture_output=True)
+        self.assertTrue(self.marker.exists(),
+                        "the planted clean/smudge filter did not fire on bare git")
+        self.marker.unlink()
+
+    def test_the_executed_control_runs_no_planted_filter(self):
+        self._positive_control()
+        rc, out, err = self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                                      "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertEqual(rc, 0, out + err)
+        self.assertFalse(self.marker.exists(),
+                         "a repo-config filter ran inside a verifier git leg (#629)")
+
+    def test_mutation_control_without_the_blanks_the_filter_fires(self):
+        self._positive_control()
+        with mock.patch.object(verify._Authority, "driver_blanks",
+                               classmethod(lambda cls, repo: [])):
+            self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                           "--lighting", "dark-eligible",
+                           "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertTrue(self.marker.exists(),
+                        "control: with the driver blanks removed the filter must fire")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

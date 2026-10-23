@@ -30,6 +30,70 @@ truth is `.claude-plugin/plugin.json`.
     is also refused until the registration records an authorised cap.
   - No mission, budget, cap or proof tier changes, and no 5,000-token target is set.
 
+- **Coordinator git reads neutralise repository-config command execution** (#629). Global and
+  system config were already off, but a worker that can write its worktree's `.git/config` (and
+  `.git/info/attributes`) could still get a command run on the COORDINATOR the next time a gate
+  diffed or read its work: a `filter.<driver>.clean/smudge/process` selected through
+  `.gitattributes`, a `diff.<driver>.textconv`/`command`, `diff.external`, `core.fsmonitor`, a
+  hook, or a `refs/replace`/graft rewriting what a read resolves. The fix hardens the one shared
+  git executor and the two gates that inline it:
+  - `gitexec.env()` (floor_guard, decisions, inventory, evidence-run, preflight) now pins
+    `core.hooksPath=/dev/null`, `diff.external=` and `GIT_GRAFT_FILE=/dev/null` on top of the
+    existing `core.fsmonitor=false` / `protocol.ext.allow=never` / replace-objects-off belt, at
+    command-line precedence over repo config. `diff_scope.py`'s inlined copy mirrors it;
+    `verify.py`'s `_Authority` keeps its own belt and a `driver_blanks` mirror, since every
+    verifier git leg runs its custody-pinned git under a scrubbed environment. `gitexec.py` is
+    in the signed verifier toolchain since #608, so this change moves its toolchain hash.
+  - `gitexec.driver_blanks(repo)` closes the attribute-selected filter/textconv channel a fixed
+    `-c` cannot name — `-c` cannot enumerate an unknown `<driver>`, and `$GIT_DIR/info/attributes`
+    outranks any `--attr-source`. It reads the driver names the repo's OWN config declares (the
+    only source of such a command) and blanks each. floor_guard's and diff_scope's working-tree
+    diffs, and verify.py's negative-control `worktree add` / `checkout` / `write-tree`, pass its
+    pairs as appended `GIT_CONFIG_KEY_n`/`VALUE_n` env entries, read from the config as BYTES so a
+    name holding `0xff`, an invalid UTF-8 sequence or an `=` is blanked as itself (a text decode or
+    a `-c <key>=` token named a different driver; PR #649 review). Each declared filter is
+    neutralised whole — commands blank and `required=false` — since git dies on a required filter
+    that runs nothing, which let a planted `required=true` (or a local Git LFS) stop every gate
+    (PR #649 review); the gate reads the working-tree bytes as they are. Reads of committed
+    objects alone (inventory, decisions `--pin-ref`) never select a filter and skip it. Every
+    gate reads the drivers in the same directory and ref state as the git call that could run
+    them: verify.py creates its control worktree `--no-checkout` and reads that worktree's own
+    config before populating it, because an `includeIf "gitdir:**/worktrees/**"` can declare a
+    filter only in a linked worktree (PR #649 review).
+  - The neutralised set covers merge drivers too: a repo `merge.<driver>.driver`, selected by a
+    `merge=<driver>` attribute, runs when git 3-way-merges a path — reachable through
+    `git merge-tree` (diff_scope's predict_merge, and `wtree.sh predict-merge`). `driver_blanks`
+    overrides `merge.<driver>.driver` to `exit 1`, a shell builtin that runs no repository
+    command and fails the merge closed, so the gate reads a conflict rather than running the
+    driver; `merge.<driver>.recursive` is covered because its inner driver's own `.driver` is
+    enumerated. verify.py's control revert/apply/checkout legs carry the override too, though a
+    linear in-order range revert is trivial per step and verify refuses a non-linear range, so
+    that leg cannot in fact be driven to a merge (PR #649 review).
+  - The driver list fails closed: an empty list means only "no driver declared" (git answers an
+    empty valid config with exit 0 and no output), while a config query that errors, times out,
+    exits non-zero or prints unparseable output stops the gate in its own terms — floor_guard
+    could-not-run, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` no
+    fingerprint — instead of running its content-reading git command with every planted driver
+    live (PR #649 review). wtree.sh's `$(git ... | tr ...)` had also hidden git's exit status.
+  - `wtree.sh` gets the same env belt and driver blanks (its `add -A` and `write-tree` ran a
+    selected filter and `core.fsmonitor`), built as `env(1)` arguments rather than shell code. It
+    blanks only drivers the REPOSITORY declares; global/system config stays in force, so the
+    coordinator's own filters (a global Git LFS) still keep the fingerprint exact. A file a
+    repo-declared driver filters keeps its fingerprint while its stat is unchanged, but once it is
+    re-staged its bytes cannot be compared to the committed tree without running that driver. So
+    wtree.sh exits 3 with the reason rather than print a value that would read as STALE (PR #649
+    review); `evidence-run.py` records it as `wtree_unverifiable`, and `verify.py check_commands`
+    refuses the record as UNVERIFIABLE with that reason. The coordinator's clean-env re-run at
+    `head_sha` decides such a unit.
+  - No gate hands git its own stdin: every gitexec-routed call (floor_guard, diff_scope,
+    decisions, inventory, evidence-run, preflight), verify.py's `_run`/`_run_bytes`/`_run_at`
+    and `wtree.sh` pass `/dev/null`, so a hook, filter or git itself can never block a gate on
+    an inherited pipe that never closes.
+  - RED-before / GREEN-after with a mutation control per gate in
+    `tests/test_gitexec_config_commands.py` and `tests/test_verify.py`
+    (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with
+    them in force it never does. `verify.py`'s guarded lines and interface width are unchanged
+    (the new logic is an `_Authority` classmethod).
 - **One fenced conductor per BASE now merges, from a persisted queue** (#599). Merge serialization
   was doctrine only: two coordinators could merge onto one BASE, and a conductor that crashed
   mid-train left no record of what it had sent. `runtime/scripts/merge_queue.py` is now the merge

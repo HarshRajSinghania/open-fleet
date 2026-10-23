@@ -247,12 +247,15 @@ def _text(raw):
     return raw.decode("utf-8", "replace")
 
 
-def git(repo, *args):
-    """Run git with argv only. Returns stdout, or None when git exits non-zero."""
+def git(repo, *args, blanks=()):
+    """Run git with argv only. Returns stdout, or None when git exits non-zero. ``blanks`` are
+    gitexec.driver_blanks pairs, carried in the env so a driver name reaches git byte-exact."""
     try:
+        # No stdin (#629): an inherited, never-closed one would let a hook or filter block the guard.
         r = subprocess.run(
             gitexec.argv("-C", str(repo), *args),
-            capture_output=True, timeout=60, env=gitexec.env(),
+            capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
@@ -310,7 +313,18 @@ def collect_diff(repo, mb):
     """
     diff_options = ("--no-ext-diff", "--no-textconv", "--no-renames", "--text", "--no-color",
                     "--unified=0")
-    tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--")
+    # A diff of the working tree runs a repo-config clean/smudge filter that a .gitattributes
+    # line selects — the exec channel --no-ext-diff/--no-textconv do NOT close (#629). Blank
+    # every filter/diff driver command the repo declares (the only place such a command lives)
+    # before any diff that touches a worktree file.
+    try:
+        blanks = gitexec.driver_blanks(repo)
+    except gitexec.DriverQueryFailed as err:
+        # An unreadable driver list is could-not-run, never "no drivers": diffing with nothing
+        # blanked would run every planted filter (PR #649 review).
+        raise GuardError(f"cannot read the repository's driver config, so its filter commands "
+                         f"cannot be neutralised: {err}") from err
+    tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--", blanks=blanks)
     if tracked is None:
         raise GuardError("tracked/staged diff acquisition failed")
     others = git(repo, "ls-files", "-z", "--others", "--exclude-standard")
@@ -324,9 +338,10 @@ def collect_diff(repo, mb):
         # go through subprocess directly rather than git() (which returns None).
         try:
             r = subprocess.run(
-                gitexec.argv("-C", str(repo), *DIFF_RENDERING, "diff", "--no-index", *diff_options,
-                             "--", "/dev/null", name),
-                capture_output=True, timeout=60, env=gitexec.env(),
+                gitexec.argv("-C", str(repo), *DIFF_RENDERING, "diff", "--no-index",
+                             *diff_options, "--", "/dev/null", name),
+                capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
+                stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError) as err:
             raise GuardError("untracked diff acquisition failed to run") from err

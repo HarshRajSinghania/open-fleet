@@ -24,7 +24,11 @@ One record is appended to the manifest's `commands[]`:
   - `wtree` is `wtree.sh`'s working-tree content fingerprint — the freshness key. verify.py
     requires an exit-0 record whose `wtree` equals `git rev-parse <head_sha>^{tree}`, i.e. the run
     happened on exactly the content the head commit carries. A record made on other content is
-    STALE and does not certify the head.
+    STALE and does not certify the head;
+  - `wtree_unverifiable` appears only when wtree.sh exits 3: a changed path is filtered by a
+    driver the REPOSITORY declares, whose command the coordinator never runs, so its content
+    cannot be compared to the committed tree (#629, PR #649 review). `wtree` is then null, and
+    verify.py's commands check reports the run as UNVERIFIABLE with this reason, not as STALE.
 
 The manifest is created (`{"commands": []}`) if absent, so a unit can start recording before it has
 anything else to say. A zero-length manifest, absent or pre-existing-empty, reads as a new ledger.
@@ -74,7 +78,7 @@ def warn(msg):
 def git_out(args, cwd):
     try:
         p = subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, text=True,
-                           timeout=30, check=False, env=gitexec.env())
+                           timeout=30, check=False, env=gitexec.env(), stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError) as err:
         return None, str(err)
     if p.returncode != 0:
@@ -82,17 +86,30 @@ def git_out(args, cwd):
     return p.stdout.strip(), None
 
 
+class WtreeUnverifiable(str):
+    """wtree.sh's exit-3 reason: a changed path is filtered by a repository-declared driver, so its
+    content cannot be compared to the committed tree without running that repository's command
+    (#629, PR #649 review). A str, so every caller that prints the error keeps working; its type is
+    what tells "unverifiable" from "no fingerprint for some other reason"."""
+
+
+WTREE_UNVERIFIABLE_EXIT = 3
+
+
 def working_tree_fingerprint(cwd):
-    """`wtree.sh` — the content fingerprint the freshness check binds to."""
+    """`wtree.sh` — the content fingerprint the freshness check binds to. Returns (tree, None),
+    or (None, reason); the reason is a WtreeUnverifiable when wtree.sh exited 3."""
     script = HERE / "wtree.sh"
     if not script.exists():
         return None, f"{script} is missing"
     try:
         p = subprocess.run(["sh", str(script), str(cwd)], capture_output=True, text=True,
-                           timeout=120, check=False)
+                           errors="replace", timeout=120, check=False, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError) as err:
         return None, str(err)
     out = p.stdout.strip()
+    if p.returncode == WTREE_UNVERIFIABLE_EXIT:
+        return None, WtreeUnverifiable(p.stderr.strip() or "wtree.sh: unverifiable working tree")
     if p.returncode != 0 or not out:
         return None, (p.stderr.strip() or "no fingerprint (not a git repo, or no commits)")
     return out, None
@@ -275,7 +292,12 @@ def main(argv=None):
     # behind. Run from a CLEAN tree at head_sha and this equals `git rev-parse <head_sha>^{tree}`,
     # which is exactly what verify.py's commands check demands.
     wtree, err = working_tree_fingerprint(cwd)
-    if err:
+    unverifiable = str(err) if isinstance(err, WtreeUnverifiable) else None
+    if unverifiable:
+        warn(f"no working-tree fingerprint recorded: {unverifiable} — verify.py's commands check "
+             "will refuse this record as UNVERIFIABLE, and the coordinator's clean-env re-run at "
+             "head_sha decides the unit")
+    elif err:
         warn(f"no working-tree fingerprint recorded: {err} — verify.py's commands check will treat "
              "this record as STALE")
 
@@ -297,6 +319,7 @@ def main(argv=None):
         "commit": commit,
         "wtree": wtree,
         "artifact": os.fspath(artifact) if artifact else None,
+        **({"wtree_unverifiable": unverifiable} if unverifiable else {}),
     })
     return code
 

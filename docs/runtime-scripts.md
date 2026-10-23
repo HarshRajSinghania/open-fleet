@@ -393,9 +393,11 @@ Changed set = committed diff vs merge base + working tree + untracked files, eve
 with `--no-renames` so a move counts as its delete AND its add (a file moved out of
 `db/migrate/` still earns `MIGRATIONS`). git is resolved once to an absolute path and run under
 `runtime/scripts/gitexec.py`'s whole floor, inlined (no global or system config,
-`safe.directory=*`, fsmonitor, `ext::` and replacement objects off), plus the diff-rendering
-pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert under `-z --name-only`);
-`tests/test_diff_scope.py` pins the copy to `runtime/scripts/gitexec.py:HARDENED`. Twelve
+`safe.directory=*`, fsmonitor, hooks, external diff, `ext::`, replacement objects and grafts
+off), plus the diff-rendering pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert
+under `-z --name-only`) and, on the working-tree diff, the declared filter/diff driver commands
+blanked (`_driver_blanks`, #629); `tests/test_diff_scope.py` pins the copy to
+`runtime/scripts/gitexec.py:HARDENED`. Twelve
 independent flags: `FRONTEND`, `BACKEND`, `PROMPTS`, `TESTS`, `DOCS`, `CONFIG`,
 `MIGRATIONS`, `API`, `AUTH`, `SECURITY`, `A11Y`, `PERF` — path signals plus working-tree
 content signals (capped at 256 KiB per file; deleted files contribute path signals only).
@@ -801,33 +803,72 @@ differs from the store) · 2 usage or store error.
 Single git resolution rule and hardened git environment for the read-side tools
 (`runtime/scripts/inventory.py`, `runtime/scripts/evidence-run.py`,
 `runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`). Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-39`; behavior pinned by `tests/test_inventory.py`,
-`tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`, and
-`tests/test_diff_scope.py`.
+Source `runtime/scripts/gitexec.py:1-62`; behavior pinned by `tests/test_inventory.py`,
+`tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`,
+`tests/test_diff_scope.py`, and `tests/test_gitexec_config_commands.py`.
 
-API: `argv`, `env`.
+API: `argv`, `env`, `driver_blanks`.
 
 `argv(*args)` prepends the absolute path resolved once at import (`GIT`) and raises `GitAbsent`
 (a `FileNotFoundError`) when no `git` binary was on `PATH`; `env()` returns the caller's
-environment hardened with `GIT_NO_REPLACE_OBJECTS=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
-`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, and command-line config overrides
-(`core.fsmonitor=false`, `protocol.ext.allow=never`, `safe.directory=*`) while stripping
-`GIT_EXTERNAL_DIFF` and inherited `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs. It pins no
-diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that parses a diff, passes
-`diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its own argv
-(`runtime/scripts/floor_guard.py:DIFF_RENDERING`). `runtime/scripts/diff_scope.py` inlines this
-floor rather than importing the module, and `tests/test_diff_scope.py` holds the copy to
-`runtime/scripts/gitexec.py:HARDENED`.
+environment hardened with `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, and command-line
+config overrides (`core.fsmonitor=false`, `protocol.ext.allow=never`, `safe.directory=*`,
+`core.hooksPath=/dev/null`, `diff.external=`) while stripping `GIT_EXTERNAL_DIFF` and inherited
+`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs. Those command-line overrides close every
+command-bearing repository-config key that has a FIXED name: a worker's own `.git/config`
+`core.fsmonitor` (a program git runs on `status`/`add`), its hooks (`post-checkout` on a
+`worktree add` / `checkout <paths>` among them), its external-diff program, the `ext::`
+transport, and — with the two object-rewrite env vars — a planted `refs/replace`/graft (#629).
+
+`driver_blanks(repo)` closes the remaining channel a fixed `-c` cannot: a
+`filter.<driver>.clean/smudge/process`, a `diff.<driver>.textconv`/`command`, or a
+`merge.<driver>.driver` git runs when a `.gitattributes` (or `$GIT_DIR/info/attributes`, which
+outranks any `--attr-source`) line selects `<driver>`. `-c` cannot enumerate an unknown
+`<driver>`, so it reads the driver names the repo's OWN config declares — the only source of such
+a command — and returns `(key, value)` pairs that neutralise each: a declared filter gets
+`clean`/`smudge`/`process` blank AND `required=false` (git dies on a required filter that runs
+nothing — blanked, or with no command declared — so blanking alone let a planted `required=true`
+stop every gate; PR #649 review), a `diff.<driver>` gets its `textconv`/`command` blank, and a
+declared merge driver gets `merge.<driver>.driver` overridden to `exit 1` — a shell builtin that
+runs no repository command and fails the merge closed, so a `git merge-tree` (diff_scope's
+predict_merge, and `wtree.sh predict-merge`) or a control 3-way merge reads a conflict instead of
+running the driver; this covers `merge.<driver>.recursive` too, since its named inner driver's own
+`merge.<driver>.driver` is enumerated and overridden. git then runs no command and passes the
+working-tree bytes through as they are. A caller passes them as
+`env(blanks=...)`: appended GIT_CONFIG_KEY_n/VALUE_n pairs, never `-c <key>=` argv, which splits a
+name holding `=` at its first `=` and blanks a different key. The config is read as bytes and each
+key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any
+bytes git accepts (`0xff`, an invalid UTF-8 sequence) and an attribute selects exactly those; a
+text decode named a different driver (PR #649 review). A read that MATERIALISES working-tree
+content passes its pairs; a read of committed objects alone selects no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, and `wtree.sh` exit 1 with no fingerprint. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+`stdin=subprocess.DEVNULL`, as `driver_blanks` does, so a hook, filter or git itself never
+waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
+parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
+own argv (`runtime/scripts/floor_guard.py:DIFF_RENDERING`). `runtime/scripts/diff_scope.py`
+inlines this floor (`_git_env` and `_driver_blanks`) rather than importing the module, and
+`tests/test_diff_scope.py` holds that copy to `runtime/scripts/gitexec.py:HARDENED`.
+`runtime/scripts/verify.py`'s `_Authority` keeps its own `git_env` and a `driver_blanks` mirror:
+every verifier git leg runs the custody-classed git it pinned at startup under its scrubbed
+environment, where this module runs `GIT` under the caller's whole environment.
+`tests/test_gitexec_config_commands.py` holds both `driver_blanks` copies to this one.
 
 Exits: n/a (library).
 
 > Why: read-side tools inspect repositories they do not own, where a worker-planted `./bin/git`,
-> a repo-local `core.fsmonitor` hook, or a `refs/replace/` ref could hijack a bare `git` call.
-> Resolving `runtime/scripts/gitexec.py:GIT` once at import (and raising
-> `runtime/scripts/gitexec.py:GitAbsent` when missing) plus overriding repo-local config via
-> `runtime/scripts/gitexec.py:env` keeps read-side git queries deterministic. Since #608 the module
-> is part of the signed verifier toolchain (`runtime/scripts/verify.py:_Transcript`): verify.py
-> loads `runtime/scripts/inventory.py` to check a retention receipt, and that loads this module.
+> a repo-local `core.fsmonitor` hook, a selected clean/smudge filter, or a `refs/replace/` ref
+> could hijack a bare `git` call or run a command on the coordinator. Resolving
+> `runtime/scripts/gitexec.py:GIT` once at import (and raising
+> `runtime/scripts/gitexec.py:GitAbsent` when missing), overriding repo-local config via
+> `runtime/scripts/gitexec.py:env`, and blanking attribute-selected driver commands via
+> `runtime/scripts/gitexec.py:driver_blanks` keeps read-side git queries deterministic.
+> `runtime/scripts/wtree.sh` carries the same belt and blanks for its `add -A`/`write-tree`
+> fingerprint, blanking only repository-declared drivers and leaving global/system config in
+> force; a changed path a repo-declared driver filters is refused as unverifiable (exit 3) rather
+> than fingerprinted from bytes the commit was never built from (#629, PR #649 review). Since #608 the module is part of the signed verifier toolchain
+> (`runtime/scripts/verify.py:_Transcript`): verify.py loads `runtime/scripts/inventory.py` to
+> check a retention receipt, and that loads this module — so a change here changes a toolchain
+> hash, and a signed transcript binds to it at the graded pin like any other sibling.
 
 ## `guard_text.py`
 
@@ -1727,7 +1768,8 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage.
 
 Prints a working-tree CONTENT fingerprint (a git tree hash). Builds a temp index, stages
 the full tree into it, prints `git write-tree` of that index — the real index is never
-touched. Source `runtime/scripts/wtree.sh:1-41`; exercised by `tests/test_evidence_run.py`.
+touched. Source `runtime/scripts/wtree.sh:1-50`; exercised by `tests/test_evidence_run.py` and
+`tests/test_gitexec_config_commands.py`.
 
 Usage: `wtree.sh [repo-dir]` (default: current directory).
 
@@ -1747,8 +1789,23 @@ leaned on ignored content (`.env`, a stale build artifact, a file hidden by
 tree — the fingerprint binds committable content only, and the coordinator's clean-env re-run
 at `head_sha` is what catches such a pass.
 
-Exits: 0 prints the hash · 1 outside a git repo, or no commits and no usable index
-(callers fail closed on nonzero — never treat it as an empty fingerprint).
+Filters and the repository's config (#629, PR #649 review). wtree.sh runs over a worker's
+worktree, so a filter driver the REPOSITORY declares (`--show-scope` local/worktree, includes
+counted in the including file's scope) is blanked and never runs, and the fsmonitor/hooks/replace
+belt is set as for gitexec. A filter from the coordinator's own global or system config is
+trusted and still runs, so a globally installed Git LFS keeps its committed form. The trade-off:
+a file a repo-declared driver filters can be compared to the committed tree only by running that
+driver. While its stat is unchanged, git reuses the index's cleaned blob and the fingerprint is
+exact. Once its stat changes (a touch, an edit), git would re-clean it, and the raw bytes it
+stages instead would make a good run read as STALE. So for any such path staged differently from
+HEAD (found with `diff-index --cached` and `check-attr filter`, which run nothing) wtree.sh exits
+3 with the reason instead of printing a misleading value. `evidence-run.py` records that reason as
+`wtree_unverifiable`, and `verify.py check_commands` refuses the record as UNVERIFIABLE, naming
+the reason, not as STALE. The coordinator's clean-env re-run at `head_sha` decides such a unit.
+
+Exits: 0 prints the hash · 1 outside a git repo, or no commits and no usable index · 3 a path
+staged differently from HEAD is filtered by a repo-declared driver, reason on stderr, nothing on
+stdout (callers fail closed on nonzero — never treat it as an empty fingerprint).
 
 > Why this and not `HEAD^{tree}`: committing identical content must not invalidate a
 > record made on a dirty tree, a new untracked file must invalidate "tests passed", and

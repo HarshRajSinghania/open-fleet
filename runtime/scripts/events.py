@@ -1239,6 +1239,11 @@ def cmd_check(args):
     run_report = _sibling("run_report", "run_report.py")
     derived = derived_cells(report)
     errors, claimed = [], {}
+    if not derived:
+        # Nothing derived and nothing claimed compares clean — and binds nothing, the same
+        # answer report gives through `complete` (PR #638 review, P1).
+        errors.append(f"the record derives no WIP-curve row for run {report['run']}: no "
+                      "wave.open or wave.close was admitted, so there is nothing to check against")
     for row, cells, doubled in run_report._wip_rows(text):
         if doubled:
             errors.append(f"row {row!r} carries {doubled} more than once")

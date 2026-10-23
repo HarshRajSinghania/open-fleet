@@ -780,6 +780,14 @@ class TestCheckAgainstARunReport(Base):
         self.assertIn("wave 2: the record derives a row the report does not carry", proc.stderr)
         self.assertIn("wave 3: the report carries a row for a wave the record never", proc.stderr)
 
+    def test_empty_evidence_does_not_check_clean(self):
+        # PR #638 review (P1): no wave in the record and no row in the report compared nothing,
+        # and nothing compared exited 0.
+        self.write(unit_stream()[:1])
+        proc = self.cli("check", "--run-report", str(self.report_file([])))
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("the record derives no WIP-curve row", proc.stderr)
+
     def test_a_measured_value_the_record_cannot_support_is_detected(self):
         self.write(scenario_crash())
         claimed = [CRASH_ROWS[0].replace("throughput=unavailable", "throughput=2.00/h")]

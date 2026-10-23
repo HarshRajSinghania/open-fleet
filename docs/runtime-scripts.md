@@ -249,8 +249,9 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-152`;
-behavior pinned by `tests/test_deny_hook.py` and `tests/test_deny_hook_multi_harness.py`.
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-165`;
+behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harness.py` and the
+differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
 Usage: hook mode reads stdin (no arguments); `deny-hook.sh --settings <worktree>` prints
 the settings.json registration block with the worktree boundary resolved;
@@ -261,11 +262,18 @@ Flags: `--help`, `--settings`, `--verify-settings`, `--harness`.
 
 Every Bash segment is judged after one peeler strips what launches it — `VAR=`, `env`, `sudo`,
 `doas`, `nohup`, `nice`, `time`, `timeout`, `exec`, `setsid`, `stdbuf`, `ionice`, `chrt`,
-`taskset`, `xargs`, `command`, `builtin`, `(`/`{`/`!`, `if`/`then`/`do`/`while` and case
-patterns, options and operands included — and a `sh -c` or `eval` body is judged as segments of
-its own. Words are quote-removed as the shell does it, ANSI-C `$'…'` decoded, so `$'\x72m'`
-is the `rm` it runs. A target from a variable, a launcher outside that list, or a script file
-stays beyond the text.
+`taskset`, `xargs`, `chroot`, `unshare`, `nsenter`, `strace`, `command`, `builtin`,
+`(`/`{`/`!`, `if`/`then`/`do`/`while` and case patterns, options and operands included. A
+command line that runs later or elsewhere is judged as segments of its own (#598): a `sh -c` or
+`eval` body, a `trap` action, an `alias` value, a `gh alias set --shell` expansion, the string
+or command of `flock`, `su -c`, `runuser`, `script -c`, `watch`, `parallel`, `ssh host cmd` and
+`find -exec`, a literal that `python -c`/`perl -e`/`node -e` code (or a heredoc fed to one)
+hands to `os.system`/`subprocess`, a program fed to a shell on stdin (`echo …`/`printf …`/
+`cat` piped into `sh`, `bash <<EOF`, `bash <<< …`) or written to a file and run in the same
+command, and a command head built from a variable or a substitution — its literal value on the
+line, what `echo` prints, else each refused head in its place. A `gh alias` whose expansion is
+an off-repo write, and `gh alias import`, deny: no receipt can bind the later send. Words are
+quote-removed as the shell does it, ANSI-C `$'…'` decoded, so `$'\x72m'` is the `rm` it runs.
 
 HIGH tier denies (never asks) for Bash: recursive delete rooted at `/`, `~`, `$HOME`, or
 `/*` (or carrying `--no-preserve-root`); force-push to the default branch (including the
@@ -287,7 +295,10 @@ wrapper, run from `<(…)` or `"$(…)"`, or downloaded and then run in the same
 history-discarding local git: `reset --hard`, whole-tree `checkout`/`restore`,
 `checkout`/`switch -f`, a whole-tree `clean -f`, `branch -D/-M/-C/-f`, `update-ref -d`,
 `reflog expire|delete`, `stash drop|clear`, `filter-repo`/`filter-branch`,
-`worktree remove -f`.
+`worktree remove -f`. It reads the segments with their real operators but not what only
+carries text — `echo`/`printf` arguments, a `git -m` or `gh --body`/`--title` message, a
+comment, heredoc data — so `git commit -m "explain why rm -rf / is refused"` is not asked
+about, while `sh -c "rm -r ./build"` and `psql -c "DROP TABLE …"` still are (#598, from #602).
 
 When `ORCA_UNIT_WORKTREE` is set, writes outside it deny — Edit/Write `file_path`,
 NotebookEdit `notebook_path`, and absolute-path Bash redirects and `tee` destinations —
@@ -295,9 +306,37 @@ resolved through the full symlink chain. The self-guard denies, with or without 
 write, redirect, `tee`, `rm`/`mv`/`cp`/`ln`/`install`/`rsync`, `sed -i`/`perl -i`, `truncate`,
 `dd of=`, `sort -o`, `ed`/`ex`/`vim`, `curl -o`/`wget -O`, or `chmod`/`chown`/`chgrp` (bar an
 additive chmod mode) aimed at a hook config (`.claude/settings*.json` or another harness's
-hook file) or at this script, and inline interpreter code (`python -c`, `perl -e`, `node -e`,
-…) naming a guard path beside a write call; `touch` is not guarded. A `grep`, `sed` or `tr`
+hook file), at a pinned trust anchor (`.orca/human-grant-pubkey`, `.orca/dispatch-pubkey`,
+which `decisions.py`, `floor_guard.py`, `verify-gate.sh` and `run_report.py` verify against) or
+at this script, `find … -delete` reaching one, and inline interpreter code (`python -c`,
+`perl -e`, `node -e`, …) naming a guard path beside a write call; `touch` is not guarded and
+reading an anchor stays free. A `grep`, `sed` or `tr`
 that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
+
+Shell grammar and versions (#598). `scripts/deny_hook_corpus.py` differential-tests the
+parser against real bash: each template runs with an inert sentinel in the hole in a throwaway
+directory (PATH holding only the sentinel, `bash`, `cat` and `find`; CPU, file-size and 5 s
+wall limits), while the same hole holding `git push --force origin main` (HIGH),
+`gh issue close 34` (rule 5) or `rm -r -f ./build` (Never list) is only ever fed to the hook.
+The grid covers quote state, backslash parity, continuations, heredoc delimiter quoting,
+spacing and tabs, comments, nested substitutions and the deferred or relaunched forms above;
+seed 598 stacks those contexts. A miss fails CI outright; a false denial is scored apart and
+must be a minimized boundary in `tests/fixtures/deny_hook_conformance.json` (pinned exactly on
+bash 3.2, the recording host; held to a small slack on bash 5.x, where CI runs). Switching off
+each parser safeguard in a copy of the hook must make the corpus disagree with bash (the
+mutation control in the same test module). Supported: POSIX sh and bash 3.2–5.2 command
+grammar, plus bash 5.3 `${ cmd; }` read as a substitution. Deliberately conservative (refused,
+recorded as boundaries): a function body or trap action judged as if called or fired, an alias
+value judged where aliases are not expanded, a quoted `"$c"` head judged by its split value,
+`coproc` read as bash 4+ reads it, a heredoc delimiter word holding `$(`, a delimiter followed
+by `)` inside a substitution (bash 3.2 closes both there), and a comment that swallows a
+substitution's `)`. Unsupported, left to the Never list and the sandbox: a script already on
+disk, a program a download or a decoder produces (`base64 -d | sh` is not read), a shell
+reading a file on stdin (`sh < f`), an alias, function or `gh` alias defined in an EARLIER
+command, interpreter APIs beyond string literals handed to an exec-shaped call, and any value
+computed at run time. Run it with `python3 scripts/deny_hook_corpus.py` (`--random N --both`
+for more cases, `--minimize --write` to store new mismatches, `--hook PATH` to judge another
+copy of the hook, e.g. a mutant or `git show <base>:runtime/scripts/deny-hook.sh`).
 
 Exits: 0 in hook-decision mode — the decision is the output, not the status — except exit 2
 (reason on stderr) for an empty or unparseable payload, a missing or broken `grep`/`sed`/`tr`,

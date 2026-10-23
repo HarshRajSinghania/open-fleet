@@ -6,6 +6,23 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The deny-hook is differential-tested against real bash** (#598). `scripts/deny_hook_corpus.py`
+  runs each generated template with an inert sentinel in a throwaway bash and feeds the same
+  template holding a refused command only to the hook; quote state, backslash parity,
+  continuations, heredoc delimiters, comments, nested substitutions and deferred forms are
+  covered, misses fail CI, false denials are scored apart, every mismatch is a minimized fixture
+  with its bash version and seed, and switching off each parser safeguard is caught. The 43
+  misses it found are closed: trap actions, alias values, gh shell aliases, `flock`/`su`/
+  `runuser`/`script`/`watch`/`parallel`/`ssh`/`find -exec` commands, programs fed to a shell
+  on stdin or written and run in the same command, variable or substitution command heads,
+  interpreter code handing a literal to `os.system`/`subprocess`, nested backticks, newlines in
+  a `-c` body, case patterns in `$( )` and `${ cmd; }` are judged; `chroot`, `unshare`,
+  `nsenter` and `strace` are peeled; a `gh alias` hiding an off-repo write is refused. From
+  #602: a never-list shape only quoted as data (`git commit -m`, `echo`, comments) is no longer
+  asked about, and `.orca/human-grant-pubkey` / `.orca/dispatch-pubkey` are guarded like the
+  hook's own config. Supported shell versions and what stays beyond the text are documented in
+  `docs/runtime-scripts.md`.
+
 ## [0.8.0] - 2026-10-23
 
 - **The project is renamed orca-fleet → open-fleet.** The repository is `ravidsrk/open-fleet`

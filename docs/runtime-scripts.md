@@ -511,7 +511,9 @@ verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the sh
 a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a dispatch into a
 later wave); freshness counts approving reviews (one per reviewer dispatch and head) voided by
 a closing head that moved, unless both trees are recorded and equal. An interval needs one clock, no
-`recovered` endpoint and a non-negative difference. Events recorded under an epoch below the
+`recovered` endpoint and a non-negative difference. Coordinator history must be whole —
+`run.start` at epoch 1, then each `coordinator.resume` at the next epoch — or every metric of
+the run is unavailable. Events recorded under an epoch below the
 declared one (a fenced coordinator) or above it (undeclared) are excluded, as is a reused
 `event_id` that says something different; the metrics they touch report unavailable. What an
 event says (`runtime/scripts/events.py:identity`) leaves out who recorded it (`epoch`) and,

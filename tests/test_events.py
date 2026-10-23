@@ -480,6 +480,29 @@ class TestClocksAndResume(Base):
         report = self.derive(evs)
         self.assertEqual(self.metric(report, 1, "latency_max")["value"], "10.00m")
 
+    def test_missing_run_history_is_unavailable_not_complete(self):
+        # PR #638 review (P2): a record that opens on a resume, a run.start past epoch 1, or a
+        # resume that skips an epoch is missing coordinator history; it must not read complete.
+        def at_epoch(evs, epoch, start=0):
+            for event in evs[start:]:
+                event["epoch"] = epoch
+            return evs
+
+        opens_on_resume = unit_stream()
+        opens_on_resume[0] = ev("coordinator.resume", "10:00:00", data={"coordinator": "c2"}, **ONE)
+        skipped = unit_stream()
+        skipped.insert(4, ev("coordinator.resume", "10:12:00", data={"coordinator": "c3"},
+                             run="r", epoch=3, clock="host-a"))
+        cases = {"opens on a resume": opens_on_resume,
+                 "run.start at epoch 2": at_epoch(unit_stream(), 2),
+                 "resume skips epoch 2": at_epoch(skipped, 3, 5)}
+        for name, evs in cases.items():
+            with self.subTest(name):
+                report = self.derive(evs)
+                self.assertFalse(report["complete"])
+                reasons = self.metric(report, 1, "throughput")["unavailable"]
+                self.assertTrue(any("missing" in r for r in reasons), reasons)
+
     def test_an_undeclared_epoch_is_excluded(self):
         evs = unit_stream()
         evs[5]["epoch"] = 2  # a verdict under an epoch no resume declared

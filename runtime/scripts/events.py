@@ -530,6 +530,15 @@ def screen(events):
                                "declared": declared, "reason": why})
                 taint(event, why)
                 continue
+            # The run's coordinator history must be whole: run.start declares epoch 1, and each
+            # resume the next one. A record opening on a resume, a run.start past 1, or a skipped
+            # epoch is missing history, so the run is unavailable — the declaration is still
+            # admitted, so what follows is read, not fenced (PR #638 review, P2).
+            expected = ("run.start", 1) if declared == 0 else ("coordinator.resume", declared + 1)
+            if (event["kind"], event["epoch"]) != expected:
+                taint(event, f"{event['kind']} declares epoch {event['epoch']} where "
+                             f"{expected[0]} at epoch {expected[1]} was due — coordinator "
+                             "history is missing")
             declared = event["epoch"]
             epochs.append({"epoch": event["epoch"], "kind": event["kind"],
                            "coordinator": event["data"]["coordinator"],

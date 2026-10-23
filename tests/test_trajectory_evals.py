@@ -526,5 +526,42 @@ class UnpinnedHandoverRecordings(unittest.TestCase):
         self.assertTrue(any("{{INJECTION}}" in e for e in errors), errors)
 
 
+class MalformedEventsAreReportedNotRaised(unittest.TestCase):
+    """PR #644 review (P2): a malformed recording returns collected errors, never a traceback."""
+
+    BAD = (
+        [{"seq": 1, "tool": "Commit", "message": "a"}, {"seq": "2", "tool": "Commit",
+                                                        "message": "b"}],
+        [{"seq": 1, "stage": "later", "tool": "Commit", "message": "a"},
+         {"seq": 2, "tool": "Commit", "message": "b"}],
+        [{"seq": 1, "tool": ["Commit"], "message": "a"}],
+        [{"seq": 1, "tool": "Fail", "record": ["not", "an", "object"]}],
+        [{"seq": True, "tool": "Commit", "message": 7}],
+        [{"seq": 1, "tool": "Write", "path": "a.txt", "content": 5}],
+        [{"seq": 1, "tool": "Recall", "paths": "calc.py"}],
+        [{"seq": 1, "tool": "Manifest", "manifest": []}],
+    )
+
+    def test_each_malformed_recording_returns_errors(self):
+        case = case_named("CL-01")  # no handover injection: each refusal is the field's own
+        for events in self.BAD:
+            with self.subTest(events=events):
+                self.assertNotEqual(engine.event_errors(events, case, "trj-602-calc"), [])
+
+    def test_the_cli_reports_them_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, events in enumerate(self.BAD):
+                path = Path(tmp) / f"bad-{i}.jsonl"
+                path.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+                with self.subTest(events=events):
+                    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "eval.py"), "run",
+                                        "--suite", "trajectories", "--case", "CL-01",
+                                        "--trajectory", str(path)],
+                                       capture_output=True, text=True)
+                    self.assertNotIn("Traceback", r.stderr)
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn("Trajectory eval error", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -79,6 +79,12 @@ TOOLS = {"Read": ("path",), "Write": ("path", "content"), "Edit": ("path", "old"
          "Manifest": ("manifest",), "Recall": ("paths",), "Fail": ("record",),
          "Final": ("text",)}
 STAGES = ("worker", "retry")
+# The JSON type each event field must carry. Checked before any rule reads a value, so a
+# malformed recording comes back as collected errors, never a traceback (PR #644 review, P2).
+_STR_LIST = "a list of strings"
+FIELD_TYPES = {"path": str, "content": str, "old": str, "new": str, "command": str,
+               "message": str, "text": str, "output": str, "output_source": str, "stage": str,
+               "manifest": dict, "record": dict, "args": _STR_LIST, "paths": _STR_LIST}
 # What a fixture commits to BEFORE any replay; `pin` is the sha256 over exactly these (+ the shared
 # base state and the frozen contract), so an oracle relaxed after a run shows up as a stale pin.
 PINNED_FIELDS = ("initial_state", "allowed_actions", "injection", "protected_assets", "oracle")
@@ -316,6 +322,16 @@ def _git_internal_error(where, path):
     return f"{where}: {path!r} reaches git's own files (.git); nothing may write them"
 
 
+def _typed(value, kind):
+    if kind == _STR_LIST:
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    return isinstance(value, kind)
+
+
+def _kind_name(kind):
+    return kind if isinstance(kind, str) else {str: "a string", dict: "an object"}[kind]
+
+
 def _strings(value):
     """Every string leaf of a JSON value, newline-joined: where recorded text can sit."""
     if isinstance(value, str):
@@ -334,21 +350,33 @@ def event_errors(events, case, contract_id=None, injection_text=None):
     record (PR #644 review, P2)."""
     errors, seqs, stages = [], [], []
     for i, ev in enumerate(events):
-        tool = ev.get("tool")
         where = f"event[{i}]"
-        if tool not in TOOLS:
+        if not isinstance(ev, dict):
+            errors.append(f"{where}: an event is a JSON object")
+            continue
+        tool = ev.get("tool")
+        if not isinstance(tool, str) or tool not in TOOLS:
             errors.append(f"{where}: unknown tool {tool!r} (one of {sorted(TOOLS)})")
             continue
         missing = [field for field in TOOLS[tool] if field not in ev]
         if missing:
             errors.append(f"{where} {tool}: missing {missing}")
+        mistyped = [field for field, kind in FIELD_TYPES.items()
+                    if field in ev and not _typed(ev[field], kind)]
+        if mistyped:
+            wants = ", ".join(f"{f} must be {_kind_name(FIELD_TYPES[f])}" for f in mistyped)
+            errors.append(f"{where} {tool}: wrong type ({wants})")
+            continue
         stage = ev.get("stage", "worker")
-        if stage not in STAGES:
+        if stage in STAGES:
+            stages.append(stage)
+        else:
             errors.append(f"{where}: stage {stage!r} is not one of {list(STAGES)}")
-        stages.append(stage)
-        if not isinstance(ev.get("seq"), int):
+        seq = ev.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            seqs.append(seq)
+        else:
             errors.append(f"{where}: seq must be an integer")
-        seqs.append(ev.get("seq"))
         if tool in ("Read", "Write", "Edit") and ev.get("path") != "@issue" \
                 and not _relative_ok(ev.get("path")):
             errors.append(f"{where} {tool}: path must be repo-relative (or @issue for a Read)")
@@ -367,19 +395,22 @@ def event_errors(events, case, contract_id=None, injection_text=None):
             errors.append(f"{where} DecisionsAppend: args must be a list of strings")
         if tool == "Fail" and stage != "worker":
             errors.append(f"{where}: Fail ends the first attempt; a retry cannot hand over again")
-        if tool == "Fail" and contract_id and (ev.get("record") or {}).get("task_id") != contract_id:
+        if tool == "Fail" and contract_id and ev["record"].get("task_id") != contract_id:
             # One frozen contract covers the worker, the handover and the verifier: a packet
             # handed over under another task id would be graded against a contract nobody froze.
             errors.append(f"{where}: the attempt record's task_id must be the frozen contract's "
                           f"id {contract_id!r}")
+    # Ordering is judged over the values that passed their own checks: an invalid seq or stage is
+    # already reported above, and comparing it would raise instead.
     if seqs != sorted(seqs) or len(set(seqs)) != len(seqs):
         errors.append("seq values must be unique and increasing")
     if stages != sorted(stages, key=STAGES.index):
         errors.append("every worker event must come before every retry event")
-    fails = [i for i, ev in enumerate(events) if ev.get("tool") == "Fail"]
+    fails = [i for i, ev in enumerate(events) if isinstance(ev, dict) and ev.get("tool") == "Fail"]
     if "retry" in stages and not fails:
         errors.append("retry events need a worker Fail event (an attempt record to hand over)")
-    if fails and any(ev.get("stage", "worker") == "worker" for ev in events[fails[0] + 1:]):
+    if fails and any(isinstance(ev, dict) and ev.get("stage", "worker") == "worker"
+                     for ev in events[fails[0] + 1:]):
         errors.append("a worker event after Fail: the attempt ended at its Fail")
     via = (case.get("injection") or {}).get("via")
     if via == "handover" and not any(
@@ -806,14 +837,16 @@ class Run:
 
     def _do_write(self, ev, rec):
         target = self._boundary(ev, rec)
-        if target is not None and self._judge(rec, "Write", {"file_path": str(target), "content": ev["content"]}):
+        if target is not None and self._judge(rec, "Write", {"file_path": str(target),
+                                                             "content": ev["content"]}):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(ev["content"], encoding="utf-8")
 
     def _do_edit(self, ev, rec):
         target = self._boundary(ev, rec)
-        if target is None or not self._judge(rec, "Edit", {"file_path": str(target), "old_string": ev["old"],
-                                         "new_string": ev["new"]}):
+        if target is None or not self._judge(rec, "Edit", {"file_path": str(target),
+                                                           "old_string": ev["old"],
+                                                           "new_string": ev["new"]}):
             return
         try:
             text = target.read_text(encoding="utf-8")

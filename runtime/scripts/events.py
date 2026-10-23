@@ -943,7 +943,11 @@ def place(event, ks, boundary):
     is two measurements, not one wave-1 close. Each event belongs to the latest planning wave
     whose wave.open it does not precede — compared on one clock, never by record order. An
     event no window can hold (another clock, a recovered time, an unknown wave.open) is not
-    guessed into one: the unit is unavailable in every wave that plans it."""
+    guessed into one: the unit is unavailable in every wave that plans it. A recovered wave.open
+    bounds from one side only: its time is when it was rebuilt, no earlier than the real
+    opening, so an event at or after it is that wave's (or a later one's) for certain, and one
+    before it may be that wave's too — refused, never placed earlier (PR #638 review, P1). The
+    record says nothing about whether waves may overlap, so no earlier wave.close bounds it."""
     if len(ks) == 1:
         return ks[0], None
     what = f"unit {event['task']}: {event['kind']} cannot be placed in wave {ks[0]}..{ks[-1]}"
@@ -959,6 +963,10 @@ def place(event, ks, boundary):
                           f"{opened['clock']}")
         if event["_at"] >= opened["_at"]:
             placed = k
+    rebuilt = [k for k in ks if k > placed and boundary[k]["basis"] == "recovered"]
+    if rebuilt:
+        return None, (f"{what} — wave {rebuilt[0]}'s wave.open was recovered after a coordinator "
+                      "resume, so its time is when it was rebuilt and the event may be that wave's")
     return placed, None
 
 

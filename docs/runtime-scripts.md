@@ -506,7 +506,9 @@ Derivation (`runtime/scripts/events.py:derive`). A unit is a task in a `wave.ope
 planned in several waves is measured in each, from the events in that wave's window — the latest
 planning wave whose `wave.open` the event does not precede, on one clock
 (`runtime/scripts/events.py:place`); an event no window can hold leaves the unit unavailable in
-all of them. The unit's events in its earlier planning waves are context for a later one, never
+all of them. A recovered `wave.open` bounds from one side only (its time is when it was rebuilt,
+no earlier than the real opening): an event before it may be that wave's, so it is refused,
+never placed in an earlier wave. The unit's events in its earlier planning waves are context for a later one, never
 a second measurement: which dispatches already ran and launched, the worker_done an interval
 starts from, the pass a close rests on and the approvals a close voids; each interval and void
 is measured once, in the wave its end is placed in. A unit a later wave re-plans is final in the

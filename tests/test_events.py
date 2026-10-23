@@ -589,6 +589,51 @@ class TestCarriedUnits(Base):
             with self.subTest(wave=wave):
                 self.assertTrue(any("cannot be placed" in r for r in reasons), reasons)
 
+    def test_a_recovered_wave_opening_is_no_boundary_for_earlier_work(self):
+        # PR #638 review (P1): place() refused an event whose own time was recovered, but used
+        # a recovered wave.open as a known boundary. Its time is when it was rebuilt, later than
+        # the opening, so wave-2 work done before the rebuild landed in wave 1: the replacement
+        # d2 and its retry counted there (rework 1/1) and wave 2 lost them (rework 0/1).
+        evs = carried_stream()
+        evs[6] = ev("wave.open", "10:47:00", data={"wave": 2, "builders": 1, "reviewers": 1,
+                                                   "tasks": ["t"]}, basis="recovered", **ONE)
+        report = self.derive(evs)
+        for wave in (1, 2):
+            reasons = self.metric(report, wave, "rework")["unavailable"]
+            with self.subTest(wave=wave):
+                self.assertTrue(any("cannot be placed" in r and "recovered" in r for r in reasons),
+                                reasons)
+
+    def test_work_after_a_recovered_opening_is_still_placed(self):
+        # Control: a rebuilt opening time is no earlier than the real one, so an event at or
+        # after it is in that wave (or a later one) for certain. t was planned in wave 1 but
+        # did nothing there; all of its work follows wave 2's rebuilt opening. Only wave 2's
+        # wall-clock, an interval with a recovered end, is unavailable.
+        stream = carried_stream()  # drop wave 1's launch, done and park of t (indexes 2-4)
+        evs = stream[:2] + [stream[5], ev("wave.open", "10:30:00", basis="recovered", **ONE, data={
+            "wave": 2, "builders": 1, "reviewers": 1, "tasks": ["t"]})] + stream[7:]
+        report = self.derive(evs)
+        self.assertEqual([e["kind"] for e in evs][:5],
+                         ["run.start", "wave.open", "wave.close", "wave.open", "dispatch.launched"])
+        self.assertEqual(self.metric(report, 2, "latency_max")["value"], "5.00m")
+        self.assertEqual(self.metric(report, 2, "rework")["value"], "0/1")
+        self.assertTrue(any("recovered" in r for r in self.metric(report, 2, "throughput")["unavailable"]))
+
+    def test_an_opening_rebuilt_after_a_later_wave_opened_does_not_refuse_that_wave(self):
+        # Guard: wave 2's opening was rebuilt at 11:20, after wave 3 opened at 11:00. Work at
+        # 11:06-11:15 follows wave 3's real opening, so it is wave 3's whatever wave 2's was.
+        c, a = ONE, sha("a1")
+        evs = [ev("run.start", "10:00:00", data={"coordinator": "c1"}, **c)] + [
+            ev("wave.open", at, data={"wave": k, "builders": 1, "reviewers": 1, "tasks": ["t"]},
+               basis=basis, **c)
+            for k, at, basis in ((1, "10:00:00", "observed"), (2, "11:20:00", "recovered"),
+                                 (3, "11:00:00", "observed"))] + [
+            ev("dispatch.launched", "11:06:00", task="t", dispatch="d1", **c),
+            ev("task.done", "11:10:00", task="t", dispatch="d1", data={"head_sha": a}, **c),
+            ev("verify.verdict", "11:15:00", task="t", data={"exit": 0, "head_sha": a}, **c)]
+        units = self.derive(evs)["waves"][2]["units"]
+        self.assertEqual((units[0]["outcome"], units[0]["latency"]["value"]), ("verified", "5.00m"))
+
     def test_a_worker_carried_into_the_next_wave_is_not_a_replacement(self):
         # PR #638 review (P1): d1 launched in wave 1 and finished in wave 2. Wave 2 saw d1 and
         # the task's earlier dispatch d1, so it marked the unit bounced, and with d1's launch in

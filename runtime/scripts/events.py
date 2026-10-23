@@ -632,13 +632,24 @@ def derive_unit(task, wave, events, prior_dispatches=()):
 
     # Freshness: approving reviews voided by a head that moved (reviewed-sha-freshness.md: the
     # SHA check is the default; equal trees on both sides are the one equivalence class).
+    # Counted per REVIEW, not per reviewed SHA: two reviews of one head, both voided, are two
+    # (PR #638 review, P2). A review is its reviewer dispatch at a head, or its own event when
+    # no reviewer is named, so a duplicate delivery or a re-observation still counts once.
     approvals = [r for r in by["review.verdict"] if r["data"]["verdict"] == "approve"]
-    voided = {v["data"]["reviewed_sha"] for v in by["review.voided"]}
-    if close_head:
-        for review in approvals:
-            tree = review["data"]["reviewed_wtree"]
-            if review["data"]["reviewed_sha"] != close_head and not (tree and tree == close_tree):
-                voided.add(review["data"]["reviewed_sha"])
+    reviews = {}
+    for review in approvals:
+        key = ((review["dispatch"], review["data"]["reviewed_sha"]) if review["dispatch"]
+               else ("event", review["event_id"]))
+        reviews.setdefault(key, review)
+    explicit = {v["data"]["reviewed_sha"] for v in by["review.voided"]}
+    voided = []
+    for _key, review in sorted(reviews.items()):
+        sha, tree = review["data"]["reviewed_sha"], review["data"]["reviewed_wtree"]
+        moved = close_head and sha != close_head and not (tree and tree == close_tree)
+        if moved or sha in explicit:
+            voided.append(sha)
+    # A void observed without the approval it voided is still one voided review.
+    voided += sorted(explicit - {r["data"]["reviewed_sha"] for r in approvals})
 
     return {
         "task": task, "wave": wave, "outcome": outcome,
@@ -651,7 +662,7 @@ def derive_unit(task, wave, events, prior_dispatches=()):
         "bounced": (bool(by["unit.suspect"]) or len(seen) > 1
                     or bool(seen and prior_dispatches)
                     or any(v["data"]["exit"] == 2 for v in by["verify.verdict"])),
-        "approvals": len(approvals), "voided_reviews": sorted(voided),
+        "approvals": len(reviews), "voided_reviews": sorted(voided),
         "latency": latency, "queue": queue, "contested": contested,
         "revisions": {"closed_at": close_head, "closed_tree": close_tree,
                       "verified_at": sorted({p["data"]["head_sha"] for p in passes

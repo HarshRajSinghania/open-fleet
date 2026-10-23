@@ -580,6 +580,31 @@ class TestRedispatchIsRework(Base):
         self.assertEqual(self.metric(report, 2, "rework")["value"], "1/1")
 
 
+class TestFreshnessCountsReviews(Base):
+    def test_two_approvals_of_one_head_voided_count_twice(self):
+        # PR #638 review (P2): freshness counted distinct reviewed SHAs, so two reviews of the
+        # same head, both voided when it moved, counted once. A duplicate delivery or a
+        # re-observation of ONE review (same reviewer, same head) still counts once.
+        a, b = sha("aa"), sha("bb")
+
+        def approve(at, reviewer, head, **kw):
+            return ev("review.verdict", at, task="t", dispatch=reviewer,
+                      data={"verdict": "approve", "reviewed_sha": head}, **ONE, **kw)
+        first_r1 = approve("10:11:00", "r1", a)
+        evs = unit_stream()[:4] + [
+            first_r1, approve("10:12:00", "r2", a), first_r1,
+            approve("10:13:00", "r1", a, event_id="r1-seen-again"),
+            ev("task.done", "10:20:00", task="t", dispatch="d", data={"head_sha": b}, **ONE),
+            approve("10:22:00", "r3", b),
+            ev("verify.verdict", "10:25:00", task="t", data={"exit": 0, "head_sha": b}, **ONE),
+            ev("unit.closed", "10:30:00", task="t", data={"head_sha": b}, **ONE),
+            ev("wave.close", "10:40:00", data={"wave": 1}, **ONE),
+        ]
+        report = self.derive(evs)
+        self.assertEqual(self.metric(report, 1, "freshness")["value"], "2")
+        self.assertEqual(report["waves"][0]["units"][0]["voided_reviews"], [a, a])
+
+
 class TestUsage(Base):
     def test_unknown_cost_stays_null_with_provenance_never_zero(self):
         report = self.derive(scenario_clean())

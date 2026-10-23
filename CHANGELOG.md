@@ -30,6 +30,12 @@ truth is `.claude-plugin/plugin.json`.
   agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
   first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
   for other providers.
+||||||| 5fcab11f93
+- **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
+  key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
+  a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it
+  signed itself. floor_guard.py already read the pin at its base ref; this gives the CLI the same
+  anchor. Without the flag, behaviour is unchanged.
 
 ## [0.8.0] - 2026-10-23
 

@@ -271,6 +271,21 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
+def _statements(script: str) -> list[str]:
+    """Split a DDL script into statements by SQLite's own rule: a `;` inside a comment or a
+    string ends nothing (`str.split(";")` did, so a commented schema broke the store's opening)."""
+    out: list[str] = []
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            out.append(buf)
+            buf = ""
+    if buf.strip():  # a last statement with no `;` still runs (and fails loudly if malformed)
+        out.append(buf)
+    return out
+
+
 class Store:
     """SQLite WAL store. Every write is ONE `BEGIN IMMEDIATE` transaction (`tx`)."""
 
@@ -331,7 +346,7 @@ class Store:
         with self.tx() as conn:
             # Not executescript: it COMMITs first and runs each statement in autocommit, which
             # would let another opener interleave between the CREATEs and the migration.
-            for statement in self.SCHEMA.split(";"):
+            for statement in _statements(self.SCHEMA):
                 if statement.strip():
                     conn.execute(statement)
             self._migrate(conn)
@@ -374,8 +389,13 @@ class Store:
         Switching the journal mode needs an exclusive lock, and SQLite answers a contender
         `database is locked` at once rather than through the busy handler. Several conductors
         opening a fresh store together hit exactly that (#599 CI: openers exiting 1 at random).
-        WAL is persistent, so the first opener's switch is every later connection's no-op;
-        a contender backs off and re-reads the mode until it sees WAL.
+        WAL is persistent, so the first opener's switch is every later connection's no-op.
+        Only a lock is retried, with backoff, up to BUSY_SECONDS, then refused as
+        `store_locked`. Any mode SQLite answers without error ends the switch: WAL, or one it
+        keeps a database in (`memory` for an in-memory one). The queue's guarantees rest on
+        `BEGIN IMMEDIATE` and the busy timeout, which every journal mode honours; WAL only lets
+        readers run beside a writer. Before, a non-WAL answer was asked again forever, with no
+        deadline (the same defect main's local_state.py fixed).
         """
         deadline = time.monotonic() + self.BUSY_SECONDS
         delay = 0.005
@@ -383,12 +403,18 @@ class Store:
             try:
                 if str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower() == "wal":
                     return
-                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA journal_mode=WAL;").fetchone()
+                return
             except sqlite3.OperationalError as exc:
                 if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
                     raise
                 if time.monotonic() >= deadline:
-                    raise
+                    raise QueueError(
+                        "store_locked",
+                        f"{self.path}: could not switch the store to WAL within {self.BUSY_SECONDS:g}s; "
+                        f"another process kept it locked ({exc})",
+                        {"store": str(self.path)},
+                    ) from exc
                 time.sleep(delay)
                 delay = min(delay * 2, 0.2)
 

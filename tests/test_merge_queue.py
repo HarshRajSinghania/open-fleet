@@ -1048,6 +1048,73 @@ class StoreMigration(unittest.TestCase):
             self.assertEqual(mode, "wal")
 
 
+class _ScriptedConnection:
+    """A connection whose journal-mode switch is scripted: `locked` refusals, then `answer`."""
+
+    def __init__(self, answer, locked=0, max_calls=40):
+        self.mode, self.answer, self.locked, self.max_calls = "delete", answer, locked, max_calls
+        self.calls = self.switches = 0
+
+    def execute(self, sql):
+        self.calls += 1
+        if self.calls > self.max_calls:
+            raise RuntimeError(f"the WAL switch is spinning ({self.calls} statements)")
+        if sql.strip() == "PRAGMA journal_mode=WAL;":
+            self.switches += 1
+            if self.locked:
+                self.locked -= 1
+                raise sqlite3.OperationalError("database is locked")
+            self.mode = self.answer
+        return self
+
+    def fetchone(self):
+        return (self.mode,)
+
+
+class WalSwitch(unittest.TestCase):
+    """The WAL switch retries a lock only, and ends on any mode SQLite answers (PR #647 follow-up)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = mq_mod.Store(Path(self.tmp.name) / "mq.db")
+
+    def test_a_store_sqlite_keeps_out_of_wal_opens_promptly(self):
+        code = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('m',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.Store(':memory:');print('ok')")
+        try:
+            proc = subprocess.run([sys.executable, "-c", code, str(W.SCRIPT)], capture_output=True, text=True,
+                                  timeout=20, cwd=self.tmp.name)
+        except subprocess.TimeoutExpired:
+            self.fail("opening an in-memory store spun in the WAL switch instead of returning")
+        self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "ok"), proc.stderr)
+
+    def test_a_mode_sqlite_answers_without_error_ends_the_switch(self):
+        conn = _ScriptedConnection(answer="delete")
+        self.store._wal(conn)
+        self.assertEqual(conn.switches, 1, "a mode SQLite settled on was asked for again")
+
+    def test_a_locked_switch_is_still_retried(self):
+        conn = _ScriptedConnection(answer="wal", locked=3)
+        self.store._wal(conn)
+        self.assertEqual((conn.switches, conn.mode), (4, "wal"))
+
+    def test_a_switch_locked_past_the_deadline_gives_up_clearly(self):
+        self.store.BUSY_SECONDS = 0.3
+        conn = _ScriptedConnection(answer="wal", locked=10**6, max_calls=10**6)
+        started = time.monotonic()
+        with self.assertRaises(mq_mod.QueueError) as refused:
+            self.store._wal(conn)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(refused.exception.code, "store_locked")
+        self.assertIn("WAL", refused.exception.message)
+
+    def test_a_schema_comment_holding_a_semicolon_is_not_a_statement_break(self):
+        class Commented(mq_mod.Store):
+            SCHEMA = "-- a note; with a semicolon in it\n" + mq_mod.Store.SCHEMA
+        Commented(Path(self.tmp.name) / "commented.db")
+
+
 class DoctrineWiring(unittest.TestCase):
     def test_the_policy_names_the_mechanism_that_enforces_it(self):
         text = (ROOT / "runtime" / "merge-serialization.md").read_text(encoding="utf-8")

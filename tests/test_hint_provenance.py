@@ -253,6 +253,13 @@ class CurrencyAgainstTheLiveSource(unittest.TestCase):
         self.assertEqual(self.label("unchanged-scope-current", "2026-01-10-run-a/AUTH-1"), ("CURRENT", [], True))
         self.assertEqual(self.label("symbol-scope", "2026-01-10-run-a/SVC-A"), ("CURRENT", [], True))
         self.assertEqual(self.label("fix-then-pass", "2026-01-11-run-b/PAY-7"), ("CURRENT", [], True))
+        self.assertEqual(self.label("decorator-changed", "2026-01-10-run-c/VIEW-3"), ("CURRENT", [], True))
+
+    def test_a_decorator_change_is_a_symbol_change(self):
+        for key, name in (("2026-01-10-run-a/VIEW-1", "show"), ("2026-01-10-run-b/VIEW-2", "other")):
+            with self.subTest(symbol=name):
+                self.assertEqual(self.label("decorator-changed", key),
+                                 ("STALE", [f"symbol-changed:src/views.py::{name}"], False))
 
     def test_live_rev_pins_a_commit_instead_of_the_working_tree(self):
         fx = Fixture(scenario([{"name": "c0", "files": BASE}],
@@ -591,6 +598,9 @@ class MutationControls(unittest.TestCase):
     def test_symbol_check(self):
         self.red(["symbol-scope"], (hp, "symbol_block", lambda text, symbol: "same"))
 
+    def test_decorator_inclusion(self):
+        self.red(["decorator-changed"], (hp, "_decorator_start", lambda lines, i, indent: i))
+
     def test_related_test_check(self):
         self.red(["tests-changed-source-unchanged"], (hp, "_related_test_reasons", lambda *a: []))
 
@@ -647,6 +657,17 @@ class Helpers(unittest.TestCase):
         self.assertIsNone(hp.symbol_block(py, "c"))
         js = "function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n"
         self.assertEqual(hp.symbol_block(js, "a"), "function a() {\n  return 1;\n}")
+
+    def test_symbol_block_includes_decorators(self):
+        # PR #639 review: the block started at the def line, so a changed or added decorator left
+        # it byte-identical and the hint CURRENT.
+        src = ("def prev():\n    return 0\n\n\n@app.route(\n    \"/a\",\n)\n@login_required\ndef view():\n"
+               "    return 1\n")
+        self.assertEqual(hp.symbol_block(src, "view"),
+                         "@app.route(\n    \"/a\",\n)\n@login_required\ndef view():\n    return 1")
+        self.assertEqual(hp.symbol_block(src, "prev"), "def prev():\n    return 0")
+        method = "class A:\n    x = 1\n\n    @property\n    def y(self):\n        return 2\n"
+        self.assertEqual(hp.symbol_block(method, "y"), "    @property\n    def y(self):\n        return 2")
 
     def test_split_symbol_and_checked_path(self):
         self.assertEqual(hp.split_symbol("./src/a.py::Cls.meth"), ("src/a.py", "Cls.meth"))

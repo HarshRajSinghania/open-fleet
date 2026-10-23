@@ -193,10 +193,28 @@ def recorded_time(manifest, unit, run_id):
     return _epoch(found.group(1) + "T00:00:00+00:00") if found else None
 
 
+def _decorator_start(lines, i, indent):
+    """Index of the first decorator line directly above lines[i] (i itself when none). A decorator
+    is part of the definition: changing or adding one changes behavior with the body untouched
+    (PR #639 review). Continuation lines of a multi-line decorator -- deeper-indented or a closing
+    bracket -- are taken only when an ``@`` line at the def's own indentation opens them."""
+    start, j = i, i - 1
+    while j >= 0:
+        stripped = lines[j].strip()
+        depth = len(lines[j].expandtabs()) - len(lines[j].expandtabs().lstrip())
+        if stripped.startswith("@") and depth == indent:
+            start = j
+        elif not (stripped == "" or depth > indent or stripped[0] in ")]}"):
+            break
+        j -= 1
+    return start
+
+
 def symbol_block(text, symbol):
-    """The definition block of ``symbol`` (its def/class/function line through the next line
-    indented no deeper), or None when the file defines no such symbol. Indentation-scoped, so it
-    is exact for Python and a heuristic for brace languages -- the fallback is the whole file."""
+    """The definition block of ``symbol``: its decorators, its def/class/function line, and the
+    lines through the next one indented no deeper; None when the file defines no such symbol.
+    Indentation-scoped, so it is exact for Python and a heuristic for brace languages -- the
+    fallback is the whole file."""
     if text is None:
         return None
     lines = text.splitlines()
@@ -206,7 +224,7 @@ def symbol_block(text, symbol):
         if not found:
             continue
         indent = len(found.group("indent").expandtabs())
-        block = [line]
+        block = lines[_decorator_start(lines, i, indent):i + 1]
         for nxt in lines[i + 1:]:
             stripped = nxt.strip()
             if stripped and len(nxt) - len(nxt.lstrip()) <= indent and not stripped.startswith((")", "}", "]")):

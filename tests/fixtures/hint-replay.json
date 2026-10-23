@@ -1531,6 +1531,119 @@
      "marker": "fails the soak test"
     }
    }
+  },
+  {
+   "id": "decorator-changed",
+   "about": "Only decorators changed: a changed route and an added cache change behavior with byte-identical bodies, so both symbols are STALE; an untouched symbol stays CURRENT (PR #639 review).",
+   "commits": [
+    {
+     "name": "c0",
+     "files": {
+      "README.md": "# fixture\n",
+      "src/__init__.py": "",
+      "src/auth.py": "def refresh(token):\n    return token + 1\n",
+      "tests/test_auth.py": "import unittest\n\n\nclass Refresh(unittest.TestCase):\n    def test_once(self):\n        self.assertEqual(1 + 1, 2)\n",
+      "src/views.py": "import functools\n\n\ndef route(path):\n    return lambda fn: fn\n\n\n@route(\"/a\")\ndef show():\n    return \"page\"\n\n\ndef other():\n    return 1\n"
+     }
+    },
+    {
+     "name": "c1",
+     "files": {
+      "src/views.py": "import functools\n\n\ndef route(path):\n    return lambda fn: fn\n\n\n@route(\"/b\")\ndef show():\n    return \"page\"\n\n\n@functools.lru_cache\ndef other():\n    return 1\n"
+     }
+    }
+   ],
+   "runs": [
+    {
+     "run": "2026-01-10-run-a",
+     "manifest": {
+      "unit": "VIEW-1",
+      "status": "verified",
+      "files_touched": [
+       "src/views.py::show"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "show serves the page at /a"
+      }
+     }
+    },
+    {
+     "run": "2026-01-10-run-b",
+     "manifest": {
+      "unit": "VIEW-2",
+      "status": "verified",
+      "files_touched": [
+       "src/views.py::other"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "other recomputes on every call"
+      }
+     }
+    },
+    {
+     "run": "2026-01-10-run-c",
+     "manifest": {
+      "unit": "VIEW-3",
+      "status": "verified",
+      "files_touched": [
+       "src/views.py::route"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "route is a pass-through decorator"
+      }
+     }
+    }
+   ],
+   "query": [
+    "src/views.py"
+   ],
+   "expect": {
+    "2026-01-10-run-a/VIEW-1": {
+     "currency": "STALE",
+     "reason": "symbol-changed:src/views.py::show",
+     "class": "stale",
+     "marker": "serves the page at /a"
+    },
+    "2026-01-10-run-b/VIEW-2": {
+     "currency": "STALE",
+     "reason": "symbol-changed:src/views.py::other",
+     "class": "stale",
+     "marker": "recomputes on every call"
+    },
+    "2026-01-10-run-c/VIEW-3": {
+     "currency": "CURRENT",
+     "reason": null,
+     "class": "useful",
+     "marker": "pass-through decorator"
+    }
+   }
   }
  ]
 }

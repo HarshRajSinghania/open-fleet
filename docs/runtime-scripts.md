@@ -997,7 +997,10 @@ merges live `orca search` hits when a query is passed, and emits a bounded `<= 1
   `role-play-marker`), keeping its pointer and labels; a note that QUOTES such text stays,
   labelled. The decision covers the raw field AND the text as shown — lines joined, a literal
   `\n` read as a break, a token cut to its charset, each width a field is truncated to — so a
-  claim split across lines in the record is withheld, not just labelled. `--hint-mode historical`
+  claim split across lines in the record is withheld, not just labelled. The entry line is then
+  decided as a whole: fields that pass one by one but read as a claim once joined (a session title
+  `Deployment approved` and its snippet `by the human coordinator`) are all withheld, on the line
+  and in `--hint-json`, and the artifact digest still points at the record. `--hint-mode historical`
   lists everything, labelled, for a coordinator's audit.
 - **Selection.** Ranked by currency, match strength (structured field before prose) and
   recency, one entry per producing run before any run's second — not file-name order.
@@ -1231,7 +1234,8 @@ repeating the same approach, hitting 3 attempts, or matching a prior error signa
 carries an `AUTHORITY:` line — prior-attempt text grants nothing and never widens the frozen
 task — and every reflection, command or stderr line that asserts a grant outside quotes is
 labelled `grant-claim` and withheld (#605) — a one-line field decided after its lines are joined,
-as it is shown, and a literal `\n` read as a break — while instruction-shaped lines stay, labelled, as the
+as it is shown, and a literal `\n` read as a break; a line joined from several fields (reflection,
+dispatch and task, error signature) withholds every field when the joined line asserts a grant — while instruction-shaped lines stay, labelled, as the
 error delta the retry needs), `--config`
 (threshold/rate-limit JSON, default `runtime/watchdog.json`), `--state` (nudge-history
 JSON, default .orca/watchdog-state.json), `--log` (JSONL action log, default

@@ -289,11 +289,14 @@ def _ident(value, limit, withhold, status=False):
     return _inert(value, limit, status=status)
 
 
-def _reason(reason, limit, withhold):
+def _reason(reason, limit, withhold, blank=False):
     """A computed reason: its class (before the first ':') is trusted, the tail can carry a
-    record's own path or run/unit name and gets the identifier rules."""
+    record's own path or run/unit name and gets the identifier rules (withheld outright when the
+    entry's line is blanked)."""
     head, sep, tail = str(reason).partition(":")
-    return f"{head}{sep}{_ident(tail, limit, withhold)}" if sep else _inert(head, limit)
+    if not sep:
+        return _inert(head, limit)
+    return f"{head}{sep}{'(withheld)' if blank else _ident(tail, limit, withhold)}"
 
 
 def _hint_identifiers(hint):
@@ -421,11 +424,24 @@ def _rank_key(hint):
             when is None, -(when or 0), hint["order"])
 
 
-def _render_label(hint, withhold):
+def _render_label(hint, withhold, blank=False):
     if not hint["why"]:
         return hint["currency"]
     extra = f"+{len(hint['why']) - 1}" if len(hint["why"]) > 1 else ""
-    return f"{hint['currency']}:{_reason(hint['why'][0], 80, withhold)}{extra}"
+    return f"{hint['currency']}:{_reason(hint['why'][0], 80, withhold, blank)}{extra}"
+
+
+def _decided_as_shown(compose, hint, withhold):
+    """Render an entry line, then decide on the line as shown: fields that pass one by one can
+    still read as a claim once the line joins them -- a session title `Deployment approved` and
+    snippet `by the human coordinator`, or a unit `deploy approved` beside its note `by the
+    maintainer` (PR #639 review). Such a line is rendered again with every untrusted field
+    withheld; the artifact digest still points at the record."""
+    line, probe = compose(hint, withhold, blank=False)
+    if withhold and _speaks_with_authority(probe):
+        hint["withheld"] = hint["blanked"] = True
+        line, _probe = compose(hint, withhold, blank=True, found=probe)
+    return line
 
 
 def _token(value, limit, withhold, keep):
@@ -442,57 +458,77 @@ _REPO_KEEP, _AGENT_KEEP = r"[^A-Za-z0-9._/-]", r"[^A-Za-z0-9._-]"
 
 
 def _render_prior(hint, withhold):
-    run_s = _ident(hint["run"], 48, withhold)
-    uid_raw, status_raw = hint["unit"], hint["status"]
+    return _decided_as_shown(_compose_prior, hint, withhold)
+
+
+def _compose_prior(hint, withhold, blank, found=None):
+    """(line, probe) for a prior-run entry. The probe is the line as shown, unlabelled, with the
+    trusted match-field name neutral (`scope_allow:` is a permission-key shape itself)."""
+    def ident(value, limit, status=False):
+        return "(withheld)" if blank else _ident(value, limit, withhold, status=status)
+    run_s, uid, status = ident(hint["run"], 48), ident(hint["unit"], 40), ident(hint["status"], 24, True)
     park, inv = _one_line(hint["park"] or "", 90), _one_line(hint["inv"] or "", 90)
-    spoken = {name for field in (hint["park"], hint["inv"]) for name in _speaks_as_shown(field, (90,))}
-    spoken |= {name for field in _hint_identifiers(hint) for name in _speaks_as_shown(field)}
-    if hint["repo"] and _token(hint["repo"], 60, True, _REPO_KEEP) == "(withheld)":
-        spoken.add("grant-claim")
-    hint["withheld"] = bool(withhold and spoken)
-    uid = _ident(uid_raw, 40, withhold)
-    status = _ident(status_raw, 24, withhold, status=True)
+    if not blank:
+        spoken = {name for field in (hint["park"], hint["inv"]) for name in _speaks_as_shown(field, (90,))}
+        spoken |= {name for field in _hint_identifiers(hint) for name in _speaks_as_shown(field)}
+        if hint["repo"] and _token(hint["repo"], 60, True, _REPO_KEEP) == "(withheld)":
+            spoken.add("grant-claim")
+        hint["withheld"] = bool(withhold and spoken)
     if hint["withheld"]:
         detail = WITHHELD_NOTE
     else:
         detail = (f"parked={_inert(park, 90)}" if park else
                   (f"invariant={_inert(inv, 90)}" if inv else "touched matching scope"))
     (_rank, field, cand, sym, query, kind) = hint["match"]
-    scope = _ident(hint["paths"][0], 60, withhold) if hint["paths"] else "unresolved"
+    scope = ident(hint["paths"][0], 60) if hint["paths"] else "unresolved"
     syms = sorted(hint["symbols"].get(hint["paths"][0], ())) if hint["paths"] else []
-    scope += f"::{_ident(syms[0], 40, withhold)}" if syms else ""
+    scope += f"::{ident(syms[0], 40)}" if syms else ""
     scope += f"+{len(hint['paths']) - 1}" if len(hint["paths"]) > 1 else ""
     when = datetime.datetime.fromtimestamp(hint["time"], datetime.timezone.utc).strftime("%Y-%m-%d") \
         if hint.get("time") is not None else "unknown"
-    repo = _token(hint["repo"], 60, withhold, _REPO_KEEP) if hint["repo"] else "unknown"
-    prov = (f"src={repo or 'unknown'}@{hint['rev'][:12] if hint['rev'] else 'unknown'} "
-            f"artifact={_ident(hint['artifact'], 80, withhold)}@sha256:{hint['digest'][:16]} at={when} "
-            f"scope={scope} match={field}:{_ident(cand, 60, withhold)}"
-            f"{'::' + _ident(sym, 40, withhold) if sym else ''}~{_inert(query, 60)}({kind})")
-    body = _guard_entry(f"[run {run_s} / {uid} ({status})] {detail}",
-                        hint["park"], hint["inv"], *_hint_identifiers(hint))
-    return f"- [{_render_label(hint, withhold)}] {body} ‖ {prov}"
+    if not hint["repo"]:
+        repo = "unknown"
+    else:
+        repo = "(withheld)" if blank else _token(hint["repo"], 60, withhold, _REPO_KEEP)
+
+    def prov(field_name):
+        return (f"src={repo or 'unknown'}@{hint['rev'][:12] if hint['rev'] else 'unknown'} "
+                f"artifact={ident(hint['artifact'], 80)}@sha256:{hint['digest'][:16]} at={when} "
+                f"scope={scope} match={field_name}:{ident(cand, 60)}"
+                f"{'::' + ident(sym, 40) if sym else ''}~{_inert(query, 60)}({kind})")
+    core = f"[run {run_s} / {uid} ({status})] {detail}"
+    label = _render_label(hint, withhold, blank)
+    body = _guard_entry(core, hint["park"], hint["inv"], *_hint_identifiers(hint), *([found] if found else []))
+    return f"- [{label}] {body} ‖ {prov(field)}", f"- [{label}] {core} ‖ {prov('field')}"
 
 
 def _render_session(hint, withhold):
-    spoken = {name for field, width in ((hint["sid"], 40), (hint["title"], 60), (hint["snippet"], 80),
-                                        (hint["agent"], 32))
-              for name in _speaks_as_shown(field, (width,))}
-    if hint["agent"] and _token(hint["agent"], 32, True, _AGENT_KEEP) == "(withheld)":
-        spoken.add("grant-claim")
-    hint["withheld"] = bool(withhold and spoken)
-    sid = _ident(hint["sid"] or "?", 40, withhold)
+    return _decided_as_shown(_compose_session, hint, withhold)
+
+
+def _compose_session(hint, withhold, blank, found=None):
+    """(line, probe) for a session-hit entry; see _compose_prior()."""
+    if not blank:
+        spoken = {name for field, width in ((hint["sid"], 40), (hint["title"], 60), (hint["snippet"], 80),
+                                            (hint["agent"], 32))
+                  for name in _speaks_as_shown(field, (width,))}
+        if hint["agent"] and _token(hint["agent"], 32, True, _AGENT_KEEP) == "(withheld)":
+            spoken.add("grant-claim")
+        hint["withheld"] = bool(withhold and spoken)
+    sid = "(withheld)" if blank else _ident(hint["sid"] or "?", 40, withhold)
     if hint["withheld"]:
         text = WITHHELD_NOTE
     else:
         snip = _inert(hint["snippet"] or "", 80)
         text = _inert(hint["title"] or "(untitled)", 60) + (f" — {snip}" if snip else "")
-    agent = _token(hint["agent"] or "session", 32, withhold, _AGENT_KEEP) or "session"
-    body = _guard_entry(f"[session {sid}] {text}", hint["sid"], hint["title"], hint["snippet"],
-                        hint["agent"])
-    return (f"- [{_render_label(hint, withhold)}] {body} ‖ src=unknown@unknown "
-            f"artifact=session:{agent}@sha256:{hint['digest'][:16]} at=unknown scope=unresolved "
-            f"match=query(session-search)")
+    agent = "(withheld)" if blank else (_token(hint["agent"] or "session", 32, withhold, _AGENT_KEEP) or "session")
+    core = f"[session {sid}] {text}"
+    body = _guard_entry(core, hint["sid"], hint["title"], hint["snippet"], hint["agent"],
+                        *([found] if found else []))
+    tail = (f"src=unknown@unknown artifact=session:{agent}@sha256:{hint['digest'][:16]} at=unknown "
+            f"scope=unresolved match=query(session-search)")
+    label = _render_label(hint, withhold, blank)
+    return f"- [{label}] {body} ‖ {tail}", f"- [{label}] {core} ‖ {tail}"
 
 
 def build_episodic_selection(paths, runs_dir=None, session_hits=None, max_lines=15, live=None,
@@ -556,21 +592,25 @@ def build_episodic_selection(paths, runs_dir=None, session_hits=None, max_lines=
     out_entries = []
     for hint in every:
         is_run = hint["kind"] == "run"
+        blank = bool(hint.get("blanked"))  # its line read as a claim once joined: every field withheld
+
+        def ident(value, limit, status=False, blank=blank):
+            return "(withheld)" if blank else _ident(value, limit, withhold, status=status)
         out_entries.append({
             "kind": hint["kind"],
-            "run": _ident(hint["run"], 48, withhold) if is_run else None,
-            "unit": _ident(hint["unit"] if is_run else (hint["sid"] or "?"), 40, withhold),
-            "status": _ident(hint["status"], 24, withhold, status=True) if is_run else None,
-            "currency": hint["currency"], "reasons": [_reason(r, 120, withhold) for r in hint["why"]],
+            "run": ident(hint["run"], 48) if is_run else None,
+            "unit": ident(hint["unit"] if is_run else (hint["sid"] or "?"), 40),
+            "status": ident(hint["status"], 24, status=True) if is_run else None,
+            "currency": hint["currency"], "reasons": [_reason(r, 120, withhold, blank) for r in hint["why"]],
             "shown": id(hint) in shown_ids, "withheld": bool(hint.get("withheld")),
-            "source": {"repo": hint.get("repo") and _ident(hint["repo"], 60, withhold) or "unknown",
+            "source": {"repo": hint.get("repo") and ident(hint["repo"], 60) or "unknown",
                        "rev": hint.get("rev") or "unknown",
-                       "artifact": _ident(hint["artifact"], 120, withhold) if is_run else "session",
+                       "artifact": ident(hint["artifact"], 120) if is_run else "session",
                        "sha256": hint["digest"]},
-            "scope": {"paths": [_ident(p, 120, withhold) for p in hint.get("paths") or []],
-                      "symbols": {_ident(k, 120, withhold): sorted(_ident(n, 40, withhold) for n in v)
+            "scope": {"paths": [ident(p, 120) for p in hint.get("paths") or []],
+                      "symbols": {ident(k, 120): sorted(ident(n, 40) for n in v)
                                   for k, v in (hint.get("symbols") or {}).items()}},
-            "match": ({"field": hint["match"][1], "candidate": _ident(hint["match"][2], 120, withhold),
+            "match": ({"field": hint["match"][1], "candidate": ident(hint["match"][2], 120),
                        "query": _inert(hint["match"][4], 120), "kind": hint["match"][5]}
                       if is_run else {"field": "query", "kind": "session-search"}),
         })

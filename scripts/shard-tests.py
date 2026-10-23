@@ -140,6 +140,9 @@ WEIGHTS = {
     "test_vfbench": 20.1,
     "test_vfbench_gate": 0.1,
     "test_vfbench_guards": 11.6,
+    # #601: timed locally (3.6 s and 43.7 s) and scaled by the same 11.8 / 45.8 ratio as above.
+    "test_vfbench_heldout": 0.9,
+    "test_vfbench_replay": 11.3,
     "test_watchdog": 1.1,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,

@@ -1023,10 +1023,22 @@
      "max": 0,
      "min": 0,
      "of": 53,
+     "of_per_run": [
+      53,
+      53,
+      53
+     ],
      "per_run": [
       0,
       0,
       0
+     ],
+     "rate_max": 0.0,
+     "rate_min": 0.0,
+     "rate_per_run": [
+      0.0,
+      0.0,
+      0.0
      ],
      "spread": 0
     },
@@ -1034,31 +1046,55 @@
      "max": 0,
      "min": 0,
      "of": 19,
+     "of_per_run": [
+      19,
+      19,
+      19
+     ],
      "per_run": [
       0,
       0,
       0
      ],
+     "rate_max": 0.0,
+     "rate_min": 0.0,
+     "rate_per_run": [
+      0.0,
+      0.0,
+      0.0
+     ],
      "spread": 0
     },
     "wall_seconds": {
-     "max": 71.683,
-     "mean": 61.511,
-     "min": 56.39,
+     "max": 60.63,
+     "mean": 57.721,
+     "min": 52.508,
      "per_run": [
-      56.461,
-      56.39,
-      71.683
+      60.024,
+      52.508,
+      60.63
      ]
     },
     "wrong_reason": {
      "max": 0,
      "min": 0,
      "of": 28,
+     "of_per_run": [
+      28,
+      28,
+      28
+     ],
      "per_run": [
       0,
       0,
       0
+     ],
+     "rate_max": 0.0,
+     "rate_min": 0.0,
+     "rate_per_run": [
+      0.0,
+      0.0,
+      0.0
      ],
      "spread": 0
     }
@@ -1088,7 +1124,7 @@
       "rate": 0.0
      },
      "not_scored": {},
-     "wall_seconds": 56.461,
+     "wall_seconds": 60.024,
      "wrong_reason": {
       "count": 0,
       "of": 28,
@@ -1119,7 +1155,7 @@
       "rate": 0.0
      },
      "not_scored": {},
-     "wall_seconds": 56.39,
+     "wall_seconds": 52.508,
      "wrong_reason": {
       "count": 0,
       "of": 28,
@@ -1150,7 +1186,7 @@
       "rate": 0.0
      },
      "not_scored": {},
-     "wall_seconds": 71.683,
+     "wall_seconds": 60.63,
      "wrong_reason": {
       "count": 0,
       "of": 28,
@@ -2044,10 +2080,22 @@
      "max": 52,
      "min": 52,
      "of": 53,
+     "of_per_run": [
+      53,
+      53,
+      53
+     ],
      "per_run": [
       52,
       52,
       52
+     ],
+     "rate_max": 0.9811,
+     "rate_min": 0.9811,
+     "rate_per_run": [
+      0.9811,
+      0.9811,
+      0.9811
      ],
      "spread": 0
     },
@@ -2055,10 +2103,22 @@
      "max": 0,
      "min": 0,
      "of": 19,
+     "of_per_run": [
+      19,
+      19,
+      19
+     ],
      "per_run": [
       0,
       0,
       0
+     ],
+     "rate_max": 0.0,
+     "rate_min": 0.0,
+     "rate_per_run": [
+      0.0,
+      0.0,
+      0.0
      ],
      "spread": 0
     },
@@ -2635,7 +2695,7 @@
   "system_custody_git_dir": "/usr/bin",
   "tool": {
    "path": "bench/vf-bench/replay.py",
-   "sha256": "a0a29ca92d0ba7e6d0a838f39cdff6c439f35c1d19a855e0e17c0416f2d0ccf1"
+   "sha256": "9e3d1f35ea597e5b8aa449ad7f7f0c131432df0996f0026bc071ce34e3471e6f"
   }
  },
  "external_verifiers": [
@@ -2712,5 +2772,5 @@
   },
   "vf_bench": "vf-bench@0.1"
  },
- "wall_seconds": 197.754
+ "wall_seconds": 184.333
 }

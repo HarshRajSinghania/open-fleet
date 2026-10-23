@@ -399,7 +399,7 @@ Each configuration is reported on its own, never as a pass rate:
 | wrong reason | traps it refused without the refusal the trap declares (`expect_reason`); only for a gate that gives reasons |
 | coverage | rows of the [inventory](#verifier-check-inventory-600) whose trap it scored, over all rows (sampled invariants versus the inventory) |
 | wall time | seconds per run, its mean and range |
-| repeated-run uncertainty | each count per run with its spread, and every case whose verdict or status moved between runs |
+| repeated-run uncertainty | each count per run beside that run's own denominator, with its spread; rates only from matching count and denominator pairs (a case declined in one run and scored in another moves the denominator, PR #645 review); and every case whose verdict or status moved between runs |
 
 A case that timed out, crashed, raised or answered malformed is never scored as a catch: it leaves
 the denominator, is listed by kind, and fails the replay. `compare` ignores exactly three things:

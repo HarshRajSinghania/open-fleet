@@ -533,11 +533,25 @@ def _spread(values):
 
 
 def aggregate(per_run):
-    """The repeated-run view: each count per run with its spread, never one run's number alone."""
+    """The repeated-run view: each count per run with its spread, never one run's number alone.
+
+    Every count keeps its OWN run's denominator, and rates come from matching pairs: a case a
+    configuration declined in one run and scored in another moves the denominator, and dividing
+    by the first run's total showed impossible rates such as 2/1, 200% (PR #645 review). `of` is
+    the shared denominator when every run has the same one, else null."""
     out = {}
     for key in ("false_acceptance", "false_rejection", "wrong_reason"):
-        counts = [r[key]["count"] if r[key] else None for r in per_run]
-        out[key] = None if None in counts else {**_spread(counts), "of": per_run[0][key]["of"]}
+        entries = [r[key] for r in per_run]
+        if None in entries:
+            out[key] = None
+            continue
+        ofs = [e["of"] for e in entries]
+        rates = [e["rate"] for e in entries]
+        known = [x for x in rates if x is not None]
+        out[key] = {**_spread([e["count"] for e in entries]), "of_per_run": ofs,
+                    "of": ofs[0] if len(set(ofs)) == 1 else None, "rate_per_run": rates,
+                    "rate_min": min(known) if known else None,
+                    "rate_max": max(known) if known else None}
     rates = [r["coverage"].get("rate") for r in per_run]
     out["coverage_rate"] = None if None in rates else _spread(rates)
     walls = [r["wall_seconds"] for r in per_run]
@@ -859,12 +873,18 @@ def _finish(report):
 # ---------------------------------------------------------------------------------------------
 
 def _fmt_ratio(m):
+    """`count/of rate` when every run shares a denominator, else each run's own `count/of`; the
+    rate (or its range) is always from matching counts and denominators."""
     if not m:
         return "n/a"
-    lo, hi, of = m["min"], m["max"], m["of"]
-    count = f"{lo}" if lo == hi else f"{lo}-{hi}"
-    rate = f"{100 * hi / of:.1f}%" if of else "-"
-    return f"{count}/{of} {rate}"
+    lo, hi = m["rate_min"], m["rate_max"]
+    rate = "-" if lo is None else (f"{100 * lo:.1f}%" if lo == hi
+                                   else f"{100 * lo:.1f}-{100 * hi:.1f}%")
+    if m["of"] is not None:
+        count = f"{m['min']}" if m["min"] == m["max"] else f"{m['min']}-{m['max']}"
+        return f"{count}/{m['of']} {rate}"
+    pairs = ", ".join(f"{c}/{o}" for c, o in zip(m["per_run"], m["of_per_run"], strict=True))
+    return f"{pairs} {rate}"
 
 
 def render_summary(report):

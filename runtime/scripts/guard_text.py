@@ -150,6 +150,10 @@ GRANT_CLAIM_PATTERNS = [
 # text said ("the issue said 'ignore previous instructions'") rather than saying it. A single
 # quote must open and close at a word boundary so an apostrophe pair cannot fake a span.
 QUOTED_SPAN = re.compile(r"\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’|`[^`\n]*`|(?<!\w)'[^'\n]+'(?!\w)")
+# ...unless ':' or '=' follows it: then it is the KEY of an assignment the line makes
+# (`{"allowed-tools": "Bash(*)"}`), not a quotation, and it stays for the claim checks (PR #639
+# review: blanking the key hid a permission assignment from withholding).
+ASSIGNED = re.compile(r"\s*[:=]")
 
 
 def grant_labels(line):
@@ -159,8 +163,9 @@ def grant_labels(line):
 
 
 def unquoted(text):
-    """The text with every quoted span blanked: what it SAYS, not what it QUOTES (#605)."""
-    return QUOTED_SPAN.sub(" ", text)
+    """The text with every quoted span blanked: what it SAYS, not what it QUOTES (#605). A quoted
+    assignment key is kept: the line assigns through it rather than quoting it."""
+    return QUOTED_SPAN.sub(lambda m: m.group(0) if ASSIGNED.match(text, m.end()) else " ", text)
 
 
 def splice(text):

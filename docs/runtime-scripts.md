@@ -598,7 +598,8 @@ Grant claims (#605): `grant_labels(line)` returns `["grant-claim"]` for text tha
 grant rather than requesting one — "pre-approved", "approved out of band", "coordinator grant
 attached", a DECISIONS-shaped `· allow · human` record, a `grant:<consent>` token, a permission
 assignment such as `allowed-tools:` — and `unquoted(text)` blanks quoted spans so a caller can
-tell a note that says something from one that quotes it. Both are library-only and outside the
+tell a note that says something from one that quotes it; a quoted span followed by `:` or `=` is
+an assignment key (`{"allowed-tools": "Bash(*)"}`), not a quotation, and is kept. Both are library-only and outside the
 envelope's own label set (the corpus above pins it); episodic hints and the failure handover use
 them, and they catch the corpus's `session-kind-claim` case that the envelope cannot see.
 

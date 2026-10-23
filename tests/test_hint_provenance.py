@@ -778,5 +778,37 @@ class Helpers(unittest.TestCase):
         self.assertEqual(reasons, [("UNKNOWN", "artifact-untracked")])
 
 
+class SameRevisionRecordsAreOrdered(unittest.TestCase):
+    """PR #639 review: two runs at ONE revision share a commit time, so commit time alone cannot say
+    which came later -- a run that reversed an earlier verdict on unchanged code left both CURRENT."""
+
+    def select(self, runs):
+        fx = Fixture(scenario([{"name": "c0", "files": BASE}], runs))
+        try:
+            return {e["run"]: (e["currency"], e["reasons"], e["shown"]) for e in fx.select()["entries"]}
+        finally:
+            fx.close()
+
+    def test_a_later_run_at_the_same_revision_supersedes_the_earlier_verdict(self):
+        got = self.select([unit_run("2026-02-01-run-a", "FLIP-1", "@c0", ["src/auth.py"], note="first verdict"),
+                           unit_run("2026-02-03-run-b", "FLIP-1", "@c0", ["src/auth.py"], status="regressed",
+                                    note="later verdict")])
+        self.assertEqual(got["2026-02-01-run-a"], ("SUPERSEDED", ["superseded-by:2026-02-03-run-b/FLIP-1"], False))
+        self.assertEqual(got["2026-02-03-run-b"], ("CURRENT", [], True))
+
+    def test_contradicting_runs_nothing_can_order_are_unknown_not_current(self):
+        # Same revision AND the same claimed time: neither is newer, so neither verdict holds.
+        got = self.select([unit_run("2026-02-01-run-a", "FLIP-2", "@c0", ["src/auth.py"], note="passes"),
+                           unit_run("2026-02-01-run-b", "FLIP-2", "@c0", ["src/auth.py"], status="failed",
+                                    note="fails")])
+        self.assertEqual(got["2026-02-01-run-a"], ("UNKNOWN", ["contradicted-by:2026-02-01-run-b/FLIP-2"], True))
+        self.assertEqual(got["2026-02-01-run-b"], ("UNKNOWN", ["contradicted-by:2026-02-01-run-a/FLIP-2"], True))
+
+    def test_agreeing_runs_at_the_same_revision_stay_current(self):
+        got = self.select([unit_run("2026-02-01-run-a", "SAME-1", "@c0", ["src/auth.py"], note="passes"),
+                           unit_run("2026-02-01-run-b", "SAME-1", "@c0", ["src/auth.py"], note="passes again")])
+        self.assertEqual(list(got.values()), [("CURRENT", [], True)] * 2)
+
+
 if __name__ == "__main__":
     unittest.main()

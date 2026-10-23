@@ -513,7 +513,9 @@ def provenance_failed(hint):
 
 def _newer(a, b, live):
     """True when record b is strictly newer than record a: by ancestry when the live repo knows
-    both revisions, else by commit time, else by the records' own claimed time."""
+    both revisions, else by commit time, else by the records' own claimed time. Two runs at ONE
+    revision share a commit time, so the claimed time breaks that tie (PR #639 review: a later
+    run reversing an earlier verdict on unchanged code left both CURRENT)."""
     ra, rb = a.get("rev"), b.get("rev")
     if live is not None and ra and rb and ra != rb and live.has_commit(ra) and live.has_commit(rb):
         if _ok(git(live.root, "merge-base", "--is-ancestor", ra, rb)):
@@ -521,16 +523,22 @@ def _newer(a, b, live):
         if _ok(git(live.root, "merge-base", "--is-ancestor", rb, ra)):
             return False
     ta, tb = a.get("time"), b.get("time")
-    return ta is not None and tb is not None and tb > ta
+    if ta is not None and tb is not None and ta != tb:
+        return tb > ta
+    ca, cb = a.get("claimed", ta), b.get("claimed", tb)
+    return ca is not None and cb is not None and cb > ca
 
 
 def supersede(hints, live, observations=()):
     """Contradictory evidence (#605): a hint is SUPERSEDED when a strictly newer record of the
     same unit claims the opposite outcome, when a newer record lists it in ``supersedes``, or when
     a CURRENT observation of its scope (the frozen task's own evidence) says the opposite. Only a
-    record whose own provenance held can supersede (provenance_failed). Mutates each hint's
-    ``reasons``; a contradiction only ever demotes, never promotes."""
+    record whose own provenance held can supersede (provenance_failed). A contradicting record
+    that nothing orders either way -- same revision, same or no claimed time -- leaves both
+    UNKNOWN: neither verdict is known to hold. Mutates each hint's ``reasons``; a contradiction
+    only ever demotes, never promotes."""
     for old in hints:
+        unordered = None
         for new in hints:
             if new is old or provenance_failed(new):
                 continue
@@ -540,7 +548,12 @@ def supersede(hints, live, observations=()):
                            and old["outcome"] != new["outcome"])
             if (explicit or contradicts) and _newer(old, new, live):
                 old["reasons"].append((SUPERSEDED, f"superseded-by:{new['run']}/{new['unit']}"))
+                unordered = None
                 break
+            if contradicts and unordered is None and not _newer(new, old, live):
+                unordered = new
+        if unordered is not None:
+            old["reasons"].append((UNKNOWN, f"contradicted-by:{unordered['run']}/{unordered['unit']}"))
         for obs in observations:
             if not old.get("outcome") or obs["outcome"] == old["outcome"]:
                 continue

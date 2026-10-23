@@ -344,13 +344,16 @@ def _prior_hints(clean_paths, rdir):
             raw_uid = unit.get("id") or unit.get("unit_id") or unit.get("unit") or "unit"
             intent = unit.get("intent") if isinstance(unit.get("intent"), dict) else {}
             supersedes = unit.get("supersedes")
+            # The record's own claimed time survives the commit-time override below: it is the only
+            # order between two runs at ONE revision (PR #639 review).
+            claimed = hp.recorded_time(data, unit, run_id)
             hints.append({
                 "kind": "run", "run": run_id, "unit": raw_uid, "status": unit.get("status") or "recorded",
                 "run_key": str(run_id).strip().lower(), "unit_key": str(raw_uid).strip().lower(),
                 "outcome": hp.outcome(unit.get("status")), "rev": rev, "rev_raw": bool(head),
                 "repo": repo, "manifest_path": mf, "artifact": mf.relative_to(rdir).as_posix(),
                 "digest": digest, "records": [unit] if unit is data else [unit, data],
-                "time": hp.recorded_time(data, unit, run_id), "paths": paths, "symbols": symbols,
+                "time": claimed, "claimed": claimed, "paths": paths, "symbols": symbols,
                 "tokens": tokens, "match": best, "order": (order, idx), "reasons": [],
                 "supersedes": supersedes if isinstance(supersedes, list) else [],
                 "park": unit.get("parking_reason"),

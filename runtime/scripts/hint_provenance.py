@@ -28,12 +28,15 @@ edit agent instructions, permissions, the live checkout or the run archive.
 
 Library only: no CLI, no exit codes.
 """
+import ast
 import datetime
 import fnmatch
+import functools
 import hashlib
 import os
 import re
 import subprocess
+import warnings
 from pathlib import Path
 
 import diff_scope
@@ -70,6 +73,12 @@ FAIL_STATUSES = frozenset({"parked", "failed", "fail", "red", "regressed", "susp
 MATCH_KINDS = ("exact", "query-glob", "dir", "basename", "record-glob")
 STRUCTURED_FIELDS = ("files_touched", "scope_allow", "oracle_scope")
 SYMBOL_SPLIT = re.compile(r"::|#")
+# Python source is bounded by its own parser (PR #639 review: the indentation walk misread
+# decorators, then tabs, then a column-zero line inside a multiline string -- each cut a definition
+# short, so a changed body stayed CURRENT). The walk below remains for other languages only.
+PYTHON_SUFFIXES = (".py", ".pyi", ".pyw")
+DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+AMBIGUOUS = object()  # a name defined more than once at its shallowest depth: no single block
 DEF_LINE = r"^(?P<indent>[ \t]*)(?:export\s+)?(?:async\s+)?(?:def|class|function|func|fn)\s+{sym}\b"
 
 
@@ -205,11 +214,84 @@ def _indent(line):
     return len(LEADING.match(line).group().expandtabs())
 
 
+@functools.lru_cache(maxsize=32)
+def _python_tree(text):
+    """The parsed module, or None when ``text`` is not source the parser accepts. Warnings (an
+    invalid escape in someone's file) are the file's business, not the hint's output."""
+    if text is None:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+
+
+def _rows(text):
+    """Source rows as the parser numbers them: ``\\r\\n``, ``\\r`` and ``\\n`` end a row; a form feed
+    or a Unicode line separator does not (str.splitlines() would shift every lineno after it)."""
+    return re.split(r"\r\n|\r|\n", text)
+
+
+def _definition_levels(scope):
+    """The definitions under an ast ``scope``, one list per nesting depth: those reached through
+    plain statements (if/try/with/for) first, then the ones nested inside each of those."""
+    frontier = [scope]
+    while frontier:
+        level = []
+        for owner in frontier:
+            pending = list(ast.iter_child_nodes(owner))
+            while pending:
+                node = pending.pop()
+                if isinstance(node, DEFINITIONS):
+                    level.append(node)
+                else:
+                    pending.extend(ast.iter_child_nodes(node))
+        if level:
+            yield level
+        frontier = level
+
+
+def _python_definition(tree, symbol):
+    """The ast node ``symbol`` names: each dotted part is looked up inside the previous part's node
+    (``Cls.meth``, ``outer.inner``) at the shallowest depth that defines it, so ``balance`` is the
+    module function, not ``Account.balance``. None when nothing defines it; AMBIGUOUS when that
+    depth defines it twice (a redefinition, an if/else pair, a property setter)."""
+    scope = tree
+    for part in str(symbol).split("."):
+        found = []
+        for level in _definition_levels(scope):
+            found = [node for node in level if node.name == part]
+            if found:
+                break
+        if not found:
+            return None
+        if len(found) > 1:
+            return AMBIGUOUS
+        scope = found[0]
+    return scope
+
+
+def _unbounded(text, symbol):
+    """True when Python text gives ``symbol`` no single block: it does not parse, or the name is
+    ambiguous. Such a symbol is compared as the whole file, failing toward STALE."""
+    tree = _python_tree(text)
+    return tree is None or _python_definition(tree, symbol) is AMBIGUOUS
+
+
 def _decorator_start(lines, i, indent):
-    """Index of the first decorator line directly above lines[i] (i itself when none). A decorator
-    is part of the definition: changing or adding one changes behavior with the body untouched
-    (PR #639 review). Continuation lines of a multi-line decorator -- deeper-indented or a closing
-    bracket -- are taken only when an ``@`` line at the def's own indentation opens them."""
+    """Index of the first decorator line of the definition on lines[i] (i itself when none). A
+    decorator is part of the definition: changing or adding one changes behavior with the body
+    untouched (PR #639 review). Parsed Python answers from the definition's decorator list --
+    exact through comments, left-aligned arguments and multiline strings. Other text walks up from
+    the def (a heuristic): continuation lines of a multi-line decorator -- deeper-indented or a
+    closing bracket -- are taken only when an ``@`` line at the def's own indentation opens them."""
+    tree = _python_tree("\n".join(lines))
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, DEFINITIONS) and node.lineno == i + 1:
+                return min([i] + [d.lineno - 1 for d in node.decorator_list])
     start, j = i, i - 1
     while j >= 0:
         stripped = lines[j].strip()
@@ -223,12 +305,25 @@ def _decorator_start(lines, i, indent):
 
 
 def symbol_block(text, symbol):
-    """The definition block of ``symbol``: its decorators, its def/class/function line, and the
-    lines through the next one indented no deeper; None when the file defines no such symbol.
-    A qualified name (``Cls.meth``) resolves each part inside the previous part's block -- the
-    class, then the method in it (PR #639 review: it used to search a literal ``def Cls.meth``).
-    Indentation-scoped, so it is exact for Python and a heuristic for brace languages -- the
-    fallback is the whole file."""
+    """The definition block of ``symbol``: its decorators through its last line; None when the
+    text defines no such symbol. A qualified name (``Cls.meth``) resolves each part inside the
+    previous one -- the class, then the method in it (PR #639 review: it used to search a literal
+    ``def Cls.meth``). Text the Python parser accepts is bounded by it: the first decorator's row
+    through ``end_lineno``, and a name it defines twice at one depth returns the whole text, so a
+    comparison of it can only fail toward STALE. Any other text uses the indentation heuristic in
+    _definition_block() (a def/class/function line through the next line indented no deeper)."""
+    if text is None:
+        return None
+    tree = _python_tree(text)
+    if tree is not None:
+        node = _python_definition(tree, symbol)
+        if node is None:
+            return None
+        rows = _rows(text)
+        if node is AMBIGUOUS:
+            return "\n".join(rows)
+        start = _decorator_start(rows, node.lineno - 1, _indent(rows[node.lineno - 1]))
+        return "\n".join(rows[start:node.end_lineno])
     block = text
     for part in str(symbol).split("."):
         block = _definition_block(block, part)
@@ -238,8 +333,8 @@ def symbol_block(text, symbol):
 
 
 def _definition_block(text, symbol):
-    """symbol_block() for one unqualified name: the SHALLOWEST definition of it (first in the
-    file among equals), so ``balance`` names the module function, not ``Account.balance``."""
+    """The indentation heuristic for one unqualified name in non-Python text: the SHALLOWEST
+    definition of it (first in the file among equals)."""
     if text is None or not symbol:
         return None
     lines = text.splitlines()
@@ -463,10 +558,18 @@ def _scope_reasons(live, rev, paths, symbols):
 
 def _symbol_reasons(live, rev, path, names):
     """A changed file keeps a symbol-scoped hint CURRENT only while every named symbol's own
-    definition block is byte-identical; a vanished symbol is a rename or deletion."""
+    definition block is byte-identical; a vanished symbol is a rename or deletion. A Python file
+    that does not parse, or that defines the name twice, on either side has no trustworthy block:
+    the whole file is compared instead (PR #639 review)."""
     reasons = []
     then, now = live.text_at(rev, path), live.live_text(path)
+    python = path.lower().endswith(PYTHON_SUFFIXES)
     for name in sorted(names):
+        if python and (_unbounded(then, name) or _unbounded(now, name)):
+            whole = (STALE, f"path-changed:{path}")
+            if then != now and whole not in reasons:
+                reasons.append(whole)
+            continue
         before, after = symbol_block(then, name), symbol_block(now, name)
         if before is None:
             reasons.append((STALE, f"path-changed:{path}"))

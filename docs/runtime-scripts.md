@@ -656,10 +656,13 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 The worst reason is the label. Scope is the concrete path a match resolves to (a basename or
 directory match checks the query's path; two patterns cannot be resolved); a `path::symbol` or
 `path#symbol` token (or a unit's `symbols` list) keeps a changed file's entry current while that
-symbol's own definition block — its decorators included — is byte-identical (indentation-scoped
-in columns, a tab reaching the next multiple of eight as in Python: exact for Python, a heuristic
-for brace languages); `Cls.meth` resolves the class, then the method
-in it, and an unqualified name picks its shallowest definition. Related tests are the tests the record named plus tests sharing a
+symbol's own definition block — its decorators included — is byte-identical. Python source is
+bounded by its parser (`ast`): the first decorator's row through the definition's `end_lineno`,
+`Cls.meth` (or a nested `outer.inner`) resolved one part inside the previous, and an unqualified
+name its shallowest definition; a `.py` file that does not parse, or a name defined twice at that
+depth, compares the whole file instead, so it can only fail toward `STALE`. Other files use an
+indentation heuristic (a def/class/function line through the next line indented no deeper, in
+columns, a tab reaching the next multiple of eight) — a heuristic, not a parse. Related tests are the tests the record named plus tests sharing a
 scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are manifests and
 lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the
 archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined

@@ -976,5 +976,66 @@ class TabIndentedDefinitions(unittest.TestCase):
         self.assertEqual(entries["TAB-3"], ("CURRENT", []))
 
 
+class PythonDefinitionsUseTheParser(unittest.TestCase):
+    """PR #639 review: the third boundary bug in the indentation walk (after decorators and tabs) --
+    a column-zero line inside a multiline string ended the block, so the rest of the string and
+    the code below it never reached the comparison and a changed function stayed CURRENT. Python
+    source is now bounded by ast: the first decorator's row through end_lineno."""
+
+    def test_a_column_zero_string_line_stays_in_the_block(self):
+        src = 'def f():\n    text = """first\nsecond\n"""\n    return text\n\n\ndef g():\n    return 1\n'
+        self.assertEqual(hp.symbol_block(src, "f"), 'def f():\n    text = """first\nsecond\n"""\n    return text')
+        cls = 'class A:\n    doc = """\nx\n"""\n\n    def m(self):\n        return 1\n'
+        self.assertEqual(hp.symbol_block(cls, "A.m"), "    def m(self):\n        return 1")
+        nested = "def outer():\n    def inner():\n        s = '''\nend'''\n        return s\n    return inner\n"
+        self.assertEqual(hp.symbol_block(nested, "outer.inner"), "    def inner():\n        s = '''\nend'''\n        return s")
+
+    def test_decorator_headers_the_indentation_walk_misread(self):
+        src = "class A:\n    @a\n    # why b\n    @b\n    def m(self):\n        return 1\n"
+        self.assertEqual(hp.symbol_block(src, "m"), "    @a\n    # why b\n    @b\n    def m(self):\n        return 1")
+        src = '@doc("""\ntext\n""")\ndef f():\n    return 1\n'
+        self.assertEqual(hp.symbol_block(src, "f"), src.rstrip("\n"))
+
+    def test_rows_are_numbered_as_the_parser_numbers_them(self):
+        # A form feed is not a row break for ast, though str.splitlines() treats it as one.
+        src = "x = 1\x0c\ny = 2\r\ndef f():\r\n    return 1\r\n"
+        self.assertEqual(hp.symbol_block(src, "f"), "def f():\n    return 1")
+
+    def test_a_name_defined_twice_has_no_single_block(self):
+        for src, name in (("if X:\n    def f():\n        return 1\nelse:\n    def f():\n        return 2\n", "f"),
+                          ("class A:\n    @property\n    def x(self):\n        return 1\n\n    @x.setter\n"
+                           "    def x(self, v):\n        self.v = v\n", "A.x")):
+            with self.subTest(name=name):
+                self.assertEqual(hp.symbol_block(src, name), src)
+
+    def test_python_scopes_end_where_the_parser_says(self):
+        files = {"src/text.py": 'def render():\n    tpl = """<p>\n{body}\n</p>"""\n    return tpl\n\n\ndef other():\n'
+                                '    return 1\n',
+                 "src/sel.py": "if FAST:\n    def pick():\n        return 1\nelse:\n    def pick():\n        return 2\n",
+                 "src/broken.py": "def keep():\n    return 1\n",
+                 "src/app.js": "function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n"}
+        later = {"src/text.py": files["src/text.py"].replace("{body}", "{body!r}"),
+                 "src/sel.py": files["src/sel.py"].replace("return 2", "return 3"),
+                 "src/broken.py": files["src/broken.py"] + "def broken(:\n",
+                 "src/app.js": files["src/app.js"].replace("return 2", "return 3")}
+        fx = Fixture(scenario(
+            [{"name": "c0", "files": dict(BASE, **files)}, {"name": "c1", "files": later}],
+            [unit_run("2026-02-01-run-a", "STR-1", "@c0", ["src/text.py::render"], note="render escapes"),
+             unit_run("2026-02-01-run-b", "STR-2", "@c0", ["src/text.py::other"], note="other is untouched"),
+             unit_run("2026-02-01-run-c", "AMB-1", "@c0", ["src/sel.py::pick"], note="pick is fast"),
+             unit_run("2026-02-01-run-d", "BRK-1", "@c0", ["src/broken.py::keep"], note="keep is kept"),
+             unit_run("2026-02-01-run-e", "JS-1", "@c0", ["src/app.js::a"], note="a is untouched")],
+            query=["src/*"]))
+        try:
+            got = {e["unit"]: (e["currency"], e["reasons"]) for e in fx.select(paths=("src/*",))["entries"]}
+        finally:
+            fx.close()
+        self.assertEqual(got["STR-1"], ("STALE", ["symbol-changed:src/text.py::render"]))
+        self.assertEqual(got["STR-2"], ("CURRENT", []))
+        self.assertEqual(got["AMB-1"], ("STALE", ["path-changed:src/sel.py"]))
+        self.assertEqual(got["BRK-1"], ("STALE", ["path-changed:src/broken.py"]))
+        self.assertEqual(got["JS-1"], ("CURRENT", []))
+
+
 if __name__ == "__main__":
     unittest.main()

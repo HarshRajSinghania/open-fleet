@@ -27,7 +27,8 @@ boundary rather than assembling a gate command from its flags alone.
 | Verify a unit's evidence | [`verify.py`](../runtime/scripts/verify.py) | [Gate inputs](verify-gate.md#native-path--plugin-hooks-set-claude_plugin_root) and [manifest policy](../runtime/evidence-manifest.md) |
 | Connect verification to completion events | [`verify-gate.sh`](../runtime/scripts/verify-gate.sh) | [Install paths](verify-gate.md#install-paths-and-which-ones-carry-the-gate) |
 | Sign a coordinator-owned dispatch | [`dispatch-sign.py`](../runtime/scripts/dispatch-sign.py) | [Signed dispatch](verify-gate.md#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135) |
-| Write or check an artifact inventory | [`inventory.py`](../runtime/scripts/inventory.py) | [Run submission](run-submission-guide.md#step-by-step); recheck history at the report's named commit |
+| Write, check or sign an artifact inventory | [`inventory.py`](../runtime/scripts/inventory.py) | [Run submission](run-submission-guide.md#step-by-step); recheck history at the report's named commit |
+| Record a log upload as a retention receipt, or verify one offline | [`inventory.py receipt`](../runtime/scripts/inventory.py), [`verify.py --retention-pubkey`](../runtime/scripts/verify.py) | [Retention receipt v1](compliance-provenance.md#retention-receipt-v1--what-the-offline-check-proves-608): the shape, the claim, and what is and is not verified |
 | Check whether a run report binds | [`run_report.py`](../runtime/scripts/run_report.py) | [What binding means](run-submission-guide.md#what-binding-means) |
 | Derive or check a run's WIP-curve rows from observed events | [`events.py`](#eventspy) | [WIP-curve protocol](../runtime/attention-budget.md#the-wip-curve-protocol-how-a-cap-graduates-from-asserted-to-measured), plus the section below |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
@@ -663,7 +664,7 @@ differs from the store) · 2 usage or store error.
 Single git resolution rule and hardened git environment for the read-side tools
 (`runtime/scripts/inventory.py`, `runtime/scripts/evidence-run.py`,
 `runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`). Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-37`; behavior pinned by `tests/test_inventory.py`,
+Source `runtime/scripts/gitexec.py:1-39`; behavior pinned by `tests/test_inventory.py`,
 `tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`, and
 `tests/test_diff_scope.py`.
 
@@ -687,8 +688,9 @@ Exits: n/a (library).
 > a repo-local `core.fsmonitor` hook, or a `refs/replace/` ref could hijack a bare `git` call.
 > Resolving `runtime/scripts/gitexec.py:GIT` once at import (and raising
 > `runtime/scripts/gitexec.py:GitAbsent` when missing) plus overriding repo-local config via
-> `runtime/scripts/gitexec.py:env` keeps read-side git queries deterministic without joining the
-> signed verifier toolchain.
+> `runtime/scripts/gitexec.py:env` keeps read-side git queries deterministic. Since #608 the module
+> is part of the signed verifier toolchain (`runtime/scripts/verify.py:_Transcript`): verify.py
+> loads `runtime/scripts/inventory.py` to check a retention receipt, and that loads this module.
 
 ## `guard_text.py`
 

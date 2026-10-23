@@ -81,6 +81,21 @@ def _alive(pid):
     return proc.returncode == 0 and not proc.stdout.strip().startswith("Z")
 
 
+class FakeClock:
+    """Stands in for posix.py's `time`: only its own sleeps advance it, so a grace is measured, never waited."""
+
+    def __init__(self):
+        self.now = time.time()
+        self.slept = 0.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+
+
 class Coordinator:
     """A coordinator subprocess and the boundary lines it printed."""
 
@@ -982,6 +997,60 @@ class TestSandboxSalvageIsRetried(CrashRecoveryBase):
         self.assertEqual(len(self.died_payloads(prov, info["dispatchId"])), 1)
         self.assertEqual(prov.launch_reconcile()["count"], 0)
         self.assertTrue((Path(info["laneDir"]) / "sandbox.git").is_dir(), "the refused sandbox stays in the lane")
+
+    def test_abandoned_after_its_monitor_vanished_is_settled_without_waiting_the_sync_grace(self):
+        self.env["OPEN_FLEET_SANDBOX_SYNC_GRACE_S"] = "120"
+        prov, info = self.vanished_sandbox()
+        disp = info["dispatchId"]
+        self.docker_down.touch()
+        self.assertEqual(prov.launch_reconcile()["reconciled"][0]["resolution"], "cleanup_pending")
+        prov.worker_fence("abandon", disp)  # the give-up step a cleanup_pending receipt names
+        clock = FakeClock()
+        with mock.patch.object(self.posix, "time", clock):
+            held = prov.launch_reconcile()["reconciled"][0]
+        self.assertLess(clock.slept, 1.0, "a dead monitor never writes exit.json: recovery never waits the sync grace for it")
+        monitor = [p for p in held["processes"] if p["role"] == "monitor"][0]
+        self.assertEqual((monitor["alive"], monitor["action"]), (False, "reported_dead"))
+        self.assertEqual((held["resolution"], held["dispatch"]["after"], held["task"]["after"]), ("cleanup_pending", "abandoned", "dispatched"),
+                         "its container is not confirmed gone: the task is not handed back yet")
+        self.assertEqual([c["action"] for c in held["cleanup"] if c["kind"] == "container"], ["removal_failed"])
+        self.docker_down.unlink()
+        real_sync, synced_after = self.posix.sync_sandbox_git, []
+
+        def sync_after_removal(meta, dispatch_id):
+            synced_after.append(self.docker_log.read_text().count(f"rm -f openfleet-{disp}"))
+            return real_sync(meta, dispatch_id)
+
+        removals = self.docker_log.read_text().count(f"rm -f openfleet-{disp}")
+        with mock.patch.object(self.posix, "time", clock), mock.patch.object(self.posix, "sync_sandbox_git", side_effect=sync_after_removal):
+            r = prov.launch_reconcile()["reconciled"][0]
+        self.assertLess(clock.slept, 1.0)
+        self.assertEqual(synced_after, [removals + 1], "the container is removed, then the sandbox synced")
+        self.assertEqual((r["resolution"], r["error"]["code"]), ("failed", "dispatch_fenced"))
+        self.assertEqual((r["dispatch"]["after"], r["task"]["after"]), ("abandoned", "ready"), "the operator's fence stands")
+        self.assertIn({"kind": "container", "target": f"openfleet-{disp}", "action": "removed", "rc": 0}, r["cleanup"])
+        self.assertEqual(self.sandbox_ref(disp), info["sandboxHead"], "giving up never loses the worker's commits")
+        self.assertEqual(self.died_payloads(prov, disp), [], "a fenced dispatch's exit is expected: no worker_died")
+        self.assertEqual(prov.request_show("req-1")["state"], "failed")
+
+    def test_fenced_live_monitor_still_gets_the_whole_sync_grace(self):
+        self.env["OPEN_FLEET_SANDBOX_SYNC_GRACE_S"] = "120"
+        info = self.crash_at("published", retry_request="req-1", profile="danger", on_env="sandbox-img")
+        self.assertTrue(_wait_for(lambda: len(self.agent_lines()) == 1), "the fake sandbox never ran")
+        prov = self.restart()
+        disp = info["dispatchId"]
+        pid = self.dispatch(prov, disp)["pid"]
+        with prov.state._connect() as conn:  # a stop recorded whose caller died before its teardown
+            conn.execute("UPDATE dispatches SET state = 'stopped', terminal_state = 'stopped' WHERE dispatch_id = ?", (disp,))
+        clock = FakeClock()
+        with mock.patch.object(self.posix, "time", clock):
+            r = prov.launch_reconcile()["reconciled"][0]
+        monitor = [p for p in r["processes"] if p["role"] == "monitor"][0]
+        self.assertEqual((monitor["alive"], monitor["action"]), (True, "terminated"))
+        self.assertGreaterEqual(clock.slept, 120, "a live monitor may still be syncing: it gets the whole grace")
+        self.assertEqual(monitor["termination"]["sandboxSync"], {"error": "monitor did not report a finished sync"})
+        self.assertTrue(_wait_for(lambda: not _alive(pid)), "and is stopped after it")
+        self.assertEqual((r["resolution"], r["error"]["code"], r["task"]["after"]), ("failed", "dispatch_fenced", "ready"))
 
 
 if __name__ == "__main__":

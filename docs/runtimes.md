@@ -178,7 +178,12 @@ resolution is `cleanup_pending`, the request stays `pending`, and every `worker-
 `worker-show` and `launch-reconcile` retries both steps. No sync runs while the container may
 still be running. A failed removal is recorded `removal_failed`, never `removed`. A sandbox
 refused as tampered, or with unreadable metadata, is not retried: the death is recorded with
-the refusal, and the sandbox git dir stays in the lane. A monitor writes `<lane>/exit.json` before it
+the refusal, and the sandbox git dir stays in the lane. An operator may stop or abandon the
+dispatch while recovery is pending. If the monitor of that `danger` dispatch is confirmed dead,
+recovery runs the same removal and sync. It no longer waits the sandbox sync grace
+(`OPEN_FLEET_SANDBOX_SYNC_GRACE_S`, default 120 s) for an `exit.json` that cannot come, and the
+task is handed back only once both steps succeed. A live monitor still gets the whole grace to
+finish its own sync. A monitor writes `<lane>/exit.json` before it
 settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
 exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
 recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a

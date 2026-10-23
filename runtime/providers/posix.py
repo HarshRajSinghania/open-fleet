@@ -1859,18 +1859,30 @@ if {repr(self.backend)} == "cmux":
         elif d["state"] in FENCED_DISPATCH_STATES:
             # An operator fenced it while it was starting: finish that fence, as the live path would.
             mon = self._monitor_process(d, lane)
-            mon["action"] = "terminated"
-            mon["termination"] = self._terminate_backend(
-                d["backend"] or self.backend,
-                handle,
-                int(mon.get("pid") or 0) if mon.get("alive") else 0,
-                backend_ref=d["backend_ref"],
-                container=self._dispatch_container(d),
-                lane_dir=d["lane_dir"],
-            )
+            if mon["alive"] is False:
+                # Confirmed dead: no exit.json can ever come, and waiting the sync grace for one
+                # stalled recovery (#597). Salvage as for any vanished monitor (container removal,
+                # then the sync) with its unknown exit; only the mux session is left to close.
+                vanished = self._report_vanished(d)
+                mon["action"] = "reported_dead"
+                mon["termination"] = self._terminate_backend(d["backend"] or self.backend, handle, 0, backend_ref=d["backend_ref"])
+                self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
+                if vanished.get("retry"):
+                    resolution = "cleanup_pending"  # its container may still run: keep the task claimed
+            else:
+                mon["action"] = "terminated"
+                mon["termination"] = self._terminate_backend(
+                    d["backend"] or self.backend,
+                    handle,
+                    int(mon.get("pid") or 0) if mon.get("alive") else 0,
+                    backend_ref=d["backend_ref"],
+                    container=self._dispatch_container(d),
+                    lane_dir=d["lane_dir"],
+                )
             processes.append(mon)
-            resolution, release = "failed", True
-            err = ProviderError("dispatch_fenced", f"dispatch {disp_id!r} was fenced ({d['state']}) during startup")
+            if not resolution:
+                resolution, release = "failed", True
+                err = ProviderError("dispatch_fenced", f"dispatch {disp_id!r} was fenced ({d['state']}) during startup")
         else:
             gated = bool(_col(d, "monitor_started_at")) or exit_file.is_file() or d["state"] not in ("ready", "retained")
             if it["phase"] == "registered" and not gated:
@@ -1912,23 +1924,7 @@ if {repr(self.backend)} == "cmux":
                         mon["action"], resolution = "cleanup_pending", "cleanup_pending"
                     else:
                         mon["action"], resolution = "reported_dead", "exited"
-                    if vanished.get("salvage"):
-                        salvage = vanished["salvage"]
-                        if salvage.get("sandboxRef"):
-                            refs.append({"ref": salvage["sandboxRef"], "sha": salvage.get("head"), "source": "sandbox"})
-                        if salvage.get("container"):
-                            box = salvage["container"]
-                            cleanup.append(
-                                {"kind": "container", "target": box["name"], "action": box["action"], "rc": box["rc"]}
-                                | ({"error": box["error"]} if box.get("error") else {})
-                            )
-                        if salvage.get("sync") in ("deferred", "failed", "refused"):
-                            cleanup.append(
-                                {"kind": "sandbox_sync", "target": salvage["sandboxGit"], "action": salvage["sync"]}
-                                | ({"error": salvage["error"]} if salvage.get("error") else {})
-                            )
-                        if salvage.get("error"):
-                            mon["salvageError"] = salvage["error"]
+                    self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
                 else:
                     resolution = "unknown"
                 processes.append(mon)
@@ -1961,6 +1957,11 @@ if {repr(self.backend)} == "cmux":
             steps = ["the worker already exited: read its terminal mail or its worker_died escalation (check) before any retry-of"]
         elif resolution == "failed":
             steps = ["nothing runs for this attempt and the task is back to ready: start a new attempt with a NEW --retry-request"]
+        elif resolution == "cleanup_pending" and d_after is not None and d_after["state"] in FENCED_DISPATCH_STATES:
+            steps = [
+                f"it is {d_after['state']} and its monitor is dead, but removing its container or syncing its commits failed: "
+                "worker-list, worker-show and launch-reconcile retry both, and only then hand the task back",
+            ]
         elif resolution == "cleanup_pending":
             steps = [
                 "its monitor vanished and removing its container or syncing its commits failed: worker-list, worker-show "
@@ -2018,6 +2019,29 @@ if {repr(self.backend)} == "cmux":
         if lane.is_dir():
             (lane / "recovery.json").write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         return receipt
+
+    @staticmethod
+    def _record_salvage(
+        salvage: dict[str, Any] | None, mon: dict[str, Any], refs: list[dict[str, Any]], cleanup: list[dict[str, Any]]
+    ) -> None:
+        """What `_salvage_sandbox` did, in the recovery receipt: the synced ref and every cleanup step."""
+        if not salvage:
+            return
+        if salvage.get("sandboxRef"):
+            refs.append({"ref": salvage["sandboxRef"], "sha": salvage.get("head"), "source": "sandbox"})
+        if salvage.get("container"):
+            box = salvage["container"]
+            cleanup.append(
+                {"kind": "container", "target": box["name"], "action": box["action"], "rc": box["rc"]}
+                | ({"error": box["error"]} if box.get("error") else {})
+            )
+        if salvage.get("sync") in ("deferred", "failed", "refused"):
+            cleanup.append(
+                {"kind": "sandbox_sync", "target": salvage["sandboxGit"], "action": salvage["sync"]}
+                | ({"error": salvage["error"]} if salvage.get("error") else {})
+            )
+        if salvage.get("error"):
+            mon["salvageError"] = salvage["error"]
 
     def _dispatch_row(self, dispatch_id: str) -> Any:
         rows = self._dispatch_rows("WHERE dispatch_id = ?", (dispatch_id,))

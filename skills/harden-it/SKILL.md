@@ -15,8 +15,8 @@ compatibility: >-
   HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). git + gh; gitleaks. A security
   worker playbook (addyosmani security-and-hardening or gstack /cso — v3 runs only through its
   compiled launcher, and --comprehensive also needs Docker) — one router per worker.
-  An ephemeral per-workspace sandbox (sandbox-policy) for exploit PoCs that can't run safely on
-  the host.
+  A host-unsafe exploit PoC needs the danger lane: BLOCKED on Orca, where it parks; off Orca, a
+  placement-bound sandbox (sandbox-policy).
 metadata:
   proof: self-run
   proof_evidence: docs/runs/2026-09-21-harden-it-self-run.md
@@ -62,8 +62,8 @@ THREAT-MODEL (STRIDE per trust boundary; Always/Ask-First/Never boundary per san
     codebase at the BASE head — valid because BASE was just bootstrapped; the lens's scope-gating
     is bypassed for a full audit; per axis, a PoC SCENARIO for every P0/P1 — written, NOT executed)
   → PoC ROUTING (classify every PoC's execution profile BEFORE anyone runs it): static → ro; safe
-    local exploit → rw; networked/destructive/supply-chain → ephemeral sandbox + danger; no safe
-    sandbox → evidence-backed PARKED (never executed on host)
+    local exploit → rw; networked/destructive/supply-chain → the danger lane, which on Orca is BLOCKED
+    (sandbox-policy) → evidence-backed PARKED there; off Orca only a placement-bound sandbox; never the host
   → VERIFY findings (independent-verifier refute under the routed profile per triage-findings §5 —
     kill false positives before fix effort)
   → FIX (remediate-finding; exploit test first; audit the whole CLASS, not just the instance)

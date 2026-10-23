@@ -14,7 +14,7 @@ the unparking mission can re-derive.
 | supply knowledge the fleet lacks | a questionnaire | one idea per question, most-important-first, an answer stub under each, deadline and effort stated |
 | do bounded manual work that unblocks a decision | a Task item | what to do, and which facts it must return (locations, ids, counts) that later units depend on |
 | show the fleet a rendered element | a Design Mode capture | the human clicks the element in Orca's browser; DOM + computed styles + cropped screenshot + source file/line land in chat as DATA |
-| take over building | an `agent-brief` | the durable contract, written to that playbook's rules |
+| take over building | an agent brief | the durable contract — read agent-brief.md and write to its rules |
 
 Choose ONE per park. A questionnaire that is really a procedure gets ignored; a script that is
 really a question gets guessed at.
@@ -61,7 +61,7 @@ verdict — a mission never reports CLEAN with an unfiled park. Unparking is a s
 (gate-classification.md): the unparking worker re-derives the VERIFY-COMPLETE observation itself in
 a fresh session and records the result in the manifest (evidence-manifest.md). It never closes the
 park because the recipient replied that they did it. Nothing learned from a park is written into
-the target repo's agent context here — that goes to `compound-learn` as a proposal.
+the target repo's agent context here — that is a compound-learn proposal, never a park's side effect.
 
 ## Completion
 

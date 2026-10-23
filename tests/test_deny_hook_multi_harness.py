@@ -256,8 +256,8 @@ class TestSelfGuard(HookCase):
     def test_git_clean_stash_and_cd_forms_that_keep_the_guard_stay_allowed(self):
         env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt)}
         for command in (
-            "git clean -fd", "git clean -nx", "git clean -n -X", "git clean -fdx --dry-run",
-            "git clean -fd -e x", "git clean -fde x", "git stash", "git stash push -m -u",
+            "git clean -nx", "git clean -n -X", "git clean -fdx --dry-run",
+            "git stash", "git stash push -m -u",
             "git stash pop", "git stash list", "git stash show -u", "git stash --keep-index",
             "cd src && rm -f app.o", "cd .claude && cat settings.json", "cd src; rm -f build.log",
         ):
@@ -265,6 +265,20 @@ class TestSelfGuard(HookCase):
                 r = self.fire(wrapped("bash", command=command), env)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual(r.stdout.strip(), "")
+
+    def test_a_whole_tree_git_clean_is_a_never_list_ask_not_a_guard_hit(self):
+        # 2026-10-23 review, P2-12: a forced clean of the whole tree deletes the worker's
+        # untracked work, so it asks (strict: exit 2) -- but it keeps the guard, so the
+        # refusal names the Never list, never "own guard" (#592's distinction).
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(self.wt)}
+        for command in ("git clean -fd", "git clean -fd -e x", "git clean -fde x", "git clean -f"):
+            with self.subTest(command=command):
+                r = self.fire(wrapped("bash", command=command), env)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("NEVER-LIST", r.stderr)
+                self.assertNotIn("own guard", r.stderr)
+        r = self.fire(wrapped("Bash", command="git clean -fd"), env)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
 
     def test_path_limited_git_clean_is_judged_on_its_paths(self):
         # #592 review: `git clean -fdx -- build/` cannot reach the root hook configs.

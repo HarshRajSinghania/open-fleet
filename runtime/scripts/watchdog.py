@@ -66,8 +66,10 @@ Exit codes
     0  tick completed, nothing needs the coordinator
     1  tick completed, at least one stop-redispatch recommendation (or, under
        --dry-run, at least one WOULD-recommend)
-    2  could not run — unreadable heartbeats/config/state, unknown config key,
-       live mode without nudge_command, or a nudge transport failure
+    2  could not run — unreadable heartbeats/config/state (including a worker whose
+       dispatched_at/last_movement_at is missing, null, empty, unparseable or in the
+       future: its liveness cannot be judged), unknown config key, live mode without
+       nudge_command, or a nudge transport failure
 """
 import argparse
 import hashlib
@@ -142,7 +144,8 @@ def load_config(path):
     for key in ("slow_after_s", "hung_after_s", "wedge_frozen_s",
                 "max_nudges_per_dispatch", "max_ci_nudges_per_dispatch",
                 "nudge_window_s", "max_nudges_per_hour_per_worker"):
-        if not isinstance(cfg[key], (int, float)) or cfg[key] < 0:
+        # bool is an int subclass: `true` is not a budget of 1.
+        if isinstance(cfg[key], bool) or not isinstance(cfg[key], (int, float)) or cfg[key] < 0:
             raise ConfigError(f"config {path}: {key} must be a non-negative number")
     if cfg["nudge_command"] is not None and (
             not isinstance(cfg["nudge_command"], list)
@@ -346,6 +349,18 @@ def fill_waiting_input(data, env=None, store=None):
     return filled
 
 
+def _liveness_ts(worker, field, now):
+    """A REQUIRED liveness timestamp: present, parseable, and not after the tick's `now`."""
+    raw = worker.get(field)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError(f"{field}: missing ({raw!r}); liveness cannot be judged without it")
+    at = parse_ts(raw, field)
+    if at > now:
+        raise ValueError(f"{field}: {at.isoformat()} is after the tick ({now.isoformat()}); "
+                         "a future movement time would read as idle 0")
+    return at
+
+
 def classify(worker, now, cfg):
     """(state, evidence) for one worker heartbeat record.
 
@@ -358,10 +373,12 @@ def classify(worker, now, cfg):
     if terminal in SETTLED:
         return "SETTLED", {"terminal": terminal}
     try:
-        dispatched = parse_ts(worker["dispatched_at"], "dispatched_at") \
-            if worker.get("dispatched_at") else now
-        last_move = parse_ts(worker["last_movement_at"], "last_movement_at") \
-            if worker.get("last_movement_at") else dispatched
+        # A liveness timestamp that is missing, null, empty or in the future USED to read as
+        # "moved just now" (idle 0, never SLOW/HUNG): a producer that dropped a field blinded
+        # the watchdog. It is a heartbeat error now, like an unparseable one (2026-10-23
+        # review, P2-7): exit 2, naming the worker and the field.
+        _liveness_ts(worker, "dispatched_at", now)  # required: a dropped field is a broken producer
+        last_move = _liveness_ts(worker, "last_movement_at", now)
         stop_at = parse_ts(worker["stop_at"], "stop_at") \
             if worker.get("stop_at") else None
         last_nudge_raw = worker.get("last_nudge_at")
@@ -764,6 +781,17 @@ def build_failure_handover(record, max_lines=40):
     return action, flat[:max_lines]
 
 
+# GitHub check-run status/conclusion, commit-status state and `gh pr checks` state/bucket
+# vocabulary. A passing row is not a failure; a NOT-YET-TERMINAL row is not one either: signing
+# `in_progress`/`PENDING`/`QUEUED` spent the single CI nudge before the run ended, and the real
+# failure later was withheld as "budget spent" (2026-10-23 review, P2-8). Terminal failures
+# (failure, error, cancelled, timed_out, action_required, startup_failure, stale) and any
+# value outside both sets still sign: an unknown state fails toward a nudge, not silence.
+CI_PASSING = frozenset({"success", "neutral", "skipped", "passed", "pass", "skipping"})
+CI_PENDING = frozenset({"pending", "queued", "in_progress", "expected", "waiting", "requested",
+                        "running"})
+
+
 def ci_failure_signature(checks: list[dict]) -> str:
     """Deterministic SHA-256 signature of failing CI checks (ignoring timestamps, run IDs, and log URLs)."""
     items = []
@@ -771,7 +799,7 @@ def ci_failure_signature(checks: list[dict]) -> str:
         if not isinstance(chk, dict):
             continue
         conclusion = str(chk.get("conclusion") or chk.get("status") or "")
-        if conclusion.lower() in ("success", "neutral", "skipped", "passed"):
+        if conclusion.strip().lower() in CI_PASSING | CI_PENDING:
             continue
         name = str(chk.get("name") or chk.get("check_name") or chk.get("job") or "")
         step = str(chk.get("step") or chk.get("step_name") or chk.get("failing_step") or "")

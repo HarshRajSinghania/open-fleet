@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus parallel per-cell writer workers, each reviewed build-blind; which entities deserve a tutorial or an explanation is your call.
-> **Activation load:** ~31,800 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~31,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at a public surface nobody has documented. Come back to a coverage map re-derived at
@@ -63,8 +63,9 @@ against a renamed symbol is checking nothing.
   `source=doc-claims`: its unit is a false claim, its terminal is zero false claims. This mission's
   unit is an empty coverage cell and its terminal is zero critical gaps. Same claim oracle,
   opposite denominators.
-- Syncing docs to one wave's diff — [`ship-it`](ship-it.md)'s doc-sync unit inside the release
-  states.
+- Syncing docs to a wave [`ship-it`](ship-it.md) itself built — that run's own doc-sync unit, inside
+  its release states. Outside a ship-it run, docs a merged change made false are `clean-sweep`
+  `source=doc-claims`.
 - Re-witnessing runtime doctrine against an installed binary — [`pin-it`](pin-it.md).
 - Decisions rather than deliverables — [`map-it`](map-it.md).
 

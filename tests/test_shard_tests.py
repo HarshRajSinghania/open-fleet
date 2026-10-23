@@ -12,11 +12,16 @@ perf budgets live in harnesses, never in tests).
     python3 -m unittest tests.test_shard_tests -v
 """
 import importlib.util
+import json
+import os
 import re
 import subprocess
 import sys
+import textwrap
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "shard-tests.py"
@@ -42,6 +47,17 @@ def collect_ids(suite):
 
     walk(suite)
     return out
+
+
+def shard_union_ids(shards):
+    """Every ID the shards collect, through the union test's own per-module loader call."""
+    loader = unittest.TestLoader()
+    tests_dir = str(ROOT / "tests")
+    union = set()
+    for shard in shards:
+        for mod in shard:
+            union |= collect_ids(loader.discover(tests_dir, pattern=mod + ".py"))
+    return union
 
 
 class ShardCoverage(unittest.TestCase):
@@ -99,10 +115,45 @@ class ShardCoverage(unittest.TestCase):
         A mutant comparing a set to itself passes on any tree. Dropping one ID
         from a copied union must break equality, or the assertion proves nothing.
         """
-        sample = {"tests.test_a.C.test_x", "tests.test_a.C.test_y"}
-        dropped = set(sample)
-        dropped.pop()
+        # 2026-10-23 review, §5 Tests: this compared two literal sets and could not fail.
+        # Both operands are now the live ones the union test compares: full discovery, and
+        # the union of a real partition that silently lost one module.
+        sh = load_sharder()
+        shards = sh.partition(sh.discover_modules(), sh.DEFAULT_SHARDS)
+        victim = shards[0][-1]
+        sample = collect_ids(unittest.TestLoader().discover(str(ROOT / "tests")))
+        dropped = shard_union_ids([[m for m in s if m != victim] for s in shards])
         self.assertNotEqual(dropped, sample, "the union comparison cannot see a drop")
+        lost = sample - dropped
+        self.assertTrue(lost, f"dropping {victim} lost no test ID")
+        self.assertTrue(all(tid.startswith(victim + ".") for tid in lost),
+                        f"dropping {victim} lost IDs outside it: {sorted(lost)[:3]}")
+
+    def test_the_union_test_itself_fails_when_a_shard_drops_a_module(self):
+        """The real check, mutated (2026-10-23 review, §5 Tests).
+
+        Runs test_union_of_shard_ids_equals_full_discovery against a sharder whose partition
+        silently drops one module and requires it to FAIL, naming the drop. A union test
+        weakened to compare a set with itself passes that run, and this test catches it.
+        """
+        real = load_sharder()
+        victim = real.partition(real.discover_modules(), real.DEFAULT_SHARDS)[0][-1]
+
+        def partition(modules, n, *args, **kwargs):
+            return [[m for m in s if m != victim]
+                    for s in real.partition(modules, n, *args, **kwargs)]
+
+        mutant = types.SimpleNamespace(discover_modules=real.discover_modules,
+                                       DEFAULT_SHARDS=real.DEFAULT_SHARDS, partition=partition)
+        union_test = ShardCoverage.test_union_of_shard_ids_equals_full_discovery
+        result = unittest.TestResult()
+        with mock.patch.dict(union_test.__globals__, {"load_sharder": lambda: mutant}):
+            ShardCoverage("test_union_of_shard_ids_equals_full_discovery").run(result)
+        self.assertEqual(result.errors, [], "the mutated union test errored instead of failing")
+        self.assertEqual(len(result.failures), 1, f"the union test passed with {victim} dropped")
+        report = result.failures[0][1]
+        self.assertIn("shards and discovery disagree", report)
+        self.assertIn(victim + ".", report, "the failure does not name the dropped module's tests")
 
 
 class ShardDeterminismAndBalance(unittest.TestCase):
@@ -244,6 +295,63 @@ class ShardCliAndWorkflowAgreement(unittest.TestCase):
         self.assertRegex(gates, r"needs:\s*\[[^\]]*tests[^\]]*\]",
                          "gates no longer needs the sharded suite — suite failures "
                          "cannot block the merge")
+
+    def _gates(self):
+        wf = WORKFLOW.read_text(encoding="utf-8")
+        starts = [(m.start(), m.group(1))
+                  for m in re.finditer(r"^  ([a-z_]+):$", wf, re.MULTILINE)]
+        names = [n for _, n in starts]
+        self.assertIn("gates", names, "the gates job is gone from CI")
+        gi = names.index("gates")
+        end = starts[gi + 1][0] if gi + 1 < len(starts) else len(wf)
+        gates = wf[starts[gi][0]:end]
+        needs = re.search(r"(?m)^    needs:\s*\[([^\]]*)\]", gates)
+        self.assertIsNotNone(needs, "gates declares no needs list")
+        return gates, [j.strip() for j in needs.group(1).split(",") if j.strip()], names
+
+    def test_gates_runs_whatever_its_needs_did(self):
+        """2026-10-23 review, P1-5: the test above held while gates merely NEEDED the suite,
+        and that was not enough. A failed need SKIPS a plain dependent, and GitHub counts a
+        skipped required check as success — runs 39386063357 and 38533245355 left `gates`
+        skipped on a red shard. `if: always()` makes gates run, so its own verdict counts."""
+        gates, needs, names = self._gates()
+        self.assertRegex(gates, r"(?m)^    if:\s*always\(\)\s*$",
+                         "gates has no job-level if: always() — a red need skips it, and a "
+                         "skipped required check passes")
+        self.assertIn("floor", needs, "gates no longer needs the floor interpreters")
+        for job in needs:
+            with self.subTest(need=job):
+                self.assertIn(job, names, f"gates needs {job!r}, which no job defines")
+
+    def test_gates_first_step_fails_unless_every_need_succeeded(self):
+        """The result check is RUN here, once per need and per non-success result, so a check
+        that reads the wrong field, misses a need or passes an empty map fails this test."""
+        gates, needs, _ = self._gates()
+        steps = re.split(r"(?m)^      - ", gates.split("\n    steps:\n", 1)[1])[1:]
+        self.assertTrue(steps, "gates has no steps")
+        first = steps[0]
+        self.assertNotIn("actions/checkout@", first, "gates checks out before judging its needs")
+        self.assertRegex(first, r"NEEDS_JSON:\s*\$\{\{\s*toJSON\(needs\)\s*\}\}",
+                         "the first step does not read every need's result")
+        self.assertIn("run: |\n", first)
+        script = textwrap.dedent(first.split("run: |\n", 1)[1])
+
+        def run(results):
+            env = {**os.environ, "NEEDS_JSON": json.dumps(
+                {job: {"result": r, "outputs": {}} for job, r in results.items()})}
+            env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+            return subprocess.run(["bash", "-e", "-c", script], env=env,
+                                  capture_output=True, text=True, timeout=60)
+
+        green = run({job: "success" for job in needs})
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        for job in needs:
+            for result in ("failure", "cancelled", "skipped"):
+                with self.subTest(need=job, result=result):
+                    r = run({**{j: "success" for j in needs}, job: result})
+                    self.assertNotEqual(r.returncode, 0, f"gates passed with {job} {result}")
+                    self.assertIn(f"'{job}' ended '{result}'", r.stdout)
+        self.assertNotEqual(run({}).returncode, 0, "gates passed with no needs at all")
 
     def test_ci_shard_invocation_collects_coverage(self):
         """The --with-coverage flag unwired is the orphan-mechanism shape: CI

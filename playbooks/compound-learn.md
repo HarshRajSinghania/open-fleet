@@ -50,7 +50,7 @@ Rules:
 ## Search the session index before proposing
 
 Before writing the proposal, search indexed agent sessions for prior runs on the same seams
-(`orca search`, guarded exactly as in `diagnose`: resolve the binary, run the index-status
+(`orca search`, guarded: resolve the binary, run the index-status
 precheck, skip silently when the app predates search or indexing is off, quote multi-word
 queries, redact every snippet before it lands anywhere). A gotcha the index shows recurring
 across runs is evidence for the proposal; a gotcha it shows already proposed-and-rejected stays

@@ -40,6 +40,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Only the release maintainer publishes
+        # 2026-10-23 review, P2-23: docs/ops.md "Maintainer roles" says only the repository owner
+        # authorizes a cut and write access alone does not delegate it, yet any writer's `v*` tag
+        # push (or dispatch) ran this job. The account that pushed or dispatched AND the one that
+        # started this attempt (a re-run's triggering_actor) must both be the owner. This binds
+        # the reviewed copy of this file only: a writer who tags a commit whose own copy drops the
+        # step is stopped by the tag ruleset in docs/ops.md#publishing-releases, not by this step.
+        env:
+          RELEASE_MAINTAINER: ${{ github.repository_owner }}
+          RUN_ACTOR: ${{ github.actor }}
+          RUN_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_MAINTAINER" ] || [ "$RUN_ACTOR" != "$RELEASE_MAINTAINER" ] \
+             || [ "$RUN_TRIGGERING_ACTOR" != "$RELEASE_MAINTAINER" ]; then
+            echo "::error::only the release maintainer '$RELEASE_MAINTAINER' publishes; this run is by '$RUN_ACTOR' (attempt by '$RUN_TRIGGERING_ACTOR'), see docs/ops.md#publishing-releases"
+            exit 1
+          fi
+          echo "release maintainer '$RELEASE_MAINTAINER' started this run"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as validate.yml)
         with:
           # A dispatch checks out the named tag, never the branch the run was started from.

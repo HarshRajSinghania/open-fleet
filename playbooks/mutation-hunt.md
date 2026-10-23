@@ -1,5 +1,6 @@
 # Playbook — mutation-hunt  (reviewer-side: prove the tests can fail)
 
+Recipe: fleet-native — field-derived from the 2026-09-14 clean-sweep tracker run, no upstream pack.
 The test-adequacy method behind acceptance-review.md's one-line axis ("would
 reverting the production change fail a test?"). A suite that is green at the
 tip proves nothing by itself — this playbook hunts the survivors that green

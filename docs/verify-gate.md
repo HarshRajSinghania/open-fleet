@@ -73,7 +73,12 @@ coordinator sets the gate env (every input verify-gate.sh reads, enumerated belo
 ```
 
 **The gate env surface** — every `ORCA_*` variable `verify-gate.sh` reads, all coordinator-set (never
-worker-set; anything else in the environment is ignored):
+worker-set). Each also reads as its `OPEN_FLEET_*` alias (the neutral family in
+[runtimes.md](runtimes.md); `ORCA_MANIFEST` as `OPEN_FLEET_GATE_MANIFEST` or `OPEN_FLEET_MANIFEST`).
+Either spelling may set an input, and two spellings set to different values BLOCK (exit 2) rather
+than one silently winning: the alias used to override the documented name unannounced, so an
+inherited `OPEN_FLEET_UNIT_CLASS` could downgrade a class the coordinator set as `ORCA_UNIT_CLASS`
+(2026-10-23 review, P3). Anything else in the environment is ignored:
 
 - `ORCA_MANIFEST` — path to the unit's evidence manifest (required; named-but-missing ⇒ BLOCK;
   unset ⇒ BLOCK on `TaskCompleted`, allowed on `Stop` with no unit in progress).
@@ -143,11 +148,22 @@ worker-set; anything else in the environment is ignored):
   the change (#280): the paths it restores, and the `+++` targets of a `hand` diff, must be
   production paths `base_sha..head_sha` really changes — not a decoy, and not a test file; the
   range-revert fallback is refused when the unit touches a test module; and the RED must carry an
-  assertion failure rather than an ImportError, a SyntaxError, or silence. Fail-closed on anything
+  assertion failure rather than an ImportError, a SyntaxError, or silence. A "test path" is not
+  only a name: the runners' own discovery at `head_sha` counts too — pytest's `python_files` and
+  `testpaths` (pytest.ini, pyproject.toml, tox.ini, setup.cfg, `-c`, `-o`), every test file the
+  bound command names as an operand, unittest's module operands and discover pattern, and Jest's
+  `testMatch`/`testRegex` in package.json; a configuration that cannot be parsed is RED. A load
+  failure the runner reports (a SyntaxError or ImportError raised in a test, Jest's "Test suite
+  failed to run", Vitest's "Failed Suites") is a stillborn mutant even when the summary counts
+  it as `N failed`, and even beside an assertion failing in another test: the control must leave
+  the code loadable. The source repository's git hooks never run (`core.hooksPath=/dev/null` on
+  every verifier git leg), and the bind is re-read from the sealed control tree itself, the
+  object the control phase checks out. Fail-closed on anything
   else too: a tool with no replay, a missing command/paths, a git error, a control that changes
   nothing, or a command that passes under the control ("tautological — the proof does not go RED"). It is **REQUIRED** in the two review-waiver
-  lanes below; elsewhere it is the stronger form of the same check. Budget ~2 worktree checkouts +
-  2 runs of the bound command (600 s cap each).
+  lanes below; elsewhere it is the stronger form of the same check. Budget: 4 checkouts (the
+  scratch worktree the control is applied and sealed in, plus one fresh repository per phase) and
+  3 runs of the bound command — clean, control, clean — at 600 s cap each.
 - `ORCA_NO_GH` — set to take the **no-gh lane**: review authority switches from the GitHub lookup to a
   local reviewer artifact — a downgrade, see [Trust boundary](#trust-boundary). **Requires
   `ORCA_EXECUTE_NC`**: with the GitHub authority gone, the negative control is the only oracle left,
@@ -162,7 +178,9 @@ worker-set; anything else in the environment is ignored):
   advisory `NOTE` and is forwarded as `--provenance`, under which the review authority (an explicit
   `ORCA_REPO`, a `gh` outside any worker-writable location) is required, not merely noted.
 - `ORCA_DISPATCH_RECORD` — the coordinator-signed dispatch envelope (path, or `path@ref`) binding the
-  contract digest, unit class, and lighting (#135).
+  contract digest, unit class, and lighting (#135). verify.py checks the signature over
+  dispatch-sign.py's own canonical form, so a record signed with `--profile`/`--parent-profile`
+  (#590) verifies, and an edited profile does not.
 - `ORCA_DISPATCH_PUBKEY` — the Ed25519 verifying key, overriding key discovery; trustworthy only when
   set off-worker (see below).
 

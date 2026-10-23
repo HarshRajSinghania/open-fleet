@@ -54,8 +54,9 @@ fires were `skipped` before believing a streak of green reports.
   mechanical/taste gates; a ONE-WAY gate (freeze, BASE→default promotion, deploy, spend, secret
   rotation) is NEVER faked — the run PARKS it and winds down, surfacing what a human owes. So a
   mission schedules cleanly **iff its value lands BEFORE any one-way gate**: report-only sweeps
-  (`review-it`, `attest-it` — the verdict / conformance report is the deliverable; a GAP parks to a
-  human) and bounded-source mutation runs that park at their FIRST one-way gate (`clean-sweep` — a
+  (`review-it`; `attest-it` from a catalog the automation's human author pre-froze at a digest —
+  decide-and-freeze's VALIDATE branch, else it parks at FREEZE — the verdict / conformance report is
+  the deliverable; a GAP parks to a human) and bounded-source mutation runs that park at their FIRST one-way gate (`clean-sweep` — a
   batch-close gate for a refuted / duplicate item without a recorded grant, else the promotion PR;
   the sweep findings land before either). A scheduled `ship-it` from raw intent parks at the freeze
   gate almost immediately — schedule it only from a pre-frozen spec, and it still stops at PROMOTION_READY.

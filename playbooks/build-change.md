@@ -66,7 +66,8 @@ never from the manifest, which the graded worker writes (#279). `--execute-nc` i
 review-waiver lanes (`--lighting dark-eligible`, `--no-gh`), where the control is the only oracle
 left, and is the stronger form everywhere else. Record the run per `docs/runs/TEMPLATE.md`.
 
-## Red flags (fail the unit)
+## Completion
 
-`git add -A`; running the same test twice with no intervening change; >100 lines written before a
-test run; a green test whose negative control passes.
+Built per Evidence above, and none of these, which fail the unit: `git add -A`; the same test run
+twice with no change between; >100 lines written before a test run; a green test whose negative
+control passes.

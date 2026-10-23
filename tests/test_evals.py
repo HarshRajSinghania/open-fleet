@@ -664,6 +664,11 @@ class TestCliGate(unittest.TestCase):
             (root / "scripts" / "eval.py").write_text(
                 (ROOT / "scripts" / "eval.py").read_text(encoding="utf-8"), encoding="utf-8"
             )
+            # eval.py reads frontmatter through the catalog's one shared reader (2026-10-23
+            # review, §5), so the sandbox carries that module beside it, at its repo path.
+            grammar = Path("runtime") / "scripts" / "_catalog_grammar.py"
+            (root / grammar).parent.mkdir(parents=True)
+            (root / grammar).write_bytes((ROOT / grammar).read_bytes())
             (root / "skills").symlink_to(SKILLS, target_is_directory=True)
             (root / "evals").mkdir()
             data = json.loads((EVALS / "routing.json").read_text(encoding="utf-8"))

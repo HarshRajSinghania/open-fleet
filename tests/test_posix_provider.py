@@ -75,15 +75,33 @@ class PosixRealProcessBase(unittest.TestCase):
         _git("commit", "-qm", "init", cwd=self.repo)
         self.bin = base / "bin"
         self.bin.mkdir()
+        # Every harness name resolves to a TRIPWIRE ahead of the developer's real binary: an
+        # unfaked agent, or a launch that loses the fake `bin`, records a hit and exits instead
+        # of starting a real agent with --dangerously-skip-permissions (2026-10-23 review, P1-11).
+        self.tripwire = base / "tripwire"
+        self.tripwire.mkdir()
+        self.tripwire_log = base / "tripwire.log"
+        for harness in self.providers.SUPPORTED_HARNESSES:
+            trip = self.tripwire / harness
+            trip.write_text(f'#!/bin/sh\necho "{harness} $*" >> "{self.tripwire_log}"\nexit 97\n', encoding="utf-8")
+            trip.chmod(0o755)
         self.env = {
             **os.environ,
             "OPEN_FLEET_STATE_DB": str(base / "state" / "runtime.db"),
             "OPEN_FLEET_CLI_CWD": str(self.repo),
             "OPEN_FLEET_POSIX_BACKEND": self.backend,
-            "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PATH": os.pathsep.join([str(self.bin), str(self.tripwire), os.environ.get("PATH", "")]),
+            # No rc file of a login shell (zsh sources ~/.zshenv even for `-c`) may reorder PATH.
+            "SHELL": "/bin/sh",
         }
         self.prov = self.providers.get_provider("posix", env=self.env)
+        self.addCleanup(self._no_tripwire_hit)
         self.addCleanup(self._kill_all)
+
+    def _no_tripwire_hit(self):
+        """Runs after `_kill_all`: no test in this module may launch anything but its fake agent."""
+        hits = self.tripwire_log.read_text() if self.tripwire_log.exists() else ""
+        self.assertEqual(hits, "", f"an agent resolved past the fake bin to the tripwire: {hits!r}")
 
     def _kill_all(self):
         # Stop every live worker (retained ones too) and let its monitor finish writing into
@@ -460,11 +478,33 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             # No tmux on this host: exercise the same env-file mechanism through setsid.
             self.env["OPEN_FLEET_POSIX_BACKEND"] = "setsid"
         else:
-            self.env["TMUX_TMPDIR"] = self.tmp.name
-            os.environ["TMUX_TMPDIR"] = self.tmp.name
-            self.addCleanup(lambda: os.environ.pop("TMUX_TMPDIR", None))
-            subprocess.run(["tmux", "new-session", "-d", "-s", "preexisting"], env={**os.environ}, check=True)
-            self.addCleanup(lambda: subprocess.run(["tmux", "kill-server"], capture_output=True))
+            # A private socket dir and HOME: never the developer's own server (an inherited
+            # $TMUX would point every tmux call, kill-server included, at it) or rc files.
+            home = Path(self.tmp.name) / "home"
+            home.mkdir()
+            # The provider's own fence/liveness tmux calls read os.environ: patch it, restored.
+            patcher = mock.patch.dict(os.environ, {"TMUX_TMPDIR": self.tmp.name})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            for var in ("TMUX", "TMUX_PANE", "ZDOTDIR", "XDG_CONFIG_HOME"):
+                self.env.pop(var, None)
+                os.environ.pop(var, None)
+            self.env.update({"TMUX_TMPDIR": self.tmp.name, "HOME": str(home)})
+            # The pre-existing server's shell rewrites PATH the way a login rc does (zsh sources
+            # ~/.zshenv even for `-c`; that put the developer's real `claude` first) and its own
+            # PATH lacks the fake `bin`: an agent the provider lets resolve on either PATH hits
+            # the tripwire and fails this test closed instead of running anything real.
+            rc_shell = Path(self.tmp.name) / "rc-shell"
+            rc_shell.write_text(f'#!/bin/sh\nPATH="{self.tripwire}:$PATH"; export PATH\nexec /bin/sh "$@"\n', encoding="utf-8")
+            rc_shell.chmod(0o755)
+            tmux_env = {k: v for k, v in self.env.items() if k != "PATH"}
+            self.server_env = {
+                **tmux_env,
+                "SHELL": str(rc_shell),
+                "PATH": os.pathsep.join([str(self.tripwire), os.environ.get("PATH", "")]),
+            }
+            subprocess.run(["tmux", "-f", os.devnull, "new-session", "-d", "-s", "preexisting"], env=self.server_env, check=True)
+            self.addCleanup(lambda: subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True))
         self.prov = self.providers.get_provider("posix", env=self.env)
 
     def test_env_survives_preexisting_tmux_server_and_stop_kills(self):
@@ -474,6 +514,8 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             f'echo "$OPEN_FLEET_DENY_HOOK|$OPEN_FLEET_SANDBOX_PROFILE" > "{out}"; trap "" HUP TERM; while :; do sleep 0.1; done',
         )
         _, res = self.start()
+        _wait_for(lambda: out.is_file() or self.tripwire_log.exists())
+        self.assertFalse(self.tripwire_log.exists(), "the agent resolved on the tmux SERVER's PATH, not the spawner's")
         self.assertTrue(_wait_for(out.is_file))
         hook, profile = out.read_text().strip().split("|")
         self.assertEqual(hook, str(self.posix.CANONICAL_DENY_HOOK))
@@ -482,6 +524,7 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             lane = Path(conn.execute("SELECT lane_dir FROM dispatches WHERE dispatch_id = ?", (res["dispatchId"],)).fetchone()["lane_dir"])
         env_file = lane / "worker_env.json"
         self.assertEqual(json.loads(env_file.read_text())["OPEN_FLEET_DENY_HOOK"], hook)
+        self.assertEqual(json.loads(env_file.read_text())["PATH"], self.env["PATH"], "the spawner's PATH travels with the worker")
         self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
         self.prov.worker_fence("stop", res["dispatchId"])
         stamp = out.stat().st_mtime
@@ -490,6 +533,21 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             self.assertNotEqual(subprocess.run(["tmux", "has-session", "-t", sess], capture_output=True).returncode, 0)
         self.assertEqual(self.prov.worker_show(res["dispatchId"])["worker"]["state"], "stopped")
         self.assertEqual(out.stat().st_mtime, stamp)
+
+    def test_a_server_the_spawn_starts_never_hands_one_workers_launch_env_to_the_next(self):
+        """The first spawn into NO server starts one, and that client's env becomes the server's
+        global env for every later session (2026-10-23 review, P1-11)."""
+        if self.has_tmux:
+            subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True)
+        first = Path(self.tmp.name) / "first-up"
+        out = Path(self.tmp.name) / "second.txt"
+        self.fake_agent("opencode", f'touch "{first}"; trap "" HUP TERM; while :; do sleep 0.1; done')
+        self.fake_agent("claude", f'echo "[$OPENCODE_CONFIG_CONTENT]" > "{out}"')
+        self.start(agent="opencode")
+        self.assertTrue(_wait_for(first.is_file), "the first worker never ran")
+        self.start(agent="claude")
+        self.assertTrue(_wait_for(out.is_file), "the second worker never ran")
+        self.assertEqual(out.read_text().strip(), "[]", "the first worker's launch env leaked into the second")
 
 
 class TestWorktreeSafety(PosixRealProcessBase):

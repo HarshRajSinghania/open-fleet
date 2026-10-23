@@ -210,6 +210,31 @@ class TestHardenedGit(ScopeBase):
         self.assertIsNone(data["error"], r.stdout + r.stderr)
         self.assertTrue(data["flags"]["TESTS"], data["flags"])
 
+    def test_the_git_floor_is_gitexecs_whole_floor(self):
+        """2026-10-23 review §5: the inlined copy lacked GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM
+        and safe.directory. Every gitexec.HARDENED setting must reach diff_scope's git child."""
+        spec = importlib.util.spec_from_file_location("gitexec", ROOT / "runtime" / "scripts" / "gitexec.py")
+        gitexec = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gitexec)
+        env = diff_scope._git_env()
+        want = {k: v for k, v in gitexec.HARDENED.items() if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "GIT_CONFIG_COUNT"))}
+        self.assertEqual({k: env.get(k) for k in want}, want)
+        def pairs(e):
+            return {e[f"GIT_CONFIG_KEY_{i}"]: e[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(e["GIT_CONFIG_COUNT"]))}
+        ours = pairs(env)
+        # diff_scope may pin MORE than gitexec, never less.
+        self.assertEqual({k: ours.get(k) for k in pairs(gitexec.HARDENED)}, pairs(gitexec.HARDENED))
+
+    def test_a_global_gitconfig_cannot_hide_an_untracked_migration(self):
+        # A global core.excludesFile ignoring everything made the brand-new migration invisible.
+        ignore = write(self.tmp, "ignore-all", "*\n")
+        glob = write(self.tmp, "global.gitconfig", f"[core]\n\texcludesFile = {ignore}\n")
+        write(self.repo, "db/migrate/002_add.rb", "class Add; end\n")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(glob)}):
+            data, r = self.flags()
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["MIGRATIONS"], data["flags"])
+
     def test_repo_fsmonitor_command_does_not_run(self):
         marker = Path(self.tmp) / "fsmonitor-ran"
         hook = write(self.repo, "hook.sh", f"#!/bin/sh\ntouch '{marker}'\n")
@@ -217,6 +242,33 @@ class TestHardenedGit(ScopeBase):
         git(self.repo, "config", "core.fsmonitor", str(hook))
         self.flags()
         self.assertFalse(marker.exists())
+
+
+class TestRenamesCountBothSides(ScopeBase):
+    """2026-10-23 review, P2-9: rename detection folded a move into its NEW path, so moving a
+    migration out of db/migrate/ or renaming session_guard.py never set MIGRATIONS/AUTH."""
+
+    def _on_main(self, rel, text):
+        write(self.repo, rel, text)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", f"add {rel}")
+        git(self.repo, "branch", "-f", "main", "HEAD")
+
+    def test_a_committed_move_out_of_migrations_sets_migrations(self):
+        self._on_main("db/migrate/001_init.rb", "class Init\n  def change; end\nend\n")
+        (self.repo / "archive").mkdir()
+        git(self.repo, "mv", "db/migrate/001_init.rb", "archive/001_init.rb")
+        git(self.repo, "commit", "-qm", "move the migration out")
+        data, r = self.flags()
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["MIGRATIONS"], f"the old path's lens was dropped: {data['flags']}")
+
+    def test_a_staged_rename_away_from_an_auth_name_sets_auth(self):
+        self._on_main("lib/session_guard.py", "def check():\n    return 1\n")
+        git(self.repo, "mv", "lib/session_guard.py", "lib/guard.py")
+        data, r = self.flags()
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], f"the old path's lens was dropped: {data['flags']}")
 
 
 class TestPathClassification(ScopeBase):
@@ -558,14 +610,10 @@ class PredictMergeContract(ScopeBase):
 
     def test_non_utf8_path_conflict_is_reported_as_json(self):
         name = os.fsdecode(b"caf\xe9.txt")
-        git(self.repo, "checkout", "-q", "-b", "latin", "main")
-        (self.repo / name).write_text("latin\n", encoding="utf-8")
-        git(self.repo, "add", "-A")
-        git(self.repo, "commit", "-qm", "latin side")
-        git(self.repo, "checkout", "-q", "main")
-        (self.repo / name).write_text("main\n", encoding="utf-8")
-        git(self.repo, "add", "-A")
-        git(self.repo, "commit", "-qm", "main side")
+        # The non-UTF-8 path lives only in git objects: APFS refuses to create it (Errno 92),
+        # so both sides are committed with plumbing, never through the filesystem (P2-29).
+        self._commit_raw_path("latin", "main", b"caf\xe9.txt", b"latin\n")
+        self._commit_raw_path("main", "main", b"caf\xe9.txt", b"main\n")
         r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo),
                             "--predict-merge", "main", "latin", "--json"],
                            capture_output=True)
@@ -573,6 +621,20 @@ class PredictMergeContract(ScopeBase):
         doc = json.loads(r.stdout)
         self.assertFalse(doc["clean"])
         self.assertIn(name, doc["conflicts"])
+
+    def _commit_raw_path(self, branch, parent, raw_path, content):
+        """Point `branch` at a commit on `parent` adding `raw_path` (bytes, any encoding) with
+        `content`, through a private index: no checkout, no file of that name on disk."""
+        def plumb(*args, data=b"", env=None):
+            return subprocess.run(["git", "-C", str(self.repo), *args], input=data, env=env,
+                                  capture_output=True, check=True).stdout.strip().decode()
+        blob = plumb("hash-object", "-w", "--stdin", data=content)
+        index = {**os.environ, "GIT_INDEX_FILE": str(Path(self.tmp) / f"index-{branch}")}
+        plumb("read-tree", parent, env=index)
+        plumb("update-index", "-z", "--index-info", data=b"100644 " + blob.encode() + b"\t" + raw_path + b"\0", env=index)
+        tree = plumb("write-tree", env=index)
+        commit = plumb("commit-tree", tree, "-p", parent, "-m", f"{branch} side")
+        plumb("update-ref", f"refs/heads/{branch}", commit)
 
     def test_unexpected_crash_is_exit_2_not_the_conflict_code(self):
         out = io.StringIO()

@@ -1,0 +1,29 @@
+{
+  "_about": "Per-mission activation-load budgets, in the bytes/4 tokens scripts/validate.py's transitive_load() measures (2026-10-23 review, section 5: one catalog-wide cap bounded only the heaviest mission, so the other 21 could grow by thousands of tokens unseen). validate.py fails a mission whose load exceeds its budget, a mission with no budget, a budget naming no mission, a budget above MISSION_MAX_LOAD_TOKENS, and a budget more than max_slack above the measured load (a shrink is banked by lowering the budget, never kept as silent headroom). A budget is the measured load rounded up to the next step. Raising one is a hand edit whose commit says why.",
+  "step": 500,
+  "max_slack": 1000,
+  "budgets": {
+    "absorb-it": 31500,
+    "access-it": 30500,
+    "attest-it": 27000,
+    "clean-sweep": 33000,
+    "deflake-it": 29000,
+    "document-it": 32000,
+    "field-test-it": 32000,
+    "floor-it": 32500,
+    "harden-it": 34000,
+    "map-it": 25500,
+    "migrate-it": 32000,
+    "modernize-it": 34000,
+    "offload-it": 23500,
+    "oncall-it": 31000,
+    "oss-contribute": 32500,
+    "pin-it": 32500,
+    "prove-it": 30000,
+    "reshape-it": 31000,
+    "review-it": 24500,
+    "root-cause": 19500,
+    "ship-it": 34000,
+    "speed-it": 31500
+  }
+}

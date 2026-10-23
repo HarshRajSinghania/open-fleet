@@ -66,5 +66,45 @@ class TestCatalogAudit(unittest.TestCase):
         self.assertEqual(chain_check.audit(ROOT), [])
 
 
+class TestSpellingAndCaseCannotLaunderADegradedTerminal(unittest.TestCase):
+    """2026-10-23 review, §5: classification was case- and spelling-sensitive, so
+    `Done-With-Parked` read clean and PROCEEDED when the chain named it."""
+
+    VARIANTS = ("Done-With-Parked", "done-with-parked", "DONE_WITH_PARKED", "done with parked",
+                " DONE--WITH__PARKED ", "No-Go", "no_go", "Abandoned", "inconclusive",
+                "Hardened-With-Open-Items", "stable_with_quarantine")
+
+    def test_every_spelling_of_a_degraded_terminal_is_degraded(self):
+        for name in self.VARIANTS:
+            with self.subTest(name=name):
+                self.assertEqual(chain_check.classify(name), "degraded")
+
+    def test_a_degraded_variant_never_proceeds_even_when_declared(self):
+        for name in self.VARIANTS:
+            with self.subTest(name=name):
+                proceed, why = chain_check.gate(name, {name, "CLEAN"})
+                self.assertFalse(proceed, why)
+        stop = subprocess.run([sys.executable, str(SCRIPT), "gate", "--allowed",
+                               "Done-With-Parked", "Done-With-Parked"], capture_output=True, text=True)
+        self.assertEqual(stop.returncode, 1, stop.stdout + stop.stderr)
+        self.assertIn("STOP", stop.stdout)
+
+    def test_handoffs_and_clean_names_match_across_spellings(self):
+        self.assertEqual(chain_check.classify("Awaiting_Maintainer_Merge"), "handoff")
+        self.assertEqual(chain_check.classify("diagnosed-with-handoff"), "handoff")
+        self.assertTrue(chain_check.gate("promotion-ready", {"PROMOTION_READY"})[0])
+        self.assertTrue(chain_check.gate("Clean", {"CLEAN"})[0])
+
+    def test_an_unrecognised_terminal_fails_closed(self):
+        for name in ("", "   ", "DONE-WITH-PARKD", "X-WITH-SOMETHING-NEW", "CLEAN!", "42", "--"):
+            with self.subTest(name=name):
+                self.assertEqual(chain_check.classify(name), "unknown")
+                proceed, _ = chain_check.gate(name, {name})
+                self.assertFalse(proceed)
+        cli = subprocess.run([sys.executable, str(SCRIPT), "classify", "DONE-WITH-PARKD"],
+                             capture_output=True, text=True)
+        self.assertEqual((cli.returncode, cli.stdout.strip()), (1, "unknown"))
+
+
 if __name__ == "__main__":
     unittest.main()

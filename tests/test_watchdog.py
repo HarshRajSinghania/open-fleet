@@ -768,5 +768,119 @@ class WaitingInputProducer(unittest.TestCase):
                              "dry-run created side files (-wal/-shm) beside the state db")
 
 
+class LivenessTimestampsFailLoud(unittest.TestCase):
+    """2026-10-23 review, P2-7: a missing dispatched_at defaulted to now and a missing
+    last_movement_at to dispatch time, and a future movement clamped to idle 0 — a producer
+    that dropped a field made a worker idle for hours read as OK, forever."""
+
+    BAD = (None, "", "   ")
+
+    def test_missing_null_or_empty_liveness_fields_are_heartbeat_errors(self):
+        for field in ("dispatched_at", "last_movement_at"):
+            for value in self.BAD + ("absent",):
+                with self.subTest(field=field, value=value):
+                    rec = worker(idle_min=600)
+                    if value == "absent":
+                        del rec[field]
+                    else:
+                        rec[field] = value
+                    with self.assertRaises(watchdog.HeartbeatError) as cm:
+                        watchdog.classify(rec, T0, CFG)
+                    self.assertIn(field, str(cm.exception))
+                    self.assertIn("task_w", str(cm.exception))
+
+    def test_a_future_movement_time_is_a_heartbeat_error_not_idle_zero(self):
+        for field in ("dispatched_at", "last_movement_at"):
+            with self.subTest(field=field):
+                rec = worker(idle_min=1, **{field: (T0 + timedelta(minutes=5)).isoformat()})
+                with self.assertRaises(watchdog.HeartbeatError) as cm:
+                    watchdog.classify(rec, T0, CFG)
+                self.assertIn("after the tick", str(cm.exception))
+
+    def test_movement_exactly_at_the_tick_is_fine(self):
+        state, ev = watchdog.classify(worker(last_movement_at=T0.isoformat()), T0, CFG)
+        self.assertEqual((state, ev["idle_s"]), ("OK", 0))
+
+    def test_settled_workers_need_no_liveness_fields(self):
+        rec = {"worker_id": "task_done", "dispatch_id": "d", "terminal": "exited"}
+        self.assertEqual(watchdog.classify(rec, T0, CFG)[0], "SETTLED")
+
+    def test_cli_exits_2_naming_worker_and_field(self):
+        rec = worker(idle_min=600)
+        del rec["last_movement_at"]
+        with tempfile.TemporaryDirectory() as raw:
+            beats = Path(raw) / "beats.json"
+            beats.write_text(json.dumps({"run_id": "run_blind", "workers": [rec]}))
+            proc = run_cli("--heartbeats", str(beats), "--config", str(CONFIG),
+                           "--state", str(Path(raw) / "s.json"), "--log", str(Path(raw) / "w.jsonl"),
+                           "--now", "2026-09-14T12:00:00Z", "--dry-run")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("task_w", proc.stderr)
+        self.assertIn("last_movement_at", proc.stderr)
+        self.assertNotIn(" OK ", proc.stdout)
+
+
+class PendingCIIsNotAFailure(unittest.TestCase):
+    """2026-10-23 review, P2-8: in_progress/PENDING/QUEUED rows were signed as failures and
+    spent the single CI nudge; the real failure 90 minutes later was withheld."""
+
+    PENDING = ("in_progress", "IN_PROGRESS", "pending", "PENDING", "queued", "QUEUED",
+               "expected", "EXPECTED", "waiting", "WAITING", "requested", "REQUESTED")
+
+    def test_non_terminal_states_never_sign_or_nudge(self):
+        for value in self.PENDING:
+            with self.subTest(state=value):
+                checks = [{"name": "unit", "step": "pytest", "conclusion": value}]
+                self.assertEqual(watchdog.ci_failure_signature(checks),
+                                 watchdog.ci_failure_signature([]))
+                _, action, _, _ = watchdog.decide(worker(idle_min=1, ci_checks=checks), T0, CFG, {"workers": {}})
+                self.assertEqual(action, "none")
+
+    def test_a_status_only_row_still_running_is_not_signed(self):
+        checks = [{"name": "unit", "status": "in_progress", "conclusion": None}]
+        self.assertEqual(watchdog.ci_failure_signature(checks), watchdog.ci_failure_signature([]))
+
+    def test_terminal_failures_still_sign(self):
+        for value in ("failure", "FAILURE", "error", "cancelled", "timed_out", "action_required",
+                      "startup_failure", "stale"):
+            with self.subTest(state=value):
+                checks = [{"name": "unit", "step": "pytest", "conclusion": value}]
+                self.assertNotEqual(watchdog.ci_failure_signature(checks),
+                                    watchdog.ci_failure_signature([]))
+
+    def test_pending_rows_do_not_spend_the_nudge_the_real_failure_needs(self):
+        state = {"workers": {}}
+        pending = [{"name": "unit", "step": "pytest", "conclusion": "PENDING"}]
+        _, action, _, _ = watchdog.decide(worker(idle_min=1, ci_checks=pending), T0, CFG, state)
+        self.assertEqual(action, "none")
+        later = T0 + timedelta(minutes=90)
+        rec = worker(idle_min=1, ci_checks=FAILING_CI, last_movement_at=later.isoformat())
+        _, action, _, note = watchdog.decide(rec, later, CFG, state)
+        self.assertEqual(action, "nudge", note)
+
+    def test_a_pending_row_beside_a_failure_does_not_change_its_signature(self):
+        mixed = FAILING_CI + [{"name": "lint", "step": "ruff", "conclusion": "queued"}]
+        self.assertEqual(watchdog.ci_failure_signature(mixed), watchdog.ci_failure_signature(FAILING_CI))
+
+
+class EveryThresholdLivesInTheConfig(unittest.TestCase):
+    """worker-supervision.md: every threshold lives in runtime/watchdog.json. The CI nudge
+    budget lived only in watchdog.py's DEFAULTS (2026-10-23 review, §5)."""
+
+    def test_the_committed_config_names_every_default(self):
+        committed = json.loads(CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(k for k in watchdog.DEFAULTS if k not in committed), [])
+        self.assertEqual(watchdog.load_config(CONFIG)["max_ci_nudges_per_dispatch"],
+                         committed["max_ci_nudges_per_dispatch"])
+
+    def test_a_boolean_budget_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "w.json"
+            conf.write_text(json.dumps({"max_ci_nudges_per_dispatch": True}))
+            with self.assertRaises(watchdog.ConfigError):
+                watchdog.load_config(conf)
+
+
 if __name__ == "__main__":
     unittest.main()

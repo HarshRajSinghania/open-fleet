@@ -19,6 +19,7 @@ Drop in another gate by adding it to GATES (e.g. a subprocess wrapper around `ru
     # tests/test_vfbench.py asserts the soundness property.
 """
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -198,6 +199,230 @@ def build_mutation_fixture(repo):
     }
 
 
+# #612 / #613 (2026-10-23 review, P1-1 / P1-2): runners that COUNT a load failure as a failed
+# test, and a hook in the graded repo's own .git that stages the kill. pytest, Jest and Vitest are
+# not in this bench's stdlib-only toolchain, so each `runner.py` loads the unit the way that runner
+# does and prints that runner's REAL output shape — captured from pytest 9, Jest 29.7 and Vitest
+# 2.1.9 against the same defect. Every shape also carries a neighbouring valid control: a genuine
+# assertion-failure kill under the SAME runner, which must stay GREEN, so a gate cannot clear these
+# traps by refusing everything the runner prints.
+_RUNNER_PYTEST = """import importlib.util
+import sys
+import traceback
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, ".")
+spec = importlib.util.spec_from_file_location("test_mod", "test_mod.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+failed, ran, summary = 0, 0, []
+for name in sorted(n for n in dir(module) if n.startswith("test_")):
+    ran += 1
+    try:
+        getattr(module, name)()
+    except Exception as exc:
+        failed += 1
+        lines = "".join(traceback.format_exception_only(type(exc), exc)).rstrip().splitlines()
+        print("_" * 20, name, "_" * 20)
+        for line in lines:
+            print("E   " + line)
+        summary.append(f"FAILED test_mod.py::{name} - {lines[0]}")
+if summary:
+    print("=" * 10, "short test summary info", "=" * 10)
+    print("\\n".join(summary))
+print(f"{failed} failed" if failed else f"{ran} passed", "in 0.01s")
+sys.exit(1 if failed else 0)
+"""
+_RUNNER_JEST = """import sys
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, ".")
+try:
+    import mod
+except SyntaxError as exc:
+    print("FAIL ./mod.test.js")
+    print("  \\u25cf Test suite failed to run")
+    print()
+    print(f"    SyntaxError: {exc.filename}: Unexpected token ({exc.lineno}:{exc.offset})")
+    print()
+    print("Test Suites: 1 failed, 1 total")
+    print("Tests:       0 total")
+    print("Ran all test suites.")
+    sys.exit(1)
+got = mod.add(2, 2)
+if got != 4:
+    print("FAIL ./mod.test.js")
+    print("  \\u25cf add")
+    print()
+    print("    expect(received).toBe(expected) // Object.is equality")
+    print()
+    print("    Expected: 4")
+    print(f"    Received: {got}")
+    print()
+    print("Test Suites: 1 failed, 1 total")
+    print("Tests:       1 failed, 1 total")
+    print("Ran all test suites.")
+    sys.exit(1)
+print("PASS ./mod.test.js")
+print("Test Suites: 1 passed, 1 total")
+print("Tests:       1 passed, 1 total")
+"""
+# Vitest reports an unparseable module through rollup, whose message never says "SyntaxError":
+# only the suite-level "Failed Suites" verdict marks it as a load failure.
+_RUNNER_VITEST = """import sys
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, ".")
+bar = "\\u23af" * 6
+print(" RUN  v2.1.9")
+print()
+try:
+    import mod
+except SyntaxError as exc:
+    print(" \\u276f mod.test.js (0 test)")
+    print()
+    print(f"{bar} Failed Suites 1 {bar}")
+    print()
+    print(" FAIL  mod.test.js [ mod.test.js ]")
+    print("Error: Expected an expression, got end of line")
+    print(f" \\u276f mod.py:{exc.lineno}:{exc.offset}")
+    print()
+    print(" Test Files  1 failed (1)")
+    print("      Tests  no tests")
+    sys.exit(1)
+got = mod.add(2, 2)
+if got != 4:
+    print(" \\u276f mod.test.js (1 test | 1 failed) 4ms")
+    print("   \\u00d7 add 4ms")
+    print(f"     \\u2192 expected {got} to be 4 // Object.is equality")
+    print()
+    print(f"{bar} Failed Tests 1 {bar}")
+    print()
+    print(" FAIL  mod.test.js > add")
+    print(f"AssertionError: expected {got} to be 4 // Object.is equality")
+    print()
+    print(" Test Files  1 failed (1)")
+    print("      Tests  1 failed (1)")
+    sys.exit(1)
+print(" \\u2713 mod.test.js (1 test) 2ms")
+print(" Test Files  1 passed (1)")
+print("      Tests  1 passed (1)")
+"""
+# pytest's shape for the review's fixture: the test imports the module INSIDE the test body, so a
+# module that cannot load is reported as `1 failed`, not as a collection error.
+FIXTURE_TEST_IN_TEST_IMPORT = (
+    "def test_add():  # the test AC-1 binds to\n"
+    "    import mod\n"
+    "    assert mod.add(2, 2) == 4\n"
+)
+# The mixed shape: a unit that also adds sub(). Reverting the whole of mod.py fails test_add on an
+# assertion AND test_sub on an ImportError in one run — `2 failed`, half of it stillborn.
+FIXTURE_MOD_HEAD_WITH_SUB = FIXTURE_MOD_HEAD + "\n\ndef sub(a, b):\n    return a - b\n"
+FIXTURE_TEST_MIXED = FIXTURE_TEST_IN_TEST_IMPORT + (
+    "\n\ndef test_sub():\n"
+    "    from mod import sub\n"
+    "    assert sub(3, 1) == 2\n"
+)
+FIXTURE_NC_STILLBORN_RUNNER = FIXTURE_NC_STILLBORN.replace(
+    "`python -m unittest` exited non-zero", "`runner.py` exited non-zero")
+# The mixed shape's valid control: a hand mutant on add()'s changed line only, so the run fails
+# exactly one assertion and loads everything else.
+FIXTURE_NC_HAND_ADD = (
+    "hand negative control, EXECUTED\n\n"
+    "```diff\n"
+    "--- a/mod.py\n"
+    "+++ b/mod.py\n"
+    "@@ -1,3 +1,3 @@\n"
+    " def add(a, b):\n"
+    "-    return a + b  # the fix\n"
+    "+    return a - b  # the fix\n"
+    " \n"
+    "```\n\n"
+    "`runner.py` went RED on the add() assertion (mutant KILLED).\n"
+)
+# #613: a test that asserts nothing about AC-1, and a post-checkout hook in the repository's own
+# .git/hooks that stages a failing version of it into whatever index is being checked out. The
+# verifier's worktree legs used to run it — so the hook, not the control, supplied the RED.
+FIXTURE_TEST_TAUTOLOGICAL = (
+    "import unittest\n\nimport mod\n\n\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_add(self):  # names AC-1, asserts nothing about it\n"
+    "        self.assertTrue(callable(mod.add))\n"
+)
+FIXTURE_HOOK = (
+    "#!/bin/sh\n"
+    "blob=$(printf '%s\\n' 'import unittest' '' '' 'class T(unittest.TestCase):' "
+    "'    def test_add(self):' '        self.assertEqual(1, 2)' | git hash-object -w --stdin)\n"
+    'git update-index --cacheinfo "100644,$blob,test_taut.py"\n'
+)
+SHAPES = {
+    # shape: (runner.py source or None, test_mod.py source, mod.py at head)
+    "pytest-shaped": (_RUNNER_PYTEST, FIXTURE_TEST_IN_TEST_IMPORT, FIXTURE_MOD_HEAD),
+    "jest-shaped": (_RUNNER_JEST, None, FIXTURE_MOD_HEAD),
+    "vitest-shaped": (_RUNNER_VITEST, None, FIXTURE_MOD_HEAD),
+    "mixed-shaped": (_RUNNER_PYTEST, FIXTURE_TEST_MIXED, FIXTURE_MOD_HEAD_WITH_SUB),
+    "hook-staged": (None, FIXTURE_TEST, FIXTURE_MOD_HEAD),
+}
+
+
+def build_shape_fixture(repo, shape):
+    """A REAL mutation unit under one runner SHAPE (#612/#613), built at run time like
+    build_mutation_fixture: the defect at base_sha, the fix at head_sha, the runner and its tests
+    committed, evidence written after the head commit and pinned by artifacts[]. `proof_cmd` runs
+    the shape's runner (or `python -m unittest test_mod` for the hook shape, whose `taut_cmd` runs
+    the test that asserts nothing). The hook is installed LAST, after every commit, so it fires only
+    inside the checkouts the verifier makes."""
+    runner, test_src, mod_head = SHAPES[shape]
+    repo.mkdir(parents=True)
+    _fixture_git(repo, "init", "-q", "-b", "main")
+    (repo / "mod.py").write_text(FIXTURE_MOD_BASE, encoding="utf-8")
+    (repo / "contract.md").write_text(FIXTURE_CONTRACT, encoding="utf-8")
+    if runner is not None:
+        (repo / "runner.py").write_text(runner, encoding="utf-8")
+    if test_src is not None:
+        (repo / "test_mod.py").write_text(test_src, encoding="utf-8")
+    if shape == "hook-staged":
+        (repo / "test_taut.py").write_text(FIXTURE_TEST_TAUTOLOGICAL, encoding="utf-8")
+    _fixture_git(repo, "add", "-A")
+    _fixture_git(repo, "-c", "user.name=vf", "-c", "user.email=vf@vf", "commit", "-qm", "base")
+    base = _fixture_rev(repo, "HEAD")
+    (repo / "mod.py").write_text(mod_head, encoding="utf-8")
+    _fixture_git(repo, "-c", "user.name=vf", "-c", "user.email=vf@vf", "commit", "-qam", "the fix")
+    head = _fixture_rev(repo, "HEAD")
+    evidence = repo / "docs" / "reports" / "vf"
+    evidence.mkdir(parents=True)
+    (evidence / "nc.txt").write_text(FIXTURE_NC.replace("`python -m unittest`", "the proof command"),
+                                     encoding="utf-8")
+    (evidence / "nc-stillborn.txt").write_text(FIXTURE_NC_STILLBORN_RUNNER, encoding="utf-8")
+    (evidence / "nc-hand-add.txt").write_text(FIXTURE_NC_HAND_ADD, encoding="utf-8")
+    (evidence / "review.txt").write_text(
+        f"build-blind review of {head}\nAPPROVED by vf-reviewer (local lane record)\n",
+        encoding="utf-8")
+    if shape == "hook-staged":
+        hook = repo / ".git" / "hooks" / "post-checkout"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text(FIXTURE_HOOK, encoding="utf-8")
+        hook.chmod(0o755)
+
+    def sha256(rel):
+        return hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+
+    proof = (f"{sys.executable} -m unittest test_mod" if runner is None
+             else f"{sys.executable} runner.py")
+    taut = f"{sys.executable} -m unittest test_taut"
+    return {
+        "base_sha": base, "head_sha": head, "head_tree": _fixture_rev(repo, "HEAD^{tree}"),
+        "contract_digest": "sha256:" + sha256("contract.md"),
+        "nc_sha256": sha256("docs/reports/vf/nc.txt"),
+        "nc_stillborn_sha256": sha256("docs/reports/vf/nc-stillborn.txt"),
+        "nc_hand_sha256": sha256("docs/reports/vf/nc-hand-add.txt"),
+        "review_sha256": sha256("docs/reports/vf/review.txt"),
+        "proof_cmd": proof, "proof_cmd_sha256": hashlib.sha256(proof.encode("utf-8")).hexdigest(),
+        "taut_cmd": taut, "taut_cmd_sha256": hashlib.sha256(taut.encode("utf-8")).hexdigest(),
+        "python": sys.executable,
+    }
+
+
 def _gh_stub(bindir, head, state="APPROVED"):
     """A `gh` on PATH that serves ONE independent review at head_sha by a login that is not the PR
     author. The review authority is external to the manifest by design, so the only honest way to
@@ -234,7 +459,8 @@ def _render(obj, facts):
     return obj
 
 
-FIXTURES = {"mutation-revert": build_mutation_fixture, "report-only": build_report_fixture}
+FIXTURES = {"mutation-revert": build_mutation_fixture, "report-only": build_report_fixture,
+            **{shape: functools.partial(build_shape_fixture, shape=shape) for shape in SHAPES}}
 
 
 def fixture_gate(trap):

@@ -25,7 +25,7 @@ ID or an unambiguous installed name — IDs when names collide. Multiple `--skil
 ONE bundle and ONE link; `--all` and arbitrary paths are intentionally unsupported, so name
 every skill the user asked to publish and never widen the set: the permission is authority,
 not intent. The agent switch (Settings → Share Skills) is default-off with no CLI way to
-grant it — `agent_skill_sharing_disabled` means STOP and ask the human (`human-handoff`),
+grant it — `agent_skill_sharing_disabled` means STOP and ask the human (read human-handoff.md),
 never retry. One staged agent bundle per host: on busy, wait, then retry. Run on the Orca
 terminal of the machine that stores the skills — forwarded WSL, SSH, and paired-runtime calls
 fail before discovery so the wrong filesystem is never read.

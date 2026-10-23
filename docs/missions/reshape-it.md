@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel scan and deepen waves behind a pinned characterization net; bounding the target surface and any API-break are your gates.
-> **Activation load:** ~30,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~30,800 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at the codebase where every change touches twelve imports. Come back to hot modules
@@ -149,7 +149,6 @@ Playbooks:
 [`decide-and-freeze`](../../playbooks/decide-and-freeze.md) ·
 [`remediate-finding`](../../playbooks/remediate-finding.md) ·
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·
-[`compound-learn`](../../playbooks/compound-learn.md) ·
 [`design-twice`](../../playbooks/design-twice.md) ·
 [`record-decision`](../../playbooks/record-decision.md) ·
 [`plan-review`](../../playbooks/plan-review.md)
@@ -159,11 +158,12 @@ Runtime policies:
 [`merge-serialization`](../../runtime/merge-serialization.md) ·
 [`reviewed-sha-freshness`](../../runtime/reviewed-sha-freshness.md) ·
 [`dispatch-lifecycle`](../../runtime/dispatch-lifecycle.md) ·
-[`liveness-resume`](../../runtime/liveness-resume.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`gate-classification`](../../runtime/gate-classification.md) ·
 [`attention-budget`](../../runtime/attention-budget.md)
+
+Deferred reads, loaded on entering their phase and never at activation: [`liveness-resume`](../../runtime/liveness-resume.md) on a stall or resume · [`compound-learn`](../../playbooks/compound-learn.md) at VERDICT.
 
 ## Related missions
 

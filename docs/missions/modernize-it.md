@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel migration workers per dependency group under a compatibility graph; you own the one-way doors.
-> **Activation load:** ~33,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~33,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at a repo with a green CI baseline. Come back to a dependency surface where every
@@ -163,6 +163,9 @@ Everything else is classified mechanical or taste and resolved per policy.
   pinned-and-parked with a written reason and a human ref;
 - every merge kept CI green — the merge commits' checks are verified; a red pipeline never
   landed;
+- every upgrade unit carries an executed negative control: its command asserts the resolved
+  version is the target and runs the tests over the adapted call sites (an advisory's
+  reachability probe for a security bump), and reverting the unit turns it red;
 - every upgrade that forced a stateful DB migration has a `migrate-it` phase brief placing
   the dependent upgrade between expansion and contraction; unresolved handoffs stay parked
   with reason and human ref, and completed ones return phase/deploy evidence before counting
@@ -234,6 +237,8 @@ Runtime policies:
 [`evidence-manifest`](../../runtime/evidence-manifest.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`attention-budget`](../../runtime/attention-budget.md)
+
+Deferred reads, loaded on entering their phase and never at activation: [`agent-brief`](../../playbooks/agent-brief.md) at the FORCED-MIGRATION CHECK, when a handoff to migrate-it is written.
 
 ## Related missions
 

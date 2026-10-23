@@ -41,6 +41,13 @@
 # Without ORCA_CONTRACT_SOURCE/DIGEST the verifier fail-closes on scope (a manifest cannot certify
 # its own denominator), so the gate blocks — as it should.
 #
+# Aliases: every input above also reads as OPEN_FLEET_<same suffix> (ORCA_MANIFEST also as
+# OPEN_FLEET_GATE_MANIFEST / OPEN_FLEET_MANIFEST) — the neutral family docs/runtimes.md names.
+# Either spelling may set an input; when two spellings are set and DISAGREE the gate BLOCKS
+# (exit 2) instead of letting one silently win. The alias used to take precedence unannounced,
+# so an inherited OPEN_FLEET_UNIT_CLASS or OPEN_FLEET_NO_GH overrode the coordinator's ORCA_*
+# value — a class downgrade or a review waiver nobody set where they looked (2026-10-23 review, P3).
+#
 # Exit: 0 = verified (allow) · 2 = a required invariant failed OR nothing to verify (BLOCK).
 # Enterprise note: `allowManagedHooksOnly` can disable plugin hooks — see docs/verify-gate.md
 # for the MCP-Task / CI / SDK-subprocess fallbacks that run the SAME verify.py.
@@ -58,18 +65,41 @@ if [ "${1:-}" = "--event" ]; then
   [ -n "$EVENT" ] || { echo "verify-gate: --event needs a value" >&2; exit 2; }  # usage is 2, never a bare set -eu exit 1 (#382)
   shift 2
 fi
-MANIFEST="${OPEN_FLEET_GATE_MANIFEST:-${OPEN_FLEET_MANIFEST:-${ORCA_MANIFEST:-${1:-}}}}"
-CONTRACT_SOURCE="${OPEN_FLEET_CONTRACT_SOURCE:-${ORCA_CONTRACT_SOURCE:-}}"
-CONTRACT_DIGEST="${OPEN_FLEET_CONTRACT_DIGEST:-${ORCA_CONTRACT_DIGEST:-}}"
-REPO="${OPEN_FLEET_REPO:-${ORCA_REPO:-}}"
-BASE="${OPEN_FLEET_BASE:-${ORCA_BASE:-}}"
-SYMBOL="${OPEN_FLEET_SYMBOL:-${ORCA_SYMBOL:-}}"
-UNIT_CLASS="${OPEN_FLEET_UNIT_CLASS:-${ORCA_UNIT_CLASS:-}}"
-NO_GH="${OPEN_FLEET_NO_GH:-${ORCA_NO_GH:-}}"
-LIGHTING="${OPEN_FLEET_LIGHTING:-${ORCA_LIGHTING:-}}"
-UNIT_LANE="${OPEN_FLEET_UNIT_LANE:-${ORCA_UNIT_LANE:-}}"
-RECORD="${OPEN_FLEET_DISPATCH_RECORD:-${ORCA_DISPATCH_RECORD:-}}"
-PUBKEY="${OPEN_FLEET_DISPATCH_PUBKEY:-${ORCA_DISPATCH_PUBKEY:-}}"
+# _pick NAME VALUE [NAME VALUE]... — the one value the named variables agree on (empty when none
+# is set), or a BLOCK when two of them are set to different values. Each value is passed beside
+# its name, so nothing is looked up by a constructed name.
+_pick() {
+  _val="" _from=""
+  while [ "$#" -ge 2 ]; do
+    _name=$1 _cur=$2
+    shift 2
+    [ -n "$_cur" ] || continue
+    if [ -z "$_from" ]; then
+      _val=$_cur _from=$_name
+    elif [ "$_cur" != "$_val" ]; then
+      echo "verify-gate: $_from and $_name are both set and disagree — BLOCKING (fail-closed: one" \
+           "spelling must not silently override the other; set one)" >&2
+      return 2
+    fi
+  done
+  printf '%s' "$_val"
+}
+MANIFEST=$(_pick OPEN_FLEET_GATE_MANIFEST "${OPEN_FLEET_GATE_MANIFEST:-}" OPEN_FLEET_MANIFEST "${OPEN_FLEET_MANIFEST:-}" ORCA_MANIFEST "${ORCA_MANIFEST:-}") || exit 2
+[ -n "$MANIFEST" ] || MANIFEST="${1:-}"
+CONTRACT_SOURCE=$(_pick OPEN_FLEET_CONTRACT_SOURCE "${OPEN_FLEET_CONTRACT_SOURCE:-}" ORCA_CONTRACT_SOURCE "${ORCA_CONTRACT_SOURCE:-}") || exit 2
+CONTRACT_DIGEST=$(_pick OPEN_FLEET_CONTRACT_DIGEST "${OPEN_FLEET_CONTRACT_DIGEST:-}" ORCA_CONTRACT_DIGEST "${ORCA_CONTRACT_DIGEST:-}") || exit 2
+REPO=$(_pick OPEN_FLEET_REPO "${OPEN_FLEET_REPO:-}" ORCA_REPO "${ORCA_REPO:-}") || exit 2
+BASE=$(_pick OPEN_FLEET_BASE "${OPEN_FLEET_BASE:-}" ORCA_BASE "${ORCA_BASE:-}") || exit 2
+SYMBOL=$(_pick OPEN_FLEET_SYMBOL "${OPEN_FLEET_SYMBOL:-}" ORCA_SYMBOL "${ORCA_SYMBOL:-}") || exit 2
+UNIT_CLASS=$(_pick OPEN_FLEET_UNIT_CLASS "${OPEN_FLEET_UNIT_CLASS:-}" ORCA_UNIT_CLASS "${ORCA_UNIT_CLASS:-}") || exit 2
+NO_GH=$(_pick OPEN_FLEET_NO_GH "${OPEN_FLEET_NO_GH:-}" ORCA_NO_GH "${ORCA_NO_GH:-}") || exit 2
+LIGHTING=$(_pick OPEN_FLEET_LIGHTING "${OPEN_FLEET_LIGHTING:-}" ORCA_LIGHTING "${ORCA_LIGHTING:-}") || exit 2
+UNIT_LANE=$(_pick OPEN_FLEET_UNIT_LANE "${OPEN_FLEET_UNIT_LANE:-}" ORCA_UNIT_LANE "${ORCA_UNIT_LANE:-}") || exit 2
+RECORD=$(_pick OPEN_FLEET_DISPATCH_RECORD "${OPEN_FLEET_DISPATCH_RECORD:-}" ORCA_DISPATCH_RECORD "${ORCA_DISPATCH_RECORD:-}") || exit 2
+PUBKEY=$(_pick OPEN_FLEET_DISPATCH_PUBKEY "${OPEN_FLEET_DISPATCH_PUBKEY:-}" ORCA_DISPATCH_PUBKEY "${ORCA_DISPATCH_PUBKEY:-}") || exit 2
+EXECUTE_NC=$(_pick OPEN_FLEET_EXECUTE_NC "${OPEN_FLEET_EXECUTE_NC:-}" ORCA_EXECUTE_NC "${ORCA_EXECUTE_NC:-}") || exit 2
+NC_COMMAND=$(_pick OPEN_FLEET_NC_COMMAND "${OPEN_FLEET_NC_COMMAND:-}" ORCA_NC_COMMAND "${ORCA_NC_COMMAND:-}") || exit 2
+PROVENANCE=$(_pick OPEN_FLEET_PROVENANCE "${OPEN_FLEET_PROVENANCE:-}" ORCA_PROVENANCE "${ORCA_PROVENANCE:-}") || exit 2
 # #135 key SOURCE: an injected ORCA_DISPATCH_PUBKEY (off-worker orchestrator) else the committed
 # opt-in pin .orca/dispatch-pubkey — preferring the reviewed remote blob, falling back to the working
 # tree — so a repo that follows the docs actually gets the check to RUN.
@@ -120,9 +150,6 @@ set -- --manifest "$MANIFEST"
 [ -n "$UNIT_LANE" ] && set -- "$@" --lane "$UNIT_LANE"
 [ -n "$RECORD" ] && set -- "$@" --dispatch-record "$RECORD"
 [ -n "$PUBKEY" ] && set -- "$@" --dispatch-pubkey "$PUBKEY"
-EXECUTE_NC="${OPEN_FLEET_EXECUTE_NC:-${ORCA_EXECUTE_NC:-}}"
-NC_COMMAND="${OPEN_FLEET_NC_COMMAND:-${ORCA_NC_COMMAND:-}}"
-PROVENANCE="${OPEN_FLEET_PROVENANCE:-${ORCA_PROVENANCE:-}}"
 [ -n "$EXECUTE_NC" ] && set -- "$@" --execute-nc
 [ -n "$NC_COMMAND" ] && set -- "$@" --nc-command "$NC_COMMAND"
 # h409 F-1/F-2: verify.py learns the lane too, so a sound lane's review authority (an explicit

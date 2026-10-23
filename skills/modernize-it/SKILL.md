@@ -37,12 +37,14 @@ PR-per-outdated-package is often actively WRONG. Composes `remediate-finding`, `
 install hook is untrusted code — the run's single most dangerous execution surface). Worker TASK
 pack: addy — never co-mount a second router.
 
+DEFERRED READS, never at activation: agent-brief.md at the FORCED-MIGRATION CHECK, when a handoff to migrate-it is written.
+
 Scope boundary: this mission owns DEPENDENCY/FRAMEWORK CURRENCY (bump → adapt call sites → CI green).
 STATEFUL DB schema/data migration across deploys is a different unit, state machine, and proof — hand
 a brief to `migrate-it`, which owns each deploy-gated phase. Its plan places the dependent upgrade
 after expansion, preserves dual writes through backfill/switch, and contracts only after the
 upgraded code is deployed, stable and no longer uses the old shape. Track the handoff until its
-evidence returns; keep code-only upgrades here. Details: docs/missions/modernize-it.md.
+evidence returns; keep code-only upgrades here.
 
 ## Two terminal outcomes
 
@@ -85,7 +87,10 @@ INVENTORY (outdated + advisories; read the CHANGELOG not the version delta; reac
 ## Convergence proof
 
 Every outdated dep: upgraded+merged with CI green (the green run referenced) OR pinned-and-parked with
-a written reason + human ref. Every merge kept CI green (check the merge commits' checks — a red
+a written reason + human ref. Every upgrade unit carries an EXECUTED negative control (evidence-manifest
+§1-§2): its criterion-bound command asserts the resolved version (lockfile/installed) is the target and
+runs the tests over the adapted call sites — for an advisory, its reachability probe — and reverting
+the unit turns it RED. A unit whose revert stays green has not shown the suite touches the upgrade. Every merge kept CI green (check the merge commits' checks — a red
 pipeline never landed). Every upgrade that FORCED a stateful DB migration has a migrate-it handoff
 tracking the dependent upgrade between expand and contract; unresolved handoffs remain parked in
 the inventory with reason and human ref. Completed handoffs return phase/deploy evidence before

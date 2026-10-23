@@ -41,7 +41,7 @@ The tally is never coordinator memory — it lives in the target repo's DECISION
   in the scope header (never drop silently). Every finding needs a concrete step-by-step exploit
   scenario (never test live APIs); one verified finding → grep the whole tree for VARIANTS. (Full audit→re-attack loop is `harden-it`; this is the bounded review lens.)
 - **Performance:** measure-first (no optimizing without a baseline); symptom→cause tree (slow load →
-  bundle vs TTFB); CWV targets; before→after to its metric contract, and a delta `explain-the-number` calls inconclusive is not measured; add a CI
+  bundle vs TTFB); CWV targets; before→after to its metric contract, and a delta `explain-the-number` calls inconclusive is not measured (read explain-the-number.md for this lens); add a CI
   regression budget (GUARD). Backend red flags: N+1 fetch patterns; an index added with no query
   plan before and after; a cache key omitting an input the response depends on (tenant, locale,
   viewer); a cache with no staleness window or invalidation; a pool size raised in answer to

@@ -1,6 +1,6 @@
 # Runtime policy — dispatch lifecycle + the operational gotchas that are the product
 
-The mechanics of turning a task into a worker, and the hard-won specifics that made clean-sweep / spec-to-ship reliable — not incidental; they are the value.
+The mechanics of turning a task into a worker, and the hard-won specifics that made clean-sweep / ship-it reliable — not incidental; they are the value.
 
 **Anti-drift rule:** this file describes the CLI the installed binary ships. After any Orca upgrade the mechanics are re-witnessed against `orca skills get
 orchestration` / `orca skills get orca-cli` — but the compact guide is a KERNEL, not the contract: enumerate `orca skills get <topic> --references` and load

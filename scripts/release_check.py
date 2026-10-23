@@ -421,16 +421,25 @@ def gate1(ctx):
 # Gate 2 — flagships proven (epic DoD 2)
 # ---------------------------------------------------------------------------
 
+def _catalog_grammar():
+    """The catalog's one frontmatter reader (runtime/scripts/_catalog_grammar.py), by path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_catalog_grammar", Path(__file__).resolve().parent.parent / "runtime" / "scripts"
+        / "_catalog_grammar.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def frontmatter_proof(text):
-    """`metadata.proof` from a SKILL.md, read the way the checklist reads it:
-    the block between the first `---` pair, the indented `proof:` key."""
-    if not text.startswith("---"):
-        return None
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None
-    m = re.search(r"^\s+proof:\s*(\S+)\s*$", text[3:end], re.M)
-    return m.group(1).strip("\"'") if m else None
+    """`metadata.proof` from a SKILL.md, read by the shared frontmatter reader validate.py
+    uses. This used its own regex over any indented `proof:` line, one of five readers that
+    disagreed (2026-10-23 review, §5) — a `proof:` under some other key read as the tier."""
+    data, _err = _catalog_grammar().parse_frontmatter(text)
+    meta = (data or {}).get("metadata")
+    proof = meta.get("proof") if isinstance(meta, dict) else None
+    return proof if isinstance(proof, str) and proof else None
 
 
 def gate2(ctx):
@@ -483,18 +492,48 @@ def check_negative_control_demo(ctx):
     return (name, FAIL, f"sh {script}: exit {r.returncode}: {tail(r.stdout + r.stderr, 2)}")
 
 
+_RUN_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?run:\s*(.*?)\s*$")
+_BLOCK_SCALAR_RE = re.compile(r"^[|>](?:[1-9]?[+-]?|[+-]?[1-9]?)$")
+
+
+def workflow_run_text(text):
+    """The shell a workflow actually runs: every `run:` step's script, comment lines dropped.
+
+    "CI runs X" was satisfied by X anywhere in a workflow file — a comment, a step name, an
+    `if:` — so a gate could read PASS for a check CI never executes (2026-10-23 review, §5).
+    """
+    lines = text.splitlines()
+    scripts = []
+    i = 0
+    while i < len(lines):
+        m = _RUN_KEY_RE.match(lines[i])
+        i += 1
+        if not m:
+            continue
+        indent, value = len(m.group(1)), m.group(2)
+        body = [] if _BLOCK_SCALAR_RE.match(value) else [value]
+        while i < len(lines) and (not lines[i].strip()
+                                  or len(lines[i]) - len(lines[i].lstrip()) > indent):
+            body.append(lines[i])
+            i += 1
+        scripts.extend(line for line in body if line.strip() and not line.lstrip().startswith("#"))
+    return "\n".join(scripts)
+
+
 def check_workflows_mention(ctx, name, patterns, landed):
     wf_dir = ctx.repo / ".github" / "workflows"
     files = sorted(p for p in wf_dir.iterdir() if p.is_file()) if wf_dir.is_dir() else []
     hits = []
     for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = workflow_run_text(path.read_text(encoding="utf-8", errors="replace"))
         if any(re.search(pat, text) for pat in patterns):
             hits.append(path.name)
     what = " or ".join(patterns)
     if hits:
-        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} mention {what} ({landed} landed)")
-    return (name, FAIL, f"no file under .github/workflows/ mentions {what} ({landed} has not landed)")
+        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} run {what} in a `run:` "
+                            f"step ({landed} landed)")
+    return (name, FAIL, f"no `run:` step under .github/workflows/ runs {what} "
+                        f"({landed} has not landed)")
 
 
 def gate3(ctx):
@@ -564,8 +603,24 @@ def check_orca_pin(ctx):
         return (name, FAIL, f"runtime/pins.json: no readable orca entry ({type(e).__name__}: {e})")
     if witness == "live" and witnessed >= PIN_MIN_WITNESSED:
         return (name, PASS, f"orca {version} witnessed {witnessed} live (fresh: >= {PIN_MIN_WITNESSED})")
+    # A source-delta re-pin stands on the last LIVE replay it carries: `live_receipts` names that
+    # witness's version, date and run record, which must exist under docs/runs/ and clear the same
+    # floor. A pure source pin, or one leaning on a stale or unrecorded live witness, still fails.
+    # pins.json once labelled the v1.4.229 source re-pin "live" and this gate passed on the label
+    # (2026-10-23 review, P2-41); the carried receipts are now a field the gate reads, not a word.
+    carried = orca.get("live_receipts") if isinstance(orca, dict) else None
+    if witness == "source" and isinstance(carried, dict):
+        live_on = str(carried.get("witnessed", ""))
+        run = str(carried.get("run", ""))
+        recorded = (run.startswith("docs/runs/") and ".." not in run.split("/")
+                    and ctx.read(run) is not None)
+        if live_on >= PIN_MIN_WITNESSED and live_on <= witnessed and recorded:
+            return (name, PASS, f"orca {version} source re-pin {witnessed} carrying live receipts "
+                                f"from {carried.get('version')} witnessed {live_on} ({run})")
     return (name, FAIL, f"orca {version}: witness={witness!r} witnessed={witnessed!r}; the gate "
-                        f"needs witness 'live' and witnessed >= {PIN_MIN_WITNESSED}")
+                        f"needs witness 'live' and witnessed >= {PIN_MIN_WITNESSED}, or a source "
+                        f"re-pin whose live_receipts were witnessed >= {PIN_MIN_WITNESSED} and "
+                        "recorded under docs/runs/")
 
 
 def check_chaining_report_published(ctx):

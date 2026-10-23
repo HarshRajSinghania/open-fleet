@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — one serial recipe lane (snapshots are paid and ordered); the money and the login are yours at classified checkpoints.
-> **Activation load:** ~15,200 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 8% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~23,300 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no run has been retained against this mission yet
 > (`runtime/scripts/run_report.py`)
 
@@ -72,7 +72,8 @@ upstream pack per worker, never two in the same context.
 
 ```mermaid
 flowchart TD
-    A[Repo + provider] --> B[INSPECT<br/>existing entry? scripts? state?]
+    A[Repo + provider] --> A2[BOOTSTRAP integration BASE<br/>preflight · BASE ≠ default branch]
+    A2 --> B[INSPECT<br/>existing entry? scripts? state?]
     B -->|working recipe| H[DOCTOR loop<br/>never a rebuild]
     B -->|nothing usable| C[INTERVIEW<br/>mode · provider · agent · git auth]
     C --> D[SCAFFOLD<br/>scripts + state, executable]
@@ -81,12 +82,18 @@ flowchart TD
     F --> G[WIRE orca.yaml<br/>create/suspend/resume/destroy]
     G --> H
     H --> I[PROVISION loop<br/>transcript → fix → re-run]
-    I --> J{{OFFLOADED}}
-    I --> K{{OFFLOADED-WITH-PARKED}}
+    I --> L[PR against BASE → build-blind REVIEW → LAND]
+    L --> P[PROMOTE<br/>promotion PR open — your merge]
+    P --> J{{OFFLOADED}}
+    P --> K{{OFFLOADED-WITH-PARKED}}
 ```
 
 Phase by phase:
 
+0. **Bootstrap BASE.** `preflight.py --mission offload-it --base <BASE> --fork-point <sha>
+   --require-gitleaks` — write mode, because this mission lands files. Every script, the state
+   file, and `orca.yaml` are written on a unit worktree off that integration BASE, never on your
+   primary checkout.
 1. **Inspect.** The coordinator reads the repo for an existing `environmentRecipes` entry,
    `scripts/orca-vm/`, a state file, or setup notes. A working recipe goes straight to the
    doctor loop — rebuilding what exists is how two half-recipes are born.
@@ -107,17 +114,24 @@ Phase by phase:
    The fleet verifies by the status command's exit code, refuses to snapshot unauthenticated,
    then — on your explicit OK, because the re-snapshot is paid and your login words do not
    cover it — re-snapshots and overwrites the state id.
-6. **Wire.** `orca.yaml` points create/suspend/resume/destroy at the scripts. The composer
-   reads recipes from the primary checkout, so a recipe that lives only on a branch never
-   appears as a Run-on option — the doctor works anywhere, the picker does not.
+6. **Wire.** `orca.yaml` points create/suspend/resume/destroy at the scripts, on the same
+   worktree. The doctor and the provision loop run against it (`--repo-path`) — they work on
+   any branch; only the Run-on picker needs the primary checkout (step 10).
 7. **Doctor dry-run — free and static.** Clear means no fail AND no warn; `ok` alone proves
    nothing, and each warn is resolved or accepted-with-reason before any provision spend.
 8. **Provision loop [paid checkpoint].** `create`, validation of the returned JSON, then
    `destroy` — reading the `provisionTranscript` on failure, fixing the script, re-running to
    green. Destroy is confirmed to really tear down; `destroy: none` is hand-cleanup, recorded
    and human-accepted, never assumed.
-9. **Verdict.** OFFLOADED, or OFFLOADED-WITH-PARKED with the checkpoint register. An optional
-   workspace test (create via the picker, verify sleep/wake/delete) runs only if you asked.
+9. **Land.** One PR against BASE (gitleaks-scanned), a build-blind review
+   ([`acceptance-review`](../../playbooks/acceptance-review.md)) for secrets and a real destroy,
+   then the conductor's ancestry-verified merge. Negative control: revert the recipe entry and
+   the free doctor dry-run fails.
+10. **Promote — your gate.** The coordinator opens the BASE→default promotion PR and stops. The
+   composer reads recipes from the primary checkout, so Run-on appears once you merge it; the
+   optional workspace test (create via the picker, verify sleep/wake/delete) runs only after that
+   merge and only if you asked.
+11. **Verdict.** OFFLOADED, or OFFLOADED-WITH-PARKED with the checkpoint register.
 
 ## Terminal states
 
@@ -125,14 +139,15 @@ Phase by phase:
 
 | State | Meaning | Who acts on it |
 |---|---|---|
-| `OFFLOADED` | Doctor clear (no fail, no warn) and the provision loop green end to end; state holds the authenticated snapshot id; destroy tested | use the Run-on option |
+| `OFFLOADED` | Doctor clear (no fail, no warn) and the provision loop green end to end; state holds the authenticated snapshot id; destroy tested; the recipe merged to BASE with its promotion PR open | merge the promotion PR, then use the Run-on option |
 | `OFFLOADED-WITH-PARKED` | ≥1 park naming its checkpoint: a quota/cap ask, an unauthenticated login to re-run, or an interactive step not yet run | the human named on the park |
 
 ## Human gates
 
-The money and the login, both one-way under
+The money, the login, and the promotion, all one-way under
 [`gate-classification`](../../runtime/gate-classification.md): each paid checkpoint (base
-snapshot, auth snapshot, the provision loop) proceeds only on your explicit OK, and the
+snapshot, auth snapshot, the provision loop) proceeds only on your explicit OK, the recipe
+reaches your default branch only when you merge its promotion PR, and the
 interactive agent login is yours to run — the fleet has no TTY for it and never pretends
 otherwise. What the fleet *may* do unasked is read, scaffold, and dry-run the doctor; what it
 may never do is pick your plan or region, invent a scope or billing id, write a credential
@@ -194,12 +209,18 @@ the manifest holds the snapshot ids and both transcripts.
 ## Composes
 Playbooks:
 [`human-handoff`](../../playbooks/human-handoff.md) ·
-[`research-brief`](../../playbooks/research-brief.md)
+[`research-brief`](../../playbooks/research-brief.md) ·
+[`acceptance-review`](../../playbooks/acceptance-review.md) (build-blind review of the recipe PR)
 
 Runtime policies:
 [`evidence-manifest`](../../runtime/evidence-manifest.md) ·
+[`dispatch-lifecycle`](../../runtime/dispatch-lifecycle.md) (the recipe is written on a unit worktree off BASE) ·
+[`reviewed-sha-freshness`](../../runtime/reviewed-sha-freshness.md) ·
+[`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`gate-classification`](../../runtime/gate-classification.md) ·
 [`sandbox-policy`](../../runtime/sandbox-policy.md)
+
+Deferred reads, loaded on entering their phase and never at activation: [`liveness-resume`](../../runtime/liveness-resume.md) on a stall or resume.
 
 ## Related missions
 

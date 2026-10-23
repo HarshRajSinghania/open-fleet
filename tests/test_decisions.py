@@ -253,11 +253,15 @@ class TestSignedGrants(DecisionsBase):
         orca.mkdir(parents=True, exist_ok=True)
         (orca / "human-grant-pubkey").write_text(pub + "\n", encoding="utf-8")
 
+    # Payload v2 binds the line's ts (2026-10-23 review, P2-3): the signer and the
+    # appender name the same stamp.
+    SIGNED_TS = "2026-09-10T09:00:00Z"
+
     def _sign(self, ident="gate-s1", answer="approved", why="deploy to production",
               extra=()):
         return subprocess.run(
             [sys.executable, str(DECISIONS), "sign-grant", "--key", str(self.key),
-             "--id", ident, "--answer", answer, "--why", why, *extra],
+             "--id", ident, "--answer", answer, "--why", why, "--ts", self.SIGNED_TS, *extra],
             capture_output=True, text=True)
 
     def test_keygen_writes_a_seed_and_a_pubkey_outside_the_repo(self):
@@ -339,7 +343,8 @@ class TestSignedGrants(DecisionsBase):
         sig = self._sign()
         self.assertEqual(sig.returncode, 0, sig.stderr)
         r = self.append("gate-s1", "one-way", "approved", "deploy to production",
-                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip()))
+                        extra=("--source", "human:lia", "--grant-sig", sig.stdout.strip(),
+                               "--ts", self.SIGNED_TS))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("sig=", self.log.read_text(encoding="utf-8"))
         self.assertEqual(self.run_dec("check").returncode, 0)
@@ -981,6 +986,178 @@ class TestMainInProc(DecisionsInProcBase):
                     runpy.run_path(str(DECISIONS), run_name="__main__")
         self.assertEqual(ctx.exception.code, 0)
         self.assertIn("1 record(s) valid", out.getvalue())
+
+
+
+# ---- 2026-10-23 end-to-end review (#621): P1-8 and P2-3 -----------------------------------------
+
+
+class PinnedLedger(DecisionsBase):
+    """A ledger whose repository root pins a fresh human grant key."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed_bytes = os.urandom(32)
+        self.ed = decisions._ed25519()
+        subprocess.run(["git", "init", "-q", self.tmp], capture_output=True)
+        orca = Path(self.tmp) / ".orca"
+        orca.mkdir(parents=True, exist_ok=True)
+        (orca / "human-grant-pubkey").write_text(
+            self.ed.publickey(self.seed_bytes).hex() + "\n", encoding="utf-8")
+
+    def signed(self, ident, answer, ts, why="deploy to production", signed_ts=None,
+               klass="one-way", task="t-1"):
+        payload = decisions.grant_payload(ident, answer, why, task, ts=signed_ts or ts,
+                                          klass=klass)
+        sig = self.ed.signature(payload, self.seed_bytes, self.ed.publickey(self.seed_bytes)).hex()
+        return f"{ts} · {ident} · one-way · {answer} · {why} [source=human:lia sig={sig}] · {task}"
+
+
+class TestPinnedKeyRequiresEverySignatureP18(PinnedLedger):
+    """P1-8: `check` and `active` must hold a hand-written line to what `append` demands."""
+
+    UNSIGNED = ("2026-09-01T00:00:00Z · gate-p18 · one-way · approved · deploy to production "
+                "[source=human:lia] · t-1")
+
+    def test_check_fails_a_hand_written_unsigned_one_way_line(self):
+        # The review's reproduction: append refused it, the same line typed in passed
+        # `check` ("1 record(s) valid", exit 0).
+        self.seed([self.UNSIGNED])
+        r = self.run_dec("check")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("no grant signature", r.stderr)
+
+    def test_active_does_not_list_an_unsigned_one_way_line(self):
+        self.seed([self.UNSIGNED])
+        r = self.run_dec("active")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("gate-p18", r.stdout, "an unsigned grant was listed as live")
+
+    def test_an_unsigned_line_neither_outranks_nor_retires_a_signed_one(self):
+        self.seed([self.signed("gate-p18", "approved", "2026-09-01T00:00:00Z"),
+                   "2026-09-02T00:00:00Z · gate-p18 · one-way · denied · deploy to production "
+                   "[source=human:lia] · t-1"])
+        rows = json.loads(self.run_dec("active", "--json").stdout)
+        self.assertEqual([(r["id"], r["answer"]) for r in rows], [("gate-p18", "approved")])
+
+    def test_a_signed_line_still_checks_and_lists(self):
+        self.seed([self.signed("gate-p18", "approved", "2026-09-01T00:00:00Z")])
+        self.assertEqual(self.run_dec("check").returncode, 0)
+        self.assertIn("gate-p18", self.run_dec("active").stdout)
+
+    def test_without_a_pin_an_unsigned_one_way_line_is_still_valid(self):
+        shutil.rmtree(Path(self.tmp) / ".orca")
+        self.seed([self.UNSIGNED])
+        r = self.run_dec("check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("gate-p18", self.run_dec("active").stdout)
+
+
+class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):
+    """P2-3: a signature binds when the decision was taken, so it cannot be re-dated."""
+
+    def test_a_signed_grant_replayed_under_a_later_ts_does_not_outrank_a_supersede(self):
+        approved = self.signed("gate-p23", "approved", "2026-09-01T00:00:00Z")
+        replay = approved.replace("2026-09-01T00:00:00Z", "2026-09-03T00:00:00Z", 1)
+        self.seed([approved,
+                   self.signed("gate-p23", "superseded", "2026-09-02T00:00:00Z"),
+                   replay])
+        r = self.run_dec("check")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(":7: grant signature does not verify", r.stderr)
+        self.assertEqual(json.loads(self.run_dec("active", "--json").stdout), [],
+                         "a replayed approval out-ranked the later supersede")
+
+    def test_the_payload_binds_ts_and_class(self):
+        base = dict(ident="g", answer="approved", why_core="w", task_id="t")
+        v2 = decisions.grant_payload(**base, ts="2026-09-01T00:00:00Z", klass="one-way")
+        self.assertTrue(v2.startswith(b"orca-fleet human grant v2\n"))
+        self.assertIn(b"2026-09-01T00:00:00Z", v2)
+        self.assertNotEqual(v2, decisions.grant_payload(**base, ts="2026-09-02T00:00:00Z",
+                                                        klass="one-way"))
+        self.assertNotEqual(v2, decisions.grant_payload(**base, ts="2026-09-01T00:00:00Z",
+                                                        klass="taste"))
+
+    def test_a_v1_signature_no_longer_verifies(self):
+        v1 = ("orca-fleet human grant v1\n" + "\n".join(
+            ["gate-v1", "approved", "deploy to production", "t-1"])).encode("utf-8")
+        sig = self.ed.signature(v1, self.seed_bytes, self.ed.publickey(self.seed_bytes)).hex()
+        self.seed([f"2026-09-01T00:00:00Z · gate-v1 · one-way · approved · deploy to production "
+                   f"[source=human:lia sig={sig}] · t-1"])
+        self.assertEqual(self.run_dec("check").returncode, 1)
+
+    def test_append_refuses_a_timestamp_in_the_future(self):
+        # `append --ts 2099-…` out-ranked a human `deny` in active().
+        r = self.append("gate-p23f", "taste", "option-b", "reconsidered",
+                        extra=("--ts", "2099-01-01T00:00:00Z"))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("in the future", r.stderr)
+        self.assertFalse(self.log.exists() and "gate-p23f" in self.log.read_text(encoding="utf-8"))
+
+    def test_check_names_a_hand_written_future_line(self):
+        self.seed(["2099-01-01T00:00:00Z · gate-p23f · taste · option-b · reconsidered · t-1"])
+        r = self.run_dec("check")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("in the future", r.stderr)
+
+    def test_a_stamp_within_the_skew_is_accepted(self):
+        from datetime import timedelta
+        soon = decisions._now() + timedelta(seconds=60)
+        r = self.append("gate-p23s", "taste", "option-b", "clock skew",
+                        extra=("--ts", soon.strftime("%Y-%m-%dT%H:%M:%SZ")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_sign_grant_binds_and_prints_the_ts_it_signed(self):
+        key = Path(self.tmp) / "human.seed"
+        key.write_text(self.seed_bytes.hex() + "\n", encoding="utf-8")
+        signed = subprocess.run(
+            [sys.executable, str(DECISIONS), "sign-grant", "--key", str(key), "--id", "gate-p23",
+             "--answer", "approved", "--why", "deploy to production", "--task", "t-1"],
+            capture_output=True, text=True)
+        self.assertEqual(signed.returncode, 0, signed.stderr)
+        stamp = re.search(r"ts=(\S+)", signed.stderr).group(1)
+        r = self.append("gate-p23", "one-way", "approved", "deploy to production",
+                        extra=("--task", "t-1", "--source", "human:lia",
+                               "--grant-sig", signed.stdout.strip(), "--ts", stamp))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.run_dec("check").returncode, 0)
+
+    def test_append_with_a_signature_but_no_ts_says_which_flag_is_missing(self):
+        r = self.append("gate-p23", "one-way", "approved", "deploy to production",
+                        extra=("--source", "human:lia", "--grant-sig", "a" * 128))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--ts", r.stderr)
+
+    def test_sign_grant_refuses_a_future_stamp(self):
+        key = Path(self.tmp) / "human.seed"
+        key.write_text(self.seed_bytes.hex() + "\n", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, str(DECISIONS), "sign-grant", "--key", str(key), "--id", "g",
+             "--answer", "approved", "--why", "w", "--ts", "2099-01-01T00:00:00Z"],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "")
+
+
+class TestGrantProblemsUnits(unittest.TestCase):
+    """The one rule floor_guard.py borrows for its waivers (#621, P1-7)."""
+
+    def _record(self, klass="one-way", why="ok [source=human:lia]"):
+        return decisions.parse_line(
+            f"2026-09-01T00:00:00Z · floor-waiver:r:p · {klass} · allow · {why} · t-1")
+
+    def test_only_a_sourced_one_way_line_stands_as_a_grant(self):
+        self.assertEqual(decisions.grant_problems(self._record()), [])
+        self.assertTrue(decisions.grant_problems(self._record(klass="taste")))
+        self.assertTrue(decisions.grant_problems(self._record(why="no source")))
+
+    def test_standing_drops_only_one_way_lines_a_pinned_key_does_not_verify(self):
+        pub = decisions._ed25519().publickey(os.urandom(32))
+        keep = [self._record(klass="mechanical", why="retired")]
+        unsigned = [self._record(), self._record(why="no source")]
+        self.assertEqual(decisions.standing(keep + unsigned, pub), keep)
+        # Unpinned, the marker is a record-format check: `active` lists what it always listed.
+        self.assertEqual(decisions.standing(keep + unsigned), keep + unsigned)
 
 
 if __name__ == "__main__":

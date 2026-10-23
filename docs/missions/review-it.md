@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel axis reviewers on the same pinned SHA; the GO/NO-GO verdict is yours to act on — a gate class, not a lower rung.
-> **Activation load:** ~24,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~24,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** external-run — the 2026-10-13 Linux witness reviewed stablyai/orca PR #28206 at
 > `6dcd957a` to a NO-GO verdict (4 read-only workers, 14/14 quotes re-read, `verify.py` OK) with
 > every artifact retained in its own run directory; binding report
@@ -139,7 +139,9 @@ moves past `reviewed_sha` leaves you holding an opinion about code that no longe
 
 ## Human gates
 
-Zero inside the run — a mission that mutates nothing has no one-way doors to hold. Workers run
+One: posting the verdict to the PR is the run's only outward action, a one-way gate that needs a
+recorded human grant ([`gate-classification`](../../runtime/gate-classification.md)) — the report
+itself lands without one. Nothing else is held: the run mutates nothing. Workers run
 `PROFILE=ro`, report-only fleets preflight with `preflight.py --mode readonly`
 ([`dispatch-lifecycle`](../../runtime/dispatch-lifecycle.md)), and the permission boundary is
 enforced below the model rather than requested of it.

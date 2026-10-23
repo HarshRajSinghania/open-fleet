@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel characterize and mutate workers per critical path; you own the one-way doors.
-> **Activation load:** ~29,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~29,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** self-run — [2026-09-16 run](../runs/2026-09-16-prove-it-self-run.md) (PF-2 kind gate, COVERED, 4/4 mutants killed).
 
 > Point it at the money, auth, and data paths nothing currently protects. Come back to a
@@ -203,8 +203,7 @@ Playbooks:
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·
 [`runtime-prove`](../../playbooks/runtime-prove.md) ·
 [`compound-learn`](../../playbooks/compound-learn.md) ·
-[`design-twice`](../../playbooks/design-twice.md) ·
-[`mutation-hunt`](../../playbooks/mutation-hunt.md) (deferred: loaded at build-blind review)
+[`design-twice`](../../playbooks/design-twice.md)
 
 Runtime policies:
 [`merge-serialization`](../../runtime/merge-serialization.md) ·
@@ -215,6 +214,8 @@ Runtime policies:
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`attention-budget`](../../runtime/attention-budget.md)
+
+Deferred reads, loaded on entering their phase and never at activation: [`mutation-hunt`](../../playbooks/mutation-hunt.md) at build-blind REVIEW (the reviewer writes its own killer mutant per path).
 
 ## Related missions
 

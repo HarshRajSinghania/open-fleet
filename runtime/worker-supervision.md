@@ -60,7 +60,9 @@ transcript persists and stays citable):
 (classify only; drop `--dry-run` and add `--state`/`--log` for live) polls
 worker heartbeats and classifies OK / SLOW / HUNG / WEDGED per the ladder:
 past-STOP silence is HUNG, an explicit wedge marker (or frozen-past-STOP
-plus an unanswered nudge) is WEDGED, slow-but-alive is not stuck. Every
+plus an unanswered nudge) is WEDGED, slow-but-alive is not stuck. A heartbeat
+whose `dispatched_at`/`last_movement_at` is missing, empty, unparseable or in the
+future cannot be judged: exit 2, naming the worker — never a silent idle 0. Every
 threshold lives in `runtime/watchdog.json` — tunable without code edits.
 
 Owned by the watchdog: classification, one auto-nudge per HUNG worker
@@ -79,8 +81,9 @@ Heartbeat inputs beyond liveness (the snapshot the coordinator assembles):
 
 - `ci_checks`: `[{name, step, conclusion, exit_code}]` from the worker's PR
   checks (the coordinator maps e.g. `gh pr checks --json name,state` rows,
-  `state` -> `conclusion`); passing rows are ignored, run ids and log URLs
-  never enter the signature. No producer ships in-repo: absent means no CI nudge.
+  `state` -> `conclusion`); passing and still-pending (`in_progress`, `PENDING`,
+  `QUEUED`…) rows are ignored, run ids and log URLs never enter the signature.
+  No producer ships in-repo: absent means no CI nudge.
 - `waiting_input`: `true` while the worker has an open HITL question. The
   coordinator may set it; when absent and `OPEN_FLEET_STATE_DB` names an
   existing local-state DB, the watchdog derives it by reading that DB strictly

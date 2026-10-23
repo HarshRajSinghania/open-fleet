@@ -1,5 +1,6 @@
 # Playbook — upstream-contribution  (contributing to a repo you do not control)
 
+Recipe: fleet-native — field-derived from the 2026-07-16 oss-contribute external run, no upstream pack.
 The delta between fixing your OWN backlog (remediate-finding + merge-serialization) and CONTRIBUTING
 one upstream. You have READ on the target, so you never merge, never own a BASE, and never run a merge
 conductor. The unit's terminal state is a PR OPEN and internally reviewed, not a merged SHA. This
@@ -78,7 +79,7 @@ PR open against `upstream:<default>`, `baseRefName == <default>` asserted, `head
 (fresh), and bot/CI green-or-reconciled. `parked` names the maintainer-merge dependency. There is no
 `git merge-base --is-ancestor` check because the fleet never performs the merge.
 
-## Rules
+## Completion and rules
 
 - Close a unit off a PR that is OPEN + internally reviewed + etiquette-conformant — never off a merge
   you cannot perform, never off worker memory.

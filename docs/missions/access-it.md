@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel fix workers on isolated violation units against a deterministic axe oracle; the residual human-AT park and the promotion are gate classes you own.
-> **Activation load:** ~29,100 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~30,200 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
 
 > Point it at a page/flow/component set and a WCAG target. Come back to a surface a deterministic
@@ -90,7 +90,9 @@ flowchart TD
 
 ## Human gates
 
-The residual **human-AT park** is a one-way door under
+**FREEZE is yours.** The surface × WCAG 2.2 AA criteria set is the denominator; you confirm it
+([`decide-and-freeze`](../../playbooks/decide-and-freeze.md)), and a headless run parks there
+rather than choosing it for you. The residual **human-AT park** is a one-way door under
 [`gate-classification`](../../runtime/gate-classification.md): the fleet never declares a
 screen-reader/cognitive criterion passing on the oracle's silence. Fix workers run `PROFILE=rw`
 ([`sandbox-policy`](../../runtime/sandbox-policy.md)); promotion past a degraded terminal is human.
@@ -138,6 +140,7 @@ The run ends `CONFORMANT-WITH-MANUAL-PARKED`; the denominator was never shrunk t
 
 ## Composes
 Playbooks:
+[`decide-and-freeze`](../../playbooks/decide-and-freeze.md) (FREEZE is the one-way gate) ·
 [`decompose-dag`](../../playbooks/decompose-dag.md) ·
 [`remediate-finding`](../../playbooks/remediate-finding.md) ·
 [`acceptance-review`](../../playbooks/acceptance-review.md) ·
@@ -153,6 +156,8 @@ Runtime policies:
 [`liveness-resume`](../../runtime/liveness-resume.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
 [`attention-budget`](../../runtime/attention-budget.md)
+
+Deferred reads, loaded on entering their phase and never at activation: [`human-handoff`](../../playbooks/human-handoff.md) at PARK and for a Design Mode capture.
 
 ## Related missions
 

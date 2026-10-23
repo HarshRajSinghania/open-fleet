@@ -58,6 +58,11 @@ jobs:
   verdict:
     # GO-marker reviews from trusted authors only (PR #465 review, P1):
     # evaluating a stranger's GO marker would fail-poison the head.
+    # But a SKIPPED job reports success to a required check, so every review this
+    # `if:` declines satisfies a required `verdict` context: PR #611 merged on five
+    # skipped `verdict` runs and no evaluated one (2026-10-23 review, P1-5). This
+    # job cannot be the required check; docs/ops.md#merge-gate step 3 (#594) moves
+    # protection to `verdict-gate`.
     if: >-
       contains(github.event.review.body, 'VERDICT: GO') &&
       (github.event.review.author_association == 'OWNER' ||

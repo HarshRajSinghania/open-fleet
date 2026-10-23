@@ -817,10 +817,17 @@ class PosixWorktreeProvider(RuntimeProvider):
         # The worker's launch environment travels IN the monitor script: a tmux/cmux server that
         # is already running ignores the client's environment, which silently dropped the hook
         # path and the ro safety settings (#591 review). Only the explicit launch vars are
-        # written (mode 0600) — never the coordinator's whole environment.
+        # written (mode 0600) — never the coordinator's whole environment. PATH is one of them:
+        # without it the agent resolved on the multiplexer server's PATH (or one its shell rc
+        # rewrote) and a stale server ran a different `claude` (2026-10-23 review, P1-11).
+        launch_env = {"PATH": merged_env.get("PATH") or os.defpath, **env_vars}
         env_file = lane_dir / "worker_env.json"
-        env_file.write_text(json.dumps(env_vars, sort_keys=True), encoding="utf-8")
+        env_file.write_text(json.dumps(launch_env, sort_keys=True), encoding="utf-8")
         os.chmod(env_file, 0o600)
+        # A multiplexer server this spawn starts keeps its client's env for EVERY later
+        # session: hand it the coordinator's env only, never this worker's launch vars, which
+        # would otherwise leak into the next worker launched into that server (P1-11).
+        mux_env = {k: v for k, v in self.env.items() if k not in WORKER_ENV_DENYLIST}
         monitor_py = f"""
 import json, os, subprocess, sys, time
 sys.path.insert(0, {repr(str(RUNTIME_DIR))})
@@ -922,6 +929,8 @@ if {repr(self.backend)} == "cmux":
         runner_script.write_text(monitor_py, encoding="utf-8")
         os.chmod(runner_script, 0o600)
         py_bin = os.environ.get("PYTHON", "python3")
+        # The monitor interpreter is resolved here too, not by the server's shell (P1-11).
+        py_bin = shutil.which(py_bin, path=launch_env["PATH"]) or py_bin
         # `-I`: never import from the (worker-writable) cwd or honour PYTHON* env.
         wrapped_monitor = f"{shlex.quote(py_bin)} -I {shlex.quote(str(runner_script))}"
 
@@ -930,7 +939,7 @@ if {repr(self.backend)} == "cmux":
                 ["cmux", "new-workspace", "--cwd", wt_path, "--command", wrapped_monitor],
                 capture_output=True,
                 text=True,
-                env=merged_env,
+                env=mux_env,
             )
             if proc.returncode != 0:
                 raise ProviderError("spawn_failed", (proc.stderr or proc.stdout or "cmux new-workspace failed").strip())
@@ -945,7 +954,7 @@ if {repr(self.backend)} == "cmux":
                 ["tmux", "new-session", "-d", "-s", sess_name, "-c", wt_path, wrapped_monitor],
                 capture_output=True,
                 text=True,
-                env=merged_env,
+                env=mux_env,
             )
             if proc.returncode != 0:
                 raise ProviderError("spawn_failed", (proc.stderr or proc.stdout or "tmux new-session failed").strip())

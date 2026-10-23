@@ -8,8 +8,8 @@ before a builder is spawned. A PR is an issue with attached code: same roles, sa
 ## Roles: one category, one state, always both
 
 Category: `bug` (something is broken) or `enhancement` (new behaviour). State: `needs-triage`
-(unevaluated), `needs-info` (parked on the reporter), `ready-for-agent` (fully specified, an
-`agent-brief` is attached), `ready-for-human` (specified but needs judgment, external access, or
+(unevaluated), `needs-info` (parked on the reporter), `ready-for-agent` (fully specified, an agent
+brief attached — read agent-brief.md to write it), `ready-for-human` (specified but needs judgment, external access, or
 manual testing the fleet cannot do), `wontfix` (closed, not actioned). Canonical names — the
 tracker's label strings are a mapping supplied by the mission, never guessed. Two conflicting state
 roles on one item is a STOP: ask, do not pick.
@@ -35,7 +35,7 @@ only on reporter activity. An unusual transition is flagged for the human, not a
 
 Post triage notes: **what we've established so far** (everything already resolved — the work is not
 thrown away) and **what we still need from you**, as specific, answerable questions, never "please
-provide more info". Then park the item with `human-handoff`: the recipient is the reporter, the
+provide more info". Then read human-handoff.md and park the item: the recipient is the reporter, the
 artifact is the notes comment, and the VERIFY-COMPLETE observation is reporter activity after the
 notes timestamp. On that activity the item RE-ENTERS enumeration — it is re-triaged from step 1
 against the current tree, not resumed from a stale recommendation, because the tree moved while it

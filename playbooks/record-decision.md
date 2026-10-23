@@ -39,7 +39,7 @@ and WHY, not filling in sections. Add only what earns its place:
 - **Status** (proposed / accepted / deprecated / superseded by <id>) — when decisions in this area
   get revisited.
 - **Considered options** — when the rejected alternatives are worth remembering, with the reason
-  each lost. Where a `research-brief` or a `plan-review` produced them, cite it.
+  each lost. Where a research brief or a plan review produced them, cite it.
 - **Consequences** — when a non-obvious downstream effect needs calling out.
 
 Where the decision came out of a gate (gate-classification.md), the ADR names the class and who

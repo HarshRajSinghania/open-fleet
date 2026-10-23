@@ -3,7 +3,7 @@
 Recipe: gstack `cso` (v2) false-positive filtering + active verification + parallel independent
 verifiers, and the review-army dispatch shape. cso v3 dropped its confidence gate and exclusions
 upstream: §1–§2 are fleet rules, applied to a v3 worker's output as to any scanner's. A scanner emits candidates; this playbook decides
-which of them are findings. It sits between a lens or audit wave and `remediate-finding`, and it
+which of them are findings. It sits between a lens or audit wave and the remediate-finding loop, and it
 has no fix authority.
 
 ## 1. Confidence gate (declared per run, not per finding)
@@ -80,4 +80,4 @@ The mode and its bar are recorded; every candidate is VERIFIED, UNVERIFIED, TENT
 discarded-with-a-reason; every reported finding quotes its motivating line and names `file:line`;
 every VERIFIED finding has a variant search with its result; every verifier ran in a session that
 did not produce the candidate; degradations are stated on the findings they affect. Findings leave
-here as input to `remediate-finding` — nothing is fixed from inside this playbook.
+here as input to the remediate-finding loop — nothing is fixed from inside this playbook.

@@ -24,8 +24,10 @@ before launch, and the backend's own flags (docker family: cap-drop ALL, no-new-
 pids limit; bwrap: workspace filesystem scope, no host network; gondolin: only /workspace
 mounted). Any backend fails on `privileged: true`, host networking, a mount of a container
 runtime socket or of a directory holding one (`/run`, `/var/run`, `/run/containerd`, …), or a
-mount of the real home directory, /root, an ancestor of either, or a credential directory (or an
-ancestor of one) under either. Other subdirectories of home and /root are fine. Mount strings
+mount of the real home directory, /root, a conventional home root (`HOME_ROOTS`: /home, /Users,
+/var/home, or a user's home directly under one) whatever the judging machine's `$HOME` is, an
+ancestor of any of these, or a credential directory (or an ancestor of one) under them. Other
+subdirectories of a home are fine. Mount strings
 in `--mount type=bind,source=…` / `src=` form are parsed for their host side too.
 
 Exit codes
@@ -66,6 +68,10 @@ _USER_RUNTIME_DIR = re.compile(r"^/(?:var/)?run/user(?:/[^/]+(?:/(?:podman|docke
 # itself and every directory above it expose it; anything else under home is fine.
 HOME_CREDENTIALS = (".ssh", ".config/gh", ".aws", ".gnupg", ".netrc", ".docker", ".kube",
                     ".git-credentials", ".gitconfig", ".config/gcloud", ".azure")
+# Roots that hold EVERY user's home on the platforms a recipe may target. Judged whatever the
+# judging host is: a macOS coordinator (HOME=/Users/x, where /home resolves into
+# /System/Volumes/Data) must still refuse a Linux recipe mounting /home (2026-10-23 review, P2-15).
+HOME_ROOTS = ("/home", "/Users", "/var/home")
 
 # "none of these", in the text forms a doctor writes them: "failures": [], failures: 0,
 # warnings={}, errors: none, 0 warnings, no failures.
@@ -177,8 +183,9 @@ def _socket_paths() -> list[str]:
 
 
 def _mount_exposes_host(mount_item) -> str | None:
-    """A reason when the host side is the real home, /root, an ancestor of either, a credential
-    directory under either (or a directory above one), or a runtime socket / a directory holding one.
+    """A reason when the host side is the real home, /root, a home root (`HOME_ROOTS`) or any
+    user's home directly under one, an ancestor of any of these, a credential directory under a
+    home (or a directory above one), or a runtime socket / a directory holding one.
 
     A SUBDIRECTORY of home or /root is fine — worktrees live under ~/.open-fleet/state/…, and a
     root user's repos live under /root — so this compares resolved paths rather than prefixes of
@@ -197,13 +204,25 @@ def _mount_exposes_host(mount_item) -> str | None:
             return f"mount exposes the container runtime socket {sock!r} through {source!r}"
     if _USER_RUNTIME_DIR.match(real):
         return f"mount exposes a per-user runtime directory (rootless container sockets): {source!r}"
-    home = _real("~")
-    for guarded, label in ((home, "the real home directory"), ("/root", "/root")):
-        if _covers(real, guarded):
-            return f"mount exposes {label}: {source!r}"
-        for cred in HOME_CREDENTIALS:
-            if _covers(real, os.path.join(guarded, cred)):
-                return f"mount exposes {label}/{cred}: {source!r}"
+    # The path as spelled (normalized) AND as resolved here: a recipe's host is not always the
+    # judge's, so a symlinked or absent root on this host must not hide the spelled one.
+    seen = list(dict.fromkeys((real, os.path.normpath(os.path.expanduser(os.path.expandvars(source))))))
+    guarded = [(_real("~"), "the real home directory"), ("/root", "/root")]
+    for root in HOME_ROOTS:
+        for root_form in dict.fromkeys((root, os.path.realpath(root))):
+            for path in seen:
+                if _covers(path, root_form):
+                    return f"mount exposes every user's home ({root}): {source!r}"
+                if path.startswith(root_form + "/"):
+                    user = path[len(root_form) + 1:].split("/", 1)[0]
+                    guarded.append((os.path.join(root_form, user), f"the home directory {root}/{user}"))
+    for guarded_home, label in guarded:
+        for path in seen:
+            if _covers(path, guarded_home):
+                return f"mount exposes {label}: {source!r}"
+            for cred in HOME_CREDENTIALS:
+                if _covers(path, os.path.join(guarded_home, cred)):
+                    return f"mount exposes {label}/{cred}: {source!r}"
     return None
 
 

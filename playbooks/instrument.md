@@ -14,7 +14,7 @@ ask at 2 a.m. into the ledger, before instrumenting — e.g. for `POST /checkout
 payments succeed first attempt vs after retry; when one fails permanently, why (provider error /
 timeout / validation); is the provider slower than usual. Every signal added must answer one of
 them by name; a signal that answers none is deleted, not kept "just in case". If the questions
-cannot be written, the path is not ready to instrument — a `human-handoff` item, not a smaller job.
+cannot be written, the path is not ready to instrument — a park (read human-handoff.md), not a smaller job.
 
 ## 2. One signal per question, typed
 

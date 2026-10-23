@@ -31,10 +31,10 @@
     {
       "id": 3,
       "prompt": "Watch production performance after the next deploy.",
-      "expected_output": "Should NOT route to speed-it alone. Post-deploy observation is observe via ship-it; speed-it owns the pre-deploy budget-meet loop.",
+      "expected_output": "Should NOT route to speed-it alone. A standalone post-deploy watch has no mission: the canary runs only inside ship-it's release states for a change that run shipped; speed-it owns the pre-deploy budget-meet loop.",
       "assertions": [
         "Does not route to speed-it as primary mission",
-        "Routes post-deploy watch to ship-it / observe",
+        "Says no mission owns a standalone post-deploy watch (the canary lives in ship-it's release states)",
         "Distinguishes budget-meet from post-deploy watch"
       ],
       "files": [],

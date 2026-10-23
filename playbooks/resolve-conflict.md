@@ -28,7 +28,7 @@ of these is escalated, not guessed.
 - **Never invent behaviour.** A resolution that is neither side — a "cleaner" third version, a
   rename, a tidy-up, a helper extracted while you were in there — is a code change smuggled through
   a merge, invisible to the review that approved either side. If the correct result genuinely is
-  neither side, STOP and route it as a change unit through `build-change`.
+  neither side, STOP and route it as a change unit (read build-change.md).
 - **Always resolve; never abort.** `--abort` throws away the analysis and hands the same conflict
   to the next attempt. If the resolution cannot be made, stop WITH the conflict in place and
   escalate through the gate (gate-classification.md) — a stopped, documented conflict is

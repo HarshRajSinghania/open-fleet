@@ -512,5 +512,38 @@ class TestParentProfileFolding(unittest.TestCase):
         self.assertIn("escalation refused", r.stderr)
 
 
+class OneSignedFieldRule(unittest.TestCase):
+    """2026-10-23 review, P2-2/P3 (#614): which fields a dispatch record is signed over was
+    written three times (canonical_subset, envelope, verify.py) and the verifier's copy dropped
+    the profile rule. signed_fields is the one rule; the envelope ships exactly the fields its
+    signature covers, and verify.py verifies through canonical_record itself."""
+
+    RECORD = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation",
+              "lighting": None, "nc_paths": ["b.py", "a.py"], "profile": "ro",
+              "parent_profile": "rw", "unsigned_extra": "x"}
+
+    def test_the_envelope_carries_exactly_the_signed_fields(self):
+        env = dispatch_sign.envelope(bytes(range(32)), self.RECORD)
+        self.assertEqual(set(env["record"]),
+                         {k for k in dispatch_sign.signed_fields(self.RECORD)
+                          if self.RECORD.get(k) is not None})
+        self.assertEqual(set(env["record"]), set(dispatch_sign.canonical_subset(self.RECORD)))
+        self.assertIn("profile", env["record"])
+        self.assertNotIn("unsigned_extra", env["record"])
+
+    def test_a_profile_free_record_keeps_its_exact_bytes(self):
+        bare = {k: v for k, v in self.RECORD.items() if k not in dispatch_sign._PROFILE_FIELDS}
+        self.assertEqual(dispatch_sign.signed_fields(bare), dispatch_sign._RECORD_FIELDS)
+        self.assertNotIn(b"profile", dispatch_sign.canonical_record(bare))
+
+    def test_the_verifier_verifies_over_the_signers_own_form(self):
+        spec = importlib.util.spec_from_file_location(
+            "verify_for_sign_parity", ROOT / "runtime" / "scripts" / "verify.py")
+        verify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verify)
+        self.assertEqual(verify._canonical_dispatch(self.RECORD),
+                         dispatch_sign.canonical_record(self.RECORD))
+
+
 if __name__ == "__main__":
     unittest.main()

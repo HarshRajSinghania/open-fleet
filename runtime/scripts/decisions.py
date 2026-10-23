@@ -37,19 +37,37 @@ What ``append`` refuses to write, and why each refusal exists:
   ed25519 public key as ``.orca/human-grant-pubkey`` turns authentication on:
   append then requires ``--grant-sig`` (produced by ``sign-grant`` with the
   human's seed, kept off every repo and worker via ``grant-keygen``), the
-  signature binds id+answer+why+task, and ``check`` verifies every recorded
-  signature (a signed line with no pinned key fails closed). Lines written
-  before the pin landed carry no signature and stay readable history.
+  signature binds ts+id+class+answer+why+task (payload v2), and ``check``
+  verifies every recorded signature (a signed line with no pinned key fails
+  closed);
+* under a pinned key, a ``one-way`` line with NO signature -- ``validate``,
+  not only ``append``, requires one, so ``check`` fails a hand-written
+  unsigned grant and ``active`` does not list it (2026-10-23 review, P1-8).
+  A one-way line written before the pin landed must be re-signed
+  (``sign-grant --ts <its own ts>``) or it no longer stands;
+* a timestamp more than ``MAX_FUTURE_SKEW_SECONDS`` ahead of now -- ``active`` ranks by
+  ``ts``, so ``--ts 2099-…`` out-ranked every later human ``deny`` (P2-3).
+
+Payload v2 (P2-3): v1 signed id/answer/why/task only, so a signed ``approved``
+line copied under a later ``ts`` out-ranked a later signed ``superseded``. v2
+binds the line's exact ``ts`` and its class; a v1 signature no longer verifies
+(no key was pinned in this repository when v2 landed, so none was live here).
 
 Subcommands
     append   validate and append one line
     active   list the non-superseded lines (the newest line for an id wins; an
-             answer of exactly ``superseded`` retires the id entirely)
+             answer of exactly ``superseded`` retires the id entirely; under a
+             pinned key a one-way line the key does not verify is not a decision
+             -- see ``standing``)
     tally    ``--lens <name>``: read ``lens-tally:<lens>`` lines newest-first and
              report the streak of consecutive zero-finding dispatches, plus
              whether that lens may auto-gate off (10+ zeros, and the lens is not
              one of the never-gate lenses)
     check    run every append-time rule over an existing file
+    grant-keygen  ``--out <seed path>``: generate the human grant keypair, the seed kept off
+             every repo and worker
+    sign-grant    ``--key <seed> --id … --answer … --why … [--task …] [--ts …]``: print the
+             payload-v2 signature for the one-way line ``append --grant-sig`` will carry
 
 Exit codes
     0  ok
@@ -134,6 +152,15 @@ RESERVED_HUMAN_NAMES = frozenset({
     "unknown", "worker",
 })
 TS_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}")
+# How far ahead of this machine's clock a record's ts may sit (P2-3): room for skew between the
+# human's signing host and the appender, none for a stamp chosen to out-rank later decisions.
+MAX_FUTURE_SKEW_SECONDS = 300
+
+
+def _now():
+    """The current UTC instant (a seam the tests freeze)."""
+    return datetime.now(timezone.utc)
+
 
 # Shapes, not values. A match is reported by NAME; the matched text is never echoed.
 SECRET_SHAPES = [
@@ -233,10 +260,14 @@ def human_source_of(record):
     return human_grant_of(record)[0]
 
 
-def grant_payload(ident, answer, why_core, task_id=""):
-    """Canonical bytes a human grant signature binds (domain-separated)."""
-    return ("orca-fleet human grant v1\n" + "\n".join(
-        [ident, answer, why_core, task_id or ""])).encode("utf-8")
+def grant_payload(ident, answer, why_core, task_id="", *, ts, klass="one-way"):
+    """Canonical bytes a human grant signature binds (domain-separated, v2).
+
+    v2 binds the line's exact ``ts`` and its class beside id/answer/why/task: active() ranks
+    by ts, so a signature that did not cover it let a signed `approved` be replayed under a
+    later stamp to out-rank a later signed `superseded` (2026-10-23 review, P2-3)."""
+    return ("orca-fleet human grant v2\n" + "\n".join(
+        [ts, ident, klass, answer, why_core, task_id or ""])).encode("utf-8")
 
 
 def grant_pubkey(log_path):
@@ -260,14 +291,21 @@ def grant_pubkey(log_path):
             text = pin.read_text(encoding="utf-8").strip()
         except OSError as err:
             raise DecisionsError(f"{pin} is unreadable: {err}") from err
-        try:
-            pub = bytes.fromhex(text)
-        except ValueError as err:
-            raise DecisionsError(f"{pin} is not a hex public key: {err}") from err
-        if len(pub) != 32:
-            raise DecisionsError(f"{pin} is not a 32-byte public key")
-        return pub
+        return parse_grant_pubkey(text, pin)
     return None
+
+
+def parse_grant_pubkey(text, where):
+    """32 pubkey bytes from a pin's text; anything else is could-not-run, never a pass.
+
+    Public because floor_guard.py reads the pin from a git ref, not a file (P1-7)."""
+    try:
+        pub = bytes.fromhex(text.strip())
+    except ValueError as err:
+        raise DecisionsError(f"{where} is not a hex public key: {err}") from err
+    if len(pub) != 32:
+        raise DecisionsError(f"{where} is not a 32-byte public key")
+    return pub
 
 
 def door_hits(text, net):
@@ -324,6 +362,11 @@ def validate(record, net, grant_pub=None):
         problems.append("empty answer")
     if not record["why"]:
         problems.append("empty why (a decision nobody can reconstruct is not a record)")
+    ahead = (_instant(record.get("ts", "")) - _now()).total_seconds()
+    if ahead > MAX_FUTURE_SKEW_SECONDS:
+        problems.append(
+            f"ts is {int(ahead)}s in the future — active() ranks by ts, so a future stamp "
+            "out-ranks every later decision on this id (P2-3)")
     shapes = secret_hits(record["raw"])
     if shapes:
         problems.append(f"credential-shaped text ({', '.join(shapes)}) — the log is permanent")
@@ -343,6 +386,13 @@ def validate(record, net, grant_pub=None):
         if name is None:
             problems.append("class one-way with no human source — the why must end with "
                             "[source=human:<name>] recorded via append --source")
+        elif sig is None and grant_pub is not None:
+            # P1-8: the requirement lived only in cmd_append, so a hand-written line with no
+            # sig= passed `check` and `active` listed it as the live grant.
+            problems.append(
+                "class one-way with no grant signature while a human grant pubkey is pinned "
+                "(.orca/human-grant-pubkey) — every one-way line must carry a signature "
+                "that verifies (sign-grant, then append --grant-sig)")
         elif sig is not None:
             if grant_pub is None:
                 problems.append(
@@ -353,15 +403,44 @@ def validate(record, net, grant_pub=None):
                     verified = _ed25519().checkvalid(
                         bytes.fromhex(sig),
                         grant_payload(record["id"], record["answer"], why_core,
-                                      record.get("task_id", "")),
+                                      record.get("task_id", ""), ts=record["ts"],
+                                      klass=record["class"]),
                         grant_pub)
                 except Exception:
                     verified = False
                 if not verified:
                     problems.append(
                         "grant signature does not verify against the pinned human "
-                        "grant pubkey for this line's id/answer/why/task")
+                        "grant pubkey for this line's ts/id/class/answer/why/task "
+                        "(payload v2: a v1 signature, or one replayed under another ts, "
+                        "does not)")
     return problems
+
+
+def grant_problems(record, grant_pub=None):
+    """Why `record` does not stand as a one-way human grant; [] when it does.
+
+    Class `one-way`, a human source, every append-time rule, and -- with `grant_pub` pinned
+    -- a signature that verifies over payload v2. floor_guard.py requires this of every
+    floor waiver (2026-10-23 review, P1-7), so the rule lives here, once."""
+    problems = [] if record.get("class") == "one-way" else [
+        f"class {record.get('class')!r} is not one-way — a grant is a one-way human decision"]
+    return problems + validate(record, (), grant_pub)
+
+
+def standing(records, grant_pub=None):
+    """`records` without the one-way lines a PINNED key does not verify.
+
+    With `.orca/human-grant-pubkey` pinned, a one-way line that is unsigned or whose signature
+    fails is not a decision: it must neither out-rank a real grant nor retire one, so it is
+    dropped BEFORE active() picks the newest line per id (2026-10-23 review, P1-8). Without a
+    pin the source marker is a record-format check, not authentication: `check` reports a
+    malformed line and `active` keeps listing it as it always has. Lines of other classes pass
+    untouched -- they never claimed a human's authority."""
+    if grant_pub is None:
+        return list(records)
+    return [r for r in records
+            if r.get("class") != "one-way" or not grant_problems(r, grant_pub)]
 
 
 def read_lines(path):
@@ -461,7 +540,7 @@ def tally(records, lens):
 
 def cmd_append(args, net):
     pub = grant_pubkey(args.file)
-    ts = args.ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = args.ts or _now().strftime("%Y-%m-%dT%H:%M:%SZ")
     why = args.why
     if args.grant_sig and args.klass != "one-way":
         print("decisions: --grant-sig binds a one-way human grant; it has no meaning "
@@ -508,6 +587,12 @@ def cmd_append(args, net):
                   "requires --grant-sig from the human's key (`sign-grant`)",
                   file=sys.stderr)
             return EXIT_VIOLATION
+        if effective_sig and not args.ts:
+            # Payload v2 binds the ts (P2-3): a default "now" can never be the stamp the
+            # human signed, so say which flag is missing instead of failing verification.
+            print("decisions: a grant signature binds the line's timestamp — pass the "
+                  "--ts that sign-grant printed", file=sys.stderr)
+            return EXIT_VIOLATION
         if effective_sig:
             if not re.fullmatch(r"[0-9a-fA-F]{128}", effective_sig):
                 print("decisions: --grant-sig must be 128 hex characters", file=sys.stderr)
@@ -551,7 +636,7 @@ def cmd_append(args, net):
 
 def cmd_active(args, _net):
     records = read_lines(args.file)
-    rows = active(records)
+    rows = active(standing(records, grant_pubkey(args.file)))
     if args.json:
         print(json.dumps([{k: r[k] for k in ("ts", "id", "class", "answer", "why", "task_id")}
                           for r in rows], indent=2))
@@ -647,12 +732,22 @@ def cmd_sign_grant(args, _net):
     embedded = HUMAN_SOURCE_SUFFIX.search(why)
     if embedded:
         why = why[:embedded.start()].rstrip()
+    ts = args.ts or _now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not TS_PREFIX.match(ts) or _instant(ts) == _UNDATED:
+        print(f"decisions: --ts {ts!r} is not an ISO timestamp", file=sys.stderr)
+        return EXIT_VIOLATION
+    if (_instant(ts) - _now()).total_seconds() > MAX_FUTURE_SKEW_SECONDS:
+        print("decisions: refusing to sign a grant stamped in the future — it would "
+              "out-rank every later decision on this id (P2-3)", file=sys.stderr)
+        return EXIT_VIOLATION
     ed = _ed25519()
     sig = ed.signature(
         grant_payload(args.id.strip(), args.answer.strip(), why.strip(),
-                      (args.task or "").strip()),
+                      (args.task or "").strip(), ts=ts, klass="one-way"),
         seed, ed.publickey(seed))
     print(sig.hex())
+    print(f"decisions: signed for ts={ts} — append this grant with --ts {ts}",
+          file=sys.stderr)
     return EXIT_OK
 
 
@@ -677,7 +772,9 @@ def build_parser():
     a.add_argument("--grant-sig", default=None,
                    help="128-hex grant signature from sign-grant; required for one-way "
                         "once .orca/human-grant-pubkey is pinned")
-    a.add_argument("--ts", default=None, help="ISO timestamp (default: now, UTC)")
+    a.add_argument("--ts", default=None,
+                   help="ISO timestamp (default: now, UTC; at most a few minutes ahead — "
+                        "required with a grant signature, which binds it)")
 
     sub.add_parser("active", help="list non-superseded decisions").add_argument(
         "--json", action="store_true", help="emit JSON")
@@ -699,6 +796,9 @@ def build_parser():
     s.add_argument("--answer", required=True)
     s.add_argument("--why", required=True)
     s.add_argument("--task", default=None)
+    s.add_argument("--ts", default=None,
+                   help="the exact ts the appended line will carry (default: now, UTC; "
+                        "printed on stderr) — payload v2 binds it")
     return p
 
 

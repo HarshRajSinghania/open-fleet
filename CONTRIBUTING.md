@@ -145,7 +145,8 @@ python3 -m unittest discover -s tests -v   # all contract + validator fixture te
 ```
 
 The validator finishes in under a second; the suite takes a few minutes because it builds real
-git repositories. Neither is optional. PRs that fail either
+git repositories. It runs on Linux and macOS; tmux tests use a fake agent and never start your
+installed agent CLI. Neither is optional. PRs that fail either
 will be asked to fix before review. ruff is CI-only (not required locally). If you add validator behavior, add the negative-path fixture that proves
 the new failure branch fires — the suite's standard is that every guard must be demonstrably
 capable of failing.
@@ -154,7 +155,7 @@ capable of failing.
 
 - Semantic prefixes (`feat:`, `fix:`, `docs:`, `test:`, `chore:`), small logical commits, each
   building alone.
-- No `Co-authored-by` or tool-attribution trailers.
+- No `Co-authored-by` or tool-attribution trailers (`Generated-by:`, `Assisted-by:`, a "Generated with <AI tool>" footer). CI enforces this on each PR's own commits; run `python3 scripts/check_trailers.py --base origin/main` locally.
 - PR bodies: state the problem, then the solution. If you changed a mission's contract, show
   the before/after of its convergence proof.
 

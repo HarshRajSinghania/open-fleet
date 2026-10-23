@@ -148,7 +148,8 @@ open promotion PR is `PROMOTION_READY` — reporting it as `RELEASED` is the ove
 machine exists to prevent.
 
 A **solo run** — no second GitHub identity to review the work — cannot close a mutation unit: it
-records RED and stops at `BUILT`, or takes the executed-control lane; it never self-approves.
+records RED with the unit short of `REVIEWED` — so the wave never reaches `BUILT` that way — or
+takes the executed-control lane; it never self-approves.
 `BUILT-WITH-PARKED` is a degraded terminal; it is never reported as `BUILT`.
 
 ## Human gates
@@ -240,10 +241,9 @@ Runtime policies:
 [`gate-classification`](../../runtime/gate-classification.md) ·
 [`sandbox-policy`](../../runtime/sandbox-policy.md) ·
 [`ledger-contract`](../../runtime/ledger-contract.md) ·
-[`attention-budget`](../../runtime/attention-budget.md) ·
-`orca-dag-semantics` (phase-cued: read when composing the DAG, not standing load)
+[`attention-budget`](../../runtime/attention-budget.md)
 
-Deferred reads, loaded on entering their phase and never at activation: [`liveness-resume`](../../runtime/liveness-resume.md) when a worker stalls or a run resumes · [`plan-review`](../../playbooks/plan-review.md) on the map-it handoff route · [`risk-review`](../../playbooks/risk-review.md) when a slice's surface triggers a lens · [`release`](../../playbooks/release.md) at RELEASE · [`observe`](../../playbooks/observe.md) at DEPLOYED_AND_VERIFIED · [`human-handoff`](../../playbooks/human-handoff.md) at a handoff · [`completion-audit`](../../playbooks/completion-audit.md) + [`compound-learn`](../../playbooks/compound-learn.md) at run close · [`mission-chaining`](../../runtime/mission-chaining.md) as a chain link.
+Deferred reads, loaded on entering their phase and never at activation: [`orca-dag-semantics`](../../runtime/orca-dag-semantics.md) at DECOMPOSE · [`liveness-resume`](../../runtime/liveness-resume.md) when a worker stalls or a run resumes · [`plan-review`](../../playbooks/plan-review.md) on the map-it handoff route · [`risk-review`](../../playbooks/risk-review.md) when a slice's surface triggers a lens · [`release`](../../playbooks/release.md) at RELEASE · [`observe`](../../playbooks/observe.md) at DEPLOYED_AND_VERIFIED · [`human-handoff`](../../playbooks/human-handoff.md) at a handoff · [`completion-audit`](../../playbooks/completion-audit.md) + [`compound-learn`](../../playbooks/compound-learn.md) at run close · [`mission-chaining`](../../runtime/mission-chaining.md) as a chain link.
 
 ## Related missions
 

@@ -22,7 +22,8 @@ Three layers, strictly separated:
   `preflight.py --mission` and `quarantine_check.py` enforce fail-closed. Only a human adds,
   removes or narrows a quarantine entry; an agent never edits it.
 
-Only `skills/` may contain a `SKILL.md`. `scripts/validate.py` fails the build if that breaks.
+Only `skills/` may contain a `SKILL.md`, and no `_`- or `.`-prefixed directory under `skills/` may
+hold one. `scripts/validate.py` fails the build if either breaks.
 
 ## Intent → mission mapping
 
@@ -113,8 +114,10 @@ states which pack a worker uses in the dispatched TASK.
   advancing an existing mission past doctrine-only.
 - `metadata` also carries the six identity points (`unit`, `state_machine`, `convergence`,
   `ordering`, `parking`, `oracle`). Two missions declaring the same six fails the build — and so
-  does a PARAPHRASE of them: comparison is stemmed and synonym-expanded, and a pair with no point
-  on which the two actually diverge is one mission twice, however it is worded (#288).
+  does a PARAPHRASE of them (#288): comparison is stemmed and folded through a closed concept
+  table: a pair with no divergent point fails, and so does a pair that restates five points and
+  diverges on one. A restatement that rewords two or more points outside that table still passes,
+  so the six points are reviewed, not just validated.
 - Instruction budget (validator-enforced): mission body ≤ 110 lines and frontmatter ≤ 34,
   playbooks ≤ 90, runtime ≤ 160.
 - Playbooks and runtime policies are plain Markdown with no frontmatter — never give them a
@@ -126,6 +129,12 @@ states which pack a worker uses in the dispatched TASK.
   count toward that minimum), and checks every `<name>.md` mention — in missions
   AND in playbooks/runtime docs — resolves; case typos and path-prefixed
   references are flagged.
+- In a playbook, a backticked playbook name is a CALL: every mission that loads the caller
+  composes or defers the callee, or the call is a `read <name>.md` cue at the step that needs it
+  (a deferred read those missions inherit). Cite where a rule lives with a bare `name.md` or plain
+  words. `tests/test_doctrine_consistency.py` enforces it, with one evidence-manifest §3 class
+  per mission, a human-gated FREEZE, deferred reads keyed to real pipeline phases, and a `Recipe:`
+  line plus `## Completion` in every playbook.
 
 ## Boundaries
 

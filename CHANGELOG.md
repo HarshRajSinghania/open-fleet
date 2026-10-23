@@ -6,6 +6,37 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The 2026-10-23 end-to-end review's findings are closed** (#629; children #612–#628). The
+  review found a bypass in each mechanism the thesis stands on; each now fails where it passed:
+  - Verifier: a stillborn mutant is refused even when the runner prints `N failed` (pytest,
+    Jest, Vitest); `--execute-nc` runs no source-repo git hooks and the seal re-checks the index
+    it commits; profile-signed dispatch records verify through one canonicalization; the
+    oracle bind reads the runner's own test discovery; `pr.number` must be an integer.
+  - Deny-hook: one peeler for launch wrappers (`timeout`, `exec`, `setsid`, `env -i`, `nice -n`,
+    grouping, `!`, `xargs`, …) feeds every tier; `$'…'` is decoded; the self-guard covers
+    `chmod`, `sort -o`, `ed`, `rsync` and inline interpreter writes; the Never list and rule 5
+    cover history-discarding git, destructive `gh` verbs and every remote-code shape found;
+    matching fails closed when `grep` errors.
+  - CI: `gates` runs `if: always()` and fails unless every need succeeded; release publishers
+    refuse any actor but the owner and a tag off `main`; `v*` tags are restricted by a ruleset;
+    no `${{ }}` reaches a `run:` body; PR commits carrying attribution trailers fail.
+  - Floor guard and ledger: every diff is `--text` with pinned prefixes; waivers are read from
+    the base ref and grant only as one-way human decisions; removed or re-keyed CONSTRAINTS rows,
+    moved test files and imperative skips are caught; a pinned key requires a signature on every
+    one-way line, signed over `ts` and class; routine post-merge teardown is not the deletion door.
+  - Validator: one frontmatter reader (block scalars, full-length caps); one composition set for
+    quarantine across validate, preflight and the CLI; misspelt clause tokens, hidden mission
+    dirs and one-point paraphrases fail; each mission has its own activation-load budget under
+    the 34,000 cap; `bundle.py --out` never deletes what it did not write.
+  - Suite and scripts: tmux workers carry the spawner's `PATH`, and the lifecycle test fails
+    closed on any real agent; the suite runs green on macOS; watchdog fails loud on missing
+    timestamps and skips pending CI; diff_scope counts both sides of a rename; chain_check
+    folds case and spelling.
+  - Doctrine: migrate-it parks each phase for a recorded deploy grant; offload-it lands its
+    recipe through a PR; every FREEZE is a one-way `decide-and-freeze` gate; the contradictions
+    the review listed are reconciled, and `tests/test_doctrine_consistency.py` checks them.
+  - The 16 MB showreel moved to the v0.7.1 Release assets; `pinned-demo` is a required check.
+
 - **External CI monitor runs without a logged-in CLI** (#528). `scripts/external-ci-monitor.py`
   gains `--transport rest`, which reads the public Actions API with no `gh` login (a
   `GITHUB_TOKEN` is sent when set), so a scheduled cloud session can run it. The default `gh`

@@ -1,0 +1,73 @@
+{
+  "id": "hook-staged-kill-1",
+  "class": "hook-staged-kill",
+  "sound_expected": "RED",
+  "note": "#613 / 2026-10-23 review P1-2. The graded repo's own .git/hooks/post-checkout stages a failing test_taut.py into whatever index is being checked out. The bound test asserts nothing about AC-1, so the control is TAUTOLOGICAL \u2014 but `worktree add` and `checkout <base> -- mod.py` ran the hook as the verifier, the revert check read the work tree while the seal committed the index, and the hook supplied the RED. Expressible here because the fixture repo is built at run time with its own .git. Neighbour: hook-valid-control-1.",
+  "unit_class": "mutation",
+  "fixture": "hook-staged",
+  "execute_nc": true,
+  "nc_command": "{{taut_cmd}}",
+  "lighting": "lit",
+  "gh_stub": true,
+  "repo": "vf-bench/hook-staged-kill",
+  "manifest": {
+    "unit": "vf-bench-hook-staged-kill",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{taut_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{taut_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc.txt",
+      "command": "{{taut_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  }
+}

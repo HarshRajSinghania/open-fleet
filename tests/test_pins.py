@@ -273,6 +273,19 @@ class TestPins(unittest.TestCase):
             "a run updates both or neither",
         )
 
+    def test_orca_witness_level_matches_the_pin_record(self):
+        # Membership in ("source", "live") above let pins.json say `live` while orca-pin.md and
+        # its run report said `source` (2026-10-23 review, P2-41). The level is a value both
+        # records state, so it is compared as one.
+        orca = load_pins()["orca"]
+        row = re.search(r"^\|\s*Witnessed\s*\|(.*)\|\s*$", ORCA_PIN.read_text(encoding="utf-8"),
+                        re.MULTILINE)
+        self.assertIsNotNone(row, "runtime/orca-pin.md has no Witnessed row")
+        stated = re.findall(r"`(source|live)`", row.group(1))
+        self.assertEqual(stated[:1], [orca["witness"]],
+                         "runtime/pins.json orca.witness disagrees with the witness level "
+                         "runtime/orca-pin.md's Witnessed row states")
+
     def test_tampered_pin_record_is_caught(self):
         # Negative control: corrupting either side of the promise must surface as
         # a mismatch, not a green suite. Tampers derive from the live values so a

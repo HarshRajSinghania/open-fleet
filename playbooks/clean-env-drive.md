@@ -1,6 +1,6 @@
 # Playbook — clean-env-drive  (prove first-run behaviour where no prior state exists)
 
-Recipe: Orca placement (`worker-start --worktree new-top-level --setup run`) for repo-level
+Recipe: Orca placement (`worker-start --worktree new-child --setup run`) for repo-level
 clean, Orca per-workspace environment recipes for machine-level clean. Any mission phase whose
 oracle is first-run, install, or permission-prompt behaviour runs through here — the CLEAN-ENV
 tier. A pass on a developer machine that already has caches, logins, and global installs proves
@@ -8,7 +8,7 @@ nothing about a first run.
 
 ## Name the cleanliness tier, then earn it
 
-Two tiers, declared per step (`FRESHNESS=`): REPO-CLEAN (a fresh top-level worktree, setup run
+Two tiers, declared per step (`FRESHNESS=`): REPO-CLEAN (a fresh child worktree, setup run
 from zero — no carried `node_modules`, caches, or env files) and MACHINE-CLEAN (a disposable
 runtime booted from a snapshot, per the workspace recipe). A step that needs MACHINE-CLEAN is
 never "verified" REPO-CLEAN; the tier is recorded per step and never upgraded silently.

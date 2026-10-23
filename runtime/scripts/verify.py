@@ -53,11 +53,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import configparser
+import fnmatch
 import functools
 import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -677,6 +680,8 @@ def fetch_reviews(repo, pr_number):
     _Authority.ensure()  # a library caller that never ran main(): pin on first use, ONCE (F-1)
     if _Authority.gh is None:
         return None, _Authority.ABSENT
+    if not (type(pr_number) is int and pr_number > 0):  # a path segment, never a path (P3)
+        return None, f"pr.number {pr_number!r} is not a positive integer"
     # --paginate: without it GitHub returns the first 30 reviews only, and review_ok would
     # compute "latest per reviewer" over a stale window (#167). One HTTP round-trip per page,
     # so allow a longer timeout than the single-call default.
@@ -687,7 +692,7 @@ def fetch_reviews(repo, pr_number):
 
 
 def fetch_pr_author(repo, pr_number):
-    if _Authority.gh is None:
+    if _Authority.gh is None or not (type(pr_number) is int and pr_number > 0):
         return None
     code, out, _ = _Authority.api(repo, f"pulls/{pr_number}")
     if code != 0:
@@ -933,14 +938,22 @@ class _Authority:
         another commit's tree, parents and content, and a `.git/info/grafts` file rewrites a
         commit's parents, so ancestry and range diffs answer for a history that never existed.
         GIT_NO_REPLACE_OBJECTS=1 makes git ignore replace refs; GIT_GRAFT_FILE=/dev/null points
-        the graft lookup at an empty file, so a planted grafts file is never read."""
+        the graft lookup at an empty file, so a planted grafts file is never read.
+
+        And the HOOK channel (2026-10-23 review, P1-2): `worktree add` and `checkout <base> --
+        <paths>` each run `post-checkout` from the source repo's `$GIT_COMMON_DIR/hooks` (or a
+        repo-local `core.hooksPath`) as this uid, and the shared `.git` is the graded worker's to
+        write on the native lane and in every worktree layout docs/verify-gate.md describes. A
+        hook could stage a failing test into the control commit. `core.hooksPath=/dev/null` at
+        `-c` precedence points every hook lookup at a path with no hooks under it."""
         return {**cls.nc_env(), "GIT_TERMINAL_PROMPT": "0",
                 "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_COUNT": "3",
+                "GIT_CONFIG_COUNT": "4",
                 "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
                 "GIT_CONFIG_KEY_1": "protocol.ext.allow", "GIT_CONFIG_VALUE_1": "never",
-                "GIT_CONFIG_KEY_2": "safe.directory", "GIT_CONFIG_VALUE_2": "*"}
+                "GIT_CONFIG_KEY_2": "safe.directory", "GIT_CONFIG_VALUE_2": "*",
+                "GIT_CONFIG_KEY_3": "core.hooksPath", "GIT_CONFIG_VALUE_3": os.devnull}
 
     @classmethod
     def api(cls, repo, endpoint, *flags, timeout=20):
@@ -1049,6 +1062,13 @@ def check_review(m, repo, is_mutation, no_gh=False, corroborated=False, dispatch
     number = (m.get("pr") or {}).get("number")
     if not number:
         return ["mutation unit: no pr.number to look up an independent review — unreviewed"]
+    if not (type(number) is int and number > 0):
+        # The manifest is worker-written and the number is interpolated into the `gh api` PATH
+        # (`repos/<slug>/pulls/<n>/reviews`): `"7/../../other"` or `"7?per_page=1"` would steer
+        # which resource answers. github.com refuses dot-segments today; this does not rely on
+        # it (2026-10-23 review, P3). A JSON integer, positive, and nothing else.
+        return [f"mutation unit: pr.number {number!r} is not a positive integer — it names the "
+                "GitHub resource the review is read from, so anything else is refused; fail-closed"]
     if not repo:
         return ["mutation unit: --repo not resolvable — cannot verify the review independently"]
     authority = _Authority.review_leg(repo)
@@ -1145,8 +1165,12 @@ def _nc_command(nc, override):
 def _fresh_command_records(m):
     """`commands[]` records with exit 0 whose wtree is head_sha's tree. Returns (records, err).
 
-    Same freshness rule as `check_commands`; kept in one place so the ledger the NC
-    replay binds to and the ledger the gate checks can never drift apart.
+    The freshness rule `check_commands` (its only caller) applies. The executed negative control
+    does NOT read this ledger: since #279 its command comes from the coordinator's --nc-command,
+    because the ledger is worker-written and cannot authorise the proof that grades the worker.
+    What the ledger still proves is narrower — the named command ran green on this content, as
+    the worker's own runner recorded it (#352; 2026-10-23 review, P3: this docstring said the
+    replay bound to it).
     """
     head = m.get("head_sha")
     if not head:
@@ -1231,16 +1255,18 @@ def _changed_paths(base, head, nc_command=None):
     if not (base and head and HEX40_RE.match(str(base)) and HEX40_RE.match(str(head))):
         return None, None, ("the control cannot be bound to the change without pinned 40-hex "
                             "base_sha and head_sha")
-    code, out = _git(["diff", "--name-only", "-z", f"{base}..{head}"])
+    # --no-renames: a rename changes BOTH paths, and the sealed control is listed the same way, so
+    # restoring a renamed file's old name is bound like any other change (2026-10-23 review, P1-2).
+    code, out = _git(["diff", "--name-only", "--no-renames", "-z", f"{base}..{head}"])
     if code != 0:
         return None, None, ("cannot diff base_sha..head_sha to bind the control to the change; "
                             "fail-closed")
     changed = [p for p in out.split("\0") if p]  # -z: newline-safe (#382)
     prod, tests = [], []
     for path in changed:
-        verdict = _is_oracle_path(path, nc_command)
+        verdict = _is_oracle_path(path, nc_command, head)
         if verdict is None:
-            return None, None, _classifier_unavailable(nc_command)
+            return None, None, _classifier_unavailable(nc_command, head)
         (tests if verdict else prod).append(path)
     return prod, tests, None
 
@@ -1359,23 +1385,41 @@ def _command_oracle_paths(command):
     return paths
 
 
-def _classifier_unavailable(nc_command):
-    """Name which of the two fail-closed causes actually applies.
+def _classifier_unavailable(nc_command, head=None):
+    """Name which of the fail-closed causes actually applies.
 
-    `_is_oracle_path` answers None for two unrelated reasons: the proof command is outside the
-    bounded grammar, or diff_scope.py — the repo's one definition of a test path — could not be
-    loaded beside this script. One message for both told an operator nothing about which of them
-    to fix, and an installed bundle missing diff_scope.py reported a proof-command problem it did
-    not have (#322 bundle oracle vs #323 wrapped-proof grammar).
+    `_is_oracle_path` answers None for three unrelated reasons: the proof command is outside the
+    bounded grammar, the runners' discovery configuration at head_sha could not be read, or
+    diff_scope.py — the repo's one definition of a test path — could not be loaded beside this
+    script. One message for all of them told an operator nothing about which to fix, and an
+    installed bundle missing diff_scope.py reported a proof-command problem it did not have
+    (#322 bundle oracle vs #323 wrapped-proof grammar).
     """
     if _command_oracle_paths(nc_command) is None:
         return "unsupported proof command; fail-closed"
+    found = _is_oracle_path.discovery.get((_ROOTS["git"], os.getcwd(), head, nc_command))
+    if found is not None and found[1]:
+        return found[1]
     return ("diff_scope.py could not be loaded, so a test path cannot be told from a production "
             "one; fail-closed")
 
 
-def _is_oracle_path(path, nc_command=None):
-    """Test modules and runner configuration are part of the oracle, never mutation targets."""
+def _is_oracle_path(path, nc_command=None, head=None):
+    """Test modules and runner configuration are part of the oracle, never mutation targets.
+
+    A NAME test alone (fixed config names, diff_scope's TESTS regex, the inputs the bound command
+    names as options) classed a test the runner collects under any other name as production:
+    `checks/add_check.py` under pytest's `python_files = *_check.py` could be reverted, and the
+    RED came from the OLD oracle failing against head (2026-10-23 review, P2-1). So with `head`
+    the runners' own discovery at head_sha decides too (`discover` below, read once per run):
+    pytest's python_files/testpaths from the pytest.ini / pyproject.toml / tox.ini / setup.cfg at
+    the root and above each operand, a `-c` file and `-o` overrides; every test path the bound
+    pytest/unittest command names as an operand (a `.py` operand, a `file::node` id, a dotted
+    unittest module) and unittest's discover pattern; and Jest's testMatch/testRegex from the
+    root package.json. Configuration that cannot be read or parsed is None, fail-closed. Still
+    outside this bounded grammar, as before: a conftest collection hook, a JS config file
+    (jest.config.js, vitest.config.ts) and transitive imports — the coordinator chooses the
+    command, and a broad one is its risk to take."""
     if Path(path).name.lower() in {"conftest.py", "pytest.ini", "tox.ini", "setup.cfg",
                                    "pyproject.toml", "package.json", ".coveragerc",
                                    "makefile", "gnumakefile"}:
@@ -1387,7 +1431,244 @@ def _is_oracle_path(path, nc_command=None):
         return None
     if Path(path).suffix.lower() == ".mk" or Path(path).as_posix() in inputs:
         return True
+
+    def rel(value):
+        """A command operand as a repo-relative POSIX path, or None when it leaves the repo."""
+        p = os.path.normpath(value.split("::", 1)[0])
+        if os.path.isabs(p):
+            try:
+                p = os.path.relpath(p, _toplevel() or "/")
+            except ValueError:
+                return None
+        p = Path(p).as_posix()
+        return None if p == ".." or p.startswith("../") else ("" if p == "." else p)
+
+    def words(value):
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        try:
+            return shlex.split(str(value))
+        except ValueError:
+            return str(value).split()
+
+    def glob_re(glob):
+        """A Jest/micromatch glob as a regex body: **, *, ?, {a,b}, [..] and the extglobs
+        ?( ) *( ) +( ) @( ); !( ) over-matches one segment, the fail-closed direction."""
+        out, i = "", 0
+        while i < len(glob):
+            ch = glob[i]
+            if glob.startswith("**/", i):
+                out, i = out + "(?:.*/)?", i + 3
+            elif glob.startswith("**", i):
+                out, i = out + ".*", i + 2
+            elif ch in "?*+@!" and glob[i + 1:i + 2] == "(":
+                depth, j, alts, start = 0, i + 1, [], i + 2
+                while j < len(glob):
+                    depth += {"(": 1, ")": -1}.get(glob[j], 0)
+                    if depth == 1 and glob[j] == "|":
+                        alts, start = alts + [glob[start:j]], j + 1
+                    if depth == 0:
+                        break
+                    j += 1
+                if depth:
+                    raise ValueError(f"unbalanced extglob in {glob!r}")
+                body = "[^/]*" if ch == "!" else "|".join(glob_re(a) for a in alts + [glob[start:j]])
+                out += f"(?:{body})" + {"?": "?", "*": "*", "+": "+"}.get(ch, "")
+                i = j + 1
+            elif ch == "{" and "}" in glob[i:]:
+                j = glob.index("}", i)
+                out += "(?:" + "|".join(glob_re(a) for a in glob[i + 1:j].split(",")) + ")"
+                i = j + 1
+            elif ch == "[" and "]" in glob[i + 1:]:
+                j = glob.index("]", i + 1)
+                out += "[" + glob[i + 1:j].replace("!", "^", 1).replace("\\", "\\\\") + "]"
+                i = j + 1
+            else:
+                out += {"*": "[^/]*", "?": "[^/]"}.get(ch) or re.escape(ch)
+                i += 1
+        return out
+
+    def toml_pytest(text):
+        """The pytest tables of a pyproject.toml: [tool.pytest.ini_options] and pytest 9's
+        [tool.pytest]. tomllib where the interpreter has it (3.11+). Without it — verify-gate.sh
+        runs whatever python3 is first on PATH, the system 3.9 on macOS — a scan of the two keys
+        this reads, and a key it cannot read there is a refusal, never a silent miss."""
+        try:
+            import tomllib
+        except ImportError:
+            tomllib = None
+        if tomllib is not None:
+            tool = tomllib.loads(text).get("tool", {}).get("pytest", {})
+            return [tool.get("ini_options", {}), tool]
+        found, inside, lines, i = {}, False, text.splitlines(), 0
+        while i < len(lines):
+            line = lines[i].split("#", 1)[0].strip()
+            if line.startswith("["):
+                inside = line.replace(" ", "") in ("[tool.pytest.ini_options]", "[tool.pytest]")
+            hit = re.match(r"(python_files|testpaths)\s*=\s*(.*)", line) if inside else None
+            if hit:
+                value = hit.group(2)
+                while value.count("[") > value.count("]") and i + 1 < len(lines):
+                    i += 1
+                    value += " " + lines[i].split("#", 1)[0].strip()
+                quoted = [a or b for a, b in re.findall(r'"([^"]*)"|\'([^\']*)\'', value)]
+                found[hit.group(1)] = quoted if value.startswith("[") else " ".join(quoted)
+            i += 1
+        if re.search(r"\b(?:python_files|testpaths)\b", text) and not found:
+            raise ValueError("python_files/testpaths present in a form this interpreter cannot "
+                             "read without tomllib")
+        return [found]
+
+    def discover(command):
+        """(matcher, None) or (None, reason): what the runners collect as tests at head_sha."""
+        argv = shlex.split(command) if command else []
+        if argv and Path(argv[0]).name == "env":
+            argv = argv[2:] if argv[1:2] == ["--"] else argv[1:]
+        prog = Path(argv[0]).name if argv else ""
+        runner, rest = ("pytest", argv[1:]) if prog == "pytest" else (None, [])
+        if re.fullmatch(r"(?:python(?:[0-9.]+)?|pypy[0-9]*)", prog):
+            i = 1
+            while i < len(argv) and argv[i] in {"-B", "-E", "-I", "-O", "-OO", "-s", "-S", "-u", "-q"}:
+                i += 1
+            arg = argv[i] if i < len(argv) else ""
+            name = (argv[i + 1] if i + 1 < len(argv) else "") if arg == "-m" else arg[2:]
+            if arg.startswith("-m") and name in ("pytest", "unittest"):
+                runner, rest = name, argv[i + (2 if arg == "-m" else 1):]
+        # Operands are read generously: an option value this grammar does not know becomes one
+        # more operand, which only ADDS a path or a root — never narrows what counts as a test.
+        ops, configs, overrides, opt = [], [], {}, {}
+        valued = {"pytest": {"-c": "c", "--config-file": "c", "-o": "o", "--override-ini": "o",
+                             "--rootdir": "", "-k": "", "-m": "", "-p": ""},
+                  "unittest": {"-p": "p", "--pattern": "p", "-s": "s", "--start-directory": "s",
+                               "-t": "", "--top-level-directory": "", "-k": ""}}.get(runner, {})
+        i, after = 0, False
+        while i < len(rest):
+            tok = rest[i]
+            long_key, eq, long_val = tok.partition("=")
+            if after or not tok.startswith("-"):
+                ops.append(tok)
+            elif tok == "--":
+                after = True
+            elif tok in valued:
+                opt.setdefault(valued[tok], []).append(rest[i + 1] if i + 1 < len(rest) else "")
+                i += 1
+            elif eq and long_key in valued and tok.startswith("--"):
+                opt.setdefault(valued[long_key], []).append(long_val)
+            elif runner == "pytest" and tok[:2] in ("-c", "-o") and len(tok) > 2:
+                opt.setdefault(tok[1], []).append(tok[2:])
+            i += 1
+        configs = opt.get("c", [])
+        for pair in opt.get("o", []):
+            key, _, val = pair.partition("=")
+            overrides.setdefault(key.strip(), []).extend(words(val))
+        exact, dirs, roots = set(), {""}, []
+        if runner == "unittest" and ops[:1] == ["discover"]:
+            opt.setdefault("s", []).extend(ops[1:2])  # discover's positionals: start, pattern
+            opt.setdefault("p", []).extend(ops[2:3])
+        elif runner == "unittest":
+            for op in ops:
+                if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", op):
+                    # A dotted operand names a module, a class or a method
+                    # (`checks.add_check.TestAdd.test_add`): the oracle is the deepest prefix that
+                    # is a module at head_sha, not the whole dotted path read as a file. With no
+                    # prefix resolvable, every prefix stays protected (PR #631 review, P1).
+                    parts = op.split(".")
+                    cands = [f"{'/'.join(parts[:k])}{tail}"
+                             for k in range(1, len(parts) + 1) for tail in (".py", "/__init__.py")]
+                    code, found = _git(["--literal-pathspecs", "ls-tree", "--full-tree", "-r", "-z",
+                                        "--name-only", str(head), "--", *cands])
+                    if code != 0:
+                        return None, (f"cannot resolve the unittest operand {op!r} at head_sha "
+                                      f"{head}; fail-closed (PR #631 review, P1)")
+                    present = [c for c in cands if c in set(found.split("\0"))]
+                    exact.update(present[-1:] or cands)
+                elif rel(op):
+                    exact.add(rel(op))
+        else:
+            for p in (q for q in map(rel, ops) if q is not None):
+                roots.append(p)  # "" (an operand of `.`) roots the whole repo
+                if p:
+                    exact.add(p)
+                    parts = p.split("/")
+                    dirs.update("/".join(parts[:k]) for k in range(len(parts)))
+        names = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
+        wanted = {f"{d}/{n}".lstrip("/") for d in dirs for n in names} | {"package.json"}
+        wanted |= set(filter(None, map(rel, configs)))
+        code, listing = _git(["--literal-pathspecs", "ls-tree", "--full-tree", "-r", "-z",
+                              "--name-only", str(head), "--", *sorted(wanted)])
+        if code != 0:
+            return None, (f"cannot list the test-discovery configuration at head_sha {head}; "
+                          "fail-closed (2026-10-23 review, P2-1)")
+        py_globs, testpaths, regexes = list(overrides.get("python_files", [])), [], []
+        testpaths += [p for p in map(rel, overrides.get("testpaths", [])) if p is not None]
+        for cfg in sorted(p for p in listing.split("\0") if p):
+            code, raw, _ = _git_bytes(["cat-file", "blob", f"{head}:{cfg}"])
+            try:
+                if code != 0:
+                    raise ValueError("unreadable at head_sha")
+                text = raw.decode("utf-8")
+                if cfg == "package.json":
+                    jest = json.loads(text).get("jest")
+                    jest = jest if isinstance(jest, dict) else {}
+                    rx = jest.get("testRegex") or []
+                    regexes += [re.compile(r) for r in ([rx] if isinstance(rx, str) else rx)]
+                    regexes += [re.compile("^/" + glob_re(g.replace("<rootDir>/", "")) + "$")
+                                for g in words(jest.get("testMatch") or []) if not g.startswith("!")]
+                    continue
+                if cfg.endswith(".toml"):
+                    sections = toml_pytest(text)
+                else:
+                    parser = configparser.RawConfigParser(strict=False, allow_no_value=True)
+                    parser.read_string(text)
+                    sections = [dict(parser[s]) for s in ("pytest", "tool:pytest")
+                                if parser.has_section(s)]
+                for sec in sections:
+                    py_globs += words(sec.get("python_files") or [])
+                    testpaths += [p for p in (rel(posixpath.join(cfg.rpartition("/")[0], t))
+                                              for t in words(sec.get("testpaths") or []))
+                                  if p is not None]
+            except (ValueError, TypeError, AttributeError, re.error, configparser.Error) as exc:
+                return None, (f"the test-discovery configuration {cfg} at head_sha cannot be read "
+                              f"({exc}), so a test path cannot be told from a production one; "
+                              "fail-closed (2026-10-23 review, P2-1)")
+        # Union, never a narrowing: the operands' trees AND testpaths (pytest ignores testpaths
+        # when given operands; reading both only ever protects more), else the whole repo.
+        py_roots = roots + testpaths if testpaths else [""]
+        py_globs = py_globs or ["test_*.py", "*_test.py"]
+        ut_globs = (opt.get("p") or ["test*.py"]) if runner == "unittest" else []
+        ut_roots = [p for p in map(rel, opt.get("s") or ["."]) if p is not None]
+
+        def under(p, tops):
+            anc = ["/".join(p.split("/")[:k]) for k in range(1, p.count("/") + 1)]
+            return any(t == "" or p == t or any(fnmatch.fnmatchcase(a, t) for a in anc) for t in tops)
+
+        def collected(p, globs):
+            leaf = p.rpartition("/")[2]
+            return any(fnmatch.fnmatchcase(p, g) or fnmatch.fnmatchcase(p, "*/" + g) if "/" in g
+                       else fnmatch.fnmatchcase(leaf, g) for g in globs)
+
+        def matcher(p):
+            return (p in exact
+                    or (p.endswith(".py") and under(p, py_roots) and collected(p, py_globs))
+                    or (p.endswith(".py") and under(p, ut_roots) and collected(p, ut_globs))
+                    or any(r.search("/" + p) for r in regexes))
+        return matcher, None
+
+    if head is not None:
+        key = (_ROOTS["git"], os.getcwd(), head, nc_command)
+        if key not in _is_oracle_path.discovery:
+            _is_oracle_path.discovery[key] = discover(nc_command)
+        matcher, _err = _is_oracle_path.discovery[key]
+        if matcher is None:
+            return None
+        if matcher(Path(path).as_posix()):
+            return True
     return _is_test_path(path)
+
+
+# (git root, cwd, head_sha, nc_command) -> (matcher | None, reason): the runners' discovery at
+# head_sha, read once per run before any control executes (main() clears it per run).
+_is_oracle_path.discovery = {}
 
 
 def _bind_paths_to_change(paths, m, what, nc_command=None):
@@ -1400,9 +1681,9 @@ def _bind_paths_to_change(paths, m, what, nc_command=None):
     prod_set = set(scope["paths"]) if scope else set(prod)
     for path in paths:
         norm = Path(path).as_posix()
-        verdict = _is_oracle_path(norm, nc_command)
+        verdict = _is_oracle_path(norm, nc_command, m.get("head_sha"))
         if verdict is None:
-            return _classifier_unavailable(nc_command)
+            return _classifier_unavailable(nc_command, m.get("head_sha"))
         if verdict:
             return (f"{what} names {path!r}, which is a TEST path. Reverting the test that encodes "
                     "the criterion makes the proof go RED because the oracle is gone, not because "
@@ -1446,7 +1727,7 @@ def check_oracle_scope(m, source, digest):
         return ["oracle scope: explicit path/line coordinates required"]
     for path, lines in paths.items():
         _, err = _resolve(path)
-        if err or _is_oracle_path(path) is not False:
+        if err or _is_oracle_path(path, head=m.get("head_sha")) is not False:
             return ["oracle scope: TEST paths and escaping paths cannot be mutated"]
         if not isinstance(lines, list) or not lines or any(type(n) is not int or n < 1 for n in lines):
             return ["oracle scope: positive integer line coordinates required"]
@@ -1703,8 +1984,10 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
                                          str(base), "--", *paths], env=_Authority.git_env())
             if code != 0:
                 return f"could not restore {paths} from base_sha in the control worktree: {gerr.strip()}"
-            code, actual, gerr = _run_at(wt, [_Authority.git_bin(), "diff", "--name-only", "--no-renames",
-                                            "-z", "HEAD"], env=_Authority.git_env())
+            # --cached: the INDEX is what _seal_control's write-tree commits, so the check reads
+            # that object, never the work tree beside it (2026-10-23 review, P1-2).
+            code, actual, gerr = _run_at(wt, [_Authority.git_bin(), "diff", "--cached", "--name-only",
+                                            "--no-renames", "-z", "HEAD"], env=_Authority.git_env())
             if code != 0:
                 return f"cannot inspect restored paths: {gerr.strip()}"
             affected = set(actual.rstrip('\0').split('\0')) if actual else set()
@@ -1814,15 +2097,31 @@ def execute_negative_control(m, nc_command=None):
         never reaches the control run.
 
         The stillborn check lives here and compares TREES: a control whose applied tree equals
-        head_sha's tree changed NOTHING and cannot make any proof go RED (#255)."""
+        head_sha's tree changed NOTHING and cannot make any proof go RED (#255).
+
+        The bind is re-read HERE, from the tree just written — the very object the control phase
+        checks out. _apply_control's checks read the index too, but a check of one object and a
+        seal of another left room for anything that staged content between or beside them (a
+        post-checkout hook updating the index while the check read the work tree: 2026-10-23
+        review, P1-2). Every path the sealed tree changes must be a production path this unit
+        changed, or nothing is sealed."""
         git, env = _Authority.git_bin(), _Authority.git_env()
         code, tree, gerr = _run_at(wt, [git, "write-tree"], env=env)
         tree = tree.strip()
         if code != 0 or not HEX40_RE.match(tree):
             return None, f"cannot record the applied control's tree: {gerr.strip()}"
-        if tree == _tree(head):
+        head_tree = _tree(head)
+        if tree == head_tree:
             return None, ("the negative control changed NOTHING at head_sha — a no-op mutant cannot "
                           "make any proof go RED (#255)")
+        code, sealed, gerr = _run_at(wt, [git, "diff-tree", "-r", "-z", "--name-only", "--no-renames",
+                                          str(head_tree), tree], env=env)
+        if code != 0:
+            return None, f"cannot list what the sealed control changes: {gerr.strip()}"
+        bind_err = _bind_paths_to_change([p for p in sealed.split("\0") if p], m,
+                                         "the sealed control", nc_command)
+        if bind_err:
+            return None, bind_err
         code, raw, gerr = _git_bytes(["cat-file", "commit", str(head)])
         if code != 0 or not raw.startswith(b"tree ") or b"\n" not in raw:
             return None, f"cannot read head_sha's commit object to seal the control: {gerr.strip()}"
@@ -2455,6 +2754,9 @@ def check_provenance(m):
             "(EU AI Act Art-12/50 record incomplete)"] if missing else []
 
 
+# The dispatch fields the gate ENFORCES — a mirror of dispatch-sign.py's _RECORD_FIELDS pinned by
+# the parity test, never a canonical form: _canonical_dispatch signs through the signer itself, so
+# a record carrying the signer's _PROFILE_FIELDS (#590) verifies too (2026-10-23 review, P2-2).
 _DISPATCH_FIELDS = ("manifest_id", "contract_digest", "unit_class", "lighting",
                     "nc_paths", "nc_command", "nc_artifact_sha256",
                     "no_gh", "lane", "execute_nc")
@@ -2476,11 +2778,12 @@ def _load_ed25519():
 
 
 def _canonical_dispatch(record):
-    """Must match dispatch-sign.py.canonical_record byte-for-byte (a cross-tool test guards this)."""
-    subset = {k: record[k] for k in _DISPATCH_FIELDS if record.get(k) is not None}
-    if isinstance(subset.get("nc_paths"), list):  # a SET of paths, not a listing order (#311)
-        subset["nc_paths"] = sorted(str(x) for x in subset["nc_paths"])
-    return json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    """dispatch-sign.py's own canonical_record, not a copy of it (2026-10-23 review, P2-2). The
+    copy that lived here signed _DISPATCH_FIELDS only, and the signer appends _PROFILE_FIELDS to
+    a record carrying a profile (#590), so every genuine `--profile`/`--parent-profile` record
+    read as forged. One implementation, loaded from the verifier's own toolchain (dispatch-sign.py
+    is in _Transcript.TOOLCHAIN), cannot drift; the parity tests sample profile records too."""
+    return _Transcript.signer().canonical_record(record)
 
 
 class _Transcript:
@@ -2500,11 +2803,23 @@ class _Transcript:
             "unit_class", "no_gh", "lighting", "lane", "dispatch_record", "dispatch_pubkey",
             "nc_command", "git_dir", "evidence_root", "provenance")
 
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def signer():
+        """dispatch-sign.py, loaded once by path the way the other siblings are. It owns the ONE
+        canonical form both envelopes are signed over — the dispatch record's and this
+        transcript's — and the seed custody rule; verify.py verifies and signs through it rather
+        than through copies (2026-10-23 review, P2-2: the dispatch copy lost the profile rule)."""
+        spec = importlib.util.spec_from_file_location(
+            "dispatch_sign", Path(__file__).resolve().parent / "dispatch-sign.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
     @classmethod
     def canonical(cls, record):
-        """Must match dispatch-sign.py.canonical_transcript byte-for-byte (a cross-tool test guards this)."""
-        subset = {k: record[k] for k in cls.FIELDS if record.get(k) is not None}
-        return json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        """dispatch-sign.py.canonical_transcript itself — one implementation, not a mirror."""
+        return cls.signer().canonical_transcript(record)
 
     @classmethod
     def build(cls, args, exit_code, fatal, notes, raw=None):
@@ -2555,11 +2870,7 @@ class _Transcript:
         key is a USAGE error (exit 1) before any verdict, not a transcript silently left unsigned.
         h409 F-4: the read is dispatch-sign.py's own _seed, so the custody rule (0600, not in an
         unignored work tree, class named on stderr) is ONE rule shared by all four signers."""
-        spec = importlib.util.spec_from_file_location(
-            "dispatch_sign", Path(__file__).resolve().parent / "dispatch-sign.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        seed, err = mod._seed(Path(key_ref))
+        seed, err = _Transcript.signer()._seed(Path(key_ref))
         return (None, f"--transcript-key: {err}") if err else (seed, None)
 
     @classmethod
@@ -2637,6 +2948,11 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
         ed = _load_ed25519()
     except Exception as exc:
         return [f"dispatch provenance requested but the Ed25519 verifier is unavailable ({exc}) — fail-closed"]
+    try:
+        _Transcript.signer()  # the canonical form _canonical_dispatch reads (review P2-2)
+    except Exception as exc:
+        return [f"dispatch provenance requested but dispatch-sign.py's canonical form is "
+                f"unavailable ({exc}) — fail-closed"]
     rec_text, err = read_source(record_ref)
     if err:
         return [f"dispatch record unreadable ({record_ref}): {err}"]
@@ -2995,6 +3311,7 @@ def main(argv=None):
         return 1
     _ROOTS.update(git=roots["--git-dir"], evidence=roots["--evidence-root"])
     _roots_are_split.cache.clear()  # one answer per run, taken before any control executes
+    _is_oracle_path.discovery.clear()  # the same: test discovery is read before the control
     # h409 F-1: the review authority is pinned HERE, before any check runs and long before the
     # executed negative control runs worker code — never looked up lazily after it.
     repo = _Authority.resolve(args.provenance,

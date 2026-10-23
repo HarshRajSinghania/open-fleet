@@ -254,6 +254,36 @@ class GatesFailOnAFixtureThatViolatesThem(unittest.TestCase):
                 _, status, detail = find(rc.gate5(ctx_for(root)), "gate5/orca-pin-live")
                 self.assertEqual(status, want, detail)
 
+    def test_a_source_re_pin_passes_gate_5_only_on_fresh_recorded_live_receipts(self):
+        """2026-10-23 review, P2-41: pins.json labelled a source-delta re-pin "live" and gate 5
+        passed on the word. The carried live witness is now a field the gate reads: it passes
+        only when that witness is fresh, no later than the re-pin, and its run record exists."""
+        run = "docs/runs/2026-10-12-pin-it-x.md"
+        cases = (
+            ({"version": "v9.9.8", "witnessed": "2026-09-20", "run": run}, True, rc.PASS),
+            ({"version": "v9.9.8", "witnessed": "2026-09-20", "run": run}, False, rc.FAIL),
+            ({"version": "v9.9.8", "witnessed": "2026-09-13", "run": run}, True, rc.FAIL),
+            ({"version": "v9.9.8", "witnessed": "2026-10-01", "run": run}, True, rc.FAIL),
+            ({"version": "v9.9.8", "witnessed": "2026-09-20", "run": "README.md"}, True, rc.FAIL),
+            ({"version": "v9.9.8", "witnessed": "2026-09-20",
+              "run": "docs/runs/../../README.md"}, True, rc.FAIL),
+            ("2026-09-20", True, rc.FAIL),
+        )
+        for carried, write_run, want in cases:
+            with self.subTest(carried=carried, write_run=write_run), \
+                    tempfile.TemporaryDirectory() as tmp:
+                root = make_fixture(tmp, witness="source", witnessed="2026-09-28")
+                pins = root / "runtime" / "pins.json"
+                data = json.loads(pins.read_text(encoding="utf-8"))
+                data["orca"]["live_receipts"] = carried
+                pins.write_text(json.dumps(data), encoding="utf-8")
+                (root / "README.md").write_text("not a run record\n", encoding="utf-8")
+                if write_run:
+                    (root / run).parent.mkdir(parents=True, exist_ok=True)
+                    (root / run).write_text("# pin-it run\n", encoding="utf-8")
+                _, status, detail = find(rc.gate5(ctx_for(root)), "gate5/orca-pin-live")
+                self.assertEqual(status, want, detail)
+
     def test_an_unreadable_pin_fails_gate_5(self):
         for text in ("{not json", '{"gstack": {}}', '{"orca": "a string"}'):
             with self.subTest(pins=text), tempfile.TemporaryDirectory() as tmp:
@@ -623,6 +653,49 @@ class TheChecklistPointsAtTheScript(unittest.TestCase):
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', m.group(1))), rc.PROOF_BAR)
         self.assertIn(f'e["witnessed"]>="{rc.PIN_MIN_WITNESSED}"', self.text)
 
+
+
+VF_BENCH = (r"vfbench\.py", r"vf-bench/gate\.py")
+
+
+class CiRunsMeansARunStep(unittest.TestCase):
+    """2026-10-23 review, §5: "CI runs X" was satisfied by X anywhere in a workflow file — a
+    comment, a step name, an `if:` — so gate3 could PASS on a check CI never executes."""
+
+    def gate3(self, workflow):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fixture(tmp)
+            wf = root / ".github" / "workflows"
+            wf.mkdir(parents=True)
+            (wf / "validate.yml").write_text(workflow, encoding="utf-8")
+            # The check gate3 makes, without gate3's ~10 s of real tool runs around it.
+            return rc.check_workflows_mention(ctx_for(root), "gate3/ci-runs-vf-bench",
+                                              VF_BENCH, "#412")[1]
+
+    def test_a_mention_outside_a_run_step_fails(self):
+        for workflow in (
+            "# python3 bench/vf-bench/gate.py is run nightly elsewhere\n",
+            "jobs:\n  gates:\n    steps:\n      - name: bench/vf-bench/gate.py\n"
+            "        run: echo skipped\n",
+            "jobs:\n  gates:\n    steps:\n      - run: |\n          echo start\n"
+            "          # python3 bench/vf-bench/gate.py\n",
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_inline_and_block_run_steps_pass(self):
+        for workflow in (
+            "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n"
+            "          set -e\n          time python3 bench/vf-bench/gate.py\n",
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.PASS)
+
+    def test_the_live_workflows_run_both_checks(self):
+        for patterns in (VF_BENCH, (r"negative-control",)):
+            check = rc.check_workflows_mention(ctx_for(ROOT), "live", patterns, "landed")
+            self.assertEqual(check[1], rc.PASS, check)
 
 if __name__ == "__main__":
     unittest.main()

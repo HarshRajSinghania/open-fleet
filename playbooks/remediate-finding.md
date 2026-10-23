@@ -1,5 +1,6 @@
 # Playbook — remediate-finding  (the per-finding fix loop; shared by clean-sweep + campaigns)
 
+Recipe: Matt `triage` (verify a finding before fixing it) on the fleet's own PR-per-finding closure.
 The unit is ONE confirmed finding. Same loop whether the finding came from an audit, a tracker issue,
 a security lens, a perf breach, or a flaky test — the mission supplies the finding SOURCE and the
 "clean" contract; this playbook supplies the closure pipeline.
@@ -10,7 +11,8 @@ a security lens, a perf breach, or a flaky test — the mission supplies the fin
    check out the PR and confirm it does what it claims. Two codebase checks first — REDUNDANCY (search
    by domain concept: already implemented → wontfix) and PRIOR-REJECTION (an out-of-scope KB). An
    unreproducible finding is REFUTED with attempts logged, or needs-human if it implies private state.
-2. **Fix** via `build-change` (failing test first / red repro, smallest change, negative control).
+2. **Fix** — read build-change.md into the fix TASK (failing test first / red repro, smallest change,
+   negative control).
    The finding TASK carries the same autonomy block as decompose-dag (goal · scope · non-goals ·
    stop · evidence · escalation · budget) and an intent packet on the manifest.
 3. **Open PR against BASE** (integrator, never the builder; assert `baseRefName==BASE`) + reconcile
@@ -34,3 +36,8 @@ a security lens, a perf breach, or a flaky test — the mission supplies the fin
 - Lane B forks (gate-classification.md): draft both options, human gate — do not pick silently.
 - The mission owns "how do I know the whole set is clean" (its convergence proof); this owns "how do I
   close one finding correctly".
+
+## Completion
+
+The finding is closed off a verified merge SHA with its negative control executed, refuted or
+duplicate behind the batch gate, or parked (`CODE_CLOSED` + `VERIFY_AT_SCALE`, needs-human) with a reason.

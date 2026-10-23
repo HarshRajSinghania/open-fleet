@@ -42,6 +42,7 @@ Spec: https://agentskills.io/specification
 """
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -74,6 +75,10 @@ _qc_spec = importlib.util.spec_from_file_location(
 )
 _quarantine = importlib.util.module_from_spec(_qc_spec)
 _qc_spec.loader.exec_module(_quarantine)
+# The catalog grammar — frontmatter reader and composition grammar — is the quarantine matcher's
+# own module, so the CI gate, preflight and the CLI read one composition set (2026-10-23 review,
+# P1-9 / P1-10). It lives in runtime/scripts/ because the matcher ships inside every bundle.
+_grammar = _quarantine._grammar
 SKILLS_DIR = ROOT / "skills"
 PLAYBOOKS_DIR = ROOT / "playbooks"
 RUNTIME_DIR = ROOT / "runtime"
@@ -109,6 +114,12 @@ METADATA_VALUE_MAX = 160
 # Mutating missions land code; they must ride the SHA-bound evidence protocol so
 # completion is never graded on worker narration. Report-only / planning /
 # diagnosis missions bind evidence differently and are not in this set.
+#
+# The set is the declared list other authorities mirror (evidence-manifest.md §3), but it is no
+# longer the only way in (2026-10-23 review, P2-20): a mission is mutating when it is listed OR
+# when its own Composes/rides clause or DEFERRED READS name a code-landing protocol. A renamed
+# code-landing mission therefore still owes both rides, and is told to join the list.
+LANDS_CODE = frozenset({"build-change", "remediate-finding", "merge-serialization"})
 MUTATING_MISSIONS = {
     "ship-it",
     "clean-sweep",
@@ -127,6 +138,9 @@ MUTATING_MISSIONS = {
     "oncall-it",
     "absorb-it",
     "document-it",
+    # It writes scripts/orca-vm/ and orca.yaml into the target repo; the 2026-10-23 review
+    # found it in no mission class (evidence-manifest.md §3 now lists it as a mutation unit).
+    "offload-it",
 }
 # Instruction budget. The predecessor's mandatory instruction surface hit ~42K
 # tokens with no counterpressure; these caps are the counterpressure.
@@ -149,83 +163,31 @@ _MAX_BYTES_PER_LINE = 240
 MISSION_MAX_BYTES = MISSION_MAX_LINES * _MAX_BYTES_PER_LINE
 PLAYBOOK_MAX_BYTES = PLAYBOOK_MAX_LINES * _MAX_BYTES_PER_LINE
 RUNTIME_MAX_BYTES = RUNTIME_MAX_LINES * _MAX_BYTES_PER_LINE
-# A mission declares what it composes in a "Composes ... rides ..." clause. Capture
-# each such clause through the END of its paragraph — terminating at the first
-# sentence break lets an abbreviation ("e.g. ") truncate the clause and smuggle
-# dangling names past the check — and verify every backtick name in it resolves.
-# RIDES (all-caps) is accepted alongside Rides/rides, matching COMPOSES handling.
-# This regex is the shared grammar: the orphan test and the mission-guide compose
-# check import it rather than keeping a parallel copy.
-COMPOSE_CLAUSE_RE = re.compile(
-    r"\b(?:Composes|COMPOSES|composes|Rides|RIDES|rides)\b\s+(.+?)(?:\n\n|\Z)", re.DOTALL
-)
-# Mutator evidence-manifest must appear in a composition rides clause, not mid-prose
-# ("the worker rides `evidence-manifest` out of turn") and not a mere Composes mention
-# ("does not ride `evidence-manifest`"). Accept only rides after `;`, after a newline,
-# or at the start of the document — the forms missions actually write.
-RIDES_CLAUSE_RE = re.compile(
-    r"(?:(?<=;)|(?<=\n)|(?<=\A))\s*(?:Rides|RIDES|rides)\b\s+(.+?)(?:\n\n|\Z)",
-    re.DOTALL,
-)
-BACKTICK_RE = re.compile(r"`([a-z0-9][a-z0-9-]*)`")
+# The composition grammar is defined ONCE, in runtime/scripts/_catalog_grammar.py, and
+# re-exported here: the orphan test, the mission-guide compose check, bundle.py and
+# quarantine_check.py all read that one definition rather than keeping a parallel copy
+# (quarantine_check.py used to carry its own COMPOSE_CLAUSE_RE — 2026-10-23 review, §5).
+#
+# A clause is captured through the END of its paragraph (an "e.g. " cannot truncate it), and
+# a mutator's evidence-manifest counts only in a RIDES clause (after `;`, a newline, or the
+# start of the document) — not mid-prose and not as a bare Composes mention.
+COMPOSE_CLAUSE_RE = _grammar.COMPOSE_CLAUSE_RE
+RIDES_CLAUSE_RE = _grammar.RIDES_CLAUSE_RE
+BACKTICK_RE = _grammar.BACKTICK_RE
+# A DEFERRED READS paragraph (it opens a line): read on entering a phase, never at activation.
+DEFERRED_RE = _grammar.DEFERRED_RE
 # Any lowercase `<name>.md` mention (pipeline text, parentheticals) must also resolve;
 # basenames that fail NAME_RE (ARCHITECTURE.md, SKILL.md) are exempt.
-MD_TOKEN_RE = re.compile(r"[\w./-]+\.md\b")
-
-
-def compose_clause_backticks(text):
-    """Backticked names inside every Composes/rides paragraph."""
-    return [
-        ref
-        for clause in COMPOSE_CLAUSE_RE.findall(text)
-        for ref in BACKTICK_RE.findall(clause)
-    ]
-
-
-def _is_url_md_token(text, match):
-    """True for https://…/x.md (and //…/x.md) — an external link, not a protocol ref."""
-    tok = match.group(0)
-    return tok.startswith("//") or text[max(0, match.start() - 1) : match.start()] == ":"
-
-
-def bare_md_stems(text):
-    """Bare `<name>.md` tokens that look like protocol names.
-
-    URLs and path-prefixed forms are excluded: protocols are referenced by bare
-    name, and a path-prefixed protocol token is a validator error, not composition.
-    """
-    stems = []
-    for m in MD_TOKEN_RE.finditer(text):
-        if _is_url_md_token(text, m):
-            continue
-        tok = m.group(0)
-        if "/" in tok:
-            continue
-        stem = tok[: -len(".md")]
-        if NAME_RE.match(stem):
-            stems.append(stem)
-    return stems
-
-
-def explicit_protocol_refs(text):
-    """Names that count as an explicit protocol reference.
-
-    Two forms, matching what the validator actually checks:
-
-    - backticked names inside a Composes/rides clause
-    - bare `<name>.md` tokens anywhere
-
-    A backticked name in Related/prose is not composition — that is the
-    asymmetry the orphan test previously got wrong by accepting backticks
-    anywhere. The orphan test imports this helper so the two checkers cannot
-    drift.
-
-    A further deliberate cut, *not* this helper: the human-guide compose check
-    uses `guide_declared_protocol_names` (first sentence of each clause) so a
-    caveat like clean-sweep's "not a full `runtime-prove` pass" does not force
-    that protocol into `docs/missions/`. Do not collapse the two.
-    """
-    return set(compose_clause_backticks(text)) | set(bare_md_stems(text))
+MD_TOKEN_RE = _grammar.MD_TOKEN_RE
+compose_clause_backticks = _grammar.compose_clause_backticks
+_is_url_md_token = _grammar.is_url_md_token
+bare_md_stems = _grammar.bare_md_stems
+# Backticked clause names plus bare `<name>.md` tokens anywhere — never a Related-section
+# backtick (#216). A further deliberate cut, *not* this helper: the human-guide compose check
+# uses `guide_declared_protocol_names` (first sentence of each clause), so a caveat like
+# clean-sweep's "not a full `runtime-prove` pass" does not force that protocol into
+# `docs/missions/`. Do not collapse the two.
+explicit_protocol_refs = _grammar.explicit_protocol_refs
 
 
 def guide_declared_protocol_names(text):
@@ -242,7 +204,7 @@ def guide_declared_protocol_names(text):
     return names
 
 
-def md_ref_errors(text, protocols):
+def md_ref_errors(text, protocols, base=None):
     """Errors for every `<name>.md` token that should be a protocol reference.
 
     URL tokens (https://…/x.md) are external links, not protocol refs. Uppercase
@@ -250,6 +212,10 @@ def md_ref_errors(text, protocols):
     underscore typo of a REAL protocol name must not ride that exemption, and a
     path-prefixed form must not pass on basename alone (the path can lie about
     where the file lives) — protocols are referenced by bare name.
+
+    A `./` or `../` path is relative to the file that holds it (`base`), the way a reader
+    follows it: `../../docs/x.md` from a SKILL.md was resolved against the repo root and
+    reported dangling (2026-10-23 review, §5). Any other path is repo-root-relative.
     """
     errs = []
     for m in MD_TOKEN_RE.finditer(text):
@@ -268,7 +234,8 @@ def md_ref_errors(text, protocols):
                         f"path-prefixed reference: {tok} — reference protocols by "
                         f"bare name (`{stem}` or {stem}.md)"
                     )
-                elif not (ROOT / tok).exists():
+                elif not ((base or ROOT) / tok if tok.startswith(("./", "../"))
+                          else ROOT / tok).exists():
                     errs.append(f"dangling path: {tok} does not exist")
             elif stem not in protocols:
                 errs.append(f"dangling reference: {tok} names no playbook or runtime policy")
@@ -287,64 +254,11 @@ def known_protocol_names():
     return names
 
 
-def _unquote(val):
-    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-        return val[1:-1]
-    return val
-
-
-def parse_frontmatter(text):
-    """Minimal YAML-frontmatter reader: scalars, block scalars, one nested map.
-
-    The nested map is what the agentskills.io spec calls the extension point:
-    `metadata:` followed by indented `key: value` lines is returned as a dict.
-    A bare `key:` with nothing indented under it still returns "<object>", so
-    the "compatibility must be a string" error keeps its shape.
-    """
-    if not text.startswith("---"):
-        return None, "missing opening ---"
-    end = text.find("\n---", 4)
-    if end == -1:
-        return None, "missing closing ---"
-    block = text[3:end].strip()
-    data = {}
-    current_key = None
-    multiline_indicator = None
-    multiline_value = []
-    nested_key = None
-    for line in block.split("\n"):
-        if multiline_indicator and (line.startswith("  ") or line.strip() == ""):
-            multiline_value.append(line[2:] if line.startswith("  ") else line)
-            continue
-        if multiline_indicator:
-            data[current_key] = " ".join(l.strip() for l in multiline_value if l.strip())
-            multiline_indicator = None
-            multiline_value = []
-        if nested_key is not None and line.startswith("  ") and line.strip():
-            sub = re.match(r"^\s+([a-zA-Z_-][a-zA-Z0-9_-]*):\s*(.*)$", line)
-            if sub:
-                if data[nested_key] == "<object>":
-                    data[nested_key] = {}
-                if isinstance(data[nested_key], dict):
-                    data[nested_key][sub.group(1)] = _unquote(sub.group(2).strip())
-                continue
-        m = re.match(r"^([a-zA-Z_-][a-zA-Z0-9_-]*):\s*(.*)$", line)
-        if m:
-            nested_key = None
-            key, val = m.group(1), m.group(2).strip()
-            if val in (">", "|", ">-", "|-"):
-                current_key = key
-                multiline_indicator = val
-                multiline_value = []
-            elif val == "":
-                current_key = key
-                nested_key = key
-                data[key] = "<object>"
-            else:
-                data[key] = _unquote(val)
-    if multiline_indicator:
-        data[current_key] = " ".join(l.strip() for l in multiline_value if l.strip())
-    return data, None
+# The frontmatter reader is the shared one (runtime/scripts/_catalog_grammar.py). This file's
+# own copy read `unit: >-` under `metadata:` as the literal `>-` and cut a plain multi-line
+# description at its first line, so the identity gate scored a folded point 0.0 and the length
+# caps measured a fragment (2026-10-23 review, P1-9 / P2-16). One reader for every gate now.
+parse_frontmatter = _grammar.parse_frontmatter
 
 
 def read_text_safe(path):
@@ -434,6 +348,9 @@ def validate_skill(skill_dir, protocols):
                     f"metadata.{key} is {len(value)} chars > {METADATA_VALUE_MAX} "
                     "— the tuple is a claim, not a paragraph"
                 )
+        # The shared reader reads a map nested under a metadata key as a dict; it is reported
+        # above and read as empty below, never handed to a check that expects a string.
+        meta = {k: (v if isinstance(v, str) else "") for k, v in meta.items()}
 
     # Six-point mission identity (ARCHITECTURE.md). Each point is declared, so
     # "is this a mission or a mode of another?" is answered by a diff, not a memo.
@@ -537,6 +454,10 @@ def validate_skill(skill_dir, protocols):
             "no machine-checkable composition: the Composes/rides clause must name "
             "at least one playbook or runtime policy in backticks"
         )
+    # A misspelt clause token (`Build-Change`, `build_change`, `playbooks/build-change`) was
+    # neither resolved nor flagged; the `.md` spellings always were (2026-10-23 review, P2-18).
+    errors.extend(_grammar.clause_token_typos(text, protocols))
+    errors.extend(deferred_read_errors(text, protocols))
     flat = re.sub(r"\s+", " ", text.lower())
     pack_ok = False
     for stmt in re.findall(r"pack:\s*([^.]*)", flat):
@@ -559,12 +480,20 @@ def validate_skill(skill_dir, protocols):
         for clause in RIDES_CLAUSE_RE.findall(text)
         for ref in BACKTICK_RE.findall(clause)
     ]
-    if name in MUTATING_MISSIONS and "evidence-manifest" not in ride_refs:
+    lands = code_landing_refs(text)
+    mutating = name in MUTATING_MISSIONS or bool(lands)
+    if lands and name not in MUTATING_MISSIONS:
+        errors.append(
+            f"composes code-landing protocol(s) {lands} but is not in MUTATING_MISSIONS — a "
+            "mission that lands code is a mutation unit: list it there and in "
+            "evidence-manifest.md §3 (2026-10-23 review, P2-20)"
+        )
+    if mutating and "evidence-manifest" not in ride_refs:
         errors.append(
             "mutating mission must ride `evidence-manifest` in a rides clause "
             "(SHA-bound definition of done; a Composes mention alone does not count)"
         )
-    if name in MUTATING_MISSIONS and "sandbox-policy" not in ride_refs:
+    if mutating and "sandbox-policy" not in ride_refs:
         errors.append(
             "mutating mission must ride `sandbox-policy` in a rides clause "
             "(least-privilege worker profiles; six mutating missions omitted it "
@@ -572,9 +501,32 @@ def validate_skill(skill_dir, protocols):
         )
 
     # every lowercase `<name>.md` mention must resolve (catches renames outside the clause)
-    errors.extend(md_ref_errors(text, protocols))
+    errors.extend(md_ref_errors(text, protocols, skill_md.parent))
 
     return errors
+
+
+def deferred_read_errors(text, protocols):
+    """A DEFERRED READ is a declaration too: the quarantine gate requires it to exist, so a
+    backticked one that names nothing is a dangling composition, not prose (a `name.md` one is
+    already read by md_ref_errors)."""
+    return [
+        f"dangling deferred read: `{ref}` names no playbook or runtime policy"
+        for para in DEFERRED_RE.findall(text)
+        for ref in BACKTICK_RE.findall(para)
+        if ref not in protocols
+    ]
+
+
+def code_landing_refs(text):
+    """Code-landing protocols a mission names in its own clause or DEFERRED READS (P2-20).
+
+    Direct names only: following playbooks transitively would make every report-only mission
+    "mutating" (review-it reaches build-change through acceptance-review's calls).
+    """
+    named = (_grammar.clause_refs(text) | _grammar.deferred_declared(text)
+             | _grammar.deferred_words(text))
+    return sorted(named & LANDS_CODE)
 
 
 def check_protocol_doc_refs(protocols):
@@ -593,7 +545,7 @@ def check_protocol_doc_refs(protocols):
             if read_err:
                 failures.append(f"{f.relative_to(ROOT)}: {read_err}")
                 continue
-            for e in md_ref_errors(text, protocols):
+            for e in md_ref_errors(text, protocols, f.parent):
                 failures.append(f"{f.relative_to(ROOT)}: {e}")
             if d == PLAYBOOKS_DIR:
                 packs = {
@@ -670,16 +622,34 @@ def check_lower_layer_frontmatter(root=None):
             # Frontmatter is an opening `---` on line 1 and a closing one later. A horizontal
             # rule mid-document is not frontmatter, and neither is a `---` on line 1 with no
             # close — that is malformed, and calling it frontmatter would be a false red.
-            if not text.startswith("---\n"):
-                continue
             # parse_frontmatter is the repo's own reader, so "what counts as frontmatter" has
-            # exactly one definition. A `---` on line 1 with no closing fence is malformed, not
-            # frontmatter, and it returns an error rather than a block — calling that a leak
-            # would be a false red on a document that simply opens with a horizontal rule.
+            # exactly one definition — including its BOM and CRLF tolerance: a BOM (U+FEFF) before `---`
+            # opening used to fail a `startswith("---\n")` pre-check and escape this gate while a
+            # host that strips the BOM still indexed it (2026-10-23 review, §5).
             block, err = parse_frontmatter(text)
             if block is not None and not err:
                 offenders.append(str(md.relative_to(root)))
     return offenders
+
+
+def check_hidden_missions(root=None):
+    """Refuse a SKILL.md under a `_`- or `.`-prefixed skills/ directory (2026-10-23 review, P2-19).
+
+    Every gate here skips those directories as "not a mission", but the `skills/*/SKILL.md`
+    globs in eval.py, bundle.py's input check, install.yml and the agentskills loop pick them
+    up, so a `skills/_draft/` with a 404-line body and no metadata passed the build. A draft
+    lives outside skills/; a SKILL.md inside it is either a mission (and validated as one) or
+    nothing — never a mission nobody checks.
+    """
+    skills_dir = (root or ROOT) / "skills"
+    if not skills_dir.is_dir():
+        return []
+    return [
+        f"skills/{d.name}/SKILL.md — a `_`/`.` prefix skips every catalog rule while installers "
+        "and indexers still read it; rename it to a validated mission or move it out of skills/"
+        for d in sorted(skills_dir.iterdir())
+        if d.is_dir() and d.name.startswith((".", "_")) and os.path.lexists(d / "SKILL.md")
+    ]
 
 
 def check_layer_separation(root=None):
@@ -762,10 +732,8 @@ def transitive_load(skill_dir, protocols=None):
     # Only what the Composes/rides clause makes MANDATORY. A protocol named in
     # prose ("see `mission-chaining.md`") is an on-demand pointer, not activation
     # load — counting it would inflate the number and blur what the cap is for.
-    mandatory = set()
-    for clause in COMPOSE_CLAUSE_RE.findall(text):
-        mandatory |= set(BACKTICK_RE.findall(clause))
-        mandatory |= set(bare_md_stems(clause))
+    # The same set the quarantine gate starts from (P1-10): clause backticks AND clause `name.md`.
+    mandatory = _grammar.clause_refs(text)
     for name in sorted(mandatory):
         if name not in protocols:
             continue
@@ -802,6 +770,46 @@ def load_report(root=None):
     return rows
 
 
+def check_load_budgets(root=None):
+    """Failures against scripts/mission-load-budgets.json, the per-mission ratchet under the cap.
+
+    One catalog-wide cap bounded only the heaviest mission; the other 21 could grow by thousands
+    of tokens with nothing noticing (2026-10-23 review, section 5). Each mission now carries its
+    own budget: over it fails, and so does a budget more than `max_slack` above the measured load,
+    so a shrink is banked by lowering the budget instead of becoming silent headroom. A missing or
+    malformed file fails closed: no budgets must never read as no limits.
+    """
+    path = (root or ROOT) / "scripts" / "mission-load-budgets.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        budgets, step, slack = data["budgets"], int(data["step"]), int(data["max_slack"])
+        if not isinstance(budgets, dict) or step <= 0 or slack < 0:
+            raise ValueError("budgets must be an object, step positive, max_slack non-negative")
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        return [f"{_repo_rel(path)}: unreadable ({type(err).__name__}: {err}) — every mission "
+                "needs a budget; a missing file is not 'no limits'"]
+    failures = []
+    measured = dict(load_report(root))
+    for name, load in sorted(measured.items()):
+        budget = budgets.get(name)
+        suggested = min(-(-load // step) * step, MISSION_MAX_LOAD_TOKENS)
+        if not isinstance(budget, int) or isinstance(budget, bool):
+            failures.append(f"{name}: no integer budget (measured ~{load} tokens; add {suggested})")
+        elif budget > MISSION_MAX_LOAD_TOKENS:
+            failures.append(f"{name}: budget {budget} is above the {MISSION_MAX_LOAD_TOKENS} cap")
+        elif load > budget:
+            failures.append(
+                f"{name}: activation load ~{load} tokens > its budget {budget} — move a phase's "
+                "doc behind a 'read <doc> when entering <phase>' cue, or raise the budget in a "
+                "commit that says why")
+        elif budget - load > slack:
+            failures.append(f"{name}: budget {budget} sits {budget - load} tokens above the "
+                            f"measured ~{load} (max slack {slack}) — lower it to {suggested}")
+    for name in sorted(set(budgets) - set(measured)):
+        failures.append(f"{name}: a budget for a mission that is not in skills/")
+    return failures
+
+
 # Identity-tuple comparison (#288). The similarity engine — tokenizer hookup, concept table,
 # negation polarity, containment — lives in scripts/_identity.py (pushed down like the count-lint
 # engine, RV-D1); this module keeps the gate POLICY below and re-exports the three functions it
@@ -832,6 +840,15 @@ IDENTITY_POINT_SAME = 0.85
 # oss-contribute) has 2 of 6 points at or above 0.5 and none of the rest above 0.45, so the
 # all-six rule keeps wide clearance.
 IDENTITY_POINT_NEAR = 0.5
+# The all-six rule escaped on ONE point (2026-10-23 review, P2-17): reword five points within the
+# concept table and the sixth with words outside it, and that point scores 0.0 — five near, no
+# error, and no WARN either (the WARN counts SAME points, and reworded ones are only near). Five
+# near points of which at least one is merely reworded is now the paraphrase signature too. Five
+# SAME points plus one far point stays the legal, surfaced WARN, and two far points stay silent:
+# both are ARCHITECTURE.md's own rules, and a lexical gate cannot tell a reworded point from a
+# genuinely different one, so a paraphrase that rewords two or more points out of the table
+# still passes. The live catalog's closest pair has 2 near points, so this keeps clearance.
+IDENTITY_PARAPHRASE_MIN_NEAR = 5
 
 
 def identity_point_length_errors(meta):
@@ -872,7 +889,8 @@ def identity_collisions(root=None):
         if err or not isinstance(data, dict):
             continue
         meta = data.get("metadata")
-        if isinstance(meta, dict) and all(meta.get(k) for k in IDENTITY_KEYS):
+        if isinstance(meta, dict) and all(
+                isinstance(meta.get(k), str) and meta[k] for k in IDENTITY_KEYS):
             tuples[skill_dir.name] = tuple(meta[k] for k in IDENTITY_KEYS)
     errors, warnings = [], []
     names = sorted(tuples)
@@ -901,6 +919,20 @@ def identity_collisions(root=None):
                     "different. A paraphrase is not a distinction — there is no point on which "
                     "these two missions actually diverge. Merge them, or make one point genuinely "
                     "differ and say so in ARCHITECTURE.md (#288)"
+                )
+            elif near >= IDENTITY_PARAPHRASE_MIN_NEAR and len(same) < near:
+                far = [k for k, value in zip(IDENTITY_KEYS, sims, strict=True)
+                       if value < IDENTITY_POINT_NEAR]
+                restated = [k for k, value in zip(IDENTITY_KEYS, sims, strict=True)
+                            if IDENTITY_POINT_NEAR <= value < IDENTITY_POINT_SAME]
+                errors.append(
+                    f"{a} and {b} restate {near} of {len(IDENTITY_KEYS)} identity points "
+                    f"({restated} reworded, mean {mean:.2f}) and diverge only on {far}. A "
+                    "one-point distinction is legal when the shared points are stated as shared "
+                    "(the surfaced WARN), not paraphrased: rewording five points and moving one "
+                    "out of the gate's vocabulary is how a restatement passes. Merge them, or "
+                    "state the shared points in the same words and argue the difference in "
+                    "ARCHITECTURE.md (#288; 2026-10-23 review, P2-17)"
                 )
             elif len(same) == len(IDENTITY_KEYS) - 1:
                 differs = [k for k in IDENTITY_KEYS if k not in same]
@@ -1108,24 +1140,21 @@ def check_quarantine():
     entries, errors, _ = _quarantine.load_quarantine(ROOT)
     if errors:
         return errors, []
-    playbook_stems = {p.stem for p in PLAYBOOKS_DIR.glob("*.md")}
-    missions, composes = set(), {}
-    for skill_dir in sorted(SKILLS_DIR.iterdir()):
-        skill = skill_dir / "SKILL.md"
-        if skill_dir.is_dir() and skill.is_file():
-            missions.add(skill_dir.name)
-            composes[skill_dir.name] = (
-                set(compose_clause_backticks(skill.read_text(encoding="utf-8")))
-                & playbook_stems
-            )
-    pins, pins_error = _quarantine.pins_view(ROOT)
-    view = {"missions": set(), "composes": composes,
-            "pins": pins, "pins_error": pins_error}
-    failures = _quarantine.violations(entries, view)
+    # The catalog view is quarantine_check.py's own, so this gate, `quarantine_check.py
+    # --catalog` and `preflight.py --mission` read ONE composition set: clause backticks and
+    # clause `name.md`, DEFERRED READS, body mentions, and every playbook those reach. This gate
+    # used to build its own view from clause backticks alone, so a clause respelled
+    # `build-change.md` was charged as activation load and cleared here while the CLI refused it
+    # (2026-10-23 review, P1-10 / P2-11).
+    try:
+        view = _quarantine.catalog_view(ROOT)
+    except _quarantine.QuarantineError as err:
+        return [f"quarantine cannot clear the catalog: {err}"], []
+    failures = _quarantine.violations(entries, {**view, "missions": set()})
     warnings = [
         f"mission {e['name']} is quarantined ({e['reason']}) but still in the "
         "catalog — dispatch is refused at preflight; files preserved as evidence"
-        for e in entries if e["kind"] == "mission" and e["name"] in missions
+        for e in entries if e["kind"] == "mission" and e["name"] in view["missions"]
     ]
     return failures, warnings
 
@@ -1164,6 +1193,13 @@ def main():
                 print(f"   - {e}")
         else:
             print(f"ok   {skill_dir.name}")
+
+    hidden = check_hidden_missions()
+    if hidden:
+        all_passed = False
+        print("\nFAIL hidden missions — a SKILL.md in a `_`/`.`-prefixed skills/ directory:")
+        for failure in hidden:
+            print(f"   - {failure}")
 
     leaks = check_layer_separation()
     if leaks:
@@ -1222,6 +1258,13 @@ def main():
         all_passed = False
         print("\nFAIL pin-version claims — a hand-typed Orca version drifted from runtime/pins.json:")
         for failure in pin_failures:
+            print(f"   - {failure}")
+
+    budget_failures = check_load_budgets()
+    if budget_failures:
+        all_passed = False
+        print("\nFAIL activation-load budgets — a mission outgrew, or no longer fills, its budget:")
+        for failure in budget_failures:
             print(f"   - {failure}")
 
     keyword_failures = check_manifest_keywords()

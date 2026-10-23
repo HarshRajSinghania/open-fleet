@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -312,6 +313,33 @@ class SocketAncestorsAndLongFormMounts(unittest.TestCase):
         clear, _reason, exposes = self.verdict([{"source": os.path.join(HOME, ".config"), "target": "/c"}])
         self.assertFalse(clear)
         self.assertTrue(exposes)
+
+
+class HomeRootsWhateverTheJudgesHome(unittest.TestCase):
+    """2026-10-23 review, P2-15: the doctor compared a source to the JUDGING process's $HOME, so a
+    macOS coordinator (HOME=/Users/x) cleared a Linux recipe bind-mounting every user's /home."""
+
+    def verdict(self, source, home):
+        # A bare path is a mount's source; anything else is a long-form mount string as written.
+        mounts = [{"source": source, "target": "/x"} if source.startswith("/") else source]
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            return sandbox_doctor.assess(json.dumps(dict(GOOD["docker"], mounts=mounts)), "lane-7")
+
+    def test_home_roots_and_user_homes_are_refused_on_any_judge(self):
+        for home in ("/Users/x", "/home/tester", "/root", "/nonexistent-judge-home"):
+            for source in ("/home", "/home/", "/Users", "/var/home", "/home/alice", "/Users/bob",
+                           "/var/home/carol", "/home/alice/.ssh", "/Users/bob/.config", "type=bind,source=/home,target=/h"):
+                with self.subTest(home=home, source=source):
+                    clear, reason, exposes = self.verdict(source, home)
+                    self.assertFalse(clear, reason)
+                    self.assertTrue(exposes, reason)
+
+    def test_a_subdirectory_of_any_users_home_is_still_fine(self):
+        for home in ("/Users/x", "/home/tester"):
+            for source in ("/home/alice/src/repo", "/Users/bob/.open-fleet/state/w", "/var/home/carol/work"):
+                with self.subTest(home=home, source=source):
+                    clear, reason, _ = self.verdict(source, home)
+                    self.assertTrue(clear, reason)
 
 
 class ExitCodes(unittest.TestCase):

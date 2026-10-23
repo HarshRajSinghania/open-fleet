@@ -16,12 +16,12 @@ one — mechanical independence beats instructed independence.
 
 SOLO RUN — no second identity at all. This review cannot then be independent, and must not be faked:
 `verify.py` requires an approval the fleet cannot self-issue, so a mutation unit cannot reach a
-closed state. Record the verifier RED and stop at the build state, or take the executed-control lane
-(`--lighting dark-eligible --execute-nc`: the review is waived and the control becomes the only
-oracle). A reviewer that is the builder is not a reviewer. The flagship ship-it run hit exactly this
-and recorded RED, which is why that mission sits at `doctrine-only`.
+closed state. Record the verifier RED and stop the unit short of `REVIEWED`, or take the
+executed-control lane (`--lighting dark-eligible --execute-nc`: the review is waived and the control
+becomes the only oracle). A reviewer that is the builder is not a reviewer. The 2026-08-28 ship-it self-run recorded
+exactly that RED.
 
-## The three axes (isolated parallel sub-agents, no cross-rerank)
+## The three axes (one coordinator-dispatched worker each, no cross-rerank)
 
 - **Standards:** repo-documented standards (paste the files) + the Fowler 12-smell baseline, judged
   per hunk. Repo standard overrides the baseline; smells are judgement calls; skip what tooling
@@ -33,8 +33,8 @@ and recorded RED, which is why that mission sits at `doctrine-only`.
   found is a STOP, not a review against the reviewer's own idea of the requirement.
 - **Test-adequacy:** for each claimed fix, would reverting the production change fail a test?
 
-Run the axes as separate fresh-context workers so they can't pollute each other; aggregate side by
-side; do NOT rerank across axes (code can pass one and fail the other — that's the point).
+The COORDINATOR dispatches each axis as a fresh-context worker (a reviewer never fans out —
+dispatch-lifecycle.md); aggregate side by side; do NOT rerank across axes (code can pass one and fail the other — that's the point).
 
 ## Anti-false-positive gate
 
@@ -62,4 +62,4 @@ finding ping-pongs an unattended run forever.
 Pinned fixed point (non-empty `git diff <fp>...HEAD`), ALL THREE axes reported with no cross-rerank,
 every finding quotes its line, reviewed_sha recorded, blind-fix expectation written before the diff
 was opened, round count ≤ 3. This axis checks conformance; refusal-under-attack is
-`risk-review` / `harden-it`.
+risk-review's or harden-it's.

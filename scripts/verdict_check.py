@@ -59,6 +59,8 @@ import subprocess
 import sys
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*GO\s*$", re.MULTILINE)
+# Every VERDICT line, whatever it says: a review counts only when all of them read exactly GO.
+ANY_VERDICT_RE = re.compile(r"^\s*VERDICT\s*:(.*)$", re.MULTILINE)
 SHA_RE = re.compile(r"^reviewed_sha:\s*([0-9a-fA-F]{40})\s*$", re.MULTILINE)
 
 GH_API = "gh api"
@@ -103,6 +105,10 @@ def go_reviews_at_tip(reviews, head_sha, pr_author=None):
             continue
         body = review.get("body") or ""
         if not VERDICT_RE.search(body):
+            continue
+        if any(v.strip() != "GO" for v in ANY_VERDICT_RE.findall(body)):
+            # `VERDICT: GO` then `VERDICT: NO-GO` read as GO: the first GO line won. Any other
+            # verdict line in the same review voids it — fail closed (2026-10-23 review, §5).
             continue
         match = SHA_RE.search(body)
         if match and match.group(1).lower() == head:

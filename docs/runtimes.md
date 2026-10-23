@@ -89,7 +89,7 @@ Every adapter delivers the task spec to the worker (`resolve_task_prompt`), refu
 | `overstory` | `jayminwest/overstory` | `ov sling` / `ov spec write` / `ov mail`; Overstory's own guard hooks | ro (claude, pi, sapling), rw | `cap:core-orchestration` |
 | `t3code` | `pingdotgg/t3code` | MCP `t3_thread_*` tools via `t3 acp-mcp-call` (`T3_ACP_MCP_ENDPOINT`, `T3_ACP_MCP_AUTHORIZATION`, `OPEN_FLEET_T3_PROJECT_ID`) | ro, rw | `cap:core-orchestration` |
 | `ao` | `ComposioHQ/agent-orchestrator` | Loopback HTTP daemon `POST /api/v1/sessions` | rw | `cap:core-orchestration` |
-| `superset` | `superset-sh/superset` | `superset terminals create` (ro), `agents create --prompt` (rw), `workspaces create --environment` (danger, cloud) | ro, rw, danger | `cap:core-orchestration` |
+| `superset` | `superset-sh/superset` | `superset terminals create` (ro), `agents create --prompt` (rw), `workspaces create --environment` (danger, cloud; not advertised, no recipe doctor certifies it) | ro, rw | `cap:core-orchestration` |
 
 ### Tier 2 — Ecosystem adapters
 
@@ -100,9 +100,9 @@ Every adapter delivers the task spec to the worker (`resolve_task_prompt`), refu
 | `jcode-swarm` | `1jehuang/jcode` | `jcode serve` daemon socket (`comm_spawn` / `comm_read_context` / `comm_stop`) | rw (jcode only) | `cap:core-orchestration` |
 | `emdash` | `generalaction/emdash` | workspace-server unix socket (`workspace.sock`, framed wire protocol 12.0.0) | ro (claude), rw | `cap:core-orchestration` |
 | `vibe-kanban` | `BloopAI/vibe-kanban` | REST `POST /api/workspaces/start`; `ORCA_RO` executor variant; post-exit auto-commit guard (reject by default) | ro (claude), rw | `cap:core-orchestration` |
-| `paperclip` | `paperclipai/paperclip` | REST control plane (port 3100): `adapterConfig` flags read back, atomic checkout, bwrap for danger | ro (claude), rw, danger | `cap:core-orchestration` |
+| `paperclip` | `paperclipai/paperclip` | REST control plane (port 3100): `adapterConfig` flags read back, atomic checkout, bwrap for danger (not advertised, no recipe doctor certifies it) | ro (claude), rw | `cap:core-orchestration` |
 | `multiclaude` | `dlorenc/multiclaude` | Daemon socket `spawn_agent` + tmux; hooks via `.multiclaude/hooks.json`; release needs `orchestration worker-verify` | ro, rw (claude only) | `cap:core-orchestration` |
-| `openhands` | `OpenHands/software-agent-sdk` | agent-server REST conversations (port 8000) with request-level deny-hook config; danger only on a docker runtime | ro, rw, danger | `cap:core-orchestration` |
+| `openhands` | `OpenHands/software-agent-sdk` | agent-server REST conversations (port 8000) with request-level deny-hook config; danger only on a docker runtime (not advertised, no recipe doctor certifies it) | ro, rw | `cap:core-orchestration` |
 
 ---
 

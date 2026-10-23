@@ -137,6 +137,7 @@ KINDS = {
                                    "cost_usd": ("money", _O), "provenance": ("text", _R)}),
 }
 DECLARES_EPOCH = ("run.start", "coordinator.resume")
+DISPATCH_KINDS = ("dispatch.launched", "task.done", "dispatch.died")  # what names a dispatch
 VERDICTS = ("approve", "changes")
 # What a unit has to have reached before each wave metric is final (see derive_unit).
 CLOSED_OR_PARKED = ("verified-closed", "closed-unverified", "parked")
@@ -517,8 +518,9 @@ def _scope(event):
 
 def screen(events):
     """Dedup, then fence, in record order. Returns (kept, duplicates, conflicts, fenced, epochs,
-    taints) where taints maps a scope to the reasons its metrics are unavailable."""
-    by_id, kept, duplicates, conflicts, taints = {}, [], 0, [], {}
+    taints, excluded) where taints maps a scope to the reasons its metrics are unavailable and
+    excluded holds every event left out as a conflicting copy or a fenced write."""
+    by_id, kept, duplicates, conflicts, taints, excluded = {}, [], 0, [], {}, []
 
     def taint(event, why):
         taints.setdefault(_scope(event), []).append(why)
@@ -537,6 +539,7 @@ def screen(events):
                    "(contested observation)")
             taint(seen, why)
             taint(event, why)
+            excluded.append(event)
     declared, screened, fenced, epochs = 0, [], [], []
     for event in kept:
         if event["kind"] in DECLARES_EPOCH:
@@ -546,6 +549,7 @@ def screen(events):
                 fenced.append({"digest": event["_digest"], "epoch": event["epoch"],
                                "declared": declared, "reason": why})
                 taint(event, why)
+                excluded.append(event)
                 continue
             # The run's coordinator history must be whole: run.start declares epoch 1, and each
             # resume the next one. A record opening on a resume, a run.start past 1, or a skipped
@@ -572,9 +576,10 @@ def screen(events):
             fenced.append({"digest": event["_digest"], "epoch": event["epoch"],
                            "declared": declared, "reason": why})
             taint(event, why)
+            excluded.append(event)
             continue
         screened.append(event)
-    return screened, duplicates, conflicts, fenced, epochs, taints
+    return screened, duplicates, conflicts, fenced, epochs, taints, excluded
 
 
 def derive_unit(task, wave, events, history=(), carried_out=False):
@@ -864,9 +869,11 @@ def _zero(field):
     return Decimal(0) if field == "cost_usd" else 0
 
 
-def usage_summary(events, dispatches, tainted):
+def usage_summary(events, dispatches, tainted, unsure=()):
     """Observed model usage. A field any observation left unreported is null, with the
-    observations' own provenance — never zero, never a partial sum presented as a total."""
+    observations' own provenance — never zero, never a partial sum presented as a total.
+    `unsure` are dispatches named only by fenced or conflicting evidence: one with no usage
+    observation of its own leaves the run's coverage unknown, so the run total is too."""
     models = {}
     for event in events:
         name = event["data"]["model"] or "(unreported)"
@@ -901,11 +908,15 @@ def usage_summary(events, dispatches, tainted):
         out_models[name] = entry
     covered = {e["dispatch"] for e in events if e["dispatch"]}
     unobserved = sorted(set(dispatches) - covered)
+    unknown = sorted(set(unsure) - covered)
     run_total = {}
     for field in USAGE_FIELDS:
         reasons = list(totals[field][1])
         if unobserved:
             reasons.append(f"{len(unobserved)} dispatch(es) have no usage observation")
+        if unknown:
+            reasons.append(f"dispatch(es) {unknown} appear only in fenced or conflicting evidence "
+                           "and have no usage observation, so the run's usage coverage is unknown")
         if not events:
             reasons.append("no model.usage observed")
         reasons += tainted
@@ -963,7 +974,7 @@ def derive(events, run=None, file_sha="", head=""):
     mine = [e for e in events if e["run"] == run]
     if not mine:
         raise UsageError(f"the record holds no event for run {run!r} (runs: {runs})")
-    kept, duplicates, conflicts, fenced, epochs, taints = screen(mine)
+    kept, duplicates, conflicts, fenced, epochs, taints, excluded = screen(mine)
     if not epochs:
         taints.setdefault(("run",), []).append("no run.start observed, so no coordinator "
                                                "epoch was ever declared")
@@ -1003,7 +1014,11 @@ def derive(events, run=None, file_sha="", head=""):
     unplanned = [{"task": t, "events": len(evs)} for t, evs in sorted(lifecycle.items())
                  if t not in plan]
     waves = []
-    for k in range(1, max(list(opens) + list(closes), default=0) + 1):
+    # A wave only excluded (fenced or conflicting) evidence names is still a wave of the run:
+    # dropping it would let the run read complete without it (PR #638 review, coverage sweep).
+    # With no epoch declared at all nothing is admitted, and the run is unavailable as a whole.
+    named = [scope[1] for scope in taints if scope[0] == "wave"] if epochs else []
+    for k in range(1, max(list(opens) + list(closes) + named, default=0) + 1):
         wave_units = [units[key] for key in sorted(units) if key[1] == k]
         opened, why_open = first(opens[k], f"wave {k} wave.open") if k in opens else (None, None)
         closed, why_close = first(closes[k], f"wave {k} wave.close") if k in closes else (None, None)
@@ -1027,10 +1042,13 @@ def derive(events, run=None, file_sha="", head=""):
             "metrics": metrics, "outcomes": outcomes,
             "units": [_unit_view(u) for u in wave_units],
         })
-    dispatches = sorted({e["dispatch"] for e in kept if e["dispatch"]
-                         and e["kind"] in ("dispatch.launched", "task.done", "dispatch.died")})
+    dispatches = sorted({e["dispatch"] for e in kept if e["dispatch"] and e["kind"] in DISPATCH_KINDS})
+    # A dispatch only excluded evidence names still ran, as far as the record can tell: its
+    # usage is part of the run's coverage, never dropped from it (PR #638 review, P1).
+    unsure = sorted({e["dispatch"] for e in excluded if e["dispatch"] and e["kind"] in DISPATCH_KINDS}
+                    - set(dispatches))
     usage = usage_summary([e for e in kept if e["kind"] == "model.usage"], dispatches,
-                          taints.get(("usage",), []) + taints.get(("run",), []))
+                          taints.get(("usage",), []) + taints.get(("run",), []), unsure)
     report = {
         "schema": REPORT_SCHEMA, "run": run,
         "record": {"log_sha256": file_sha, "head": head, "lines": len(events),

@@ -542,7 +542,10 @@ conflict. A provider that rewrites a terminal dispatch's head later (multiclaude
 `worker_verify` and ao's head preservation write `dispatches.head_sha` directly) gives that
 message a second `task.done` at the new head, not a conflict. Model usage keeps
 any field an observation did not report null — with its provenance — in the model's sum and in
-the run total; it is never 0.
+the run total; it is never 0. Excluded evidence never shrinks coverage: a dispatch named only by
+fenced or conflicting events still counts, so without a usage observation of its own the run
+total is unavailable, and a wave named only by excluded events is listed, unavailable, rather
+than dropped (once the run has declared an epoch).
 
 `report` prints the rows in docs/runs/TEMPLATE.md's table, `unavailable` in any cell the record
 cannot support (`runtime/scripts/run_report.py` then refuses the row, which is the point),

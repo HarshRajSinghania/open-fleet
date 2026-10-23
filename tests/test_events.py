@@ -830,6 +830,44 @@ class TestUsage(Base):
                          "--clock", "host-a", "--dispatch", "d", "--observed-at", "2026-10-20T10:00:00Z")
         self.assertIn("duplicate", again.stdout)
 
+    def test_excluded_dispatch_evidence_leaves_usage_coverage_unknown(self):
+        # PR #638 review (P1): coverage was checked against ADMITTED dispatch evidence only, so
+        # a worker whose launch was fenced out, or carried by a conflicting re-delivery, fell
+        # out of it, and the other workers' tokens read as the run's total.
+        def usage(dispatch, tokens, **kw):
+            return ev("model.usage", "10:41:00", task="t", dispatch=dispatch,
+                      data={"model": "m", "input_tokens": tokens, "provenance": "p"}, **{**ONE, **kw})
+        resumed = {"run": "r", "epoch": 2, "clock": "host-a"}
+        fenced = unit_stream() + [
+            usage("d", 5), ev("coordinator.resume", "10:42:00", data={"coordinator": "c2"}, **resumed),
+            ev("dispatch.launched", "10:43:00", task="t", dispatch="d9", **ONE)]  # a stale writer
+        conflicting = unit_stream() + [usage("d", 5)]
+        conflicting.append(ev("dispatch.launched", "10:01:00", task="t", dispatch="d9",
+                              event_id=conflicting[2]["event_id"], **ONE))
+        for name, evs in (("fenced", fenced), ("conflicting", conflicting)):
+            with self.subTest(name):
+                total = self.derive(evs)["usage"]["run_total"]["input_tokens"]
+                self.assertIsNone(total["value"], total)
+                self.assertTrue(any("['d9']" in r and "coverage" in r for r in total["unavailable"]),
+                                total)
+        # Control: once the excluded worker's own usage is observed, its coverage is known.
+        report = self.derive(fenced + [usage("d9", 7, epoch=2)])
+        self.assertEqual(report["usage"]["run_total"]["input_tokens"], {"value": 12})
+
+    def test_a_wave_only_excluded_evidence_opens_is_reported_not_dropped(self):
+        # Sweep (coverage that silently shrinks): waves were enumerated from admitted wave.open
+        # and wave.close only, so a last wave whose open was fenced vanished from the report
+        # and the run read complete. Waves are enumerated from the excluded evidence too.
+        self.assertTrue(self.derive(unit_stream())["complete"])
+        evs = unit_stream() + [
+            ev("wave.open", "10:50:00", data={"wave": 2, "builders": 1, "reviewers": 1,
+                                              "tasks": ["t2"]}, run="r", epoch=3, clock="host-a")]
+        report = self.derive(evs)
+        self.assertEqual([w["wave"] for w in report["waves"]], [1, 2])
+        self.assertFalse(report["complete"])
+        reasons = self.metric(report, 2, "throughput")["unavailable"]
+        self.assertTrue(any("epoch 3" in r for r in reasons), reasons)
+
     def test_ingest_usage_without_a_result_line_records_nothing(self):
         stream = self._stream([{"type": "system", "subtype": "init", "model": "m"}])
         proc = self.cli("ingest-usage", "--stream", str(stream), "--run", "r", "--epoch", "1",

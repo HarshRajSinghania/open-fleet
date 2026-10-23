@@ -1,0 +1,658 @@
+{
+  "carried": [],
+  "complete": false,
+  "conflicts": [
+    {
+      "conflicting": "60528bb25cf1bd2a66f891eb27a77913ceab1ff32a95455fa41eae1b6c23151c",
+      "event_id": "rv-launch",
+      "kept": "2ffc53527ed28090bbce9e57867ecea02bdd3e9bf022e6cfd0a20d444086433d"
+    }
+  ],
+  "epochs": [
+    {
+      "clock": "host-a",
+      "coordinator": "coord-1",
+      "digest": "75ed358ade53d3edb97c8cc5875f26f4beb95f43e28f23a69c87304b467a72b8",
+      "epoch": 1,
+      "kind": "run.start"
+    },
+    {
+      "clock": "host-b",
+      "coordinator": "coord-2",
+      "digest": "9227610d5d6fd208877a298f1c521df8d4f1c081068a258df76d4677fe21d17c",
+      "epoch": 2,
+      "kind": "coordinator.resume"
+    }
+  ],
+  "fenced": [
+    {
+      "declared": 2,
+      "digest": "5d1b2e4e3ab9f6bd3b43c783a3c31b1f099632e6952f2245afcc0dad874be04c",
+      "epoch": 1,
+      "reason": "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+    },
+    {
+      "declared": 2,
+      "digest": "b1c16346ce2ee32cdf1693f246183e940a68ee4e7439e185c6661c3dc5f9b557",
+      "epoch": 3,
+      "reason": "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
+    }
+  ],
+  "record": {
+    "conflicts": 1,
+    "duplicates": 0,
+    "fenced": 2,
+    "head": "58b1a405eb8d799e8270548b5aec5945bd0905dc922b7cbc1ad14848a344ad85",
+    "lines": 34,
+    "log_sha256": "430ed3b1955da50b0eb7443efc9527012f13aeb42f5bfd9970ce70f5fb0b108c",
+    "other_run_events": 1,
+    "run_events": 30
+  },
+  "run": "run-b",
+  "schema": "open-fleet.events-report/1",
+  "unplanned": [
+    {
+      "events": 1,
+      "task": "rv1"
+    }
+  ],
+  "usage": {
+    "models": {
+      "(unreported)": {
+        "cache_creation_input_tokens": {
+          "known_sum": null,
+          "unavailable": "1 of 1 observation(s) did not report it",
+          "value": null
+        },
+        "cache_read_input_tokens": {
+          "known_sum": null,
+          "unavailable": "1 of 1 observation(s) did not report it",
+          "value": null
+        },
+        "cost_usd": {
+          "known_sum": null,
+          "unavailable": "1 of 1 observation(s) did not report it",
+          "value": null
+        },
+        "input_tokens": {
+          "value": 900
+        },
+        "observations": 1,
+        "output_tokens": {
+          "known_sum": null,
+          "unavailable": "1 of 1 observation(s) did not report it",
+          "value": null
+        },
+        "provenance": [
+          "fixture stream x5 result line 12; not reported: model, output_tokens, cost_usd"
+        ]
+      }
+    },
+    "run_total": {
+      "cache_creation_input_tokens": {
+        "unavailable": [
+          "5 dispatch(es) have no usage observation",
+          "model (unreported): 1 observation(s) did not report it",
+          "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
+        ],
+        "value": null
+      },
+      "cache_read_input_tokens": {
+        "unavailable": [
+          "5 dispatch(es) have no usage observation",
+          "model (unreported): 1 observation(s) did not report it",
+          "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
+        ],
+        "value": null
+      },
+      "cost_usd": {
+        "unavailable": [
+          "5 dispatch(es) have no usage observation",
+          "model (unreported): 1 observation(s) did not report it",
+          "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
+        ],
+        "value": null
+      },
+      "input_tokens": {
+        "unavailable": [
+          "5 dispatch(es) have no usage observation",
+          "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
+        ],
+        "value": null
+      },
+      "output_tokens": {
+        "unavailable": [
+          "5 dispatch(es) have no usage observation",
+          "model (unreported): 1 observation(s) did not report it",
+          "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
+        ],
+        "value": null
+      }
+    },
+    "unobserved_dispatches": [
+      "x1",
+      "x2",
+      "x3",
+      "x4",
+      "xr1"
+    ]
+  },
+  "waves": [
+    {
+      "builders": 2,
+      "metrics": {
+        "freshness": {
+          "value": "0"
+        },
+        "latency_max": {
+          "unavailable": [
+            "unit u1 latency: task.done and verify.verdict are on different clocks (host-a, host-b); no common clock, no interval",
+            "unit u2 latency: task.done was recovered after a coordinator resume, so its time is when it was rebuilt, not when it happened"
+          ],
+          "value": null
+        },
+        "latency_median": {
+          "unavailable": [
+            "unit u1 latency: task.done and verify.verdict are on different clocks (host-a, host-b); no common clock, no interval",
+            "unit u2 latency: task.done was recovered after a coordinator resume, so its time is when it was rebuilt, not when it happened"
+          ],
+          "value": null
+        },
+        "retries": {
+          "value": "0"
+        },
+        "review_queue_max": {
+          "unavailable": [
+            "wave 1: no review.started observed"
+          ],
+          "value": null
+        },
+        "review_queue_median": {
+          "unavailable": [
+            "wave 1: no review.started observed"
+          ],
+          "value": null
+        },
+        "rework": {
+          "bounced": 0,
+          "units": 2,
+          "value": "0/2"
+        },
+        "throughput": {
+          "unavailable": [
+            "wave 1 wall-clock: wave.open and wave.close are on different clocks (host-a, host-b); no common clock, no interval"
+          ],
+          "value": null
+        }
+      },
+      "outcomes": {
+        "closed-unverified": 0,
+        "completed": 0,
+        "open": 0,
+        "parked": 0,
+        "task_completed": 2,
+        "verified": 0,
+        "verified-closed": 2
+      },
+      "reviewers": 1,
+      "row": "| `wave=1` | `builders=2 reviewers=1` | `throughput=unavailable` | `latency_median=unavailable latency_max=unavailable` | `rework=0/2` | `freshness=0` |",
+      "units": [
+        {
+          "bounced": false,
+          "dispatches": [
+            "x1"
+          ],
+          "events": [
+            {
+              "digest": "67d23807c361a2ffe390b5324ce516a638fe54c4e6902a6ee5670acc74a4745f",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "f72f1328076cff655a560c6d5309fd95ca0a47ff3d04d79cd1a6e198fe448acd",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "3a65a2918a4437af0fbee985f6c874f2bbb7ceef5f27e71ed3559f5db1f2e502",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "27e03f2633d7c8eda5f73129af649c5aa9aee1a3288bedd21041f51b6078674b",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "ac21bc65fa9f9e7c8b897459022106c421797688a84262bf9a07da368d6af675",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "unavailable": [
+              "unit u1 latency: task.done and verify.verdict are on different clocks (host-a, host-b); no common clock, no interval"
+            ],
+            "value": null
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+            "closed_tree": null,
+            "done_at": [
+              "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            ],
+            "reviewed": [
+              "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            ],
+            "verified_at": [
+              "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            ]
+          },
+          "task": "u1",
+          "task_completed": true,
+          "voided_reviews": []
+        },
+        {
+          "bounced": false,
+          "dispatches": [
+            "x2"
+          ],
+          "events": [
+            {
+              "digest": "61f505c965122bd80a452c71abf2d72c0b5d1b71c3253f645205b758dca6ac00",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "111891ee46b823709941e61353651baa59bf2ee17ee0746b55ff2bed301b53ac",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "0843dcdcdad31569a6eadc30e9ba306ff1f1de56a0ddb9ee9756dbf0c2a83b35",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "d51e686729825792ecf15a451084ec2cbfe8ae5d0ec3b89281b146edb9f4f5c6",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "89d152a4a8b00e1fdcb580151bb693e93cc8540fabf65d0399ac1746a0db0648",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "unavailable": [
+              "unit u2 latency: task.done was recovered after a coordinator resume, so its time is when it was rebuilt, not when it happened"
+            ],
+            "value": null
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+            "closed_tree": null,
+            "done_at": [
+              "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+            ],
+            "reviewed": [
+              "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+            ],
+            "verified_at": [
+              "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+            ]
+          },
+          "task": "u2",
+          "task_completed": true,
+          "voided_reviews": []
+        }
+      ],
+      "wave": 1
+    },
+    {
+      "builders": 1,
+      "metrics": {
+        "freshness": {
+          "unavailable": [
+            "wave 2: ['u4'] not closed or parked; a review is voided at merge, which has not happened yet"
+          ],
+          "value": null
+        },
+        "latency_max": {
+          "unavailable": [
+            "unit u3 latency: negative on clock host-b (-300.00s) \u2014 the clock stepped back or the events are misattributed; never clamped to 0",
+            "unit u4: no verified-or-parked observation (open)"
+          ],
+          "value": null
+        },
+        "latency_median": {
+          "unavailable": [
+            "unit u3 latency: negative on clock host-b (-300.00s) \u2014 the clock stepped back or the events are misattributed; never clamped to 0",
+            "unit u4: no verified-or-parked observation (open)"
+          ],
+          "value": null
+        },
+        "retries": {
+          "value": "0"
+        },
+        "review_queue_max": {
+          "unavailable": [
+            "wave 2: no review.started observed"
+          ],
+          "value": null
+        },
+        "review_queue_median": {
+          "unavailable": [
+            "wave 2: no review.started observed"
+          ],
+          "value": null
+        },
+        "rework": {
+          "unavailable": [
+            "wave 2: ['u4'] not yet verified or parked \u2014 a later bounce could still land"
+          ],
+          "value": null
+        },
+        "throughput": {
+          "unavailable": [
+            "wave 2: ['u4'] not observed CLOSED or parked \u2014 a pending or unrecorded close would change the count",
+            "wave 2: wave.close not observed, so the wall-clock is unknown"
+          ],
+          "value": null
+        }
+      },
+      "outcomes": {
+        "closed-unverified": 0,
+        "completed": 0,
+        "open": 1,
+        "parked": 0,
+        "task_completed": 1,
+        "verified": 0,
+        "verified-closed": 1
+      },
+      "reviewers": 1,
+      "row": "| `wave=2` | `builders=1 reviewers=1` | `throughput=unavailable` | `latency_median=unavailable latency_max=unavailable` | `rework=unavailable` | `freshness=unavailable` |",
+      "units": [
+        {
+          "bounced": false,
+          "dispatches": [
+            "x3"
+          ],
+          "events": [
+            {
+              "digest": "8300dc7e644b5bfb1badc64cedca695a3be00f742562baa1f480c724cd78d575",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "2be1a6b54972793ea327e1ce851eaaa7ecb3e53cb8b776a1b580fc114cb03d92",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "d4689cc67dd7fa3aeb058fa45598cde979464eca5d951594a69e6c508085a2a6",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "0513368bb7207fa610ffd5a47b39d345356ca4045b3806ca5bbc493764f47a74",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "670432613ff4084e4dcf18280cf6b59dda9ac27d9e0f280e7d343044d4dc6b57",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "unavailable": [
+              "unit u3 latency: negative on clock host-b (-300.00s) \u2014 the clock stepped back or the events are misattributed; never clamped to 0"
+            ],
+            "value": null
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2",
+            "closed_tree": null,
+            "done_at": [
+              "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2"
+            ],
+            "reviewed": [
+              "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2"
+            ],
+            "verified_at": [
+              "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2"
+            ]
+          },
+          "task": "u3",
+          "task_completed": true,
+          "voided_reviews": []
+        },
+        {
+          "bounced": false,
+          "dispatches": [
+            "x4"
+          ],
+          "events": [
+            {
+              "digest": "3abb61f2c0ee4df47a0d01b2fd7b62c3161881bbf3feb0a2bf6fc2535edbdd4e",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "unavailable": [
+              "unit u4: no verified-or-parked observation (open)"
+            ],
+            "value": null
+          },
+          "outcome": "open",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": null,
+            "closed_tree": null,
+            "done_at": [],
+            "reviewed": [],
+            "verified_at": []
+          },
+          "task": "u4",
+          "task_completed": false,
+          "voided_reviews": []
+        }
+      ],
+      "wave": 2
+    },
+    {
+      "builders": 1,
+      "metrics": {
+        "freshness": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "latency_max": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "latency_median": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "retries": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "review_queue_max": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "review_queue_median": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "rework": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        },
+        "throughput": {
+          "unavailable": [
+            "unit.suspect recorded under epoch 1 after epoch 2 was declared \u2014 a fenced coordinator's write"
+          ],
+          "value": null
+        }
+      },
+      "outcomes": {
+        "closed-unverified": 0,
+        "completed": 0,
+        "open": 0,
+        "parked": 0,
+        "task_completed": 1,
+        "verified": 0,
+        "verified-closed": 1
+      },
+      "reviewers": 0,
+      "row": "| `wave=3` | `builders=1 reviewers=0` | `throughput=unavailable` | `latency_median=unavailable latency_max=unavailable` | `rework=unavailable` | `freshness=unavailable` |",
+      "units": [
+        {
+          "bounced": false,
+          "dispatches": [
+            "x5"
+          ],
+          "events": [
+            {
+              "digest": "ea0e9ecd221533d9d839787213864cb46d7fe896beda19fe8522ef54338c16a3",
+              "kind": "dispatch.launched",
+              "source": {
+                "ref": "fixture:dispatch.launched",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "ac89c5c7c75e055170d7c6c44311eb54009345551055f4d4e7db5d274ebff083",
+              "kind": "task.done",
+              "source": {
+                "ref": "fixture:task.done",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "87762ef8437c9dd142c227a46938b4aa97e7f62dc8fc75710256d07550223f4a",
+              "kind": "review.verdict",
+              "source": {
+                "ref": "fixture:review.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "a1c8ce658e9bf7e1c4abe51b9669d14ff6539e5e99b834e90ecb84304d277640",
+              "kind": "verify.verdict",
+              "source": {
+                "ref": "fixture:verify.verdict",
+                "sha256": null
+              }
+            },
+            {
+              "digest": "9d439f30d04ff9c737bc6968594de1b794496afb5e1ae9d4252ffbfe19765646",
+              "kind": "unit.closed",
+              "source": {
+                "ref": "fixture:unit.closed",
+                "sha256": null
+              }
+            }
+          ],
+          "latency": {
+            "seconds": "300",
+            "value": "5.00m"
+          },
+          "outcome": "verified-closed",
+          "park_classes": [],
+          "revisions": {
+            "closed_at": "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3",
+            "closed_tree": null,
+            "done_at": [
+              "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3"
+            ],
+            "reviewed": [
+              "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3"
+            ],
+            "verified_at": [
+              "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3"
+            ]
+          },
+          "task": "u5",
+          "task_completed": true,
+          "voided_reviews": []
+        }
+      ],
+      "wave": 3
+    }
+  ]
+}

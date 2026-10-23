@@ -47,8 +47,11 @@ Entry states
     failed -> queued | bounced | dropped       (`resolve`, the conductor's recorded decision)
 
 Modes
-    gh   `gh pr merge <n> --merge --match-head-commit <head>`, verified by `gh pr view` and
-         ancestry. This is the default path.
+    gh   GitHub's merges endpoint, `POST repos/<owner>/<name>/merges` with base=<BASE> and
+         head=<the accepted commit>: the write names BASE, so a PR retargeted after the last
+         read cannot take the merge to another branch (PR #647; `gh pr merge` merges into
+         whatever the PR targets when it runs). PR facts come from `gh pr view`; the result is
+         verified by ancestry on BASE. This is the default path.
     git  the no-gh lane (merge-serialization.md "No-gh fallback"): the merge commit is
          `commit-tree` of the TESTED tree, pushed with `--force-with-lease=<BASE>:<expected>`
          (a true compare-and-swap on the remote ref). Its receipts say `no-gh: local-merge`.
@@ -457,12 +460,20 @@ class Gh:
             raise Offline("GitHub", "pr view returned no headRefOid")
         return data
 
-    def pr_merge(self, repo: str, pr: int, head: str, delete_branch: bool,
-                 pass_fds: tuple[int, ...]) -> subprocess.CompletedProcess:
-        args = ["pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head]
-        if delete_branch:
-            args.append("--delete-branch")
-        return self._run(args, pass_fds=pass_fds)
+    def merge_into(self, repo: str, base: str, head: str, message: str,
+                   pass_fds: tuple[int, ...]) -> subprocess.CompletedProcess:
+        """GitHub's merges endpoint: merge the commit `head` into the branch `base`, BY NAME (PR #647).
+
+        Not `gh pr merge`: GitHub's PR merge (REST or GraphQL) can pin the head SHA but never the
+        target, and merges into whatever the PR targets when it runs. A PR retargeted after the
+        conductor's last read (at the default branch, say) would take the merge with it. This call
+        names the branch and the exact accepted commit, so nothing about the PR can redirect it.
+        GitHub marks a PR merged once its head reaches the branch it targets.
+        """
+        host, owner_name = repo.split("/", 1)
+        return self._run(["api", "--method", "POST", "--hostname", host, f"repos/{owner_name}/merges",
+                          "-f", f"base={base}", "-f", f"head={head}", "-f", f"commit_message={message}"],
+                         pass_fds=pass_fds)
 
 
 class MergeQueue:
@@ -957,20 +968,21 @@ class MergeQueue:
         out: dict[str, Any] = {"entry": e["entry_id"], "unit": e["unit"], "acceptedHead": e["accepted_head"],
                                "expectedBase": e["expected_base"]}
         try:
+            # Both lanes adopt a merge only by ancestry on the queue's BASE: the accepted head is in
+            # BASE, and the adopted merge commit is on BASE's first-parent chain. A PR state alone
+            # never adopts one: GitHub may report MERGED for a merge into another branch (PR #647).
             base_head = self._base_head(cfg)
-            if cfg["mode"] == "gh":
-                st = self._unit_state(cfg, e)
-                if st["state"] == "MERGED" and st["mergeCommit"]:
-                    if self.git.has_commit(st["mergeCommit"]) and self.git.is_ancestor(st["mergeCommit"], base_head):
-                        return {**out, **self._merged_facts(e, st["mergeCommit"]), "resolution": "merged"}
-                    return {**out, "resolution": "failed", "reason": "merged_not_on_base", "mergeSha": st["mergeCommit"]}
-                if st["state"] == "OPEN":
-                    return {**out, "resolution": "requeued", "reason": "remote merge never landed"}
-                return {**out, "resolution": "failed", "reason": "closed_unmerged"}
             head = e["accepted_head"]
             if head and self.git.has_commit(head) and self.git.is_ancestor(head, base_head):
                 merge_sha = self._find_merge(e, base_head)
                 return {**out, **self._merged_facts(e, merge_sha), "resolution": "merged"}
+            if cfg["mode"] == "gh":
+                st = self._unit_state(cfg, e)
+                if st["state"] == "MERGED":
+                    return {**out, "resolution": "failed", "reason": "merged_not_on_base",
+                            "mergeSha": st["mergeCommit"], "prBase": st["baseRefName"]}
+                if st["state"] != "OPEN":
+                    return {**out, "resolution": "failed", "reason": "closed_unmerged"}
             return {**out, "resolution": "requeued", "reason": "remote merge never landed"}
         except Offline as exc:
             return {**out, "resolution": "unknown", "reason": exc.message}
@@ -1229,13 +1241,31 @@ class MergeQueue:
                 self._clear_tested(conn, repo, base, 0 if decision["resolution"] == "requeued" else e["seq"])
         if decision["resolution"] == "merged":
             self._boundary("merged_recorded", info)
+            branch = self._teardown_branch(cfg, e) if delete_branch and cfg["mode"] == "gh" else "retained"
             return {"ok": True, "result": "merged", "entry": e["entry_id"], "unit": e["unit"], **decision,
-                    "noGh": cfg["mode"] == "git"}
+                    "noGh": cfg["mode"] == "git", "branch": branch}
         if decision["resolution"] == "unknown":
             raise QueueError("merge_outcome_unknown", "the merge was sent but its outcome cannot be read yet; it is "
                              "reconciled before anything else merges", decision)
         raise QueueError("merge_refused" if decision["resolution"] == "failed" else "retest_required",
                          f"{e['entry_id']} did not merge: {decision.get('reason')}", decision)
+
+    def _teardown_branch(self, cfg: dict[str, Any], e: dict[str, Any]) -> str:
+        """Delete the merged unit's head branch, or say why it was kept. Best-effort, never a failure.
+
+        Only when GitHub reports THIS PR merged into BASE (a PR retargeted elsewhere stays open,
+        and deleting its head would close it), and only while the branch still names the merged
+        head: the deletion is a compare-and-swap, so a branch moved since is kept for re-review.
+        """
+        try:
+            st = self._unit_state(cfg, e)
+            if st["state"] != "MERGED" or st["baseRefName"] != cfg["base"]:
+                return f"retained: PR is {st['state'].lower()} on {st['baseRefName']}"
+            proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
+                                self._bound_remote(cfg), f":refs/heads/{e['branch']}", check=False)
+            return "deleted" if proc.returncode == 0 else "retained: branch moved or already gone"
+        except QueueError as exc:
+            return f"retained: {exc.code}"
 
     def _refusal(self, cfg: dict[str, Any], e: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
         """A send that did not land: a moved head or BASE returns to plan; anything else freezes."""
@@ -1256,7 +1286,10 @@ class MergeQueue:
         remote = self._bound_remote(cfg)  # re-proved at the send: the push URL is read here
         if cfg["mode"] == "gh":
             try:
-                proc = self.gh.pr_merge(cfg["repo"], e["pr"], e["accepted_head"], delete_branch, fds)
+                proc = self.gh.merge_into(
+                    cfg["repo"], cfg["base"], e["accepted_head"],
+                    f"Merge PR #{e['pr']} ({e['branch']}) into {cfg['base']} "
+                    f"(merge queue {e['entry_id']}, unit {e['unit']})", fds)
             except Offline as exc:  # never sent, or sent with no answer: reconcile decides which
                 return False, {"exit": None, "stderr": exc.message}
         else:
@@ -1476,7 +1509,8 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--gate-timeout", type=float, default=1800.0)
             s.add_argument("--ack", action="store_true", help="acknowledge each verified merge")
             s.add_argument("--max-steps", type=int, default=100)
-            s.add_argument("--keep-branch", action="store_true", help="gh lane: do not pass --delete-branch")
+            s.add_argument("--keep-branch", action="store_true",
+                           help="gh lane: keep the head branch (it is deleted only when GitHub merged the PR into BASE)")
 
     s = sub.add_parser("release", help="give the lease up")
     s.add_argument("--token", required=True)

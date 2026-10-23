@@ -26,7 +26,9 @@ truth is `.claude-plugin/plugin.json`.
     merge freezes the train behind it until `resolve`.
   - Promotion to the default branch stays human: the queue refuses it as a BASE or a target.
   - Every GitHub and git call is bound to the queue's repository: `gh` gets an explicit `--repo`,
-    and the remote's fetch and push URLs must name the repository the lease does. A saved plan is
+    and the remote's fetch and push URLs must name the repository the lease does. The gh lane
+    merges through GitHub's merges endpoint, which names BASE, so a PR retargeted after the last
+    check cannot take the merge to the default branch. A saved plan is
     reused only for the gate it passed, so `drain --gate-cmd` never skips a requested gate.
   - What is tested: two competing conductor processes, pause-transfer-resume, and crash restarts
     before the merge, after the remote merge and before the acknowledgement, on the gh lane and

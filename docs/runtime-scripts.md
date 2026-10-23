@@ -1037,7 +1037,7 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 
 The persisted, fenced single-conductor merge queue (#599), the mechanism behind
 [`runtime/merge-serialization.md`](../runtime/merge-serialization.md). Source
-`runtime/scripts/merge_queue.py:1-65`; behavior pinned by `tests/test_merge_queue.py`, and the
+`runtime/scripts/merge_queue.py:1-68`; behavior pinned by `tests/test_merge_queue.py`, and the
 process-level drills (two conductors, pause-transfer-resume, crash restarts, mutation controls)
 by `tests/test_merge_queue_drills.py`.
 
@@ -1091,9 +1091,14 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
 - **`merge` revalidates first.** A BASE whose tree moved, or a merge tree that is no longer the
   tested one, gets `retest_required`. A head that moved to new content is returned to review
   (`bounced`). A content-identical move (reviewed-sha-freshness.md) keeps the review and pins the
-  new head. Then it sends `gh pr merge <n> --repo <host/owner/name> --merge --match-head-commit <head>`, or on the git lane
-  pushes a `commit-tree` of the tested tree with `--force-with-lease=<BASE>:<expected>`. Ancestry
-  verifies the result. Only the head of the train merges (`not_head`), and a merged entry must be
+  new head. Then it sends the merge with a write that names BASE. The gh lane uses GitHub's merges
+  endpoint (`gh api --method POST repos/<owner>/<name>/merges` with `base=<BASE>` and
+  `head=<accepted commit>`), not `gh pr merge`, which follows whatever the PR targets when it runs,
+  so a PR retargeted after the last read cannot take the merge to another branch (PR #647). The git
+  lane pushes a `commit-tree` of the tested tree with `--force-with-lease=<BASE>:<expected>`.
+  Ancestry on BASE verifies the result and is the only thing that adopts an in-flight merge: a PR
+  GitHub reports merged into another branch is refused (`merged_not_on_base`). The head branch is
+  deleted, as a compare-and-swap, only when GitHub merged that PR into BASE (`--keep-branch` keeps it). Only the head of the train merges (`not_head`), and a merged entry must be
   acknowledged (`ack`) before the next merge (`ack_owed`).
 - **One repository.** The lease, the entries and the receipts name one repository, the one the
   remote's configured URL names (`init` refuses any other `--repo`; the gh lane needs a

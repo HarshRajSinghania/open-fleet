@@ -7,11 +7,16 @@ a call acts on is resolved as the real CLI resolves it: `--repo`/`-R`, else $GH_
 default ("repo"); a fork shares the upstream's objects and may carry a PR with the same head. A PR
 names its `headRefName` and `baseRefName`; its head is read live from the bare repo, and every
 `pr view` mirrors it to `refs/pull/<n>/head` as GitHub does. `pr merge` merges the way GitHub's
-merge button does: an in-memory merge onto the CURRENT base head, refused when
-`--match-head-commit` does not name the PR head. Every merge call is appended to $FAKE_GH_LOG
+merge button does: an in-memory merge onto the CURRENT base head of whatever the PR targets now,
+refused when `--match-head-commit` does not name the PR head. `api --method POST
+repos/<owner>/<name>/merges -f base=<branch> -f head=<sha>` is GitHub's merges endpoint: it merges
+that commit into THAT branch, and every open PR whose head the branch now contains, and which
+targets it, is marked merged (as GitHub marks a PR whose head reaches its base). Every merge call is appended to $FAKE_GH_LOG
 with the pid of the conductor that ran it, so a test can prove which conductor sent and how often.
 $FAKE_GH_MERGE_DELAY holds a merge open for that many seconds (the killed-mid-call drill), and a
-state `race_base_write` makes a non-cooperating writer move the base just before one merge lands.
+state `race_base_write` makes a non-cooperating writer move the base just before one merge lands, and
+`retarget_before_merge` ({"pr": n, "to": branch}) retargets a PR as a merge request arrives: after
+every check a conductor could make, before GitHub acts (the PR #647 retarget race).
 """
 import fcntl
 import json
@@ -55,7 +60,15 @@ def present(scope, num, pr, target):
             "mergeCommit": {"oid": pr["mergeCommit"]} if pr.get("mergeCommit") else None}
 
 
+def retarget(state, scope):
+    """Someone retargets a PR between the conductor's last read and GitHub's merge."""
+    move = state.pop("retarget_before_merge", None)
+    if move:
+        scope["prs"][str(move["pr"])]["baseRefName"] = move["to"]
+
+
 def merge(state, scope, num, argv, target):
+    retarget(state, scope)
     pr, bare = scope["prs"][num], scope["bare"]
     match = argv[argv.index("--match-head-commit") + 1] if "--match-head-commit" in argv else None
     head = present(scope, num, pr, target)["headRefOid"]
@@ -81,6 +94,34 @@ def merge(state, scope, num, argv, target):
     return 0, f"Merged pull request #{num}"
 
 
+def api_merge(state, scope, argv, target):
+    """POST repos/<owner>/<name>/merges: merge `head` (a commit) into the NAMED `base` branch."""
+    retarget(state, scope)
+    fields = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "-f")
+    base, head, bare = fields["base"], fields["head"], scope["bare"]
+    by_head = [(n, pr) for n, pr in scope["prs"].items() if present(scope, n, pr, target)["headRefOid"] == head]
+    if any(pr.get("refuse") for _n, pr in by_head):
+        return 1, next(pr["refuse"] for _n, pr in by_head if pr.get("refuse")), by_head
+    if state.pop("race_base_write", False):
+        race_base_write(bare, base)
+    base_head = ref(bare, f"refs/heads/{base}")
+    if base_head is None:
+        return 1, "gh: Base does not exist (HTTP 404)", by_head
+    if git(bare, "merge-base", "--is-ancestor", head, base_head, check=False).returncode == 0:
+        return 0, "", by_head  # 204: nothing to merge
+    proc = git(bare, "merge-tree", "--write-tree", base_head, head, check=False)
+    if proc.returncode != 0:
+        return 1, "gh: Merge conflict (HTTP 409)", by_head
+    tree = proc.stdout.splitlines()[0].strip()
+    commit = git(bare, "commit-tree", tree, "-p", base_head, "-p", head,
+                 "-m", fields.get("commit_message") or f"Merge {head} into {base}").stdout.strip()
+    git(bare, "update-ref", f"refs/heads/{base}", commit, base_head)
+    for _n, pr in by_head:
+        if pr["state"] == "OPEN" and pr["baseRefName"] == base:
+            pr.update({"state": "MERGED", "mergeCommit": commit, "mergedHead": head})
+    return 0, json.dumps({"sha": commit}), by_head
+
+
 def main(argv):
     path = os.environ["FAKE_GH_STATE"]
     with open(path + ".lock", "a") as lock:
@@ -93,6 +134,10 @@ def main(argv):
         if argv[:2] == ["auth", "status"]:
             return 0
         full, target = list(argv), os.environ.get("GH_REPO") or state["repo"]
+        if argv[:1] == ["api"]:  # an API path names its repository; GH_REPO does not apply
+            host = argv[argv.index("--hostname") + 1] if "--hostname" in argv else "github.com"
+            api_path = next(a for a in argv[1:] if a.startswith("repos/"))
+            target = f"{host}/{'/'.join(api_path.split('/')[1:3])}"
         for flag in ("--repo", "-R"):
             if flag in argv:
                 i = argv.index(flag)
@@ -101,6 +146,21 @@ def main(argv):
         if scope is None:
             print(f"GraphQL: Could not resolve to a Repository with the name '{target}'.", file=sys.stderr)
             return 1
+        if argv[:1] == ["api"] and "POST" in argv and next(a for a in argv if a.startswith("repos/")).endswith("/merges"):
+            head = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "-f")["head"]
+            prs = [int(n) for n, pr in scope["prs"].items() if present(scope, n, pr, target)["headRefOid"] == head]
+            with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as log:
+                log.write(json.dumps({"event": "start", "pr": prs[0] if prs else None, "repo": target,
+                                      "caller": os.getppid(), "argv": full}) + "\n")
+            time.sleep(float(os.environ.get("FAKE_GH_MERGE_DELAY", "0") or 0))
+            code, message, _by_head = api_merge(state, scope, argv, target)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(state, fh)
+            with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as log:
+                log.write(json.dumps({"event": "merged" if code == 0 else "refused", "pr": prs[0] if prs else None,
+                                      "repo": target, "caller": os.getppid(), "message": message}) + "\n")
+            print(message, file=sys.stdout if code == 0 else sys.stderr)
+            return code
         if argv[:2] == ["pr", "view"]:
             num = argv[2]
             if num not in scope["prs"]:

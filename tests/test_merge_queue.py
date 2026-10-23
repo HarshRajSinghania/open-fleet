@@ -423,7 +423,7 @@ class Freshness(QueueCase):
         intent = [r for r in self.receipts(ids[0]) if r["kind"] == "merge_intent"][0]["body"]
         self.assertEqual(intent["how"], "content_equivalent")
         call = self.w.merge_log("start")[0]["argv"]
-        self.assertEqual(call[call.index("--match-head-commit") + 1], moved)
+        self.assertIn(f"head={moved}", call)  # the merges-endpoint write pins the newly accepted head
         self.assertEqual(self.w.merged_heads(), [moved])
 
     def test_a_moved_base_makes_the_tested_prefix_stale(self):
@@ -571,7 +571,8 @@ class RepositoryBinding(QueueCase):
         self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE), fork_base)
         self.assertEqual(self.w.merged_heads(), [u["reviewed_sha"]])
         call = self.w.merge_log("start")[0]["argv"]
-        self.assertEqual(call[call.index("--repo") + 1], W.SLUG)
+        host, owner_name = W.SLUG.split("/", 1)  # the merges-endpoint write names the bound repository
+        self.assertEqual((call[call.index("--hostname") + 1], f"repos/{owner_name}/merges" in call), (host, True))
 
     def test_a_queue_whose_identity_is_not_its_remote_is_refused(self):
         rc, out = self.w.cli("--repo", "github.invalid/other/repo", *self.w.init_args())
@@ -616,6 +617,72 @@ class RepositoryBinding(QueueCase):
         rc, out = self.w.cli("plan", "--token", token)
         self.assertEqual([(x["result"], x["reason"]) for x in out["planned"]], [("bounce", "pr_branch_mismatch")], out)
         self.assertEqual(self.state_of(entry), "bounced")
+
+
+class MergeTargetBinding(QueueCase):
+    """The remote write names the queue's BASE; nothing about the PR can redirect it (PR #647)."""
+
+    def test_a_pr_retargeted_after_the_last_check_cannot_redirect_the_merge(self):
+        main_before = self.w.remote_ref(W.DEFAULT)
+        base_before = self.w.remote_ref(W.BASE)
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        (entry,) = self.board(token, u)
+        self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
+        # Retargeted at the default branch after every read the conductor makes, as GitHub gets the merge.
+        self.w.set_gh(lambda s: s.__setitem__("retarget_before_merge", {"pr": u["pr"], "to": W.DEFAULT}))
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual(self.w.remote_ref(W.DEFAULT), main_before, "the merge reached the default branch")
+        self.assertEqual((rc, out.get("result")), (0, "merged"), out)
+        self.assertEqual(self.w.merged_heads(), [u["reviewed_sha"]])
+        merge_sha = self.w.remote_ref(W.BASE)
+        parents = self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "rev-list", "--parents", "-n", "1", merge_sha)
+        self.assertEqual(parents.split()[1:], [base_before, u["reviewed_sha"]])
+        pr = self.w.gh_state()["prs"][str(u["pr"])]
+        self.assertEqual((pr["baseRefName"], pr["state"]), (W.DEFAULT, "OPEN"), "a PR aimed at the default was merged")
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "branch", "--list", u["branch"]),
+                         u["branch"], "the head branch of a PR not merged on GitHub was deleted")
+
+    def test_the_github_write_names_the_base_and_the_accepted_commit(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        self.board(token, u)
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        call = self.w.merge_log("start")[0]["argv"]
+        self.assertIn(f"base={W.BASE}", call)
+        self.assertIn(f"head={u['reviewed_sha']}", call)
+        self.assertEqual(self.w.gh_state()["prs"][str(u["pr"])]["state"], "MERGED")
+
+    def test_a_base_that_is_not_a_plain_branch_name_is_refused_at_init(self):
+        for bad in ("integration:refs/heads/main", "refs/heads/main", "-main", "a..b"):
+            with self.subTest(bad=bad):
+                rc, out = self.w.cli("init", f"--base={bad}", "--default", W.DEFAULT, "--consent", "grant:x",
+                                     "--host", "github.invalid")
+                self.assertEqual((rc, out.get("code")), (2, "usage"), out)
+
+    def test_an_in_flight_merge_github_landed_elsewhere_is_never_adopted(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        (entry,) = self.board(token, u)
+        self.w.cli("plan", "--token", token)
+        mq = self.w.queue(mq_mod)
+        mq._send = lambda *a, **k: (_ for _ in ()).throw(SystemExit("conductor died before the send"))
+        with self.assertRaises(SystemExit):
+            mq.merge(token)
+        self.assertEqual(self.state_of(entry), "merging")
+        # Meanwhile the PR is retargeted at the default branch and merged there, outside the fleet.
+        self.w.set_gh(lambda s: s["prs"][str(u["pr"])].__setitem__("baseRefName", W.DEFAULT))
+        subprocess.run([str(self.w.tmp / "bin" / "gh"), "pr", "merge", str(u["pr"]), "--merge"], env=self.w.env,
+                       capture_output=True, check=True)
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2", "--takeover")
+        self.assertEqual(rc, 0, out)
+        decision = out["reconciled"][0]
+        self.assertEqual((decision["resolution"], decision["reason"]), ("failed", "merged_not_on_base"), decision)
+        self.assertEqual(self.state_of(entry), "failed")
+        self.assertEqual(self.w.merged_heads(), [])
 
 
 class GitLaneRepositoryBinding(QueueCase):

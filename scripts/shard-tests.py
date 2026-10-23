@@ -96,7 +96,7 @@ WEIGHTS = {
     "test_install_workflow_triggers": 0.1,
     "test_inventory": 27.5,
     "test_local_state": 1.6,
-    "test_merge_queue": 82.0,
+    "test_merge_queue": 91.0,
     "test_merge_queue_drills": 51.0,
     "test_migration_walkthrough": 0.1,
     "test_multi_harness_hooks_and_search": 3.2,

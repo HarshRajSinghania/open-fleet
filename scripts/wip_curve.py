@@ -1,0 +1,1862 @@
+#!/usr/bin/env python3
+"""wip_curve.py — the pre-registered WIP throughput-curve experiment (#604): plan, run, report, verify.
+
+runtime/attention-budget.md keeps the fleet's WIP caps ASSERTED until at least three
+protocol-compliant runs at differing WIP settings measure verified-CLOSED throughput. This script
+is that experiment short of the model spend, which needs the owner's authorisation
+(docs/experiments/wip-curve-prereg.md says exactly what is built and what remains):
+
+  check-prereg  the pre-registration and its task set are well formed and bound to each other: the
+                task set hashes to the registered digest, the seed rebuilds to the registered
+                commit, every oracle fails on the seed and passes on its task's reference edit, and
+                the six references compose in the forward and the reverse order
+  plan          the schedule derived from the pre-registration alone: each run's condition,
+                repetition, position in the counterbalanced order, and task order
+  run           execute scheduled runs on the posix provider through the public wrappers
+                (task_ops.py, spawn_worker.sh, worker_ops.py, orca_cli.py), with build-blind
+                reviewers, a coordinator-run oracle at each worker's head in a clean checkout, and
+                merges through merge_queue.py's git lane; every observation goes into the run's
+                append-only events.py record (#603), and every source it rests on is retained
+  report        derive the experiment report from the retained sources ONLY: each run's metrics
+                come from events.py's derivation of its record, conflicts from the merge queue's
+                receipts, and every terminal outcome is re-checked against git and review authority
+  verify        recompute the report from the sources and name every cell a published report.json
+                or report.md gets wrong, then run `events.py check` on each run's WIP-curve rows
+  gate          (internal) the merge queue's gate: the visible tests, plus the oracle of every task
+                whose reviewed head the prefix commit under test contains
+
+Two kinds of worker, ONE code path (first_run.py's pattern, #596):
+
+  --worker inert   a stand-in answers to the harness name from a private bin directory first on
+      PATH, behind tripwires for every other harness name, with a private HOME. It applies each
+      task's reference edit (or a scripted miss) and answers reviews; it calls no model and spends
+      nothing. Its runs are labelled fixture-tested and are never protocol-compliant.
+  --worker live    the operator's real harness. Refused without an explicit --cost-cap-usd above
+      zero and a --model pin. Its runs are labelled live-unreviewed until a maintainer binds them.
+
+Exit: 0 ok · 1 incomplete, mismatch or refused check · 2 usage or refused start · 3 fail-closed (a
+bound source is missing, altered or unreadable).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import platform
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
+from fractions import Fraction
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "runtime" / "scripts"
+PREREG_DEFAULT = ROOT / "docs" / "experiments" / "wip-curve-prereg.json"
+PREREG_SCHEMA = "open-fleet.wip-curve-prereg/1"
+TASKSET_SCHEMA = "open-fleet.wip-curve-taskset/1"
+RUN_SCHEMA = "open-fleet.wip-curve-run/1"
+ORACLE_SCHEMA = "open-fleet.wip-curve-oracle/1"
+REPORT_SCHEMA = "open-fleet.wip-curve-report/1"
+PENDING = "PENDING OWNER AUTHORISATION"
+EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE, EXIT_FAIL_CLOSED = 0, 1, 2, 3
+HOLDER = "wip-runner"
+REVIEW_LINE = re.compile(r"^WIP-REVIEW (WIP-NONCE:[0-9a-f]{16}) ([0-9a-f]{40}) (approve|changes)\s*$", re.M)
+# Inert workers answer in Claude's stream-json shape, the one events.py ingest-usage reads.
+INERT_AGENTS = ("claude",)
+# Two-sided 95% Student-t critical values by degrees of freedom (the usual table, 3 places).
+T95 = {1: "12.706", 2: "4.303", 3: "3.182", 4: "2.776", 5: "2.571", 6: "2.447", 7: "2.365",
+       8: "2.306", 9: "2.262", 10: "2.228", 11: "2.201", 12: "2.179", 13: "2.160", 14: "2.145",
+       15: "2.131", 16: "2.120", 17: "2.110", 18: "2.101", 19: "2.093", 20: "2.086"}
+Z95 = Decimal("1.959963984540054")
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The event record, the first-run sandbox and its stand-in pattern are reused, never copied.
+events = _load("wip_curve_events", SCRIPTS / "events.py")
+first_run = _load("wip_curve_first_run", SCRIPTS / "first_run.py")
+
+
+class Refused(Exception):
+    """A usage error or a refused start (exit 2)."""
+
+
+class SourceError(Exception):
+    """A bound source is missing, altered or unreadable (exit 3)."""
+
+
+class RunFailed(Exception):
+    """An infrastructure failure inside a run: the run is retained as failed."""
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    return sha256_bytes(Path(path).read_bytes())
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def money(text) -> Decimal:
+    try:
+        value = Decimal(str(text))
+    except (InvalidOperation, ValueError):
+        raise Refused(f"{text!r} is not a decimal amount") from None
+    if not value.is_finite() or value < 0:
+        raise Refused(f"{text!r} is not a non-negative amount")
+    return value
+
+
+def fmt(frac, places=2) -> str:
+    return events._decimal(Fraction(frac), places)
+
+
+def git_env(base: dict | None = None) -> dict:
+    """The runner's own git: no system or user config (a signing or template setting would make
+    the seed commit differ between hosts), never a prompt."""
+    env = dict(base if base is not None else os.environ)
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
+    return env
+
+
+def git(cwd: Path, *args: str, env: dict | None = None, check=True, data: bytes | None = None):
+    proc = subprocess.run(["git", *args], cwd=str(cwd), env=git_env(env), capture_output=True,
+                          input=data)
+    if check and proc.returncode != 0:
+        raise RunFailed(f"git {' '.join(args)} failed in {cwd}: "
+                        f"{proc.stderr.decode('utf-8', 'replace').strip()[:400]}")
+    return proc
+
+
+def git_out(cwd: Path, *args: str, env: dict | None = None) -> str:
+    return git(cwd, *args, env=env).stdout.decode("utf-8", "replace").strip()
+
+
+# ---------------------------------------------------------------------------- prereg + taskset
+
+def load_json(path: Path) -> dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise Refused(f"{path} is not readable JSON: {err}") from err
+
+
+def load_prereg(path: Path | None = None):
+    """(prereg, taskset, prereg path, prereg sha256)."""
+    path = Path(path or PREREG_DEFAULT)
+    prereg = load_json(path)
+    rel = (prereg.get("taskset") or {}).get("path")
+    if not isinstance(rel, str):
+        raise Refused(f"{path}: taskset.path is missing")
+    taskset_path = (ROOT / rel) if not Path(rel).is_absolute() else Path(rel)
+    taskset = load_json(taskset_path)
+    return prereg, taskset, path, sha256_file(path), taskset_path
+
+
+def task_by_id(taskset: dict) -> dict:
+    return {t["id"]: t for t in taskset["tasks"]}
+
+
+def apply_edits(tree: Path, edits: list) -> list[str]:
+    """Apply a task's reference edits to a working tree; the paths changed. An anchor must match
+    exactly one whole line, so an edit never lands somewhere its author did not mean (#604)."""
+    changed = []
+    for edit in edits:
+        path = Path(tree) / edit["file"]
+        text = path.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        if "replace" in edit:
+            hits = [i for i, line in enumerate(lines) if line == edit["replace"]]
+            if len(hits) != 1:
+                raise ValueError(f"{edit['file']}: anchor {edit['replace']!r} matches {len(hits)} lines")
+            lines[hits[0]:hits[0] + 1] = list(edit["with"])
+            text = "\n".join(lines)
+        elif "append" in edit:
+            if not text.endswith("\n"):
+                text += "\n"
+            text += "\n".join(edit["append"]) + "\n"
+        else:
+            raise ValueError(f"{edit['file']}: an edit is replace/with or append")
+        path.write_text(text, encoding="utf-8")
+        if edit["file"] not in changed:
+            changed.append(edit["file"])
+    return changed
+
+
+def write_seed(taskset: dict, dest: Path) -> None:
+    for rel, content in sorted(taskset["seed"]["files"].items()):
+        path = dest / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o644)
+
+
+def seed_env(taskset: dict, base: dict | None = None) -> dict:
+    seed = taskset["seed"]
+    env = git_env(base)
+    env.update(GIT_AUTHOR_NAME=seed["author_name"], GIT_AUTHOR_EMAIL=seed["author_email"],
+               GIT_AUTHOR_DATE=seed["date"], GIT_COMMITTER_NAME=seed["author_name"],
+               GIT_COMMITTER_EMAIL=seed["author_email"], GIT_COMMITTER_DATE=seed["date"])
+    return env
+
+
+def configure_repo(repo: Path, env: dict | None = None) -> None:
+    for key, val in (("user.email", "wip-curve@open-fleet.invalid"), ("user.name", "open-fleet wip-curve"),
+                     ("commit.gpgsign", "false"), ("tag.gpgsign", "false"), ("core.hooksPath", os.devnull),
+                     ("core.autocrlf", "false")):
+        git(repo, "config", key, val, env=env)
+
+
+def build_seed(taskset: dict, dest: Path, env: dict | None = None) -> str:
+    """The seed repository at `dest` (branch main), committed with the task set's fixed identity
+    and date: the same task set gives the same commit on any host, which is the reset proof."""
+    dest.mkdir(parents=True, exist_ok=True)
+    git(dest, "init", "-q", "-b", "main", env=env)
+    configure_repo(dest, env)
+    write_seed(taskset, dest)
+    git(dest, "add", "-f", "--", *sorted(taskset["seed"]["files"]), env=env)
+    git(dest, "commit", "-q", "--no-verify", "-m", taskset["seed"]["message"], env=seed_env(taskset, env))
+    return git_out(dest, "rev-parse", "HEAD", env=env)
+
+
+def python_argv(*args: str) -> list[str]:
+    return [sys.executable, "-s", *args]
+
+
+def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, timeout: int = 300) -> dict:
+    """The visible tests plus each task's oracle, at `checkout`, with the oracles OUTSIDE it (a
+    worker never receives them). {"exit": 0 pass | 2 fail | 1 could not run, ...}."""
+    oracle_dir = workdir / f"oracle-{secrets.token_hex(4)}"
+    oracle_dir.mkdir(parents=True)
+    for task in tasks:
+        (oracle_dir / f"test_oracle_{task['id'].lower()}.py").write_text(task["oracle"], encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env.update(PYTHONPATH=str(checkout), PYTHONDONTWRITEBYTECODE="1")
+    steps, tail, exit_code = [], [], 0
+    commands = [("visible", python_argv(*taskset["visible_tests"]))]
+    if tasks:
+        commands.append(("oracle", python_argv("-m", "unittest", "discover", "-s", str(oracle_dir),
+                                               "-t", str(oracle_dir))))
+    for name, argv in commands:
+        try:
+            proc = subprocess.run(argv, cwd=str(checkout), env=env, capture_output=True, timeout=timeout)
+            rc = proc.returncode
+            out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        except subprocess.TimeoutExpired:
+            rc, out = None, f"timed out after {timeout}s"
+        steps.append({"name": name, "rc": rc})
+        tail += [f"[{name}] {ln}" for ln in out.strip().splitlines()[-8:]]
+        if rc is None:
+            exit_code = 1
+        elif rc != 0 and exit_code == 0:
+            exit_code = 2
+    shutil.rmtree(oracle_dir, ignore_errors=True)
+    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks]}
+
+
+def extract_tree(git_dir: Path, rev: str, dest: Path, env: dict | None = None) -> None:
+    """`rev`'s tree, as files, at `dest`: a clean checkout no worker touched."""
+    data = git(git_dir, "archive", "--format=tar", rev, env=env).stdout
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        tar.extractall(dest, filter="data")
+
+
+def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=True) -> list[str]:
+    """Every problem with the pre-registration, [] when it holds."""
+    errors = []
+    if prereg.get("schema") != PREREG_SCHEMA:
+        errors.append(f"schema is {prereg.get('schema')!r}, not {PREREG_SCHEMA}")
+    if taskset.get("schema") != TASKSET_SCHEMA:
+        errors.append(f"task set schema is {taskset.get('schema')!r}, not {TASKSET_SCHEMA}")
+    if errors:
+        return errors
+    conds = prereg.get("conditions") or []
+    ids = [c.get("id") for c in conds]
+    if len(set(ids)) != len(ids) or not all(isinstance(i, str) and i for i in ids):
+        errors.append(f"condition ids must be unique, non-empty strings: {ids}")
+    for c in conds:
+        for key in ("builders", "reviewers"):
+            if not isinstance(c.get(key), int) or isinstance(c.get(key), bool) or c[key] < 1:
+                errors.append(f"condition {c.get('id')}: {key} must be a positive integer")
+    if not any(c.get("builders") == 1 for c in conds):
+        errors.append("no condition runs builders=1; the curve needs the serial point (#604)")
+    if len({(c.get("builders"), c.get("reviewers")) for c in conds}) < 3:
+        errors.append("fewer than three differing WIP settings; the protocol needs three (attention-budget.md)")
+    reps = prereg.get("repetitions")
+    if not isinstance(reps, int) or isinstance(reps, bool) or reps < 3:
+        errors.append(f"repetitions is {reps!r}; pre-register at least 3")
+    order = prereg.get("order") or {}
+    rows = order.get("rows") or []
+    if not isinstance(order.get("seed"), str) or not order.get("seed"):
+        errors.append("order.seed is missing: the task order must be recomputable")
+    if isinstance(reps, int) and len(rows) < reps:
+        errors.append(f"order.rows has {len(rows)} rows for {reps} repetitions")
+    for i, row in enumerate(rows, 1):
+        if sorted(row) != sorted(ids):
+            errors.append(f"order row {i} is not a permutation of the conditions: {row}")
+    for key in ("cache_warmup", "task_difficulty", "model_changes", "reviewer_effort"):
+        if not (prereg.get("confounds") or {}).get(key):
+            errors.append(f"confounds.{key} is not stated")
+    stop = prereg.get("stopping_rule") or {}
+    for key in ("run_complete", "attempts", "cost", "experiment", "run_wall_clock_minutes",
+                "dispatch_timeout_minutes", "max_attempts_per_task"):
+        if key not in stop:
+            errors.append(f"stopping_rule.{key} is not stated")
+    cost = prereg.get("cost") or {}
+    if cost.get("cap_usd") != PENDING:
+        try:
+            money(cost.get("cap_usd"))
+        except Refused:
+            errors.append(f"cost.cap_usd is {cost.get('cap_usd')!r}: an amount, or {PENDING!r}")
+    for key in ("proposed_cap_usd", "reservation_per_dispatch_usd"):
+        try:
+            money(cost.get(key))
+        except Refused:
+            errors.append(f"cost.{key} is {cost.get(key)!r}, not an amount")
+    for key in ("provider", "machine", "harness", "model"):
+        if not (prereg.get("runtime") or {}).get(key):
+            errors.append(f"runtime.{key} is not stated")
+    if not (prereg.get("isolation") or {}).get("per_run"):
+        errors.append("isolation.per_run is not stated")
+    if not prereg.get("reviewer_availability"):
+        errors.append("reviewer_availability is not stated")
+    if not prereg.get("generalization_limits"):
+        errors.append("generalization_limits are not stated")
+    reg = prereg.get("taskset") or {}
+    digest = sha256_file(taskset_path)
+    if reg.get("sha256") != digest:
+        errors.append(f"taskset.sha256 is {reg.get('sha256')!r}; the task set hashes to {digest}")
+    tasks = taskset.get("tasks") or []
+    if len({t.get("id") for t in tasks}) != len(tasks) or len(tasks) < 2:
+        errors.append("the task set needs at least two tasks with unique ids")
+    if not oracles or errors:
+        return errors
+    with tempfile.TemporaryDirectory(prefix="wip-curve-check-") as tmp:
+        tmp = Path(tmp)
+        seed = build_seed(taskset, tmp / "seed")
+        if reg.get("seed_commit") != seed:
+            errors.append(f"taskset.seed_commit is {reg.get('seed_commit')!r}; the seed builds {seed}")
+        for task in tasks:
+            base = run_oracle(tmp / "seed", [task], taskset, tmp)
+            if base["steps"][0]["rc"] != 0:
+                errors.append(f"{task['id']}: the visible tests fail on the seed: {base['tail']}")
+            if base["exit"] == 0:
+                errors.append(f"{task['id']}: the oracle passes on the seed, so it measures nothing")
+            work = tmp / f"ref-{task['id']}"
+            shutil.copytree(tmp / "seed", work, ignore=shutil.ignore_patterns(".git"))
+            try:
+                apply_edits(work, task["reference"])
+            except (ValueError, KeyError, OSError) as err:
+                errors.append(f"{task['id']}: the reference edit does not apply: {err}")
+                continue
+            ref = run_oracle(work, [task], taskset, tmp)
+            if ref["exit"] != 0:
+                errors.append(f"{task['id']}: the oracle fails on the reference edit: {ref['tail']}")
+        for label, ordered in (("forward", tasks), ("reverse", list(reversed(tasks)))):
+            work = tmp / f"all-{label}"
+            shutil.copytree(tmp / "seed", work, ignore=shutil.ignore_patterns(".git"))
+            try:
+                for task in ordered:
+                    apply_edits(work, task["reference"])
+            except (ValueError, KeyError, OSError) as err:
+                errors.append(f"the references do not compose in the {label} order: {err}")
+                continue
+            both = run_oracle(work, tasks, taskset, tmp)
+            if both["exit"] != 0:
+                errors.append(f"the composed references fail an oracle ({label}): {both['tail']}")
+    return errors
+
+
+# ---------------------------------------------------------------------------- schedule
+
+def run_id_for(prereg: dict, cond: str, rep: int, attempt: int = 1) -> str:
+    rid = f"wip{prereg['version']}-{cond}-rep{rep}"
+    return rid if attempt == 1 else f"{rid}-a{attempt}"
+
+
+def task_order(prereg: dict, taskset: dict, rid: str) -> list[str]:
+    """The run's task order: ids sorted by sha256('<seed>:<run id>:<task id>'), so anyone can
+    recompute it from the pre-registration (#604: randomised, recorded, not chosen)."""
+    seed = prereg["order"]["seed"]
+    base_id = re.sub(r"-a\d+$", "", rid)  # a re-run keeps its run's order
+    return sorted((t["id"] for t in taskset["tasks"]),
+                  key=lambda tid: hashlib.sha256(f"{seed}:{base_id}:{tid}".encode()).hexdigest())
+
+
+def schedule(prereg: dict, taskset: dict) -> list[dict]:
+    conds = {c["id"]: c for c in prereg["conditions"]}
+    out, position = [], 0
+    for rep in range(1, prereg["repetitions"] + 1):
+        for cid in prereg["order"]["rows"][rep - 1]:
+            position += 1
+            rid = run_id_for(prereg, cid, rep)
+            out.append({"position": position, "repetition": rep, "condition": dict(conds[cid]),
+                        "run_id": rid, "task_order": task_order(prereg, taskset, rid)})
+    return out
+
+
+# ---------------------------------------------------------------------------- the inert stand-in
+
+INERT_WORKER = r'''
+"""Inert stand-in for a coding-agent harness (wip_curve.py, #604; first_run.py's pattern). It
+calls no model and spends nothing: a builder applies its task's reference edit (or a scripted
+miss), a reviewer reads the diff it was given and answers."""
+import importlib.util, json, os, re, subprocess, sys
+from pathlib import Path
+
+harness, argv = sys.argv[1], sys.argv[2:]
+here = Path(sys.argv[0]).resolve().parent
+cfg = json.loads((here / "wip-config.json").read_text(encoding="utf-8"))
+dispatch = os.environ.get("OPEN_FLEET_DISPATCH_ID", "")
+spec = next((a for a in argv if "WIP-NONCE:" in a), "")
+build = re.search(r"WIP-BUILD (WIP-NONCE:[0-9a-f]{16}) task=(\S+)", spec)
+review = re.search(r"WIP-REVIEW-REQUEST (WIP-NONCE:[0-9a-f]{16}) task=(\S+) head=([0-9a-f]{40}) diff=(\S+)", spec)
+role = "builder" if build else "reviewer" if review else None
+task = (build or review).group(2) if role else None
+log = here / "runs.log"
+prior = [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines()] if log.is_file() else []
+attempt = 1 + sum(1 for r in prior if r.get("role") == role and r.get("task") == task)
+with open(log, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({"harness": harness, "dispatch": dispatch, "role": role, "task": task,
+                         "attempt": attempt}) + "\n")
+if role is None:
+    print("no WIP-curve spec in argv", file=sys.stderr)
+    sys.exit(3)
+plan = cfg["script"].get(task, {}).get(role, [])
+action = plan[attempt - 1] if attempt <= len(plan) else ("solve" if role == "builder" else "approve")
+
+
+def answer(text):
+    """Claude's stream-json: the init line names the stand-in, the result line reports its usage
+    (zero tokens; the configured synthetic cost, 0 unless a test asks for one)."""
+    print(json.dumps({"type": "system", "subtype": "init", "model": "inert-stand-in"}))
+    usage = {k: 0 for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                            "cache_creation_input_tokens")}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
+                      "usage": usage, "total_cost_usd": float(cfg["cost_usd"])}))
+
+
+def sh(*args):
+    return subprocess.run(list(args), capture_output=True, text=True, check=True).stdout.strip()
+
+
+if role == "builder":
+    nonce = build.group(1)
+    if action == "die":
+        answer("stand-in scripted to exit without reporting")
+        sys.exit(1)
+    if action in ("solve", "miss"):
+        spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
+        runner = importlib.util.module_from_spec(spec_r)
+        spec_r.loader.exec_module(runner)
+        tdef = runner.task_by_id(json.loads(Path(cfg["taskset"]).read_text(encoding="utf-8")))[task]
+        if action == "solve":
+            changed = runner.apply_edits(Path.cwd(), tdef["reference"])
+        else:  # a scripted miss: a commit that does not do the task, so the oracle fails it
+            target = Path(tdef["files"][0])
+            target.write_text(target.read_text(encoding="utf-8") + "# stand-in: scripted miss\n",
+                              encoding="utf-8")
+            changed = [tdef["files"][0]]
+        sh("git", "add", "--", *changed)
+        sh("git", "commit", "-q", "-m", f"{task}: {tdef['title']}")
+    head = sh("git", "rev-parse", "HEAD")
+    outcome = "failed" if action == "fail" else "succeeded"
+    rc = subprocess.run([sys.executable, "-I", os.path.join(os.environ["OPEN_FLEET_ROOT"], "runtime",
+                         "scripts", "send_msg.py"), "--type", "worker_done", "--outcome", outcome,
+                         "--run", os.environ.get("OPEN_FLEET_RUN_ID", "default"),
+                         "--subject", f"worker_done:{dispatch}",
+                         "--payload", json.dumps({"head": head})]).returncode
+    answer(f"WIP-BUILD-DONE {nonce} {head} {outcome}")
+    sys.exit(rc)
+
+nonce, head = review.group(1), review.group(3)
+diff = Path(review.group(4)).read_text(encoding="utf-8", errors="replace")
+verdict = "changes" if action == "changes" or "diff --git" not in diff else "approve"
+text = f"Read {len(diff.splitlines())} diff lines.\nWIP-REVIEW {nonce} {head} {verdict}\n"
+done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
+if done:
+    text += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
+answer(text)
+'''
+
+# The dry run's default script: one scripted miss (an oracle bounce) and one review that asks
+# for changes, so the inert pipeline exercises rework as well as conflicts and closes.
+DRY_RUN_SCRIPT = {"T3": {"builder": ["miss"]}, "T1": {"reviewer": ["changes"]}}
+
+
+class Sandbox(first_run.Sandbox):
+    """first_run.py's sandbox (#596): private state store, scrubbed environment, setsid only,
+    SHELL=/bin/sh; in inert mode a stand-in first on PATH behind a tripwire for every other
+    harness name, and a private HOME."""
+
+    def __init__(self, workdir: Path, worker: str, agent: str, inert_config: dict | None = None):
+        self.inert_config = inert_config or {}
+        super().__init__(workdir, worker, agent)
+
+    def _install_inert(self) -> None:
+        super()._install_inert()
+        (self.inert / "worker.py").write_text(INERT_WORKER, encoding="utf-8")
+        (self.inert / "wip-config.json").write_text(json.dumps(self.inert_config), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------- one run
+
+def host_facts() -> dict:
+    facts = first_run.host_facts()
+    facts.update(machine=platform.machine(), cpu_count=os.cpu_count())
+    return facts
+
+
+class Run:
+    """One scheduled run: a fresh sandbox, waves of `builders` units, reviews by at most
+    `reviewers` at a time, the oracle, the merge queue, and an append-only event record."""
+
+    def __init__(self, args, prereg, taskset, paths, entry, results: Path, spent_before: Decimal):
+        self.args, self.prereg, self.taskset, self.entry = args, prereg, taskset, entry
+        self.prereg_path, self.prereg_sha, self.taskset_path = paths
+        self.tasks = task_by_id(taskset)
+        self.rid = entry["run_id"]
+        self.cond = entry["condition"]
+        self.dir = results / "runs" / self.rid
+        self.log = self.dir / "events.jsonl"
+        self.clock = "wip-runner@" + re.sub(r"[^A-Za-z0-9._-]", "-", platform.node() or "host")[:60]
+        self.cap = args.cost_cap
+        self.spent_before = spent_before
+        # What one dispatch can spend at worst: the pre-registered reservation for a live worker;
+        # for the inert stand-in, exactly the synthetic cost it is configured to report.
+        self.reservation = (money(args.inert_cost_usd) if args.worker == "inert"
+                            else money(prereg["cost"]["reservation_per_dispatch_usd"]))
+        self.observed = Decimal(0)
+        self.reserved = Decimal(0)
+        self.usage_seen: set[str] = set()
+        stop = prereg["stopping_rule"]
+        self.max_attempts = stop["max_attempts_per_task"]
+        scale = args.timeout_scale
+        self.timeout_builder = int(stop["dispatch_timeout_minutes"]["builder"] * 60 * scale)
+        self.timeout_reviewer = int(stop["dispatch_timeout_minutes"]["reviewer"] * 60 * scale)
+        self.wall_limit = stop["run_wall_clock_minutes"] * 60
+        self.units: dict[str, dict] = {}
+        self.merges: list[dict] = []
+        self.sources: dict[str, str] = {}
+        self.integration = prereg["taskset"]["integration_branch"]
+        self.default_branch = prereg["taskset"]["default_branch"]
+        self.record = {"schema": RUN_SCHEMA, "run_id": self.rid, "position": entry["position"],
+                       "repetition": entry["repetition"], "condition": self.cond,
+                       "task_order": entry["task_order"], "status": "failed", "stop_reason": None}
+
+    # --- plumbing ---------------------------------------------------------------------------
+    def wrapper(self, argv, env=None, cwd=None, timeout=600):
+        proc = first_run.run_text(argv, cwd=str(cwd or self.sb.target), env={**self.sb.env, **(env or {})},
+                                  timeout=timeout)
+        self.commands.append({"argv": [str(a)[:120] for a in argv], "rc": proc.returncode})
+        return proc
+
+    def emit(self, kind, *, source_ref, task=None, dispatch=None, data=None, basis="observed",
+             at=None, source_file=None, event_id=None):
+        argv = [sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl", "emit",
+                "--kind", kind, "--run", self.rid, "--epoch", "1", "--clock", self.clock,
+                "--producer", "wip_curve.py", "--basis", basis, "--observed-at", at or now(),
+                "--source-ref", source_ref]
+        for flag, value in (("--task", task), ("--dispatch", dispatch), ("--source-file", source_file),
+                            ("--event-id", event_id)):
+            if value:
+                argv += [flag, value]
+        if data is not None:
+            argv += ["--data", json.dumps(data, sort_keys=True)]
+        proc = first_run.run_text(argv, cwd=str(self.dir))
+        if proc.returncode != 0:
+            raise RunFailed(f"events.py emit {kind}: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
+
+    def ingest_state(self):
+        proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
+                                   "ingest-state", "--db", str(self.sb.state_db), "--run", self.rid,
+                                   "--epoch", "1", "--clock", self.clock], cwd=str(self.dir))
+        if proc.returncode not in (0, 1):
+            raise RunFailed(f"events.py ingest-state rc={proc.returncode}: {proc.stderr.strip()[:300]}")
+
+    def ingest_usage(self, dispatch, store_task):
+        """Retain the dispatch's stream and record its usage; returns the cost charged."""
+        if dispatch in self.usage_seen:
+            return Decimal(0)
+        self.usage_seen.add(dispatch)
+        row = self.dispatch_row(dispatch)
+        lane = Path(row["lane_dir"]) if row and row["lane_dir"] else None
+        stream = lane / "events.jsonl" if lane else None
+        cost = None
+        if stream and stream.is_file():
+            rel = f"streams/{dispatch}.jsonl"
+            (self.dir / "streams").mkdir(exist_ok=True)
+            shutil.copyfile(stream, self.dir / rel)
+            proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
+                                       "ingest-usage", "--stream", rel, "--run", self.rid, "--epoch", "1",
+                                       "--clock", self.clock, "--task", store_task, "--dispatch", dispatch],
+                                      cwd=str(self.dir))
+            if proc.returncode == 0:
+                cost = self.stream_cost(self.dir / rel)
+        if cost is None:  # unobserved: charge the reservation, never assume it was free
+            self.reserved += self.reservation
+            return self.reservation
+        self.observed += cost
+        return cost
+
+    @staticmethod
+    def stream_cost(path: Path):
+        total, seen = Decimal(0), False
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("type") == "result":
+                value = obj.get("total_cost_usd")
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    return None
+                total += Decimal(str(value))
+                seen = True
+        return total if seen else None
+
+    def spent(self) -> Decimal:
+        return self.spent_before + self.observed + self.reserved
+
+    def dispatch_row(self, dispatch):
+        conn = sqlite3.connect(f"file:{self.sb.state_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute("SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch,)).fetchone()
+        finally:
+            conn.close()
+
+    def worker_done(self, dispatch):
+        """The outcome of the dispatch's worker_done, read from the store (read-only), or None."""
+        row = self.dispatch_row(dispatch)
+        if row is None:
+            return None
+        conn = sqlite3.connect(f"file:{self.sb.state_db}?mode=ro", uri=True)
+        try:
+            hit = conn.execute("SELECT outcome FROM messages WHERE msg_type = 'worker_done' AND sender = ? "
+                               "AND run_id = ? ORDER BY created_at DESC LIMIT 1",
+                               (row["terminal_handle"], self.rid)).fetchone()
+        finally:
+            conn.close()
+        return hit[0] if hit else None
+
+    def create_task(self, spec, title):
+        proc = self.wrapper(first_run.py("task_ops.py", "create", "--spec", spec, "--run", self.rid,
+                                         "--task-title", title))
+        task = first_run.field(proc.stdout, "CREATED")
+        if proc.returncode != 0 or not task:
+            raise RunFailed(f"task_ops.py create: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
+        return task
+
+    def spawn(self, store_task, worktree: Path, title, profile):
+        env = {"PROFILE": profile}
+        if profile == "rw":
+            env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
+        proc = self.wrapper(["bash", str(SCRIPTS / "spawn_worker.sh"), "--run", self.rid, store_task,
+                             f"path:{worktree}", title, self.args.agent], env=env)
+        disp = first_run.field(proc.stdout, "DISPATCH")
+        if proc.returncode != 0 or not disp:
+            raise RunFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}")
+        return disp
+
+    def state_of(self, dispatch):
+        out = self.wrapper(first_run.py("worker_ops.py", "show", "--dispatch", dispatch)).stdout
+        return first_run.field(out, "STATE")
+
+    def wait(self, dispatches, timeout):
+        """{dispatch: settled state}; one still live at the deadline is stopped (`timeout`)."""
+        deadline = time.monotonic() + timeout
+        pending, states = set(dispatches), {}
+        while pending and time.monotonic() < deadline:
+            for d in sorted(pending):
+                state = self.state_of(d)
+                if state and state not in first_run.LIVE_STATES:
+                    states[d] = state
+                    pending.discard(d)
+            if pending:
+                time.sleep(0.3)
+        for d in sorted(pending):
+            self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", d))
+            states[d] = "timeout"
+        return states
+
+    def transcript_answer(self, dispatch):
+        proc = self.wrapper(first_run.py("orca_cli.py", "orchestration", "worker-read", "--dispatch", dispatch,
+                                         "--limit", "100000", "--json"))
+        try:
+            messages = json.loads(proc.stdout)["result"]["transcript"]["messages"]
+        except (ValueError, KeyError, TypeError):
+            return ""
+        lines = [str(block.get("text") or "") for msg in messages for block in (msg.get("blocks") or [])]
+        return first_run.TRANSCRIPT.final_answer(self.args.agent, lines)
+
+    def mq(self, *args, check=True):
+        proc = self.wrapper([sys.executable, str(SCRIPTS / "merge_queue.py"), "--db", str(self.sb.dir / "merge-queue.db"),
+                             "--repo-dir", str(self.sb.target), *args],
+                            env=git_env({**self.sb.env, "OPEN_FLEET_STATE_DIR": str(self.sb.dir / "mq-state")}))
+        try:
+            out = json.loads(proc.stdout)
+        except ValueError:
+            raise RunFailed(f"merge_queue.py {args[0]}: unreadable output rc={proc.returncode}: "
+                            f"{(proc.stderr or proc.stdout).strip()[:300]}") from None
+        if check and proc.returncode not in (0, 1):
+            raise RunFailed(f"merge_queue.py {args[0]} rc={proc.returncode}: {json.dumps(out)[:400]}")
+        return proc.returncode, out
+
+    # --- setup ------------------------------------------------------------------------------
+    def setup(self):
+        sb, env = self.sb, self.sb.env
+        origin = sb.dir / "origin.git"
+        seed = build_seed(self.taskset, sb.dir / "seed", env)
+        if seed != self.prereg["taskset"]["seed_commit"]:
+            raise RunFailed(f"the seed built {seed}, not the registered {self.prereg['taskset']['seed_commit']}")
+        git(sb.dir, "init", "-q", "--bare", str(origin), env=env)
+        git(sb.dir / "seed", "push", "-q", str(origin), f"main:refs/heads/{self.default_branch}",
+            f"main:refs/heads/{self.integration}", env=env)
+        git(sb.dir, "clone", "-q", "--no-hardlinks", str(origin), str(sb.target), env=env)
+        configure_repo(sb.target, env)
+        git(sb.target, "branch", "-q", "--track", self.integration, f"origin/{self.integration}", env=env)
+        self.record["seed_commit"] = seed
+        rc, out = self.mq("init", "--base", self.integration, "--default", self.default_branch,
+                          "--consent", f"wip-curve run {self.rid} (#604): merges only to {self.integration}",
+                          "--mode", "git")
+        if rc != 0:
+            raise RunFailed(f"merge_queue.py init refused: {json.dumps(out)[:300]}")
+        (sb.dir / "wt").mkdir()
+        (sb.dir / "rv").mkdir()
+        (sb.dir / "ck").mkdir()
+
+    def integration_head(self):
+        git(self.sb.target, "fetch", "-q", "origin", env=self.sb.env)
+        head = git_out(self.sb.target, "rev-parse", f"origin/{self.integration}", env=self.sb.env)
+        git(self.sb.target, "update-ref", f"refs/heads/{self.integration}", head, env=self.sb.env)
+        return head
+
+    # --- specs ------------------------------------------------------------------------------
+    def builder_spec(self, tid, nonce):
+        t = self.tasks[tid]
+        return "\n".join([
+            f"open-fleet WIP-curve builder unit (#604). WIP-BUILD {nonce} task={tid}",
+            f"Task {tid}: {t['title']}",
+            t["statement"],
+            "This worktree is a git checkout of the stocklib package. Run its tests with: "
+            "python3 -m unittest discover -s tests -t .",
+            "Change only what the task needs. Commit your change on the current branch: git add the files "
+            "you changed, then git commit.",
+            "Then report completion with:",
+            '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded '
+            '--run "$OPEN_FLEET_RUN_ID" --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" '
+            "--payload '{\"head\": \"<the commit sha>\"}'",
+            "If you cannot complete the task, send the same message with --outcome failed.",
+        ])
+
+    def review_spec(self, tid, nonce, base, head, task_rel, diff_rel):
+        return "\n".join([
+            f"open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST {nonce} task={tid} head={head} "
+            f"diff={diff_rel}",
+            f"You are a build-blind reviewer. Review the change {base}..{head} for task {tid}. The task "
+            f"statement is in {task_rel} and the change's diff in {diff_rel}, both in your working tree: read "
+            "both to the end. Do not modify anything.",
+            "Approve only if the change does what the task statement asks and nothing it forbids; otherwise "
+            "ask for changes.",
+            f"End your answer with exactly one line: WIP-REVIEW {nonce} {head} approve   or   "
+            f"WIP-REVIEW {nonce} {head} changes",
+        ])
+
+    # --- one wave ---------------------------------------------------------------------------
+    def wave(self, k, planned):
+        """Build, review, verify and merge the planned tasks; returns the tasks to carry."""
+        base = self.integration_head()
+        store_ids = [self.units[t]["store_task"] for t in planned]
+        self.emit("wave.open", source_ref=f"wip_curve.py:wave/{k}",
+                  data={"wave": k, "builders": self.cond["builders"], "reviewers": self.cond["reviewers"],
+                        "tasks": store_ids})
+        attempts = {}
+        for tid in planned:
+            unit = self.units[tid]
+            n = len(unit["attempts"]) + 1
+            if n > 1:  # a re-dispatch: the coordinator returns the task to `ready` (rework)
+                proc = self.wrapper(first_run.py("task_ops.py", "update", "--id", unit["store_task"], "--status",
+                                                 "ready", "--run", self.rid))
+                if proc.returncode != 0:
+                    raise RunFailed(f"task_ops.py update {tid}: rc={proc.returncode} {proc.stderr.strip()[:300]}")
+            branch = f"wip/{self.rid}/{tid.lower()}-a{n}"
+            wt = self.sb.dir / "wt" / f"{tid.lower()}-a{n}"
+            git(self.sb.target, "worktree", "add", "-q", "-b", branch, str(wt), base, env=self.sb.env)
+            disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw")
+            attempt = {"wave": k, "n": n, "dispatch": disp, "branch": branch, "base": base, "head": None,
+                       "outcome": None}
+            unit["attempts"].append(attempt)
+            attempts[tid] = attempt
+        states = self.wait([a["dispatch"] for a in attempts.values()], self.timeout_builder)
+        self.ingest_state()
+        done = []
+        for tid, a in attempts.items():
+            state = states[a["dispatch"]]
+            head = git_out(self.sb.target, "rev-parse", a["branch"], env=self.sb.env)
+            row = self.dispatch_row(a["dispatch"])
+            a["state"] = state
+            if state != "completed" or self.worker_done(a["dispatch"]) != "succeeded" or head == base:
+                a["outcome"] = "builder-failed" if state != "timeout" else "builder-timeout"
+            elif row is not None and row["head_sha"] and row["head_sha"] != head:
+                a["outcome"] = "builder-claim-mismatch"  # the store's head is not what git holds
+            else:
+                a["head"] = head
+                a["tree"] = git_out(self.sb.target, "rev-parse", f"{head}^{{tree}}", env=self.sb.env)
+                done.append(tid)
+        self.review(done)
+        passed = [tid for tid in done if attempts[tid]["outcome"] is None and self.oracle(tid, attempts[tid])]
+        self.merge(passed, attempts)
+        for tid in planned:
+            self.ingest_usage(attempts[tid]["dispatch"], self.units[tid]["store_task"])
+        self.ingest_state()
+        carry = []
+        for tid in planned:
+            a = attempts[tid]
+            if a["outcome"] == "landed":
+                continue
+            if len(self.units[tid]["attempts"]) >= self.max_attempts:
+                self.park(tid, "attempts-exhausted", a.get("head"))
+            else:
+                carry.append(tid)
+        return carry
+
+    def review(self, done):
+        """At most `reviewers` review units in flight; done units wait in worker_done order."""
+        queue = list(done)
+        live = {}  # reviewer dispatch -> (task id, nonce, attempt)
+        while queue or live:
+            while queue and len(live) < self.cond["reviewers"]:
+                tid = queue.pop(0)
+                a = self.units[tid]["attempts"][-1]
+                nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
+                n = len(self.units[tid]["reviews"]) + 1
+                wt = self.sb.dir / "rv" / f"{tid.lower()}-a{a['n']}-r{n}"
+                git(self.sb.target, "worktree", "add", "-q", "--detach", str(wt), a["head"], env=self.sb.env)
+                review_dir = wt / ".wip-review" / tid
+                review_dir.mkdir(parents=True)
+                diff = git(self.sb.target, "diff", a["base"], a["head"], env=self.sb.env).stdout
+                (review_dir / "change.diff").write_bytes(diff)
+                t = self.tasks[tid]
+                (review_dir / "task.md").write_text(f"# {tid}: {t['title']}\n\n{t['statement']}\n", encoding="utf-8")
+                task_rel, diff_rel = f".wip-review/{tid}/task.md", f".wip-review/{tid}/change.diff"
+                spec = self.review_spec(tid, nonce, a["base"], a["head"], task_rel, diff_rel)
+                rtask = self.create_task(spec, f"wip-review-{tid.lower()}-a{a['n']}")
+                disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro")
+                self.emit("review.started", source_ref=f"wip_curve.py:review/{disp}", task=self.units[tid]["store_task"],
+                          dispatch=disp, data={"head_sha": a["head"]})
+                review = {"dispatch": disp, "store_task": rtask, "nonce": nonce, "head": a["head"],
+                          "attempt": a["n"], "verdict": None}
+                self.units[tid]["reviews"].append(review)
+                live[disp] = (tid, review, time.monotonic())
+            settled = {}
+            for disp, (_tid, _review, since) in sorted(live.items()):
+                state = self.state_of(disp)
+                if state and state not in first_run.LIVE_STATES:
+                    settled[disp] = state
+                elif time.monotonic() - since > self.timeout_reviewer:
+                    self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
+                    settled[disp] = "timeout"
+            for disp, state in sorted(settled.items()):
+                tid, review, _since = live.pop(disp)
+                self.finish_review(tid, review, state)
+            if live and not settled:
+                time.sleep(0.3)
+
+    def finish_review(self, tid, review, state):
+        a = self.units[tid]["attempts"][-1]
+        answer = self.transcript_answer(review["dispatch"]) if state != "timeout" else ""
+        rel = f"reviews/{review['dispatch']}.txt"
+        (self.dir / "reviews").mkdir(exist_ok=True)
+        (self.dir / rel).write_text(answer, encoding="utf-8")
+        hits = [m for m in REVIEW_LINE.finditer(answer) if m.group(1) == review["nonce"]]
+        review["state"] = state
+        if not hits or hits[-1].group(2) != review["head"]:
+            a["outcome"] = "review-failed"
+            review["verdict"] = None
+        else:
+            review["verdict"] = hits[-1].group(3)
+            self.emit("review.verdict", source_ref=rel, source_file=rel, task=self.units[tid]["store_task"],
+                      dispatch=review["dispatch"],
+                      data={"verdict": review["verdict"], "reviewed_sha": review["head"],
+                            "reviewed_wtree": a["tree"]})
+            if review["verdict"] == "changes":
+                a["outcome"] = "changes-requested"
+        self.ingest_usage(review["dispatch"], review["store_task"])
+
+    def oracle(self, tid, a) -> bool:
+        """The coordinator's verification: the visible tests and the task's oracle at the worker's
+        head, in a clean checkout cut from git (never the worker's tree)."""
+        ck = self.sb.dir / "ck" / f"{tid.lower()}-a{a['n']}"
+        extract_tree(self.sb.target, a["head"], ck, env=self.sb.env)
+        started = now()
+        result = run_oracle(ck, [self.tasks[tid]], self.taskset, self.sb.dir)
+        doc = {"schema": ORACLE_SCHEMA, "run": self.rid, "task": tid, "head_sha": a["head"], "tree": a["tree"],
+               "visible_tests": self.taskset["visible_tests"], "started_at": started, "finished_at": now(),
+               **result}
+        rel = f"oracle/{tid.lower()}-a{a['n']}.json"
+        (self.dir / "oracle").mkdir(exist_ok=True)
+        (self.dir / rel).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        shutil.rmtree(ck, ignore_errors=True)
+        self.emit("verify.verdict", source_ref=rel, source_file=rel, task=self.units[tid]["store_task"],
+                  basis="occurred", at=doc["finished_at"], data={"exit": result["exit"], "head_sha": a["head"]})
+        a["oracle"] = result["exit"]
+        if result["exit"] != 0:
+            a["outcome"] = "oracle-failed"
+        return result["exit"] == 0
+
+    def merge(self, passed, attempts):
+        """Board each verified, approved unit on the merge queue (git lane) and drain it behind the
+        gate. A conflict or a failed gate is resolved `bounce`: the unit goes back to a builder."""
+        if not passed:
+            return
+        landing = {}
+        for t, unit in self.units.items():
+            heads = [a["head"] for a in unit["attempts"] if a.get("outcome") == "landed"]
+            if t in passed:
+                heads.append(attempts[t]["head"])
+            if heads:
+                landing[t] = heads
+        landing_path = self.sb.dir / "landing.json"
+        landing_path.write_text(json.dumps(landing, sort_keys=True), encoding="utf-8")
+        gate = shlex.join([sys.executable, "-s", str(Path(__file__).resolve()), "gate", "--taskset",
+                           str(self.taskset_path), "--landing", str(landing_path)])
+        rc, out = self.mq("acquire", "--base", self.integration, "--holder", HOLDER, "--takeover")
+        token = out.get("token")
+        if rc != 0 or not token:
+            raise RunFailed(f"merge_queue.py acquire: {json.dumps(out)[:300]}")
+        by_unit = {}
+        for tid in passed:
+            a = attempts[tid]
+            git(self.sb.target, "push", "-q", "origin", f"{a['branch']}:refs/heads/{a['branch']}", env=self.sb.env)
+            payload = {"unit": self.units[tid]["store_task"], "branch": a["branch"], "base": self.integration,
+                       "reviewed_sha": a["head"], "reviewed_wtree": a["tree"], "pr": None, "run": self.rid}
+            rc, out = self.mq("enqueue", "--token", token, "--payload", json.dumps(payload), "--run", self.rid)
+            if rc != 0:
+                raise RunFailed(f"merge_queue.py enqueue {tid}: {json.dumps(out)[:300]}")
+            by_unit[self.units[tid]["store_task"]] = tid
+        self.mq("release", "--token", token)
+        for _ in range(4 * len(passed) + 4):
+            rc, out = self.mq("drain", "--base", self.integration, "--holder", HOLDER, "--gate-cmd", gate,
+                              "--ack", "--takeover")
+            steps = (out.get("steps") if rc == 0 else (out.get("data") or {}).get("drain", {}).get("steps")) or []
+            for step in steps:
+                if "ack" in step and step["ack"].get("landed"):
+                    entry = step["ack"]["entry"]
+                    self.merges.append({"entry": entry, "result": "landed", "merge_sha": step["ack"]["mergeSha"]})
+            if rc == 0:
+                break
+            if out.get("code") != "queue_frozen":
+                raise RunFailed(f"the merge queue is blocked: {out.get('code')} {out.get('message', '')[:200]}")
+            data = out["data"]
+            plans = [s["plan"] for s in steps if "plan" in s]
+            against = None
+            for plan in plans:
+                prior = plan.get("baseHead")
+                for item in plan.get("planned", []):
+                    if item.get("entry") == data["entry"]:
+                        against = prior
+                    elif item.get("prefixCommit"):
+                        prior = item["prefixCommit"]
+            ref = None
+            if against:
+                ref = f"refs/wip/prefix/{data['entry']}"
+                git(self.sb.target, "update-ref", ref, against, env=self.sb.env)
+            tid = by_unit.get(data.get("unit"))
+            self.merges.append({"entry": data["entry"], "result": data.get("reason"), "task": tid,
+                                "head": attempts[tid]["head"] if tid else None, "against": against,
+                                "against_ref": ref})
+            rc2, out2 = self.mq("acquire", "--base", self.integration, "--holder", HOLDER, "--takeover")
+            self.mq("resolve", "--token", out2["token"], "--entry", data["entry"], "--action", "bounce",
+                    "--reason", f"{data.get('reason')}: back to a builder (wip-curve)")
+            self.mq("release", "--token", out2["token"])
+        else:
+            raise RunFailed("the merge queue did not drain")
+        _, status = self.mq("status", "--base", self.integration)
+        landed_head = self.integration_head()
+        for entry in status.get("all", []):
+            tid = by_unit.get(entry.get("unit"))
+            if tid is None or entry.get("run_id") != self.rid or entry.get("reviewed_sha") != attempts[tid]["head"]:
+                continue
+            a = attempts[tid]
+            if entry["state"] == "landed":
+                ancestor = git(self.sb.target, "merge-base", "--is-ancestor", a["head"], landed_head,
+                               env=self.sb.env, check=False).returncode == 0
+                if not ancestor:
+                    raise RunFailed(f"{tid}: the queue says landed, git does not hold {a['head']} on {self.integration}")
+                a["outcome"] = "landed"
+                a["merge_sha"] = entry["merge_sha"]
+                self.emit("unit.closed", source_ref=f"merge-queue:{entry['entry_id']}",
+                          task=self.units[tid]["store_task"],
+                          data={"head_sha": a["head"], "head_wtree": a["tree"]})
+            else:
+                reason = (entry.get("reason") or "").split(" ", 1)[0] or entry["state"]
+                a["outcome"] = {"conflict": "merge-conflict", "gate": "gate-failed"}.get(reason, f"merge-{reason}")
+
+    def park(self, tid, park_class, head=None):
+        unit = self.units[tid]
+        unit["final"] = "parked"
+        unit["park_class"] = park_class
+        data = {"park_class": park_class}
+        if head:
+            data["head_sha"] = head
+        self.emit("unit.parked", source_ref=f"wip_curve.py:park/{tid}", task=unit["store_task"], data=data)
+
+    # --- the run ----------------------------------------------------------------------------
+    def execute(self, sb: Sandbox):
+        self.sb = sb
+        self.commands = []
+        self.dir.mkdir(parents=True)
+        self.record.update(started_at=now(), sandbox=str(sb.dir))
+        started = time.monotonic()
+        try:
+            self.setup()
+            self.emit("run.start", source_ref=f"wip_curve.py:run/{self.rid}", data={"coordinator": HOLDER})
+            for tid in self.entry["task_order"]:
+                nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
+                store = self.create_task(self.builder_spec(tid, nonce), f"wip-{tid.lower()}")
+                self.units[tid] = {"store_task": store, "nonce": nonce, "attempts": [], "reviews": [],
+                                   "final": "not-run", "park_class": None}
+            builders = self.cond["builders"]
+            queue = list(self.entry["task_order"])
+            nxt, k = queue[:builders], 0
+            if self.over_budget(nxt):
+                self.stop("cost-cap", [])  # not even the first wave fits the cap
+                nxt = []
+            while nxt:
+                k += 1
+                queue = [t for t in queue if t not in nxt]
+                carry = self.wave(k, nxt)
+                for tid in nxt:
+                    if self.units[tid]["attempts"][-1]["outcome"] == "landed":
+                        self.units[tid]["final"] = "closed"
+                nxt = (carry + queue)[:builders]  # a wave holds at most `builders`, carried first
+                # The stopping rule is applied BEFORE this wave closes: a unit it parks belongs to
+                # this wave, so the record still derives every cell (#604).
+                reason = ("cost-cap" if nxt and self.over_budget(nxt) else
+                          "time-limit" if nxt and time.monotonic() - started > self.wall_limit else None)
+                if reason:
+                    self.stop(reason, carry)
+                    nxt = []
+                self.emit("wave.close", source_ref=f"wip_curve.py:wave/{k}", data={"wave": k})
+            if self.record["stop_reason"] is None:
+                self.record["status"] = "complete"
+        except RunFailed as err:
+            self.record.update(status="failed", error=str(err)[:1000])
+        finally:
+            self.record["finished_at"] = now()
+            self.finish()
+        return self.record
+
+    def over_budget(self, planned) -> bool:
+        """Observed spend plus the next wave's worst case (a builder and a reviewer per unit, each
+        at the reservation) would pass the cap."""
+        return self.spent() + self.reservation * 2 * len(planned) > self.cap
+
+    def stop(self, reason, carry):
+        """The stopping rule: park every unit still in flight, so the record stays derivable."""
+        self.record.update(status="stopped", stop_reason=reason)
+        for tid in carry:
+            head = self.units[tid]["attempts"][-1].get("head") if self.units[tid]["attempts"] else None
+            self.park(tid, f"stopped-{reason}", head)
+
+    def finish(self):
+        """Stop every worker, retain the sources, write the run report and run.json last."""
+        first_run.stop_workers(self.sb)
+        sb = self.sb
+        rec = self.record
+        rec["units"] = {t: {k: v for k, v in u.items()} for t, u in self.units.items()}
+        rec["not_run"] = [t for t, u in self.units.items() if not u["attempts"]] + \
+            [t for t in self.entry["task_order"] if t not in self.units]
+        rec["merges"] = self.merges
+        rec["commands"] = self.commands
+        rec["cost"] = {"cap_usd": str(self.cap), "spent_before_usd": str(self.spent_before),
+                       "observed_usd": str(self.observed), "reserved_unobserved_usd": str(self.reserved),
+                       "reservation_per_dispatch_usd": str(self.reservation)}
+        try:
+            if sb.target.is_dir():
+                head = git(sb.target, "rev-parse", f"refs/heads/{self.integration}", env=sb.env, check=False)
+                rec["integration"] = {"branch": self.integration,
+                                      "head": head.stdout.decode().strip() if head.returncode == 0 else None}
+                git(sb.target, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*", env=sb.env, check=False)
+                git(sb.target, "bundle", "create", "-q", str(self.dir / "target.bundle"), "--all", env=sb.env)
+            if sb.state_db.is_file():
+                src = sqlite3.connect(f"file:{sb.state_db}?mode=ro", uri=True)
+                dst = sqlite3.connect(str(self.dir / "state.db"))
+                try:
+                    src.backup(dst)
+                finally:
+                    src.close()
+                    dst.close()
+            if (sb.dir / "merge-queue.db").is_file():
+                _, receipts = self.mq("receipts", "--base", self.integration, check=False)
+                (self.dir / "merge-receipts.json").write_text(json.dumps(receipts, indent=2, sort_keys=True) + "\n",
+                                                              encoding="utf-8")
+        except (RunFailed, sqlite3.Error, OSError) as err:
+            rec.setdefault("error", f"retaining sources: {err}"[:1000])
+            rec["status"] = "failed"
+        if self.log.is_file():
+            proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
+                                       "report", "--run", self.rid], cwd=str(self.dir))
+            header = (f"# WIP-curve run {self.rid}\n\nRUN: wip-curve run={self.rid} "
+                      f"condition={self.cond['id']} tier={rec.get('tier')}\n\n"
+                      "## WIP-curve protocol row (derived by events.py report)\n\n")
+            (self.dir / "run-report.md").write_text(header + proc.stdout, encoding="utf-8")
+            _events, _sha, head = events.read_log(self.log)
+            rec["events_head"] = head
+        rec["sources"] = {str(p.relative_to(self.dir)): sha256_file(p) for p in sorted(self.dir.rglob("*"))
+                          if p.is_file() and p.name != "run.json"}
+        (self.dir / "run.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------- report
+
+def runs_in(results: Path) -> list[Path]:
+    root = Path(results) / "runs"
+    return sorted(p for p in root.iterdir() if (p / "run.json").is_file()) if root.is_dir() else []
+
+
+def spent_in(results: Path) -> Decimal:
+    total = Decimal(0)
+    for d in runs_in(results):
+        cost = json.loads((d / "run.json").read_text(encoding="utf-8")).get("cost") or {}
+        total += money(cost.get("observed_usd", "0")) + money(cost.get("reserved_unobserved_usd", "0"))
+    return total
+
+
+def describe(values: list[Fraction], places=2) -> dict:
+    """n, every value, mean, sample sd and a two-sided 95% Student-t interval (#604: uncertainty
+    is reported, never narrowed). Exact arithmetic; the square root in 50-digit decimals."""
+    n = len(values)
+    out = {"n": n, "values": [fmt(v, places) for v in values]}
+    if not n:
+        return {**out, "mean": None, "sd": None, "ci95": None, "min": None, "max": None}
+    mean = sum(values, Fraction(0)) / n
+    out.update(mean=fmt(mean, places), min=fmt(min(values), places), max=fmt(max(values), places))
+    if n < 2:
+        return {**out, "sd": None, "ci95": None, "note": "one run: no spread to estimate"}
+    var = sum(((v - mean) ** 2 for v in values), Fraction(0)) / (n - 1)
+    with localcontext() as ctx:
+        ctx.prec = 50
+        sd = (Decimal(var.numerator) / Decimal(var.denominator)).sqrt()
+        t = Decimal(T95.get(n - 1, "1.960"))
+        half = t * sd / Decimal(n).sqrt()
+        m = Decimal(mean.numerator) / Decimal(mean.denominator)
+        q = Decimal(1).scaleb(-places)
+        out.update(sd=str(sd.quantize(q, rounding=ROUND_HALF_EVEN)),
+                   ci95=[str((m - half).quantize(q, rounding=ROUND_HALF_EVEN)),
+                         str((m + half).quantize(q, rounding=ROUND_HALF_EVEN))])
+    return out
+
+
+def wilson(k: int, n: int) -> dict:
+    """A pooled proportion with its 95% Wilson score interval."""
+    if n == 0:
+        return {"k": k, "n": n, "p": None, "ci95": None}
+    with localcontext() as ctx:
+        ctx.prec = 50
+        p, z2, dn = Decimal(k) / Decimal(n), Z95 * Z95, Decimal(n)
+        denom = 1 + z2 / dn
+        center = (p + z2 / (2 * dn)) / denom
+        half = Z95 * (p * (1 - p) / dn + z2 / (4 * dn * dn)).sqrt() / denom
+        q = Decimal("0.001")
+        return {"k": k, "n": n, "p": str(p.quantize(q, rounding=ROUND_HALF_EVEN)),
+                "ci95": [str(max(center - half, Decimal(0)).quantize(q, rounding=ROUND_HALF_EVEN)),
+                         str(min(center + half, Decimal(1)).quantize(q, rounding=ROUND_HALF_EVEN))]}
+
+
+class Bound:
+    """One run's retained sources, each re-hashed against the digest run.json binds."""
+
+    def __init__(self, run_dir: Path):
+        run_dir = self.dir = Path(run_dir).resolve()
+        try:
+            self.record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as err:
+            raise SourceError(f"{run_dir}/run.json is unreadable: {err}") from err
+        self.problems = []
+        sources = self.record.get("sources") or {}
+        for rel, digest in sorted(sources.items()):
+            path = run_dir / rel
+            if not path.is_file():
+                raise SourceError(f"{self.record.get('run_id')}: bound source {rel} is missing")
+            if sha256_file(path) != digest:
+                raise SourceError(f"{self.record.get('run_id')}: bound source {rel} does not hash to the "
+                                  f"digest run.json binds ({digest[:16]}…) — altered after the run")
+        extra = sorted(str(p.relative_to(run_dir)) for p in run_dir.rglob("*")
+                       if p.is_file() and p.name != "run.json" and str(p.relative_to(run_dir)) not in sources)
+        if extra:
+            raise SourceError(f"{self.record.get('run_id')}: unbound file(s) in the run directory: {extra}")
+
+    def path(self, rel):
+        return self.dir / rel
+
+
+def bind_outcomes(bound: Bound, derived: dict, raw_events: list, prereg: dict, taskset: dict) -> list[str]:
+    """Every terminal outcome re-checked against git and review authority, from the retained
+    bundle and artifacts alone (#604 Verification): [] when all bind."""
+    rec, problems = bound.record, []
+    integration = prereg["taskset"]["integration_branch"]
+    if rec.get("seed_commit") != prereg["taskset"]["seed_commit"]:
+        problems.append(f"the run started at {rec.get('seed_commit')}, not the registered seed commit")
+    if not bound.path("target.bundle").is_file():
+        return problems + ["no retained git bundle: no terminal outcome can be checked"]
+    by_store = {u["store_task"]: t for t, u in (rec.get("units") or {}).items()}
+    tasks = task_by_id(taskset)
+    with tempfile.TemporaryDirectory(prefix="wip-curve-bind-") as tmp:
+        repo = Path(tmp) / "repo.git"
+        git(Path(tmp), "init", "-q", "--bare", str(repo))
+        if git(repo, "fetch", "-q", str(bound.path("target.bundle")), "+refs/*:refs/*", check=False).returncode:
+            return problems + ["the retained bundle does not unpack"]
+        ref = f"refs/heads/{integration}"
+        roots = git(repo, "rev-list", "--max-parents=0", ref, check=False).stdout.decode().split()
+        if roots != [prereg["taskset"]["seed_commit"]]:
+            problems.append(f"{integration}'s root is {roots}, not the registered seed commit")
+        reviews = [e for e in raw_events if e["kind"] == "review.verdict"]
+        verdicts = [e for e in raw_events if e["kind"] == "verify.verdict"]
+        for wave in derived["waves"]:
+            for unit in wave["units"]:
+                if unit["outcome"] == "closed-unverified":
+                    problems.append(f"{unit['task']}: CLOSED at a head no passing verdict names")
+                if unit["outcome"] != "verified-closed":
+                    continue
+                head = unit["revisions"]["closed_at"]
+                tid = by_store.get(unit["task"], unit["task"])
+                what = f"{tid} ({unit['task']}) at {head[:12]}"
+                if git(repo, "merge-base", "--is-ancestor", head, ref, check=False).returncode != 0:
+                    problems.append(f"{what}: not on {integration} in the retained bundle")
+                    continue
+                tree = git(repo, "rev-parse", f"{head}^{{tree}}", check=False).stdout.decode().strip()
+                if unit["revisions"]["closed_tree"] and tree != unit["revisions"]["closed_tree"]:
+                    problems.append(f"{what}: git's tree {tree} is not the recorded {unit['revisions']['closed_tree']}")
+                builders = set(unit["dispatches"])
+                approving = [e for e in reviews if e["task"] == unit["task"] and e["data"]["verdict"] == "approve"
+                             and e["data"]["reviewed_sha"] == head and e["dispatch"] not in builders]
+                if not approving:
+                    problems.append(f"{what}: no approving review of that head by another dispatch")
+                for e in approving:
+                    rel = e["source"]["ref"]
+                    path = bound.path(rel)
+                    if not path.is_file() or sha256_file(path) != e["source"]["sha256"]:
+                        problems.append(f"{what}: the review artifact {rel} is missing or is not the bytes recorded")
+                        continue
+                    lines = [m for m in REVIEW_LINE.finditer(path.read_text(encoding="utf-8"))]
+                    if not lines or lines[-1].group(2) != head or lines[-1].group(3) != "approve":
+                        problems.append(f"{what}: {rel} does not end in an approving WIP-REVIEW line for that head")
+                passing = [e for e in verdicts if e["task"] == unit["task"] and e["data"]["exit"] == 0
+                           and e["data"]["head_sha"] == head]
+                for e in passing:
+                    rel = e["source"]["ref"]
+                    path = bound.path(rel)
+                    if not path.is_file() or sha256_file(path) != e["source"]["sha256"]:
+                        problems.append(f"{what}: the oracle transcript {rel} is missing or altered")
+                        continue
+                    doc = json.loads(path.read_text(encoding="utf-8"))
+                    if doc.get("head_sha") != head or doc.get("exit") != 0 or doc.get("task") != tid:
+                        problems.append(f"{what}: {rel} does not record a pass of {tid} at that head")
+                if not passing:
+                    problems.append(f"{what}: no passing oracle verdict at that head")
+                if tid in tasks:
+                    work = Path(tmp) / f"rerun-{tid}-{head[:8]}"
+                    extract_tree(repo, head, work)
+                    if run_oracle(work, [tasks[tid]], taskset, Path(tmp))["exit"] != 0:
+                        problems.append(f"{what}: the oracle does not pass again at that head")
+        for merge in rec.get("merges") or []:
+            if merge.get("result") != "conflict":
+                continue
+            against = merge.get("against_ref")
+            if not against or not merge.get("head"):
+                problems.append(f"conflict {merge.get('entry')}: no retained prefix to re-derive it from")
+                continue
+            proc = git(repo, "merge-tree", "--write-tree", "--no-messages", against, merge["head"], check=False)
+            if proc.returncode != 1:
+                problems.append(f"conflict {merge['entry']}: git merges {merge['head'][:12]} onto its prefix "
+                                f"cleanly (rc={proc.returncode}); the recorded conflict does not re-derive")
+    return problems
+
+
+def merge_counts(bound: Bound) -> dict:
+    """Conflicts and gate failures from the merge queue's own receipts, cross-checked against the
+    runner's merge log; None when the receipts were not retained."""
+    path = bound.path("merge-receipts.json")
+    if not path.is_file():
+        return {"conflicts": None, "gate_failures": None, "landed": None}
+    receipts = json.loads(path.read_text(encoding="utf-8")).get("receipts") or []
+    failed = [r for r in receipts if r.get("kind") == "failed"]
+    return {"conflicts": sum((r.get("body") or {}).get("reason") == "conflict" for r in failed),
+            "gate_failures": sum((r.get("body") or {}).get("reason") == "gate" for r in failed),
+            "landed": sum(r.get("kind") == "acknowledged" for r in receipts)}
+
+
+def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, taskset_sha: str) -> dict:
+    bound = Bound(run_dir)
+    rec = bound.record
+    rid = rec.get("run_id")
+    out = {"run_id": rid, "condition": rec["condition"]["id"], "builders": rec["condition"]["builders"],
+           "reviewers": rec["condition"]["reviewers"], "repetition": rec.get("repetition"),
+           "position": rec.get("position"), "tier": rec.get("tier"), "status": rec.get("status"),
+           "stop_reason": rec.get("stop_reason"), "error": rec.get("error"),
+           "started_at": rec.get("started_at"), "finished_at": rec.get("finished_at"),
+           "run_json_sha256": sha256_file(run_dir / "run.json")}
+    reasons = []
+    if not bound.path("events.jsonl").is_file():
+        out.update(metrics=None, compliant=False, noncompliance=["no event record was retained"])
+        return out
+    try:
+        raw, file_sha, head = events.read_log(bound.path("events.jsonl"))
+        if events.check_anchor(raw, head, expect_head=rec.get("events_head")):
+            reasons.append("the event record does not end at the head run.json anchors")
+        derived = events.derive(raw, rid, file_sha, head)
+    except (events.EventsError, events.UsageError) as err:
+        raise SourceError(f"{rid}: {err}") from err
+    by_store = {u["store_task"]: t for t, u in (rec.get("units") or {}).items()}
+    waves, closed, wall, lat, lat_reasons, tp_reasons = [], 0, Fraction(0), [], [], []
+    bounced = units = fresh = retries = 0
+    for w in derived["waves"]:
+        m = w["metrics"]
+        waves.append({"wave": w["wave"], "row": w["row"], "outcomes": w["outcomes"]})
+        if m["throughput"]["value"] is None:
+            tp_reasons += m["throughput"][events.UNAVAILABLE]
+        else:
+            closed += m["throughput"]["verified_closed"]
+            wall += Fraction(m["throughput"]["wall_clock_s"])
+        if m["latency_median"]["value"] is None:
+            lat_reasons += m["latency_median"][events.UNAVAILABLE]
+        for u in w["units"]:
+            if u["latency"].get("seconds") is not None:
+                lat.append(Fraction(u["latency"]["seconds"]))
+        if m["rework"]["value"] is not None:
+            bounced += m["rework"]["bounced"]
+            units += m["rework"]["units"]
+        if m["freshness"]["value"] is not None:
+            fresh += int(m["freshness"]["value"])
+        if m["retries"]["value"] is not None:
+            retries += int(m["retries"]["value"])
+    metrics = {
+        "throughput": ({"value": fmt(Fraction(closed * 3600) / wall) + "/h", "exact": str(Fraction(closed * 3600) / wall),
+                        "verified_closed": closed, "wall_clock_s": str(wall)}
+                       if not tp_reasons and wall > 0 else {"value": None, "unavailable": sorted(set(tp_reasons))
+                                                            or ["no wave wall-clock"]}),
+        "latency": ({"median_min": fmt(events._median(lat) / 60), "max_min": fmt(max(lat) / 60),
+                     "units": len(lat), "median_exact_s": str(events._median(lat))}
+                    if lat and not lat_reasons else {"value": None, "unavailable": sorted(set(lat_reasons))
+                                                     or ["no unit latency"]}),
+        "rework": {"bounced": bounced, "units": units},
+        "freshness": fresh, "retries": retries,
+        "complete": derived["complete"],
+        "rows": [w["row"] for w in waves],
+    }
+    metrics.update(merge_counts(bound))
+    usage = derived["usage"]
+    metrics["usage"] = {f: usage["run_total"][f].get("value") for f in events.USAGE_FIELDS}
+    metrics["usage_unavailable"] = sorted({r for f in events.USAGE_FIELDS
+                                           for r in usage["run_total"][f].get(events.UNAVAILABLE, [])})
+    metrics["models"] = sorted(usage["models"])
+    tasks_out = {}
+    for w in derived["waves"]:
+        for u in w["units"]:
+            tid = by_store.get(u["task"], u["task"])
+            entry = tasks_out.setdefault(tid, {"waves": [], "outcome": None, "latency_min": []})
+            entry["waves"].append(w["wave"])
+            entry["outcome"] = u["outcome"]
+            if u["latency"].get("seconds") is not None:
+                entry["latency_min"].append(fmt(Fraction(u["latency"]["seconds"]) / 60))
+    metrics["tasks"] = dict(sorted(tasks_out.items()))
+    out["metrics"] = metrics
+    out["record"] = {"log_sha256": file_sha, "head": head, "events": len(raw)}
+    out["binding_problems"] = bind_outcomes(bound, derived, raw, prereg, taskset)
+    # Protocol compliance (prereg "compliance"), each failure named.
+    if rec.get("tier") != "live-unreviewed" or rec.get("worker") != "live":
+        reasons.append("not a live run (the inert stand-in is a fixture)")
+    if rec.get("prereg", {}).get("sha256") != prereg_sha or rec.get("taskset", {}).get("sha256") != taskset_sha:
+        reasons.append("ran under another pre-registration or task set than this one")
+    if not rec.get("model_pin") or not (rec.get("harness") or {}).get("version"):
+        reasons.append("the model pin or harness version was not recorded")
+    elif metrics["models"] != [rec["model_pin"]]:
+        reasons.append(f"observed model(s) {metrics['models']} are not the pin {rec['model_pin']!r}")
+    if not derived["complete"]:
+        reasons.append("events.py cannot derive every WIP-curve cell")
+    if out["binding_problems"]:
+        reasons.append(f"{len(out['binding_problems'])} terminal outcome(s) do not bind")
+    if rec.get("status") != "complete":
+        reasons.append(f"the run ended {rec.get('status')}" + (f" ({rec['stop_reason']})" if rec.get("stop_reason") else ""))
+    out["compliant"] = not reasons
+    out["noncompliance"] = reasons
+    return out
+
+
+def condition_block(cond: dict, runs: list[dict]) -> dict:
+    tp = [Fraction(r["metrics"]["throughput"]["exact"]) for r in runs
+          if r.get("metrics") and r["metrics"]["throughput"].get("exact")]
+    med = [Fraction(r["metrics"]["latency"]["median_exact_s"]) / 60 for r in runs
+           if r.get("metrics") and r["metrics"]["latency"].get("median_exact_s")]
+    bounced = sum(r["metrics"]["rework"]["bounced"] for r in runs if r.get("metrics"))
+    units = sum(r["metrics"]["rework"]["units"] for r in runs if r.get("metrics"))
+    block = {"condition": cond["id"], "builders": cond["builders"], "reviewers": cond["reviewers"],
+             "runs": [r["run_id"] for r in runs], "throughput_per_h": describe(tp),
+             "latency_median_min": describe(med), "rework": wilson(bounced, units)}
+    for key in ("freshness", "conflicts", "gate_failures", "retries"):
+        values = [r["metrics"][key] for r in runs if r.get("metrics")]
+        block[key] = ({"values": values, "total": sum(values)} if values and None not in values
+                      else {"values": values, "total": None})
+    for field in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cost_usd"):
+        vals = [r["metrics"]["usage"][field] for r in runs if r.get("metrics")]
+        block[field] = (describe([Fraction(str(v)) for v in vals], 4 if field == "cost_usd" else 2)
+                        if vals and None not in vals else {"n": len(vals), "unavailable":
+                                                           "a run's usage was not fully observed; never 0"})
+    return block
+
+
+def recommend(prereg: dict, blocks: dict, compliant: list[dict]) -> dict:
+    """The pre-registered decision rule, applied mechanically; a recommendation, never a change."""
+    rule = prereg["analysis"]["decision_rule"]
+    settings = {(r["builders"], r["reviewers"]) for r in compliant}
+    base = {"rule": rule, "authority": rule["authority"]}
+    if len(compliant) < 3 or len(settings) < 3:
+        return {**base, "status": "not-issued",
+                "why": f"{len(compliant)} protocol-compliant run(s) at {len(settings)} differing WIP setting(s); "
+                       "the protocol needs at least three runs at three settings"}
+
+    def ci(cid):
+        b = blocks.get(cid, {}).get("throughput_per_h") or {}
+        return [Decimal(x) for x in b["ci95"]] if b.get("ci95") else None
+
+    ref = ci("b3r1")
+    if ref is None:
+        return {**base, "status": "keep", "why": "b3r1 (the current cap) has no interval; nothing beats it"}
+    for cid in ("b6r1", "b6r2"):
+        other = ci(cid)
+        if other is None or other[0] <= ref[1]:
+            continue
+        rw, rw_ref = blocks[cid]["rework"], blocks["b3r1"]["rework"]
+        fr, fr_ref = blocks[cid]["freshness"], blocks["b3r1"]["freshness"]
+        if None in (rw["p"], rw_ref["p"], fr["total"], fr_ref["total"]):
+            continue
+        if Decimal(rw["p"]) - Decimal(rw_ref["p"]) <= Decimal("0.10") and \
+                Fraction(fr["total"], max(len(fr["values"]), 1)) - Fraction(fr_ref["total"], max(len(fr_ref["values"]), 1)) <= 1:
+            return {**base, "status": "raise", "why": f"{cid}'s throughput interval lies above b3r1's"}
+    low = ci("b1r1")
+    if low is not None and low[0] > ref[1]:
+        return {**base, "status": "lower", "why": "b1r1's throughput interval lies above b3r1's"}
+    return {**base, "status": "keep", "why": "no pre-registered criterion for a change is met (a null or negative result)"}
+
+
+def build_report(results: Path, prereg_path: Path | None = None, basis: str = "compliant") -> dict:
+    prereg, taskset, path, prereg_sha, taskset_path = load_prereg(prereg_path)
+    taskset_sha = sha256_file(taskset_path)
+    sched = schedule(prereg, taskset)
+    runs = [summarize_run(d, prereg, prereg_sha, taskset, taskset_sha) for d in runs_in(results)]
+    order = {e["run_id"]: e["position"] for e in sched}
+    runs.sort(key=lambda r: (order.get(re.sub(r"-a\d+$", "", r["run_id"]), 10**6), r["run_id"]))
+    present = {re.sub(r"-a\d+$", "", r["run_id"]) for r in runs}
+    cooldown = prereg["isolation"]["cooldown_minutes"] * 60
+    live = sorted((r for r in runs if r.get("tier") == "live-unreviewed" and r.get("started_at")),
+                  key=lambda r: r["started_at"])
+    for before, run in zip(live, live[1:], strict=False):
+        gap = (datetime.fromisoformat(run["started_at"]) - datetime.fromisoformat(before["finished_at"])).total_seconds()
+        if gap < cooldown:
+            run["compliant"] = False
+            run.setdefault("noncompliance", []).append(
+                f"started {int(gap)}s after {before['run_id']} ended; the cooldown is {cooldown}s")
+    compliant = [r for r in runs if r["compliant"]]
+    pool = compliant if basis == "compliant" else [r for r in runs if r.get("metrics")]
+    blocks = {c["id"]: condition_block(c, [r for r in pool if r["condition"] == c["id"]])
+              for c in prereg["conditions"]}
+    tiers = sorted({r["tier"] for r in runs if r.get("tier")})
+    try:
+        rel = str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        rel = str(path)
+    return {
+        "schema": REPORT_SCHEMA, "basis": basis,
+        "prereg": {"path": rel, "sha256": prereg_sha, "version": prereg["version"]},
+        "taskset": {"path": prereg["taskset"]["path"], "sha256": taskset_sha},
+        "tiers": tiers,
+        "evidence": ("live" if tiers == ["live-unreviewed"] else
+                     "none (fixture runs only: they exercise the pipeline and are not evidence)" if tiers == ["fixture-tested"]
+                     else "mixed" if tiers else "none"),
+        "scheduled": len(sched), "present": len(present & {e["run_id"] for e in sched}),
+        "missing": [e["run_id"] for e in sched if e["run_id"] not in present],
+        "runs": runs, "conditions": [blocks[c["id"]] for c in prereg["conditions"]],
+        "compliant_runs": [r["run_id"] for r in compliant],
+        "recommendation": recommend(prereg, blocks, compliant),
+        "generalization_limits": prereg["generalization_limits"],
+    }
+
+
+def _cell(value):
+    if value is None:
+        return "unavailable"
+    if isinstance(value, dict):
+        if value.get("mean") is None:
+            return "no run" if value.get("n") == 0 else "unavailable"
+        ci = f" [{value['ci95'][0]}, {value['ci95'][1]}]" if value.get("ci95") else ""
+        return f"{value['mean']}{ci} (n={value['n']})"
+    return str(value)
+
+
+def render_markdown(report: dict) -> str:
+    lines = ["# WIP-curve experiment report", "",
+             f"Pre-registration `{report['prereg']['path']}` v{report['prereg']['version']} "
+             f"(sha256 `{report['prereg']['sha256']}`); task set sha256 `{report['taskset']['sha256']}`.",
+             f"Evidence: {report['evidence']}. Basis of the condition rows: {report['basis']} runs. "
+             f"Runs present: {report['present']} of {report['scheduled']} scheduled; protocol-compliant: "
+             f"{len(report['compliant_runs'])}.", "",
+             "## Conditions", "",
+             "| Condition | WIP | Runs | Throughput /h, mean [95% CI] | Latency median min, mean [95% CI] | "
+             "Rework (pooled, 95% Wilson) | Freshness | Conflicts | Gate failures | Cost USD |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    for c in report["conditions"]:
+        rw = c["rework"]
+        rework = f"{rw['k']}/{rw['n']} = {rw['p']} [{rw['ci95'][0]}, {rw['ci95'][1]}]" if rw["p"] else "no unit"
+        cost = _cell(c["cost_usd"]) if "mean" in c["cost_usd"] else "unavailable"
+        lines.append(f"| `{c['condition']}` | `builders={c['builders']} reviewers={c['reviewers']}` | "
+                     f"{len(c['runs'])} | {_cell(c['throughput_per_h'])} | {_cell(c['latency_median_min'])} | "
+                     f"{rework} | {_cell(c['freshness']['total'])} | {_cell(c['conflicts']['total'])} | "
+                     f"{_cell(c['gate_failures']['total'])} | {cost} |")
+    lines += ["", "## Runs (every run, failed, stopped and parked included)", "",
+              "| Run | Condition | Tier | Status | Throughput | Latency median/max min | Rework | Freshness | "
+              "Conflicts | Retries | Cost USD | Compliant |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r in report["runs"]:
+        m = r.get("metrics")
+        if not m:
+            lines.append(f"| `{r['run_id']}` | `{r['condition']}` | {r['tier']} | {r['status']} | unavailable | "
+                         "unavailable | unavailable | unavailable | unavailable | unavailable | unavailable | no |")
+            continue
+        lat = (f"{m['latency']['median_min']}/{m['latency']['max_min']}" if m["latency"].get("median_min")
+               else "unavailable")
+        status = r["status"] + (f" ({r['stop_reason']})" if r.get("stop_reason") else "")
+        lines.append(f"| `{r['run_id']}` | `{r['condition']}` | {r['tier']} | {status} | "
+                     f"{m['throughput'].get('value') or 'unavailable'} | {lat} | "
+                     f"{m['rework']['bounced']}/{m['rework']['units']} | {m['freshness']} | {_cell(m['conflicts'])} | "
+                     f"{m['retries']} | {_cell(m['usage']['cost_usd'])} | {'yes' if r['compliant'] else 'no'} |")
+    lines += ["", "## Per-wave WIP-curve rows (derived by events.py from each run's record)", ""]
+    for r in report["runs"]:
+        if r.get("metrics"):
+            lines += [f"### `{r['run_id']}`", "", "| Wave | WIP setting | Builder throughput | Verification latency | "
+                      "Rework rate | Freshness violations |", "|---|---|---|---|---|---|", *r["metrics"]["rows"], ""]
+    lines += ["## Non-compliance and binding", ""]
+    for r in report["runs"]:
+        for why in r.get("noncompliance", []):
+            lines.append(f"- `{r['run_id']}`: {why}")
+        for why in r.get("binding_problems", []) or []:
+            lines.append(f"- `{r['run_id']}` binding: {why}")
+        if r.get("error"):
+            lines.append(f"- `{r['run_id']}` error: {r['error']}")
+    rec = report["recommendation"]
+    lines += ["", "## Recommendation", "", f"Status: **{rec['status']}** — {rec['why']}.", "",
+              f"Authority: {rec['authority']}.", "", "## Limits on generalizing", ""]
+    lines += [f"- {x}" for x in report["generalization_limits"]]
+    return "\n".join(lines) + "\n"
+
+
+def diff_json(want, got, path="$"):
+    if type(want) is not type(got):
+        return [f"{path}: the report says {json.dumps(got)[:120]}, the sources derive {json.dumps(want)[:120]}"]
+    if isinstance(want, dict):
+        out = []
+        for key in sorted(set(want) | set(got)):
+            if key not in got:
+                out.append(f"{path}.{key}: missing from the report")
+            elif key not in want:
+                out.append(f"{path}.{key}: the sources derive no such field")
+            else:
+                out += diff_json(want[key], got[key], f"{path}.{key}")
+        return out
+    if isinstance(want, list):
+        if len(want) != len(got):
+            return [f"{path}: {len(got)} item(s) in the report, {len(want)} derived"]
+        return [line for i, (w, g) in enumerate(zip(want, got, strict=True)) for line in diff_json(w, g, f"{path}[{i}]")]
+    return [] if want == got else [f"{path}: the report says {json.dumps(got)}, the sources derive {json.dumps(want)}"]
+
+
+# ---------------------------------------------------------------------------- commands
+
+def cmd_check_prereg(args) -> int:
+    prereg, taskset, path, digest, taskset_path = load_prereg(args.prereg)
+    errors = check_prereg(prereg, taskset, taskset_path, oracles=not args.no_oracles)
+    for line in errors:
+        print(f"wip-curve: PREREG {line}", file=sys.stderr)
+    if errors:
+        return EXIT_INCOMPLETE
+    cap = prereg["cost"]["cap_usd"]
+    print(f"wip-curve: pre-registration OK — {path.name} sha256 {digest}; task set {len(taskset['tasks'])} "
+          f"tasks, seed {prereg['taskset']['seed_commit'][:12]}; {len(schedule(prereg, taskset))} runs; cost cap: {cap}")
+    return EXIT_OK
+
+
+def cmd_plan(args) -> int:
+    prereg, taskset, path, digest, _ = load_prereg(args.prereg)
+    sched = schedule(prereg, taskset)
+    if args.json:
+        print(json.dumps({"prereg": {"path": str(path), "sha256": digest}, "runs": sched}, indent=2))
+        return EXIT_OK
+    for e in sched:
+        c = e["condition"]
+        print(f"{e['position']:>2}  {e['run_id']:<20} builders={c['builders']} reviewers={c['reviewers']}  "
+              f"tasks={','.join(e['task_order'])}")
+    print(f"cost cap: {prereg['cost']['cap_usd']} (proposed {prereg['cost']['proposed_cap_usd']} USD)")
+    return EXIT_OK
+
+
+def cmd_run(args) -> int:
+    prereg, taskset, path, prereg_sha, taskset_path = load_prereg(args.prereg)
+    if args.cost_cap_usd is None:
+        raise Refused(f"--cost-cap-usd is required: the pre-registered cap is {prereg['cost']['cap_usd']!r}, "
+                      "and the runner never picks the spend")
+    args.cost_cap = money(args.cost_cap_usd)
+    errors = check_prereg(prereg, taskset, taskset_path, oracles=False)
+    if errors:
+        raise Refused("the pre-registration does not check: " + "; ".join(errors))
+    if args.worker == "live":
+        if args.cost_cap <= 0:
+            raise Refused("a live run needs a cost cap above zero: a zero cap cannot dispatch a worker")
+        if not args.model:
+            raise Refused("a live run needs --model: the pin every observed model must equal")
+    elif args.agent not in INERT_AGENTS:
+        raise Refused(f"the inert stand-in answers as {INERT_AGENTS}; --agent {args.agent} needs --worker live")
+    if args.agent not in first_run.posix_harnesses():
+        raise Refused(f"--agent {args.agent!r} is not a posix harness")
+    results = Path(args.results).resolve()
+    sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
+    done = {d.name for d in runs_in(results)}
+    if args.runs:
+        wanted = []
+        for rid in args.runs.split(","):
+            m = re.fullmatch(r"(.+?)(?:-a([2-9]|\d\d+))?", rid.strip())
+            if not m or m.group(1) not in sched:
+                raise Refused(f"{rid} is not a scheduled run (see `plan`)")
+            wanted.append((m.group(1), int(m.group(2) or 1)))
+    else:
+        wanted = [(rid, 1) for rid in sched if rid not in done][: (len(sched) if args.all else args.next)]
+    if not wanted:
+        print("wip-curve: every scheduled run is already present", file=sys.stderr)
+        return EXIT_OK
+    script = json.loads(args.inert_script) if args.inert_script else DRY_RUN_SCRIPT
+    rc = EXIT_OK
+    for base, attempt in wanted:
+        entry = dict(sched[base])
+        entry["run_id"] = run_id_for(prereg, entry["condition"]["id"], entry["repetition"], attempt)
+        if entry["run_id"] in done or (results / "runs" / entry["run_id"]).exists():
+            raise Refused(f"{entry['run_id']} already exists in {results}: runs are append-only; a re-run "
+                          "takes the next attempt id (e.g. <run>-a2)")
+        spent = spent_in(results)
+        first_wave = min(entry["condition"]["builders"], len(entry["task_order"]))
+        worst = (money(args.inert_cost_usd) if args.worker == "inert"
+                 else money(prereg["cost"]["reservation_per_dispatch_usd"])) * 2 * first_wave
+        if spent + worst > args.cost_cap:
+            # The experiment-level stopping rule: once the cap cannot cover a first wave, no run starts.
+            print(f"wip-curve: {entry['run_id']} not started: {spent} USD spent in {results} plus its first "
+                  f"wave's worst case {worst} exceeds the cap {args.cost_cap}", file=sys.stderr)
+            return EXIT_INCOMPLETE
+        if args.worker == "live":
+            ends = [json.loads((d / "run.json").read_text(encoding="utf-8")).get("finished_at")
+                    for d in runs_in(results)]
+            ends = [datetime.fromisoformat(e) for e in ends if e]
+            if ends:
+                since = (datetime.now(timezone.utc) - max(ends)).total_seconds()
+                wait = prereg["isolation"]["cooldown_minutes"] * 60 - since
+                if wait > 0:  # the cache/warmup confound: no live run starts inside the cooldown
+                    print(f"wip-curve: cooldown {int(wait)}s before {entry['run_id']}", flush=True)
+                    time.sleep(wait)
+        workdir = Path(args.workdir).resolve() / entry["run_id"] if args.workdir else \
+            Path(tempfile.mkdtemp(prefix=f"wip-curve-{entry['run_id']}-"))
+        workdir.mkdir(parents=True, exist_ok=True)
+        config = {"taskset": str(taskset_path), "runner": str(Path(__file__).resolve()), "script": script,
+                  "cost_usd": str(args.inert_cost_usd)}
+        sb = Sandbox(workdir, args.worker, args.agent, config)
+        run = Run(args, prereg, taskset, (path, prereg_sha, taskset_path), entry, results, spent)
+        binary = first_run.HARNESS_BINARIES.get(args.agent, args.agent)
+        found = shutil.which(binary, path=sb.env["PATH"])
+        if args.worker == "live" and (not found or Path(found).resolve().is_relative_to(workdir.resolve())):
+            raise Refused(f"live mode needs the real `{binary}` on PATH")
+        run.record.update(
+            tier="fixture-tested" if args.worker == "inert" else "live-unreviewed", worker=args.worker,
+            agent=args.agent, model_pin=args.model,
+            harness={"path": found, "version": "inert stand-in (no model)" if args.worker == "inert"
+                     else first_run.harness_version(found, sb.env)},
+            host=host_facts(), clock=run.clock, epoch=1, attempt=attempt,
+            prereg={"path": str(path), "sha256": prereg_sha},
+            taskset={"path": prereg["taskset"]["path"], "sha256": sha256_file(taskset_path)},
+            inert_script=script if args.worker == "inert" else None)
+        previous = first_run.trap_termination()
+        try:
+            record = run.execute(sb)
+        finally:
+            for sig in previous:
+                signal.signal(sig, signal.SIG_IGN)
+            try:
+                first_run.stop_workers(sb)
+            finally:
+                first_run.restore_signals(previous)
+        hits = sb.tripwire_hits() if args.worker == "inert" else ""
+        if hits:
+            print(f"wip-curve: TRIPWIRE a harness resolved past the stand-in: {hits[:200]!r}", file=sys.stderr)
+            rc = EXIT_INCOMPLETE
+        if record["status"] == "complete" and not args.keep:
+            shutil.rmtree(workdir, ignore_errors=True)
+        print(f"WIP_RUN={record['run_id']} STATUS={record['status']}"
+              + (f" STOP={record['stop_reason']}" if record.get("stop_reason") else "")
+              + f" TIER={record['tier']} SPENT_USD={run.observed + run.reserved}"
+              + (f" ERROR={record['error'][:200]}" if record.get("error") else ""))
+        if record["status"] == "failed":
+            rc = EXIT_INCOMPLETE
+        if record["status"] == "stopped" and record["stop_reason"] == "cost-cap":
+            print("wip-curve: the cost cap is reached; no further run starts", file=sys.stderr)
+            return EXIT_INCOMPLETE
+    return rc
+
+
+def cmd_report(args) -> int:
+    results = Path(args.results)
+    report = build_report(results, args.prereg, args.basis)
+    out = Path(args.out) if args.out else results
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(render_markdown(report), encoding="utf-8")
+    print(f"wip-curve: report for {len(report['runs'])} run(s) ({len(report['compliant_runs'])} compliant) "
+          f"-> {out / 'report.json'}, {out / 'report.md'}; recommendation {report['recommendation']['status']}")
+    return EXIT_OK
+
+
+def cmd_verify(args) -> int:
+    results = Path(args.results)
+    try:
+        claimed = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise Refused(f"--report {args.report} is not readable JSON: {err}") from err
+    report = build_report(results, args.prereg, claimed.get("basis", "compliant"))
+    mismatches = diff_json(report, claimed)
+    if args.report_md:
+        want = render_markdown(report).splitlines()
+        got = Path(args.report_md).read_text(encoding="utf-8").splitlines()
+        for i in range(max(len(want), len(got))):
+            w = want[i] if i < len(want) else None
+            g = got[i] if i < len(got) else None
+            if w != g:
+                mismatches.append(f"{args.report_md}:{i + 1}: the report says {g!r}, the sources derive {w!r}")
+    claimed_heads = {r.get("run_id"): (r.get("record") or {}).get("head") for r in claimed.get("runs") or []}
+    for r in report["runs"]:
+        d = results / "runs" / r["run_id"]
+        if not (d / "run-report.md").is_file() or not r.get("record"):
+            continue
+        # The head the PUBLISHED report names is the anchor kept off the writer (#312's rule).
+        proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", str(d / "events.jsonl"),
+                                   "check", "--run-report", str(d / "run-report.md"), "--run", r["run_id"],
+                                   "--expect-head", claimed_heads.get(r["run_id"]) or ""])
+        if proc.returncode != 0:
+            mismatches += [f"{r['run_id']}/run-report.md: {ln}" for ln in proc.stderr.strip().splitlines()]
+    for line in mismatches:
+        print(f"wip-curve: MISMATCH {line}", file=sys.stderr)
+    if mismatches:
+        return EXIT_INCOMPLETE
+    print(f"wip-curve: the report recomputes from {len(report['runs'])} run(s)' bound sources; every terminal "
+          f"outcome was re-checked against git ({sum(len(r.get('binding_problems') or []) for r in report['runs'])} "
+          "binding problem(s), each named in the report)")
+    return EXIT_OK
+
+
+def cmd_gate(args) -> int:
+    """The merge queue's gate, run in the prefix checkout: the visible tests, plus the oracle of
+    every task whose reviewed head the prefix contains (a regression of an earlier unit fails)."""
+    taskset = load_json(Path(args.taskset))
+    landing = load_json(Path(args.landing))
+    tasks = task_by_id(taskset)
+    cwd = Path.cwd()
+    included = [tasks[t] for t, heads in sorted(landing.items()) if t in tasks and any(
+        subprocess.run(["git", "merge-base", "--is-ancestor", h, "HEAD"], cwd=str(cwd), env=git_env(),
+                       capture_output=True).returncode == 0 for h in heads)]
+    with tempfile.TemporaryDirectory(prefix="wip-curve-gate-") as tmp:
+        result = run_oracle(cwd, included, taskset, Path(tmp))
+    print(f"wip-curve gate: {result['exit']} for {[t['id'] for t in included]}")
+    for line in result["tail"]:
+        print(line)
+    return EXIT_OK if result["exit"] == 0 else EXIT_INCOMPLETE
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="wip_curve.py", description="The pre-registered WIP-curve experiment (#604).",
+                                epilog="exit 0 ok / 1 incomplete or mismatch / 2 usage or refused / 3 fail-closed")
+    p.add_argument("--prereg", default=None, help=f"the pre-registration (default {PREREG_DEFAULT.relative_to(ROOT)})")
+    sub = p.add_subparsers(dest="command", required=True)
+    c = sub.add_parser("check-prereg", help="check the pre-registration and its task set")
+    c.add_argument("--no-oracles", action="store_true", help="skip building the seed and running the oracles")
+    s = sub.add_parser("plan", help="print the schedule")
+    s.add_argument("--json", action="store_true")
+    r = sub.add_parser("run", help="execute scheduled runs")
+    r.add_argument("--results", required=True, help="the results directory (append-only; one dir per run)")
+    r.add_argument("--cost-cap-usd", default=None, dest="cost_cap_usd",
+                   help="REQUIRED: the spend cap the owner authorised, across every run in --results")
+    r.add_argument("--worker", choices=("inert", "live"), default="inert")
+    r.add_argument("--agent", default="claude")
+    r.add_argument("--model", default=None, help="the model pin (required for --worker live)")
+    pick = r.add_mutually_exclusive_group()
+    pick.add_argument("--runs", default=None, help="comma-separated run ids (see plan); <run>-a2 re-runs one")
+    pick.add_argument("--next", type=int, default=1, help="the next N scheduled runs not yet present (default 1)")
+    pick.add_argument("--all", action="store_true", help="every scheduled run not yet present")
+    r.add_argument("--workdir", default=None, help="where sandboxes go (default: a new temp dir per run)")
+    r.add_argument("--keep", action="store_true", help="keep a complete run's sandbox")
+    r.add_argument("--timeout-scale", type=float, default=1.0, dest="timeout_scale",
+                   help="scale the pre-registered dispatch timeouts (a dry run may shorten them)")
+    r.add_argument("--inert-script", default=None, dest="inert_script",
+                   help="dry run only: the stand-in's per-task script as JSON (default: one miss, one changes)")
+    r.add_argument("--inert-cost-usd", default="0", dest="inert_cost_usd",
+                   help="dry run only: a synthetic cost the stand-in reports per dispatch (not a spend)")
+    rp = sub.add_parser("report", help="derive the experiment report from the retained sources")
+    rp.add_argument("--results", required=True)
+    rp.add_argument("--out", default=None, help="where report.json and report.md go (default --results)")
+    rp.add_argument("--basis", choices=("compliant", "all"), default="compliant",
+                    help="which runs feed the condition rows (all: a dry run's fixture runs too)")
+    v = sub.add_parser("verify", help="recompute the report and name every cell it gets wrong")
+    v.add_argument("--results", required=True)
+    v.add_argument("--report", required=True, help="the published report.json")
+    v.add_argument("--report-md", default=None, dest="report_md", help="the published report.md")
+    g = sub.add_parser("gate", help="(internal) the merge queue's gate command")
+    g.add_argument("--taskset", required=True)
+    g.add_argument("--landing", required=True)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    handlers = {"check-prereg": cmd_check_prereg, "plan": cmd_plan, "run": cmd_run, "report": cmd_report,
+                "verify": cmd_verify, "gate": cmd_gate}
+    try:
+        if args.command == "run" and args.inert_script and args.worker == "live":
+            raise Refused("--inert-script is for the inert stand-in only")
+        if args.command == "run":
+            money(args.inert_cost_usd)
+        return handlers[args.command](args)
+    except Refused as err:
+        print(f"wip-curve: refused: {err}", file=sys.stderr)
+        return EXIT_USAGE
+    except SourceError as err:
+        print(f"wip-curve: FAIL-CLOSED: {err}", file=sys.stderr)
+        return EXIT_FAIL_CLOSED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

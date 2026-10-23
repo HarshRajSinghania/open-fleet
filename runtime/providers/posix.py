@@ -1224,7 +1224,7 @@ if {repr(self.backend)} == "cmux":
         dispatch_id = f"disp_{uuid.uuid4().hex[:10]}"
         term_handle = f"term_{uuid.uuid4().hex[:8]}"
         lane_dir = self.state.db_path.parent / "lanes" / dispatch_id
-        planned_wt = self._planned_worktree_path(worktree, name or task_id)
+        wt_name, planned_wt = self._plan_worktree(worktree, name or task_id)
         info: dict[str, Any] = {
             "intentId": intent_id,
             "requestId": retry_request,
@@ -1277,7 +1277,12 @@ if {repr(self.backend)} == "cmux":
         self._boundary("intent_claimed", info)
 
         try:
-            wt_path = str(Path(self._resolve_worktree_path(worktree, name or task_id)).resolve())
+            wt_path = str(Path(self._resolve_worktree_path(worktree, wt_name)).resolve())
+            if wt_path != planned_wt:
+                raise ProviderError(
+                    "worktree_create_failed",
+                    f"created {wt_path} but the launch intent recorded {planned_wt}; refusing a worktree recovery could not name",
+                )
             Path(wt_path).mkdir(parents=True, exist_ok=True)
             lane_dir.mkdir(parents=True, exist_ok=True)
             sandbox_meta: dict[str, str] | None = None
@@ -1522,12 +1527,19 @@ if {repr(self.backend)} == "cmux":
     def _recovery_lock_path(self, intent_id: str) -> Path:
         return self.state.db_path.parent / "intents" / f"{intent_id}.recovery.lock"
 
-    def _planned_worktree_path(self, worktree_sel: str, name: str) -> str:
-        """Where `_resolve_worktree_path` will put the worktree, computed WITHOUT creating it."""
+    def _plan_worktree(self, worktree_sel: str, name: str) -> tuple[str, str]:
+        """The worktree name and path a launch uses, chosen ONCE, before its intent is recorded.
+
+        A name that sanitizes to nothing (`---`) gets `worktree_create`'s random fallback here,
+        not later: the intent records that path, and the launch creates exactly it (the name is
+        already a slug, so `worktree_create` keeps it, and its branch `fleet/<name>` with it).
+        Otherwise a coordinator that died before registering left recovery an empty worktree
+        path, unable to name or pin the worktree it had created (#597 review).
+        """
         if worktree_sel in ("new-child", "new-top-level"):
-            slug = _worktree_slug(name)
-            return str((self._worktree_base_dir() / slug).resolve()) if slug else ""
-        return str(Path(self._resolve_worktree_path(worktree_sel, name)).resolve())
+            slug = _worktree_slug(name) or f"wt-{uuid.uuid4().hex[:6]}"
+            return slug, str((self._worktree_base_dir() / slug).resolve())
+        return name, str(Path(self._resolve_worktree_path(worktree_sel, name)).resolve())
 
     @staticmethod
     def _check_owner(conn: Any, intent_id: str, token: str) -> None:

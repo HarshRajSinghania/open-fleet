@@ -115,8 +115,8 @@ them (SIGKILL, power loss) leaves state that a restarted coordinator settles by 
 
 | # | Boundary | What is durable after it | What a restarted coordinator does |
 |---|---|---|---|
-| 1 | `intent_claimed`: ONE transaction writes the launch intent (pre-minted dispatch id, terminal handle, lane dir, planned worktree, owner token, epoch 1), claims the task (`ready → dispatched`) and records the request `pending` with its payload hash | the intent, at phase `claimed` | Hands the claim back (task → `ready`). No dispatch row exists, so no monitor can pass the launch gate. The request → `failed` |
-| 2 | `worktree_created`: `git worktree add`, plus the hooks (a side effect, no commit) | as 1 | Same as 1. The worktree is kept, named in the receipt, and its HEAD is pinned |
+| 1 | `intent_claimed`: ONE transaction writes the launch intent (pre-minted dispatch id, terminal handle, lane dir, planned worktree, owner token, epoch 1), claims the task (`ready → dispatched`) and records the request `pending` with its payload hash. A worker name that sanitizes to nothing (`---`) gets its fallback worktree name `wt-<random>` here, and the launch creates exactly that path | the intent, at phase `claimed` | Hands the claim back (task → `ready`). No dispatch row exists, so no monitor can pass the launch gate. The request → `failed` |
+| 2 | `worktree_created`: `git worktree add` at the recorded path, on the branch `fleet/<name>`, plus the hooks (a side effect, no commit) | as 1 | Same as 1. The worktree is kept, named in the receipt, and its HEAD is pinned |
 | 3 | `registered`: terminal and dispatch rows, plus the intent's phase `registered`, in one transaction | dispatch `ready`, pid 0 | Abandons the dispatch if no monitor has claimed the launch gate, and adopts it otherwise (see the gate below) |
 | 4 | `monitor_spawned`: the setsid, tmux or cmux monitor starts (a side effect) | as 3 | Adopts the monitor that claimed the gate and publishes its pid. Otherwise it abandons, as in 3 |
 | 5 | `published`: pid and backend, plus the phase `published` | the dispatch carries its pid | Adopts it, or tears it down when an operator fenced it during startup |

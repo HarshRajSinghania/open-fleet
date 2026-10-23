@@ -1320,5 +1320,53 @@ class TestClosedGateSkipsTheSyncGrace(CrashRecoveryBase):
         self.assertFalse(runner._gate_proves_never_ran(row), "an injected runner starts work without the gate")
 
 
+class TestFallbackWorktreeNameIsRecorded(CrashRecoveryBase):
+    """A worker name that sanitizes to nothing gets its fallback worktree name BEFORE the intent (#597 review)."""
+
+    def test_crash_after_a_fallback_named_worktree_is_created_keeps_and_pins_it(self):
+        info = self.crash_at("worktree_created", retry_request="req-1", name="---")
+        wt = Path(info["worktree"])
+        self.assertTrue((wt / ".git").is_file(), "the fallback-named worktree exists when the coordinator dies")
+        self.assertRegex(wt.name, r"^wt-[0-9a-f]{6}$")
+        prov = self.restart()
+        self.assertEqual(prov.state.launch_intent(info["intentId"])["worktree"], str(wt),
+                         "the intent named this worktree before it was created")
+        self.assertEqual(_git("rev-parse", "--verify", "--quiet", f"refs/heads/fleet/{wt.name}", cwd=self.repo).returncode, 0,
+                         "and its branch follows from that recorded name")
+        r = prov.launch_reconcile(request="req-1")["reconciled"][0]
+        self.assertEqual((r["resolution"], r["worktree"]), ("failed", str(wt)))
+        self.assertIn({"kind": "worktree", "target": str(wt), "action": "kept", "why": "recovery never deletes a worktree or a branch"},
+                      r["cleanup"])
+        head = _git("rev-parse", "HEAD", cwd=wt).stdout.strip()
+        self.assertEqual(r["preservedRefs"][0], {"ref": f"refs/open-fleet/preserved/{info['dispatchId']}", "sha": head,
+                                                 "source": "worktree", "worktree": str(wt)})
+        self.assertEqual(_git("rev-parse", f"refs/open-fleet/preserved/{info['dispatchId']}", cwd=self.repo).stdout.strip(), head)
+        self.assert_no_worker_ran()
+
+    def test_an_uninterrupted_launch_creates_exactly_the_worktree_its_intent_named(self):
+        c = self.coordinator(None, retry_request="req-1", name="!!!")
+        out = c.finish()
+        res = out[-1]["result"]
+        prov = self.restart()
+        recorded = prov.state.launch_intent(c.info["intentId"])["worktree"]
+        claimed = [m["info"]["worktree"] for m in out if m.get("boundary") == "intent_claimed"]
+        self.assertEqual(claimed, [recorded], "named at the claim, before any side effect")
+        self.assertEqual(res["worker"]["worktree"], recorded)
+        self.assertRegex(Path(recorded).name, r"^wt-[0-9a-f]{6}$")
+        self.assertEqual(sorted(p.name for p in (self.base / "state" / "worktrees").iterdir()), [Path(recorded).name],
+                         "one worktree, the one the intent named: no second fallback name was drawn")
+
+    def test_a_worktree_other_than_the_recorded_one_fails_the_attempt(self):
+        prov = self.restart()
+        create = prov.worktree_create
+        prov.worktree_create = lambda name, **kw: create(f"{name}-elsewhere", **kw)  # a creator that drifts
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            prov.worker_start(**self.start_kwargs(retry_request="req-1", name="---"))
+        self.assertEqual(ctx.exception.code, "worktree_create_failed")
+        self.assertEqual(prov.request_show("req-1")["state"], "failed")
+        self.assertEqual(self.task_status(prov), "ready", "the attempt is withdrawn, never launched in an unnamed worktree")
+        self.assert_no_worker_ran()
+
+
 if __name__ == "__main__":
     unittest.main()

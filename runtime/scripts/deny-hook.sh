@@ -2013,7 +2013,8 @@ def _head_bodies(ws):
         nxt, changed = [], False
         for h in heads:
             sub = re.search(_SUB_MARK + r"([0-9]+)_", h)
-            printed = _printed(_SUB_TEXTS[int(sub[1])]) if sub else None
+            known = sub and int(sub[1]) < len(_SUB_TEXTS)
+            printed = _printed(_SUB_TEXTS[int(sub[1])]) if known else None
             if printed is not None:
                 # `echo CMD` as the head: the substitution prints the command that runs.
                 changed = True
@@ -2308,7 +2309,7 @@ def _heredoc_owner(before, after):
     head_text = pre[-1][1] if pre else ""
     post = _split(after)
     lead = after.lstrip(BLANKS)[:1]
-    if not lead or lead in tuple(";&|)" + chr(10)):
+    if not post or lead in tuple(";&|)" + chr(10)):   # nothing, a comment, or a separator
         owner_text, k = head_text, 0
     else:
         owner_text, k = head_text + " " + post[0][1], 1

@@ -195,7 +195,7 @@ MUTANTS = (
     ("printf conversions filled", "text = _printf_text(rest[0], rest[1:]) if rest else \"\"",
      "text = chr(10).join(rest)", ("launch:stdin-printf", "launch:printed-printf")),
     ("printed substitution head read",
-     "printed = _printed(_SUB_TEXTS[int(sub[1])]) if sub else None", "printed = None",
+     "printed = _printed(_SUB_TEXTS[int(sub[1])]) if known else None", "printed = None",
      ("launch:printed",)),
     ("find -exec judged", 'if head == "find":\n        out, i = [], 0',
      'if False:\n        out, i = [], 0', ("launch:find",)),
@@ -327,6 +327,7 @@ class TestDeferredExecution(HookOnly):
             "echo $(case x in x) git push --force origin main;; esac)",
             "echo ${ git push --force origin main; }",
             "x=$(: <<'EOF'\nsafe\nEOF)\ngit push --force origin main\nEOF\n)",
+            "bash <<EOF # a comment after the opener\ngit push --force origin main\nEOF",
         ))
         self.expect("deny", ("gh alias set --shell x 'git push --force origin main'",
                              "gh alias set x '!gh issue close 34'"))
@@ -345,6 +346,7 @@ class TestDeferredExecution(HookOnly):
             "python3 <<'EOF'\nprint('gh issue close 34')\nEOF",
             "gh alias set co 'pr checkout'", "gh alias list",
             "cat <<'EOF' > doc.md\ngit push --force origin main\nEOF",
+            "cat <<EOF # a comment after the opener\ngit push --force origin main\nEOF",
         ))
 
 

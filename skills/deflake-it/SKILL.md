@@ -68,8 +68,8 @@ DETECT: run the suite DETECT_RUNS times (default 30; varied seed/order; parallel
     → conductor LAND
   → PROVE: full suite GREEN_STREAK consecutive runs, local AND verified in CI (gh run list), all at
     ONE SHA — the BASE head after the last fix lands; a new commit restarts the streak. Trigger CI
-    re-runs with `gh run rerun` / `gh workflow run`, never empty commits. ANY flake resets the
-    streak to zero and re-enters detection. → loop → outcome → REFLECT (`compound-learn`)
+    re-runs with `egress.py write … && gh run rerun` (or `gh workflow run`: each is a receipted send),
+    never empty commits. ANY flake resets the streak to zero and re-enters detection. → loop → outcome → REFLECT (`compound-learn`)
 ```
 
 ## Convergence proof

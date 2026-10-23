@@ -17,15 +17,21 @@
 # python3 — never printf-interpolated, since a path carrying a quote produces
 # malformed JSON and a malformed decision is no decision at all.
 #
-# POLARITY IS FAIL-CLOSED. Unparseable stdin, absent stdin, or no JSON parser on
-# PATH all DENY. A boundary that fails open is not a boundary. Allow is the only
-# decision this hook makes silently (exit 0, no output).
+# POLARITY IS FAIL-CLOSED. Unparseable stdin, absent stdin, no JSON parser on
+# PATH, or a grep/sed/tr that is missing or errors all DENY. A boundary that
+# fails open is not a boundary. Allow is the only decision this hook makes
+# silently (exit 0, no output).
 #
 # HIGH tier (deny, never ask) for Bash. Every segment of a compound command is
-# judged on its own, with env/VAR= prefixes stripped first, so a refused shape
-# is refused wherever it sits rather than only in first position (#297). Still
-# string matching: a segment whose target comes from a variable or a subshell is
-# beyond it, and the Never list is the net for those. The refused shapes:
+# judged on its own, after ONE peeler in the payload reader (_command_words)
+# strips what launches it: VAR=, env, sudo, doas, nohup, nice, time, timeout,
+# exec, setsid, stdbuf, ionice, chrt, taskset, xargs, command, builtin, ( { !,
+# if/then/do/while and case patterns. A `sh -c`/`eval` body is judged as
+# segments of its own, and words are quote-removed as the shell does it, ANSI-C
+# $'...' decoded. So a refused shape is refused wherever it sits (#297; 2026-10-23
+# review, P1-3, P2-10). Still string matching: a target from a variable, a
+# launcher outside that list, or a script file is beyond it (#598), and the
+# Never list is the net for those. The refused shapes:
 #   1. recursive delete whose every target is /, ~, $HOME or /*, or any
 #      recursive delete carrying --no-preserve-root
 #   2. force-push to the default branch, including the +main refspec form that
@@ -38,8 +44,10 @@
 #      that it disables the --force-with-lease checks
 #   4. `orca orchestration reset` — one command that discards a whole fleet's
 #      dispatch state
-#   5. an off-repo write (`gh pr|issue|release <write-verb>`, or `gh api` with
-#      a write method/field) with no egress receipt immediately &&-preceding
+#   5. an off-repo write (`gh pr|issue|release <write-verb>`; `gh repo|workflow|
+#      run|gist|variable|cache|label|ssh-key|gpg-key|codespace|project` writes;
+#      `gh api` with a write method/field), however launched, `sh -c`/`eval`
+#      bodies included, with no egress receipt immediately &&-preceding
 #      it in the same command (`egress.py write … &&`). Judged in the payload
 #      reader, the only place the joining operators survive: a receipt joined
 #      by || or ; proves nothing (the send runs even when the receipt failed),
@@ -63,10 +71,16 @@
 # global force, which Git documents as disabling the lease checks.
 #
 # Never list (ask, per runtime/sandbox-policy.md): live-prod mutation, credential
-# provisioning, destructive database or infrastructure teardown, unpinned remote
-# code execution, publishing, and history-discarding local git. These are "ask"
-# rather than "deny" because each has a legitimate form the human can authorize
-# in the moment; the HIGH tier has none.
+# provisioning (gh secret set|delete), destructive database or infrastructure
+# teardown (gh repo delete too), unpinned remote code execution, publishing, and
+# history-discarding local git. These are "ask" rather than "deny" because each
+# has a legitimate form the human can authorize in the moment; the HIGH tier has
+# none. Matched, not inferred: remote code is curl/wget piped into a shell or
+# interpreter, run from <(...) or "$(...)", or downloaded and then run; local git
+# is reset --hard, checkout/restore of the whole tree, checkout/switch -f, a
+# whole-tree clean -f, branch -D/-M/-C/-f (the default branch too: origin still
+# holds it), update-ref -d, reflog expire|delete, stash drop|clear,
+# filter-repo|filter-branch, worktree remove -f.
 #
 # Worktree boundary: when ORCA_UNIT_WORKTREE is set, a write outside it is DENIED.
 # It covers the Edit/Write/MultiEdit file_path and NotebookEdit's notebook_path
@@ -101,11 +115,17 @@
 #     tool names are PascalCase, so its contract above is unchanged.
 #
 # Self-guard. A worker that can rewrite its own hook config is not guarded, so a
-# write, edit, redirect, tee, rm/mv/cp/ln/sed -i/truncate/dd target naming a hook
-# config (.claude/settings*.json, .codex/hooks.json, .openhands/hooks.json,
+# write, edit, redirect, tee, rm/mv/cp/ln/install/rsync, sed -i/perl -i,
+# truncate, dd of=, sort -o, ed/ex/vim, curl -o/wget -O, or chmod/chown/chgrp
+# (bar an additive chmod mode) target naming a hook config
+# (.claude/settings*.json, .codex/hooks.json, .openhands/hooks.json,
 # .agents/plugins/orca-deny-hook/, .opencode/plugin/orca-deny-hook.ts,
 # .open-fleet/, .crush/crush.json, .crush-orca-ro/, .hermes-open-fleet/) or this
-# file is DENIED — relative or absolute, since the pattern needs no cwd.
+# file is DENIED — relative or absolute, since the pattern needs no cwd, and for
+# this file regardless of the worktree. A delete, mode or contents change of a
+# directory above this file counts too. Inline interpreter code (python -c,
+# perl -e, node -e, ...) naming a guard path beside a write call is judged a
+# write to it; touch is not guarded (it changes no content or permission).
 #
 # File touches (#590). With OPEN_FLEET_STATE_DB set, an allowed edit is recorded
 # with its line range, the path RELATIVE to the unit worktree so two workers'
@@ -156,7 +176,8 @@ Environment:
   ORCA_HOOK_STRICT_EXIT=1  strict mode: ask becomes deny, deny exits 2.
 
 Exit: 0 with the decision on stdout (Claude Code); 2 with the reason on stderr
-in strict mode and for unparseable input. Fail-closed: unparseable input denies.
+in strict mode, for unparseable input, and when grep, sed or tr is missing or
+errors. Fail-closed: unparseable input, or a matcher that cannot run, denies.
 USAGE
 }
 
@@ -736,8 +757,13 @@ def _split(cmd):
     cur_join, sep_run = "start", ""
     i, n, quote = 0, len(cmd), ""
     word_start = True
+    # $<SQ>...<SQ> is ANSI-C quoting: a backslash escapes the next character, an escaped quote
+    # among them, so the quote does not end where a plain single quote would (2026-10-23
+    # review, P2-10). ansi marks that state; dollar marks an unquoted, unescaped $ just read.
+    ansi = dollar = False
     while i < n:
         ch = cmd[i]
+        was_dollar, dollar = dollar, False
         # A backslash-newline is a line continuation. The shell REMOVES it -- inside double
         # quotes as well as outside -- and the text on either side is one word. Keeping it opened
         # two holes (PR #325 review, P1): the newline rode into a word and broke the one-line
@@ -754,17 +780,17 @@ def _split(cmd):
             # the one-line record protocol below, so it rides as a space: a value, still one word.
             sep_run = ""
             cur.append(" " if ch == "\n" else ch)
-            if ch == "\\" and quote == DQ and i + 1 < n:
-                cur.append(cmd[i + 1])
+            if ch == "\\" and (quote == DQ or ansi) and i + 1 < n:
+                cur.append(" " if cmd[i + 1] == "\n" else cmd[i + 1])
                 i += 2
                 continue
             if ch == quote:
-                quote = ""
+                quote, ansi = "", False
             word_start = False
             i += 1
             continue
         if ch == SQ or ch == DQ:
-            quote = ch
+            quote, ansi = ch, ch == SQ and was_dollar
             sep_run = ""
             cur.append(ch)
             word_start = False
@@ -811,6 +837,7 @@ def _split(cmd):
             sep_run = ""
         cur.append(ch)
         word_start = ch in BLANKS
+        dollar = ch == "$"
         i += 1
     if cur:
         segs.append((cur_join, "".join(cur)))
@@ -845,24 +872,101 @@ def shell_tokens(seg):
             i += len(op[0])
             target = True
             continue
-        start, quote = i, ""
+        start, quote, ansi, dollar = i, "", False, False
         while i < len(seg):
             ch = seg[i]
-            if ch == "\\" and quote != SQ:
+            if ch == "\\" and (quote != SQ or ansi):
                 i += 2
+                dollar = False
                 continue
             if quote:
                 if ch == quote:
-                    quote = ""
+                    quote, ansi = "", False
             elif ch in (SQ, DQ):
-                quote = ch
+                quote, ansi = ch, ch == SQ and dollar
             elif ch in BLANKS or ch in "<>&":
                 break
+            dollar = not quote and ch == "$"
             i += 1
         if i == start:
             raise ValueError("unexpected operator")
-        yield "word", shlex.split(seg[start:i])[0]
+        yield "word", _unquote(seg[start:i])
         target = False
+
+
+# Escapes the shell decodes inside $<SQ>...<SQ>. A decoded newline or CR rides as a space: a
+# record is one line, and a word is still one word (the same rule _split applies).
+_ANSI_C = {"a": chr(7), "b": chr(8), "e": chr(27), "E": chr(27), "f": chr(12), "n": " ",
+           "r": " ", "t": chr(9), "v": chr(11), "\\": "\\", SQ: SQ, DQ: DQ, "?": "?"}
+
+
+def _ansi_c(text, j):
+    # Decode an ANSI-C quoted body from j (just past the opening quote) to its closing quote:
+    # (decoded text, index after the quote). shlex knows no $<SQ>...<SQ>, so it kept the escapes
+    # literal and $<SQ>\x72m<SQ> -rf / was judged a command named $\x72m, while bash and zsh run
+    # rm (2026-10-23 review, P2-10). A NUL ends the string in the shell, so it ends it here.
+    out, cut, n = [], False, len(text)
+    while j < n:
+        ch = text[j]
+        if ch == SQ:
+            return "".join(out), j + 1
+        val, step = ch, 1
+        if ch == "\\" and j + 1 < n:
+            nxt, step = text[j + 1], 2
+            m = None
+            if nxt in _ANSI_C:
+                val = _ANSI_C[nxt]
+            elif nxt in "01234567":
+                m = re.match(r"[0-7]{1,3}", text[j + 1:])
+                val, step = chr(int(m[0], 8) & 255), 1 + len(m[0])
+            elif nxt in "xuU":
+                m = re.match(r"[0-9A-Fa-f]{1,%d}" % {"x": 2, "u": 4, "U": 8}[nxt], text[j + 2:])
+                if m:
+                    code = int(m[0], 16)
+                    val, step = (chr(code) if code < 0x110000 else "?"), 2 + len(m[0])
+                else:
+                    val = ch + nxt
+            elif nxt == "c" and j + 2 < n:
+                val, step = chr(ord(text[j + 2]) & 31), 3
+            else:
+                val = ch + nxt   # an unknown escape keeps its backslash
+        if val == chr(0):
+            cut = True
+        if not cut:
+            out.append(val.replace(chr(10), " ").replace(chr(13), " "))
+        j += step
+    raise ValueError("unclosed ANSI-C quote")
+
+
+def _unquote(text):
+    """One shell word, quote-removed the way the shell does it, ANSI-C and $DQ...DQ included."""
+    out, i, n, quote = [], 0, len(text), ""
+    while i < n:
+        ch = text[i]
+        if quote == SQ:
+            quote = "" if ch == SQ else quote
+        elif quote == DQ:
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i:i + 2])
+                i += 2
+                continue
+            quote = "" if ch == DQ else quote
+        elif ch == "\\" and i + 1 < n:
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        elif ch == "$" and text[i + 1:i + 2] == SQ:
+            body, i = _ansi_c(text, i + 2)
+            out.append(SQ + body.replace(SQ, SQ + "\\" + SQ + SQ) + SQ)
+            continue
+        elif ch == "$" and text[i + 1:i + 2] == DQ:
+            i += 1   # $DQ...DQ is a double-quoted string (a locale lookup at most)
+            continue
+        elif ch in (SQ, DQ):
+            quote = ch
+        out.append(ch)
+        i += 1
+    return shlex.split("".join(out))[0]
 
 
 def record(kind, value):
@@ -945,7 +1049,28 @@ for _pv in _patch_blobs:
 # because only this side of the protocol still knows the joining operators).
 # Paths stay decoded on their own lines; comparison words cannot split operands.
 SEND_VERBS = {"create", "merge", "comment", "review", "close", "reopen", "edit",
-              "delete", "upload", "ready", "pin", "unpin", "lock", "unlock", "transfer"}
+              "delete", "upload", "ready", "pin", "unpin", "lock", "unlock", "transfer",
+              "revert", "update-branch", "develop", "delete-asset"}
+# Off-repo writes beyond pr/issue/release (2026-10-23 review, P2-14): each verb changes state
+# on the host, so it carries a receipt like any other send. gh secret stays a Never-list ask
+# (credential provisioning wants a human grant, not a receipt); gh api is judged by method.
+GH_WRITES = {
+    "repo": {"create", "delete", "archive", "unarchive", "rename", "edit", "fork", "sync"},
+    "workflow": {"run", "enable", "disable"},
+    "run": {"cancel", "rerun", "delete"},
+    "gist": {"create", "edit", "delete", "rename"},
+    "variable": {"set", "delete"},
+    "cache": {"delete"},
+    "label": {"create", "edit", "delete", "clone"},
+    "ssh-key": {"add", "delete"},
+    "gpg-key": {"add", "delete"},
+    "codespace": {"create", "delete", "edit", "stop", "rebuild"},
+    "project": {"create", "delete", "edit", "close", "copy", "link", "unlink", "mark-template",
+                "item-add", "item-create", "item-edit", "item-delete", "item-archive",
+                "field-create", "field-delete"},
+}
+# gh persistent flags that take an operand and may sit before the verb: `gh pr -R o/r merge 1`.
+_GH_OPERAND_FLAGS = ("-R", "--repo", "--hostname")
 
 
 # Wrapper words strip_prefix peels on the shell side (env/sudo-style
@@ -1097,7 +1222,60 @@ def _peel_sudo(ws):
     return ws
 
 
-def _plain_words(args, peel_bang=True):
+# Launchers that run their operands as a command, beyond the env/sudo family: (short options
+# taking an operand, long options taking one, operands before the command: the timeout
+# DURATION, the taskset MASK, the chrt PRIORITY). The HIGH tier anchored at a segment head
+# that only the env/sudo family was peeled from, so `timeout 30 git push --force origin main`,
+# `exec …`, `setsid …` and `xargs …` were allowed, and rule 5 never saw `timeout 5 gh pr merge`
+# (2026-10-23 review, P1-3, P2-13). A --help/--version word means nothing runs.
+_LAUNCHERS = {
+    "timeout": ("sk", ("--signal", "--kill-after"), 1),
+    "stdbuf": ("ioe", ("--input", "--output", "--error"), 0),
+    "ionice": ("cnpPu", ("--class", "--classdata", "--pid", "--pgid", "--uid"), 0),
+    "chrt": ("TPD", ("--sched-runtime", "--sched-period", "--sched-deadline"), 1),
+    "taskset": ("", (), 1),
+    "doas": ("auC", (), 0),
+    "setsid": ("", (), 0),
+    "exec": ("a", (), 0),
+    "xargs": ("adEILnPsJRS", ("--arg-file", "--delimiter", "--max-args", "--max-procs",
+                              "--max-chars", "--process-slot-var"), 0),
+}
+# A receipt must report the writer exit status to &&: setsid may fork and return at once,
+# xargs may run nothing at all, and exec never returns, so none of them can arm a send.
+_RECEIPT_LAUNCHERS = ("timeout", "stdbuf", "ionice", "chrt", "taskset", "doas")
+# Reserved words that open a command without being one: `if git push -f …; then …`.
+_KEYWORDS = ("if", "then", "elif", "else", "do", "while", "until")
+
+
+def _peel_launcher(ws, short_arg, long_arg, positional):
+    original, ws = ws, ws[1:]
+    while ws:
+        word = ws[0]
+        if word in ("--help", "--version"):
+            return original
+        if word == "--":
+            ws = ws[1:]
+            break
+        if word.startswith("--"):
+            name = word.split("=", 1)[0]
+            takes = "=" not in word and len(name) > 2 and any(o.startswith(name) for o in long_arg)
+            ws = ws[2:] if takes else ws[1:]
+        elif word.startswith("-") and len(word) > 1:
+            used = 1
+            for k, flag in enumerate(word[1:]):
+                if flag in short_arg:
+                    used = 2 if k == len(word) - 2 else 1
+                    break
+            ws = ws[used:]
+        else:
+            break
+    return ws[positional:]
+
+
+def _plain_words(args, peel_bang=True, extended=False, assigns=None):
+    # extended: also peel the launcher table, reserved words, case patterns and function
+    # heads, by basename (`/usr/bin/timeout`). The default keeps the original peel, which
+    # the bracket lexer relies on; "receipt" peels only exit-status-preserving launchers.
     ws = list(args)
     while ws:
         # Group/subshell openers and negation name no command: `{ gh …; }`,
@@ -1107,28 +1285,66 @@ def _plain_words(args, peel_bang=True):
         # a negated writer that FAILS reads as success to `&&` — it proves
         # nothing was recorded and must never arm a send (P1).
         openers = ("{", "(", "!") if peel_bang else ("{", "(")
+        head = ws[0].rsplit("/", 1)[-1] if extended else ws[0]
         if ws[0] in openers:
             ws = ws[1:]
         elif ws[0][:1] in openers and len(ws[0]) > 1:
             ws = [ws[0][1:]] + ws[1:]
         elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", ws[0], re.DOTALL):
+            if assigns is not None:
+                assigns.append(ws[0])
             ws = ws[1:]
-        elif ws[0] == "sudo":
+        elif head == "sudo":
             peeled = _peel_sudo(ws)
             if peeled == ws:
                 return ws  # help/version stop: judge the words as they stand
             ws = peeled
-        elif ws[0] in _WRAPPER_OPERANDS:
-            peeled = _peel_wrapper(ws, _WRAPPER_OPERANDS[ws[0]],
-                                   is_env=ws[0] == "env")
+        elif head in _WRAPPER_OPERANDS:
+            peeled = _peel_wrapper(ws, _WRAPPER_OPERANDS[head],
+                                   is_env=head == "env")
             if peeled == ws:
                 return ws
             ws = peeled
-        elif ws[0] in _WRAPPERS:
+        elif head in _WRAPPERS:
+            if extended and len(ws) > 1 and ws[1] in ("-v", "-V"):
+                return ws  # command -v prints a path and runs nothing
+            ws = ws[2:] if extended and ws[1:2] == ["-p"] else ws[1:]
+        elif extended and head in _LAUNCHERS \
+                and (extended != "receipt" or head in _RECEIPT_LAUNCHERS):
+            peeled = _peel_launcher(ws, *_LAUNCHERS[head])
+            if peeled is ws:
+                return ws
+            ws = peeled
+        elif extended and head in _KEYWORDS:
             ws = ws[1:]
+        elif extended and head == "case":
+            ws = ws[3:]  # case WORD in: the pattern) that follows is peeled next
+        elif extended and head == "coproc":
+            ws = ws[2:] if len(ws) > 2 and ws[2][:1] in ("{", "(") else ws[1:]
+        elif extended and head == "function" and len(ws) > 1:
+            ws = ws[2:]
+        elif extended and ws[1:2] == ["()"]:
+            ws = ws[2:]  # NAME () { …: the body is judged as if called
+        elif extended and len(ws[0]) > 1 and ws[0].endswith(")") \
+                and (ws[0].endswith("()") or "(" not in ws[0]):
+            ws = ws[1:]  # a case-arm pattern word or a NAME() head names no command
         else:
             return ws
     return ws
+
+
+def _command_words(args, assigns=None):
+    """The command a segment runs, every wrapper the shell or a launcher adds peeled off.
+
+    The one peeler: the HIGH tier, the never list, rule 5, the tee boundary and the
+    self-guard all judge these words (2026-10-23 review, P1-3). Leading NAME=value words are
+    collected into assigns when given, so GIT_DIR= still redirects a push for the tier.
+    """
+    ws = list(args)
+    if ws and ws[-1].endswith(")"):
+        last = ws[-1].rstrip(")")  # a subshell close glued to the last word
+        ws = ws[:-1] + ([last] if last else [])
+    return _plain_words(ws, extended=True, assigns=assigns)
 
 
 def _is_receipt(args):
@@ -1136,7 +1352,7 @@ def _is_receipt(args):
     # executable, or as the script a python invocation runs. Merely
     # MENTIONING it (`echo egress.py write`) records nothing and arms
     # nothing (PR #567 review, P1).
-    ws = _plain_words(args, peel_bang=False)
+    ws = _plain_words(args, peel_bang=False, extended="receipt")
     def is_egress(word):
         return word == "egress.py" or word.endswith("/egress.py")
 
@@ -1168,18 +1384,21 @@ def _is_receipt(args):
 
 
 def _is_send(args):
-    ws = _plain_words(args)
+    ws = _command_words(args)
     if not ws or not (ws[0] == "gh" or ws[0].endswith("/gh")):
         return False
-    rest = ws[1:]
-    if len(rest) >= 2 and rest[0] in ("pr", "issue", "release"):
-        return rest[1] in SEND_VERBS
-    if rest and rest[0] == "api":
-        method, fields, i = None, False, 1
-        while i < len(rest):
-            word = rest[i]
-            if word in ("-X", "--method") and i + 1 < len(rest):
-                method = rest[i + 1].upper()
+    rest, i = ws[1:], 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in _GH_OPERAND_FLAGS else 1
+    if i >= len(rest):
+        return False
+    group, tail = rest[i], rest[i + 1:]
+    if group == "api":
+        method, fields, i = None, False, 0
+        while i < len(tail):
+            word = tail[i]
+            if word in ("-X", "--method") and i + 1 < len(tail):
+                method = tail[i + 1].upper()
                 i += 2
                 continue
             if word.startswith("--method="):
@@ -1198,7 +1417,23 @@ def _is_send(args):
         if method is not None:
             return method in ("POST", "PUT", "PATCH", "DELETE")
         return fields
-    return False
+    # The verb is the first word after the group that is not a flag (a persistent -R/--repo
+    # and its operand may sit between them).
+    verbs, i = [], 0
+    while i < len(tail) and len(verbs) < 2:
+        if tail[i] in _GH_OPERAND_FLAGS:
+            i += 2
+            continue
+        if not tail[i].startswith("-"):
+            verbs.append(tail[i])
+        i += 1
+    if not verbs:
+        return False
+    if group in ("pr", "issue", "release"):
+        return verbs[0] in SEND_VERBS
+    if group == "repo" and verbs[0] in ("deploy-key", "autolink"):
+        return verbs[1:2] in (["add"], ["create"], ["delete"])
+    return verbs[0] in GH_WRITES.get(group, ())
 
 
 def _balanced_paren_end(text, j):
@@ -1355,6 +1590,7 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
     # so documentation and fixtures that QUOTE a shell example stay writable. Return
     # the command surface without heredoc bodies, plus patch bodies for target checks.
     out, i, n, in_sq, in_dq = [], 0, len(text), False, False
+    ansi = False   # inside $<SQ>...<SQ>, where a backslash escapes the quote (P2-10)
     source_length, paren_level = n, 1
     # Continuations normalize the scanned text; boundary callers need an index
     # into their original text. Retain the position of each surviving character.
@@ -1443,7 +1679,7 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                 if (i - 1 - k) % 2 == 0:
                     i -= 1
             continue
-        if ch == chr(92) and not in_sq:
+        if ch == chr(92) and (not in_sq or ansi):
             i += 2
             continue
         param = contexts[-1][5] if contexts and contexts[-1][0] == "{" else None
@@ -1460,8 +1696,12 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                     param["mode"] = "default" if ch in "-+=?" or (ch == ":" and text[end:end + 1] in "-+=?" and end < n) else "pattern"
                 param["name"] = True
         param_quoted = bool(param and param["quoted"] and param["mode"] == "default")
+        if ch == "$" and text[i + 1:i + 2] == SQ and not (in_sq or in_dq or param_quoted):
+            in_sq = ansi = True
+            i += 2
+            continue
         if ch == SQ and not in_dq and not param_quoted:
-            in_sq = not in_sq
+            in_sq, ansi = not in_sq, False
         elif ch == DQ and not in_sq:
             in_dq = not in_dq
         elif not (in_sq or in_dq or contexts) and ch == "#" and (i == 0 or text[i - 1] in " " + chr(9) + chr(10) + ";|&("):
@@ -1554,6 +1794,81 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
     return [b for b in out if b.strip()], "".join(surface) + text[surface_start:], patches
 
 
+def _tokenize(seg):
+    args, writes, pending = [], [], None
+    for kind, value in shell_tokens(seg):
+        if kind == "redirect":
+            pending = value
+        elif pending:
+            if pending in (">", ">>", ">|", ">&", "&>", "&>>", "<>"):
+                writes.append(value)
+            pending = None
+        else:
+            args.append(value)
+    return args, writes
+
+
+_SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh")
+
+
+def _inner_body(ws):
+    """The command text `sh -c BODY` runs, or the words `eval` joins, or None.
+
+    A shell handed a string runs it as a command line of its own, so its body is judged as
+    segments of its own: `bash -c "git push --force origin main"` is that push, and
+    `bash -c "gh pr merge 12"` is that send (2026-10-23 review, P1-3, P2-13).
+    """
+    if not ws:
+        return None
+    head = ws[0].rsplit("/", 1)[-1]
+    if head == "eval":
+        rest = ws[2:] if ws[1:2] == ["--"] else ws[1:]
+        return " ".join(rest)
+    if head not in _SHELLS:
+        return None
+    has_c, i = False, 1
+    while i < len(ws):
+        word = ws[i]
+        if word == "--":
+            i += 1
+            break
+        if word in ("-o", "+o", "-O", "+O"):
+            i += 2
+        elif re.fullmatch(r"[-+][A-Za-z]+", word):
+            has_c = has_c or (word[0] == "-" and "c" in word)
+            i += 1
+        elif word.startswith("--"):
+            i += 1
+        else:
+            break
+    return ws[i] if has_c and i < len(ws) else None
+
+
+def _body_pairs(body):
+    """(join, args) per segment of a shell body, its substitutions judged as commands too."""
+    subs, surface, _patches = substitution_bodies(body)
+    for sub in subs:
+        surface += chr(10) + sub
+    return [(join, _tokenize(seg)[0]) for join, seg in _split(surface)]
+
+
+def _views(args, depth=0):
+    """[(assignments, words)]: the command a segment runs, then each command its body runs."""
+    assigns = []
+    ws = _command_words(args, assigns)
+    out = [(assigns, ws)]
+    body = _inner_body(ws) if depth < 3 else None
+    if body is not None:
+        try:
+            pairs = _body_pairs(body)
+        except ValueError:
+            # A body this reader cannot split is still judged by its words, never skipped.
+            pairs = [("start", body.split())]
+        for _j, inner in pairs:
+            out += _views(inner, depth + 1)
+    return out
+
+
 _subs, _judged, heredoc_patches = substitution_bodies(raw_command)
 for _sub in _subs:
     _judged += chr(10) + _sub
@@ -1565,37 +1880,61 @@ for _extra_p in target_paths[1:]:
     record("F", s(_extra_p))
 _seg_args = []
 _guard_segs = []
+_all_views = []   # (words, writes, segment text) of every command in order, bodies included
 for _join, seg in _split(_judged):
-    args, writes, pending = [], [], None
-    for kind, value in shell_tokens(seg):
-        if kind == "redirect":
-            pending = value
-        elif pending:
-            if pending in (">", ">>", ">|", ">&", "&>", "&>>", "<>"):
-                writes.append(value)
-            pending = None
-        else:
-            args.append(value)
+    args, writes = _tokenize(seg)
     _seg_args.append((_join, args))
     _guard_segs.append((args, writes))
-    record("C", " ".join(policy_word(word) for word in args))
+    # C carries the peeled command, not the words as typed: the HIGH tier and the never list
+    # anchor at its head (2026-10-23 review, P1-3). Assignments ride in front for git_redirected.
+    _seg_views = _views(args)
+    record("C", " ".join(policy_word(word) for word in _seg_views[0][0] + _seg_views[0][1]))
     for path in writes:
         record("W", path)
     for word in args:
         record("A", word)
+    for _va, _vw in _seg_views[1:]:
+        record("C", " ".join(policy_word(word) for word in _va + _vw))
+    _all_views += [(_vw, writes, seg) if _k == 0 else (_vw, [], "")
+                   for _k, (_va, _vw) in enumerate(_seg_views)]
 
-_armed = False
-for _join, _args in _seg_args:
-    if _is_receipt(_args):
-        _armed = True
-        continue
-    if _is_send(_args):
-        if not (_armed and _join == "&&"):
-            record("E", "unreceipted")
-            break
-        _armed = False  # one receipt covers exactly one send
-        continue
-    _armed = False  # any other segment consumes the arming
+
+def _unreceipted(pairs, armed=False, depth=0):
+    """True when an off-repo write in pairs has no receipt immediately &&-before it."""
+    for join, args in pairs:
+        if _is_receipt(args):
+            armed = True
+            continue
+        body = _inner_body(_command_words(args)) if depth < 3 else None
+        if body is not None:
+            # The body runs as one command of this line: an outer receipt &&-joined to the
+            # shell arms the first send inside it, and nothing else (P2-13).
+            lead = armed and join == "&&"
+            try:
+                inner = _body_pairs(body)
+            except ValueError:
+                inner = None
+            if inner is None:
+                gh_word = re.search(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)", body)
+                if gh_word and not lead:
+                    return True
+            elif inner:
+                inner[0] = ("&&" if lead else "start", inner[0][1])
+                if _unreceipted(inner, lead, depth + 1):
+                    return True
+            armed = False
+            continue
+        if _is_send(args):
+            if not (armed and join == "&&"):
+                return True
+            armed = False  # one receipt covers exactly one send
+            continue
+        armed = False  # any other segment consumes the arming
+    return False
+
+
+if _unreceipted(_seg_args):
+    record("E", "unreceipted")
 
 
 # --- self-guard (#577): a worker must not be able to disarm its own hook --------------
@@ -1682,20 +2021,6 @@ def _guarded_exact(p, deleting, base=None):
             return True
     # Deleting the unit worktree, or a directory holding it, deletes the guard with it.
     return bool(deleting and _GW and (_GROOT == real or _GROOT.startswith(real.rstrip("/") + "/")))
-
-
-def _tokenize(seg):
-    args, writes, pending = [], [], None
-    for kind, value in shell_tokens(seg):
-        if kind == "redirect":
-            pending = value
-        elif pending:
-            if pending in (">", ">>", ">|", ">&", "&>", "&>>", "<>"):
-                writes.append(value)
-            pending = None
-        else:
-            args.append(value)
-    return args, writes
 
 
 def _operands(rest, opt_arg=()):
@@ -1807,7 +2132,7 @@ def _git_stash_takes_untracked(rest):
 
 def _cd_target(words):
     """The directory a `cd`/`pushd` segment moves to: a path, "?" when text cannot tell, else None."""
-    ws = _plain_words(words)
+    ws = _command_words(words)
     if not ws or ws[0] not in ("cd", "pushd"):
         return None
     ops = [w for w in ws[1:] if not (w.startswith("-") and w != "-")]
@@ -1818,11 +2143,152 @@ def _cd_target(words):
 
 
 _GUARD_BASENAMES = {g.rsplit("/", 1)[-1] for g in GUARD_SAMPLES} - {"config.yaml"}
+# A purely additive symbolic chmod mode (u+x, +w, a+rX) takes no permission away.
+_CHMOD_ADDITIVE = re.compile(r"[ugoa]*\+[rwxXst]*(,[ugoa]*\+[rwxXst]*)*")
+# Option words of rsync that take a separate operand.
+_RSYNC_ARG = ("-e", "--rsh", "-f", "--filter", "--exclude", "--include", "--exclude-from",
+              "--include-from", "--files-from", "-T", "--temp-dir", "-B", "--block-size", "-M",
+              "--remote-option", "--log-file", "--out-format", "--partial-dir", "--backup-dir",
+              "--suffix", "--compare-dest", "--copy-dest", "--link-dest", "--chmod", "--chown",
+              "--password-file", "--port", "--timeout", "--bwlimit", "--max-size", "--min-size",
+              "--rsync-path", "--address", "-@", "--modify-window", "--info", "--debug")
+# curl/wget short options that take an operand (the rest of the cluster, else the next word).
+_FETCH_ARG = {"curl": "oKdHuXAebcFTwxrmyYzCEPQtUD", "wget": "OoaiPtTwQUeBlARDXI"}
+# Interpreters that run code straight from argv, and the option letters that carry it.
+_INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs": "ep",
+                 "bun": "e", "php": "r"}
+_CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
+_CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
+                          r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
+                          r"|rmSync|>|open[^)]*[\x22\x27][rbt]*[wax+]")
+
+
+def _attr_targets(head, rest):
+    """The files a chmod/chown/chgrp changes (none for an additive chmod mode)."""
+    ops, end, ref = [], False, False
+    for w in rest:
+        if not end and w == "--":
+            end = True
+        elif not end and w.startswith("--reference"):
+            ref = True
+        elif not end and w.startswith("-") and len(w) > 1 \
+                and not (head == "chmod" and re.fullmatch(r"-[rwxXst]+", w)):
+            continue  # an option; chmod -x / -w are MODES, not options
+        else:
+            ops.append(w)
+    if ref:
+        return ops
+    if not ops or (head == "chmod" and _CHMOD_ADDITIVE.fullmatch(ops[0])):
+        return []
+    return ops[1:]
+
+
+def _sort_outputs(rest):
+    """The -o/--output files a sort writes."""
+    out, i = [], 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "--":
+            break
+        if w.startswith("--"):
+            name, eq, val = w[2:].partition("=")
+            if name and "output".startswith(name):
+                if not eq and i + 1 < len(rest):
+                    val, i = rest[i + 1], i + 1
+                out.append(val)
+            elif not eq and name in ("key", "field-separator", "buffer-size", "temporary-directory",
+                                     "files0-from", "batch-size", "parallel", "compress-program",
+                                     "random-source", "sort"):
+                i += 1
+        elif w.startswith("-") and len(w) > 1:
+            for k, flag in enumerate(w[1:]):
+                if flag in "okStT":
+                    val = w[k + 2:]
+                    if not val and i + 1 < len(rest):
+                        val, i = rest[i + 1], i + 1
+                    if flag == "o":
+                        out.append(val)
+                    break
+        i += 1
+    return out
+
+
+def _editor_targets(head, rest):
+    """The files ed/ex/vi open, and so may write; vim -w/-W write their keystroke log too."""
+    if head in ("ed", "red"):
+        return _operands(rest, ("-p",))
+    skip = ("-c", "--cmd", "-S", "-u", "-U", "-i", "-s", "-T", "-t", "-q", "-w", "-W")
+    out = [w for w in _operands(rest, skip) if not w.startswith("+")]
+    return out + [rest[i + 1] for i, w in enumerate(rest[:-1]) if w in ("-w", "-W")]
+
+
+def _fetch_outputs(head, rest):
+    """The files a curl/wget writes: -o / -O / --output(-document), or the URL basename."""
+    arg, out_flag = _FETCH_ARG[head], "o" if head == "curl" else "O"
+    longs = ("--output",) if head == "curl" else ("--output-document",)
+    outs, remote, explicit, i = [], False, False, 0
+    while i < len(rest):
+        w = rest[i]
+        if w.startswith("--"):
+            name, eq, val = w.partition("=")
+            if name in longs:
+                if not eq and i + 1 < len(rest):
+                    val, i = rest[i + 1], i + 1
+                outs.append(val)
+                explicit = True
+            elif name in ("--remote-name", "--remote-name-all"):
+                remote = True
+        elif w.startswith("-") and len(w) > 1:
+            for k, flag in enumerate(w[1:]):
+                if head == "curl" and flag == "O":
+                    remote = True
+                elif flag in arg:
+                    val = w[k + 2:]
+                    if not val and i + 1 < len(rest):
+                        val, i = rest[i + 1], i + 1
+                    if flag == out_flag:
+                        outs.append(val)
+                        explicit = True
+                    break
+        i += 1
+    if remote or (head == "wget" and not explicit):
+        outs += [re.sub(r"[?#].*", "", u).rstrip("/").rsplit("/", 1)[-1]
+                 for u in rest if re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", u)]
+    return [o for o in outs if o and o != "-"]
+
+
+def _inline_code(head, rest):
+    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, ..."""
+    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    letters = _INLINE_FLAGS.get(key)
+    codes, i = [], 0
+    while letters and i < len(rest):
+        w = rest[i]
+        m = re.fullmatch(r"-([A-Za-z]*?)([%s])(.*)" % letters, w, re.DOTALL)
+        if w in ("--eval", "--print") and i + 1 < len(rest):
+            codes.append(rest[i + 1])
+            i += 1
+        elif m and not w.startswith("--"):
+            if m[3]:
+                codes.append(m[3])
+            elif i + 1 < len(rest):
+                codes.append(rest[i + 1])
+                i += 1
+            if key == "python":
+                break  # -c ends the python option list
+        elif key == "python" and not w.startswith("-"):
+            break  # a script path: what follows are its own arguments
+        i += 1
+    return codes
 
 
 def guard_targets(words, depth=0):
-    """(path, deleting) pairs a shell command writes or removes, as far as text shows."""
-    ws = _plain_words(words)
+    """(path, deleting) pairs a shell command writes or removes, as far as text shows.
+
+    deleting also marks a change to a path AS A WHOLE (a mode, an owner, a contents sync):
+    done to a directory above the hook, it reaches the hook too.
+    """
+    ws = _command_words(words)
     if not ws:
         return []
     head, rest, out = ws[0].rsplit("/", 1)[-1], ws[1:], []
@@ -1851,10 +2317,17 @@ def guard_targets(words, depth=0):
                 tdir = rest[i + 1]
             elif w.startswith("--target-directory="):
                 tdir = w.split("=", 1)[1]
+            elif re.fullmatch(r"-[A-Za-z]*t", w) and i + 1 < len(rest):
+                tdir = rest[i + 1]  # -rt DIR: the cluster ends in the operand-taking -t
+            elif re.fullmatch(r"-[A-Za-z]*?t[^A-Za-z].*", w):
+                tdir = w[w.index("t") + 1:]  # -t/dir glued
         ops = _operands(rest, ("-t", "--target-directory", "-S", "--suffix", "-m", "--mode",
                                "-o", "--owner", "-g", "--group"))
         dests, srcs = ([tdir], ops) if tdir is not None else ((ops[-1:], ops[:-1]) if ops else ([], []))
-        out += [(d_, False) for d_ in dests]
+        # -T, or a src/. contents copy, replaces what is in the destination wholesale.
+        whole = any(w == "--no-target-directory" or re.fullmatch(r"-[A-Za-z]*T[A-Za-z]*", w)
+                    for w in rest) or any(s_.endswith("/.") for s_ in srcs)
+        out += [(d_, whole) for d_ in dests]
         out += [(d_.rstrip("/") + "/" + os.path.basename(s_.rstrip("/")), False)
                 for d_ in dests for s_ in srcs]
         if head == "mv":
@@ -1870,15 +2343,29 @@ def guard_targets(words, depth=0):
         out += [(w, False) for w in _operands(rest)]
     elif head == "dd":
         out += [(w[3:], False) for w in rest if w.startswith("of=")]
-    elif head in ("sh", "bash", "zsh", "dash", "ksh", "eval") and depth < 3:
-        inner = None
-        if head == "eval":
-            inner = " ".join(rest)
-        else:
-            for i, w in enumerate(rest):
-                if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", w) and i + 1 < len(rest):
-                    inner = rest[i + 1]
-                    break
+    # chmod 000 / chmod -x / sort -o on the hook were allowed while truncate and rm were
+    # denied; after chmod 000 the hosts that fail open on a hook error run unguarded
+    # (2026-10-23 review, P1-4). touch is left out: it changes no content or permission.
+    elif head in ("chmod", "chown", "chgrp"):
+        out += [(w, True) for w in _attr_targets(head, rest)]
+    elif head == "sort":
+        out += [(w, False) for w in _sort_outputs(rest)]
+    elif head in ("ed", "red", "ex", "vi", "vim", "nvim"):
+        out += [(w, False) for w in _editor_targets(head, rest)]
+    elif head == "rsync":
+        ops = _operands(rest, _RSYNC_ARG)
+        if len(ops) > 1:
+            dest, srcs = ops[-1], ops[:-1]
+            whole = any(w.startswith("--del") for w in rest) \
+                or any(s_.endswith(("/", "/.")) for s_ in srcs)
+            out += [(dest, whole)]
+            out += [(dest.rstrip("/") + "/" + os.path.basename(s_.rstrip("/")), False) for s_ in srcs]
+            if "--remove-source-files" in rest:
+                out += [(s_, True) for s_ in srcs]
+    elif head in _FETCH_ARG:
+        out += [(w, False) for w in _fetch_outputs(head, rest)]
+    elif depth < 3 and _inner_body(ws) is not None:
+        inner = _inner_body(ws)
         if inner:
             try:
                 for _j, seg2 in _split(inner):
@@ -1887,6 +2374,21 @@ def guard_targets(words, depth=0):
                     out += guard_targets(a2, depth + 1)
             except ValueError:
                 pass  # an inner string the tokenizer cannot read is judged as written
+    # Interpreter code from argv that names a guard path beside a write-shaped call --
+    # open(..., "w"), os.chmod, unlink, a shell-out -- is judged a write to that path (P1-4).
+    # A script file, stdin, or a path the code assembles at run time stays beyond the text.
+    for code in _inline_code(head, rest):
+        if not _CODE_WRITES.search(code):
+            continue
+        for m in _CODE_LITERAL.finditer(code):
+            lit = m[1] if m[1] is not None else m[2]
+            out.append((lit, False))
+            if depth < 3 and " " in lit.strip():
+                try:
+                    for _j, seg2 in _split(lit):
+                        out += guard_targets(_tokenize(seg2)[0], depth + 1)
+                except ValueError:
+                    out += [(w, False) for w in lit.split()]
     return out
 
 
@@ -1915,6 +2417,120 @@ if strict_payload:
     record("S", "1")
 for _hp in heredoc_targets:
     record("P", s(_hp))
+
+
+# --- Never list, the shapes a regex over the line cannot read (2026-10-23 review) ----------
+# N records: the shell asks on the first one. Judged on the peeled words of every command.
+_WHOLE_TREE = (".", "./", "./*", "*", ":/", ":/*", ":(top)", ":(top).")
+
+
+def _never_git(ws):
+    """Why a git command discards local work or history beyond easy recovery, or None (P2-12)."""
+    if not ws or ws[0].rsplit("/", 1)[-1] != "git":
+        return None
+    sub = _git_sub(ws[1:])
+    if not sub:
+        return None
+    verb, rest, letters, longs = sub[0], sub[1:], "", []
+    for w in rest:
+        if w == "--":
+            break
+        if w.startswith("--"):
+            longs.append(w)
+        elif w.startswith("-") and len(w) > 1:
+            letters += w[1:]
+
+    def has_long(*names):
+        return any(_long_is(w, names) for w in longs)
+
+    force = "f" in letters or has_long("force")
+    whole = any(w in _WHOLE_TREE for w in rest)
+    if verb == "branch" and (force or any(flag in letters for flag in "DMC")):
+        return "Force-deleting, force-renaming or resetting a local branch."
+    if verb == "update-ref" and ("d" in letters or has_long("delete")):
+        return "Deleting a ref outright."
+    if verb == "reflog" and sub[1:2] in (["expire"], ["delete"]):
+        return "Expiring reflog entries, the record that makes discarded commits recoverable."
+    if verb == "stash" and sub[1:2] in (["drop"], ["clear"]):
+        return "Dropping stashed work."
+    if verb in ("filter-repo", "filter-branch"):
+        return "Rewriting repository history."
+    if verb == "worktree" and sub[1:2] == ["remove"] and force:
+        return "Force-removing a worktree and its uncommitted work."
+    if verb == "reset" and has_long("hard"):
+        return "Discarding uncommitted work."
+    if verb in ("checkout", "switch") and (force or has_long("discard-changes")):
+        return "Discarding every local change."
+    if verb == "checkout" and whole:
+        return "Discarding every local change."
+    if verb == "restore" and whole and ("W" in letters or has_long("worktree")
+                                        or not ("S" in letters or has_long("staged"))):
+        return "Discarding every local change."
+    if verb == "clean" and force and not ("n" in letters or has_long("dry-run")):
+        specs = _git_clean_pathspecs(rest)
+        if not specs or any(sp in _WHOLE_TREE or sp.startswith(":") or any(ch in sp for ch in "*?[")
+                            for sp in specs):
+            return "Deleting every untracked file in the tree."
+    return None
+
+
+_RUNNERS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh", "fish", "csh",
+            "tcsh", "source", ".", "eval", "perl", "ruby", "node", "nodejs", "deno", "bun", "php",
+            "pwsh")
+_SUB_MARK = "__orca_substitution__"
+
+
+def _code_words(ws):
+    """The words a runner executes as code: a -c/-e string, else its script operand."""
+    head = ws[0].rsplit("/", 1)[-1] if ws else ""
+    if not (head in _RUNNERS or re.fullmatch(r"python[0-9.]*", head)):
+        return None
+    if head in ("eval", "source", "."):
+        return ws[1:]
+    body = _inner_body(ws)
+    if body is not None:
+        return [body]
+    codes = _inline_code(head, ws[1:])
+    if codes:
+        return codes
+    ops = [w for w in ws[1:] if not w.startswith("-")]
+    return ops[:1]
+
+
+def _fetch_runs():
+    """A remote script fetched and run in one command, past what the line regex sees (§5)."""
+    fetch_sub = False
+    for sub in _subs:
+        try:
+            heads = [_command_words(_tokenize(seg)[0])[:1] for _j, seg in _split(sub)]
+        except ValueError:
+            heads = [[w] for w in sub.split()[:1]]
+        fetch_sub = fetch_sub or any(h and h[0].rsplit("/", 1)[-1] in _FETCH_ARG for h in heads)
+    fetched = set()
+    for ws, writes, seg in _all_views:
+        if not ws:
+            continue
+        head = ws[0].rsplit("/", 1)[-1]
+        if head in _FETCH_ARG:
+            fetched |= {os.path.basename(p) for p in _fetch_outputs(head, ws[1:]) + writes}
+            continue
+        code = _code_words(ws)
+        # sh <(curl …), bash -c "$(curl …)", `eval` of "$(wget -O- …)", python3 < <(curl …)
+        if fetch_sub and code is not None and (any(_SUB_MARK in w for w in code)
+                                               or re.search(r"<{1,3}[ \t]*\x22?" + _SUB_MARK, seg)):
+            return True
+        # curl -o f URL && sh f, wget URL/install.sh; bash install.sh, curl -O … && ./x.sh
+        if fetched and ((code is not None and any(os.path.basename(w) in fetched for w in code))
+                        or ("/" in ws[0] and head in fetched)):
+            return True
+    return False
+
+
+_never = [why for why in (_never_git(_vw) for _vw, _w, _sg in _all_views) if why]
+if _fetch_runs():
+    _never.append("Running a script fetched from the network in the same command.")
+if _never:
+    record("N", _never[0])
 ' 2>/dev/null) || {
   # Exit 2 UNCONDITIONALLY: OpenHands and jcode fail OPEN on exit 1 and on an
   # exit-0 reply they cannot attribute, and Claude Code reads exit 2 as block.
@@ -1922,6 +2538,17 @@ for _hp in heredoc_targets:
   decide deny "deny-hook: the tool payload is empty or could not be parsed. Fail-closed: an unreadable payload is refused, never allowed."
   exit 2
 }
+
+# Every record reader below, and has() in the tiers, leans on grep, sed and tr. A missing or
+# broken one read as "no match" or an empty segment, and every rule failed OPEN (2026-10-23
+# review, section 5). Probe them once; a tool that cannot answer refuses, exit 2 as above.
+if ! printf 'probe\n' | grep -qE '^pro(be)$' 2>/dev/null \
+  || [ "$(printf 'a\nb\n' | sed -n '2p' 2>/dev/null)" != "b" ] \
+  || [ "$(printf 'a  b' | tr -s '[:space:]' ' ' 2>/dev/null)" != "a b" ]; then
+  HOOK_STRICT=1
+  decide deny "deny-hook: grep, sed or tr is missing or broken, so no rule can be matched. Fail-closed."
+  exit 2
+fi
 
 # Rule 5 verdict, computed in the payload reader (the only place the joining
 # operators survive): an E record means an off-repo write in this command has
@@ -2312,7 +2939,16 @@ EOF
 # because splitting only ever makes MORE segments. It is not: the split leaves the rest of the
 # quoted value glued to the FRONT of the next segment, and every rule here is anchored at `^`.
 FULL_CMD=$CMD
-has() { printf '%s' "$CMD" | grep -qE "$1" 2>/dev/null; }
+# grep exits 1 for no match, 2 on an error, 127 when it is missing. Only 1 is "no match": the
+# rest used to read as one too, so a broken matcher passed every rule (2026-10-23 review, §5).
+has() {
+  printf '%s' "$CMD" | grep -qE "$1" 2>/dev/null && return 0
+  _has_rc=$?
+  [ "$_has_rc" -eq 1 ] && return 1
+  HOOK_STRICT=1
+  decide deny "deny-hook: grep failed (exit $_has_rc) while matching the command. Fail-closed."
+  exit 2
+}
 
 # Canonicalise the executable spelling of the FIRST word: an absolute or
 # relative path, a leading backslash, or surrounding quotes name the same
@@ -2343,7 +2979,10 @@ canon_first() {
 # Drop env/sudo-style prefixes so a refused command cannot be laundered by putting something
 # harmless in front of it. `sudo` is peeled but REATTACHED — the rules below match `sudo`
 # themselves — because an assignment under it (`sudo GIT_DIR=x git push -d`) otherwise hid
-# the whole command from every anchored pattern (PR #321 review).
+# the whole command from every anchored pattern (PR #321 review). The C records reaching it
+# are already peeled by the payload reader (_command_words, the one peeler: this one knew no
+# timeout/exec/setsid and no option operands, 2026-10-23 review, P1-3); it stays as a second
+# pass over the assignments those records keep in front.
 strip_prefix() {
   _c=$(canon_first "$1")
   _pre=""
@@ -2867,11 +3506,16 @@ never_list() {
   has '(^|[[:space:]])terraform[[:space:]]+(destroy|apply)' && ask "Infrastructure mutation."
   has '(^|[[:space:]])(aws|gcloud|az)[[:space:]]+[a-z0-9-]+[[:space:]]+(delete|rm|destroy|terminate)' && ask "Cloud resource deletion."
   has '(^|[[:space:]])docker[[:space:]]+(system[[:space:]]+prune|rm[[:space:]]+-f|volume[[:space:]]+rm)' && ask "Container or volume destruction."
-  has 'curl[^|]*\|[[:space:]]*(ba|z|d|k)?sh' && ask "Piping a remote script into a shell."
+  # Fetched text piped into a shell or interpreter, through any wrapper and any middle stage:
+  # wget, `| sudo sh`, `| python3` all evaded the curl-into-sh form (2026-10-23 review, §5).
+  # `<(curl …)`, `"$(curl …)"` and download-then-run are judged in the payload reader (N).
+  has '(^|[^[:alnum:]_.-])(curl|wget)([[:space:]][^|;&]*)?[|]([^|;&]+[|])*[[:space:]]*((sudo|doas|env|command|exec|nohup|time|nice|stdbuf|setsid|timeout|ionice|chrt|taskset|xargs|builtin|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+)?([^[:space:]|;&]*/)?((ba|da|z|k|mk|a|y|c|tc|fi)?sh|python[0-9.]*|perl|ruby|node|nodejs|deno|bun|php|pwsh)([[:space:]]|$|[;&|)"])' \
+    && ask "Piping a remote script into a shell or interpreter."
   has '(^|[[:space:]])(npm|pnpm|yarn|cargo|gem|twine)[[:space:]]+publish' && ask "Publishing a package."
   has '(^|[[:space:]])git[[:space:]]+reset[[:space:]]+--hard' && ask "Discarding uncommitted work."
   has '(^|[[:space:]])git[[:space:]]+(checkout|restore)[[:space:]]+\.' && ask "Discarding every local change."
   has '(^|[[:space:]])gh[[:space:]]+secret[[:space:]]+(set|delete)' && ask "Writing or removing a repository secret."
+  has '(^|[[:space:]])gh[[:space:]]+repo[[:space:]]+delete' && ask "Deleting a repository."
   has '(^|[[:space:]])(aws[[:space:]]+iam|gcloud[[:space:]]+iam)[[:space:]]+.*(create|add)' && ask "Provisioning a credential or identity."
   has '(^|[[:space:]])git[[:space:]]+push[^|;]*(prod|production|release)' && ask "Pushing to a production ref."
   # Every rule above is `has && ask` — when nothing matches the function's
@@ -2886,6 +3530,11 @@ never_list() {
 # over the same normalized segments the HIGH tier judged — prefixes and git
 # global options stripped — so `git -C /x reset --hard` asks what `git reset
 # --hard` asks (#297). A line the split somehow emptied falls back to raw.
+# N: a never-list shape the payload reader judged on parsed words -- history-discarding git
+# beyond the two forms a regex reads, and a fetched script run through <(…), "$(…)" or a
+# downloaded file (2026-10-23 review, P2-12, section 5).
+_NEVER=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^N //p' | sed -n '1p')
+[ -z "$_NEVER" ] || ask "$_NEVER"
 CMD=$FULL_CMD
 never_list
 CMD=

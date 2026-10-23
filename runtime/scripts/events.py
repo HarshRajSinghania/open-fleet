@@ -1185,17 +1185,22 @@ def _money(value):
 def cmd_ingest_usage(args):
     """Model usage from a Claude worker's stream-json log: the `system/init` line's model and
     each `result` line's `usage` and `total_cost_usd`. A field the line does not carry is
-    recorded null and named in the provenance; nothing is ever recorded as zero by default."""
+    recorded null and named in the provenance; nothing is ever recorded as zero by default.
+
+    Each observation is bound to the stream's bytes THROUGH its result line (without that
+    line's newline): its id and source digest stay fixed while the worker and its monitor keep
+    appending, so re-ingesting a grown stream is a duplicate. A whole-file digest gave every
+    earlier result a new id on each append, and its usage was counted again (PR #638, P1)."""
     path = Path(args.stream)
     try:
         raw = path.read_bytes()
     except OSError as err:
         raise UsageError(f"--stream {path} is unreadable: {err}") from err
-    digest = sha256_hex(raw)
-    model, events = None, []
-    for lineno, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
+    model, events, end = None, [], -1
+    for lineno, chunk in enumerate(raw.split(b"\n"), 1):  # JSON Lines: one object per \n
+        end += 1 + len(chunk)  # raw[:end] is lines 1..lineno, without lineno's own newline
         try:
-            obj = json.loads(line)
+            obj = json.loads(chunk.decode("utf-8", errors="replace"))
         except ValueError:
             continue
         if not isinstance(obj, dict):
@@ -1213,7 +1218,9 @@ def cmd_ingest_usage(args):
             data[field] = value if ok else None
         data["cost_usd"] = _money(obj.get("total_cost_usd"))
         absent = [f for f in ("model",) + USAGE_FIELDS if data[f] is None]
-        data["provenance"] = (f"claude stream-json result line {lineno} of sha256:{digest[:16]}"
+        digest = sha256_hex(raw[:end])
+        data["provenance"] = (f"claude stream-json result line {lineno}, lines 1-{lineno} "
+                              f"sha256:{digest[:16]}"
                               + (f"; not reported: {', '.join(absent)}" if absent else ""))
         events.append(_build(args, "model.usage", producer="claude-stream-json", task=args.task,
                              dispatch=args.dispatch, observed_at=args.observed_at or _now(),

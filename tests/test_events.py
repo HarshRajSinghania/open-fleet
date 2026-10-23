@@ -964,6 +964,41 @@ class TestIngest(Base):
         self.assertIn("duplicate", out.getvalue())
         self.assertEqual(len(events.read_log(self.log)[0]), 1)
 
+    def test_a_stream_that_grows_is_not_counted_twice(self):
+        # PR #638 review (P1): each observation's id was derived from the WHOLE file's digest,
+        # so any line the worker or monitor appended gave every earlier result line a new id and
+        # usage_summary added its tokens again. Bound to the bytes through its own result line,
+        # an observation survives appends — including the newline its writer had not flushed yet.
+        path = self.tmp / "worker.jsonl"
+        init = json.dumps({"type": "system", "subtype": "init", "model": "m"}) + "\n"
+        result = json.dumps({"type": "result", "total_cost_usd": 0.5,
+                             "usage": {"input_tokens": 5, "output_tokens": 1}})
+        path.write_text(init + result, encoding="utf-8")  # its newline is not flushed yet
+        argv = ("ingest-usage", "--stream", str(path), "--run", "r", "--epoch", "1",
+                "--clock", "host-a", "--dispatch", "d", "--observed-at", "2026-10-20T10:00:00Z")
+        events.append_events(self.log, [ev("run.start", "09:00:00", data={"coordinator": "c1"}, **ONE)])
+        procs = [self.cli(*argv)]
+        with path.open("a", encoding="utf-8") as fh:  # an unrelated line arrives
+            fh.write("\n" + json.dumps({"type": "system", "subtype": "status"}) + "\n")
+        procs.append(self.cli(*argv))
+        with path.open("a", encoding="utf-8") as fh:  # and then a second result
+            fh.write(json.dumps({"type": "result", "total_cost_usd": 0.25,
+                                 "usage": {"input_tokens": 7, "output_tokens": 2}}) + "\n")
+        procs.append(self.cli(*argv))
+        self.assertEqual([p.returncode for p in procs], [0, 0, 0], [p.stdout for p in procs])
+        self.assertEqual([line.split()[0] for p in procs for line in p.stdout.splitlines()],
+                         ["appended", "duplicate", "duplicate", "appended"])
+        recorded, file_sha, head = events.read_log(self.log)
+        report = events.derive(recorded, "r", file_sha, head)
+        self.assertEqual(report["record"]["conflicts"], 0)
+        model = report["usage"]["models"]["m"]
+        self.assertEqual((model["observations"], model["input_tokens"]["value"],
+                          model["output_tokens"]["value"], model["cost_usd"]["value"]),
+                         (2, 12, 3, "0.75"))
+        usage = [e for e in recorded if e["kind"] == "model.usage"]
+        self.assertEqual(usage[0]["source"]["sha256"], events.sha256_hex(init + result),
+                         "the source digest is the stream through the result line, not the file")
+
     def test_a_copy_recorded_again_after_a_resume_does_not_contest_the_unit(self):
         evs = unit_stream()
         evs.insert(4, ev("coordinator.resume", "10:12:00", data={"coordinator": "c2"},

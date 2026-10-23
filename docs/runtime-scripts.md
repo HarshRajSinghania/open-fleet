@@ -518,7 +518,9 @@ declared one (a fenced coordinator) or above it (undeclared) are excluded, as is
 `event_id` that says something different; the metrics they touch report unavailable. What an
 event says (`runtime/scripts/events.py:identity`) leaves out who recorded it (`epoch`) and,
 unless `basis` is `occurred`, when, so re-ingesting the same rows or stream after a resume or
-later in time is a duplicate, never a conflict. Model usage keeps
+later in time is a duplicate, never a conflict. `ingest-usage` binds each result line to the
+stream's bytes through that line (its id and `source.sha256`), so a stream re-ingested after
+the worker or monitor appended to it adds only its new result lines. Model usage keeps
 any field an observation did not report null — with its provenance — in the model's sum and in
 the run total; it is never 0.
 

@@ -581,7 +581,7 @@ def screen(events):
     return screened, duplicates, conflicts, fenced, epochs, taints, excluded
 
 
-def derive_unit(task, wave, events, history=(), carried_out=False):
+def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=()):
     """One planned unit's outcome and per-unit measurements in one wave, from the set of its
     events placed there.
 
@@ -591,7 +591,8 @@ def derive_unit(task, wave, events, history=(), carried_out=False):
     pass a close here rests on, and the approvals a close here voids. An interval or a void is
     measured in the wave its END is placed in, so each is counted once. `carried_out`: a later
     wave plans the unit again, so every later event is placed there and what it reached here
-    is final for this wave — it no longer leaves this wave pending."""
+    is final for this wave — it no longer leaves this wave pending. `ended_before` are the heads
+    whose latency interval an earlier wave actually ended (each unit returns its own `ended`)."""
     by = {kind: [] for kind in KINDS}
     for event in events:
         by[event["kind"]].append(event)
@@ -606,9 +607,12 @@ def derive_unit(task, wave, events, history=(), carried_out=False):
     passes = [e for e in by["verify.verdict"] if e["data"]["exit"] == 0]
     passed_before = {e["data"]["head_sha"] for e in past["verify.verdict"]
                      if e["data"]["exit"] == 0 and e["data"]["head_sha"]}
-    # A head whose latency an earlier wave ended (a pass or a park at it) was measured there.
-    ended_before = passed_before | {e["data"]["head_sha"] for e in past["unit.parked"]
-                                    if e["data"]["head_sha"]}
+    # A head whose latency interval an earlier wave ENDED was measured there: any pass at it
+    # (the first passing verdict ends it), or a park at it that had a worker_done to end. A
+    # park before any worker_done ended nothing, so a later done -> pass at that head is a
+    # measurement of its own (PR #638 review, P1).
+    ended_before = passed_before | set(ended_before)
+    ended = {p["data"]["head_sha"] for p in passes if p["data"]["head_sha"]}
     dones, known_dones = by["task.done"], by["task.done"] + past["task.done"]
     closes = by["unit.closed"]
     close_heads = sorted({e["data"]["head_sha"] for e in closes})
@@ -682,6 +686,8 @@ def derive_unit(task, wave, events, history=(), carried_out=False):
             latency["unavailable"] = (f"unit {task}: worker_done at several heads and the park "
                                       "names none; which one it ends is ambiguous")
         else:
+            if starts[0]["data"]["head_sha"]:
+                ended.add(starts[0]["data"]["head_sha"])  # this wave ends the interval at it
             start, why = first(starts, f"unit {task} worker_done")
             end, why_end = first(ends, f"unit {task} {ends[0]['kind']}")
             if why or why_end:
@@ -757,7 +763,8 @@ def derive_unit(task, wave, events, history=(), carried_out=False):
         "bounced": (bool(by["unit.suspect"]) or retries > 0
                     or any(v["data"]["exit"] == 2 for v in by["verify.verdict"])),
         "approvals": len(reviews), "voided_reviews": sorted(voided),
-        "latency": latency, "queue": queue, "rereviewed": rereviewed, "contested": contested,
+        "latency": latency, "ended": sorted(ended), "queue": queue, "rereviewed": rereviewed,
+        "contested": contested,
         "revisions": {"closed_at": close_head, "closed_tree": close_tree,
                       "verified_at": sorted({p["data"]["head_sha"] for p in passes
                                              if p["data"]["head_sha"]}),
@@ -1014,10 +1021,12 @@ def derive(events, run=None, file_sha="", head=""):
                 taints.setdefault(("unit", task), []).append(why)
             else:
                 parts[k].append(event)
-        history = []
+        history, ended = [], set()
         for i, k in enumerate(ks):  # a planned unit never observed is open, not missing
-            units[(task, k)] = derive_unit(task, k, parts[k], history, carried_out=i < len(ks) - 1)
+            units[(task, k)] = derive_unit(task, k, parts[k], history, carried_out=i < len(ks) - 1,
+                                           ended_before=ended)
             history = history + parts[k]
+            ended |= set(units[(task, k)]["ended"])
     unplanned = [{"task": t, "events": len(evs)} for t, evs in sorted(lifecycle.items())
                  if t not in plan]
     waves = []

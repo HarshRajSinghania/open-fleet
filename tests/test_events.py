@@ -713,6 +713,21 @@ class TestCarriedUnits(Base):
         self.assertEqual(report["waves"][1]["units"][0]["voided_reviews"], [a])
         self.assertEqual(self.metric(report, 2, "latency_max")["value"], "5.00m")
 
+    def test_a_park_before_any_worker_done_ended_no_interval(self):
+        # PR #638 review (P1): every earlier park at a head counted as an interval already
+        # measured. t parked at A in wave 1 before any worker_done (that wave measured nothing),
+        # resumed unchanged and finished at A in wave 2: its done -> pass there was dropped.
+        a = sha("a1")
+        report = self.derive(two_wave_stream(
+            wave1=[("unit.parked", "10:15:00", {"data": {"park_class": "needs-human", "head_sha": a}})],
+            wave2=[("task.done", "10:40:00", {"dispatch": "d1", "data": {"head_sha": a}}),
+                   ("review.verdict", "10:42:00", {"data": {"verdict": "approve", "reviewed_sha": a}}),
+                   ("verify.verdict", "10:45:00", {"data": {"exit": 0, "head_sha": a}}),
+                   ("unit.closed", "10:50:00", {"data": {"head_sha": a}})]))
+        self.assertIn("parked with no worker_done", report["waves"][0]["units"][0]["latency"]["excluded"])
+        self.assertEqual(report["waves"][1]["units"][0]["latency"]["value"], "5.00m")
+        self.assertEqual(self.metric(report, 2, "latency_max")["value"], "5.00m")
+
     def test_an_interval_an_earlier_wave_ended_is_not_measured_again(self):
         # Sweep guard: with earlier worker_done events as interval starts, a head parked in
         # wave 1 and verified in wave 2 would get a second latency spanning the park, and a

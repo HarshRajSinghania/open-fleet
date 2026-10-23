@@ -511,9 +511,12 @@ no earlier than the real opening): an event before it may be that wave's, so it 
 never placed in an earlier wave. The unit's events in its earlier planning waves are context for a later one, never
 a second measurement: which dispatches already ran and launched, the worker_done an interval
 starts from, the pass a close rests on and the approvals a close voids; each interval and void
-is measured once, in the wave its end is placed in. A unit a later wave re-plans is final in the
-earlier one (every later event of it is placed in the later wave), so it no longer leaves that
-wave pending; it has no latency there unless it verified or parked there. Its outcome comes from
+is measured once, in the wave its end is placed in (a pass at a head ends its interval; a
+park ends one only if a worker_done at that head preceded it, so a unit parked before any
+worker_done and finished later at the same head is measured in the later wave). A unit a later
+wave re-plans is final in the earlier one (every later event of it is placed in the later
+wave), so it no longer leaves that wave pending; it has no latency there unless it verified
+or parked there. Its outcome comes from
 the set of its events, never their order: verified-CLOSED (closed at a head a verdict passed,
 in this wave or an earlier one), closed-unverified, parked, verified, completed (worker_done
 only) or open. Latency runs from the worker_done at a head to the first passing verdict at that

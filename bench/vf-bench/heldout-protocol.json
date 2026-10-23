@@ -58,7 +58,7 @@
       "id": "history-scan",
       "command": "python3 bench/vf-bench/heldout.py check --digests DIGESTS.json --all-history",
       "detects": "a held-out case committed and later deleted, which history still carries beside the solver",
-      "limits": "the digest and canary scans' limits (no gzip or other decompression, no base64 or hex decoding; UTF-16 and UTF-32 text is decoded), over every blob reachable from a ref, with submodules named UNSCANNED only at the revision; unreachable objects and other clones or forks are outside it",
+      "limits": "the digest and canary scans' limits (no gzip or other decompression, no base64 or hex decoding; UTF-16 and UTF-32 text is decoded), over every blob reachable from a ref, with submodules named UNSCANNED only at the revision; history the repository does not hold is never passed: a shallow clone's history before its boundary, and each object a partial clone never fetched, is named UNSCANNED and fails the check, while the history it does hold is still scanned, and no git call fetches (GIT_NO_LAZY_FETCH); run it on a full clone (CI: fetch-depth: 0); unreachable objects and other clones or forks are outside it",
       "when": "immediately before each held-out evaluation"
     },
     {

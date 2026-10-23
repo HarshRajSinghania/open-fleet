@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -255,8 +256,15 @@ def load_digests(path):
 # check (the leakage scan)
 # ---------------------------------------------------------------------------------------------
 
+# Never fetch. A partial clone's promisor remote would otherwise be asked, object by object, for
+# everything the clone never fetched: a network read in a check that must judge only what this
+# repository holds. What is not here is named UNSCANNED instead (PR #645 review).
+GIT_ENV = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+
+
 def _git(repo, *args, data=None):
-    r = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True)
+    r = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True,
+                       env=GIT_ENV)
     if r.returncode != 0:
         raise UsageError(f"git {' '.join(args)}: {r.stderr.decode('utf-8', 'replace').strip()[:300]}")
     return r.stdout
@@ -265,8 +273,11 @@ def _git(repo, *args, data=None):
 def committed_blobs(repo, rev="HEAD", all_history=False):
     """[(blob sha, path)] committed at REV, or reachable from any ref with all_history."""
     if all_history:
-        listing = _git(repo, "rev-list", "--objects", "--all").decode("utf-8", "replace")
-        pairs = [(ln.split(" ", 1)[0], ln.split(" ", 1)[1] if " " in ln else "")
+        # --missing=print lists, as `?<sha>`, each object a partial clone never fetched (a tree
+        # among them hides everything under it); they reach check as missing objects.
+        listing = _git(repo, "rev-list", "--objects", "--all",
+                       "--missing=print").decode("utf-8", "replace")
+        pairs = [(ln.split(" ", 1)[0].lstrip("?"), ln.split(" ", 1)[1] if " " in ln else "")
                  for ln in listing.splitlines() if ln]
         kinds = _git(repo, "cat-file", "--batch-check=%(objectname) %(objecttype)",
                      data="".join(f"{s}\n" for s, _ in pairs).encode()).decode().split("\n")
@@ -420,8 +431,8 @@ def check(repo, digests, rev="HEAD", all_history=False):
     for sha, path in blobs:
         if contents.get(sha) is None:
             leaks.append({"path": path, "blob": sha, "kind": "unscanned",
-                          "digest": "the object is missing from this repository (a shallow or "
-                                    "partial clone)"})
+                          "digest": "an object this repository never fetched (a partial clone; "
+                                    "if it is a tree, nothing under it was scanned)"})
             continue
         try:
             hits = scan(contents[sha], digests)
@@ -432,7 +443,27 @@ def check(repo, digests, rev="HEAD", all_history=False):
     for sha, path in submodules(repo, rev):
         leaks.append({"path": path, "blob": sha, "kind": "unscanned",
                       "digest": "a submodule: its content is another repository's"})
+    if all_history:
+        leaks += shallow_gap(repo)
     return leaks, len(blobs)
+
+
+def shallow_gap(repo):
+    """A shallow clone's history stops at its boundary commits: `rev-list --all` walks no further,
+    so a case committed and deleted before them was simply never seen, and the history scan
+    reported clean (PR #645 review). That unseen history is one UNSCANNED finding, which fails
+    the check; the history the clone does hold is still scanned and reported. The tree at REV is
+    whole in a shallow clone, so the default scan is unaffected."""
+    if _git(repo, "rev-parse", "--is-shallow-repository").decode().strip() != "true":
+        return []
+    shallow = Path(_git(repo, "rev-parse", "--absolute-git-dir").decode().strip()) / "shallow"
+    boundary = shallow.read_text(encoding="utf-8").split() if shallow.is_file() else []
+    return [{"path": "(history before the shallow boundary)",
+             "blob": boundary[0] if boundary else "",
+             "kind": "unscanned",
+             "digest": f"a shallow clone: the history before {len(boundary)} boundary commit(s) was "
+                       "never fetched, so it was not scanned (git fetch --unshallow, or "
+                       "actions/checkout with fetch-depth: 0)"}]
 
 
 def main(argv=None):
@@ -497,7 +528,7 @@ def main(argv=None):
             print(f"{len(leaks)} leak(s) in {where}: held-out content is committed beside the solver")
         if unscanned:
             print(f"{len(unscanned)} place(s) in {where} the scan could not look, so it is not "
-                  "clean (raise --max-json-bytes for a large JSON document)")
+                  "clean; each UNSCANNED line says why")
         if findings:
             return 1
         print(f"clean: {scanned} committed blob(s) in {where} checked against "

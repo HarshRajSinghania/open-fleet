@@ -12,6 +12,8 @@ import contextlib
 import gzip
 import importlib.util
 import json
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -676,6 +678,83 @@ class NoOneFileStopsTheCheck(unittest.TestCase):
         (traps / "broken.json").write_text("{not json", encoding="utf-8")
         errors = heldout.validate(_protocol(), traps_dir=traps)
         self.assertTrue(any("broken.json" in e for e in errors), errors)
+
+
+
+class HistoryTheCloneNeverFetchedIsNeverClean(unittest.TestCase):
+    """PR #645 review (P1): on a shallow clone, `check --all-history` stopped at the shallow
+    boundary and reported clean, though a held-out case had been committed and deleted before it.
+    A partial clone hid history the same way, or reached for its promisor remote to fetch it. What
+    the repository does not hold is now named UNSCANNED and fails the check, while the history it
+    does hold is still scanned, and no git call here ever fetches."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.cases = _holder_cases(self.tmp / "holder", n=1)
+        self.digests = self.tmp / "digests.json"
+        doc, _ = heldout.digest_cases(self.tmp / "holder", CANARY)
+        self.digests.write_text(json.dumps(doc), encoding="utf-8")
+        self.src = self.tmp / "src"
+        self.src.mkdir()
+        _git(self.src, "init", "-q", "-b", "main")
+        _git(self.src, "config", "uploadpack.allowFilter", "true")
+        (self.src / "case.json").write_bytes(self.cases[0].read_bytes())
+        _commit(self.src, "a held-out case, committed")
+        (self.src / "case.json").unlink()
+        (self.src / "README.md").write_text("nothing to see\n", encoding="utf-8")
+        _commit(self.src, "and deleted")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _clone(self, name, *flags):
+        dest = self.tmp / name
+        subprocess.run(["git", "clone", "-q", *flags, self.src.as_uri(), str(dest)], check=True,
+                       capture_output=True)
+        return dest
+
+    def _check(self, repo, *extra):
+        return _cli("check", "--digests", str(self.digests), "--repo", str(repo), *extra)
+
+    def test_the_full_history_holds_the_leak(self):
+        r = self._check(self._clone("full"), "--all-history")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("LEAK verbatim: case.json", r.stdout)
+
+    def test_a_shallow_clone_is_unscanned_history_not_clean(self):
+        shallow = self._clone("shallow", "--depth", "1")
+        self.assertEqual(_git(shallow, "rev-parse", "--is-shallow-repository"), "true")
+        r = self._check(shallow, "--all-history")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("clean:", r.stdout)
+        self.assertIn("UNSCANNED: (history before the shallow boundary)", r.stdout)
+        # The tree at HEAD is whole in a shallow clone: the default scan still runs, and passes.
+        self.assertEqual(self._check(shallow).returncode, 0)
+
+    def test_a_partial_clone_names_what_it_never_fetched_and_fetches_nothing(self):
+        partial = self._clone("partial", "--no-checkout", "--filter=blob:none")
+        # The promisor is gone: any fetch would fail loudly, and the check must not need one.
+        shutil.rmtree(self.src)
+        r = self._check(partial, "--all-history")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("clean:", r.stdout)
+        self.assertIn("UNSCANNED:", r.stdout)
+        self.assertIn("never fetched", r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_the_protocol_states_it(self):
+        history = next(c for c in _protocol()["leakage_checks"] if c["id"] == "history-scan")
+        self.assertIn("shallow", history["limits"])
+        self.assertIn("UNSCANNED", history["limits"])
+
+    def test_no_workflow_runs_the_history_scan_on_a_shallow_checkout(self):
+        for wf in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            text = wf.read_text(encoding="utf-8")
+            for job in re.split(r"(?m)^  (?=[A-Za-z0-9_-]+:\s*$)", text)[1:]:
+                if "heldout.py check" in job and "--all-history" in job:
+                    with self.subTest(workflow=wf.name, job=job.split(":", 1)[0]):
+                        self.assertRegex(job, r"fetch-depth:\s*0\b")
 
 
 if __name__ == "__main__":

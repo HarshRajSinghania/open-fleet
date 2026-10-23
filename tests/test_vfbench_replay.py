@@ -1347,5 +1347,28 @@ class NoOneItemStopsTheReplay(_FakeBench):
         self.assertFalse(r["verdict"]["ok"], "a case nobody scored still fails the replay")
 
 
+
+class AReplayFromAPartialCloneNeverFetches(_FakeBench):
+    """Sweep of PR #645 review P1 PRRT_kwDOTWxN9c6vwE8q in replay.py: the export fetches the
+    pinned commit from the source checkout. A partial-clone source lacks objects; its promisor is
+    never asked for them (the replay promises no network), so the export fails as a usage error.
+    git >= 2.45.1 already refuses this by default; the replay now sets GIT_NO_LAZY_FETCH itself,
+    so this pin holds on any git."""
+
+    def test_the_export_refuses_rather_than_fetches(self):
+        _git(self.repo, "config", "uploadpack.allowFilter", "true")
+        partial = self.tmp / "partial"
+        subprocess.run(["git", "clone", "-q", "--no-checkout", "--filter=blob:none",
+                        self.repo.as_uri(), str(partial)], check=True, capture_output=True)
+        with self.assertRaises(replay.ReplayError) as ctx:
+            replay.replay(partial, self.commit, runs=1)
+        self.assertIn("git fetch", str(ctx.exception))
+        # The promisor was never asked: the partial clone still lacks what it lacked.
+        listing = subprocess.run(["git", "-C", str(partial), "rev-list", "--objects", "--all",
+                                  "--missing=print"], capture_output=True, text=True,
+                                 env={**os.environ, "GIT_NO_LAZY_FETCH": "1"}).stdout
+        self.assertIn("?", listing)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

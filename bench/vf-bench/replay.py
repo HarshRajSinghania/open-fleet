@@ -187,7 +187,11 @@ def export_revision(source, commit, dest, env, git):
     a real commit read the same refs on every host — never whatever branches the source had."""
     dest.mkdir(parents=True)
     _git(["init", "-q", "-b", "main"], cwd=dest, env=env, git=git)
-    _git(["fetch", "--no-tags", "--quiet", str(source), commit], cwd=dest, env=env, git=git)
+    # Never fetch past the source: if it is a partial clone, its promisor remote is not asked
+    # for what it lacks; the export fails instead (git >= 2.45.1's upload-pack does this by
+    # default, and this makes it so on any git; PR #645 review sweep).
+    _git(["fetch", "--no-tags", "--quiet", str(source), commit], cwd=dest,
+         env={**env, "GIT_NO_LAZY_FETCH": "1"}, git=git)
     _git(["update-ref", "refs/heads/main", commit], cwd=dest, env=env, git=git)
     _git(["update-ref", "refs/remotes/origin/main", commit], cwd=dest, env=env, git=git)
     _git(["reset", "--quiet", "--hard", commit], cwd=dest, env=env, git=git)

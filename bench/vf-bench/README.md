@@ -512,9 +512,15 @@ A holder publishes digests, never content: each case's raw sha256, its canonical
 the sha256 of the split's canary GUID, which every held-out case must carry (`digest` refuses one
 that does not). `digest` reads a case the way the scanner does: parsed in any encoding `json.loads`
 reads, with the GUID found in its strings in either letter case or behind JSON escapes; a case that
-is not a JSON object, which the scanner could never match, is refused (PR #645 review). `check` fails if any committed blob at the revision (or reachable from any ref,
-with `--all-history`) is a held-out case verbatim, the same case reformatted, the case embedded as
-an object in a larger JSON document, or a file carrying the held-out canary. Each blob is checked
+is not a JSON object, which the scanner could never match, is refused (PR #645 review).
+
+`check` fails if any committed blob at the revision (or reachable from any ref, with
+`--all-history`) is a held-out case verbatim, the same case reformatted, the case embedded as an
+object in a larger JSON document, or a file carrying the held-out canary. With `--all-history`,
+history the repository does not hold is never passed as clean: a shallow clone's history before
+its boundary, and each object a partial clone never fetched, is named `UNSCANNED` and fails the
+check, while the history it does hold is still scanned; no git call fetches (`GIT_NO_LAZY_FETCH`),
+so run it on a full clone (CI: `fetch-depth: 0`; PR #645 review). Each blob is checked
 as text in every encoding `json.loads` reads (UTF-8 with or without a BOM, UTF-16 and UTF-32 in
 either byte order), so re-saving a case in another encoding does not hide it (PR #645 review). It
 decodes text, not containers: a gzip or otherwise compressed copy, a base64- or hex-encoded one
@@ -524,9 +530,10 @@ text). What the scan cannot look into is never reported clean: a JSON document o
 (20 MiB; `--max-json-bytes` raises it) or nested too deep to parse, a Git LFS pointer and a
 submodule are each named `UNSCANNED` and fail the check, and so is any file the scan fails on (a
 string with an unpaired surrogate the canonical form cannot encode, JSON the parser cannot convert,
-an object a partial clone lacks); the other files are still reported (PR #645 review). The protocol states these limits beside each
-check, and `validate` refuses a scan that states none. The tests run it against a synthetic holder built in a
-temp directory; no held-out content is committed anywhere.
+an object a partial clone lacks); the other files are still reported (PR #645 review). The
+protocol states these limits beside each check, and `validate` refuses a scan that states none.
+The tests run it against a synthetic holder built in a temp directory; no held-out content is
+committed anywhere.
 
 ## Add a gate
 

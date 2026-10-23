@@ -14,7 +14,9 @@ truth is `.claude-plugin/plugin.json`.
     [JSON](docs/experiments/ablation-prereg.json) register the experiment: the mission and task mix, the exact prompts, the model and harness
     fields to fill at run time, the seeds and repeats, the deferred-read rules, the safety
     obligations and the metrics. The page pins the JSON's bytes.
-  - The registration proposes a cost cap of USD 600, marked `PENDING OWNER AUTHORISATION`.
+  - The registration proposes a cost cap of USD 750, marked `PENDING OWNER AUTHORISATION`. The
+    live spend guard is pre-emptive: a cell starts only if the cap still covers the worst case of
+    its agent and grader calls, and each call carries its own `--max-budget-usd` limit.
   - `scripts/ablation.py generate` writes a mission's reduced variant mechanically: registered
     documents move behind `<name>.md at <PHASE>` cues, and their obligation lines are copied
     verbatim into a minimal contract. The variant goes to an output directory, never over

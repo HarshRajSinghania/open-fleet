@@ -111,8 +111,12 @@
     "harness": null,
     "harness_version": null,
     "agent_cmd_default": "claude -p --output-format stream-json --permission-mode acceptEdits",
-    "grader_cmd_default": "claude -p",
-    "contract": "The agent command reads the task on stdin, runs in the cell's workspace and prints Claude stream-json on stdout (system/init, assistant messages with text and tool_use blocks, a result line with usage and total_cost_usd). For a trajectory cell its wrapper also writes the #602 event vocabulary to $ABLATION_OUT/trajectory.jsonl. Environment: disposable, no credentials beyond the model's own, no network sinks."
+    "agent_limit_flag": "--max-budget-usd",
+    "grader_cmd_default": "claude -p --output-format json",
+    "grader_limit_flag": "--max-budget-usd",
+    "grader_output": "claude-json",
+    "contract": "The agent command reads the task on stdin, runs in the cell's workspace and prints Claude stream-json on stdout (system/init, assistant messages with text and tool_use blocks, a result line with usage and total_cost_usd). For a trajectory cell its wrapper also writes the #602 event vocabulary to $ABLATION_OUT/trajectory.jsonl. Environment: disposable, no credentials beyond the model's own, no network sinks.",
+    "per_call_limit": "Every agent and grader call is handed its own spend limit through the flag above, set to harness_limit_fraction of that call's reservation: Claude Code's --max-budget-usd (print mode) stops a run once its estimated spend reaches the amount, and can pass it, so the limit sits below the reservation. A harness with no such limit cannot run the live tier. The grader's JSON result carries total_cost_usd, so its bill is measured, not assumed."
   },
   "seeds": [
     606,
@@ -634,13 +638,15 @@
     "recommendation": "Only a live-tier result can support one; fixture and stub tiers exercise the pipeline and are never evidence."
   },
   "cost_cap": {
-    "proposed_usd": 600,
+    "proposed_usd": 750,
     "status": "PENDING OWNER AUTHORISATION",
     "authorised_usd": null,
     "authorised_by": null,
-    "derivation": "4 missions x 9 tasks x 2 arms x 5 repeats = 360 agent runs at an assumed ~USD 1.50 mean (cached 20-35k-token activations), plus 160 grader calls at the reserve below: about USD 580. Proposed only; nothing may be spent until the owner records an authorised amount here.",
+    "derivation": "4 missions x 9 tasks x 2 arms x 5 repeats = 360 agent runs at an assumed ~USD 1.50 mean (cached 20-35k-token activations), plus 160 grader calls at an assumed ~USD 0.75 (a whole stream-json trace to read): about USD 660. The guard reserves a cell's worst case before it starts, so the last cells need a full reservation of headroom; proposed USD 750. Proposed only; nothing may be spent until the owner records an authorised amount here.",
     "max_cost_per_agent_run_usd": 5.0,
-    "grader_reserve_usd": 0.25
+    "grader_reserve_usd": 1.0,
+    "harness_limit_fraction": 0.8,
+    "guard": "PRE-EMPTIVE. Before a cell starts, the runner reserves the worst case of every call it will make: the agent's reservation, plus the grader's for a behavioral cell. A cell starts only if the spend so far plus that reservation is within the cap. A call is charged its measured cost or, when unmeasured, its full reservation. A measured call above its reservation (the harness limit did not hold) stops the run, and so does an agent run whose usage is unavailable."
   },
   "registered_payloads": {
     "ship-it": {

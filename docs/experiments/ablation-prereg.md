@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `fce280716045cfd7fa24631672eecee626b78c64cefda77cf1d1ebb24efbf8a9`.
+Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `edec15c27cfde5ec0f9e498bfb58e90008ea4c73991df5b8e949fcff9022f244`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no
@@ -148,7 +148,9 @@ case's prompt, or for a trajectory cell `TASK: {issue}` plus a line naming `CONT
 
 **Model and harness:** fields to fill at run time (`model`, `harness`, `harness_version`,
 `agent_cmd`, `grader_cmd`, `environment`). The runner records them in the results and refuses a
-live run without them. The default agent command is `eval.py`'s Claude stream-json invocation.
+live run without them. The default agent command is `eval.py`'s Claude stream-json invocation, and
+the default grader is `claude -p --output-format json`. Both are handed a per-call spend limit (see
+the cost cap below).
 
 **Seeds and repeats:** 5 repeats, seeds 606 to 610. Repeat *k* shuffles its pairs with `seeds[k]`
 and picks which arm of each pair runs first, so neither arm always runs warm. The seed is also
@@ -198,22 +200,33 @@ the binary metrics also get an exact McNemar p. The decision rule is applied in 
 
 ## Cost cap: PENDING OWNER AUTHORISATION
 
-Proposed: **USD 600**. The estimate is 4 missions × 9 tasks × 2 arms × 5 repeats, which is 360
-agent runs at an assumed mean of about USD 1.50, plus 160 grader calls at a USD 0.25 reserve.
-That totals about USD 580. Nothing may be spent until the owner records `status: AUTHORISED`,
-`authorised_usd` and `authorised_by` in the JSON, and that edit is itself a reviewed change.
+Proposed: **USD 750**. The estimate is 4 missions × 9 tasks × 2 arms × 5 repeats, which is 360
+agent runs at an assumed mean of about USD 1.50, plus 160 grader calls at about USD 0.75 each
+(the grader reads a whole trace). That totals about USD 660. The guard below reserves a cell's
+worst case before it starts, so the last cells need a full reservation of headroom. Nothing may
+be spent until the owner records `status: AUTHORISED`, `authorised_usd` and `authorised_by` in
+the JSON, and that edit is itself a reviewed change.
 
 The runner refuses to start in any tier without an explicit `--cost-cap-usd`. A live run is
 refused in each of these cases:
 
 - the registration's cap is not AUTHORISED, or the requested cap exceeds the authorised amount;
-- a registered payload has moved since registration;
+- the agent or the grader has no per-call spend limit;
+- a registered payload or task input has moved since registration;
 - the design is filtered;
 - a variant fails the obligation check.
 
-During a live run it stops when the observed spend plus a USD 5 per-run reserve would cross the
-cap, and when a run's usage is unavailable, because a cap that cannot be measured cannot be
-enforced.
+**The spend guard is pre-emptive.** Every agent call reserves USD 5 and every grader call reserves
+USD 1. A cell starts only if the spend so far plus the worst case of every call it will make
+(the agent, plus the grader for a behavioral cell) is within the cap. So spend never crosses the
+cap, and a cap that leaves exactly a cell's worst case still runs that cell.
+
+Each call is handed its own limit at 0.8 of its reservation, through Claude Code's
+`--max-budget-usd` (USD 4.00 for the agent, USD 0.80 for the grader). The limit sits below the
+reservation because Claude Code documents that spend can pass that flag. The grader runs with
+`--output-format json`, so its bill is measured, and an unmeasured call is charged its full
+reservation. Two things stop the run: a measured call above its reservation (the harness limit
+did not hold), and an agent run that reports no usage.
 
 ## Run it
 

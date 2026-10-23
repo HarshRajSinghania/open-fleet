@@ -250,6 +250,7 @@ def prereg_errors(prereg):
                 errors.append(f"{mission}: no registered obligation of class {cls} applies — "
                               "register one before ablating this mission")
     errors += _cap_errors(prereg.get("cost_cap"))
+    errors += _harness_errors(prereg.get("harness"))
     errors += _analysis_errors(prereg.get("analysis"), prereg.get("prompt"))
     if not isinstance(prereg.get("registered_payloads"), dict):
         errors.append("registered_payloads must be an object (prereg --refresh writes it)")
@@ -348,7 +349,11 @@ def _cap_errors(cap):
 
     money("proposed_usd")
     money("max_cost_per_agent_run_usd")
-    money("grader_reserve_usd", positive=False)
+    money("grader_reserve_usd")
+    fraction = cap.get("harness_limit_fraction")
+    if not isinstance(fraction, (int, float)) or isinstance(fraction, bool) or not 0 < fraction <= 1:
+        errors.append("cost_cap.harness_limit_fraction must be in (0, 1]: a call's limit sits at or "
+                      "below its reservation")
     status = cap.get("status")
     if status == PENDING:
         if cap.get("authorised_usd") is not None or cap.get("authorised_by") is not None:
@@ -359,6 +364,23 @@ def _cap_errors(cap):
             errors.append("cost_cap: an AUTHORISED cap names who authorised it")
     else:
         errors.append(f"cost_cap.status must be {PENDING!r} or {AUTHORISED!r}")
+    return errors
+
+
+GRADER_OUTPUTS = ("claude-json", "text")
+
+
+def _harness_errors(harness):
+    """The per-call limit is what makes the live spend guard pre-emptive (#652 review)."""
+    if not isinstance(harness, dict):
+        return ["harness must be an object"]
+    errors = [f"harness.{key} must name the harness's per-call spend-limit flag"
+              for key in ("agent_limit_flag", "grader_limit_flag")
+              if not isinstance(harness.get(key), str) or not harness[key].startswith("-")]
+    if harness.get("grader_output") not in GRADER_OUTPUTS:
+        errors.append(f"harness.grader_output must be one of {GRADER_OUTPUTS}")
+    if not isinstance(harness.get("grader_cmd_default"), str) or not harness["grader_cmd_default"].strip():
+        errors.append("harness.grader_cmd_default must be a command")
     return errors
 
 

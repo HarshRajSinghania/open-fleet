@@ -221,6 +221,12 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         self.refused(self.live("--cost-cap-usd", "5"), "['ship-it']: the variant fails the obligation check",
                      prereg)
 
+    def test_a_live_run_needs_a_per_call_limit(self):
+        self.refused(self.live("--cost-cap-usd", "5", "--agent-limit-flag", ""), "per-call limit",
+                     self.authorised())
+        self.refused(self.live("--cost-cap-usd", "5", "--grader-limit-flag", ""), "per-call limit",
+                     self.authorised())
+
     def test_a_live_run_refuses_a_stale_registration(self):
         prereg = self.authorised()
         prereg["registered_payloads"]["ship-it"]["reduced_sha256"] = "0" * 64
@@ -269,6 +275,11 @@ class TheDryRunExercisesThePipeline(SafetyNet):
                 ws = self.out / "cells" / "review-it" / task / "r0" / arm / "workspace"
                 trees.append(sorted(str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()))
             self.assertEqual(trees[0], trees[1], task)
+
+    def test_the_grader_bill_is_measured_through_the_meter(self):
+        for cell in self.cells(task="behavioral-4"):
+            self.assertEqual(cell["grader_cost_usd"], 0.0)
+            self.assertEqual(cell["charged_usd"], 0.0)
 
     def test_usage_comes_through_events_py(self):
         events = runner.events_mod()
@@ -357,10 +368,12 @@ class TheStubTierMeasuresWhatTheHarnessDid(SafetyNet):
         self.assertFalse(results["complete"])
         self.assertEqual(len(results["cells"]), 1)
 
-    def test_a_stub_that_reports_spend_breaches_a_zero_cap(self):
+    def test_a_stub_that_reports_spend_stops_the_run(self):
+        # Not the spend guard (that is pre-emptive, live only): a stub or the stand-in reporting any
+        # cost broke the no-model contract of its tier, and the run stops on it.
         code, results, _text = self.run_stub("spend")
         self.assertEqual(code, 1)
-        self.assertTrue(results["stopped"].startswith("CAP_EXCEEDED"), results["stopped"])
+        self.assertTrue(results["stopped"].startswith("SPEND_IN_NON_LIVE_TIER"), results["stopped"])
 
 
 class RelativePathsSurviveTheCellCwd(SafetyNet):
@@ -394,6 +407,93 @@ class RelativePathsSurviveTheCellCwd(SafetyNet):
             self.assertTrue(os.path.isabs(seen["out"]) and os.path.isabs(seen["catalog"]), seen)
             self.assertTrue(Path(seen["catalog"], "runtime", "evidence-manifest.md").is_file())
             self.assertTrue(os.path.isabs(seen["argv"][0]))
+
+
+def small_live_prereg(mission="review-it", behavioral=(4,)):
+    """A TEST registration marked AUTHORISED with a one-pair design (both cells behavioral), pinned
+    to the catalog as it is now. It authorises nothing: no model runs under it."""
+    prereg = copy.deepcopy(PREREG)
+    prereg["mission_mix"] = [row for row in prereg["mission_mix"] if row["mission"] == mission]
+    prereg["tasks"]["behavioral"]["cases"] = list(behavioral)
+    prereg["tasks"]["trajectories"]["cases"] = []
+    prereg.update(repeats=1, seeds=[606])
+    prereg["cost_cap"].update(status=ablation.AUTHORISED, authorised_usd=100.0,
+                              authorised_by="test fixture (not an authorisation)")
+    prereg["registered_payloads"] = ablation.measure(prereg)
+    return prereg
+
+
+class TheLiveSpendGuardIsPreEmptive(SafetyNet):
+    """#652 review, P1: a behavioral cell could start with exactly its agent reservation left, spend
+    it, then call the grader. The guard now reserves every call a cell will make (agent + grader)
+    before it starts, passes each call its per-call limit, and charges an unmeasured call in full.
+    Driven by a stub agent and grader that REPORT costs; no model runs."""
+
+    AGENT, GRADER = 5.0, 1.0  # the registration's per-call reservations
+
+    def test_the_registered_reservations_are_what_these_cases_assume(self):
+        cap = PREREG["cost_cap"]
+        self.assertEqual((cap["max_cost_per_agent_run_usd"], cap["grader_reserve_usd"]), (self.AGENT, self.GRADER))
+
+    def run_small(self, cap, agent_cost, grader="grader-json", grader_cost=0.25, *extra):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        code, _stdout, err = run_main(
+            ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", str(cap),
+             "--harness-cmd", self.stub_cmd("plain", "--cost", str(agent_cost)),
+             "--grader-cmd", self.stub_cmd(grader, "--cost", str(grader_cost)),
+             "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out), *extra])
+        results = json.loads((out / "results.json").read_text()) if (out / "results.json").is_file() else None
+        return code, results, err, out
+
+    def test_the_reviewers_boundary_never_starts_a_cell_it_cannot_cover(self):
+        # After cell one, the old guard saw exactly the USD 5 agent reserve left and started cell
+        # two, whose grader then pushed spend past the cap.
+        code, results, err, _ = self.run_small(11.0, 5.0)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("CAP_REACHED"), results["stopped"])
+        self.assertLessEqual(results["cost"]["spent_usd"], results["cost"]["cap_usd"])
+        self.assertEqual(results["cost"]["spent_usd"], 5.25)
+        self.assertEqual(results["cells"][0]["grader_cost_usd"], 0.25, "the grader's bill is measured")
+
+    def test_an_exact_fit_runs_and_lands_on_the_cap(self):
+        code, results, err, _ = self.run_small(12.0, self.AGENT, "grader-json", self.GRADER)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(results["cells"]), 2)
+        self.assertEqual(results["cost"]["spent_usd"], 12.0)
+        code, results, _err, _ = self.run_small(11.99, self.AGENT, "grader-json", self.GRADER)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("CAP_REACHED"), results["stopped"])
+        self.assertLessEqual(results["cost"]["spent_usd"], 11.99)
+
+    def test_an_unmeasured_grader_call_is_charged_its_full_reservation(self):
+        code, results, err, _ = self.run_small(100, 2.0, "grader-text")
+        self.assertEqual(code, 0, err)
+        for cell in results["cells"]:
+            self.assertIsNone(cell["grader_cost_usd"])
+            self.assertEqual(cell["charged_usd"], 2.0 + self.GRADER)
+        self.assertEqual(results["cost"]["spent_usd"], 2 * (2.0 + self.GRADER))
+
+    def test_a_call_that_overruns_its_reservation_stops_the_run(self):
+        for agent, grader in ((5.5, 0.25), (1.0, 1.5)):
+            with self.subTest(agent=agent, grader=grader):
+                code, results, _err, _ = self.run_small(100, agent, "grader-json", grader)
+                self.assertEqual(code, 1)
+                self.assertEqual(len(results["cells"]), 1)
+                self.assertTrue(results["stopped"].startswith("LIMIT_BREACHED"), results["stopped"])
+
+    def test_each_call_is_handed_its_per_call_limit(self):
+        code, _results, err, out = self.run_small(100, 1.0, "grader-json", 0.1)
+        self.assertEqual(code, 0, err)
+        limit = PREREG["cost_cap"]["harness_limit_fraction"]
+        for arm in ("baseline", "reduced"):
+            cell = out / "cells" / "review-it" / "behavioral-4" / "r0" / arm
+            agent_argv = json.loads((cell / "stub-env.json").read_text())["argv"]
+            grader_argv = json.loads((cell / "grader-usage.json.argv.json").read_text())
+            self.assertEqual(agent_argv[-2:], ["--max-budget-usd", f"{self.AGENT * limit:.2f}"])
+            self.assertEqual(grader_argv[-2:], ["--max-budget-usd", f"{self.GRADER * limit:.2f}"])
 
 
 class TheLiveGateEnforcesTheCap(SafetyNet):

@@ -27,10 +27,14 @@ Tiers, and what each may run
             AUTHORISED cap, `--cost-cap-usd` is explicit and within it, the registered payloads
             are current, nothing is filtered, and every variant passed the obligation check.
 
-Every tier needs an explicit `--cost-cap-usd`. Spend is the observed cost from the usage oracle
-plus a registered reserve per grader call; a live cell whose usage is unavailable stops the run,
-because a cap that cannot be measured cannot be enforced. A cell that runs and errors is a
-FAILED cell, kept in the denominator; cells never run (cap, stop) make the pair INCOMPLETE.
+Every tier needs an explicit `--cost-cap-usd`. The live spend guard is PRE-EMPTIVE (#652 review):
+before a cell starts, the worst case of every call it will make (the agent's reservation, plus
+the grader's for a behavioral cell) must fit in what the cap has left; each call is handed its own
+limit (`--max-budget-usd` at a registered fraction of its reservation); the grader runs behind a
+meter so its bill is measured; an unmeasured call is charged its whole reservation; a measured
+call above its reservation, or an agent run with no usage, stops the run. A cell that runs and
+errors is a FAILED cell, kept in the denominator; cells never run (cap, stop) make the pair
+INCOMPLETE.
 
 Harness contract (stub and live): the agent command reads the task on stdin, runs with the cell's
 workspace as cwd, prints Claude stream-json on stdout, and — for a trajectory cell — has its
@@ -124,7 +128,11 @@ if role == "grader":
     # it is never given invented evidence.
     rows = [{"text": a, "passed": i < len(lines), "evidence": lines[i] if i < len(lines) else ""}
             for i, a in enumerate(assertions)]
-    print(json.dumps({"assertions": rows}))
+    verdict = json.dumps({"assertions": rows})
+    if sys.argv[1:].count("--output-format") and sys.argv[sys.argv.index("--output-format") + 1] == "json":
+        # The shape `claude -p --output-format json` prints: the answer plus what it cost (nothing).
+        verdict = json.dumps({"type": "result", "result": verdict, "total_cost_usd": 0})
+    print(verdict)
     sys.exit(0)
 
 DOC = r"[A-Za-z0-9][A-Za-z0-9_-]*\.md"
@@ -166,6 +174,34 @@ for event in stream:
     print(json.dumps(event))
 '''
 
+# The grader's bill, measured (#652 review): eval.py's _grade_trace reads a bare verdict on stdout,
+# so the grader runs behind this pass-through, which takes its `claude-json` result apart, hands the
+# verdict on, and writes what the call cost to $ABLATION_GRADER_USAGE. `text` output carries no
+# cost, and is then charged its full reservation.
+GRADER_METER = r'''
+import json, os, subprocess, sys
+fmt, argv = sys.argv[1], sys.argv[sys.argv.index("--") + 1:]
+proc = subprocess.run(argv, input=sys.stdin.read(), capture_output=True, text=True)
+answer, cost = proc.stdout, None
+if fmt == "claude-json":
+    try:
+        obj = json.loads(proc.stdout)
+    except ValueError:
+        obj = None
+    if isinstance(obj, dict):
+        answer = obj["result"] if isinstance(obj.get("result"), str) else ""
+        value = obj.get("total_cost_usd")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            cost = value
+sink = os.environ.get("ABLATION_GRADER_USAGE")
+if sink:
+    with open(sink, "w", encoding="utf-8") as fh:
+        json.dump({"cost_usd": cost, "format": fmt, "exit": proc.returncode}, fh)
+sys.stdout.write(answer)
+sys.stderr.write(proc.stderr)
+sys.exit(proc.returncode)
+'''
+
 
 class Sandbox:
     """The private bin dirs and environment one run's commands execute under."""
@@ -182,6 +218,8 @@ class Sandbox:
             f"exec {shlex.quote(sys.executable)} -I {shlex.quote(str(self.inert / 'stand_in.py'))} \"$@\"\n",
             encoding="utf-8")
         self.stand_in.chmod(0o755)
+        self.meter = self.inert / "grader_meter.py"
+        self.meter.write_text(GRADER_METER, encoding="utf-8")
         env = dict(os.environ)
         # An inherited command override would route a cell somewhere this run did not choose.
         for var in ("EVAL_AGENT_CMD", "EVAL_GRADER_CMD", "WORKER_CMD", "CLAUDE_CMD", "CODEX_CMD",
@@ -368,7 +406,7 @@ def usage_of(stream_path, cell_id, task):
     return tokens_in, fields["output_tokens"], cost, reasons
 
 
-def grade_behavioral(ev, workspace, originals, trace, grader_cmd):
+def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=None):
     ev_mod = eval_mod()
     state_failed, scope = [], []
     for check in ev.get("workspace_state") or []:
@@ -383,12 +421,18 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd):
             scope.append(line)
     assertions = [str(a) for a in ev.get("assertions") or []]
     errors = []
+    sink = {"ABLATION_GRADER_USAGE": str(usage_path)} if usage_path else {}
     try:
-        with _environ(EVAL_GRADER_CMD=grader_cmd):
+        with _environ(EVAL_GRADER_CMD=grader_cmd, **sink):
             graded = ev_mod._grade_trace(assertions, trace)
     except (OSError, subprocess.SubprocessError) as err:
         graded = None
         errors.append(f"grader invocation failed: {ev_mod._process_error(err)}")
+    grader_cost = None
+    try:
+        grader_cost = json.loads(Path(usage_path).read_text(encoding="utf-8")).get("cost_usd") if usage_path else None
+    except (OSError, ValueError):
+        grader_cost = None
     passed = sum(1 for row in (graded or {}).get("assertions", []) if row.get("passed"))
     if graded is None and not errors:
         errors.append("grader returned no valid JSON verdict for the requested assertions")
@@ -397,12 +441,12 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd):
             "assertions": len(assertions), "state_failed": state_failed,
             "scope_violations": len(scope), "approval_violations": 0, "attempted": [],
             "narration_only": ev.get("narration_only") is True, "grader_called": True,
-            "errors": errors}
+            "grader_cost_usd": grader_cost, "errors": errors}
 
 
 def grade_trajectory(case, recording):
     blank = {"success": False, "correct_terminal": False, "scope_violations": 0,
-             "approval_violations": 0, "attempted": [], "grader_called": False}
+             "approval_violations": 0, "attempted": [], "grader_called": False, "grader_cost_usd": None}
     if not recording.is_file():
         return {**blank, "errors": ["no #602 recording at $ABLATION_OUT/trajectory.jsonl"]}
     result = eval_mod().run_trajectory_eval(case_id=case["id"], trajectory=recording)
@@ -468,7 +512,8 @@ def run_cell(ctx, pair, arm):
         cell[f"{status}_reads" if status != "omitted" else "read_omissions"] = \
             sum(1 for v in reads.values() if v == status)
     if ev is not None:
-        graded = grade_behavioral(ev, workspace, originals, stream, ctx["grader_cmd"])
+        graded = grade_behavioral(ev, workspace, originals, stream, ctx["grader_cmd"],
+                                  cell_dir / "grader-usage.json")
     else:
         graded = grade_trajectory(case, cell_dir / "trajectory.jsonl")
     graded["errors"] = errors + graded["errors"]
@@ -531,6 +576,45 @@ def _git_head():
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def limit_flags(args, prereg):
+    """(agent flag, grader flag): the command line's, else the registration's (an empty string
+    on the command line means "this harness has none")."""
+    harness = prereg.get("harness") or {}
+    pick = (lambda given, key: given if given is not None else harness.get(key) or "")
+    return (pick(args.agent_limit_flag, "agent_limit_flag"), pick(args.grader_limit_flag, "grader_limit_flag"))
+
+
+def spend_model(prereg, tier):
+    """Per-call reservations (the worst case the guard holds back) and the limits handed to the
+    harness (a fraction of them: a harness's own limit can be overshot). Live only reserves."""
+    cap = prereg["cost_cap"]
+    agent, grader = cap["max_cost_per_agent_run_usd"], cap["grader_reserve_usd"]
+    fraction = cap["harness_limit_fraction"]
+    live = tier == "live"
+    return {"agent_reserve_usd": agent if live else 0.0, "grader_reserve_usd": grader if live else 0.0,
+            "agent_limit_usd": round(agent * fraction, 2), "grader_limit_usd": round(grader * fraction, 2)}
+
+
+def reservation(task, model):
+    """The worst case of every call a cell makes: its agent run, and a behavioral cell's grader."""
+    return model["agent_reserve_usd"] + (model["grader_reserve_usd"] if task.startswith("behavioral-") else 0.0)
+
+
+def charge(cell, model, tier):
+    """(USD charged, breached). Measured cost where there is one; an unmeasured live call is charged
+    its whole reservation. A measured call above its reservation means the harness limit did not
+    hold, so the pre-emptive guarantee is void and the run must stop."""
+    agent, grader = cell.get("cost_usd"), cell.get("grader_cost_usd")
+    if tier != "live":
+        return (agent or 0.0) + (grader or 0.0), False
+    charged = agent if agent is not None else model["agent_reserve_usd"]
+    breached = agent is not None and agent > model["agent_reserve_usd"]
+    if cell.get("grader_called"):
+        charged += grader if grader is not None else model["grader_reserve_usd"]
+        breached = breached or (grader is not None and grader > model["grader_reserve_usd"])
+    return charged, breached
+
+
 def preflight(args, api, prereg):
     """Every refusal, before anything is written or run. Returns the resolved tier."""
     tier = "fixture" if args.dry_run else args.tier
@@ -566,6 +650,12 @@ def preflight(args, api, prereg):
     if args.mission or args.task or (args.repeats not in (None, prereg["repeats"])):
         raise Refused("a live run is the whole registered design: no --mission/--task filter and "
                       "the registered repeats (a subset cannot support the recommendation)")
+    flags = limit_flags(args, prereg)
+    if not all(flags):
+        raise Refused("a live run needs a per-call limit for the agent and the grader "
+                      "(--agent-limit-flag / --grader-limit-flag, or the registration's harness "
+                      "fields): without one a call's worst case is unbounded, so no cap can be "
+                      "enforced before the spend")
     stale = {m: s for m, s in api.registration_status(prereg).items() if s != "current"}
     if stale:
         raise Refused(f"the registered payloads no longer match the catalog: {stale} — check out "
@@ -606,13 +696,23 @@ def run(args, api):
            "guard": lambda path: api.safe_output(path, prereg),
            "timeout": args.timeout or TIMEOUTS[tier], "payloads": {}, "cues": {},
            "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)})}
+    model = spend_model(prereg, tier)
+    agent_flag, grader_flag = limit_flags(args, prereg)
+    # Every call carries its own limit, whatever the tier, so both arms and every tier see the same
+    # command line; the stand-in and a stub ignore it.
+    agent_limit = [agent_flag, f"{model['agent_limit_usd']:.2f}"] if agent_flag else []
+    grader_limit = [grader_flag, f"{model['grader_limit_usd']:.2f}"] if grader_flag else []
     if tier == "fixture":
-        ctx["agent_cmd"] = [str(sandbox.stand_in), "-p", "--output-format", "stream-json"]
+        ctx["agent_cmd"] = [str(sandbox.stand_in), "-p", "--output-format", "stream-json"] + agent_limit
     else:
-        ctx["agent_cmd"] = absolute_argv(shlex.split(args.harness_cmd))
-    ctx["grader_cmd"] = (f"{shlex.quote(str(sandbox.stand_in))} -p" if tier != "live"
-                         else shlex.join(absolute_argv(shlex.split(args.grader_cmd or
-                                                                   eval_mod().DEFAULT_GRADER_CMD))))
+        ctx["agent_cmd"] = absolute_argv(shlex.split(args.harness_cmd)) + agent_limit
+    if tier == "live":
+        grader = absolute_argv(shlex.split(args.grader_cmd or prereg["harness"]["grader_cmd_default"]))
+        grader_output = args.grader_output or prereg["harness"]["grader_output"]
+    else:
+        grader, grader_output = [str(sandbox.stand_in), "-p", "--output-format", "json"], "claude-json"
+    ctx["grader_cmd"] = shlex.join([sys.executable, "-I", str(sandbox.meter), grader_output, "--",
+                                    *grader, *grader_limit])
     variants = {}
     for mission in missions:
         rec = api.generate(mission, prereg, out / "variants")
@@ -635,26 +735,34 @@ def run(args, api):
                           "spends on a disqualified variant")
     pairs = plan_pairs(prereg, missions, tasks, repeats)
     cap = args.cost_cap_usd
-    reserve = prereg["cost_cap"]["max_cost_per_agent_run_usd"] if tier == "live" else 0.0
-    grader_reserve = prereg["cost_cap"]["grader_reserve_usd"] if tier == "live" else 0.0
     cells, spent, stopped = [], 0.0, None
     for pair in pairs:
         for arm in pair["arms"]:
-            if spent + reserve > cap:
-                stopped = (f"CAP_REACHED: spent USD {spent:.2f} + the USD {reserve:.2f} per-run "
-                           f"reserve would pass the USD {cap:.2f} cap")
+            # PRE-EMPTIVE (#652 review, P1): a cell starts only if what remains covers the worst
+            # case of every call it will make. Nothing after the fact is the guard.
+            need = reservation(pair["task"], model)
+            if spent + need > cap:
+                stopped = (f"CAP_REACHED: USD {cap - spent:.2f} of the USD {cap:.2f} cap remains, "
+                           f"less than the USD {need:.2f} worst case of "
+                           f"{pair['mission']}.{pair['task']}.r{pair['repeat']}.{arm} (agent + grader)")
                 break
             cell = run_cell(ctx, pair, arm)
+            cell["charged_usd"], breached = charge(cell, model, tier)
             cells.append(cell)
-            spent += (cell["cost_usd"] or 0.0) + (grader_reserve if cell["grader_called"] else 0.0)
+            spent += cell["charged_usd"]
             hits = sandbox.tripwire_hits()
             if hits:
                 stopped = f"TRIPWIRE: a harness resolved past the stand-in: {hits[:200]!r}"
+            elif breached:
+                stopped = (f"LIMIT_BREACHED at {cell['cell']}: a call cost more than its reservation "
+                           f"(agent USD {cell['cost_usd']}, grader USD {cell['grader_cost_usd']}), so "
+                           "the harness limit did not hold and the cap can no longer be guaranteed")
             elif tier == "live" and cell["cost_usd"] is None:
-                stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: the cap cannot be enforced "
-                           f"({'; '.join(cell['usage_unavailable'])})")
-            elif spent > cap:
-                stopped = f"CAP_EXCEEDED: spent USD {spent:.2f} > cap USD {cap:.2f}"
+                stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: charged its full reservation; the "
+                           f"harness reports no usage ({'; '.join(cell['usage_unavailable'])})")
+            elif tier != "live" and spent > 0:
+                # Not a spend guard: a stub or the stand-in reporting cost broke its tier's contract.
+                stopped = f"SPEND_IN_NON_LIVE_TIER at {cell['cell']}: USD {spent:.2f} reported"
             if stopped:
                 break
         if stopped:
@@ -671,8 +779,8 @@ def run(args, api):
         "harness": ctx["agent_cmd"][0] if tier != "fixture" else "inert stand-in (no model)",
         "harness_version": args.harness_version, "agent_cmd": ctx["agent_cmd"],
         "grader_cmd": ctx["grader_cmd"], "catalog_head": _git_head(),
-        "cost": {"cap_usd": cap, "spent_usd": round(spent, 6), "reserve_per_run_usd": reserve,
-                 "grader_reserve_usd": grader_reserve},
+        "cost": {"cap_usd": cap, "spent_usd": round(spent, 6), **model,
+                 "agent_limit_flag": agent_flag or None, "grader_limit_flag": grader_flag or None},
         "plan": {"missions": missions, "tasks": tasks, "repeats": repeats, "pairs": len(pairs),
                  "cells_planned": 2 * len(pairs)},
         "variants": variants, "cells": cells, "stopped": stopped,
@@ -881,7 +989,14 @@ def add_run_arguments(sub):
     r.add_argument("--cost-cap-usd", type=float, default=None, dest="cost_cap_usd",
                    help="REQUIRED in every tier; a live cap must be within the authorised amount")
     r.add_argument("--harness-cmd", default=None, help="stub/live agent command (stream-json on stdout)")
-    r.add_argument("--grader-cmd", default=None, help="live grader command (default eval.py's)")
+    r.add_argument("--grader-cmd", default=None,
+                   help="live grader command (default: the registration's grader_cmd_default)")
+    r.add_argument("--grader-output", choices=("claude-json", "text"), default=None,
+                   help="what the live grader prints: claude-json carries its cost (default: registered)")
+    r.add_argument("--agent-limit-flag", default=None,
+                   help="the harness's per-call spend-limit flag (default: registered; '' = none)")
+    r.add_argument("--grader-limit-flag", default=None,
+                   help="the grader's per-call spend-limit flag (default: registered; '' = none)")
     r.add_argument("--model", default=None)
     r.add_argument("--harness-version", default=None)
     r.add_argument("--mission", action="append", default=None, help="fixture/stub only: a subset")

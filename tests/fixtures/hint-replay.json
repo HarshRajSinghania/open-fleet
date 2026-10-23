@@ -1644,6 +1644,112 @@
      "marker": "pass-through decorator"
     }
    }
+  },
+  {
+   "id": "untracked-test-added",
+   "about": "An untracked new test next to an unchanged source: the working tree's oracle changed, git diff alone never saw it (PR #639 review).",
+   "commits": [
+    {
+     "name": "c0",
+     "files": {
+      "README.md": "# fixture\n",
+      "src/__init__.py": "",
+      "src/auth.py": "def refresh(token):\n    return token + 1\n",
+      "tests/test_auth.py": "import unittest\n\n\nclass Refresh(unittest.TestCase):\n    def test_once(self):\n        self.assertEqual(1 + 1, 2)\n"
+     }
+    }
+   ],
+   "worktree_edits": {
+    "tests/test_auth_extra.py": "import unittest\n"
+   },
+   "runs": [
+    {
+     "run": "2026-01-10-run-a",
+     "manifest": {
+      "unit": "AUTH-9",
+      "status": "verified",
+      "files_touched": [
+       "src/auth.py"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "refresh survives a clock skew"
+      }
+     }
+    }
+   ],
+   "query": [
+    "src/auth.py"
+   ],
+   "expect": {
+    "2026-01-10-run-a/AUTH-9": {
+     "currency": "STALE",
+     "reason": "tests-changed:tests/test_auth_extra.py",
+     "class": "stale",
+     "marker": "survives a clock skew"
+    }
+   }
+  },
+  {
+   "id": "untracked-dependency-added",
+   "about": "An untracked new dependency manifest next to an unchanged source: currency UNKNOWN, git diff alone never saw it (PR #639 review).",
+   "commits": [
+    {
+     "name": "c0",
+     "files": {
+      "README.md": "# fixture\n",
+      "src/__init__.py": "",
+      "src/auth.py": "def refresh(token):\n    return token + 1\n",
+      "tests/test_auth.py": "import unittest\n\n\nclass Refresh(unittest.TestCase):\n    def test_once(self):\n        self.assertEqual(1 + 1, 2)\n"
+     }
+    }
+   ],
+   "worktree_edits": {
+    "requirements.txt": "requests==2.32.3\n"
+   },
+   "runs": [
+    {
+     "run": "2026-01-10-run-a",
+     "manifest": {
+      "unit": "AUTH-10",
+      "status": "verified",
+      "files_touched": [
+       "src/auth.py"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "refresh needs no network"
+      }
+     }
+    }
+   ],
+   "query": [
+    "src/auth.py"
+   ],
+   "expect": {
+    "2026-01-10-run-a/AUTH-10": {
+     "currency": "UNKNOWN",
+     "reason": "dependencies-changed:requirements.txt",
+     "class": "unknown",
+     "marker": "needs no network"
+    }
+   }
   }
  ]
 }

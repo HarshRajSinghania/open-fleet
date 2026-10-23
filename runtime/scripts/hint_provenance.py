@@ -352,7 +352,9 @@ class LiveSource:
 
     def changes_since(self, rev):
         """{path: (status, new_path)} from source rev to the live tree/rev, renames detected:
-        a renamed path maps to ("R", its new name)."""
+        a renamed path maps to ("R", its new name). In working-tree mode an UNTRACKED file is a
+        change too (git diff never lists one): a new test or dependency file is part of what the
+        worker will run against (PR #639 review)."""
         def compute():
             args = ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-M", "-z", rev]
             if not self.worktree:
@@ -373,6 +375,13 @@ class LiveSource:
                 else:
                     out[fields[i + 1]] = (status, None)
                     i += 2
+            if self.worktree:
+                extra = git(self.root, "ls-files", "--others", "--exclude-standard", "-z")
+                if not _ok(extra):
+                    raise ProvenanceError("cannot list untracked files in the live source")
+                for path in filter(None, extra.stdout.split("\0")):
+                    # Removed from the index yet present on disk: changed, not deleted.
+                    out[path] = ("M", None) if out.get(path, ("A",))[0] == "D" else out.get(path, ("A", None))
             return out
         return self._memo(("diff", rev), compute)
 

@@ -261,6 +261,14 @@ class CurrencyAgainstTheLiveSource(unittest.TestCase):
                 self.assertEqual(self.label("decorator-changed", key),
                                  ("STALE", [f"symbol-changed:src/views.py::{name}"], False))
 
+    def test_untracked_files_are_part_of_the_working_tree(self):
+        # PR #639 review: git diff skips untracked files, so a new test or dependency file left an
+        # unchanged source's hint CURRENT.
+        self.assertEqual(self.label("untracked-test-added", "2026-01-10-run-a/AUTH-9"),
+                         ("STALE", ["tests-changed:tests/test_auth_extra.py"], False))
+        self.assertEqual(self.label("untracked-dependency-added", "2026-01-10-run-a/AUTH-10"),
+                         ("UNKNOWN", ["dependencies-changed:requirements.txt"], True))
+
     def test_live_rev_pins_a_commit_instead_of_the_working_tree(self):
         fx = Fixture(scenario([{"name": "c0", "files": BASE}],
                               [unit_run("2026-02-01-run-a", "AUTH-1", "@c0", ["src/auth.py"], note="n")],
@@ -594,6 +602,15 @@ class MutationControls(unittest.TestCase):
         def no_renames(self, rev):
             return {k: (("D", None) if v[0] == "R" else v) for k, v in original(self, rev).items()}
         self.red(["renamed-path"], (hp.LiveSource, "changes_since", no_renames))
+
+    def test_untracked_listing(self):
+        original = hp.git
+
+        def blind_to_untracked(repo, *args, text=True):
+            if args[:2] == ("ls-files", "--others"):
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return original(repo, *args, text=text)
+        self.red(["untracked-test-added", "untracked-dependency-added"], (hp, "git", blind_to_untracked))
 
     def test_symbol_check(self):
         self.red(["symbol-scope"], (hp, "symbol_block", lambda text, symbol: "same"))

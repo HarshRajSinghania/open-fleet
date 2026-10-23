@@ -30,6 +30,41 @@ truth is `.claude-plugin/plugin.json`.
   agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
   first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
   for other providers.
+- **Provenance retention receipts are verified offline against the signed inventory** (#608).
+  `provenance.retention` names a v1 receipt (`open-fleet/retention-receipt/v1`): a
+  `{record, sig_b64}` envelope whose eight fields — schema, unit, source revision, inventory
+  path, the inventory's signed digest, log index, entry UUID, signer — are all signed over
+  dispatch-sign.py's canonical form. `inventory.py receipt` writes one for an inventory the same
+  key signed. `verify.py` checks it when the binding is claimed (`provenance.retention_receipt` in
+  the manifest, or `--retention-pubkey` from the coordinator) and only against that supplied key:
+  a key declared in the receipt is refused. It refuses a missing, unreadable or path-escaping
+  receipt, the wrong key or signer, a signature mismatch, a replay from another unit, revision,
+  run or inventory, an unsigned or altered inventory, and a manifest the inventory does not pin.
+  The NOTE says what was not verified: log inclusion, retention, the inventoried files, any legal
+  determination. Unclaimed provenance keeps its presence-only check. `inventory.py` and
+  `gitexec.py` join the signed verifier toolchain, and the transcript's argument tuple gains
+  `retention_pubkey`; run_report.py mirrors both. `tests/test_retention_receipt.py` deletes each
+  refusal's guard from a copy of the verifier and requires the case to pass there.
+
+- **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
+  first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
+  a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry
+  failed `task_not_startable` and pointed nowhere, and a crash after the spawn let `worker-stop`
+  record `stopped` while the agent kept running.
+  - The launch intent is now written in the same transaction as the task claim, before any side
+    effect. The launch gate is a compare-and-set, so one monitor at most runs a dispatch.
+  - `orchestration launch-reconcile` (and, automatically, `worker-list`, `worker-show` and a new
+    start of the same task) settles a launch whose coordinator is provably gone, by its recorded
+    identity: it rolls back, or adopts the monitor that won the gate. It never respawns.
+  - `--takeover` fences a live coordinator, which fails its next commit with `launch_fenced`.
+  - A `--retry-request` replays its outcome, and a changed payload is refused as `request_mismatch`.
+  - Every recovery writes a receipt naming processes, preserved refs, task and dispatch states and
+    cleanup, with `completionInferred: false`.
+  - What is tested, as `docs/runtimes.md` records it: setsid is crash-tested at every boundary.
+    Docker `danger` is crash-tested at every boundary, and through a host crash that orphans the
+    container, against a real daemon in the opt-in tier `tests/test_posix_docker_crash.py`
+    (`OPEN_FLEET_DOCKER_CRASH_TEST=1`, a digest-pinned fixture image with an inert `claude`). Any
+    other run reports that tier as NOT RUN. tmux and cmux are not crash-tested.
 - **VF-Bench samples the verifier invariants it used to name as unsampled** (#600). Twenty-eight
   isolated traps join the corpus — signed-dispatch tamper on a profile-signed record, class
   substitution and replay; hidden criteria in a table and in JSON; unaddressed and dropped

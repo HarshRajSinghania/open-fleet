@@ -1,0 +1,13 @@
+{
+  "record": {
+    "entry_uuid": "0608060806080608060806080608060806080608060806080608060806080608",
+    "inventory": "tests/fixtures/retention-receipt/report.md",
+    "inventory_sha256": "de56732e0d807fae5c8df9b04dd5aead7103ad7c97019585339b020215e6417f",
+    "log_index": 608,
+    "schema": "open-fleet/retention-receipt/v1",
+    "signer": "ed25519:65b60673d6ed884bf01c2c222d82ada0740f29ac3355d6a925c81f17f47a27b8",
+    "source_revision": "6080608060806080608060806080608060806080",
+    "unit": "r15-receipt-fixture"
+  },
+  "sig_b64": "M440BE9snS0DSX2lS6xaDu0YL0cn5i35S270CXuDu1yJuXL/18kiZ55oK4broJEN9DxCJ8L7j4nXFSt8GplOCg=="
+}

@@ -65,6 +65,20 @@ G-1). Without ``--pubkey`` ``check`` reads the block exactly as before, and
 for enforcement — what switches enforcement on for a run report is the
 committed ``.orca/dispatch-pubkey``, which run_report.py reads where the
 transcript rule reads it. Stdlib only, offline: nothing here reaches a network.
+
+Retention receipts (#608). When the coordinator uploads a signed inventory's digest to a
+transparency log (optional, out of band, never a gate), ``receipt --key <seed>`` records
+the result as a v1 RECEIPT: the same ``{record, sig_b64}`` envelope, its record exactly
+``RECEIPT_FIELDS`` — ``schema`` (``RECEIPT_SCHEMA``), ``unit`` and ``source_revision``
+(the graded manifest's ``unit`` and ``head_sha``), ``inventory`` (the repo-relative
+document carrying the signed inventory), ``inventory_sha256`` (that inventory's signed
+digest), ``log_index`` and ``entry_uuid`` (what the log returned), and ``signer``
+(``ed25519:`` + sha256 of the signing public key) — signed over dispatch-sign.py's
+canonical form of those fields. verify.py checks it OFFLINE (``--retention-pubkey``)
+through ``parse_receipt``, ``verify_receipt`` and ``bind_receipt``, against a key the
+verifier is handed and never one the receipt carries. A receipt proves that the
+configured key bound this log entry's identifiers to these inventory bytes; it does not
+prove that the log entry exists, that anything is retained, or any legal outcome.
 """
 import argparse
 import base64
@@ -103,6 +117,19 @@ SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 SIGNATURE_TAG = "inventory-signature"
 SIGNATURE_LINE = re.compile(r"^\s*<!--\s*" + SIGNATURE_TAG + r"\s+(\{.*\})\s*-->\s*$")
 SIGNED_FIELDS = ("entries", "inventory_sha256")
+# The v1 retention receipt (#608). A closed shape: every field is signed, none is optional, and
+# nothing else may ride along — a field outside it is refused rather than ignored, so a receipt
+# cannot smuggle a key (or anything else) a lenient reader might honour. `schema` is signed too:
+# a v2 record cannot pass as v1, and a receipt signature can never be read as another envelope's.
+RECEIPT_SCHEMA = "open-fleet/retention-receipt/v1"
+RECEIPT_FIELDS = ("schema", "unit", "source_revision", "inventory", "inventory_sha256",
+                  "log_index", "entry_uuid", "signer")
+RECEIPT_SHAPES = {
+    "source_revision": re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),  # a full commit id
+    "inventory_sha256": re.compile(r"^[0-9a-f]{64}$"),
+    "entry_uuid": re.compile(r"^(?:[0-9a-f]{16})?[0-9a-f]{64}$"),  # Rekor: leaf hash, tree-id prefix optional
+    "signer": re.compile(r"^ed25519:[0-9a-f]{64}$"),
+}
 _HERE = Path(__file__).resolve().parent
 
 
@@ -114,6 +141,12 @@ class SignatureRefused(Exception):
     """The envelope does not verify: the wrong entry set, an undecodable signature, or another
     key. Raised, never returned, so no code path can hand a caller a refusal that looks like a
     verdict."""
+
+
+class ReceiptRefused(Exception):
+    """A retention receipt does not bind (#608): the wrong shape, another signer, a signature that
+    does not hold, another unit, revision or inventory. Raised for the same reason as
+    SignatureRefused — a refusal must never be mistakable for a verdict."""
 
 
 def sha256_file(path):
@@ -367,6 +400,119 @@ def _place_signature(lines, line):
     return lines
 
 
+def signer_id(pub):
+    """A signer's identity: ``ed25519:`` + sha256 of its 32 raw public-key bytes. The verifier
+    derives the identity it TRUSTS from the key it was handed; a receipt can only name one."""
+    return "ed25519:" + hashlib.sha256(pub).hexdigest()
+
+
+def receipt_payload(record):
+    """The bytes a v1 receipt signature covers (#608): dispatch-sign.py's canonical_record over
+    RECEIPT_FIELDS — sorted keys, no whitespace — the one canonical form every signed artifact in
+    this toolchain uses, so signer and verifier cannot drift apart."""
+    return _dispatch_sign().canonical_record(record, RECEIPT_FIELDS)
+
+
+def receipt_envelope(seed, record):
+    """{record, sig_b64} for a v1 receipt record, signed with the coordinator's seed."""
+    return _dispatch_sign().envelope(seed, record, RECEIPT_FIELDS)
+
+
+def parse_receipt(raw):
+    """The v1 receipt envelope in `raw` (bytes), or ReceiptRefused — the SHAPE only; no key is
+    consulted here. Closed: the envelope is exactly {record, sig_b64} and the record exactly
+    RECEIPT_FIELDS, each in its v1 form. A key-like field anywhere is named as what it is: a
+    self-declared key, which establishes no trust."""
+    try:
+        envelope = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as err:
+        raise ReceiptRefused(f"not readable JSON ({err})") from err
+    if not (isinstance(envelope, dict) and isinstance(envelope.get("record"), dict)):
+        raise ReceiptRefused("not a {record, sig_b64} envelope")
+    record = envelope["record"]
+    for where, present, allowed in (("envelope", envelope, ("record", "sig_b64")),
+                                    ("record", record, RECEIPT_FIELDS)):
+        extra = sorted(set(present) - set(allowed))
+        keyish = [k for k in extra if "key" in k.lower()]
+        if keyish:
+            raise ReceiptRefused(
+                f"the {where} declares {keyish} — a key inside a receipt never establishes trust; "
+                "it is verified only against the key the verifier is handed (--retention-pubkey)")
+        if extra:
+            raise ReceiptRefused(f"the {where} carries {extra}, outside the {RECEIPT_SCHEMA} shape "
+                                 "— refused, not ignored")
+    missing = [k for k in RECEIPT_FIELDS if k not in record]
+    if missing:
+        raise ReceiptRefused(f"the record is missing {missing}")
+    if not isinstance(envelope.get("sig_b64"), str):
+        raise ReceiptRefused("sig_b64 is missing or not a string")
+    if record["schema"] != RECEIPT_SCHEMA:
+        raise ReceiptRefused(f"schema {record['schema']!r} is not {RECEIPT_SCHEMA!r} — this verifier "
+                             "reads v1 receipts only")
+    for field in ("unit", "inventory"):
+        if not (isinstance(record[field], str) and record[field].strip()):
+            raise ReceiptRefused(f"{field} must be a non-empty string, got {record[field]!r}")
+    if type(record["log_index"]) is not int or record["log_index"] < 0:
+        raise ReceiptRefused(f"log_index must be a non-negative integer, got {record['log_index']!r}")
+    for field, shape in RECEIPT_SHAPES.items():
+        if not (isinstance(record[field], str) and shape.match(record[field])):
+            raise ReceiptRefused(f"{field} {record[field]!r} is not in its v1 form")
+    return envelope
+
+
+def verify_receipt(envelope, pub, unit, source_revision):
+    """The receipt's record when it is the configured signer's statement about THIS unit at THIS
+    source revision; ReceiptRefused otherwise. `pub` is the verifier's trust material, never the
+    receipt's. Ordered so the cheaper lie is named first: identity, signature, then the replays."""
+    record = envelope["record"]
+    trusted = signer_id(pub)
+    if record["signer"] != trusted:
+        raise ReceiptRefused(f"it names signer {record['signer']}, but the configured trust key is "
+                             f"{trusted} — signed by, or naming, another key (wrong key)")
+    try:
+        sig = decode_signature(envelope["sig_b64"])
+    except SignatureRefused as err:
+        raise ReceiptRefused(f"signature mismatch: {err}") from err
+    if not _dispatch_sign()._load_ed25519().checkvalid(sig, receipt_payload(record), pub):
+        raise ReceiptRefused("signature mismatch: the signature does not verify under the "
+                             "configured key over the v1 payload — a field changed after signing "
+                             "(tampered), or the signature is not this key's")
+    if record["unit"] != unit:
+        raise ReceiptRefused(f"it binds unit {record['unit']!r}, not this manifest's {unit!r} — "
+                             "another run's receipt (replay)")
+    if record["source_revision"] != source_revision:
+        raise ReceiptRefused(f"it binds source revision {record['source_revision']}, not this "
+                             f"manifest's head_sha {source_revision!r} — a receipt for another "
+                             "revision (replay)")
+    return record
+
+
+def bind_receipt(record, lines, pub):
+    """(signed digest, entries) when `lines` — the document the receipt names — carry an inventory
+    whose own signature verifies under `pub` over exactly its entries, and whose signed digest is
+    the receipt's; ReceiptRefused otherwise. The entries are re-derived from the document, so an
+    entry edited after signing is refused here, not trusted from the envelope."""
+    try:
+        entries = [e for start, end in find_blocks(lines) for e in parse_entries(lines, start, end)]
+        _idx, envelope = find_signature(lines)
+    except InventoryError as err:
+        raise ReceiptRefused(f"the inventory it names cannot be read: {err}") from err
+    if envelope is None:
+        raise ReceiptRefused(f"{record['inventory']} carries no {SIGNATURE_TAG} — a receipt binds a "
+                             "SIGNED inventory, and an unsigned one binds nothing")
+    signed = envelope["record"].get("inventory_sha256")
+    try:
+        verify_signature(envelope, entries, pub)
+    except SignatureRefused as err:
+        raise ReceiptRefused(f"the inventory's own signature does not hold under the configured "
+                             f"key: {err}") from err
+    if record["inventory_sha256"] != signed:
+        raise ReceiptRefused(f"it binds inventory digest {record['inventory_sha256'][:12]}…, but "
+                             f"{record['inventory']} is signed over {str(signed)[:12]}… — a receipt "
+                             "for another inventory (replay), or a tampered digest")
+    return signed, entries
+
+
 def check_entries(entries, report, root, at=None):
     """(matched, mismatched, missing) for one inventory, in the tree or at a rev."""
     matched, mismatched, missing = [], [], []
@@ -531,6 +677,59 @@ def cmd_sign(args):
     return EXIT_OK
 
 
+def cmd_receipt(args):
+    """Write the v1 retention receipt (#608) for a report whose inventory is SIGNED by this same
+    seed and still re-derives from disk — the coordinator's record of an upload it already made.
+    Nothing is uploaded or looked up here: --log-index and --entry-uuid are what the log returned.
+    The receipt is parsed back before it is written, so the signer never emits a shape the
+    verifier would refuse."""
+    report, lines, entries = load(args.report)
+    root = repo_root(report.parent if report.parent.exists() else Path("."))
+    if root is None:
+        raise InventoryError(f"{args.report} is not inside a git work tree — a receipt names its "
+                             "inventory repo-relative")
+    _matched, mismatched, missing = check_entries(entries, report, root)
+    for path_text in [p for p, _r, _a in mismatched] + missing:
+        print(f"STALE    {path_text} — the inventory no longer re-derives from disk", file=sys.stderr)
+    if mismatched or missing:
+        print("inventory: refusing to write a receipt — run `inventory.py write` and `sign` first",
+              file=sys.stderr)
+        return EXIT_MISMATCH
+    seed = _read_seed(args.key)
+    pub = _dispatch_sign()._load_ed25519().publickey(seed)
+    _idx, envelope = find_signature(lines)
+    if envelope is None:
+        print(f"inventory: refusing to write a receipt — {args.report} carries no {SIGNATURE_TAG}; "
+              "a receipt binds a SIGNED inventory (`inventory.py sign --key <seed>`)", file=sys.stderr)
+        return EXIT_MISMATCH
+    try:
+        signed = verify_signature(envelope, entries, pub)
+    except SignatureRefused as why:
+        print(f"inventory: refusing to write a receipt — the inventory signature does not hold "
+              f"under this seed's key: {why}", file=sys.stderr)
+        return EXIT_MISMATCH
+    try:
+        rel = report.resolve().relative_to(Path(root).resolve()).as_posix()
+    except ValueError as err:
+        raise InventoryError(f"{args.report} is outside the repository at {root}") from err
+    record = {"schema": RECEIPT_SCHEMA, "unit": args.unit, "source_revision": args.source_revision,
+              "inventory": rel, "inventory_sha256": signed, "log_index": args.log_index,
+              "entry_uuid": args.entry_uuid, "signer": signer_id(pub)}
+    receipt = receipt_envelope(seed, record)
+    parse_receipt(json.dumps(receipt).encode("utf-8"))
+    text = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    if args.out is None:
+        sys.stdout.write(text)
+        return EXIT_OK
+    try:
+        Path(args.out).write_text(text, encoding="utf-8")
+    except OSError as err:
+        raise InventoryError(f"{args.out} could not be written: {err}") from err
+    print(f"inventory: wrote the {RECEIPT_SCHEMA} receipt for {rel} (digest {signed[:12]}…, "
+          f"log index {args.log_index}) to {args.out}")
+    return EXIT_OK
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="inventory.py",
@@ -557,16 +756,33 @@ def build_parser():
     sg = sub.add_parser("sign", help="sign the entry set with the coordinator's key (#386)")
     sg.add_argument("report", help="markdown report carrying the inventory block")
     sg.add_argument("--key", required=True, metavar="SEED", help="coordinator seed file from dispatch-sign.py gen-key")
+    rc = sub.add_parser("receipt", help="write the v1 retention receipt for a signed inventory (#608)")
+    rc.add_argument("report", help="markdown report carrying the SIGNED inventory block")
+    rc.add_argument("--key", required=True, metavar="SEED",
+                    help="the coordinator seed that signed the inventory (dispatch-sign.py gen-key)")
+    rc.add_argument("--unit", required=True, help="the graded manifest's `unit`")
+    rc.add_argument("--source-revision", required=True, metavar="SHA",
+                    help="the graded manifest's `head_sha` (a full commit id)")
+    rc.add_argument("--log-index", required=True, type=int, metavar="N",
+                    help="the transparency-log index the upload returned")
+    rc.add_argument("--entry-uuid", required=True, metavar="HEX",
+                    help="the transparency-log entry UUID the upload returned")
+    rc.add_argument("--out", metavar="PATH",
+                    help="write the receipt here (the path the manifest's provenance.retention "
+                         "names); stdout without it")
     return p
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    handlers = {"write": cmd_write, "check": cmd_check, "sign": cmd_sign}
+    handlers = {"write": cmd_write, "check": cmd_check, "sign": cmd_sign, "receipt": cmd_receipt}
     try:
         return handlers[args.command](args)
     except InventoryError as err:
         print(f"inventory: could not run: {err}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+    except ReceiptRefused as err:
+        print(f"inventory: receipt not written — {err}", file=sys.stderr)
         return EXIT_CANNOT_RUN
 
 

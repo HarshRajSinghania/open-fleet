@@ -2205,6 +2205,15 @@ if {repr(self.backend)} == "cmux":
         except (OSError, ValueError, TypeError, KeyError):
             return None
         head = str(rec.get("headSha") or "")
+        if r["state"] == "retained":
+            reported = self.state.terminal_report(
+                dispatch_id=r["dispatch_id"], worker_handle=r["terminal_handle"], run_id=r["run_id"]
+            )
+            if reported:
+                # Its monitor DID settle it (that is the mail), and the coordinator retained it
+                # afterwards: settling again rewrote the retain to `completed`, a `died` one
+                # included, on the next show or list (#596 review of #641). Retain stays final.
+                return {"exitCode": rc, "headSha": head, "died": {"syntheticDied": False, "retained": reported}}
         tail = ""
         with contextlib.suppress(OSError):
             tail = (lane / "events.jsonl").read_text(encoding="utf-8", errors="replace")[-500:]

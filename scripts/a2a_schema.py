@@ -554,11 +554,15 @@ def schema_errors(card, root="AgentCard", schema=None):
 
 
 def _normalize(schema, msg, value):
-    """A schema-valid ProtoJSON object with every known field keyed by its JSON name."""
+    """A schema-valid ProtoJSON object with every known field keyed by its JSON name.
+
+    A null is dropped: ProtoJSON reads it as the field's default, i.e. unset, so the semantic
+    checks see an absent key and report it -- they never call a string method on None (#636).
+    """
     out = {}
     for key, val in value.items():
         f = msg.lookup(key)
-        if f is None:
+        if f is None or val is None:
             continue
         if f.type in schema.messages and val is not None:
             sub = schema.messages[f.type]
@@ -573,6 +577,8 @@ def _normalize(schema, msg, value):
 
 
 def _absolute_url(text):
+    if not isinstance(text, str):
+        return False
     try:
         parts = urlsplit(text)
         return bool(parts.scheme and parts.netloc and parts.hostname)

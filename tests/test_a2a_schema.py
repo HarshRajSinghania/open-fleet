@@ -348,5 +348,36 @@ class TestCli(unittest.TestCase):
         self.assertEqual(self.run_cli().returncode, 2)
 
 
+class TestReviewFindings(unittest.TestCase):
+    """PR #636 review threads on the semantic checks, each pinned against the pinned proto/spec."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load(SCRIPT, "a2a_schema_review")
+
+    def errors_for(self, fn):
+        card = sample()
+        fn(card)
+        return self.mod.card_errors(card)
+
+    def test_a_null_extension_uri_is_reported_not_raised(self):
+        # ProtoJSON reads null as the default, so `"uri": null` passes the shape check; the
+        # semantic check must report the missing URI, never raise on the null.
+        errs = self.errors_for(lambda c: c["capabilities"].update(
+            extensions=[{"uri": None, "description": "no identifier"}]))
+        self.assertIn("$.capabilities.extensions[0].uri: expected an absolute URI", errs)
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "null-uri.json"
+            card = sample()
+            card["capabilities"]["extensions"] = [{"uri": None}]
+            bad.write_text(json.dumps(card), encoding="utf-8")
+            p = subprocess.run([sys.executable, str(SCRIPT), str(bad), str(SAMPLE)],
+                               capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertIn(f"A2A_CARD=invalid {bad}", p.stderr)
+        self.assertIn(f"A2A_CARD=valid {SAMPLE}", p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

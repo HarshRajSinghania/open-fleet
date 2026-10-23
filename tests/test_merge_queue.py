@@ -68,7 +68,7 @@ class LeaseAndFencing(QueueCase):
     def test_one_conductor_per_repository_and_base(self):
         self.acquire("c1")
         rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2")
-        self.assertEqual((rc, out["code"]), (3, "lease_held"), out)
+        self.assertEqual((rc, out.get("code")), (3, "lease_held"), out)
         self.assertEqual(out["data"]["holder"], "c1")
         # A second BASE in the same repository is a second queue with its own conductor.
         self.w.git(self.w.worker, "push", "-q", "origin", f"origin/{W.BASE}:refs/heads/integration-2")
@@ -108,7 +108,7 @@ class LeaseAndFencing(QueueCase):
         first = self.acquire("c1")
         second = self.acquire("c1")
         rc, out = self.w.cli("plan", "--token", first)
-        self.assertEqual((rc, out["code"]), (3, "fenced"))
+        self.assertEqual((rc, out.get("code")), (3, "fenced"))
         self.assertEqual(self.w.cli("plan", "--token", second)[0], 0)
 
     def test_an_expired_lease_is_acquirable_without_takeover(self):
@@ -136,7 +136,7 @@ class LeaseAndFencing(QueueCase):
 
     def test_an_unknown_token_is_not_an_owner(self):
         rc, out = self.w.cli("plan", "--token", "0" * 32)
-        self.assertEqual((rc, out["code"]), (3, "unknown_token"))
+        self.assertEqual((rc, out.get("code")), (3, "unknown_token"))
 
 
 class Boarding(QueueCase):
@@ -175,7 +175,7 @@ class Boarding(QueueCase):
         a = self.w.unit("alpha")
         self.board(token, a)
         rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**a, "branch": "elsewhere"}), "--run", "r1")
-        self.assertEqual((rc, out["code"]), (2, "payload_mismatch"))
+        self.assertEqual((rc, out.get("code")), (2, "payload_mismatch"))
 
     def test_reboarding_a_unit_supersedes_it_and_joins_the_back(self):
         token = self.acquire()
@@ -216,7 +216,7 @@ class Boarding(QueueCase):
         forged = {**a, "reviewed_wtree": self.w.tree(f"{W.DEFAULT}")}
         self.w.git(self.w.conductor, "fetch", "-q", "origin", "alpha")
         rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(forged))
-        self.assertEqual((rc, out["code"]), (2, "reviewed_tree_mismatch"))
+        self.assertEqual((rc, out.get("code")), (2, "reviewed_tree_mismatch"))
         self.assertEqual(self.status()["all"], [])
 
 
@@ -239,7 +239,7 @@ class FifoAndFreeze(QueueCase):
         _a, b = self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
         self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
         rc, out = self.w.cli("merge", "--token", token, "--entry", b)
-        self.assertEqual((rc, out["code"]), (2, "not_head"))
+        self.assertEqual((rc, out.get("code")), (2, "not_head"))
         self.assertEqual(self.w.merge_log("start"), [])
 
     def test_a_merged_entry_must_be_acknowledged_before_the_next_merge(self):
@@ -248,7 +248,7 @@ class FifoAndFreeze(QueueCase):
         self.w.cli("plan", "--token", token)
         self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"]), (1, "ack_owed"))
+        self.assertEqual((rc, out.get("code")), (1, "ack_owed"))
         rc, out = self.w.cli("ack", "--token", token, "--entry", a, "--note", "ledgered")
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
@@ -264,9 +264,9 @@ class FifoAndFreeze(QueueCase):
         self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
         self.w.cli("ack", "--token", token, "--entry", ids[0])
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"], out["data"]["entry"]), (1, "queue_frozen", ids[1]))
+        self.assertEqual((rc, out.get("code"), out["data"]["entry"]), (1, "queue_frozen", ids[1]))
         rc, out = self.w.cli("plan", "--token", token)
-        self.assertEqual((rc, out["code"]), (1, "queue_frozen"))
+        self.assertEqual((rc, out.get("code")), (1, "queue_frozen"))
         self.assertEqual(self.status()["frozen"]["entry"], ids[1])
         self.assertEqual(self.w.merged_heads(), [a["reviewed_sha"]], "a unit merged past a frozen predecessor")
         failed = [r for r in self.receipts(ids[1]) if r["kind"] == "failed"][0]["body"]
@@ -287,10 +287,10 @@ class FifoAndFreeze(QueueCase):
         self.w.set_gh(lambda s: s["prs"][str(a["pr"])].__setitem__("refuse", "Required status check is failing"))
         self.w.cli("plan", "--token", token)
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"]), (1, "merge_refused"), out)
+        self.assertEqual((rc, out.get("code")), (1, "merge_refused"), out)
         self.assertEqual(self.state_of(ids[0]), "failed")
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual(out["code"], "queue_frozen")
+        self.assertEqual(out.get("code"), "queue_frozen")
         self.w.set_gh(lambda s: s["prs"][str(a["pr"])].pop("refuse"))
         self.w.cli("resolve", "--token", token, "--entry", ids[0], "--action", "requeue", "--reason", "checks fixed")
         self.w.cli("release", "--token", token)
@@ -361,7 +361,7 @@ class Freshness(QueueCase):
         token, ids = self._planned(a)
         self.w.external_base_write()
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"], out["data"]["reason"]), (1, "retest_required", "base_moved"), out)
+        self.assertEqual((rc, out.get("code"), out["data"]["reason"]), (1, "retest_required", "base_moved"), out)
         self.assertEqual(self.w.merge_log("start"), [])
         self.assertIn("retest_required", [r["kind"] for r in self.receipts(ids[0])])
         self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
@@ -389,7 +389,7 @@ class OfflineAndPromotion(QueueCase):
         self.w.cli("plan", "--token", token)
         self.w.set_gh(lambda s: s.__setitem__("offline", True))
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"]), (1, "offline"), out)
+        self.assertEqual((rc, out.get("code")), (1, "offline"), out)
         self.assertEqual(self.state_of(entry), "queued")
         self.assertEqual([r["body"]["step"] for r in self.receipts(entry) if r["kind"] == "offline"], ["revalidate"])
         # The lease itself needs no network: a handoff with nothing in flight succeeds offline.
@@ -401,12 +401,12 @@ class OfflineAndPromotion(QueueCase):
 
     def test_the_default_branch_is_never_a_merge_queue_base(self):
         rc, out = self.w.cli("init", "--base", W.DEFAULT, "--default", W.DEFAULT, "--consent", "grant:x")
-        self.assertEqual((rc, out["code"]), (2, "promotion_is_human"))
+        self.assertEqual((rc, out.get("code")), (2, "promotion_is_human"))
 
     def test_a_payload_aimed_at_the_default_branch_is_refused(self):
         token = self.acquire()
         rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**self.w.unit("alpha"), "base": W.DEFAULT}))
-        self.assertEqual((rc, out["code"]), (2, "promotion_is_human"))
+        self.assertEqual((rc, out.get("code")), (2, "promotion_is_human"))
 
     def test_a_pr_retargeted_at_the_default_branch_returns_to_review(self):
         a = self.w.unit("alpha")
@@ -451,7 +451,7 @@ class OfflineAndPromotion(QueueCase):
         self.w.cli("plan", "--token", token)
         self.w.ledger.mkdir()  # the ledger path is a directory: the receipt cannot be written
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"]), (1, "egress_failed"), out)
+        self.assertEqual((rc, out.get("code")), (1, "egress_failed"), out)
         self.assertEqual(self.w.merge_log("start"), [])
         self.assertEqual(self.state_of(entry), "queued")
 
@@ -467,9 +467,9 @@ class NonCooperatingWriters(QueueCase):
         rc, out = self.w.cli("merge", "--token", token)
         self.assertEqual((rc, out["result"], out["treeMatchesTested"]), (0, "merged", False), out)
         rc, out = self.w.cli("ack", "--token", token, "--entry", entry)
-        self.assertEqual((rc, out["code"]), (1, "untested_tree_merged"), out)
+        self.assertEqual((rc, out.get("code")), (1, "untested_tree_merged"), out)
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual(out["code"], "ack_owed")
+        self.assertEqual(out.get("code"), "ack_owed")
         rc, out = self.w.cli("ack", "--token", token, "--entry", entry, "--accept-untested-tree", "--note", "re-gated")
         self.assertEqual((rc, out["acceptedUntestedTree"]), (0, True), out)
 
@@ -484,7 +484,7 @@ class GitLaneOffline(QueueCase):
         url = self.w.git(self.w.conductor, "remote", "get-url", "origin")
         self.w.git(self.w.conductor, "remote", "set-url", "origin", str(self.w.tmp / "gone.git"))
         rc, out = self.w.cli("merge", "--token", token)
-        self.assertEqual((rc, out["code"]), (1, "offline"), out)
+        self.assertEqual((rc, out.get("code")), (1, "offline"), out)
         self.assertEqual(self.state_of(entry), "queued")
         self.w.git(self.w.conductor, "remote", "set-url", "origin", url)
         rc, out = self.w.cli("merge", "--token", token)

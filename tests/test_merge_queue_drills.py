@@ -171,7 +171,7 @@ class PauseTransferResume(DrillCase):
         a = self.conductor("A", park_at=[("intent_recorded", 1)])
         parked = a.until("intent_recorded")
         rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover")
-        self.assertEqual((rc, out["code"]), (1, "merge_in_flight"), out)
+        self.assertEqual((rc, out.get("code")), (1, "merge_in_flight"), out)
         lease = self.status()["lease"]
         self.assertEqual((lease["holder"], lease["epoch"]), ("A", parked["info"]["epoch"]), "ownership moved mid-merge")
         a.resume()
@@ -190,7 +190,7 @@ class PauseTransferResume(DrillCase):
         self.assertTrue(self.w.merge_log("start"), "the conductor never reached GitHub")
         a.kill()  # the merge child it spawned is still sending, holding the inherited lock
         rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover")
-        self.assertEqual((rc, out["code"]), (1, "merge_in_flight"), out)
+        self.assertEqual((rc, out.get("code")), (1, "merge_in_flight"), out)
         rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover", "--wait", "30")
         self.assertEqual(rc, 0, out)
         self.assertEqual([d["resolution"] for d in out["reconciled"]], ["merged"],
@@ -206,7 +206,7 @@ class PauseTransferResume(DrillCase):
         a.kill()
         self.w.set_gh(lambda s: s.__setitem__("offline", True))
         rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover")
-        self.assertEqual((rc, out["code"]), (1, "in_flight_unknown"), out)
+        self.assertEqual((rc, out.get("code")), (1, "in_flight_unknown"), out)
         lease = self.status()["lease"]
         self.assertEqual((lease["holder"], lease["epoch"]), ("A", parked["info"]["epoch"]), "handed off on a guess")
         self.assertEqual(self.status()["inFlight"], [self.status()["line"][0]["entry_id"]])

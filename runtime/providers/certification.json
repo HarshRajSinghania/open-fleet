@@ -1,10 +1,10 @@
 {
   "_about": "Versioned certification record for every advertised Runtime Provider Interface route (#596). Provider cells are capabilities.json's supported_profiles x supported_harnesses per provider; harness cells are base.py's launch table x {ro, rw}. Each route group names its tier, evidence paths, explicit limitations and, for a refusal, the typed refusal. An upstream version or commit that was never recorded stays null (rendered `unknown`) and is never guessed. A provider bound to a pin (`upstream.pin`) goes STALE — every one of its cells reads `stale`, never its recorded tier — as soon as the pin's commit, version or live_receipts.version differs from `certified_against`; recheck the cells, bump record_version, re-record. runtime/scripts/certification.py validates and renders this file; docs/certification.md explains it and carries the first-run guide.",
   "schema_version": "open-fleet-certification/v1",
-  "record_version": 1,
+  "record_version": 2,
   "recorded": "2026-10-23",
   "tiers": {
-    "live-witnessed": "A real upstream build and a real harness ran this route end to end; the evidence is a docs/runs/ report whose RUN: header binds (verifier=GREEN, cited as a mission's proof_evidence). Exact upstream and harness versions are recorded.",
+    "live-witnessed": "A real upstream build and a real harness ran this route end to end; the evidence is a docs/runs/ report whose RUN: header binds (verifier=GREEN, cited as a mission's proof_evidence) and whose own inventoried artifacts name this exact route, quoted in witnessed.route. Exact upstream and harness versions are recorded.",
     "fixture-tested": "The fleet's own code for this route runs in CI against an in-repo fixture — a scripted upstream transport or the first_run.py inert worker. Proves the fleet's side of the route; proves nothing about the upstream build or the harness.",
     "source-only": "The route's launch or flags were written from reading upstream source or docs; no test drives this exact route.",
     "unsupported": "The fleet refuses this route before any launch, with the typed refusal named in `refusal`.",
@@ -32,7 +32,15 @@
             "upstream_version": "orca-ide 1.4.224",
             "harness_version": "Claude Code 2.1.296",
             "host": "Ubuntu 24.04.5 LTS arm64 (OrbStack VM)",
-            "date": "2026-10-13"
+            "date": "2026-10-13",
+            "route": [
+              {
+                "path": "docs/runs/2026-10-13-review-it-linux/manifest.json",
+                "lines": [
+                  "\"toolchain\": \"CPython 3.12.3 on Ubuntu 24.04.5 LTS arm64 (OrbStack); orca-ide 1.4.224 serve; Claude Code 2.1.296 workers (PROFILE=ro) via Orca run_18440e737a97\","
+                ]
+              }
+            ]
           },
           "evidence": [
             "docs/runs/2026-10-13-review-it-linux.md",
@@ -52,7 +60,24 @@
             "upstream_version": "orca-ide 1.4.224",
             "harness_version": "Claude Code 2.1.296",
             "host": "Ubuntu 24.04.5 LTS arm64 (OrbStack VM)",
-            "date": "2026-10-13"
+            "date": "2026-10-13",
+            "route": [
+              {
+                "path": "docs/runs/2026-10-13-ship-it-mdtoc/stage-build.py",
+                "lines": [
+                  "env = dict(os.environ, SP=\"/home/ravindra/ship527-scratch\", PROFILE=\"rw\",",
+                  "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=\"1\", ORCA_COORD_ALLOW_CMD_OVERRIDE=\"1\",",
+                  "WORKER_CMD=\"claude --dangerously-skip-permissions\","
+                ]
+              },
+              {
+                "path": "docs/runs/2026-10-13-ship-it-mdtoc/ledger.md",
+                "lines": [
+                  "Substrate: Linux witness VM (Ubuntu 24.04.5 arm64, orca-ide 1.4.224 serve,",
+                  "Claude Code 2.1.296 workers). Lane: offline (no gh in VM) — local merges to"
+                ]
+              }
+            ]
           },
           "evidence": [
             "docs/runs/2026-10-13-ship-it-mdtoc.md",

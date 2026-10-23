@@ -25,7 +25,7 @@ every cell (`matrix [--json]`) and renders the block below (`markdown`).
 
 | Tier | What it proves | What it does not |
 |---|---|---|
-| `live-witnessed` | A real upstream build and a real harness ran the route. The evidence is a `docs/runs/` report whose `RUN:` header records `verifier=GREEN` and that binds under `run_report.py`. | That later upstream builds behave the same: a pin refresh voids the cell. |
+| `live-witnessed` | A real upstream build and a real harness ran the route. The evidence is a `docs/runs/` report whose `RUN:` header records `verifier=GREEN` and that binds under `run_report.py`, and whose own bound artifacts name this exact route (`witnessed.route`). | That later upstream builds behave the same: a pin refresh voids the cell. |
 | `fixture-tested` | The fleet's own code for the route runs in CI against an in-repo fixture: a scripted upstream transport, or the inert worker of [`first_run.py`](../runtime/scripts/first_run.py). | Anything about the real upstream build or the real harness binary. |
 | `source-only` | The launch or flags were written from upstream source or docs. | That anything drives the route. |
 | `unsupported` | The fleet refuses the route before any launch, with the typed refusal in `refusal`. A test pins the refusal. | — |
@@ -35,15 +35,21 @@ every cell (`matrix [--json]`) and renders the block below (`markdown`).
 ## Live-witnessed results
 
 Two cells are live. Both are on the Orca route with Claude Code, and both come from runs that
-bind in the [run archive](runs/README.md):
+bind in the [run archive](runs/README.md). A run that binds is not enough on its own: each live
+group's `witnessed.route` quotes whole lines of that run's inventoried artifacts, read at the
+run's `inventory_at`. Those lines must name the provider, the profile beside the harness, and the
+recorded versions. A group that copies another route's witness is refused (#596 review):
 
 - `orca` `ro`/`claude`: Orca 1.4.224 (`orca-ide`, Ubuntu 24.04.5 arm64) and Claude Code
   2.1.296, 2026-10-13, in the [review-it Linux witness](runs/2026-10-13-review-it-linux.md). The
   run used spawn_worker.sh's custom-argv lane. Turn start could not be observed on that host;
-  screen reads and `worker_done` deliveries proved the workers were live.
+  screen reads and `worker_done` deliveries proved the workers were live. Route: the run
+  manifest's `toolchain` line (`orca-ide 1.4.224`, `Claude Code 2.1.296`, `PROFILE=ro`).
 - `orca` `rw`/`claude`: same build and harness, in the [ship-it mdtoc run](runs/2026-10-13-ship-it-mdtoc.md).
   Only the `WORKER_CMD` override lane was witnessed. On the witness host, the supervised
-  `worker-start` lane reported `LAUNCHED_UNUSABLE`.
+  `worker-start` lane reported `LAUNCHED_UNUSABLE`. Route: the run's dispatch script
+  (`PROFILE="rw"`, `WORKER_CMD="claude --dangerously-skip-permissions"`) and its ledger
+  (`orca-ide 1.4.224`, `Claude Code 2.1.296`).
 
 The Orca pin is now v1.4.229. That pin re-witnessed only the source delta. It carries these
 receipts through `pins.json` `live_receipts`, and the record is certified against that
@@ -68,7 +74,7 @@ works. They do not show how the upstream build or the harness behaves:
   them.
 
 <!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->
-Record version 1 (2026-10-23). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
+Record version 2 (2026-10-23). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
 
 | Provider | Upstream certified against | live-witnessed | fixture-tested | source-only | unsupported | unavailable | stale |
 |---|---|---|---|---|---|---|---|

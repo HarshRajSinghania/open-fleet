@@ -27,11 +27,13 @@ Checks (`check`, the default) — each failure is one `FAIL:` line:
      SUPPORTED_HARNESSES x {ro, rw};
   3. evidence: every path resolves under --root; `path::Name` must define `class Name` or
      `def Name` there; every group states at least one limitation;
-  4. live-witnessed: needs `witnessed` (upstream_version, harness_version, host, date), an exact
-     upstream version, and a docs/runs/*.md report whose RUN: header records verifier=GREEN at a
-     self-run/external-run tier and which BINDS under run_report.py's check_report — the check
+  4. live-witnessed: needs `witnessed` (upstream_version, harness_version, host, date, route), an
+     exact upstream version, and a docs/runs/*.md report whose RUN: header records verifier=GREEN
+     at a self-run/external-run tier and which BINDS under run_report.py's check_report — the check
      scripts/validate.py applies to proof_evidence (it re-hashes the inventory at the pinned
-     commit, so it needs full git history, like validate.py);
+     commit, so it needs full git history, like validate.py). `route` quotes whole lines of that
+     run's inventoried artifacts, read at its inventory_at, which must NAME every cell of the
+     group: provider, PROFILE=<p> beside the harness, and the recorded versions;
   5. unsupported: needs the typed `refusal` code the route is refused with;
   6. freshness: a provider bound to a pin (`upstream.pin` = `<file>#<key>`) is STALE once the
      pin's commit, version or live_receipts.version differs from `certified_against`. Every
@@ -63,6 +65,12 @@ TIERS = ("live-witnessed", "fixture-tested", "source-only", "unsupported", "unav
 HARNESS_PROFILES = ("ro", "rw")
 GROUP_KEYS = {"profiles", "harnesses", "tier", "evidence", "limitations", "refusal", "witnessed"}
 WITNESS_KEYS = ("upstream_version", "harness_version", "host", "date")
+# How run evidence names a harness or provider beyond its bare key. Harness words match without
+# case; provider words with it, so `Orca` (the runtime) never matches `orca-fleet` (this repo).
+HARNESS_WORDS = {"claude": ("claude", "claude code"), "omp": ("omp", "oh-my-pi"), "antigravity": ("antigravity", "agy"),
+                 "cursor": ("cursor", "cursor-agent")}
+PROVIDER_WORDS = {"orca": ("orca-ide", "Orca")}
+PROFILE_RE = r"""\bPROFILE=["']?{profile}\b"""
 SYMBOL_RE = r"(?m)^\s*(?:class|def|async def)\s+{name}\b"
 
 
@@ -135,7 +143,86 @@ def _evidence_errors(where: str, evidence, root: Path) -> list[str]:
     return errors
 
 
-def _live_errors(where: str, group: dict, root: Path, run_report) -> list[str]:
+@functools.lru_cache(maxsize=None)
+def _bound_artifacts(report_rel: str, root: Path) -> dict:
+    """{path: stripped lines} for every artifact in the run's OWN directory that the report's
+    inventory binds, read from git at its inventory_at — the run's evidence, not the tree's."""
+    run_report = _load_module("of_cert_run_report", ROOT / "runtime" / "scripts" / "run_report.py")
+    report = root / report_rel
+    fields, err = run_report.parse_run_header(report.read_text(encoding="utf-8"))
+    run_dir = None if err else run_report.run_directory(report, fields["mission"], root)
+    if run_dir is None:
+        return {}
+    try:
+        _report, _lines, entries = run_report.inventory.load(report)
+    except run_report.inventory.InventoryError:
+        return {}
+    matched, _mismatched, _missing = run_report.inventory.check_entries(entries, report, root, at=fields["inventory_at"])
+    out = {}
+    for path in matched:
+        blob = run_report.blob_at(fields["inventory_at"], path, root) if path.startswith(run_dir + "/") else None
+        if blob is not None:
+            out[path] = tuple(ln.strip() for ln in blob.decode("utf-8", "replace").splitlines())
+    return out
+
+
+def _names(text: str, words: tuple[str, ...], *, case: bool = False) -> bool:
+    flags = 0 if case else re.IGNORECASE
+    return any(re.search(rf"(?<![\w-]){re.escape(w)}(?![\w-])", text, flags) for w in words)
+
+
+def _route_errors(where: str, cells: list[tuple[str, str, str, str]], witnessed: dict, bound: list[str],
+                  root: Path) -> list[str]:
+    """A live cell is live only for the route its bound evidence NAMES (#596 review): a group
+    that copied another route's witness and cited its run must not certify a harness, profile
+    or provider that run never dispatched. The record only points (`route`: path + whole lines);
+    the route itself is read from those lines as the cited run's inventory binds them."""
+    quotes = witnessed.get("route")
+    if not isinstance(quotes, list) or not quotes:
+        return [f"{where}: live-witnessed needs `witnessed.route`: whole lines of the cited run's bound "
+                "artifacts that name the route's provider, profile and harness; evidence that names no "
+                "route certifies none"]
+    errors, texts = [], []
+    artifacts: dict = {}
+    for rel in bound:
+        artifacts.update(_bound_artifacts(rel, root))
+    for quote in quotes:
+        path = quote.get("path") if isinstance(quote, dict) else None
+        lines = quote.get("lines") if isinstance(quote, dict) else None
+        if not isinstance(path, str) or not isinstance(lines, list) or not lines \
+                or not all(isinstance(x, str) and x.strip() for x in lines):
+            errors.append(f"{where}: witnessed.route entry {quote!r} needs a `path` and non-empty `lines`")
+            continue
+        if path not in artifacts:
+            errors.append(f"{where}: witnessed.route {path} is not an artifact the cited run's inventory binds "
+                          "(it must be listed in that report's inventory, inside the run's own directory)")
+            continue
+        have, want = artifacts[path], tuple(x.strip() for x in lines)
+        if not any(have[i:i + len(want)] == want for i in range(len(have) - len(want) + 1)):
+            errors.append(f"{where}: witnessed.route {path} does not carry the quoted lines at the run's inventory_at")
+            continue
+        texts.append("\n".join(want))
+    if errors:
+        return errors
+    for kind, name, profile, harness in cells:
+        words = HARNESS_WORDS.get(harness, (harness,))
+        missing = []
+        if kind == "provider" and not any(_names(t, PROVIDER_WORDS.get(name, (name,)), case=True) for t in texts):
+            missing.append(f"provider {name}")
+        if not any(re.search(PROFILE_RE.format(profile=re.escape(profile)), t) and _names(t, words) for t in texts):
+            missing.append(f"PROFILE={profile} beside harness {harness} in one quote")
+        hv, uv = witnessed.get("harness_version"), witnessed.get("upstream_version")
+        if hv and not (_names(hv, words) and any(hv in t for t in texts)):
+            missing.append(f"harness version {hv!r} naming {harness}")
+        if uv and not any(uv in t for t in texts):
+            missing.append(f"upstream version {uv!r}")
+        if missing:
+            errors.append(f"{where}: live-witnessed {profile}/{harness}: the cited evidence does not identify this "
+                          f"route — no {'; no '.join(missing)} in witnessed.route")
+    return errors
+
+
+def _live_errors(where: str, group: dict, root: Path, run_report, cells=()) -> list[str]:
     errors = []
     witnessed = group.get("witnessed")
     if not isinstance(witnessed, dict) or any(not witnessed.get(k) for k in WITNESS_KEYS):
@@ -155,6 +242,8 @@ def _live_errors(where: str, group: dict, root: Path, run_report) -> list[str]:
     if not bound:
         errors.append(f"{where}: live-witnessed without a binding run report — cite a docs/runs/*.md whose RUN: "
                       "header records verifier=GREEN and which binds under run_report.py")
+    elif isinstance(witnessed, dict):
+        errors += _route_errors(where, list(cells), witnessed, bound, root)
     return errors
 
 
@@ -254,7 +343,9 @@ def validate(root: Path, record_path: Path | None = None, pins_path: Path | None
             errors.append(f"{where}: limitations must be a non-empty list of statements")
         if cell["tier"] == "live-witnessed":
             group = {"witnessed": cell["witnessed"], "evidence": cell["evidence"]}
-            errors += _live_errors(where, group, root, run_report)
+            route = [(c["kind"], c["name"], c["profile"], c["harness"]) for c in cells
+                     if (c["kind"], c["name"], c["group"]) == gkey]
+            errors += _live_errors(where, group, root, run_report, route)
             if not (cell["upstream"].get("version") or cell["upstream"].get("commit")):
                 errors.append(f"{where}: live-witnessed on an upstream whose version is unknown")
         elif cell["witnessed"] is not None:

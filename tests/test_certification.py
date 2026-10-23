@@ -926,5 +926,79 @@ class TestWorkerReadsTheChange(Tripwired):
                 self.assertNotIn(str(inputs[0].relative_to(wt)), range_files, "the input is not part of the result")
 
 
+class TestLiveRouteIsIdentified(Tripwired):
+    """A live-witnessed cell is live only for the route its cited, BOUND evidence names: the
+    provider, profile, harness and harness version are read from the run's own inventoried
+    artifacts at its pinned commit, never from the record's own fields (#596 review)."""
+
+    def check_with(self, fn):
+        record = json.loads(RECORD.read_text(encoding="utf-8"))
+        fn(record)
+        path = self.tmp / "record.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return cert_main("check", "--record", str(path))
+
+    @staticmethod
+    def live(rec, profile):
+        return next(g for g in rec["providers"]["orca"]["routes"]
+                    if g["tier"] == "live-witnessed" and g["profiles"] == [profile])
+
+    @staticmethod
+    def move_codex_rw_to(rec, group):
+        """Reclassify orca rw/codex into `group`, keeping the cover exact."""
+        routes = rec["providers"]["orca"]["routes"]
+        home = next(g for g in routes if g["profiles"] == ["rw"] and "codex" in g.get("harnesses", []))
+        home["harnesses"].remove("codex")
+        routes.append({**group, "profiles": ["rw"], "harnesses": ["codex"]})
+
+    def test_a_copied_claude_witness_does_not_certify_codex(self):
+        # The reviewer's case: an rw/codex group copies the rw/claude witness and cites the
+        # Claude ship-it report, which binds — but names no codex worker anywhere.
+        p = self.check_with(lambda rec: self.move_codex_rw_to(rec, copy.deepcopy(self.live(rec, "rw"))))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("rw/codex", p.stderr)
+        self.assertIn("does not identify this route", p.stderr)
+
+    def test_a_witness_for_another_profile_does_not_certify_this_one(self):
+        def cite_the_ro_run(rec):
+            rw, ro = self.live(rec, "rw"), self.live(rec, "ro")
+            rw.update(witnessed=copy.deepcopy(ro["witnessed"]), evidence=list(ro["evidence"]))
+        p = self.check_with(cite_the_ro_run)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("rw/claude", p.stderr)
+        self.assertIn("does not identify this route", p.stderr)
+
+    def test_a_live_cell_whose_evidence_names_no_route_is_refused(self):
+        p = self.check_with(lambda rec: self.live(rec, "ro")["witnessed"].pop("route", None))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("witnessed.route", p.stderr)
+
+    def test_a_route_quote_the_bound_evidence_does_not_carry_is_refused(self):
+        ship = "docs/runs/2026-10-13-ship-it-mdtoc"
+        cases = {
+            "fabricated in a bound file": ({"path": f"{ship}/stage-build.py",
+                                            "lines": ['WORKER_CMD="codex exec", PROFILE="rw", orca-ide 1.4.224, codex-cli 0.50']},
+                                           "does not carry the quoted lines"),
+            "real but not bound by the run": ({"path": "runtime/providers/base.py",
+                                               "lines": ['"codex",']}, "is not an artifact the cited run's inventory binds"),
+        }
+        for name, (quote, needle) in cases.items():
+            with self.subTest(quote=name):
+                def forge(rec, quote=quote):
+                    group = copy.deepcopy(self.live(rec, "rw"))
+                    group["witnessed"].update(harness_version="codex-cli 0.50", route=[quote])
+                    self.move_codex_rw_to(rec, group)
+                p = self.check_with(forge)
+                self.assertEqual(p.returncode, 1, p.stdout)
+                self.assertIn(needle, p.stderr)
+
+    def test_the_genuine_claude_routes_still_pass(self):
+        p = cert_main("check")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        _errors, _stale, cells = certification.validate(ROOT)
+        live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["effective"] == "live-witnessed"}
+        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude")})
+
+
 if __name__ == "__main__":
     unittest.main()

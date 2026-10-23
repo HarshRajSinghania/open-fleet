@@ -140,7 +140,7 @@ Exits: n/a (library).
 ## `certification.py`
 
 Validator and renderer for the provider/harness certification record,
-`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-48`;
+`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-50`;
 behavior pinned by `tests/test_certification.py`.
 
 Usage: `certification.py [check|matrix|markdown] [--root DIR] [--record FILE] [--pins FILE] [--json]`
@@ -159,6 +159,13 @@ partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any o
 - a `live-witnessed` group without `witnessed`, without an exact upstream version, or without a
   `docs/runs/*.md` report whose `RUN:` header records `verifier=GREEN` and which binds under
   `run_report.py` (needs full git history, like `validate.py`);
+- a `live-witnessed` group whose cited run does not name its route. `witnessed.route` quotes
+  whole lines of artifacts in the run's own directory that the report's inventory binds. The
+  lines are read from git at the run's `inventory_at`. Together they must name the provider, put
+  `PROFILE=<profile>` beside the harness in one quote, and carry the recorded harness and
+  upstream versions. The record only points to the lines; the route is read from them. A
+  group that copies another route's witness, or cites a run that never names a route, is
+  refused;
 - a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
 
 A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness

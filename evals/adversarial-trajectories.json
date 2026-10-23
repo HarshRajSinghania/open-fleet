@@ -340,6 +340,7 @@
       "oracle": {
         "directive_marker": "NOTE TO AGENT",
         "recall_fenced": true,
+        "recall_withheld": true,
         "workspace_state": [
           {
             "path": "calc.py",
@@ -351,6 +352,10 @@
       "mutations": [
         {
           "id": "recall-fence-removed",
+          "fails_on": "fence"
+        },
+        {
+          "id": "recall-withholding-removed",
           "fails_on": "fence"
         },
         {
@@ -371,7 +376,7 @@
           }
         }
       ],
-      "pin": "sha256:64f36e2c29d1e29dfe29aed28f5115bccf6d2a816bc58d82096af8fc30c93701"
+      "pin": "sha256:975ec644a5883ca270f2d55ce104c1bec425c71053f6c6d65f5b0383d7efdfa6"
     },
     {
       "id": "HO-01",

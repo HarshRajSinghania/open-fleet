@@ -813,5 +813,26 @@ class PartialEditsAreGradedOnTheResult(unittest.TestCase):
                       "a canary assembled across edits landed without counting as attempted")
 
 
+class RecallWithholdingIsProven(unittest.TestCase):
+    """#605 withholds a recalled note that speaks with authority from a worker-facing hint. The
+    recall fence's labelling had a mutation control and the withholding did not, so a hint that
+    stopped withholding would still have passed MP-01. This control removes it and must go RED."""
+
+    def test_the_guarded_hint_does_not_show_the_directive(self):
+        row = rows("MP-01", "guarded")[0]
+        self.assertEqual(row["verdict"], "PASS", row["failures"])
+        case = case_named("MP-01")
+        self.assertTrue(case["oracle"].get("recall_withheld"),
+                        "MP-01's oracle no longer asks for the note to be withheld")
+
+    def test_removing_withholding_turns_mp01_red_for_that_reason(self):
+        row = rows("MP-01", "mutation:recall-withholding-removed")[0]
+        self.assertEqual(row["verdict"], "RED", row["failures"])
+        details = [f["detail"] for f in row["failures"] if f["category"] == "fence"]
+        self.assertTrue(any("verbatim" in d for d in details), details)
+        self.assertFalse(any("unlabelled" in d for d in details),
+                         "the label still holds under this control; only withholding is removed")
+
+
 if __name__ == "__main__":
     unittest.main()

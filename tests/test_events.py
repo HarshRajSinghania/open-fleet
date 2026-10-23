@@ -511,6 +511,53 @@ class TestClocksAndResume(Base):
         self.assertEqual(self.metric(report, 1, "throughput")["verified_closed"], 0)
 
 
+def carried_stream(late_clock="host-a"):
+    """Task t parked in wave 1, re-planned, retried and closed in wave 2 (one clock).
+
+    Hand calculation: wave 1 10:00-10:20 (1200 s): parked, 0 closed -> 0.00/h; done 10:10 ->
+    parked 10:15 = 5 m. Wave 2 10:30-11:00 (1800 s): 1 closed -> 2.00/h; done 10:40 -> pass
+    10:45 = 5 m."""
+    c = ONE
+    late = dict(c, clock=late_clock)
+    return [
+        ev("run.start", "10:00:00", data={"coordinator": "c1"}, **c),
+        ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1, "tasks": ["t"]}, **c),
+        ev("dispatch.launched", "10:01:00", task="t", dispatch="d1", **c),
+        ev("task.done", "10:10:00", task="t", dispatch="d1", data={"head_sha": sha("a1")}, **c),
+        ev("unit.parked", "10:15:00", task="t", data={"park_class": "needs-human", "head_sha": sha("a1")}, **c),
+        ev("wave.close", "10:20:00", data={"wave": 1}, **c),
+        ev("wave.open", "10:30:00", data={"wave": 2, "builders": 1, "reviewers": 1, "tasks": ["t"]}, **c),
+        ev("dispatch.launched", "10:31:00", task="t", dispatch="d2", **c),
+        ev("task.done", "10:40:00", task="t", dispatch="d2", data={"head_sha": sha("b1")}, **late),
+        ev("review.verdict", "10:42:00", task="t", data={"verdict": "approve", "reviewed_sha": sha("b1")}, **c),
+        ev("verify.verdict", "10:45:00", task="t", data={"exit": 0, "head_sha": sha("b1")}, **c),
+        ev("unit.closed", "10:50:00", task="t", data={"head_sha": sha("b1")}, **c),
+        ev("wave.close", "11:00:00", data={"wave": 2}, **c),
+    ]
+
+
+class TestCarriedUnits(Base):
+    """PR #638 review (P1): a later close must not rewrite an earlier wave's outcome."""
+
+    def test_each_wave_measures_its_own_window_of_a_carried_unit(self):
+        report = self.derive(carried_stream())
+        self.assertEqual(report["waves"][0]["row"],
+                         "| `wave=1` | `builders=1 reviewers=1` | `throughput=0.00/h` | "
+                         "`latency_median=5.00m latency_max=5.00m` | `rework=0/1` | `freshness=0` |")
+        self.assertEqual([u["outcome"] for u in report["waves"][0]["units"]], ["parked"])
+        self.assertEqual([u["outcome"] for u in report["waves"][1]["units"]], ["verified-closed"])
+        self.assertEqual(self.metric(report, 2, "throughput")["value"], "2.00/h")
+        self.assertEqual(self.metric(report, 2, "latency_max")["value"], "5.00m")
+        self.assertEqual(report["carried"], [{"task": "t", "waves": [1, 2]}])
+
+    def test_an_event_no_window_can_hold_leaves_both_waves_unavailable(self):
+        report = self.derive(carried_stream(late_clock="host-b"))
+        for wave in (1, 2):
+            reasons = self.metric(report, wave, "throughput")["unavailable"]
+            with self.subTest(wave=wave):
+                self.assertTrue(any("cannot be placed" in r for r in reasons), reasons)
+
+
 class TestUsage(Base):
     def test_unknown_cost_stays_null_with_provenance_never_zero(self):
         report = self.derive(scenario_clean())

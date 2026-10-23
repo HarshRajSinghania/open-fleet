@@ -814,6 +814,32 @@ def _row_text(k, opened, metrics):
             f"`freshness={cell['freshness']}` |")
 
 
+def place(event, ks, boundary):
+    """(wave, None) or (None, why): which of the waves planning a task this event belongs to.
+
+    PR #638 review (P1): a unit parked in wave 1 and re-planned, retried and closed in wave 2
+    is two measurements, not one wave-1 close. Each event belongs to the latest planning wave
+    whose wave.open it does not precede — compared on one clock, never by record order. An
+    event no window can hold (another clock, a recovered time, an unknown wave.open) is not
+    guessed into one: the unit is unavailable in every wave that plans it."""
+    if len(ks) == 1:
+        return ks[0], None
+    what = f"unit {event['task']}: {event['kind']} cannot be placed in wave {ks[0]}..{ks[-1]}"
+    if event["basis"] == "recovered":
+        return None, f"{what} — its time is when it was rebuilt, not when it happened"
+    placed = ks[0]
+    for k in ks[1:]:
+        opened = boundary.get(k)
+        if opened is None:
+            return None, f"{what} — wave {k}'s wave.open is not observed on one clock"
+        if opened["clock"] != event["clock"]:
+            return None, (f"{what} — it is on clock {event['clock']}, wave {k}'s wave.open on "
+                          f"{opened['clock']}")
+        if event["_at"] >= opened["_at"]:
+            placed = k
+    return placed, None
+
+
 def derive(events, run=None, file_sha="", head=""):
     """The whole report for one run of the record. Deterministic: no clock, no environment,
     no path — the same events derive the same bytes."""
@@ -835,31 +861,36 @@ def derive(events, run=None, file_sha="", head=""):
             opens.setdefault(event["data"]["wave"], []).append(event)
         elif event["kind"] == "wave.close":
             closes.setdefault(event["data"]["wave"], []).append(event)
-    plan, carried = {}, []
+    plan = {}  # task -> every wave whose plan lists it, ascending
     for k in sorted(opens):
         plans = {json.dumps(e["data"], sort_keys=True) for e in opens[k]}
         if len(plans) > 1:
             taints.setdefault(("wave", k), []).append(f"wave {k} opened with {len(plans)} "
                                                       "different plans")
         for task in opens[k][0]["data"]["tasks"]:
-            if task in plan:
-                carried.append({"task": task, "wave": plan[task], "also_listed_in": k})
-            else:
-                plan[task] = k
+            plan.setdefault(task, []).append(k)
+    carried = [{"task": t, "waves": ks} for t, ks in sorted(plan.items()) if len(ks) > 1]
     lifecycle = {}
     for event in kept:
         if event["task"] is not None and event["kind"] != "model.usage":
             lifecycle.setdefault(event["task"], []).append(event)
-    units = {task: derive_unit(task, plan[task], evs) for task, evs in sorted(lifecycle.items())
-             if task in plan}
-    for task, k in sorted(plan.items()):
-        if task not in units:  # planned, never observed: an open unit, not a missing one
-            units[task] = derive_unit(task, k, [])
+    boundary = {k: first(opens[k], f"wave {k} wave.open")[0] for k in opens}
+    units = {}  # (task, wave) -> that wave's own measurement of the unit
+    for task, ks in sorted(plan.items()):
+        parts = {k: [] for k in ks}
+        for event in lifecycle.get(task, []):
+            k, why = place(event, ks, boundary)
+            if why:
+                taints.setdefault(("unit", task), []).append(why)
+            else:
+                parts[k].append(event)
+        for k in ks:  # a planned unit never observed is open, not missing
+            units[(task, k)] = derive_unit(task, k, parts[k])
     unplanned = [{"task": t, "events": len(evs)} for t, evs in sorted(lifecycle.items())
                  if t not in plan]
     waves = []
     for k in range(1, max(list(opens) + list(closes), default=0) + 1):
-        wave_units = [units[t] for t in sorted(units) if units[t]["wave"] == k]
+        wave_units = [units[key] for key in sorted(units) if key[1] == k]
         opened, why_open = first(opens[k], f"wave {k} wave.open") if k in opens else (None, None)
         closed, why_close = first(closes[k], f"wave {k} wave.close") if k in closes else (None, None)
         metrics = wave_metrics(k, opened, closed, wave_units)

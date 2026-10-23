@@ -499,10 +499,13 @@ ids), `wave.close`, `dispatch.launched`, `dispatch.died`, `task.done` (head), `r
 tree), `unit.parked` (park class), `unit.suspect`, `model.usage` (model, token counts and cost,
 each nullable, plus a provenance line).
 
-Derivation (`runtime/scripts/events.py:derive`). A unit is a task in a `wave.open` plan; its
-outcome comes from the set of its events, never their order: verified-CLOSED (closed at a head
-a verdict passed), closed-unverified, parked, verified, completed (worker_done only) or open.
-Latency runs from the worker_done at a head to the first passing verdict at that same head (or
+Derivation (`runtime/scripts/events.py:derive`). A unit is a task in a `wave.open` plan; a task
+planned in several waves is measured in each, from the events in that wave's window — the latest
+planning wave whose `wave.open` the event does not precede, on one clock
+(`runtime/scripts/events.py:place`); an event no window can hold leaves the unit unavailable in
+all of them. Its outcome comes from the set of its events, never their order: verified-CLOSED
+(closed at a head a verdict passed), closed-unverified, parked, verified, completed
+(worker_done only) or open. Latency runs from the worker_done at a head to the first passing verdict at that same head (or
 to the park); review queue from that worker_done to the review starting on it. Throughput is
 verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share of units with
 a failing verdict (exit 2) or a SUSPECT; freshness counts approvals voided by a closing head

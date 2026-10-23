@@ -344,7 +344,13 @@ def append_events(path, events):
             # dedup map and the chain tail are the record as it stands.
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
             fh.seek(0)
-            lines = [ln for ln in fh.read().split("\n") if ln]
+            text = fh.read()
+            lines = [ln for ln in text.split("\n") if ln]
+            if text and not text.endswith("\n"):
+                # The reader accepts a last line with no newline; appending after it would glue
+                # two objects onto one line. Ending it changes no raw line, so no link moves
+                # (PR #638 review, P2).
+                fh.write("\n")
             known = {}
             for raw in lines:
                 try:

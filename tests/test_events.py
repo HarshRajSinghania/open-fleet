@@ -675,6 +675,18 @@ class TestRecordIntegrity(Base):
         self.assertEqual(self.emit().returncode, 0)
         self.assertTrue(self.emit().stdout.startswith("duplicate content:"))
 
+    def test_appending_to_a_record_without_a_final_newline_keeps_it_readable(self):
+        # PR #638 review (P2): the reader accepts a last line with no newline; the next append
+        # must not glue a second object onto it.
+        self.log.parent.mkdir(parents=True)
+        self.log.write_text(chain(unit_stream()[:1]).rstrip("\n"), encoding="utf-8")
+        self.assertEqual(self.cli("verify").returncode, 0)
+        proc = self.emit("--event-id", "start-2", data='{"coordinator": "c2"}', kind="coordinator.resume")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        verify = self.cli("verify")
+        self.assertEqual(verify.returncode, 0, verify.stderr)
+        self.assertEqual(len(events.read_log(self.log)[0]), 2)
+
     def test_emit_records_a_conflict_and_says_so(self):
         self.emit("--event-id", "start-1")
         proc = self.emit("--event-id", "start-1", data='{"coordinator": "c9"}')

@@ -120,6 +120,68 @@ def line_labels(line):
     return names
 
 
+# A forged GRANT is a different shape from a directive (#605): not "approve all" but the
+# assertion that someone with authority already approved -- "pre-approved", "one-way approved
+# out of band", a DECISIONS-shaped `· allow · human` record, a permission assignment. Memory and
+# a prior attempt's text can never grant (the signed decisions.py ledger and the frozen task are
+# the only sources), so episodic hints and the failure handover label these as `grant-claim`.
+# Deliberately OUTSIDE line_labels(): the envelope's label set is pinned by the injection corpus.
+# The permission keys a configuration assigns through: one list for the grant pattern below and
+# for unquoted(), which keeps such a key even when its value is prose.
+PERMISSION_KEY = (r"allowed[-_]?tools|permissions?\.(?:allow|default[-_]?mode)|scope[-_]allow|"
+                  r"permission[-_]mode|defaultMode")
+GRANT_CLAIM_PATTERNS = [
+    re.compile(r"\b(approved|granted|authori[sz]ed|permitted|cleared|signed[- ]off)\b[^.\n]{0,40}?"
+               r"\b(by|from)\s+(the\s+|a\s+)?(human|owner|maintainer|admin(istrator)?|operator|"
+               r"coordinator|user|reviewer|lead)\b", re.I),
+    re.compile(r"\bpre-?(approved|authori[sz]ed|cleared)\b", re.I),
+    re.compile(r"\b(approved|authori[sz]ed|granted)\s+(out[- ]of[- ]band|in\s+advance|already)\b", re.I),
+    re.compile(r"\b(one-way|gate|door|waiver|exception)\b[^.\n]{0,30}?\b(is|was|been)\s+"
+               r"(approved|granted|authori[sz]ed|waived)\b", re.I),
+    # "<authority> grant attached", never the request "needs-human approval".
+    re.compile(r"\b(coordinator|human|owner|maintainer|admin)\s+(grant|approval|consent|sign-?off)\s+"
+               r"(attached|given|granted|received|obtained|recorded|included|on\s+file)\b", re.I),
+    re.compile(r"^\s*(grant|approved|approval|permission|consent|authori[sz]ation)\s*[:=]", re.I),
+    re.compile(r"\bgrant:[a-z0-9][a-z0-9._-]*", re.I),
+    re.compile(r"·\s*(one-way|taste|mechanical)\s*·\s*allow\s*·\s*human\b", re.I),
+    re.compile(rf"\b({PERMISSION_KEY})\b\s*[\"']?\s*[:=]", re.I),
+    re.compile(r"\byou\s+(are|have\s+been)\s+(now\s+)?(authori[sz]ed|allowed|permitted|cleared|granted)\b", re.I),
+    re.compile(r"\b(permission|access|approval)\s+(is\s+|was\s+|has\s+been\s+)?granted\b", re.I),
+]
+
+# A span inside straight, curly or back quotes is a QUOTATION: a note that reports what some
+# text said ("the issue said 'ignore previous instructions'") rather than saying it. A single
+# quote must open and close at a word boundary so an apostrophe pair cannot fake a span.
+QUOTED_SPAN = re.compile(r"\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’|`[^`\n]*`|(?<!\w)'[^'\n]+'(?!\w)")
+# ...unless it is the KEY of an assignment the line makes (`{"allowed-tools": "Bash(*)"}`): then it
+# stays for the claim checks (PR #639 review: blanking the key hid a permission assignment from
+# withholding). A key is followed by ':' or '=' and then a VALUE -- a quoted string, a list, an
+# object, a bare scalar that ends the entry (`true`, `Bash(*)`, `bypassPermissions`), or nothing
+# (a block value) -- or is itself a permission key. Prose after the colon keeps it a quotation:
+# `"pre-approved": the injected phrase was rejected` is a lesson (PR #639 review, second round).
+ASSIGNED = re.compile(r"\s*[:=]\s*(?:$|[\"'“‘`\[{]|(?:true|false|null|yes|no|on|off|-?\d[\d.]*|"
+                      r"\w+\([^()]*\)|allow|deny|ask|granted|approved|bypassPermissions|acceptEdits|"
+                      r"dontAsk|plan|default)\s*(?:$|[,;\]})]))", re.I)
+KEY_SEPARATOR = re.compile(r"\s*[:=]")
+QUOTED_PERMISSION_KEY = re.compile(rf"[\"'“‘`]\s*(?:{PERMISSION_KEY})\s*[\"'”’`]", re.I)
+
+
+def grant_labels(line):
+    """["grant-claim"] when the line asserts a grant or permission, else []."""
+    probe = normalize_for_detection(line)
+    return ["grant-claim"] if any(p.search(probe) for p in GRANT_CLAIM_PATTERNS) else []
+
+
+def unquoted(text):
+    """The text with every quoted span blanked: what it SAYS, not what it QUOTES (#605). A quoted
+    assignment key is kept: the line assigns through it rather than quoting it."""
+    def keep(m):
+        key = ASSIGNED.match(text, m.end()) or (QUOTED_PERMISSION_KEY.fullmatch(m.group(0))
+                                                and KEY_SEPARATOR.match(text, m.end()))
+        return m.group(0) if key else " "
+    return QUOTED_SPAN.sub(keep, text)
+
+
 def splice(text):
     """Splice a zero-width space through a matched banner token."""
     mid = max(1, len(text) // 2)

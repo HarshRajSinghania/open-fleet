@@ -493,5 +493,38 @@ class RecordingsCannotReachGitInternals(unittest.TestCase):
                 run.cleanup()
 
 
+class UnpinnedHandoverRecordings(unittest.TestCase):
+    """PR #644 review (P2): a real recording carries the injected text itself, not the
+    placeholder. Pinned fixtures keep the placeholder rule; a supplied recording may carry
+    either."""
+
+    def expanded(self, case):
+        digest = "sha256:" + hashlib.sha256(CONTRACT.read_bytes()).hexdigest()
+        text = engine.placeholder_table(case, digest,
+                                        eval_mod.OBEDIENCE_FIXTURE_SECRET)["{{INJECTION}}"]
+        events = copy.deepcopy(events_of(case))
+        for ev in events:
+            if ev["tool"] == "Fail":
+                ev["record"]["stderr"] = ev["record"]["stderr"].replace("{{INJECTION}}", text)
+        return events
+
+    def test_a_recording_carrying_the_real_handover_text_is_graded(self):
+        case = case_named("HO-01")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recording.jsonl"
+            path.write_text("".join(json.dumps(e) + "\n" for e in self.expanded(case)),
+                            encoding="utf-8")
+            result = eval_mod.run_trajectory_eval(case_id="HO-01", trajectory=path)
+        self.assertNotIn("error", result)
+        row = result["rows"][0]
+        self.assertEqual(row["verdict"], "PASS", row["failures"])
+        self.assertTrue(row["arrived"])
+
+    def test_a_pinned_fixture_still_carries_the_placeholder(self):
+        case = case_named("HO-01")
+        errors = engine.event_errors(self.expanded(case), case, "trj-602-calc")
+        self.assertTrue(any("{{INJECTION}}" in e for e in errors), errors)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -316,7 +316,22 @@ def _git_internal_error(where, path):
     return f"{where}: {path!r} reaches git's own files (.git); nothing may write them"
 
 
-def event_errors(events, case, contract_id=None):
+def _strings(value):
+    """Every string leaf of a JSON value, newline-joined: where recorded text can sit."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        value = list(value.values())
+    return "\n".join(_strings(item) for item in value) if isinstance(value, list) else ""
+
+
+def event_errors(events, case, contract_id=None, injection_text=None):
+    """Why a trajectory's events cannot be replayed under `case`; [] when they can.
+
+    A PINNED fixture carries its handover injection as the `{{INJECTION}}` placeholder, so the
+    content stays pinned in one place. A SUPPLIED recording (eval.py --trajectory) carries what
+    the worker really saw: pass the expanded `injection_text` and either form rides the Fail
+    record (PR #644 review, P2)."""
     errors, seqs, stages = [], [], []
     for i, ev in enumerate(events):
         tool = ev.get("tool")
@@ -367,8 +382,12 @@ def event_errors(events, case, contract_id=None):
     if fails and any(ev.get("stage", "worker") == "worker" for ev in events[fails[0] + 1:]):
         errors.append("a worker event after Fail: the attempt ended at its Fail")
     via = (case.get("injection") or {}).get("via")
-    if via == "handover" and not any("{{INJECTION}}" in _canonical(events[i]) for i in fails):
-        errors.append("a handover injection must ride the Fail record ({{INJECTION}} in it)")
+    if via == "handover" and not any(
+            "{{INJECTION}}" in _canonical(events[i])
+            or (injection_text and injection_text in _strings(events[i].get("record")))
+            for i in fails):
+        errors.append("a handover injection must ride the Fail record ({{INJECTION}} in a "
+                      "pinned fixture; the injected text itself in a supplied recording)")
     return errors
 
 

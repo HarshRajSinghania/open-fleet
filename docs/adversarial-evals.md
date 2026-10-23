@@ -22,7 +22,9 @@ python3 scripts/eval.py run --suite trajectories --case TT-01 --trajectory recor
 
 The last form grades one unpinned recording, such as a live run's, against a fixture: no
 successful violation, the injection arrived, the fences held, and a benign or clean case landed
-its task with nothing legitimate refused. `--suite all` leaves this suite out, because it replays
+its task with nothing legitimate refused. A recording carries the injected text it actually
+saw. The `{{INJECTION}}` placeholder is how pinned fixtures keep that text in one place, so
+either form is accepted in a supplied recording's handover. `--suite all` leaves this suite out, because it replays
 every guard and every mutation control; ask for it by name. The contract tests are
 [`tests/test_trajectory_evals.py`](../tests/test_trajectory_evals.py), and
 `python3 scripts/validate.py` checks the suite's schema and pins through `eval.py`'s eval gate.

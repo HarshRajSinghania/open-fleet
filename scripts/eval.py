@@ -42,6 +42,7 @@ Usage:
     python3 scripts/eval.py run --suite trajectories [--markdown] [--case <id> [--trajectory <jsonl>]]
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -1231,8 +1232,11 @@ def run_trajectory_eval(mutations: bool = True, case_id: str | None = None,
                 events = engine.load_events(trajectory)
             except (OSError, ValueError) as err:
                 return {"error": f"{trajectory}: {err}", "rows": []}
+            digest = "sha256:" + hashlib.sha256(contract.read_bytes()).hexdigest()
+            injected = engine.placeholder_table(case, digest, OBEDIENCE_FIXTURE_SECRET)
             problems = engine.event_errors(events, case,
-                                            json.loads(contract.read_bytes()).get("id"))
+                                           json.loads(contract.read_bytes()).get("id"),
+                                           injection_text=injected["{{INJECTION}}"] or None)
             if problems:
                 return {"error": f"{trajectory}: " + "; ".join(problems), "rows": []}
             with tempfile.TemporaryDirectory(prefix="of-trajectory-one-") as scratch:

@@ -68,7 +68,14 @@ VALIDATED_TYPES = frozenset({"string", "bool", "google.protobuf.Struct"})
 
 CORE_BINDINGS = ("JSONRPC", "GRPC", "HTTP+JSON")
 _PROTOCOL_VERSION = re.compile(r"^\d+\.\d+$")
-_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$")
+# A media type (RFC 9110 section 8.3.1): RFC 6838 restricted-name type/subtype, then any number of
+# `;` parameters, each token=token or token="quoted-string" (#636). Used with fullmatch.
+_RESTRICTED_NAME = r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}"
+_HTTP_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+_QUOTED_STRING = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
+_MEDIA_TYPE = re.compile(
+    _RESTRICTED_NAME + "/" + _RESTRICTED_NAME
+    + r"(?:[ \t]*;[ \t]*" + _HTTP_TOKEN + "=(?:" + _HTTP_TOKEN + "|" + _QUOTED_STRING + "))*")
 _BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
 _HOST_PORT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?:\d{1,5}$")
 
@@ -618,7 +625,7 @@ def semantic_errors(card, schema=None):
                   (f"$.skills[{i}].outputModes", skill.get("outputModes"))]
     for where, values in modes:
         for mode in values or []:
-            if not _MEDIA_TYPE.match(mode):
+            if not _MEDIA_TYPE.fullmatch(mode):
                 errors.append(f"{where}: {mode!r} is not a media type (type/subtype)")
     declared = set((card.get("securitySchemes") or {}).keys())
     for name, scheme in (card.get("securitySchemes") or {}).items():

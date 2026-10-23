@@ -378,6 +378,22 @@ class TestReviewFindings(unittest.TestCase):
         self.assertIn(f"A2A_CARD=invalid {bad}", p.stderr)
         self.assertIn(f"A2A_CARD=valid {SAMPLE}", p.stdout)
 
+    def test_media_types_with_parameters_are_accepted(self):
+        # a2a.proto: the modes are "Defined as media types"; RFC 9110 section 8.3.1 lets a media
+        # type carry `;`-separated token=token or token="quoted" parameters.
+        def add(c):
+            c["defaultInputModes"].append("text/plain; charset=utf-8")
+            c["skills"][0]["outputModes"].append('application/json;profile="https://e.org/p v1"')
+            c["skills"][1]["inputModes"].append("text/markdown;variant=GFM ; charset=UTF-8")
+
+        self.assertEqual(self.errors_for(add), [])
+        for bad in ("text/plain;", "text/plain; charset", "text/plain; =utf-8",
+                    "text/plain; charset=utf 8", 'text/plain; charset="open', "text/plain\n"):
+            with self.subTest(bad=bad):
+                errs = self.errors_for(lambda c, m=bad: c["defaultOutputModes"].append(m))
+                self.assertIn(f"$.defaultOutputModes: {bad!r} is not a media type (type/subtype)",
+                              errs)
+
 
 if __name__ == "__main__":
     unittest.main()

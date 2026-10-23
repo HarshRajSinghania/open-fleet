@@ -84,6 +84,14 @@ GUARD_SAMPLES = (".claude/settings.json", ".claude/settings.local.json", ".codex
                  ".orca/human-grant-pubkey", ".orca/dispatch-pubkey")
 GUARD_FIND_SAMPLES = (".orca/human-grant-pubkey", ".orca/dispatch-pubkey", ".claude/settings.json")
 DELETER = "dcoy_unlink"   # the safe form's rm: deletes only inside the throwaway directory
+# Receipt mode (PR #648 review): payload "receipt". {R} is an egress receipt and {SEND} an
+# off-repo write. The safe form uses a receipt sentinel that records "R" (exiting 0, or 1 in a
+# second run) and the send sentinel; "ran" means some send in bash was NOT covered by a fresh
+# successful receipt -- one receipt per send, counted at run time, not inferred from the text.
+RECEIPT_SENTINEL = "dcoy_receipt"
+RECEIPT_FORM = "python3 runtime/scripts/egress.py write --payload-class pr-body --consent grant:x"
+SEND_ARGS = "issue close 34"
+LATER = "{LATER}"
 NL, BS, TAB, SQ, DQ, BT = "\n", "\\", "\t", "'", '"', "`"
 # Words a safe form must never contain: the oracle runs it, so it may only reach the sentinel.
 _REAL_TOOLS = re.compile(r"(^|[^A-Za-z0-9_])(git|gh|rm|curl|wget|ssh|sudo|scp|nc|python[0-9.]*)"
@@ -109,6 +117,8 @@ class Case:
 
 
 def payload_kind(payload):
+    if payload == "receipt":
+        return "receipt"
     return "guard" if payload.startswith("guard:") else "cmd"
 
 
@@ -134,6 +144,9 @@ def render(template, payload, safe, root=None):
                 .replace("{GD}", folder).replace("{GNU}", name.upper()).replace("{GN}", name)
                 .replace("{DEL}", DELETER if safe else "rm"))
         return text if root is None else text.replace("{ROOT}", root)
+    if payload_kind(payload) == "receipt":
+        return (template.replace("{R}", RECEIPT_SENTINEL + " write" if safe else RECEIPT_FORM)
+                .replace("{SEND}", (SENTINEL if safe else "gh") + " " + SEND_ARGS))
     head, args = PAYLOADS[payload]
     head = SENTINEL if safe else head
     c = head[0]
@@ -208,6 +221,24 @@ def grid():
         indent = TAB if spelling.startswith("-") else ""
         out.append(Case(f"heredoc:{spelling!r}/{line[:12]!r}",
                         ": <<" + spelling + NL + indent + line + NL + term + NL + "echo done"))
+    # several heredocs on one line (PR #648 review PRRT_kwDOTWxN9c6vxmAb): bash gives a command
+    # the LAST stdin heredoc, and every command on the line gets its own bodies in order.
+    for name, tpl in (
+            ("second", "bash <<A <<B" + NL + "echo safe" + NL + "A" + NL + CMD + NL + "B"),
+            ("first-discarded", "bash <<A <<B" + NL + CMD + NL + "A" + NL + "echo safe" + NL + "B"),
+            ("quoted-second", "bash <<'A' <<\"B\"" + NL + "echo safe" + NL + "A" + NL + CMD + NL + "B"),
+            ("dash-second", "bash <<A <<-B" + NL + "echo safe" + NL + "A" + NL + TAB + CMD + NL
+             + TAB + "B"),
+            ("and-chain", "bash <<A && bash <<B" + NL + "echo safe" + NL + "A" + NL + CMD + NL + "B"),
+            ("semi-chain", "bash <<A; bash <<B" + NL + "echo safe" + NL + "A" + NL + CMD + NL + "B"),
+            ("pipe-in", "cat <<A <<B | bash" + NL + "echo safe" + NL + "A" + NL + CMD + NL + "B"),
+            ("pipe-out", "bash <<A | cat" + NL + CMD + NL + "A"),
+            ("other-fd", "bash <<A 3<<B" + NL + CMD + NL + "A" + NL + "echo safe" + NL + "B"),
+            ("herestrings", "bash <<< 'echo safe' <<< " + sq(CMD)),
+            ("cat-herestring", "cat <<< " + sq(CMD) + " | bash"),
+            ("in-sub", "echo $(bash <<'A' <<'B'" + NL + "echo safe" + NL + "A" + NL + CMD + NL + "B"
+             + NL + ")")):
+        out.append(Case(f"multi-heredoc:{name}", tpl))
     # heredocs: which line ENDS the body (a missed terminator runs the next line, or hides it)
     for (spelling, term), variant in product(HEREDOC_OPENERS[:14], TERMINATOR_VARIANTS):
         looks = variant.replace("{T}", term.strip(TAB))
@@ -426,8 +457,33 @@ def guard_grid(every=False):
             for k, tpl in enumerate(GUARD_FIND) for s in samples]
 
 
+# Receipts: does every send run under a fresh successful receipt? Several heredocs on a line
+# (PRRT_kwDOTWxN9c6vxmAb) and a receipt carried into a fed program (PRRT_kwDOTWxN9c6vvZV5).
+RECEIPT_GRID = (
+    ("and", "{R} && {SEND}"), ("semi", "{R}; {SEND}"), ("or", "{R} || {SEND}"),
+    ("two-sends", "{R} && {SEND}; {SEND}"), ("and-two", "{R} && {SEND} && {SEND}"),
+    ("sh-c", "{R} && sh -c '{SEND}'"), ("sh-c-two", "{R} && sh -c '{SEND}; {SEND}'"),
+    ("echo-pipe", "{R} && echo '{SEND}' | sh"), ("echo-pipe-two", "{R} && echo '{SEND}; {SEND}' | sh"),
+    ("heredoc", "{R} && sh <<'EOF'\n{SEND}\nEOF"),
+    ("heredoc-second", "sh <<A <<B\necho safe\nA\n{SEND}\nB"),
+    ("heredoc-second-and", "{R} && sh <<A <<B\necho safe\nA\n{SEND}\nB"),
+    ("heredoc-dash-second", "sh <<A <<-B\necho safe\nA\n\t{SEND}\n\tB"),
+    ("heredoc-quoted-second", "sh <<'A' <<\"B\"\necho safe\nA\n{SEND}\nB"),
+    ("heredoc-two-shells", "{R} && sh <<A && sh <<B\n{SEND}\nA\n{SEND}\nB"),
+    ("heredoc-semi", "sh <<A; sh <<B\necho safe\nA\n{SEND}\nB"),
+    ("heredoc-pipe", "cat <<A | sh\n{SEND}\nA"), ("heredoc-pipe-and", "{R} && cat <<A | sh\n{SEND}\nA"),
+    ("herestring-two", "sh <<< 'echo safe' <<< '{SEND}'"), ("herestring-cat", "cat <<< '{SEND}' | sh"),
+    ("sub-heredoc", "echo $(sh <<'EOF'\n{SEND}\nEOF\n)"),
+    ("sub-heredoc-inner", "echo $({R} && sh <<'EOF'\n{SEND}\nEOF\n)"),
+)
+
+
+def receipt_grid():
+    return [Case(f"receipt:{name}", tpl, "receipt") for name, tpl in RECEIPT_GRID]
+
+
 def corpus(random_count=BOUNDED_RANDOM, seed=SEED, both=False):
-    cases = list(guard_grid(every=both))
+    cases = list(guard_grid(every=both)) + receipt_grid()
     for k, case in enumerate(grid()):
         payloads = tuple(PAYLOADS) if both else (tuple(PAYLOADS)[k % len(PAYLOADS)],)
         cases += [Case(case.family, case.template, p) for p in payloads]
@@ -459,6 +515,11 @@ class BashOracle:
             "  case \"$d/\" in \"$DCOY_HOME\"/*) /bin/rm -f -- \"$f\" ;; esac\ndone\n",
             encoding="utf-8")
         deleter.chmod(0o755)
+        # The receipt mode's egress receipt: records R, exits DCOY_RECEIPT_RC (0 or 1).
+        receipt = self.bindir / RECEIPT_SENTINEL
+        receipt.write_text("#!/bin/sh\nprintf 'R\\n' >> \"$ORCA_SENTINEL_MARK\"\n"
+                           "exit \"${DCOY_RECEIPT_RC:-0}\"\n", encoding="utf-8")
+        receipt.chmod(0o755)
         # Harmless helpers only: the templates call bash/sh -c, cat, find, tee and xargs.
         for tool in ("bash", "sh", "cat", "find", "tee", "xargs"):
             real = self.bash if tool == "bash" else shutil.which(tool)
@@ -484,6 +545,8 @@ class BashOracle:
         """run(), plus whether the hole was touched at all (the sentinel with any argv)."""
         if not safe_form_ok(text):
             raise ValueError(f"a safe form may reach only the sentinel: {text!r}")
+        if payload_kind(payload) == "receipt":
+            return self._observe_receipts(text)
         with self._lock:
             self._n += 1
             work = self.root / f"case-{self._n}"
@@ -531,6 +594,47 @@ class BashOracle:
             ran = any(line.split("\x1f")[:len(want)] == want for line in lines)
         shutil.rmtree(work, ignore_errors=True)
         return ran, syntax, touched
+
+    def _observe_receipts(self, text):
+        """(a send ran without its own fresh successful receipt, parse error, any send ran).
+        Run twice: receipts succeeding, where each send must consume one receipt recorded since
+        the last send; and receipts failing, where no send may run at all."""
+        want, ungated, syntax, touched = SEND_ARGS.split(), False, False, False
+        for rc in ("0", "1"):
+            with self._lock:
+                self._n += 1
+                work = self.root / f"case-{self._n}"
+            work.mkdir()
+            for name, body in (("a.txt", "a\n"), ("b.txt", "b\n"), ("list.txt", "1\n2\n")):
+                (work / name).write_text(body, encoding="utf-8")
+            mark = work / ".sentinel"
+            env = {"PATH": str(self.bindir), "HOME": str(work), "TMPDIR": str(work), "LC_ALL": "C",
+                   "ORCA_SENTINEL_MARK": str(mark), "DCOY_RECEIPT_RC": rc}
+            limited = ['/bin/sh', '-c', 'ulimit -t 5 2>/dev/null; ulimit -f 2048 2>/dev/null; '
+                       'ulimit -c 0 2>/dev/null; exec "$0" --norc --noprofile -c "$1"',
+                       self.bash, text.replace(LATER, NL)]
+            proc = subprocess.Popen(limited, cwd=work, env=env, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    start_new_session=True)
+            try:
+                _out, err = proc.communicate(timeout=BASH_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, 9)
+                _out, err = proc.communicate()
+            syntax = syntax or bool(re.search(r"syntax error|unexpected EOF|unexpected end of "
+                                              r"file|bad substitution", err.decode("utf-8", "replace")))
+            lines = mark.read_text(encoding="utf-8").splitlines() if mark.exists() else []
+            shutil.rmtree(work, ignore_errors=True)
+            available = 0
+            for line in lines:
+                if line == "R":
+                    available += rc == "0"
+                    continue
+                touched = True
+                if line.split("\x1f")[:len(want)] == want:
+                    available -= 1
+                    ungated = ungated or available < 0
+        return ungated, syntax, touched
 
 
 def safe_form_ok(text):
@@ -633,6 +737,8 @@ def minimize(result, oracle, hook=HOOK):
         safe = render(template, payload, True)
         if payload_kind(payload) == "cmd" and not any(p in template for p in (CMD, HEAD)):
             return False   # the payload must still be in the hole
+        if payload_kind(payload) == "receipt" and "{SEND}" not in template:
+            return False
         if (HEAD in template and ARGS not in template) or not safe_form_ok(safe) \
                 or _GLUED.search(template):
             return False   # never run a real tool name; never glue text onto the payload words

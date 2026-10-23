@@ -1920,6 +1920,78 @@
       "hook": "c8b984e180 (PR #648 review PRRT_kwDOTWxN9c6vu_Rt)",
       "status": "fixed",
       "note": "A script written and then run is tracked by its normalized path, not its basename, so two different files named run.sh no longer share contents (_fed_detached, _fed_code)."
+    },
+    {
+      "kind": "miss",
+      "payload": "receipt",
+      "template": "sh <<A <<B\necho safe\nA\n{SEND}\nB",
+      "original": "sh <<A <<B\necho safe\nA\n{SEND}\nB",
+      "family": "review:PRRT_kwDOTWxN9c6vxmAb",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "78fa56bc1e (PR #648 review PRRT_kwDOTWxN9c6vxmAb)",
+      "status": "fixed",
+      "note": "Every heredoc a shell reads is judged as its own receipt scope, armed only by a receipt on its own line: the second of sh <<A <<B, a <<- or quoted second body, every here-string, cat <<< ... | sh, and a heredoc inside $(...) (_unreceipted_scope, _heredoc_armed, _receipt_pairs)."
+    },
+    {
+      "kind": "miss",
+      "payload": "receipt",
+      "template": "sh <<A <<-B\necho safe\nA\n\t{SEND}\n\tB",
+      "original": "sh <<A <<-B\necho safe\nA\n\t{SEND}\n\tB",
+      "family": "review:PRRT_kwDOTWxN9c6vxmAb",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "78fa56bc1e (PR #648 review PRRT_kwDOTWxN9c6vxmAb)",
+      "status": "fixed",
+      "note": "Every heredoc a shell reads is judged as its own receipt scope, armed only by a receipt on its own line: the second of sh <<A <<B, a <<- or quoted second body, every here-string, cat <<< ... | sh, and a heredoc inside $(...) (_unreceipted_scope, _heredoc_armed, _receipt_pairs)."
+    },
+    {
+      "kind": "miss",
+      "payload": "receipt",
+      "template": "sh <<< 'echo safe' <<< '{SEND}'",
+      "original": "sh <<< 'echo safe' <<< '{SEND}'",
+      "family": "review:PRRT_kwDOTWxN9c6vxmAb",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "78fa56bc1e (PR #648 review PRRT_kwDOTWxN9c6vxmAb)",
+      "status": "fixed",
+      "note": "Every heredoc a shell reads is judged as its own receipt scope, armed only by a receipt on its own line: the second of sh <<A <<B, a <<- or quoted second body, every here-string, cat <<< ... | sh, and a heredoc inside $(...) (_unreceipted_scope, _heredoc_armed, _receipt_pairs)."
+    },
+    {
+      "kind": "miss",
+      "payload": "receipt",
+      "template": "echo $(sh <<'EOF'\n{SEND}\nEOF\n)",
+      "original": "echo $(sh <<'EOF'\n{SEND}\nEOF\n)",
+      "family": "review:PRRT_kwDOTWxN9c6vxmAb",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "78fa56bc1e (PR #648 review PRRT_kwDOTWxN9c6vxmAb)",
+      "status": "fixed",
+      "note": "Every heredoc a shell reads is judged as its own receipt scope, armed only by a receipt on its own line: the second of sh <<A <<B, a <<- or quoted second body, every here-string, cat <<< ... | sh, and a heredoc inside $(...) (_unreceipted_scope, _heredoc_armed, _receipt_pairs)."
+    },
+    {
+      "kind": "miss",
+      "payload": "send",
+      "template": "bash <<A <<B\necho safe\nA\n{CMD}\nB",
+      "original": "bash <<A <<B\necho safe\nA\n{CMD}\nB",
+      "family": "review:PRRT_kwDOTWxN9c6vxmAb",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "78fa56bc1e (PR #648 review PRRT_kwDOTWxN9c6vxmAb)",
+      "status": "fixed",
+      "note": "Every heredoc a shell reads is judged as its own receipt scope, armed only by a receipt on its own line: the second of sh <<A <<B, a <<- or quoted second body, every here-string, cat <<< ... | sh, and a heredoc inside $(...) (_unreceipted_scope, _heredoc_armed, _receipt_pairs)."
+    },
+    {
+      "kind": "false-deny",
+      "payload": "push",
+      "template": "bash <<A <<B\n{CMD}\nA\necho safe\nB",
+      "original": "bash <<A <<B\n{CMD}\nA\necho safe\nB",
+      "family": "multi-heredoc:first-discarded",
+      "bash": "3.2.57(1)-release",
+      "seed": 598,
+      "hook": "claude/r05-deny-hook-conformance (PR #648 review PRRT_kwDOTWxN9c6vxmAb)",
+      "status": "boundary",
+      "note": "A command given several stdin heredocs reads only the last; the hook judges every heredoc body on the line, so a refused command in a discarded earlier body is refused too (conservative by design)."
     }
   ]
 }

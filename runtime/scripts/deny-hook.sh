@@ -2450,6 +2450,7 @@ def _fed_code(parts, docs):
                 elif prev[0][:1] and prev[0][0].rsplit("/", 1)[-1] == "cat":
                     out += [(kind, code) for f in prev[0][1:]
                             for code in written.get(os.path.normpath(f), [])]
+                    out += [(kind, hs.replace(_QNL, chr(10))) for hs in _herestrings(prev[1])]
                 if _SUB_MARK in prev[1]:
                     _FED_SUB.append(prev[1])
             script = _script_operand(ws)
@@ -2549,50 +2550,60 @@ def _is_deferred_def(ws):
     return False
 
 
-def _receipt_pairs(surface, docs, depth=0):
-    """(join, args, fed_shell_body) per segment of a SURFACE (substitutions already lifted out).
-    fed_shell_body is the program a shell consumer runs from a heredoc, a here-string, or a
-    producer piped into it (echo SEND | sh), attached to the CONSUMER segment with the pipeline
-    leading join preserved, so an outer && receipt still arms a send fed that way (PR #648 review
-    PRRT_kwDOTWxN9c6vvZV5). The producer/consumer pair collapses to one entry."""
-    doc_bodies = []
-    for before, after, body in docs:
-        try:
-            owner, writes, pipe = _heredoc_owner(before, after)
-        except ValueError:
-            owner, writes, pipe = [], [], None
-        # A shell reads the heredoc on stdin, OR cat/tee of the heredoc pipes it into a shell;
-        # a redirected heredoc (cat > f <<EOF) is a WRITE, handled by _fed_detached, not here.
-        if not writes and (_stdin_kind(owner) == "shell"
-                           or (owner[:1] and owner[0].rsplit("/", 1)[-1] in ("cat", "tee")
-                               and _stdin_kind(pipe) == "shell")):
-            doc_bodies.append(body)
+def _receipt_pairs(surface):
+    """(join, args, fed_programs) per segment of a SURFACE (substitutions already lifted out).
+    fed_programs are what a shell consumer runs from its here-strings, or from echo/printf (or
+    cat <<< ...) piped into it, attached to the consumer with the pipeline leading join kept, so an
+    outer && receipt arms them exactly as it arms sh -c SEND (PR #648 review ...vvZV5). Every
+    here-string counts, not only the first. Heredoc bodies are judged per heredoc instead, in
+    _unreceipted_scope: a segment can carry several and bash reads the last."""
     segs, out, i = _split(surface), [], 0
     while i < len(segs):
         join, seg = segs[i]
         args = _tokenize(seg)[0]
         ws = _command_words(args)
         head = ws[0].rsplit("/", 1)[-1] if ws else ""
-        fed = None
-        feeds_shell = _stdin_kind(ws) == "shell" or (
-            head in ("cat", "tee") and i + 1 < len(segs) and segs[i + 1][0] == "|"
-            and _stdin_kind(_command_words(_tokenize(segs[i + 1][1])[0])) == "shell")
-        if feeds_shell and "<<" in seg and doc_bodies:
-            fed = doc_bodies.pop(0)
-            if head in ("cat", "tee"):
-                i += 1   # collapse the cat <<EOF | shell pipeline to one entry
-        elif _stdin_kind(ws) == "shell":
-            hs = _herestrings(seg)
-            fed = hs[0] if hs else None
-        if fed is None and i + 1 < len(segs) and segs[i + 1][0] == "|":
+        fed = list(_herestrings(seg)) if _stdin_kind(ws) == "shell" else []
+        if i + 1 < len(segs) and segs[i + 1][0] == "|":
             nxt = _command_words(_tokenize(segs[i + 1][1])[0])
             if _stdin_kind(nxt) == "shell":
                 data = _echo_data(ws)
-                if data is not None:
-                    fed, i = data, i + 1   # the producer carries the join; skip the shell
-        out.append((join, args, fed))
+                data = [data] if data is not None else (
+                    list(_herestrings(seg)) if head == "cat" else [])
+                if data:
+                    fed, i = fed + data, i + 1   # the producer carries the join; skip the shell
+        out.append((join, args, [f.replace(_QNL, chr(10)) for f in fed]))
         i += 1
     return out
+
+
+def _shell_heredoc(before, after):
+    """True when a shell runs this heredoc as its program: the heredoc is the stdin of a shell,
+    or of cat/tee piped into one. A heredoc redirected into a file is a write (_fed_detached)."""
+    try:
+        owner, writes, pipe = _heredoc_owner(before, after)
+    except ValueError:
+        return False
+    if writes:
+        return False
+    head = owner[0].rsplit("/", 1)[-1] if owner else ""
+    return _stdin_kind(owner) == "shell" or (head in ("cat", "tee") and _stdin_kind(pipe) == "shell")
+
+
+def _heredoc_armed(before, text, armed):
+    """Whether an egress receipt arms the program in ONE heredoc: the pipeline that reads it is
+    &&-joined right after a receipt on its own line, or it opens a scope entered armed. Judged
+    per heredoc, so the second of `sh <<A <<B` is read as well as the first (PR #648 review
+    PRRT_kwDOTWxN9c6vxmAb)."""
+    pre = _split(before)
+    if not pre or before.rstrip(BLANKS)[-1:] in tuple(";&|(" + chr(10)):
+        return False
+    s = len(pre) - 1
+    while s > 0 and pre[s][0] == "|":
+        s -= 1
+    if s > 0:
+        return pre[s][0] == "&&" and _is_receipt(_tokenize(pre[s - 1][1])[0])
+    return bool(armed) and text.lstrip().startswith(before.lstrip())
 
 
 def _unreceipted(pairs, armed=False, depth=0):
@@ -2603,7 +2614,7 @@ def _unreceipted(pairs, armed=False, depth=0):
         pairs = [("&&",) + tuple(pairs[0][1:])] + list(pairs[1:])
     for item in pairs:
         join, args = item[0], item[1]
-        fed = item[2] if len(item) > 2 else None
+        fed = item[2] if len(item) > 2 and depth < 3 else []
         if _is_receipt(args):
             armed = True
             continue
@@ -2614,7 +2625,7 @@ def _unreceipted(pairs, armed=False, depth=0):
         # pipeline or heredoc) can be armed by an outer && receipt; a DEFERRED definition body
         # cannot -- its send fires later, so the receipt must sit inside it (PR #648 review).
         for run_body, defer in ([(body, deferred)] if body is not None else []) \
-                + ([(fed, False)] if fed is not None and depth < 3 else []):
+                + [(program, False) for program in fed]:
             lead = armed and join == "&&" and not defer
             try:
                 if _unreceipted_scope(run_body, lead, depth + 1):
@@ -2623,7 +2634,7 @@ def _unreceipted(pairs, armed=False, depth=0):
                 gh_word = re.search(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)", run_body)
                 if gh_word and not lead:
                     return True
-        if body is not None or fed is not None:
+        if body is not None or fed:
             armed = False
             continue
         if _is_send(args):
@@ -2682,12 +2693,18 @@ def _unreceipted_scope(text, armed=False, depth=0):
     if depth > 4:
         return False
     subs, surface, _patch, docs = substitution_bodies(text)
-    if _unreceipted(_receipt_pairs(surface, docs, depth), armed, depth):
+    if _unreceipted(_receipt_pairs(surface), armed, depth):
         return True
-    if depth < 3 and any(_unreceipted_scope(prog, False, depth + 1)
-                         for prog in _fed_detached(surface, docs)):
-        return True
-    return any(_unreceipted(_receipt_pairs(sub, [], depth + 1), False, depth + 1) for sub in subs)
+    if depth < 3:
+        # EVERY heredoc a shell reads -- the second of `sh <<A <<B`, a <<- body, one inside a
+        # $(...) -- is its own scope, armed only by a receipt on its own line (or the scope lead).
+        for before, after, body in docs:
+            if _shell_heredoc(before, after) and \
+                    _unreceipted_scope(body, _heredoc_armed(before, text, armed), depth + 1):
+                return True
+        if any(_unreceipted_scope(prog, False, depth + 1) for prog in _fed_detached(surface, docs)):
+            return True
+    return any(_unreceipted(_receipt_pairs(sub), False, depth + 1) for sub in subs)
 
 
 if _unreceipted_scope(raw_command):

@@ -73,7 +73,7 @@ class TestBoundedCorpus(unittest.TestCase):
         self.assertEqual(len({c.id for c in a}), len(a), "case ids must be unique")
         families = {c.family.split(":", 1)[0] for c in a}
         for dim in ("quote", "continuation", "comment", "heredoc", "terminator", "nested",
-                    "launch", "random"):
+                    "launch", "random", "multi-heredoc", "receipt", "guard-find"):
             self.assertIn(dim, families)
         for case in a:
             safe = corpus.render(case.template, case.payload, True)
@@ -265,6 +265,15 @@ MUTANTS = (
     ("find: a guard file is spared only when the tests prove it unmatched",
      "def _find_may_match(tests, shown, name):", "def _find_may_match(tests, shown, name):\n    return False",
      ("guard-find:",)),
+    ("receipt: every heredoc a shell reads is judged, not only the first",
+     "        for before, after, body in docs:\n            if _shell_heredoc(before, after) and",
+     "        for before, after, body in docs[:1]:\n            if _shell_heredoc(before, after) and",
+     ("receipt:heredoc-second", "receipt:heredoc-dash", "receipt:heredoc-quoted",
+      "multi-heredoc:second")),
+    ("receipt: every here-string a shell reads is judged, not only the first",
+     "        fed = list(_herestrings(seg)) if _stdin_kind(ws) == \"shell\" else []",
+     "        fed = list(_herestrings(seg))[:1] if _stdin_kind(ws) == \"shell\" else []",
+     ("receipt:herestring-two",)),
     ("data arguments dropped on the never-list pass", "def _data_dropped(ws):",
      "def _data_dropped(ws):\n    return ws", ("launch:select-free", "launch:colon-literal",
                                                "quote:sq", "launch:script-written-only")),

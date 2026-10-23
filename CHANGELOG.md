@@ -39,6 +39,43 @@ truth is `.claude-plugin/plugin.json`.
     (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with
     them in force it never does. `verify.py`'s guarded lines and interface width are unchanged
     (the new logic is an `_Authority` classmethod).
+- **Provider and harness routes are certified cell by cell, with a reproducible first run**
+  (#596). `runtime/providers/certification.json` classifies each of the 218 advertised routes:
+  every `(provider, profile, harness)` in `capabilities.json`, and every `(harness, profile)` of
+  `base.py`'s launch table. A route is `live-witnessed`, `fixture-tested`, `source-only`,
+  `unsupported` (with its typed refusal) or `unavailable`. Each cell carries its upstream version
+  (`unknown` when none was recorded), evidence paths and limitations.
+  `runtime/scripts/certification.py` checks the following:
+  - every cell is covered exactly once;
+  - every evidence path resolves;
+  - a live claim rests on a run report that binds;
+  - a moved `pins.json` pin turns the provider's cells `stale` until they are rechecked.
+  Only Orca with Claude Code (`ro` and `rw`) is live-witnessed. The 12 external adapters remain
+  fixture-tested at `unknown` upstream versions. The record shows three gaps: the Orca `ro` rows
+  for crush, hermes and jcode are weaker than the posix rows; opencode, omp and pi are refused on
+  Orca; a posix `ro` worker's clean exit is recorded as `worker_died (exit=0)`.
+  `runtime/scripts/first_run.py` drives one review unit through the public wrappers on the posix
+  route: create → dispatch → delivery → result → independent `verify.py` → retain/release. With
+  the default inert worker it calls no model; `--worker live` uses the real harness. Its `probes`
+  mode checks that unsupported profile, privilege escalation, unarmed deny hook, malformed
+  runtime response and missing capability are each refused before launch.
+  `tests/test_certification.py` runs that subset in CI for every posix harness, with no paid
+  agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
+  first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
+  for other providers.
+- **Run and wave metrics derive from an append-only event record** (#603). New
+  `runtime/scripts/events.py` keeps one hash-chained line per observed lifecycle transition in
+  `.orca/events.jsonl`, bound to run/task/dispatch with an event id, producer, timestamp, clock
+  domain, time basis, coordinator epoch and source reference. `report` derives the WIP-curve
+  rows attention-budget.md requires (verified-CLOSED throughput, verification latency, rework,
+  freshness) plus review queue time, retries and observed model usage; `check` compares a run
+  report's rows against the record. Duplicate deliveries collapse by event id, cross-clock,
+  recovered and negative intervals, fenced or undeclared coordinator epochs and conflicting
+  re-deliveries leave a metric `unavailable` with its reason, and unreported tokens or cost stay
+  null with provenance — never estimated, never 0. It reads the local-state DB (read-only),
+  verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
+  are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
+  it reads the R04 (#597) launch gate, and its receipts and R06's (#599) are later sources.
 - **Episodic hints are bound to source revision and untrusted provenance** (#605). Every
   `search_sessions.py --episodic-hint` entry names its source repo/revision (or `unknown`), the
   artifact it came from with its sha256, the checked path/symbol scope, the producing run and why

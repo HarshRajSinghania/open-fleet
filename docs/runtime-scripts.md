@@ -527,9 +527,12 @@ of units with a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced
 replacement dispatched into a later wave — a worker carried into it is neither); freshness counts
 approving reviews (one per reviewer dispatch and head) voided by a closing head that moved,
 unless both trees are recorded and equal (a void an earlier wave counted is not counted again
-when a reopened unit's later wave records it). Retries count each dispatch of a task after its first,
-in the wave it is first seen in — so a replacement that carried the unit into a later wave is a
-retry there, and a worker carried into it is not. An interval needs one clock, no
+when a reopened unit's later wave records it). Retries count each launch attempt of a task after
+its first, in the wave it is first seen in — so a replacement that carried the unit into a later
+wave is a retry there, and a worker carried into it is not. An attempt is the dispatch id and
+its launch's identity (`runtime/scripts/events.py:launch_attempt`, the store row's creation
+time), so a restart that reuses the id (multiclaude's `of-<task_id>`) is a retry too; a launch
+observed any other way names no attempt of its own. An interval needs one clock, no
 `recovered` endpoint and a non-negative difference. Coordinator history must be whole —
 `run.start` at epoch 1, then each `coordinator.resume` at the next epoch — or every metric of
 the run is unavailable. Events recorded under an epoch below the

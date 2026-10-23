@@ -581,6 +581,16 @@ def screen(events):
     return screened, duplicates, conflicts, fenced, epochs, taints, excluded
 
 
+def launch_attempt(event):
+    """A launch's attempt within its dispatch id (PR #638 review, P1): a launch read from its
+    local-state row is that row's creation time, so an id an external provider records again
+    (INSERT OR REPLACE: multiclaude's of-<task_id>, paperclip's agent id) is one attempt per
+    record. Any other observation of a launch names no attempt of its own (None)."""
+    if event["source"]["ref"] == f"local-state:dispatches/{event['dispatch']}":
+        return event["observed_at"]
+    return None
+
+
 def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=(),
                 counted_voids=()):
     """One planned unit's outcome and per-unit measurements in one wave, from the set of its
@@ -745,13 +755,26 @@ def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=
     # earlier wave counted it: a reopened unit's late record of that void is the same one.
     voided += sorted(explicit - {r["data"]["reviewed_sha"] for r in approvals} - set(counted_voids))
 
-    # Retries: a dispatch first seen in this wave that follows an earlier dispatch of the task,
-    # in this wave or one that planned it before. This wave's dispatches minus one read d1 in
-    # wave 1 and its replacement d2 in wave 2 as no retry at all (PR #638 review, P1); a
-    # dispatch already seen earlier is the same worker carried over, not a retry, and its
-    # launch in that earlier window is its observed launch (PR #638 review, P1).
-    fresh = seen - past_seen
-    retries = max(len(fresh) - (0 if past_seen else 1), 0)
+    # Retries: a launch attempt first seen in this wave that follows an earlier attempt of the
+    # task, in this wave or one that planned it before. This wave's dispatches minus one read d1
+    # in wave 1 and its replacement d2 in wave 2 as no retry at all (PR #638 review, P1); an
+    # attempt already seen earlier is the same worker carried over, not a retry, and its launch
+    # in that earlier window is its observed launch (PR #638 review, P1). An attempt is the
+    # dispatch id AND its launch's identity (`launch_attempt`), so a restart that reuses the id
+    # is a retry too (PR #638 review, P1); a launch naming no attempt adds none to a dispatch
+    # whose launches do, and a dispatch seen with no launch anywhere is one attempt.
+    named = {}
+    for e in by["dispatch.launched"] + past["dispatch.launched"]:
+        if launch_attempt(e):
+            named.setdefault(e["dispatch"], set()).add(launch_attempt(e))
+
+    def attempts(launches, ids):
+        keys = {(e["dispatch"], launch_attempt(e)) for e in launches
+                if launch_attempt(e) or not named.get(e["dispatch"])}
+        return keys | {(d, None) for d in ids - launched - past_launched}
+    before = attempts(past["dispatch.launched"], past_seen)
+    fresh = attempts(by["dispatch.launched"], seen) - before
+    retries = max(len(fresh) - (0 if before else 1), 0)
 
     return {
         "task": task, "wave": wave, "outcome": outcome, "carried_out": carried_out,
@@ -1086,8 +1109,8 @@ def derive(events, run=None, file_sha="", head=""):
     # each of those launches needs a usage observation naming its task (PR #638 review, sweep).
     relaunched = {}
     for e in kept:
-        if e["kind"] == "dispatch.launched" and e["source"]["ref"] == f"local-state:dispatches/{e['dispatch']}":
-            relaunched.setdefault(e["dispatch"], {})[e["observed_at"]] = e["task"]
+        if e["kind"] == "dispatch.launched" and launch_attempt(e):
+            relaunched.setdefault(e["dispatch"], {})[launch_attempt(e)] = e["task"]
     relaunched = {d: list(by_time.values()) for d, by_time in relaunched.items() if len(by_time) > 1}
     usage = usage_summary([e for e in kept if e["kind"] == "model.usage"], dispatches,
                           taints.get(("usage",), []) + taints.get(("run",), []), unsure, relaunched)

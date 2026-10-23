@@ -833,6 +833,36 @@ class TestRedispatchIsRework(Base):
     def test_control_a_single_dispatch_is_not_rework(self):
         self.assertEqual(self.metric(self.derive(unit_stream()), 1, "rework")["value"], "0/1")
 
+    def test_a_replacement_that_reuses_the_dispatch_id_is_still_a_retry(self):
+        # PR #638 review (P1): multiclaude's worker_start names a worker of-<task_id>, so a
+        # restart of the task reuses the dispatch id. ingest-state records each launch of the
+        # re-recorded row at its creation time, but derive keyed attempts on the id alone and
+        # merged them: the first worker died, the second finished with no failing verdict or
+        # SUSPECT, and the unit read no retry and no rework.
+        def launch(at):
+            return ev("dispatch.launched", at, task="t", dispatch="of-t", producer="local_state",
+                      basis="occurred", ref="local-state:dispatches/of-t",
+                      event_id=f"local-state:dispatch:of-t@{at}", **ONE)
+        evs = unit_stream()
+        evs[2] = launch("10:01:00")
+        evs[3:3] = [ev("dispatch.died", "10:03:00", task="t", dispatch="of-t", **ONE), launch("10:05:00")]
+        for event in evs:
+            if event["dispatch"] == "d":
+                event["dispatch"] = "of-t"
+        report = self.derive(evs)
+        self.assertEqual([self.metric(report, 1, m)["value"] for m in ("retries", "rework")], ["1", "1/1"])
+        self.assertEqual(report["waves"][0]["units"][0]["dispatches"], ["of-t"])
+
+    def test_a_worker_carried_between_waves_is_one_attempt_even_with_its_launch_identity(self):
+        # Control: the launch of d1 read from its store row in wave 1 and its worker_done in
+        # wave 2 are one attempt — the same launch identity — so wave 2 counts no retry.
+        evs = inflight_stream()
+        evs[2] = ev("dispatch.launched", "10:01:00", task="t", dispatch="d1", producer="local_state",
+                    basis="occurred", ref="local-state:dispatches/d1",
+                    event_id="local-state:dispatch:d1@10:01", **ONE)
+        report = self.derive(evs)
+        self.assertEqual([self.metric(report, 2, m)["value"] for m in ("retries", "rework")], ["0", "0/1"])
+
     def test_a_unit_re_dispatched_into_a_later_wave_is_rework_there(self):
         report = self.derive(carried_stream())
         self.assertEqual(self.metric(report, 1, "rework")["value"], "0/1")
@@ -1565,6 +1595,57 @@ class TestIngest(Base):
                           ("task.done", "task_1")])
         self.assertIn("earlier holder", second.stderr)
 
+    def test_a_restarted_task_that_reuses_its_worker_name_counts_the_retry(self):
+        # PR #638 review (P1), end to end: multiclaude records of-<task_id> again when the task
+        # is restarted (INSERT OR REPLACE). Its first worker died; the restart finished.
+        # Hand calculation: wave 10:00-10:40, one close -> 1.50/h; done@C4 10:10 -> pass 10:20 =
+        # 10 m; two launch attempts -> one retry, rework 1/1.
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        LocalStateStore = importlib.import_module("runtime.providers.local_state").LocalStateStore
+        db, c4 = self.tmp / "runtime.db", sha("c4")
+        store = LocalStateStore(db, env={})
+
+        def record(minute):
+            at = self.TEN + 60 * minute
+            with store._connect() as conn:
+                conn.execute("INSERT OR REPLACE INTO dispatches(dispatch_id, task_id, run_id, "
+                             "worktree, agent, terminal_handle, state, created_at, updated_at) VALUES "
+                             "('of-task_1', 'task_1', 'run_x', '/w', 'claude', 'of-task_1', 'ready', ?, ?)",
+                             (at, at))
+        c = {"run": "run_x", "epoch": 1, "clock": "host-a"}
+        events.append_events(self.log, [
+            ev("run.start", "09:59:00", data={"coordinator": "c1"}, **c),
+            ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                              "tasks": ["task_1"]}, **c)])
+        record(1)
+        store.ensure_terminal_or_died(dispatch_id="of-task_1", worker_handle="of-task_1",
+                                      exit_code=1, run_id="run_x")  # died, no mail
+        with store._connect() as conn:
+            conn.execute("UPDATE messages SET created_at = ?", (self.TEN + 180,))
+        first = self.ingest(db)
+        record(5)  # the restart, under the same worker name
+        store.send_message(subject="done", msg_type="worker_done", sender="of-task_1", run="run_x",
+                           attrs={"headSha": c4})
+        with store._connect() as conn:
+            conn.execute("UPDATE messages SET created_at = ? WHERE msg_type = 'worker_done'",
+                         (self.TEN + 600,))
+        second = self.ingest(db)
+        self.assertEqual((first.returncode, second.returncode), (0, 0), second.stdout + second.stderr)
+        events.append_events(self.log, [
+            ev("review.verdict", "10:15:00", task="task_1",
+               data={"verdict": "approve", "reviewed_sha": c4}, **c),
+            ev("verify.verdict", "10:20:00", task="task_1", data={"exit": 0, "head_sha": c4}, **c),
+            ev("unit.closed", "10:30:00", task="task_1", data={"head_sha": c4}, **c),
+            ev("wave.close", "10:40:00", data={"wave": 1}, **c)])
+        recorded, file_sha, digest = events.read_log(self.log)
+        report = events.derive(recorded, "run_x", file_sha, digest)
+        self.assertEqual(report["record"]["conflicts"], 0)
+        self.assertEqual(self.metric(report, 1, "retries")["value"], "1")
+        self.assertEqual(report["waves"][0]["row"],
+                         "| `wave=1` | `builders=1 reviewers=1` | `throughput=1.50/h` | "
+                         "`latency_median=10.00m latency_max=10.00m` | `rework=1/1` | `freshness=0` |")
+
     def test_a_head_the_message_carries_is_recorded_at_once_and_kept(self):
         # Control: a worker_done that names its head is stable evidence in itself — recorded
         # on the first import, and a duplicate after exit even if the store's row head differs.
@@ -1729,7 +1810,7 @@ class TestStateDBNotTouched(unittest.TestCase):
 SEEDS = range(64)
 
 
-def random_unit_life(seed):
+def random_unit_life(seed, reuse=False):
     """A seeded life of task t across W planning waves (2 or 3), beside u (wave 1 only), on one
     clock: replacements, heads reused or new, worker_done or none, reviews, and each earlier wave
     ending in a park, a pass or a carry; the last passes and closes.
@@ -1737,7 +1818,11 @@ def random_unit_life(seed):
     Returns (lifecycle events, W, dispatches of t, measured): `measured` is how many latency
     intervals the stated rules measure, written from the rules and not from the derivation — a
     pass at a head ends its interval, a park ends one only after a worker_done at that head, an
-    interval already ended is never measured again, and a measurement needs a known worker_done."""
+    interval already ended is never measured again, and a measurement needs a known worker_done.
+
+    With `reuse`, every launch is read from its store row (its attempt is the row's creation
+    time) and a replacement reuses the worker's dispatch id half the time, as multiclaude's
+    of-<task_id> does; the dispatches returned then list one id per launch attempt."""
     rng = random.Random(seed)
     c = {"run": "rp", "epoch": 1, "clock": "host-a"}
     u = sha("ee")
@@ -1751,8 +1836,13 @@ def random_unit_life(seed):
     known, ended, measured = set(), set(), 0
     for k in range(1, waves + 1):
         if k == 1 or rng.random() < 0.4:
-            dispatches.append(f"d{len(dispatches) + 1}")
-            life.append(ev("dispatch.launched", wave_at(k, 1), task="t", dispatch=dispatches[-1], **c))
+            reused = reuse and dispatches and rng.random() < 0.5
+            dispatches.append(dispatches[-1] if reused else f"d{len(set(dispatches)) + 1}")
+            store = {"producer": "local_state", "basis": "occurred",
+                     "ref": f"local-state:dispatches/{dispatches[-1]}",
+                     "event_id": f"local-state:dispatch:{dispatches[-1]}@{wave_at(k, 1)}"} if reuse else {}
+            life.append(ev("dispatch.launched", wave_at(k, 1), task="t", dispatch=dispatches[-1],
+                           **store, **c))
         if head is None or rng.random() < 0.5:
             heads += 1
             head = sha(f"{heads:02x}")
@@ -1854,6 +1944,32 @@ class TestProperties(Base):
                                  int(single["waves"][0]["metrics"]["freshness"]["value"]))
                 # each latency interval is measured once, in the wave its end is placed in
                 self.assertEqual(sum(u["latency"]["value"] is not None for u in units), measured)
+
+    def test_reused_dispatch_ids_conserve_launch_attempts_across_waves(self):
+        # PR #638 review (P1): with restarts that reuse the dispatch id (multiclaude's
+        # of-<task_id>), retries still sum to launch attempts - 1, across waves and in one, a
+        # worker carried between waves stays one attempt, and re-importing changes nothing.
+        reusing = 0
+        for seed in SEEDS:
+            life, waves, attempts, measured = random_unit_life(seed, reuse=True)
+            reusing += len(set(attempts)) < len(attempts)
+            evs = planned(life, waves)
+            multi, single = self.derive(evs), self.derive(planned(life, 1))
+            with self.subTest(seed=seed, waves=waves, attempts=attempts):
+                units = self.unit_t(multi)
+                self.assertEqual(sorted({d for u in units for d in u["dispatches"]}),
+                                 sorted(set(attempts)))
+                self.assertEqual(sum(int(w["metrics"]["retries"]["value"]) for w in multi["waves"]),
+                                 len(attempts) - 1)
+                self.assertEqual(single["waves"][0]["metrics"]["retries"]["value"],
+                                 str(len(attempts) - 1))
+                self.assertEqual(sum(u["latency"]["value"] is not None for u in units), measured)
+                log = self.tmp / f"reuse-{seed}" / "events.jsonl"
+                rng = random.Random(2000 + seed)
+                events.append_events(log, evs[:1] + rng.sample(evs[1:], len(evs) - 1))
+                again = events.append_events(log, evs[:1] + rng.sample(evs[1:], len(evs) - 1))
+                self.assertEqual({s for _i, s in again}, {"duplicate"})
+        self.assertGreater(reusing, len(SEEDS) // 8, "the generator must actually reuse ids")
 
     def test_re_importing_a_store_after_every_change_it_allows_never_conflicts(self):
         """Seeded walks over the changes the local-state store allows a worker-start dispatch —

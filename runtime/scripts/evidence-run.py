@@ -74,7 +74,7 @@ def warn(msg):
 def git_out(args, cwd):
     try:
         p = subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, text=True,
-                           timeout=30, check=False, env=gitexec.env())
+                           timeout=30, check=False, env=gitexec.env(), stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError) as err:
         return None, str(err)
     if p.returncode != 0:
@@ -89,7 +89,7 @@ def working_tree_fingerprint(cwd):
         return None, f"{script} is missing"
     try:
         p = subprocess.run(["sh", str(script), str(cwd)], capture_output=True, text=True,
-                           timeout=120, check=False)
+                           timeout=120, check=False, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError) as err:
         return None, str(err)
     out = p.stdout.strip()

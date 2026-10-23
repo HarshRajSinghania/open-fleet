@@ -216,7 +216,7 @@ def git(repo, *args, tolerate=False):
         # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
         r = subprocess.run([GIT, "-C", str(repo), *args], capture_output=True, text=True,
                            encoding="utf-8", errors="surrogateescape",
-                           timeout=60, env=_git_env())
+                           timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 and not tolerate:
@@ -440,7 +440,7 @@ def predict_merge(repo, base, branch):
             [GIT, "-C", str(repo), "-c", "core.quotePath=false",
              "merge-tree", "--write-tree", base, branch],
             capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
-            timeout=60, env=_git_env(),
+            timeout=60, env=_git_env(), stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         r = None

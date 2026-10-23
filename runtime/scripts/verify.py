@@ -118,12 +118,13 @@ _NC_ZERO_KILL_RE = re.compile(
 def _run(args, timeout=20, cwd=None, env=None):
     """Run a command; return (code, stdout, stderr). Never raises. argv[0] is None when the
     pinned authority it names was absent at startup (h409 R2): that is an error here, never a
-    reason to look the name up on PATH again."""
+    reason to look the name up on PATH again. No leg reads stdin: an inherited one (a hook
+    payload, a pipe nobody closes) would let a git hook or filter block the verifier (#629)."""
     if args[0] is None:
         return 1, "", _Authority.ABSENT_GIT
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False,
-                           cwd=cwd, env=env)
+                           cwd=cwd, env=env, stdin=subprocess.DEVNULL)
         return p.returncode, p.stdout, p.stderr
     except (subprocess.TimeoutExpired, OSError) as err:
         return 1, "", str(err)
@@ -135,7 +136,8 @@ def _run_bytes(args, timeout=20, env=None):
     if args[0] is None:
         return 1, b"", _Authority.ABSENT_GIT
     try:
-        p = subprocess.run(args, capture_output=True, timeout=timeout, check=False, env=env)
+        p = subprocess.run(args, capture_output=True, timeout=timeout, check=False, env=env,
+                           stdin=subprocess.DEVNULL)
         return p.returncode, p.stdout, p.stderr.decode("utf-8", "replace")
     except (subprocess.TimeoutExpired, OSError) as err:
         return 1, b"", str(err)
@@ -1131,12 +1133,14 @@ NC_TIMEOUT_S = 600
 def _run_at(cwd, args, timeout=20, stdin_bytes=None, env=None):
     """Run a command in `cwd` with an optional stdin payload. argv only — never shell=True, so a
     manifest string can never become a shell command. `env` is never None from a caller here:
-    a git leg passes git_env(), the control nc_env() (h409 F-6/N-4). Returns (code, stdout, stderr)."""
+    a git leg passes git_env(), the control nc_env() (h409 F-6/N-4). Returns (code, stdout, stderr).
+    With no payload the child gets /dev/null, never this process's stdin (#629)."""
     if args[0] is None:
         return 124, "", _Authority.ABSENT_GIT
+    feed = {"input": stdin_bytes} if stdin_bytes is not None else {"stdin": subprocess.DEVNULL}
     try:
         p = subprocess.run(args, cwd=cwd, capture_output=True, timeout=timeout, check=False,
-                           input=stdin_bytes, env=env)
+                           env=env, **feed)
         return (p.returncode, p.stdout.decode("utf-8", "replace"),
                 p.stderr.decode("utf-8", "replace"))
     except (subprocess.TimeoutExpired, OSError) as err:

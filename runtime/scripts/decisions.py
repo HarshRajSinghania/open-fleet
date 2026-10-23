@@ -327,7 +327,7 @@ def _pin_at_ref(root, ref):
     def git(*args):
         try:
             return subprocess.run(gitexec.argv("-C", str(root), *args), capture_output=True,
-                                  timeout=60, env=gitexec.env())
+                                  timeout=60, env=gitexec.env(), stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as err:
             raise DecisionsError(f"git {args[0]} failed to run: {err}") from err
 

@@ -250,9 +250,10 @@ def _text(raw):
 def git(repo, *args):
     """Run git with argv only. Returns stdout, or None when git exits non-zero."""
     try:
+        # No stdin (#629): an inherited, never-closed one would let a hook or filter block the guard.
         r = subprocess.run(
             gitexec.argv("-C", str(repo), *args),
-            capture_output=True, timeout=60, env=gitexec.env(),
+            capture_output=True, timeout=60, env=gitexec.env(), stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err

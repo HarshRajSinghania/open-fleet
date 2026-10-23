@@ -30,6 +30,10 @@ truth is `.claude-plugin/plugin.json`.
     `write-tree` ran a selected filter and `core.fsmonitor`); its attribute-selected filters are
     blanked, while global/system config stays in force so a committed tree still fingerprints
     faithfully.
+  - No gate hands git its own stdin: every gitexec-routed call (floor_guard, diff_scope,
+    decisions, inventory, evidence-run, preflight), verify.py's `_run`/`_run_bytes`/`_run_at`
+    and `wtree.sh` pass `/dev/null`, so a hook, filter or git itself can never block a gate on
+    an inherited pipe that never closes.
   - RED-before / GREEN-after with a mutation control per gate in
     `tests/test_gitexec_config_commands.py` and `tests/test_verify.py`
     (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with

@@ -79,6 +79,9 @@ GIT_CONFIG_KEY_2=protocol.ext.allow; GIT_CONFIG_VALUE_2=never
 export GIT_TERMINAL_PROMPT GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE GIT_CONFIG_COUNT
 export GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
 export GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
+# No git call (nor any hook or filter one runs) may read this script's stdin: an inherited pipe
+# that never closes would block the fingerprint, and the gate behind it, forever (#629).
+exec </dev/null
 
 TARGET="${1:-.}"
 TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1

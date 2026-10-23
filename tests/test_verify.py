@@ -6133,9 +6133,10 @@ class ConfigFilterNeverRunsInTheControl(MutationFixture):
         self.addCleanup(marks.cleanup)
         self.marker = Path(marks.name) / "filter-fired"
         self.probe = Path(marks.name) / "probe.sh"
-        # `cat` passthrough: the smudged content is unchanged, so app.py still reads `return 2` at
-        # head and the proof passes; the revert control still goes RED. The probe only records.
-        self.probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\ncat\n",
+        # The probe ONLY touches its marker and never reads stdin, so it cannot block on an
+        # inherited pipe. A filter that fires is the failure under test; in the GREEN case the
+        # driver is blanked and never runs, so app.py still reads `return 2` at head.
+        self.probe.write_text("#!/bin/sh\ntouch " + shlex.quote(str(self.marker)) + "\nexit 0\n",
                              encoding="utf-8")
         self.probe.chmod(0o755)
         for key in ("filter.p.clean", "filter.p.smudge"):
@@ -6150,9 +6151,10 @@ class ConfigFilterNeverRunsInTheControl(MutationFixture):
         probe_dir = Path(tempfile.mkdtemp(prefix="orca-filter-probe-"))
         self.addCleanup(shutil.rmtree, probe_dir, True)
         subprocess.run(["git", "worktree", "add", "-q", "--detach", str(probe_dir / "wt"),
-                        self.head_sha], cwd=self.repo, check=True, capture_output=True)
+                        self.head_sha], cwd=self.repo, check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL)
         subprocess.run(["git", "worktree", "remove", "--force", str(probe_dir / "wt")],
-                       cwd=self.repo, check=True, capture_output=True)
+                       cwd=self.repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
         self.assertTrue(self.marker.exists(),
                         "the planted clean/smudge filter did not fire on bare git")
         self.marker.unlink()

@@ -47,17 +47,19 @@ _CLEAN_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTE
 
 
 class _Probe:
-    """A git repo whose config names a `cat`-passthrough probe on every exec channel. The probe
-    appends ONE token per fire to a marker file; `fired()` returns the set of channels seen."""
+    """A git repo whose config names a probe on every exec channel. The probe appends ONE token
+    per fire to a marker file; `fired()` returns the set of channels seen."""
 
     def __init__(self, tmp):
         self.dir = Path(tmp)
         self.repo = self.dir / "repo"
         self.marker = self.dir / "marker"
         self.probe = self.dir / "probe.sh"
-        # `cat` passes content through unchanged, so a filter cannot alter what a gate reads;
-        # the 'process' long-running protocol would hang a plain cat, so it is never selected.
-        self.probe.write_text('#!/bin/sh\necho "$1" >> ' + _sh(self.marker) + "\ncat\n",
+        # The probe ONLY touches its marker and never reads stdin: git hands an fsmonitor hook
+        # its own stdin, so a probe that read it blocked forever under an inherited pipe that
+        # never closes. A filter that fires is the failure under test, so what it outputs (here,
+        # nothing) never matters to a GREEN case; the 'process' protocol is never selected.
+        self.probe.write_text('#!/bin/sh\necho "$1" >> ' + _sh(self.marker) + "\nexit 0\n",
                               encoding="utf-8")
         self.probe.chmod(0o755)
         self.repo.mkdir(parents=True, exist_ok=True)
@@ -270,7 +272,8 @@ class WtreeFingerprint(unittest.TestCase):
         self.assertNotEqual(stripped, src, "the control did not change wtree.sh")
         mutant = p.dir / "wtree_control.sh"
         mutant.write_text(stripped, encoding="utf-8")
-        subprocess.run(["sh", str(mutant), str(p.repo)], capture_output=True, timeout=120)
+        subprocess.run(["sh", str(mutant), str(p.repo)], capture_output=True, timeout=120,
+                       stdin=subprocess.DEVNULL)
         self.assertTrue(p.fired() & {"clean", "fsmonitor"},
                         "control: the stripped wtree.sh must run a planted channel")
 

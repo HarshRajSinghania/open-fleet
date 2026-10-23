@@ -573,7 +573,9 @@ transport, and — with the two object-rewrite env vars — a planted `refs/repl
 OWN config declares — the only source of such a command — and returns `-c <key>=` tokens blanking
 each (empty value = git runs no command, passing content through). A read that MATERIALISES
 working-tree content passes its tokens; a read of committed objects alone selects no filter and
-skips it. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
+skips it. stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+`stdin=subprocess.DEVNULL`, as `driver_blanks` does, so a hook, filter or git itself never
+waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
 own argv (`runtime/scripts/floor_guard.py:DIFF_RENDERING`). `runtime/scripts/diff_scope.py`
 inlines this floor (`_git_env` and `_driver_blanks`) rather than importing the module, and

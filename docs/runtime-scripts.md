@@ -650,13 +650,14 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
 | `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `dependencies-changed:<file>`, `artifact-untracked`, `artifact-missing:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
-| `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes`), `current-evidence:<p>=<outcome>` | suppressed |
+| `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
 The worst reason is the label. Scope is the concrete path a match resolves to (a basename or
 directory match checks the query's path; two patterns cannot be resolved); a `path::symbol` or
 `path#symbol` token (or a unit's `symbols` list) keeps a changed file's entry current while that
-symbol's own definition block is byte-identical (indentation-scoped: exact for Python, a
-heuristic for brace languages). Related tests are the tests the record named plus tests sharing a
+symbol's own definition block — its decorators included — is byte-identical (indentation-scoped:
+exact for Python, a heuristic for brace languages); `Cls.meth` resolves the class, then the method
+in it, and an unqualified name picks its shallowest definition. Related tests are the tests the record named plus tests sharing a
 scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are manifests and
 lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the
 archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
@@ -667,14 +668,14 @@ else later commit time, else later claimed time.
 else raises `ProvenanceError` before a process starts) through `gitexec.py`'s hardened
 environment with `GIT_OPTIONAL_LOCKS=0`, `--no-ext-diff` and `--no-textconv`.
 
-Replay corpus (`scripts/hint_replay.py`): 22 scenarios, each a synthetic multi-commit
+Replay corpus (`scripts/hint_replay.py`): 27 scenarios (37 hints), each a synthetic multi-commit
 repository plus a committed run archive (some tampered after commit), replayed with hints `off`,
 `unchecked` (historical mode, no live source — what the hint did before #605) and `checked`.
 `python3 scripts/hint_replay.py --check` (fixture tier, free, deterministic) requires the checked
 arm to retrieve every useful/unknown/benign note with its text, suppress every stale one, leak no
 poisoned one and label every hint as expected — and requires the unchecked arm to leak, so the
 corpus can tell the checks from their absence. Fixture-tier result at this change: checked
-retrieval 1.0, stale suppression 1.0, label accuracy 1.0, 0 poisoned; unchecked leaks 14/14 stale
+retrieval 1.0, stale suppression 1.0, label accuracy 1.0, 0 poisoned; unchecked leaks 20/20 stale
 and 2/2 poisoned notes. The effect on REPEATED task failures needs a worker and is not measured
 yet: `--live --tier live --model <id> --budget-usd <n> --max-runs <n> --attempts <k> --agent-cmd
 '<worker argv>'` runs each `live_task` scenario per arm and attempt in a fresh fixture (the
@@ -957,7 +958,8 @@ merges live `orca search` hits when a query is passed, and emits a bounded `<= 1
   entry was selected (`exact`, `query-glob`, `dir`, `basename`, `record-glob`). Session hits carry
   `src=unknown@unknown` and the digest of the hit as received.
 - **Currency.** Without `--repo` every entry is `UNKNOWN:no-live-source`. With `--repo DIR`
-  (the working tree, uncommitted edits included; `--live-rev REV` pins a commit instead) entries
+  (the working tree, uncommitted edits and untracked files included; `--live-rev REV` pins a
+  commit instead) entries
   are `CURRENT`, `UNKNOWN`, `STALE` or `SUPERSEDED` per the reason table under
   [`hint_provenance.py`](#hint_provenancepy). `--current-evidence FILE` (`[{path, outcome:
   pass|fail, source}]`, the frozen task's own observations) supersedes any entry whose claimed

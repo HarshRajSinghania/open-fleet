@@ -14,11 +14,12 @@ truth is `.claude-plugin/plugin.json`.
   or renamed scope, a moved symbol, a divergent or ahead-of-live revision, a changed related test
   and a modified artifact make an entry `STALE`; a newer contradicting record or the frozen task's
   `--current-evidence` makes it `SUPERSEDED`; missing provenance and changed dependencies leave it
-  `UNKNOWN`. The default worker-facing mode suppresses stale entries and withholds notes that
-  assert a grant or speak as an authority outside quotes, while quoted lessons stay usable;
+  `UNKNOWN`. The default worker-facing mode suppresses stale entries and withholds notes and
+  identifiers that assert a grant or speak as an authority outside quotes, while quoted lessons
+  stay usable;
   `--hint-mode historical` lists everything labelled. `guard_text.py` gains `grant_labels()` and
   `unquoted()`; the failure handover states its authority and withholds unquoted grant claims.
-  A fixed 22-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
+  A fixed 27-scenario replay corpus (`scripts/hint_replay.py --check`) measures retrieval, stale
   suppression and poisoned-note propagation with hints off/unchecked/checked; the live
   repeated-failure arm is wired but has not been run (it needs a declared model budget).
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant

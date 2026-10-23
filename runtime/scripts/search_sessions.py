@@ -263,12 +263,28 @@ def _speaks_with_authority(value):
     return sorted(set(_label_names(bare)) & WITHHOLD_LABELS)
 
 
+# Every width an untrusted field is cut to on a hint line or in --hint-json.
+_SHOWN_WIDTHS = (24, 32, 40, 48, 60, 80, 90, 120)
+
+
+def _speaks_as_shown(value, widths=_SHOWN_WIDTHS):
+    """_speaks_with_authority() for the raw field AND for the text it is shown as at each width:
+    rendering joins lines, turns a literal backslash-n into a space and truncates, so a claim a
+    newline split in the record can be whole again on the hint line (PR #639 review: it was
+    labelled there but not withheld). A decision on the raw form alone checks other text than
+    the reader gets."""
+    names = set(_speaks_with_authority(value))
+    for width in widths:
+        names |= set(_speaks_with_authority(_inert(value, width)))
+    return sorted(names)
+
+
 def _ident(value, limit, withhold, status=False):
     """An untrusted IDENTIFIER -- run name, unit, status, session id, artifact path, scope path,
     symbol, match candidate -- under the note rules (PR #639 review: run names printed raw and a
     session id asserting a grant survived withholding): withheld in current mode when it speaks
     with authority outside quotes, otherwise inert."""
-    if withhold and _speaks_with_authority(value):
+    if withhold and _speaks_as_shown(value, (limit,)):
         return "(withheld)"
     return _inert(value, limit, status=status)
 
@@ -413,18 +429,26 @@ def _render_label(hint, withhold):
 
 
 def _token(value, limit, withhold, keep):
-    """A short token field (repo, agent): withheld under the identifier rule, else charset-cut."""
-    if withhold and _speaks_with_authority(value):
+    """A short token field (repo, agent): withheld under the identifier rule -- on the raw value and
+    on the charset-cut token it is shown as, since cutting "pre approved" makes "preapproved" --
+    else charset-cut."""
+    shown = re.sub(keep, "", str(value))[:limit]
+    if withhold and (_speaks_with_authority(value) or _speaks_with_authority(shown)):
         return "(withheld)"
-    return re.sub(keep, "", str(value))[:limit]
+    return shown
+
+
+_REPO_KEEP, _AGENT_KEEP = r"[^A-Za-z0-9._/-]", r"[^A-Za-z0-9._-]"
 
 
 def _render_prior(hint, withhold):
     run_s = _ident(hint["run"], 48, withhold)
     uid_raw, status_raw = hint["unit"], hint["status"]
     park, inv = _one_line(hint["park"] or "", 90), _one_line(hint["inv"] or "", 90)
-    spoken = {name for field in (hint["park"], hint["inv"], *_hint_identifiers(hint))
-              for name in _speaks_with_authority(field)}
+    spoken = {name for field in (hint["park"], hint["inv"]) for name in _speaks_as_shown(field, (90,))}
+    spoken |= {name for field in _hint_identifiers(hint) for name in _speaks_as_shown(field)}
+    if hint["repo"] and _token(hint["repo"], 60, True, _REPO_KEEP) == "(withheld)":
+        spoken.add("grant-claim")
     hint["withheld"] = bool(withhold and spoken)
     uid = _ident(uid_raw, 40, withhold)
     status = _ident(status_raw, 24, withhold, status=True)
@@ -440,7 +464,7 @@ def _render_prior(hint, withhold):
     scope += f"+{len(hint['paths']) - 1}" if len(hint["paths"]) > 1 else ""
     when = datetime.datetime.fromtimestamp(hint["time"], datetime.timezone.utc).strftime("%Y-%m-%d") \
         if hint.get("time") is not None else "unknown"
-    repo = _token(hint["repo"], 60, withhold, r"[^A-Za-z0-9._/-]") if hint["repo"] else "unknown"
+    repo = _token(hint["repo"], 60, withhold, _REPO_KEEP) if hint["repo"] else "unknown"
     prov = (f"src={repo or 'unknown'}@{hint['rev'][:12] if hint['rev'] else 'unknown'} "
             f"artifact={_ident(hint['artifact'], 80, withhold)}@sha256:{hint['digest'][:16]} at={when} "
             f"scope={scope} match={field}:{_ident(cand, 60, withhold)}"
@@ -451,8 +475,11 @@ def _render_prior(hint, withhold):
 
 
 def _render_session(hint, withhold):
-    spoken = {name for field in (hint["sid"], hint["title"], hint["snippet"], hint["agent"])
-              for name in _speaks_with_authority(field)}
+    spoken = {name for field, width in ((hint["sid"], 40), (hint["title"], 60), (hint["snippet"], 80),
+                                        (hint["agent"], 32))
+              for name in _speaks_as_shown(field, (width,))}
+    if hint["agent"] and _token(hint["agent"], 32, True, _AGENT_KEEP) == "(withheld)":
+        spoken.add("grant-claim")
     hint["withheld"] = bool(withhold and spoken)
     sid = _ident(hint["sid"] or "?", 40, withhold)
     if hint["withheld"]:
@@ -460,7 +487,7 @@ def _render_session(hint, withhold):
     else:
         snip = _inert(hint["snippet"] or "", 80)
         text = _inert(hint["title"] or "(untitled)", 60) + (f" — {snip}" if snip else "")
-    agent = _token(hint["agent"] or "session", 32, withhold, r"[^A-Za-z0-9._-]") or "session"
+    agent = _token(hint["agent"] or "session", 32, withhold, _AGENT_KEEP) or "session"
     body = _guard_entry(f"[session {sid}] {text}", hint["sid"], hint["title"], hint["snippet"],
                         hint["agent"])
     return (f"- [{_render_label(hint, withhold)}] {body} ‖ src=unknown@unknown "

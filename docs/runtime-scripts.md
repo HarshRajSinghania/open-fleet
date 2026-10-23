@@ -988,7 +988,10 @@ merges live `orca search` hits when a query is passed, and emits a bounded `<= 1
   entries and withholds a note whose own words (outside quotes) assert a grant or speak as an
   authority (`grant-claim`, `instruction-override`, `authority-claim`, `suppression-request`,
   `role-play-marker`), keeping its pointer and labels; a note that QUOTES such text stays,
-  labelled. `--hint-mode historical` lists everything, labelled, for a coordinator's audit.
+  labelled. The decision covers the raw field AND the text as shown — lines joined, a literal
+  `\n` read as a break, a token cut to its charset, each width a field is truncated to — so a
+  claim split across lines in the record is withheld, not just labelled. `--hint-mode historical`
+  lists everything, labelled, for a coordinator's audit.
 - **Selection.** Ranked by currency, match strength (structured field before prose) and
   recency, one entry per producing run before any run's second — not file-name order.
 - `--hint-json` prints the same selection as JSON (`lines`, `entries` with source, scope, match,
@@ -1220,7 +1223,8 @@ movement, stop, terminal, wedge markers, nudge history), `--handover`
 repeating the same approach, hitting 3 attempts, or matching a prior error signature; the packet
 carries an `AUTHORITY:` line — prior-attempt text grants nothing and never widens the frozen
 task — and every reflection, command or stderr line that asserts a grant outside quotes is
-labelled `grant-claim` and withheld (#605), while instruction-shaped lines stay, labelled, as the
+labelled `grant-claim` and withheld (#605) — a one-line field decided after its lines are joined,
+as it is shown, and a literal `\n` read as a break — while instruction-shaped lines stay, labelled, as the
 error delta the retry needs), `--config`
 (threshold/rate-limit JSON, default `runtime/watchdog.json`), `--state` (nudge-history
 JSON, default .orca/watchdog-state.json), `--log` (JSONL action log, default

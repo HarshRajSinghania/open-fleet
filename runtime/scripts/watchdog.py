@@ -724,9 +724,11 @@ def _sanitize_untrusted(text):
         spec.loader.exec_module(mod)
         rendered = []
         for line in mod.defuse_banners(str(text)).split("\n"):
-            names = mod.line_labels(line)
-            names += [g for g in mod.grant_labels(line) if g not in names]
-            if mod.grant_labels(mod.unquoted(line)):
+            # A literal backslash-n reads as a line break: probe that reading too (PR #639 review).
+            probe = line.replace("\\n", " ").replace("\\r", " ")
+            names = list(dict.fromkeys(mod.line_labels(line) + mod.line_labels(probe)
+                                       + mod.grant_labels(line) + mod.grant_labels(probe)))
+            if mod.grant_labels(mod.unquoted(line)) or mod.grant_labels(mod.unquoted(probe)):
                 line = HANDOVER_GRANT_WITHHELD
             rendered.append(f"[INJECTION-PATTERN:{','.join(names)}] {line}" if names else line)
         return "\n".join(rendered)
@@ -761,7 +763,9 @@ def build_failure_handover(record, max_lines=40):
         raise HeartbeatError("handover: reflection.repeating_same_approach must be a boolean")
 
     def _one_line(val):
-        return " ".join(_sanitize_untrusted(str(val or "")).splitlines()).strip()
+        # Join FIRST, then sanitize: the decision is made on the line that is shown. Sanitizing line
+        # by line let a grant claim split across two lines through, whole once joined (PR #639).
+        return _sanitize_untrusted(" ".join(str(val or "").splitlines()).strip()).strip()
 
     attempt = record.get("attempt", 1)
     if not isinstance(attempt, int) or attempt < 1:

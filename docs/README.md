@@ -48,6 +48,7 @@ local tests requires Git and Python; see [local setup](development.md#local-setu
 | [Distribution](distribution.md) | How are installs packaged, and what do proof records establish? |
 | [Platform design](platform-ride.md) | Which platform capabilities informed the design at the recorded date? |
 | [Compliance provenance](compliance-provenance.md) | What supporting evidence can a manifest carry? |
+| [Adversarial trajectory evals](adversarial-evals.md) | Do the guards hold when a worker acts on injected instructions? |
 
 ## For contributors and maintainers
 

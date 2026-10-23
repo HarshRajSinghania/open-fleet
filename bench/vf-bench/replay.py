@@ -308,29 +308,67 @@ def parse_adapter_response(stdout):
     return {"status": "scored", "verdict": verdict, "reasons": reasons, "verifier": who}
 
 
+# The process groups of the adapters this driver has running (PR #645 review). Each adapter gets
+# its own group, so a kill of the driver's group never reaches it; the groups are therefore also
+# written to --pgid-file, and the replay kills every group listed there whenever a case process
+# ends, timed out or not. The driver's own exit path kills them too (see driver_main).
+_ADAPTER_GROUPS = set()
+_PGID_FILE = None
+
+
+def _publish_groups():
+    if _PGID_FILE:
+        Path(_PGID_FILE).write_text("".join(f"{g}\n" for g in sorted(_ADAPTER_GROUPS)),
+                                    encoding="utf-8")
+
+
+def kill_groups(pgids):
+    """SIGKILL each process group; one already gone is skipped."""
+    for pgid in pgids:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+
 def run_adapter(vf, trap, adapter, timeout):
     """One case through one external adapter, with the four outcomes kept apart: a conforming
     verdict (scored), a declared UNSUPPORTED, and three failures that are NEVER scored — a timeout
-    (process group killed), a crash (non-zero exit) and a malformed answer."""
+    (process group killed), a crash (non-zero exit) and a malformed answer.
+
+    The adapter's stdio are files, not pipes: a process it leaves behind cannot hold a pipe open
+    and turn a finished answer into a timeout. Whatever it leaves behind in its process group is
+    killed once it has answered (PR #645 review)."""
     holder = Path(tempfile.mkdtemp(prefix="vfbench-adapter-"))
     try:
         request, cwd, env = adapter_request(vf, trap, holder)
-        try:
-            proc = subprocess.Popen(adapter["argv"], cwd=cwd, env=env, stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                    start_new_session=True)
-        except OSError as exc:
-            return {"status": "crash", "error": f"the adapter could not start: {exc}"}
-        try:
-            out, err = proc.communicate(json.dumps(request), timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_group(proc)
-            proc.communicate()
+        stdin, stdout, stderr = (holder / n for n in ("request.json", "stdout", "stderr"))
+        stdin.write_text(json.dumps(request), encoding="utf-8")
+        with open(stdin, "rb") as fin, open(stdout, "wb") as fout, open(stderr, "wb") as ferr:
+            try:
+                proc = subprocess.Popen(adapter["argv"], cwd=cwd, env=env, stdin=fin,
+                                        stdout=fout, stderr=ferr, start_new_session=True)
+            except OSError as exc:
+                return {"status": "crash", "error": f"the adapter could not start: {exc}"}
+            _ADAPTER_GROUPS.add(proc.pid)
+            _publish_groups()
+            timed_out = False
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+            finally:
+                kill_groups([proc.pid])
+                proc.wait()
+                _ADAPTER_GROUPS.discard(proc.pid)
+                _publish_groups()
+        if timed_out:
             return {"status": "timeout", "error": f"no answer within {timeout} s; process group killed"}
+        err = stderr.read_text(encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             return {"status": "crash", "error": f"the adapter exited {proc.returncode}",
-                    "stderr": (err or "").strip()[-400:]}
-        return parse_adapter_response(out)
+                    "stderr": err.strip()[-400:]}
+        return parse_adapter_response(stdout.read_text(encoding="utf-8", errors="replace"))
     finally:
         shutil.rmtree(holder, ignore_errors=True)
 
@@ -357,6 +395,26 @@ def driver_case(bench, case_id, adapters, adapter_timeout):
         rec = run_adapter(vf, trap, adapter, adapter_timeout)
         rec.update(done=adapter["name"], wall_seconds=round(time.monotonic() - t0, 3))
         _emit(rec)
+
+
+def driver_main(args):
+    """The case driver's entry: whichever way it ends — a return, an exception, or a TERM, HUP or
+    INT turned into an exit — no adapter process group it started outlives it. A SIGKILL skips
+    this; the replay then kills the groups listed in --pgid-file instead."""
+    global _PGID_FILE
+    _PGID_FILE = args.pgid_file
+
+    def _exit(signum, frame):
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, _exit)
+    try:
+        driver_case(Path(args.bench), args.case, json.loads(args.adapters), args.adapter_timeout)
+    finally:
+        kill_groups(list(_ADAPTER_GROUPS))
+        _ADAPTER_GROUPS.clear()
+        _publish_groups()
+    return 0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -492,8 +550,13 @@ def aggregate(per_run):
 # The run
 # ---------------------------------------------------------------------------------------------
 
-def _run_driver(python, args, cwd, env, timeout):
+def _run_driver(python, args, cwd, env, timeout, pgid_file=None):
+    """Run one driver process; kill its process group if it outlives `timeout`, and then kill
+    every adapter process group it recorded in `pgid_file` — those are separate groups, which the
+    first kill cannot reach (PR #645 review)."""
     argv = [python, "-I", "-B", "-X", "utf8", str(Path(__file__).resolve()), "_driver", *args]
+    if pgid_file:
+        argv += ["--pgid-file", str(pgid_file)]
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
@@ -503,6 +566,10 @@ def _run_driver(python, args, cwd, env, timeout):
         _kill_group(proc)
         out, err = proc.communicate()
         timed_out = True
+    finally:
+        if pgid_file and Path(pgid_file).exists():
+            kill_groups(int(g) for g in Path(pgid_file).read_text(encoding="utf-8").split())
+            Path(pgid_file).unlink()
     records = []
     for line in (out or "").splitlines():
         if line.startswith("{"):
@@ -691,7 +758,8 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         for c in live:
             records, timed_out, code, err = _run_driver(
                 python, ["case", "--bench", str(bench), "--case", c["id"], "--adapters", spec,
-                         "--adapter-timeout", str(adapter_timeout)], export, env, budget)
+                         "--adapter-timeout", str(adapter_timeout)], export, env, budget,
+                pgid_file=export.parent / "adapter-groups")
             started = {r["start"] for r in records if "start" in r}
             done = {r["done"]: r for r in records if "done" in r}
             for n in names:
@@ -998,12 +1066,13 @@ def main(argv=None):
         ap.add_argument("--case")
         ap.add_argument("--adapters", default="[]")
         ap.add_argument("--adapter-timeout", type=float, default=DEFAULT_ADAPTER_TIMEOUT)
+        ap.add_argument("--pgid-file")
         a = ap.parse_args(argv[1:])
         if a.mode == "probe":
             driver_probe(Path(a.bench))
-        else:
-            driver_case(Path(a.bench), a.case, json.loads(a.adapters), a.adapter_timeout)
-        return 0
+            return 0
+        return driver_main(a)
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 

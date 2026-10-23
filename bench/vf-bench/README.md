@@ -449,7 +449,12 @@ It receives ONE JSON object on stdin (`vf-bench-adapter@1`):
 
 It must write ONE JSON object on stdout and exit 0:
 `{"contract": "vf-bench-adapter@1", "verdict": "GREEN" | "RED" | "UNSUPPORTED", "reasons": [strings], "verifier": {"name": …, "version": …}}`.
-No other field is allowed, and `UNSUPPORTED` needs a reason.
+No other field is allowed, and `UNSUPPORTED` needs a reason. Its stdin, stdout and stderr are
+files, so a process it leaves behind cannot hold a pipe open and turn a finished answer into a
+timeout. Nothing an adapter starts outlives its case: it runs in its own process group, which is
+killed once it answers or times out, and, if the case's outer budget runs out first, by the replay
+itself, from a list of live groups the case driver keeps outside its own process (PR #645 review).
+A process that leaves its group with `setsid` is beyond any of these.
 
 | Outcome | Scored? | Where the report lists it |
 |---|---|---|

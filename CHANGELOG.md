@@ -22,6 +22,17 @@ truth is `.claude-plugin/plugin.json`.
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it
   signed itself. floor_guard.py already read the pin at its base ref; this gives the CLI the same
   anchor. Without the flag, behaviour is unchanged.
+- **The A2A export says what it is, and A2A cards are validated against the official schema**
+  (#607). `scripts/a2a_export.py` emits an offline mission descriptor, not an A2A transport
+  AgentCard. Its `a2a-agent-card/v1` tags stay for existing consumers, it gains a `kind` field,
+  and every `capabilities` flag is now `false`: `stateTransitionHistory` was `true`, though
+  nothing serves A2A tasks. New `scripts/a2a_schema.py` checks ProtoJSON AgentCards with the
+  stdlib against the official `lf.a2a.v1` proto, vendored at `a2aproject/A2A@1205f459` and
+  pinned by sha256. The check refuses unknown fields, wrong shapes and missing or empty REQUIRED
+  fields. The custom descriptor fails it, and upstream's example cards pass. The opt-in
+  `--standard-card` projection requires a real `--endpoint` and `--binding`, refuses placeholder
+  hosts, and keeps mission proof and governance data in one namespaced extension.
+  `docs/a2a-export.md` documents the field comparison and the compatibility policy.
 
 ## [0.8.0] - 2026-10-23
 

@@ -272,14 +272,19 @@ Every Bash segment is judged after one peeler strips what launches it — `VAR=`
 `(`/`{`/`!`, `if`/`then`/`do`/`while` and case patterns, options and operands included. A
 command line that runs later or elsewhere is judged as segments of its own (#598): a `sh -c` or
 `eval` body, a `trap` action, an `alias` value, a `gh alias set --shell` expansion, the string
-or command of `flock`, `su -c`, `runuser`, `script -c`, `watch`, `parallel`, `ssh host cmd` and
-`find -exec`, a literal that `python -c`/`perl -e`/`node -e` code (or a heredoc fed to one)
-hands to `os.system`/`subprocess`, a program fed to a shell on stdin (`echo …`/`printf …`/
-`cat` piped into `sh`, `bash <<EOF`, `bash <<< …`) or written to a file and run in the same
-command, and a command head built from a variable or a substitution — its literal value on the
+or command of `flock`, `su -c`, `runuser`, `script -c`, `watch`, `parallel` (its template
+completed with each `:::` argument, `{}` substituted or the argument appended), `ssh host cmd`
+and `find -exec`, a literal that `python -c`/`perl -e`/`node -e` code — from `-c`, stdin or a
+heredoc — hands to `os.system`/`subprocess`, a program fed to a shell on stdin (`echo …`/
+`printf …`/`cat` piped into `sh`, `bash <<EOF`, `bash <<< …`) or written to a file and run in
+the same command (tracked by resolved path, so two files named `run.sh` do not share), and a
+command head built from a variable or a substitution — its literal value on the
 line, what `echo` prints, else each refused head in its place. A `gh alias` whose expansion is
-an off-repo write, and `gh alias import`, deny: no receipt can bind the later send. Words are
-quote-removed as the shell does it, ANSI-C `$'…'` decoded, so `$'\x72m'` is the `rm` it runs.
+an off-repo write, and `gh alias import`, deny: no receipt can bind the later send. `printf`/
+`echo` escapes (`\xHH`, `\NNN`, `\n` …) are decoded before the fed program is read; interpreter
+code is a command only for the literals it hands to an exec call, not every string it prints
+(PR #648 review). Words are quote-removed as the shell does it, ANSI-C `$'…'` decoded, so
+`$'\x72m'` is the `rm` it runs.
 
 HIGH tier denies (never asks) for Bash: recursive delete rooted at `/`, `~`, `$HOME`, or
 `/*` (or carrying `--no-preserve-root`); force-push to the default branch (including the
@@ -288,9 +293,12 @@ HIGH tier denies (never asks) for Bash: recursive delete rooted at `/`, `~`, `$H
 names); `orca orchestration reset`; and an off-repo write — `gh pr|issue|release` write
 verbs, the write verbs of `gh repo`, `workflow`, `run`, `gist`, `variable`, `cache`, `label`,
 `ssh-key`, `gpg-key`, `codespace` and `project`, or `gh api` with a write method/field —
-however launched, `sh -c`/`eval` bodies included, that is not immediately `&&`-preceded in the
-same command by its `egress.py write` receipt (#561 — reads stay free; one receipt covers one
-send). Push long options are read the way git reads them, so an unambiguous abbreviation
+however launched, `sh -c`/`eval` bodies and programs fed to a shell by a pipe or heredoc
+included, that is not immediately `&&`-preceded in the same command by its `egress.py write`
+receipt (#561 — reads stay free; one receipt covers one send). A DEFERRED send (a `trap`
+action, an `alias` value, a `gh alias set` expansion) runs later, so an outer receipt never
+covers it — its receipt must sit inside the saved action (PR #648 review). Push long options
+are read the way git reads them, so an unambiguous abbreviation
 (`--del`, `--mi`, `--no-force-w`) is the option it expands to. An effective
 `--force-with-lease` exempts a force-push but never a deletion.
 
@@ -305,6 +313,8 @@ history-discarding local git: `reset --hard`, whole-tree `checkout`/`restore`,
 carries text — `echo`/`printf` arguments, a `git -m` or `gh --body`/`--title` message, a
 comment, heredoc data — so `git commit -m "explain why rm -rf / is refused"` is not asked
 about, while `sh -c "rm -r ./build"` and `psql -c "DROP TABLE …"` still are (#598, from #602).
+Interpreter code is read as a command only for the literals it hands to an exec-shaped call
+(`os.system`, `subprocess.run`, a backtick), not every string it also prints (PR #648 review).
 
 When `ORCA_UNIT_WORKTREE` is set, writes outside it deny — Edit/Write `file_path`,
 NotebookEdit `notebook_path`, and absolute-path Bash redirects and `tee` destinations —
@@ -314,9 +324,12 @@ write, redirect, `tee`, `rm`/`mv`/`cp`/`ln`/`install`/`rsync`, `sed -i`/`perl -i
 additive chmod mode) aimed at a hook config (`.claude/settings*.json` or another harness's
 hook file), at a pinned trust anchor (`.orca/human-grant-pubkey`, `.orca/dispatch-pubkey`,
 which `decisions.py`, `floor_guard.py`, `verify-gate.sh` and `run_report.py` verify against) or
-at this script, `find … -delete` reaching one, and inline interpreter code (`python -c`,
-`perl -e`, `node -e`, …) naming a guard path beside a write call; `touch` is not guarded and
-reading an anchor stays free. A `grep`, `sed` or `tr`
+at this script, `find … -delete` or `find … -exec` reaching one — a name or path filter spares
+a guard file only when the whole AND-chain of tests proves it unmatched (`-iname`/`-ipath` fold
+case, `-path` matches the path as `find` prints it, a negation or `-o` or `-regex` proves
+nothing) — and interpreter code (`python -c`, `perl -e`, `node -e`, …) naming a guard path
+beside a write call, whether from `-c` or fed on stdin or a heredoc; `touch` is not guarded and
+reading an anchor stays free (PR #648 review). A `grep`, `sed` or `tr`
 that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
 
 Shell grammar and versions (#598). `scripts/deny_hook_corpus.py` differential-tests the

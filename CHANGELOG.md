@@ -6,6 +6,19 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The deny-hook closes eight PR #648 review findings** (#598). A filtered `find … -delete` or
+  `find … -exec` reaching a pinned key now denies unless the whole predicate chain proves the key
+  unmatched (case-folding `-iname`/`-ipath`, matching `-path` as `find` prints it); `printf`/`echo`
+  escapes (`\xHH`, `\NNN`) are decoded before a fed program is read; a `trap`, `alias` or
+  `gh alias set` send is denied regardless of an outer receipt (the receipt must sit inside the
+  saved action); `parallel` completes its template with each `:::` argument before judging;
+  interpreter input fed on stdin or a heredoc reaches the guarded-key check, not only `python -c`;
+  a receipt `&&`-before a shell fed by a pipe or heredoc now arms the send it runs; interpreter
+  code is judged only for the literals it hands to an exec call, not every string it prints; and a
+  written-then-run script is tracked by resolved path, so two files named `run.sh` no longer share.
+  The corpus gains a guard-path mode (find predicates over every guarded path), an escaped-command
+  family and a parallel family; each finding is a fixture RED at `c8b984e180`, with mutation
+  controls for the new safeguards.
 - **The deny-hook is differential-tested against real bash** (#598). `scripts/deny_hook_corpus.py`
   runs each generated template with an inert sentinel in a throwaway bash and feeds the same
   template holding a refused command only to the hook; quote state, backslash parity,

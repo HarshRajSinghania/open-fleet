@@ -27,7 +27,9 @@ truth is `.claude-plugin/plugin.json`.
   `heldout-protocol.json` predeclares the development and held-out splits, their digests,
   planned release dates, leakage checks with their stated limits, and an unfilled holder role,
   and `heldout.py check` verifies no committed blob is a held-out case, in UTF-8, UTF-16 or
-  UTF-32 (compressed or base64-encoded copies are a stated limit). The CI reproduction's first run
+  UTF-32 or behind JSON escapes (compressed or base64-encoded copies are a stated limit), and
+  names what it could not look into (an oversize JSON document, an LFS pointer, a submodule)
+  UNSCANNED rather than clean. The CI reproduction's first run
   on PR #645 reproduced the macOS reference on Linux. Not done: a real external verifier, and an
   actual holder and held-out set.
 - **Provenance retention receipts are verified offline against the signed inventory** (#608).

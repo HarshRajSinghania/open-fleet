@@ -243,13 +243,15 @@ class LocalStateStore:
             "runs": {"objective": "TEXT"},
             "terminals": {"backend_ref": "TEXT"},
             # monitor_pid: the monitor that holds the launch gate (cleared when it exits);
-            # monitor_started_at: set by the FIRST gate claim and never cleared (#597).
+            # monitor_started_at: set by the FIRST gate claim and never cleared (#597);
+            # gate_closed_at: set when a fence lands before any claim, and never cleared (#597).
             "dispatches": {
                 "backend_ref": "TEXT",
                 "head_sha": "TEXT",
                 "monitor_pid": "INTEGER",
                 "monitor_started_at": "REAL",
                 "intent_id": "TEXT",
+                "gate_closed_at": "REAL",
             },
             "requests": {"payload_sha256": "TEXT", "intent_id": "TEXT"},
         }
@@ -358,30 +360,50 @@ class LocalStateStore:
 
         Refuses a dispatch that is fenced or withdrawn (#591 review) AND one another monitor
         holds, so a monitor that a dead coordinator's launcher starts late can never run the
-        agent beside the one recovery adopted, nor after recovery abandoned the dispatch.
+        agent beside the one recovery adopted, nor after recovery abandoned the dispatch. It
+        also refuses, for good, a dispatch whose gate a fence closed before any claim: a later
+        `retain` rewrites the state but never reopens the gate. `gate_refusal` says which.
         """
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 "UPDATE dispatches SET monitor_pid = ?, monitor_started_at = COALESCE(monitor_started_at, ?) "
-                "WHERE dispatch_id = ? AND state IN ('ready', 'running', 'retained') AND COALESCE(monitor_pid, 0) = 0",
+                "WHERE dispatch_id = ? AND state IN ('ready', 'running', 'retained') AND COALESCE(monitor_pid, 0) = 0 "
+                "AND gate_closed_at IS NULL",
                 (int(pid), time.time(), dispatch_id),
             )
             conn.execute("COMMIT")
         return cur.rowcount == 1
 
+    def gate_refusal(self, dispatch_id: str) -> str:
+        """Why `claim_monitor` refused this dispatch, for the refused monitor's own log (#597)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT state, monitor_pid, gate_closed_at FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+        if row is None:
+            return "dispatch withdrawn before launch"
+        if row["gate_closed_at"] is not None:
+            return f"launch gate closed for good: a fence landed before any monitor claimed it (state now {row['state']})"
+        if int(row["monitor_pid"] or 0):
+            return f"held by monitor pid {row['monitor_pid']}"
+        return f"dispatch is {row['state']}, not launchable"
+
     def abandon_unlaunched(self, dispatch_id: str) -> bool:
         """Recovery's side of the gate: abandon a dispatch no monitor has EVER claimed (#597).
 
-        Exactly one of this and `claim_monitor` wins; the loser sees rowcount 0.
+        Exactly one of this and `claim_monitor` wins; the loser sees rowcount 0. The winner
+        closes the gate for good, as any fence before a claim does.
         """
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            now = time.time()
             cur = conn.execute(
-                "UPDATE dispatches SET state = 'abandoned', terminal_state = 'abandoned', updated_at = ? "
+                "UPDATE dispatches SET state = 'abandoned', terminal_state = 'abandoned', updated_at = ?, "
+                "gate_closed_at = COALESCE(gate_closed_at, ?) "
                 "WHERE dispatch_id = ? AND state IN ('ready', 'retained') AND COALESCE(monitor_pid, 0) = 0 "
                 "AND monitor_started_at IS NULL",
-                (time.time(), dispatch_id),
+                (now, now, dispatch_id),
             )
             if cur.rowcount == 1:
                 conn.execute(

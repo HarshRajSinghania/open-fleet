@@ -126,7 +126,14 @@ them (SIGKILL, power loss) leaves state that a restarted coordinator settles by 
 (`LocalStateStore.claim_monitor`). It records the monitor's pid only while the dispatch is live
 and no other monitor holds it. Reconciliation abandons an unlaunched dispatch with the opposite
 compare-and-set (`abandon_unlaunched`), so exactly one of the two wins. A monitor that starts late
-(a launcher that outlived its coordinator) is refused at the gate. Neither path ever spawns a
+(a launcher that outlived its coordinator) is refused at the gate. A `worker-stop`,
+`worker-abandon` or `worker-release` that lands before any monitor claimed closes the gate for
+good, in the same transaction (`gate_closed_at`), and so does `abandon_unlaunched`. A later
+`worker-retain` still changes the state, so inspection keeps working, but it never reopens the
+gate. Before this, a retain reopened it, and a late monitor could run the agent under a dispatch
+an operator had abandoned. A refused monitor logs `launch_refused` with the reason
+(`LocalStateStore.gate_refusal`). Stores from an older schema gain the column when they are
+opened. Neither path ever spawns a
 replacement monitor: recovery rolls back or adopts, it never respawns. `worker-stop` and the
 liveness sweep use the gate-recorded pid when no pid was published. Before this change, a
 coordinator killed after the spawn left `pid 0`, and a stop recorded `stopped` while the agent kept running.

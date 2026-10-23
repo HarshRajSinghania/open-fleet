@@ -1053,5 +1053,131 @@ class TestSandboxSalvageIsRetried(CrashRecoveryBase):
         self.assertEqual((r["resolution"], r["error"]["code"], r["task"]["after"]), ("failed", "dispatch_fenced", "ready"))
 
 
+# The `dispatches` table as the first local-state schema created it, before any additive migration.
+OLD_DISPATCHES_SCHEMA = """
+CREATE TABLE dispatches (
+    dispatch_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT 'default',
+    worktree TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    profile TEXT NOT NULL DEFAULT 'rw',
+    terminal_handle TEXT NOT NULL,
+    state TEXT NOT NULL,
+    terminal_state TEXT NOT NULL DEFAULT 'active',
+    pid INTEGER,
+    backend TEXT DEFAULT 'setsid',
+    launch_effective TEXT,
+    lane_dir TEXT,
+    session_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+"""
+
+
+class TestFenceClosesTheGate(CrashRecoveryBase):
+    """A stop, abandon or release before any monitor claimed closes the launch gate for good (#597).
+
+    `retain` still rewrites the state (inspection keeps working) but can never reopen the gate,
+    so a late monitor from a dead coordinator's launcher never runs under a fenced dispatch.
+    """
+
+    def died_payloads(self, prov, dispatch_id):
+        return [json.loads(m["payload"]) for m in prov.check_messages(terminal="coordinator", run="run-r04")["messages"]
+                if m["subject"].startswith(f"worker_died:{dispatch_id}")]
+
+    def insert_dispatch(self, prov, dispatch_id, *, state="ready"):
+        lane = self.base / "state" / "lanes" / dispatch_id
+        lane.mkdir(parents=True, exist_ok=True)
+        with prov.state._connect() as conn:
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, terminal_handle, state, pid, backend, "
+                "lane_dir, created_at, updated_at) VALUES (?, ?, 'run-r04', '', 'claude', ?, ?, 0, 'setsid', ?, 0, 0)",
+                (dispatch_id, self.task, f"term_{dispatch_id}", state, str(lane)),
+            )
+
+    def test_abandon_then_retain_never_lets_a_late_monitor_start(self):
+        # A launcher that outlived its SIGKILLed coordinator starts the monitor 3 s late.
+        wrapper = self.base / "slow-python"
+        wrapper.write_text(f'#!/bin/sh\ncase "$2" in -c) ;; *) sleep 3 ;; esac\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        wrapper.chmod(0o755)
+        info = self.crash_at("monitor_spawned", env={**self.env, "PYTHON": str(wrapper)})
+        prov = self.restart()
+        disp = info["dispatchId"]
+        events = Path(info["laneDir"]) / "events.jsonl"
+        prov.worker_fence("abandon", disp)
+        self.assertIsNone(self.dispatch(prov, disp)["monitor_started_at"], "fenced before any monitor claimed the gate")
+        self.assertEqual(prov.worker_fence("retain", disp)["state"], "retained", "retain still changes the state, for inspection")
+        self.assertTrue(_wait_for(lambda: any(k in events.read_text() for k in ('"launch_refused"', '"turn_started"')), timeout=30),
+                        "the late monitor never reached the gate")
+        refused = [json.loads(line) for line in events.read_text().splitlines() if '"launch_refused"' in line]
+        self.assertEqual(len(refused), 1, "a retained dispatch fenced before any claim still refuses a late monitor")
+        self.assertIn("launch gate closed", refused[0]["reason"])
+        self.assert_no_worker_ran(settle=0.5)
+        row = self.dispatch(prov, disp)
+        self.assertEqual((row["state"], row["monitor_started_at"], int(row["monitor_pid"] or 0)), ("retained", None, 0))
+        self.assertIsNotNone(row["gate_closed_at"])
+        states = {w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}
+        self.assertNotEqual(states[disp], "died", "nothing ran under it, so nothing is declared dead")
+        self.assertEqual(self.died_payloads(prov, disp), [], "and no worker_died is sent for it")
+
+    def test_a_fence_before_any_claim_closes_the_gate_and_retain_cannot_reopen_it(self):
+        prov = self.restart()
+        store = prov.state
+        for verb in ("stop", "abandon", "release"):
+            disp = f"disp_{verb}"
+            self.insert_dispatch(prov, disp)
+            prov.worker_fence(verb, disp)
+            self.assertIsNotNone(self.dispatch(prov, disp)["gate_closed_at"], verb)
+            prov.worker_fence("retain", disp)
+            self.assertFalse(store.claim_monitor(disp, os.getpid()), f"{verb} then retain: the gate stays closed")
+            self.assertIn("launch gate closed", store.gate_refusal(disp))
+            self.assertEqual(store.dispatch_state(disp), "retained")
+        self.insert_dispatch(prov, "disp_kept")
+        prov.worker_fence("retain", "disp_kept")
+        self.assertIsNone(self.dispatch(prov, "disp_kept")["gate_closed_at"], "retain alone never closes the gate")
+        self.insert_dispatch(prov, "disp_unlaunched")
+        self.assertTrue(store.abandon_unlaunched("disp_unlaunched"))
+        self.assertIsNotNone(self.dispatch(prov, "disp_unlaunched")["gate_closed_at"], "recovery's abandon closes it too")
+        prov.worker_fence("retain", "disp_unlaunched")
+        self.assertFalse(store.claim_monitor("disp_unlaunched", os.getpid()))
+
+    def test_a_fence_after_a_claim_leaves_the_gate_to_the_monitor_that_ran(self):
+        prov = self.restart()
+        self.insert_dispatch(prov, "disp_ran")
+        monitor = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(monitor.wait)
+        self.addCleanup(monitor.kill)
+        self.assertTrue(prov.state.claim_monitor("disp_ran", monitor.pid))
+        self.assertIn("held by monitor", prov.state.gate_refusal("disp_ran"))
+        prov.worker_fence("stop", "disp_ran")
+        row = self.dispatch(prov, "disp_ran")
+        self.assertIsNone(row["gate_closed_at"], "a monitor already ran: the gate is closed only before any claim")
+        self.assertIsNotNone(row["monitor_started_at"])
+        self.assertTrue(_wait_for(lambda: monitor.poll() is not None), "the stop reached the monitor that ran")
+
+    def test_an_older_store_gains_the_gate_column(self):
+        import sqlite3
+
+        db = self.base / "old-state" / "runtime.db"
+        db.parent.mkdir()
+        with sqlite3.connect(db) as conn:
+            conn.executescript(OLD_DISPATCHES_SCHEMA)
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, worktree, agent, terminal_handle, state, pid, created_at, updated_at) "
+                "VALUES ('disp_old', 't', '/w', 'claude', 'term_old', 'abandoned', 0, 0, 0)"
+            )
+        local_state = importlib.import_module("runtime.providers.local_state")
+        for _ in range(2):  # opening it again is a no-op
+            store = local_state.LocalStateStore(db_path=db)
+        with sqlite3.connect(db) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(dispatches)").fetchall()}
+        self.assertIn("gate_closed_at", cols)
+        self.assertEqual(store.dispatch_state("disp_old"), "abandoned", "existing rows survive the migration")
+        self.assertIsNone(store.launch_intent("li_none"))
+        self.assertFalse(store.claim_monitor("disp_old", os.getpid()), "a fenced row still refuses the gate")
+
+
 if __name__ == "__main__":
     unittest.main()

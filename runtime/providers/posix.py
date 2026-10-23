@@ -938,9 +938,10 @@ def _log(obj):
 # Launch gate: a dispatch fenced while it was starting never runs its agent (#591 review), and
 # it is a compare-and-set, so ONE monitor ever runs it: a late monitor from a dead coordinator's
 # launcher loses to the one recovery adopted, or to recovery abandoning the dispatch (#597).
+# A fence before any claim closes the gate for good: a later retain never reopens it.
 MONITOR_PID = os.getpid()
 if SUPERVISED and not store.claim_monitor(DISPATCH, MONITOR_PID):
-    _log({{"type": "launch_refused", "dispatchId": DISPATCH, "reason": "dispatch fenced, withdrawn, or held by another monitor before launch"}})
+    _log({{"type": "launch_refused", "dispatchId": DISPATCH, "reason": store.gate_refusal(DISPATCH)}})
     sys.exit(0)
 
 with open(log_path, "a", encoding="utf-8") as lf:
@@ -2406,6 +2407,15 @@ if {repr(self.backend)} == "cmux":
                 "UPDATE dispatches SET state = ?, terminal_state = ?, updated_at = ? WHERE dispatch_id = ?",
                 (new_state, term_state, time.time(), dispatch_id),
             )
+            if verb != "retain":
+                # A fence before any monitor claimed closes the launch gate for good, in the
+                # same transaction: a later retain rewrites the state for inspection, but a
+                # late monitor from a dead coordinator's launcher never runs under it (#597).
+                conn.execute(
+                    "UPDATE dispatches SET gate_closed_at = COALESCE(gate_closed_at, ?) "
+                    "WHERE dispatch_id = ? AND monitor_started_at IS NULL",
+                    (time.time(), dispatch_id),
+                )
             conn.execute("COMMIT")
         out: dict[str, Any] = {"dispatchId": dispatch_id, "state": new_state, "terminalState": term_state}
         finished = r["state"] in ("completed", "died", *FENCED_DISPATCH_STATES) or (

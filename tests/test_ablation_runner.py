@@ -279,7 +279,17 @@ class TheDryRunExercisesThePipeline(SafetyNet):
         self.assertEqual(report["review-it"]["verdict"], "INCOMPLETE")
         code, out, _ = run_main(["report", str(self.out / "results.json")])
         self.assertEqual(code, 0)
-        self.assertIn("## review-it — INCOMPLETE", out)
+        self.assertIn("## review-it — INCOMPLETE [fixture tier: pipeline check, NOT EVIDENCE]", out)
+
+    def test_a_fixture_verdict_is_never_shown_bare(self):
+        # Whatever the decision rule computes on a fixture run, it is labelled where it is shown.
+        results = dict(self.results, complete=True)
+        with mock.patch.object(runner, "_verdict", return_value=("SUCCESSFUL_REDUCTION", "x")):
+            report = runner.summarize(results, PREREG)
+            text = runner.render_markdown(results, report)
+        self.assertFalse(report["review-it"]["evidence"])
+        self.assertIn("SUCCESSFUL_REDUCTION [fixture tier: pipeline check, NOT EVIDENCE]", text)
+        self.assertNotIn("SUCCESSFUL_REDUCTION\n", text)
 
 
 class TheStubTierMeasuresWhatTheHarnessDid(SafetyNet):

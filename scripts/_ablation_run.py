@@ -733,7 +733,11 @@ def summarize(results, prereg):
         totals = {arm: sum(_violations(c) for c in cells if c["arm"] == arm) for arm in ARMS}
         verdict, why = _verdict(variant, results, len(complete), registered, new_violations,
                                 totals, effects, margin)
-        out[mission] = {"verdict": verdict, "why": why, "pairs_complete": len(complete),
+        # A verdict is computed in every tier so the decision rule itself is testable, but only a
+        # live tier's verdict is about the catalog; the others say so wherever they are shown.
+        out[mission] = {"verdict": verdict, "tier": results.get("tier"),
+                        "evidence": results.get("tier") == "live", "why": why,
+                        "pairs_complete": len(complete),
                         "pairs_registered": registered, "arms": arms, "effects": effects,
                         "violations": totals, "new_violation_cells": new_violations,
                         "failures": _failures(cells)}
@@ -806,7 +810,8 @@ def render_markdown(results, report):
         check = var.get("obligation_check") or {}
         held = sum(1 for r in check.get("results", []) if r["held"])
         routing = var.get("routing") or {}
-        lines += [f"## {mission} — {row['verdict']}", "", row["why"], "",
+        qualifier = "" if row["evidence"] else f" [{tier} tier: pipeline check, NOT EVIDENCE]"
+        lines += [f"## {mission} — {row['verdict']}{qualifier}", "", row["why"], "",
                   f"Activation (validate.py transitive_load): baseline ~{var.get('baseline_tokens')} → "
                   f"reduced ~{var.get('reduced_tokens')} ({_fmt(var.get('delta_tokens'), 0)}). "
                   f"Obligations held: {held}/{len(check.get('results', []))}"
@@ -877,7 +882,8 @@ def dispatch(args, api):
         print(f"ablation: run refused: {err}", file=sys.stderr)
         return api.EXIT_USAGE
     if args.json:
-        print(json.dumps({"out": str(out), "verdicts": {m: r["verdict"] for m, r in report.items()},
+        print(json.dumps({"out": str(out), "tier": results["tier"], "evidence": results["evidence"],
+                          "verdicts": {m: r["verdict"] for m, r in report.items()},
                           "complete": results["complete"], "stopped": results["stopped"]}, indent=2))
     else:
         print(render_markdown(results, report))

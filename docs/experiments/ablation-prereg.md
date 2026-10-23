@@ -224,7 +224,9 @@ python3 scripts/ablation.py run --dry-run --cost-cap-usd 0 --repeats 1   # inert
 The dry run uses [first_run.py](../runtime-scripts.md#first_runpy)'s pattern. An inert stand-in
 answers as `claude` from a private directory first on `PATH`, and a tripwire sits ahead of every
 other harness name. It also runs with `SHELL=/bin/sh` and a private `HOME`. It calls no model and
-spends nothing. Its results are labelled `fixture` and **NOT EVIDENCE**. `--tier stub
+spends nothing. Its results are labelled `fixture` and **NOT EVIDENCE**, and so is every verdict
+it prints: the decision rule runs in every tier so it can be tested, but only a live verdict is
+about the catalog. A full dry run of the registered design takes about three minutes. `--tier stub
 --harness-cmd <cmd>` runs an operator's deterministic command behind the same tripwires.
 
 Once the owner has authorised a cap, the live run is one command:

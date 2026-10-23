@@ -1211,6 +1211,31 @@ class TestTextDiffP16(ReviewRepo):
         self.assertRegex(err, r"\[test-made-easier\] tests/test_thing\.py:\d+")
         self.assertIn("[threshold-lowered] CONSTRAINTS.md", err)
 
+    def test_binary_media_bytes_never_read_as_code(self):
+        """PR #631 rename: --text renders a JPEG as bytes, and a re-rendered hero image tripped
+        unfinished-work on bytes that happened to spell a stub marker. Content rules skip binary
+        MEDIA by extension; a source file with a NUL byte is still read, and a media file on the
+        guard surface still trips by path."""
+        repo = self.repo(self.BASE)
+        marker = b"\xff\xd8\xff\xe0" + b"XX" + b"X " + b"TO" + b"DO " + b"# no" + b"qa \x00\x01" * 50
+        (repo / "assets").mkdir()
+        (repo / "assets" / "hero.jpg").write_bytes(marker + b"\n" + marker + b"\n")
+        (repo / "tests" / "fixture.png").write_bytes(marker + b"\nassert x\n")
+        self.commit(repo, "a re-rendered image")
+        code, out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 0, f"media bytes were read as code: {out}{err}")
+        write(repo, "src/app.py", "def compute():\n    return 4\n" + SUPPRESSED + "\n# \x00\n")
+        trap = repo / "bench" / "vf-bench" / "traps"
+        trap.mkdir(parents=True)
+        (trap / "frame.png").write_bytes(marker)
+        self.commit(repo, "a NUL-bearing source file and a media file on the guard surface")
+        code, _out, err = run_main(repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertRegex(err, r"\[silenced-checker\] src/app\.py:\d+")
+        self.assertRegex(err, r"\[guard-surface\] bench/vf-bench/traps/frame\.png:\d+")
+        self.assertNotIn("hero.jpg", err)
+        self.assertNotIn("fixture.png", err)
+
     def test_a_binary_diff_driver_does_not_blank_a_file(self):
         repo = self.repo(self.BASE)
         write(repo, ".gitattributes", "*.py diff=opaque\n")

@@ -156,6 +156,15 @@ STUBS = [
 
 ASSERTIONS = re.compile(r"(\bassert\b|\bexpect\s*\(|\bshould\b|self\.assert|\bt\.Error)")
 TEST_PATH = re.compile(r"(^|/)(tests?|spec|__tests__)/|\.(test|spec)\.|_test\.|(^|/)test_[^/]*$")
+# Binary media no checker, linter or test runner ever reads as code. The diff is taken with
+# --text (P1-6), so an image or archive renders as bytes, and a random run of bytes spelled a
+# stub marker or a suppression: a re-rendered JPEG tripped unfinished-work (PR #631 rename). The
+# content rules skip these by EXTENSION, never by a NUL byte — a NUL in a source file is the
+# evasion --text closed. Path rules (the guard surface) still see every file.
+BINARY_MEDIA = frozenset((".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif",
+                          ".tiff", ".avif", ".heic", ".mp4", ".mov", ".webm", ".mp3", ".wav",
+                          ".ogg", ".pdf", ".woff", ".woff2", ".ttf", ".otf", ".zip", ".gz",
+                          ".tgz", ".xz", ".bz2", ".7z", ".jar", ".pyc"))
 EXCEPTION_ROW = re.compile(r"^\s*\|\s*[WE]\d+\s*\|")
 EXCEPTIONS_HEADING = re.compile(r"^\s*#{1,6}\s+.*\bexceptions?\b", re.IGNORECASE)
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
@@ -462,6 +471,9 @@ def scan(added, removed, constraints_name, repo):
             return False
         return any(EXCEPTIONS_HEADING.match(ln) for ln in text.splitlines())
 
+    def media(path):
+        return Path(path or "").suffix.lower() in BINARY_MEDIA
+
     in_exceptions = {}
     for path, line, text in added:
         if is_constraints(path, constraints_name) and EXCEPTIONS_HEADING.match(text):
@@ -469,6 +481,8 @@ def scan(added, removed, constraints_name, repo):
         surface = guard_surface_hit(path, text)
         if surface:
             flag("guard-surface", path, line, surface)
+        if media(path):
+            continue
         for name, pat in SUPPRESSIONS:
             if pat.search(text):
                 flag("silenced-checker", path, line, name)
@@ -501,7 +515,7 @@ def scan(added, removed, constraints_name, repo):
         surface = guard_surface_hit(path, text)
         if surface:
             flag("guard-surface", path, line, surface)
-        if not TEST_PATH.search(path or ""):
+        if media(path) or not TEST_PATH.search(path or ""):
             continue
         if not ASSERTIONS.search(text):
             continue
@@ -512,6 +526,8 @@ def scan(added, removed, constraints_name, repo):
             in_deleted_files.setdefault(path, []).append((line, text))
             continue
         flag("assertion-removed", path, line, "assertion")
+    added = [row for row in added if not media(row[0])]
+    removed = [row for row in removed if not media(row[0])]
     _charge_moved_assertions(in_deleted_files, added, removed, flag)
     _flag_undiscoverable_renames(added, removed, flag)
     _flag_lowered_rows(added, removed, constraints_name, flag)

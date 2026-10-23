@@ -106,6 +106,78 @@ Every adapter delivers the task spec to the worker (`resolve_task_prompt`), refu
 | `multiclaude` | `dlorenc/multiclaude` | Daemon socket `spawn_agent` + tmux; hooks via `.multiclaude/hooks.json`; release needs `orchestration worker-verify` | ro, rw (claude only) | `cap:core-orchestration` |
 | `openhands` | `OpenHands/software-agent-sdk` | agent-server REST conversations (port 8000) with request-level deny-hook config; danger only on a docker runtime (not advertised, no recipe doctor certifies it) | ro, rw | `cap:core-orchestration` |
 
+### `posix` launch crash recovery (#597)
+
+A `posix` `worker-start` crosses six boundaries, in this order. A coordinator killed between two of
+them (SIGKILL, power loss) leaves state that a restarted coordinator settles by the launch's
+**recorded identity**, never by a guess from process exit. Every boundary name is in
+`LAUNCH_BOUNDARIES` ([`runtime/providers/posix.py`](../runtime/providers/posix.py)).
+
+| # | Boundary | What is durable after it | What a restarted coordinator does |
+|---|---|---|---|
+| 1 | `intent_claimed`: ONE transaction writes the launch intent (pre-minted dispatch id, terminal handle, lane dir, planned worktree, owner token, epoch 1), claims the task (`ready → dispatched`) and records the request `pending` with its payload hash | the intent, at phase `claimed` | Hands the claim back (task → `ready`). No dispatch row exists, so no monitor can pass the launch gate. The request → `failed` |
+| 2 | `worktree_created`: `git worktree add`, plus the hooks (a side effect, no commit) | as 1 | Same as 1. The worktree is kept, named in the receipt, and its HEAD is pinned |
+| 3 | `registered`: terminal and dispatch rows, plus the intent's phase `registered`, in one transaction | dispatch `ready`, pid 0 | Abandons the dispatch if no monitor has claimed the launch gate, and adopts it otherwise (see the gate below) |
+| 4 | `monitor_spawned`: the setsid, tmux or cmux monitor starts (a side effect) | as 3 | Adopts the monitor that claimed the gate and publishes its pid. Otherwise it abandons, as in 3 |
+| 5 | `published`: pid and backend, plus the phase `published` | the dispatch carries its pid | Adopts it, or tears it down when an operator fenced it during startup |
+| 6 | `receipted`: the request → `completed` and the intent's outcome → `completed`, in one transaction | final | Nothing to settle. A retry replays the receipt |
+
+**One monitor per dispatch.** The generated monitor's launch gate is a compare-and-set
+(`LocalStateStore.claim_monitor`). It records the monitor's pid only while the dispatch is live
+and no other monitor holds it. Reconciliation abandons an unlaunched dispatch with the opposite
+compare-and-set (`abandon_unlaunched`), so exactly one of the two wins. A monitor that starts late
+(a launcher that outlived its coordinator) is refused at the gate. Neither path ever spawns a
+replacement monitor: recovery rolls back or adopts, it never respawns. `worker-stop` and the
+liveness sweep use the gate-recorded pid when no pid was published. Before this change, a
+coordinator killed after the spawn left `pid 0`, and a stop recorded `stopped` while the agent kept running.
+
+**Ownership and takeover.** While a coordinator launches, it holds an exclusive `flock` on
+`<state dir>/intents/<intent>.lock`, and it checks its owner token in the same transaction as
+every later commit. The kernel drops the lock when the process dies. A free lock on an open intent
+on the same host therefore proves that its owner is gone. `orchestration launch-reconcile [--intent <id> | --request <id>]`
+settles such intents. `worker-list`, `worker-show` and a `worker-start` for the same task settle
+them automatically. When the owner is alive, or on another host, the intent is reported `pending`
+or `unknown` and left untouched, unless `--takeover` is passed. A takeover swaps the owner token
+and bumps the epoch, so the old writer's next commit fails with `launch_fenced`. A fenced writer
+releases nothing, deletes nothing and terminates nothing; the new owner decides. Reconciliation
+never mints ids, so the run, task, dispatch and terminal ids the worker was launched with are the
+ones that the receipt and the dispatch row keep. Launch fencing is per intent, and it is separate
+from the mailbox fencing of `run-use --takeover-legacy`.
+
+**Requests.** A `--retry-request` id names one launch attempt. Its state is `pending`, then one
+of `completed` (an owned dispatch: live, or already settled by its own monitor), `failed` (an
+explicitly failed attempt that launched nothing or was fenced) or `unknown` (an inspectable state
+with `nextCommands`; reconcile visits it again). A retry with the same id and payload replays the
+outcome. It never starts a second worker: `failed` re-raises the recorded error, and a pending
+attempt whose owner is alive answers `outcome_unknown`. A retry with the same id and a different
+payload (task, worktree, agent, name, run, profile, parent profile, prompt, effort, sandbox recipe,
+`--retry-of`) is refused as `request_mismatch` and never reuses the result. A failed attempt
+returns its task to `ready`, so a new attempt takes a NEW request id.
+
+**The recovery receipt** (`launch_intents.receipt_json`, plus `<lane>/recovery.json` when the lane
+exists, and the `recovery` field of the request's response) names the previous owner (pid, host,
+epoch, whether it was alive) and every process the reconciler found (monitor pid, backend ref,
+container), with what it did to each (`adopted`, `terminated`, `none`). It also names the
+preserved refs (`refs/open-fleet/preserved/<dispatch>` at the worktree HEAD, and
+`refs/open-fleet/sandbox/<dispatch>` when it salvaged a sandbox), the task and dispatch states
+before and after, and the cleanup (what was kept, abandoned or removed). Reconciliation never
+deletes a worktree or a branch. Its receipt always carries `completionInferred: false`: a dispatch
+only becomes `completed` through the worker's own terminal mail
+(`ensure_terminal_or_died`). A monitor that vanished gets the synthetic `worker_died`. When that
+monitor ran a `danger` sandbox, its private git dir is first synced back (`docker rm -f`, then
+`sync_sandbox_git`), so the worker's commits survive.
+
+**What is tested** ([`tests/test_posix_crash_recovery.py`](../tests/test_posix_crash_recovery.py)):
+- **setsid**: a real coordinator subprocess is SIGKILLed at each boundary above, with an inert fake
+  agent. The suite also covers takeover of a live owner, a late monitor and an uninterrupted control.
+- **Docker `danger`**: only with a fake `docker` CLI (the fixture tier). A crash on a real Docker
+  daemon is not tested.
+- **tmux and cmux**: they share the reconciliation code (tmux adoption fills the
+  `openfleet-<handle>` session name; a cmux workspace id that was never published stays unknown),
+  but neither is crash-tested.
+- **Out of scope**: `terminal create` and `dispatch --inject` keep their own row-first ordering
+  and have no launch intent.
+
 ---
 
 ## Supported coding-agent harnesses & sandbox profiles

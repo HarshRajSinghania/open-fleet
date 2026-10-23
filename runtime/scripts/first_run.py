@@ -262,7 +262,7 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
     rel = re.search(r"write the report to (\S+)", spec).group(1)
     Path(rel).parent.mkdir(parents=True, exist_ok=True)
     Path(rel).write_text(report, encoding="utf-8")
-    subprocess.run(["git", "add", "--", rel], check=True)
+    subprocess.run(["git", "add", "-f", "--", rel], check=True)  # the target may ignore it
     subprocess.run(["git", "commit", "-q", "-m", "first-run report", "--", rel], check=True)
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True).stdout.decode("ascii", "replace").strip()
     rc = subprocess.run([sys.executable, "-I", os.path.join(os.environ["OPEN_FLEET_ROOT"], "runtime",
@@ -485,10 +485,10 @@ class FirstRun:
             git(self.rec, "config", key, val, cwd=t)
         if not self.args.target:
             (t / "README.md").write_text("# first-run target\n", encoding="utf-8")
-            git(self.rec, "add", "README.md", cwd=t)
+            git(self.rec, "add", "-f", "--", "README.md", cwd=t)
             git(self.rec, "commit", "-q", "-m", "seed", cwd=t)
             (t / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
-            git(self.rec, "add", "app.py", cwd=t)
+            git(self.rec, "add", "-f", "--", "app.py", cwd=t)
             git(self.rec, "commit", "-q", "-m", "add greet()", cwd=t)
         base = git(self.rec, "rev-parse", "--verify", f"{self.args.base}^{{commit}}", cwd=t)
         head = git(self.rec, "rev-parse", "--verify", f"{self.args.head}^{{commit}}", cwd=t)
@@ -525,7 +525,9 @@ class FirstRun:
         )
         path = t / self.unit_dir / "contract.md"
         path.write_text(contract, encoding="utf-8")
-        git(self.rec, "add", f"{self.unit_dir}/contract.md", self.change_rel, cwd=t)
+        # Force-add exactly the files this run owns: a target's ignore rules (`*.diff`,
+        # `.first-run/`) must not block them, and no glob may sweep in anything else (#596 review).
+        git(self.rec, "add", "-f", "--", f"{self.unit_dir}/contract.md", self.change_rel, cwd=t)
         git(self.rec, "commit", "-q", "-m", f"first-run {self.run_id}: freeze contract", cwd=t)
         self.facts["contract"] = {
             "source": f"{self.unit_dir}/contract.md@{git(self.rec, 'rev-parse', 'HEAD', cwd=t)}",
@@ -554,7 +556,8 @@ class FirstRun:
         ]
         if self.args.profile == "rw":
             lines += [
-                f"Modify nothing except: write the report to {self.unit_dir}/report.md and commit only that file.",
+                f"Modify nothing except: write the report to {self.unit_dir}/report.md and commit only that file, "
+                f"adding it with `git add -f -- {self.unit_dir}/report.md` (the repository may ignore it).",
                 "Then report completion with:",
                 '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded'
                 ' --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" --payload \'{"head": "<the report commit sha>"}\'',
@@ -710,7 +713,7 @@ class FirstRun:
         else:
             path = t / rel
             path.write_text(self.facts["report"], encoding="utf-8", errors="replace")
-            git(self.rec, "add", rel, cwd=t)
+            git(self.rec, "add", "-f", "--", rel, cwd=t)
             git(self.rec, "commit", "-q", "-m", f"first-run {self.run_id}: report from the worker transcript", cwd=t)
             head = git(self.rec, "rev-parse", "HEAD", cwd=t)
         contract_sha = self.facts["contract"]["source"].rsplit("@", 1)[1]

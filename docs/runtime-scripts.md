@@ -544,6 +544,11 @@ replaced, only for display and checks. An unexpected error inside any step ends 
 receipt that names the step, the error and the line that raised it; it never ends in a
 traceback with no receipt.
 
+The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
+`change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
+worker to add its report the same way. A target that ignores `*.diff` or `.first-run/` still
+gets a first run.
+
 The report is read from the transcript in the harness's own output format
 (`first_run.py:REPORT_FORMATS`): Claude's `result` event, codex's last `agent_message`, the
 last step's text parts for opencode, the last assistant `message_end` for pi and omp, the last

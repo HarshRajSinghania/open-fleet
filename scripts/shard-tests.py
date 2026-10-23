@@ -58,9 +58,9 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
-    "test_certification": 101.7,  # #596, re-measured 2026-10-23 (macOS arm64, mean of 105.0 and 98.3):
-    # 20 posix first runs plus the report-format, committed-report, interrupt/signal and read-proof runs,
-    # and the live-route checks (each re-hashes a run inventory at its pinned commit)
+    "test_certification": 104.9,  # #596, re-measured 2026-10-24 (macOS arm64, mean of 109.6 and 100.2):
+    # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
+    # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
     "test_capability_harnesses": 0.5,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,

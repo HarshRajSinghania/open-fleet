@@ -1053,5 +1053,23 @@ class TestOlderTextEncodings(TargetRepo):
         self.assertEqual(json.loads((wd / "receipt.json").read_text(encoding="utf-8"))["verdict"], "NO-GO")
 
 
+class TestTargetIgnoreRules(TargetRepo):
+    """A target's ignore rules cannot block the files the run itself owns (#596 review)."""
+
+    def test_ignored_run_files_are_force_added_by_exact_path(self):
+        for ignored in ("*.diff", ".first-run/"):
+            repo = self.target(f"ignores-{ignored.strip('*./')}", {".gitignore": ignored.encode() + b"\n"},
+                               {"app.py": b"x = 1\n"})
+            for profile in ("ro", "rw"):
+                with self.subTest(ignored=ignored, profile=profile):
+                    rc, receipt = self.run_target(repo, f"ign-{ignored.strip('*./')}-{profile}", "--profile", profile)
+                    self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+                    adds = [c["argv"] for c in receipt["commands"] if c["argv"][:2] == ["git", "add"]]
+                    self.assertTrue(adds, "the run commits its own files")
+                    for argv in adds:
+                        self.assertEqual(argv[2:4], ["-f", "--"], f"not a force-add of exact paths: {argv}")
+                        self.assertFalse([a for a in argv[4:] if set(a) & set("*?[")], f"a glob was added: {argv}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1568,7 +1568,20 @@ def _is_oracle_path(path, nc_command=None, head=None):
         elif runner == "unittest":
             for op in ops:
                 if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", op):
-                    exact.update((op.replace(".", "/") + ".py", op.replace(".", "/") + "/__init__.py"))
+                    # A dotted operand names a module, a class or a method
+                    # (`checks.add_check.TestAdd.test_add`): the oracle is the deepest prefix that
+                    # is a module at head_sha, not the whole dotted path read as a file. With no
+                    # prefix resolvable, every prefix stays protected (PR #631 review, P1).
+                    parts = op.split(".")
+                    cands = [f"{'/'.join(parts[:k])}{tail}"
+                             for k in range(1, len(parts) + 1) for tail in (".py", "/__init__.py")]
+                    code, found = _git(["--literal-pathspecs", "ls-tree", "--full-tree", "-r", "-z",
+                                        "--name-only", str(head), "--", *cands])
+                    if code != 0:
+                        return None, (f"cannot resolve the unittest operand {op!r} at head_sha "
+                                      f"{head}; fail-closed (PR #631 review, P1)")
+                    present = [c for c in cands if c in set(found.split("\0"))]
+                    exact.update(present[-1:] or cands)
                 elif rel(op):
                     exact.add(rel(op))
         else:

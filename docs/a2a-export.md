@@ -79,6 +79,10 @@ the pin and never fetches anything. It checks:
   does not send it, so successful proto3 parsing alone cannot catch it.
 - **Semantic rules.** Rules the proto cannot express run once the shape passes:
   - interface URL, binding and `Major.Minor` protocol-version forms;
+  - every URL (interface, provider, documentation, icon) has a scheme and a host a client can
+    dial: no whitespace or control character anywhere, an ASCII DNS name (an IDN in its
+    `xn--` form), a dotted-quad IPv4 address or a bracketed IPv6 literal, and an explicit port
+    of 1-65535. The exporter's `--endpoint` check uses the same parser;
   - unique skill ids;
   - `type/subtype` media types, with optional `; name=value` parameters;
   - each security requirement names a declared scheme, and each scheme sets one variant;

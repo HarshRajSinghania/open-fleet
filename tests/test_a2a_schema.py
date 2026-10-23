@@ -470,6 +470,67 @@ class TestReviewFindings(unittest.TestCase):
                 self.assertIn(f"$.securitySchemes['key'].apiKeySecurityScheme.location: {bad!r} "
                               "is not one of query, header, cookie", self.errors_for(api_key(bad)))
 
+    # PR #636 review: urlsplit is a splitter, not a validator. It reports `bad host` as a
+    # hostname, leaves port 99999 or 0 to a later `.port` read, and deletes tab/CR/LF, so the
+    # card check and the exporter's endpoint check passed URLs no client can dial.
+    UNDIALABLE_URLS = (
+        "https://bad host/a2a", "https://host:99999/a2a",  # the review's two examples
+        "https://fleet.corp.internal:0/a2a", "https://fleet.corp.internal:/a2a",
+        "https://fleet.corp.internal:8x/a2a", "https://fleet.corp.internal:+443/a2a",
+        "https://fleet.corp.internal:٤٤٣/a2a",
+        "https://fleet\t.corp.internal/a2a", "https://fleet.corp.internal/a 2a",
+        "https://fleet.corp.internal/a2a\n", " https://fleet.corp.internal/a2a",
+        "https://fleet.corp.internal/a2a\x00", "https://fleet.corp.internal/\x7f",
+        "https://fleet.corp.internal/a2a ", "https://fleet_1.corp.internal/a2a",
+        "https://fleet<1>.corp.internal/a2a", "https://-fleet.corp.internal/a2a",
+        "https://fleet..corp.internal/a2a", "https://bücher.corp.internal/a2a",
+        "https://999.0.2.10/a2a", "https://192.0.2/a2a", "https://[2606:4700::1111/a2a",
+        "https://[fe80::1%25eth0]/a2a", "https://[v7.fe:1]/a2a", "https://[2606:4700::1111]x/a2a",
+    )
+    DIALABLE_URLS = (
+        "https://fleet.corp.internal/a2a/v1", "https://fleet.corp.internal:1/a2a",
+        "https://fleet.corp.internal:65535/a2a?tenant=ops&v=1#top",
+        "https://FLEET.Corp.Internal./a2a", "https://xn--bcher-kva.corp.internal/a2a",
+        "https://192.0.2.10:8443/a2a", "https://[2606:4700:4700::1111]/a2a",
+        "https://[2606:4700:4700::1111]:443/a2a?x=%20y",
+    )
+
+    def test_a_url_with_a_bad_host_port_or_character_is_refused_by_both_paths(self):
+        export = load(EXPORT, "a2a_export_review")
+
+        def url_errors(url):
+            return {
+                "interface": self.errors_for(
+                    lambda c: c["supportedInterfaces"][0].update(url=url)),
+                "grpc interface": self.errors_for(
+                    lambda c: c["supportedInterfaces"][1].update(url=url)),
+                "links": self.errors_for(lambda c: (c["provider"].update(url=url), c.update(
+                    documentationUrl=url, iconUrl=url))),
+            }
+
+        for bad in self.UNDIALABLE_URLS:
+            with self.subTest(bad=bad):
+                errs = url_errors(bad)
+                self.assertIn("$.supportedInterfaces[0].url: expected an absolute URL",
+                              errs["interface"])
+                self.assertIn("$.supportedInterfaces[1].url: expected an absolute URL or host:port",
+                              errs["grpc interface"])
+                for where in ("$.provider.url", "$.documentationUrl", "$.iconUrl"):
+                    self.assertIn(f"{where}: expected an absolute URL", errs["links"])
+                endpoint = export.endpoint_errors(bad, "JSONRPC")
+                self.assertEqual(len(endpoint), 1, endpoint)
+                self.assertIn(f"--endpoint {bad!r}: malformed URL (", endpoint[0])
+        for good in self.DIALABLE_URLS + ("http://fleet.corp.internal:8080/a2a",
+                                          "https://user@fleet.corp.internal/a2a"):
+            with self.subTest(good=good):
+                self.assertEqual(url_errors(good),
+                                 {"interface": [], "grpc interface": [], "links": []})
+        for good in self.DIALABLE_URLS:
+            with self.subTest(endpoint=good):
+                self.assertEqual(export.endpoint_errors(good, "JSONRPC"), [])
+                card = export.build_standard_card(good, "HTTP+JSON", mission="review-it")
+                self.assertEqual(self.mod.card_errors(card), [])
+
 
 if __name__ == "__main__":
     unittest.main()

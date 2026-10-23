@@ -97,6 +97,8 @@ _IPV_FUTURE = re.compile(r"v[0-9A-Fa-f]+\.[" + _UNRESERVED_SUB_DELIMS + ":]+")
 _HOST_SCHEMES = ("http", "https", "ws", "wss")
 # gRPC `host:port`: a DNS name or IPv4 address, or a bracketed IPv6 literal (#636).
 _HOST_PORT = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):([0-9]{1,5})")
+# One DNS label (RFC 1123 2.1): letters, digits and inner hyphens, 1-63 characters (#636).
+_DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 _TOKEN = re.compile(r"""
     (?P<ws>\s+)
@@ -602,14 +604,58 @@ def _normalize(schema, msg, value):
     return out
 
 
+def _dial_host(host):
+    """A host a client can dial: an ASCII DNS name, a dotted-quad IPv4 address or a bracketed
+    IPv6 literal. An IDN is written in its xn-- form; a zone id or IPvFuture literal is refused."""
+    if host.startswith("[") and host.endswith("]"):
+        return "%" not in host and _ipv6(host[1:-1])
+    labels = (host[:-1] if host.endswith(".") else host).split(".")
+    if len(host) > 254 or not all(_DNS_LABEL.fullmatch(label) for label in labels):
+        return False
+    if labels[-1].isdigit():  # a numeric last label makes the host an IPv4 address, or nothing
+        try:
+            ipaddress.IPv4Address(".".join(labels))
+        except ValueError:
+            return False
+    return True
+
+
+def split_url(text):
+    """urlsplit() of `text`, raising ValueError on a URL no client can dial (#636).
+
+    urlsplit splits; it does not validate. It reports `bad host` as a hostname, leaves a port of
+    99999 or 0 to a later `.port` read, and deletes tab, CR and LF, so `https://a\\t.b/` reads as
+    another host. Here the text holds no whitespace or non-printing character, an authority's
+    host passes _dial_host, and an explicit port is 1-65535 in ASCII digits. The card check and
+    the exporter's endpoint check both parse with this, so a URL one accepts the other accepts.
+    """
+    bad = next((c for c in text if c.isspace() or not c.isprintable()), None)
+    if bad is not None:
+        raise ValueError(f"{bad!r} is whitespace or a control character")
+    parts = urlsplit(text)  # raises ValueError itself on, e.g., an unclosed IPv6 bracket
+    if parts.netloc:
+        hostport = parts.netloc.rpartition("@")[2]
+        if hostport.startswith("["):
+            host, close, port = hostport.partition("]")
+            host += close
+        else:
+            host, colon, port = hostport.partition(":")
+            port = colon + port
+        if not _dial_host(host):
+            raise ValueError(f"invalid host {host!r}")
+        if port and not (re.fullmatch(r":[0-9]{1,5}", port) and 0 < int(port[1:]) < 65536):
+            raise ValueError(f"port {port.removeprefix(':')!r} is not 1-65535")
+    return parts
+
+
 def _absolute_url(text):
     if not isinstance(text, str):
         return False
     try:
-        parts = urlsplit(text)
-        return bool(parts.scheme and parts.netloc and parts.hostname)
-    except ValueError:  # a malformed authority such as an unclosed IPv6 bracket
+        parts = split_url(text)
+    except ValueError:
         return False
+    return bool(parts.scheme and parts.hostname)
 
 
 def _uri_host(authority):

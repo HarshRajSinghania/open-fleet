@@ -34,7 +34,6 @@ import ipaddress
 import json
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT / "skills"
@@ -289,11 +288,10 @@ def endpoint_errors(endpoint, binding):
         host = address[0]
     else:
         try:
-            parts = urlsplit(endpoint)
-            host = parts.hostname or ""
-            parts.port  # read for its ValueError on an out-of-range port
+            parts = a2a_schema.split_url(endpoint)  # the card check's own URL parser (#636)
         except ValueError as exc:
             return [f"--endpoint {endpoint!r}: malformed URL ({exc})"]
+        host = parts.hostname or ""
         if parts.scheme != "https" or not host:
             return [f"--endpoint {endpoint!r}: expected an absolute https URL"]
         if parts.username is not None or parts.password is not None:

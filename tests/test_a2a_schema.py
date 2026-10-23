@@ -675,6 +675,111 @@ class TestReviewFindings(unittest.TestCase):
                     self.assertIn(expected, p.stderr)
                     self.assertIn(f"A2A_CARD=valid {SAMPLE}", p.stdout)
 
+    # Every OAuth flow with its URL fields (JSON names), one security scheme per flow because
+    # OAuthFlows is a oneof (a2a.proto at the pin).
+    OAUTH_FLOWS = {
+        "authorizationCode": ("AuthorizationCodeOAuthFlow",
+                              ("authorizationUrl", "tokenUrl", "refreshUrl")),
+        "clientCredentials": ("ClientCredentialsOAuthFlow", ("tokenUrl", "refreshUrl")),
+        "implicit": ("ImplicitOAuthFlow", ("authorizationUrl", "refreshUrl")),
+        "password": ("PasswordOAuthFlow", ("tokenUrl", "refreshUrl")),
+        "deviceCode": ("DeviceCodeOAuthFlow", ("deviceAuthorizationUrl", "tokenUrl", "refreshUrl")),
+    }
+
+    def auth_card(self):
+        card = sample()
+        for flow, (_, fields) in self.OAUTH_FLOWS.items():
+            config = {name: f"https://auth.corp.internal/{flow}/{name}" for name in fields}
+            config["scopes"] = {"read": "Read access"}
+            card["securitySchemes"][f"oauth-{flow}"] = {"oauth2SecurityScheme": {
+                "flows": {flow: config},
+                "oauth2MetadataUrl": "https://auth.corp.internal/.well-known/oauth"}}
+        return card
+
+    def tls_comments_in_proto(self):
+        """{(message, string field): its comment} where the pinned proto's comment names TLS."""
+        found, message, comment = {}, None, []
+        for line in self.mod.PROTO_PATH.read_text(encoding="utf-8").splitlines():
+            words = line.split()
+            if words[:1] == ["message"]:
+                message, comment = words[1], []
+            elif words[:1] == ["//"]:
+                comment.append(" ".join(words[1:]))
+            else:
+                decl = words[1:] if words[:1] in (["optional"], ["repeated"]) else words
+                if message and len(decl) > 2 and decl[0] == "string" and decl[2] == "=" \
+                        and "TLS" in " ".join(comment):
+                    found[(message, decl[1])] = " ".join(comment)
+                comment = []
+        return found
+
+    def test_every_url_field_under_agentcard_is_checked_and_tls_ones_need_https(self):
+        # PR #636 review: openIdConnectUrl "not-a-url" and an http oauth2MetadataUrl passed,
+        # although a2a.proto says of oauth2_metadata_url "TLS is required."
+        schema = self.mod.load_schema()
+
+        def snake(name):
+            return "".join("_" + ch.lower() if ch.isupper() else ch for ch in name)
+
+        sites = [(("securitySchemes", "google", "openIdConnectSecurityScheme", "openIdConnectUrl"),
+                  "OpenIdConnectSecurityScheme")]
+        for flow, (message, fields) in self.OAUTH_FLOWS.items():
+            scheme = ("securitySchemes", f"oauth-{flow}", "oauth2SecurityScheme")
+            sites.append((scheme + ("oauth2MetadataUrl",), "OAuth2SecurityScheme"))
+            sites += [(scheme + ("flows", flow, name), message) for name in fields]
+
+        def errors_with(keys, value):
+            card = self.auth_card()
+            node = card
+            for key in keys[:-1]:
+                node = node[key]
+            node[keys[-1]] = value
+            return self.mod.card_errors(card)
+
+        self.assertEqual(self.mod.card_errors(self.auth_card()), [])
+        tls = self.tls_comments_in_proto()
+        for keys, message in sites:
+            where = f"$.{keys[0]}[{keys[1]!r}]." + ".".join(keys[2:])
+            field = schema.messages[message].lookup(keys[-1])
+            for bad in ("not-a-url", "/relative/path", "https://bad host/x",
+                        "https://auth.corp.internal:99999/x", "https://auth.corp.internal/x\n"):
+                with self.subTest(where=where, bad=bad):
+                    self.assertIn(f"{where}: expected an absolute URL", errors_with(keys, bad))
+            for good in ("https://auth.corp.internal/x?y=1", "HTTPS://[2606:4700::1111]:8443/x"):
+                with self.subTest(where=where, good=good):
+                    self.assertEqual(errors_with(keys, good), [])
+            with self.subTest(where=where, http=True):
+                errs = errors_with(keys, "http://auth.corp.internal/x")
+                if (message, field.name) in tls:
+                    self.assertTrue(any(e.startswith(f"{where}: expected an https URL")
+                                        for e in errs), errs)
+                else:
+                    self.assertEqual(errs, [])
+            with self.subTest(where=where, empty=True):
+                errs = errors_with(keys, "")
+                if field.required:
+                    self.assertIn(f"{where}: required field is empty (unset on the proto3 wire)",
+                                  errs)
+                else:  # proto3 implicit presence: "" is the default, unset on the wire
+                    self.assertEqual(errs, [])
+        url_fields, seen, todo = set(), set(), ["AgentCard"]
+        while todo:
+            name = todo.pop()
+            if name not in seen:
+                seen.add(name)
+                for f in schema.messages[name].fields:
+                    if f.type in schema.messages:
+                        todo.append(f.type)
+                    elif f.type == "string" and (f.name == "url" or f.name.endswith("_url")):
+                        url_fields.add((name, f.name))
+        exercised = {(message, snake(keys[-1])) for keys, message in sites}
+        self.assertEqual(url_fields - exercised, {
+            ("AgentCard", "documentation_url"), ("AgentCard", "icon_url"),
+            ("AgentProvider", "url"), ("AgentInterface", "url")})  # pinned in the tests above
+        self.assertEqual(set(self.mod.TLS_REQUIRED), set(tls))
+        for key, quote in self.mod.TLS_REQUIRED.items():
+            self.assertIn(quote, tls[key])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,8 +17,9 @@ scripts/vendor/a2a/PIN.json, refused when the bytes drift -- and checks a ProtoJ
   cannot see: a required string or repeated field that is empty is unset on the wire, so it is
   refused (roadmap verification note G4).
 
-Semantic checks the proto cannot express run once the shape passes: interface URL, binding and
-protocol-version forms, unique skill ids, media types (parameters allowed), security requirements
+Semantic checks the proto cannot express run once the shape passes: every `url`/`*_url` field
+under AgentCard (https where the proto says TLS is required), binding and protocol-version
+forms, unique skill ids, media types (parameters allowed), security requirements
 that name a declared scheme, API-key locations the proto lists, base64url signature parts and
 unique RFC 3986 extension URIs.
 
@@ -73,6 +74,16 @@ VALIDATED_TYPES = frozenset({"string", "bool", "google.protobuf.Struct"})
 CORE_BINDINGS = ("JSONRPC", "GRPC", "HTTP+JSON")
 # a2a.proto APIKeySecurityScheme.location: 'Valid values are "query", "header", or "cookie".' (#636)
 API_KEY_LOCATIONS = ("query", "header", "cookie")
+# URL fields a2a.proto marks TLS-only, each with its comment quoted at the pin: an http:// value
+# is refused (#636). AgentInterface.url is not here: "must be a valid absolute HTTPS URL in
+# production" is a deployment rule, and a card validator cannot know the card is for production.
+TLS_REQUIRED = {
+    ("OAuth2SecurityScheme", "oauth2_metadata_url"): "TLS is required.",
+    ("ImplicitOAuthFlow", "authorization_url"): "The OAuth2 standard requires the use of TLS",
+    ("ImplicitOAuthFlow", "refresh_url"): "The OAuth2 standard requires the use of TLS.",
+    ("PasswordOAuthFlow", "token_url"): "The OAuth2 standard requires the use of TLS.",
+    ("PasswordOAuthFlow", "refresh_url"): "The OAuth2 standard requires the use of TLS.",
+}
 # Form checks use fullmatch: `$` also matches before a final "\n", and `\d` matches any Unicode
 # digit, so "1.0\n" or Arabic-Indic digits passed (#636).
 _PROTOCOL_VERSION = re.compile(r"[0-9]+\.[0-9]+")
@@ -765,6 +776,32 @@ def grpc_address(text):
     return m.group(1), int(m.group(2))
 
 
+def _url_fields(schema, msg, value, path):
+    """(path, message name, Field, value) of every set `url`/`*_url` string under `value`.
+
+    Found by name in the schema rather than listed by hand, so the OAuth flow, OpenID Connect and
+    metadata URLs are checked and a URL field a re-pin adds is checked too (#636).
+    """
+    for f in msg.fields:
+        val = value.get(f.json_name)
+        if val is None:
+            continue
+        where = f"{path}.{f.json_name}"
+        if f.type == "string" and f.label in ("", "optional") and (
+                f.name == "url" or f.name.endswith("_url")):
+            yield where, msg.name, f, val
+        elif f.type in schema.messages:
+            sub = schema.messages[f.type]
+            if f.label == "repeated":
+                items = [(f"{where}[{i}]", v) for i, v in enumerate(val)]
+            elif f.label == "map":
+                items = [(f"{where}[{k!r}]", v) for k, v in val.items()]
+            else:
+                items = [(where, val)]
+            for ipath, item in items:
+                yield from _url_fields(schema, sub, item, ipath)
+
+
 def _security_names(requirements):
     for req in requirements or []:
         yield from (req.get("schemes") or {}).keys()
@@ -823,11 +860,16 @@ def semantic_errors(card, schema=None):
             errors.append(f"$.capabilities.extensions[{i}].uri: expected an absolute URI")
     for dup in sorted({u for u in uris if uris.count(u) > 1}):
         errors.append(f"$.capabilities.extensions: duplicate extension uri {dup!r}")
-    links = [("$.provider.url", (card.get("provider") or {}).get("url")),
-             ("$.documentationUrl", card.get("documentationUrl")), ("$.iconUrl", card.get("iconUrl"))]
-    for where, url in links:
-        if url is not None and not _absolute_url(url):
+    for where, message, f, url in _url_fields(schema, schema.messages["AgentCard"], card, "$"):
+        if (message, f.name) == ("AgentInterface", "url"):
+            continue  # checked above, where a gRPC interface may give host:port instead
+        if url == "" and f.label != "optional":
+            continue  # proto3 implicit presence: "" is the default, never on the wire
+        if not _absolute_url(url):
             errors.append(f"{where}: expected an absolute URL")
+        elif (message, f.name) in TLS_REQUIRED and split_url(url).scheme.lower() != "https":
+            errors.append(f"{where}: expected an https URL (a2a.proto {message}.{f.name}: "
+                          f"{TLS_REQUIRED[message, f.name]!r})")
     return errors
 
 

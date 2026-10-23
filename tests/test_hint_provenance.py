@@ -255,6 +255,11 @@ class CurrencyAgainstTheLiveSource(unittest.TestCase):
         self.assertEqual(self.label("fix-then-pass", "2026-01-11-run-b/PAY-7"), ("CURRENT", [], True))
         self.assertEqual(self.label("decorator-changed", "2026-01-10-run-c/VIEW-3"), ("CURRENT", [], True))
 
+    def test_a_qualified_symbol_tracks_its_own_method(self):
+        self.assertEqual(self.label("qualified-symbol", "2026-01-10-run-a/ACC-1"), ("CURRENT", [], True))
+        self.assertEqual(self.label("qualified-symbol", "2026-01-10-run-b/ACC-2"),
+                         ("STALE", ["symbol-changed:src/models.py::Account.close"], False))
+
     def test_a_decorator_change_is_a_symbol_change(self):
         for key, name in (("2026-01-10-run-a/VIEW-1", "show"), ("2026-01-10-run-b/VIEW-2", "other")):
             with self.subTest(symbol=name):
@@ -615,6 +620,10 @@ class MutationControls(unittest.TestCase):
     def test_symbol_check(self):
         self.red(["symbol-scope"], (hp, "symbol_block", lambda text, symbol: "same"))
 
+    def test_qualified_name_resolution(self):
+        literal = hp._definition_block  # the pre-fix lookup: one literal name, dots and all
+        self.red(["qualified-symbol"], (hp, "symbol_block", lambda text, symbol: literal(text, symbol)))
+
     def test_decorator_inclusion(self):
         self.red(["decorator-changed"], (hp, "_decorator_start", lambda lines, i, indent: i))
 
@@ -685,6 +694,16 @@ class Helpers(unittest.TestCase):
         self.assertEqual(hp.symbol_block(src, "prev"), "def prev():\n    return 0")
         method = "class A:\n    x = 1\n\n    @property\n    def y(self):\n        return 2\n"
         self.assertEqual(hp.symbol_block(method, "y"), "    @property\n    def y(self):\n        return 2")
+
+    def test_symbol_block_resolves_a_qualified_name(self):
+        # PR #639 review: split_symbol accepted Cls.meth but the lookup searched a literal
+        # `def Cls.meth`, failed, and an unrelated edit to the file marked the hint STALE.
+        src = ("class Account:\n    def balance(self):\n        return 1\n\n    def close(self):\n"
+               "        return 2\n\n\ndef balance():\n    return 3\n")
+        self.assertEqual(hp.symbol_block(src, "Account.balance"), "    def balance(self):\n        return 1")
+        self.assertEqual(hp.symbol_block(src, "balance"), "def balance():\n    return 3")
+        self.assertIsNone(hp.symbol_block(src, "Account.missing"))
+        self.assertIsNone(hp.symbol_block(src, "Missing.balance"))
 
     def test_split_symbol_and_checked_path(self):
         self.assertEqual(hp.split_symbol("./src/a.py::Cls.meth"), ("src/a.py", "Cls.meth"))

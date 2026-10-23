@@ -213,27 +213,39 @@ def _decorator_start(lines, i, indent):
 def symbol_block(text, symbol):
     """The definition block of ``symbol``: its decorators, its def/class/function line, and the
     lines through the next one indented no deeper; None when the file defines no such symbol.
+    A qualified name (``Cls.meth``) resolves each part inside the previous part's block -- the
+    class, then the method in it (PR #639 review: it used to search a literal ``def Cls.meth``).
     Indentation-scoped, so it is exact for Python and a heuristic for brace languages -- the
     fallback is the whole file."""
-    if text is None:
+    block = text
+    for part in str(symbol).split("."):
+        block = _definition_block(block, part)
+        if block is None:
+            return None
+    return block
+
+
+def _definition_block(text, symbol):
+    """symbol_block() for one unqualified name: the SHALLOWEST definition of it (first in the
+    file among equals), so ``balance`` names the module function, not ``Account.balance``."""
+    if text is None or not symbol:
         return None
     lines = text.splitlines()
     pattern = re.compile(DEF_LINE.format(sym=re.escape(symbol)))
-    for i, line in enumerate(lines):
-        found = pattern.match(line)
-        if not found:
-            continue
-        indent = len(found.group("indent").expandtabs())
-        block = lines[_decorator_start(lines, i, indent):i + 1]
-        for nxt in lines[i + 1:]:
-            stripped = nxt.strip()
-            if stripped and len(nxt) - len(nxt.lstrip()) <= indent and not stripped.startswith((")", "}", "]")):
-                break
-            block.append(nxt)
-        while block and not block[-1].strip():
-            block.pop()
-        return "\n".join(block)
-    return None
+    hits = [(len(found.group("indent").expandtabs()), i) for i, found in
+            ((i, pattern.match(line)) for i, line in enumerate(lines)) if found]
+    if not hits:
+        return None
+    indent, i = min(hits)
+    block = lines[_decorator_start(lines, i, indent):i + 1]
+    for nxt in lines[i + 1:]:
+        stripped = nxt.strip()
+        if stripped and len(nxt) - len(nxt.lstrip()) <= indent and not stripped.startswith((")", "}", "]")):
+            break
+        block.append(nxt)
+    while block and not block[-1].strip():
+        block.pop()
+    return "\n".join(block)
 
 
 def _inside(root, rel):

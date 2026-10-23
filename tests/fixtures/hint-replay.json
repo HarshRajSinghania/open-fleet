@@ -1750,6 +1750,91 @@
      "marker": "needs no network"
     }
    }
+  },
+  {
+   "id": "qualified-symbol",
+   "about": "Class-qualified symbol scopes resolve the class, then the method: a sibling method's edit leaves Account.balance CURRENT and makes Account.close STALE (PR #639 review).",
+   "commits": [
+    {
+     "name": "c0",
+     "files": {
+      "README.md": "# fixture\n",
+      "src/__init__.py": "",
+      "src/auth.py": "def refresh(token):\n    return token + 1\n",
+      "tests/test_auth.py": "import unittest\n\n\nclass Refresh(unittest.TestCase):\n    def test_once(self):\n        self.assertEqual(1 + 1, 2)\n",
+      "src/models.py": "class Account:\n    def balance(self):\n        return 1\n\n    def close(self):\n        return 2\n\n\ndef balance():\n    return 3\n"
+     }
+    },
+    {
+     "name": "c1",
+     "files": {
+      "src/models.py": "class Account:\n    def balance(self):\n        return 1\n\n    def close(self):\n        return 20\n\n\ndef balance():\n    return 3\n"
+     }
+    }
+   ],
+   "runs": [
+    {
+     "run": "2026-01-10-run-a",
+     "manifest": {
+      "unit": "ACC-1",
+      "status": "verified",
+      "files_touched": [
+       "src/models.py::Account.balance"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "balance never goes negative"
+      }
+     }
+    },
+    {
+     "run": "2026-01-10-run-b",
+     "manifest": {
+      "unit": "ACC-2",
+      "status": "verified",
+      "files_touched": [
+       "src/models.py::Account.close"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "close settles pending charges first"
+      }
+     }
+    }
+   ],
+   "query": [
+    "src/models.py"
+   ],
+   "expect": {
+    "2026-01-10-run-a/ACC-1": {
+     "currency": "CURRENT",
+     "reason": null,
+     "class": "useful",
+     "marker": "never goes negative"
+    },
+    "2026-01-10-run-b/ACC-2": {
+     "currency": "STALE",
+     "reason": "symbol-changed:src/models.py::Account.close",
+     "class": "stale",
+     "marker": "settles pending charges"
+    }
+   }
   }
  ]
 }

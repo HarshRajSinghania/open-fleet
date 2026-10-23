@@ -1022,6 +1022,79 @@ class TestIngest(Base):
         self.assertEqual((report["record"]["conflicts"], report["record"]["duplicates"]), (0, 1))
         self.assertEqual(self.metric(report, 1, "latency_max")["value"], "10.00m")
 
+    def running_store(self, attrs=None):
+        """One dispatch still running — the store writes its head only when the worker exits
+        (local_state.py:ensure_terminal_or_died) — and the worker_done it already sent."""
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        LocalStateStore = importlib.import_module("runtime.providers.local_state").LocalStateStore
+        db = self.tmp / "runtime.db"
+        store = LocalStateStore(db, env={})
+        ten = calendar.timegm((2026, 10, 20, 10, 0, 0))
+        with store._connect() as conn:
+            conn.execute("INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, "
+                         "terminal_handle, state, created_at, updated_at) VALUES "
+                         "('disp_1', 'task_1', 'run_x', '/w', 'claude', 'term_1', 'running', ?, ?)",
+                         (ten, ten))
+        store.send_message(subject="done", msg_type="worker_done", sender="term_1", run="run_x",
+                           attrs=attrs)
+        with store._connect() as conn:  # sent at 10:10, so the wave's times are hand-checkable
+            conn.execute("UPDATE messages SET created_at = ?", (ten + 600,))
+        return store, db
+
+    def exit_worker(self, store, head):
+        store.ensure_terminal_or_died(dispatch_id="disp_1", worker_handle="term_1", exit_code=0,
+                                      worktree_head_sha=head, run_id="run_x")
+
+    def test_an_import_before_exit_and_one_after_keep_the_wave_measured(self):
+        # PR #638 review (P1): a worker_done naming no head fell back to dispatches.head_sha,
+        # null until the worker exits. An import before exit recorded a null head, the import
+        # after it the real one under the same message id: a conflict that left the unit's wave
+        # unmeasurable for good. The message is deferred until its dispatch has exited instead.
+        # Hand calculation: wave 10:00-10:40 (2400 s), one close -> 1.50/h; done 10:10 -> pass
+        # 10:20 = 10 m.
+        store, db = self.running_store()
+        c = {"run": "run_x", "epoch": 1, "clock": "host-a"}
+        events.append_events(self.log, [
+            ev("run.start", "09:59:00", data={"coordinator": "c1"}, **c),
+            ev("wave.open", "10:00:00", data={"wave": 1, "builders": 1, "reviewers": 1,
+                                              "tasks": ["task_1"]}, **c)])
+        before = self.ingest(db)
+        self.exit_worker(store, sha("c4"))
+        after = self.ingest(db)
+        self.assertEqual((before.returncode, after.returncode), (0, 0), after.stdout + after.stderr)
+        head = sha("c4")
+        events.append_events(self.log, [
+            ev("review.verdict", "10:15:00", task="task_1",
+               data={"verdict": "approve", "reviewed_sha": head}, **c),
+            ev("verify.verdict", "10:20:00", task="task_1", data={"exit": 0, "head_sha": head}, **c),
+            ev("unit.closed", "10:30:00", task="task_1", data={"head_sha": head}, **c),
+            ev("wave.close", "10:40:00", data={"wave": 1}, **c)])
+        again = self.ingest(db)
+        self.assertEqual(again.stdout.split()[::2], ["duplicate", "duplicate"], again.stdout)
+        recorded, file_sha, digest = events.read_log(self.log)
+        report = events.derive(recorded, "run_x", file_sha, digest)
+        self.assertEqual(report["record"]["conflicts"], 0)
+        self.assertEqual(report["waves"][0]["row"],
+                         "| `wave=1` | `builders=1 reviewers=1` | `throughput=1.50/h` | "
+                         "`latency_median=10.00m latency_max=10.00m` | `rework=0/1` | "
+                         "`freshness=0` |")
+        self.assertIn("deferred until its dispatch exits", before.stderr)
+        self.assertNotIn("local-state:message:", before.stdout, "nothing recorded before exit")
+
+    def test_a_head_the_message_carries_is_recorded_at_once_and_kept(self):
+        # Control: a worker_done that names its head is stable evidence in itself — recorded
+        # on the first import, and a duplicate after exit even if the store's row head differs.
+        store, db = self.running_store(attrs={"headSha": sha("c4")})
+        first = self.ingest(db)
+        self.assertIn("appended local-state:message:", first.stdout)
+        self.exit_worker(store, sha("d5"))
+        again = self.ingest(db)
+        self.assertEqual((again.returncode, again.stdout.split()[::2]),
+                         (0, ["duplicate", "duplicate"]), again.stdout)
+        done = [e for e in events.read_log(self.log)[0] if e["kind"] == "task.done"]
+        self.assertEqual([d["data"]["head_sha"] for d in done], [sha("c4")])
+
     def _transcript(self, exit_code=0, signed=False, manifest_bytes=None):
         manifest = self.tmp / "manifest.json"
         manifest.write_bytes(manifest_bytes or json.dumps({"unit": "u", "head_sha": sha("d9")}).encode())

@@ -142,6 +142,10 @@ CLOSED_OR_PARKED = ("verified-closed", "closed-unverified", "parked")
 LEFT_DISPATCHED = CLOSED_OR_PARKED + ("verified",)
 ROW_METRICS = ("throughput", "latency_median", "latency_max", "rework", "freshness")
 UNAVAILABLE = "unavailable"
+# local-state dispatch states whose head the exit path has finished writing: an exited worker is
+# `completed` or `died` (local_state.py:ensure_terminal_or_died), a fenced one `stopped`,
+# `abandoned` or `released`; `ready`, `running` and `retained` are still live.
+TERMINAL_DISPATCH_STATES = ("completed", "died", "stopped", "abandoned", "released")
 
 
 class EventsError(Exception):
@@ -1078,7 +1082,13 @@ def _db_time(value):
 def cmd_ingest_state(args):
     """Launches, worker_done mail and deaths of one run, read from the local-state DB through
     watchdog.py's strictly read-only connection. Ids are the rows' own, so re-ingesting the same
-    DB records nothing new."""
+    DB records nothing new.
+
+    A worker_done binds the head its own attrs name. One that names none takes the dispatch
+    row's head, which the store writes only when the worker exits, so the message is deferred
+    until its dispatch is terminal: recorded before, the same message id would say null now and
+    the head after exit — a conflict that contests the unit for good (PR #638 review, P1). Its
+    time is the message's own, so recording it later records the same fact."""
     import sqlite3
     db = Path(args.db)
     if not db.is_file():
@@ -1096,7 +1106,7 @@ def cmd_ingest_state(args):
             conn.close()
     except sqlite3.Error as err:
         raise EventsError(f"{db} is not a readable local-state DB: {err}") from err
-    events, by_id, by_handle, skipped = [], {}, {}, []
+    events, by_id, by_handle, skipped, deferred = [], {}, {}, [], []
     common = {"producer": "local_state", "basis": "occurred"}
     for row in rows:
         keys = row.keys()
@@ -1129,8 +1139,13 @@ def cmd_ingest_state(args):
         except ValueError:
             attrs = {}
         attrs = attrs if isinstance(attrs, dict) else {}
-        head = next((h for h in (attrs.get("headSha"), attrs.get("head_sha"), row_head)
-                     if isinstance(h, str) and SHA_RE.fullmatch(h)), None)
+        heads = [attrs.get("headSha"), attrs.get("head_sha")]
+        if not any(isinstance(h, str) and SHA_RE.fullmatch(h) for h in heads):
+            if row["state"] not in TERMINAL_DISPATCH_STATES:
+                deferred.append(msg["id"])
+                continue
+            heads.append(row_head)
+        head = next((h for h in heads if isinstance(h, str) and SHA_RE.fullmatch(h)), None)
         events.append(_build(args, "task.done", task=row["task_id"], dispatch=row["dispatch_id"],
                              observed_at=_db_time(msg["created_at"]),
                              source_ref=f"local-state:messages/{msg['id']}",
@@ -1139,6 +1154,10 @@ def cmd_ingest_state(args):
     if skipped:
         print(f"events: {len(skipped)} worker_done message(s) name no single dispatch of run "
               f"{args.run} and were not recorded: {skipped}", file=sys.stderr)
+    if deferred:
+        print(f"events: {len(deferred)} worker_done message(s) name no head and the store has not "
+              "written their dispatch's yet; each is deferred until its dispatch exits: "
+              f"{deferred}", file=sys.stderr)
     if not events:
         print(f"events: the DB holds no dispatch or worker_done for run {args.run}", file=sys.stderr)
         return EXIT_INCOMPLETE

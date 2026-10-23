@@ -522,7 +522,13 @@ event says (`runtime/scripts/events.py:identity`) leaves out who recorded it (`e
 unless `basis` is `occurred`, when, so re-ingesting the same rows or stream after a resume or
 later in time is a duplicate, never a conflict. `ingest-usage` binds each result line to the
 stream's bytes through that line (its id and `source.sha256`), so a stream re-ingested after
-the worker or monitor appended to it adds only its new result lines. Model usage keeps
+the worker or monitor appended to it adds only its new result lines. `ingest-state` binds a
+worker_done to the head its message names; one that names none takes its dispatch's head, which
+the store writes when the worker exits, so the message is deferred (and listed on stderr) until
+the dispatch is terminal — imports before and after exit then record one `task.done`, not a
+conflict. A provider that rewrites a terminal dispatch's head later (multiclaude's
+`worker_verify` and ao's head preservation write `dispatches.head_sha` directly) makes the store
+say two things, and that re-import is still a conflict. Model usage keeps
 any field an observation did not report null — with its provenance — in the model's sum and in
 the run total; it is never 0.
 

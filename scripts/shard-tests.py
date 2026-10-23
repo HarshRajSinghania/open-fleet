@@ -152,6 +152,10 @@ WEIGHTS = {
     "test_vfbench": 20.1,
     "test_vfbench_gate": 0.1,
     "test_vfbench_guards": 11.6,
+    # #601: timed locally (6.9 s and 86.4 s, after the second round of PR #645 review tests) and
+    # scaled by the same 11.8 / 45.8 ratio as above.
+    "test_vfbench_heldout": 1.8,
+    "test_vfbench_replay": 22.3,
     "test_watchdog": 1.1,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,

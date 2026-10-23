@@ -73,7 +73,8 @@ REPORT_SCHEMA = "open-fleet.wip-curve-report/1"
 PENDING = "PENDING OWNER AUTHORISATION"
 EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE, EXIT_FAIL_CLOSED = 0, 1, 2, 3
 HOLDER = "wip-runner"
-REVIEW_LINE = re.compile(r"^WIP-REVIEW (WIP-NONCE:[0-9a-f]{16}) ([0-9a-f]{40}) (approve|changes)\s*$", re.M)
+# A reviewer may dress its verdict line in markdown (`code` or **bold**); nonce and head must match.
+REVIEW_LINE = re.compile(r"^[`*\s]*WIP-REVIEW (WIP-NONCE:[0-9a-f]{16}) ([0-9a-f]{40}) (approve|changes)[`*\s]*$", re.M)
 # Inert workers answer in Claude's stream-json shape, the one events.py ingest-usage reads.
 INERT_AGENTS = ("claude",)
 # Two-sided 95% Student-t critical values by degrees of freedom (the usual table, 3 places).
@@ -684,7 +685,20 @@ class Run:
         disp = first_run.field(proc.stdout, "DISPATCH")
         if proc.returncode != 0 or not disp:
             raise RunFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}")
+        try:
+            self.guard(worktree)
+        except RunFailed:
+            self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
+            raise
         return disp
+
+    def guard(self, worktree: Path) -> None:
+        """The deny hook the provider installed in the worker's tree must be armed (first_run.py's
+        guard step, #596): a worker whose guard does not deny is stopped and the run fails."""
+        settings = Path(worktree) / ".claude" / "settings.local.json"
+        proc = first_run.run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--verify-settings", str(settings)])
+        if proc.returncode != 0:
+            raise RunFailed(f"the guard installed in {worktree} is not armed: {proc.stderr.strip()[:300]}")
 
     def state_of(self, dispatch):
         out = self.wrapper(first_run.py("worker_ops.py", "show", "--dispatch", dispatch)).stdout
@@ -1291,6 +1305,15 @@ def bind_outcomes(bound: Bound, derived: dict, raw_events: list, prereg: dict, t
                     extract_tree(repo, head, work)
                     if run_oracle(work, [tasks[tid]], taskset, Path(tmp))["exit"] != 0:
                         problems.append(f"{what}: the oracle does not pass again at that head")
+        for e in raw_events:
+            if e["kind"] != "unit.parked" or not e["data"]["head_sha"]:
+                continue
+            head = e["data"]["head_sha"]
+            what = f"{by_store.get(e['task'], e['task'])} parked at {head[:12]}"
+            if git(repo, "cat-file", "-e", f"{head}^{{commit}}", check=False).returncode != 0:
+                problems.append(f"{what}: the retained bundle does not hold that head")
+            elif git(repo, "merge-base", "--is-ancestor", head, ref, check=False).returncode == 0:
+                problems.append(f"{what}: parked, yet that head is on {integration}")
         for merge in rec.get("merges") or []:
             if merge.get("result") != "conflict":
                 continue

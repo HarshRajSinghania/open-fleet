@@ -356,6 +356,23 @@ class TestGate(Tmp):
 _DRY_RUNS: dict = {}
 
 
+def dry_run(run: str, args: tuple):
+    """(tmp, env, tripwire log, process) of one inert run, made once per module."""
+    key = (run, args)
+    if key not in _DRY_RUNS:
+        tmp = tempfile.TemporaryDirectory(prefix="wip-curve-dry-")
+        root = Path(tmp.name)
+        env, trip_log = tripwired_env(root)
+        proc = runner("run", "--results", str(root / "results"), "--runs", run, "--workdir",
+                      str(root / "wd"), *args, env=env)
+        _DRY_RUNS[key] = (tmp, env, trip_log, proc)
+    return _DRY_RUNS[key]
+
+
+B3 = ("wip1-b3r1-rep1", ("--cost-cap-usd", "0"))
+B6_CAPPED = ("wip1-b6r2-rep1", ("--cost-cap-usd", "3.40", "--inert-cost-usd", "0.25"))
+
+
 def tearDownModule():
     for tmp, *_rest in _DRY_RUNS.values():
         tmp.cleanup()
@@ -365,20 +382,11 @@ class DryRun(unittest.TestCase):
     """One inert run per (run, arguments), shared by every class that asks for it (a run takes
     ~20 s); each tamper test works on a copy."""
 
-    RUN = "wip1-b3r1-rep1"
-    ARGS: tuple = ("--cost-cap-usd", "0")
+    RUN, ARGS = B3
 
     @classmethod
     def setUpClass(cls):
-        key = (cls.RUN, cls.ARGS)
-        if key not in _DRY_RUNS:
-            tmp = tempfile.TemporaryDirectory(prefix="wip-curve-dry-")
-            root = Path(tmp.name)
-            env, trip_log = tripwired_env(root)
-            proc = runner("run", "--results", str(root / "results"), "--runs", cls.RUN, "--workdir",
-                          str(root / "wd"), *cls.ARGS, env=env)
-            _DRY_RUNS[key] = (tmp, env, trip_log, proc)
-        tmp, cls.env, cls.trip_log, cls.proc = _DRY_RUNS[key]
+        tmp, cls.env, cls.trip_log, cls.proc = dry_run(cls.RUN, cls.ARGS)
         cls.results = Path(tmp.name) / "results"
         cls.run_dir = cls.results / "runs" / cls.RUN
 
@@ -440,6 +448,11 @@ class TestDryRunPipeline(DryRun):
         self.assertEqual(run["binding_problems"], [])
         self.assertEqual(run["metrics"]["conflicts"], 1)
         self.assertIsNotNone(run["metrics"]["throughput"]["value"])
+        reviews = sum(len(u["reviews"]) for u in self.record["units"].values())
+        self.assertEqual(run["metrics"]["review_usage"]["reviews"], reviews)
+        self.assertEqual(run["metrics"]["review_usage"]["observed"], reviews, "a reviewer's usage went unread")
+        b3 = next(c for c in report["conditions"] if c["condition"] == "b3r1")
+        self.assertEqual(sorted(b3["tasks"]), ["T1", "T2", "T3", "T4", "T5", "T6"])
         p = self.verify(results)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("recomputes", p.stdout)
@@ -565,8 +578,36 @@ class TestOutcomesBindToGitAndReview(DryRun):
         problems = self.problems_after(forge)
         self.assertTrue(any("does not re-derive" in p for p in problems), problems)
 
+    def test_a_reviewer_may_dress_its_verdict_line_in_markdown(self):
+        nonce, head = "WIP-NONCE:" + "ab" * 8, "c" * 40
+        for line in (f"WIP-REVIEW {nonce} {head} approve", f"`WIP-REVIEW {nonce} {head} approve`",
+                     f"**WIP-REVIEW {nonce} {head} approve**"):
+            self.assertEqual(wip.REVIEW_LINE.search(f"notes\n{line}\n").group(3), "approve", line)
+        self.assertIsNone(wip.REVIEW_LINE.search(f"I would say WIP-REVIEW {nonce} {head} approve"),
+                          "a verdict inside a sentence is not the verdict line")
+
     def test_the_untouched_run_binds(self):
         self.assertEqual(self.problems_after(lambda _d: None), [])
+
+
+class TestGuardIsVerified(Tmp):
+    """Every spawned worker's installed deny hook is checked armed (first_run.py's guard step)."""
+
+    def test_an_unarmed_guard_fails_the_run(self):
+        wt = self.tmp / "wt"
+        (wt / ".claude").mkdir(parents=True)
+        block = subprocess.run(["sh", str(ROOT / "runtime" / "scripts" / "deny-hook.sh"), "--settings", str(wt)],
+                               capture_output=True, text=True, check=True).stdout
+        (wt / ".claude" / "settings.local.json").write_text(block, encoding="utf-8")
+        run = wip.Run.__new__(wip.Run)
+        run.guard(wt)  # the hook deny-hook.sh itself writes is armed
+        doc = json.loads(block)
+        for entry in doc["hooks"]["PreToolUse"]:
+            for hook in entry["hooks"]:
+                hook["command"] = "true # registered but never denies"
+        (wt / ".claude" / "settings.local.json").write_text(json.dumps(doc), encoding="utf-8")
+        with self.assertRaises(wip.RunFailed):
+            run.guard(wt)
 
 
 class TestCostCapStopsTheExperiment(DryRun):
@@ -574,8 +615,7 @@ class TestCostCapStopsTheExperiment(DryRun):
     reached: six builders and six reviewers spend 3.00 of 3.40, the four bounced units' next wave
     would need 2.00 more, so the run parks them and stays derivable, and no further run starts."""
 
-    RUN = "wip1-b6r2-rep1"
-    ARGS = ("--cost-cap-usd", "3.40", "--inert-cost-usd", "0.25")
+    RUN, ARGS = B6_CAPPED
 
     def test_the_run_stops_and_parks_every_unit_in_flight(self):
         self.assertEqual(self.record["status"], "stopped", self.proc.stdout + self.proc.stderr)
@@ -588,6 +628,24 @@ class TestCostCapStopsTheExperiment(DryRun):
                              capture_output=True, text=True)
         self.assertEqual(rep.returncode, 0, "a stopped run's record must still derive every cell\n" + rep.stdout)
         self.assertIn("reviewers=2", rep.stdout)
+
+    def test_a_parked_head_git_does_not_hold_does_not_bind(self):
+        parked = [a["head"] for u in self.record["units"].values() if u["final"] == "parked"
+                  for a in u["attempts"][-1:] if a.get("head")]
+        self.assertTrue(parked)
+        results = self.copy()
+        run_dir = results / "runs" / self.RUN
+        self.assertEqual(wip.build_report(results, basis="all")["runs"][0]["binding_problems"], [])
+        work = results.parent / "drop"
+        wip.git(run_dir, "clone", "-q", "--mirror", str(run_dir / "target.bundle"), str(work))
+        refs = wip.git_out(work, "for-each-ref", "--format=%(refname)", "--points-at", parked[0]).split()
+        for ref in refs:
+            wip.git(work, "update-ref", "-d", ref)
+        (run_dir / "target.bundle").unlink()
+        wip.git(work, "bundle", "create", "-q", str(run_dir / "target.bundle"), "--all")
+        rebind(run_dir)
+        problems = wip.build_report(results, basis="all")["runs"][0]["binding_problems"]
+        self.assertTrue(any("does not hold that head" in p for p in problems), problems)
 
     def test_a_stopped_run_is_reported_not_dropped(self):
         results = self.copy()
@@ -605,11 +663,72 @@ class TestCostCapStopsTheExperiment(DryRun):
         self.assertIn("not started", p.stderr)
         self.assertEqual([d.name for d in (results / "runs").iterdir()], [self.RUN])
 
-    def test_an_unobserved_cost_is_never_free(self):
+    def test_a_stream_with_any_unreported_cost_is_unobserved(self):
         stream = Path(tempfile.mkdtemp(prefix="wip-curve-stream-")) / "s.jsonl"
         self.addCleanup(shutil.rmtree, stream.parent, True)
-        stream.write_text(json.dumps({"type": "result", "result": "x"}) + "\n", encoding="utf-8")
-        self.assertIsNone(wip.Run.stream_cost(stream), "a result line without a cost is unobserved, not 0")
+        stream.write_text(json.dumps({"type": "result", "result": "a", "total_cost_usd": 0.5}) + "\n"
+                          + json.dumps({"type": "result", "result": "b"}) + "\n", encoding="utf-8")
+        self.assertIsNone(wip.Run.stream_cost(stream), "a partial sum is not the dispatch's cost")
+        stream.write_text(json.dumps({"type": "result", "result": "a", "total_cost_usd": 0.5}) + "\n",
+                          encoding="utf-8")
+        self.assertEqual(wip.Run.stream_cost(stream), Decimal("0.5"))
+
+    def test_an_unobserved_dispatch_is_charged_the_reservation(self):
+        run = wip.Run.__new__(wip.Run)
+        run.usage_seen, run.observed, run.reserved = set(), Decimal(0), Decimal(0)
+        run.reservation, run.spent_before = Decimal("2.00"), Decimal("1.00")
+        run.dispatch_row = lambda _d: {"lane_dir": None}  # no stream retained: nothing observed
+        self.assertEqual(run.ingest_usage("disp_x", "task_x"), Decimal("2.00"))
+        self.assertEqual(run.ingest_usage("disp_x", "task_x"), Decimal(0), "one dispatch is charged once")
+        self.assertEqual(run.spent(), Decimal("3.00"))
+
+
+class TestComplianceNeedsLiveBoundEvidence(unittest.TestCase):
+    """A run counts toward the curve only when it is live, pinned, from the seed and cooled down:
+    fixture runs relabelled as live show each rule catching what it is for."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = dry_run(*B3)[1]
+        cls.sources = [Path(dry_run(*key)[0].name) / "results" / "runs" / key[0] for key in (B3, B6_CAPPED)]
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="wip-curve-compliance-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for src in self.sources:
+            self.assertTrue((src / "run.json").is_file())
+            shutil.copytree(src, self.tmp / "runs" / src.name)
+
+    def edit(self, run, **fields):
+        path = self.tmp / "runs" / run / "run.json"
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        rec.update(fields)
+        path.write_text(json.dumps(rec), encoding="utf-8")  # run.json binds; it is not bound itself
+
+    def runs(self):
+        return {r["run_id"]: r for r in wip.build_report(self.tmp, basis="all")["runs"]}
+
+    def test_a_run_that_did_not_keep_the_cooldown_is_not_compliant(self):
+        live = {"tier": "live-unreviewed", "worker": "live"}
+        self.edit(B3[0], started_at="2026-10-24T10:00:00+00:00", finished_at="2026-10-24T11:00:00+00:00", **live)
+        self.edit(B6_CAPPED[0], started_at="2026-10-24T11:01:00+00:00", finished_at="2026-10-24T12:00:00+00:00",
+                  **live)
+        runs = self.runs()
+        self.assertTrue(any("the cooldown is 600s" in why for why in runs[B6_CAPPED[0]]["noncompliance"]),
+                        runs[B6_CAPPED[0]]["noncompliance"])
+        self.assertFalse(any("cooldown" in why for why in runs[B3[0]]["noncompliance"]))
+
+    def test_an_observed_model_other_than_the_pin_is_not_compliant(self):
+        self.edit(B3[0], model_pin="claude-pinned", harness={"version": "1.0"})
+        why = self.runs()[B3[0]]["noncompliance"]
+        self.assertIn("observed model(s) ['inert-stand-in'] are not the pin 'claude-pinned'", why)
+        self.edit(B3[0], model_pin="inert-stand-in")
+        self.assertFalse(any("not the pin" in w for w in self.runs()[B3[0]]["noncompliance"]))
+
+    def test_a_run_that_did_not_start_at_the_seed_does_not_bind(self):
+        self.edit(B3[0], seed_commit="0" * 40)
+        problems = self.runs()[B3[0]]["binding_problems"]
+        self.assertTrue(any("not the registered seed commit" in p for p in problems), problems)
 
 
 if __name__ == "__main__":

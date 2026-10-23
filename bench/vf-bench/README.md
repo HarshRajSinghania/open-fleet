@@ -432,7 +432,10 @@ An external verifier is measured as one more configuration, without editing `GAT
 `replay.py run --adapter NAME="COMMAND"`. The command runs once per case, from the case's working
 directory, under the case's environment (the replay's `PATH` plus whatever the coordinator adds:
 the stubbed review authority, the system-custody git), and must answer within
-`--adapter-timeout` seconds (default 60).
+`--adapter-timeout` seconds (default 60). Results are keyed by configuration name, so `NAME` is
+stripped of surrounding whitespace and must be unique: a name equal to a built-in gate, to a gate
+the pinned revision loads, or to another adapter is refused as a usage error before any case runs
+(PR #645 review).
 
 It receives ONE JSON object on stdin (`vf-bench-adapter@1`):
 

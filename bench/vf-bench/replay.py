@@ -515,10 +515,10 @@ def _run_driver(python, args, cwd, env, timeout):
 
 def parse_adapter_spec(spec, tier):
     name, sep, command = spec.partition("=")
-    if not (sep and name.strip() and command.strip()):
+    name = name.strip()  # stripped FIRST: a padded built-in name is still that name (PR #645)
+    if not (sep and name and command.strip()):
         raise ReplayError(f"adapter spec {spec!r} is not NAME=COMMAND")
-    if name in BUILTIN:
-        raise ReplayError(f"adapter name {name!r} collides with a built-in gate")
+    check_adapter_names([{"name": name}], BUILTIN)
     argv = shlex.split(command)
     # The adapter runs from the case's workdir, so a program given as a path is made absolute.
     if os.sep in argv[0] or Path(argv[0]).exists():
@@ -527,12 +527,30 @@ def parse_adapter_spec(spec, tier):
     return {"name": name.strip(), "tier": tier, "argv": argv}
 
 
+def check_adapter_names(adapters, gates):
+    """Refuse any adapter name that is not unique among the configurations (PR #645 review).
+    Answers and results are keyed by configuration name, so a name shared with a gate or another
+    adapter would overwrite that configuration's results — an adapter's answers scored as the
+    sound gate's. Checked against the built-in names before anything runs, and again against the
+    gates the pinned revision actually loads before any case is scored."""
+    taken = {g: "a gate" for g in gates}
+    for a in adapters:
+        name = a["name"]
+        if not name or name != name.strip():
+            raise ReplayError(f"adapter name {name!r} is empty or padded with whitespace")
+        if name in taken:
+            raise ReplayError(f"adapter name {name!r} is already {taken[name]}: results are "
+                              f"keyed by name, so it would overwrite that configuration's answers")
+        taken[name] = "another adapter"
+
+
 def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
            adapter_timeout=DEFAULT_ADAPTER_TIMEOUT, adapters=(), selection=None, git=None,
            python=None, keep=None):
     """Run the replay and return the report (a dict). Raises ReplayError on usage problems."""
     if runs < 1:
         raise ReplayError("--runs must be at least 1")
+    check_adapter_names(adapters, BUILTIN)
     source = Path(source).resolve()
     commit, tree = resolve_revision(source, rev)
     git = choose_git(git)
@@ -611,6 +629,7 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         return _finish(report)
     probe = records[-1]
     gates = probe["gates"]
+    check_adapter_names(adapters, gates)
     configs = [{"name": n, "tier": BUILTIN.get(n, ("unlabelled-gate", ""))[0],
                 "label": BUILTIN.get(n, ("", f"{n} (a gate this runner has no label for)"))[1]}
                for n in gates]

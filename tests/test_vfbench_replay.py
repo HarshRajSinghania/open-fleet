@@ -814,5 +814,50 @@ class TheCliRefusesBadInput(unittest.TestCase):
         self.assertIn("false accept", text)
 
 
+
+class AdapterNamesNeverMixResults(_FakeBench):
+    """PR #645 review (P1): answers are keyed by configuration name, so an adapter whose name
+    collides with a gate or with another adapter would overwrite that configuration's results,
+    and could be scored as the sound gate. Names are stripped first, then every collision is
+    refused before anything runs."""
+
+    def _spec(self, name):
+        return replay.parse_adapter_spec(f"{name}={sys.executable} -c pass", "fixture-adapter")
+
+    def test_a_padded_built_in_name_is_refused(self):
+        for name in (f" {SOUND} ", f"{NAIVE}\t", f"  {SOUND}"):
+            with self.subTest(name=name):
+                with self.assertRaises(replay.ReplayError):
+                    self._spec(name)
+
+    def test_the_name_is_stripped_before_it_is_used(self):
+        self.assertEqual(self._spec("  mine  ")["name"], "mine")
+
+    def test_duplicate_names_are_refused_before_anything_runs(self):
+        with mock.patch.object(replay, "export_revision",
+                               side_effect=AssertionError("the replay started")):
+            with self.assertRaises(replay.ReplayError) as ctx:
+                self.replay(runs=1, adapters=[self._spec("twin"), self._spec(" twin")])
+        self.assertIn("twin", str(ctx.exception))
+
+    def test_a_gate_the_revision_loads_cannot_be_shadowed(self):
+        bench = self.repo / "bench" / "vf-bench" / "vfbench.py"
+        bench.write_text(bench.read_text(encoding="utf-8") + '\nGATES["third gate"] = _naive\n',
+                         encoding="utf-8")
+        self.commit = _commit_all(self.repo, "a third gate")
+        with self.assertRaises(replay.ReplayError) as ctx:
+            self.replay(runs=1, adapters=[self._spec("third gate")])
+        self.assertIn("third gate", str(ctx.exception))
+
+    def test_the_cli_refuses_a_collision_as_usage(self):
+        for flags in (["--fixture-adapter", f" {SOUND} ={sys.executable} -c pass"],
+                      ["--adapter", f"x={sys.executable} -c pass",
+                       "--fixture-adapter", f"x ={sys.executable} -c pass"]):
+            with self.subTest(flags=flags):
+                r = _cli("run", "--repo", str(self.repo), "--rev", self.commit, "--runs", "1",
+                         *flags)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1074,6 +1075,121 @@ class WholeFileScopeOutranksASymbol(unittest.TestCase):
             with self.subTest(unit=unit):
                 self.assertEqual(got[unit], ("CURRENT", [], {"paths": ["src/auth.py"],
                                                              "symbols": {"src/auth.py": ["refresh"]}}))
+
+
+class HiddenWorktreeChanges(unittest.TestCase):
+    """PR #639 review: in working-tree mode `git diff` answers from the index, so an assume-unchanged
+    or skip-worktree flag -- or a stale stat cache -- hides a local edit, _scope_reasons() skipped
+    the path on the empty diff, and the hint stayed CURRENT. An empty diff is never trusted for a
+    scoped path now: its working-tree bytes are compared with the recorded revision directly."""
+
+    SRC = "def refresh(t):\n    return t\n\n\ndef other():\n    return 1\n"
+
+    def fixture(self):
+        return Fixture(scenario([{"name": "c0", "files": dict(BASE, **{"src/auth.py": self.SRC})}],
+                                [unit_run("2026-02-01-run-a", "FILE-1", "@c0", ["src/auth.py"], note="file scope"),
+                                 unit_run("2026-02-01-run-b", "SYM-1", "@c0", ["src/auth.py::refresh"],
+                                          note="symbol scope"),
+                                 unit_run("2026-02-01-run-c", "DIR-1", "@c0", ["src"], note="directory scope")]))
+
+    @staticmethod
+    def entries(fx):
+        return {e["unit"]: (e["currency"], e["reasons"]) for e in fx.select(paths=("src",))["entries"]}
+
+    @staticmethod
+    def diff(fx):
+        return hp.git(fx.repo, "diff", "--name-only", "HEAD", "--").stdout
+
+    def test_a_flagged_file_hides_no_local_edit(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                fx = self.fixture()
+                try:
+                    replay_mod._git(fx.repo, "update-index", flag, "src/auth.py")
+                    (fx.repo / "src" / "auth.py").write_text(self.SRC.replace("return 1", "return 2"))
+                    diff, got = self.diff(fx), self.entries(fx)
+                finally:
+                    fx.close()
+                self.assertEqual(diff, "")
+                self.assertEqual(got["FILE-1"], ("STALE", ["path-changed:src/auth.py"]))
+                self.assertEqual(got["DIR-1"], ("STALE", ["path-changed:src"]))
+                # The symbol block is read from the working tree too: an edit elsewhere spares it.
+                self.assertEqual(got["SYM-1"], ("CURRENT", []))
+
+    def test_a_stale_stat_cache_hides_no_local_edit(self):
+        fx = self.fixture()
+        target = fx.repo / "src" / "auth.py"
+        try:
+            replay_mod._git(fx.repo, "config", "core.trustctime", "false")
+            os.utime(target, (1577836800, 1577836800))
+            replay_mod._git(fx.repo, "update-index", "--refresh")
+            cached = target.stat()
+            with open(target, "r+b") as handle:  # same size, same inode, old mtime restored
+                handle.write(self.SRC.replace("return t", "return 0").encode())
+            os.utime(target, ns=(cached.st_atime_ns, cached.st_mtime_ns))
+            diff, got = self.diff(fx), self.entries(fx)
+        finally:
+            fx.close()
+        self.assertEqual(diff, "")
+        self.assertEqual(got["FILE-1"], ("STALE", ["path-changed:src/auth.py"]))
+        self.assertEqual(got["SYM-1"], ("STALE", ["symbol-changed:src/auth.py::refresh"]))
+        self.assertEqual(got["DIR-1"], ("STALE", ["path-changed:src"]))
+
+    def test_a_scoped_file_that_cannot_be_compared_is_unknown(self):
+        fx = self.fixture()
+        try:
+            # A sparse-checkout hole: skip-worktree with no file on disk, and git diff stays empty.
+            replay_mod._git(fx.repo, "update-index", "--skip-worktree", "src/auth.py")
+            (fx.repo / "src" / "auth.py").unlink()
+            diff, hole = self.diff(fx), self.entries(fx)
+        finally:
+            fx.close()
+        self.assertEqual(diff, "")
+        self.assertEqual(hole, {"FILE-1": ("UNKNOWN", ["scope-unverifiable:src/auth.py"]),
+                                "SYM-1": ("UNKNOWN", ["scope-unverifiable:src/auth.py"]),
+                                "DIR-1": ("UNKNOWN", ["scope-unverifiable:src"])})
+        original = Path.read_bytes
+
+        def unreadable(path):
+            if path.name == "auth.py":
+                raise PermissionError(13, "Permission denied", str(path))
+            return original(path)
+        fx = self.fixture()
+        try:
+            with mock.patch.object(Path, "read_bytes", unreadable):
+                denied = self.entries(fx)
+        finally:
+            fx.close()
+        self.assertEqual(denied["FILE-1"], ("UNKNOWN", ["scope-unverifiable:src/auth.py"]))
+        self.assertEqual(denied["DIR-1"], ("UNKNOWN", ["scope-unverifiable:src"]))
+
+    def test_an_unchanged_flagged_file_stays_current(self):
+        fx = self.fixture()
+        try:
+            replay_mod._git(fx.repo, "update-index", "--assume-unchanged", "src/auth.py")
+            replay_mod._git(fx.repo, "update-index", "--skip-worktree", "src/__init__.py")
+            flagged = self.entries(fx)
+            # Line endings converted on checkout are not an edit.
+            (fx.repo / "src" / "auth.py").write_bytes(self.SRC.replace("\n", "\r\n").encode())
+            crlf = self.entries(fx)
+            pinned = {e["unit"]: e["currency"] for e in
+                      fx.select(paths=("src",), live=hp.LiveSource(str(fx.repo), rev="HEAD"))["entries"]}
+        finally:
+            fx.close()
+        for got in (flagged, crlf):
+            self.assertEqual(got, {"FILE-1": ("CURRENT", []), "SYM-1": ("CURRENT", []), "DIR-1": ("CURRENT", [])})
+        self.assertEqual(set(pinned.values()), {"CURRENT"})
+
+    def test_mutation_trusting_the_diff_again_goes_red(self):
+        fx = self.fixture()
+        try:
+            replay_mod._git(fx.repo, "update-index", "--assume-unchanged", "src/auth.py")
+            (fx.repo / "src" / "auth.py").write_text(self.SRC.replace("return 1", "return 2"))
+            with mock.patch.object(hp.LiveSource, "worktree_differs", lambda self, rev, path: False):
+                blind = self.entries(fx)
+        finally:
+            fx.close()
+        self.assertEqual(blind["FILE-1"], ("CURRENT", []))
 
 
 if __name__ == "__main__":

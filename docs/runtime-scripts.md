@@ -649,7 +649,7 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | Label | Reasons | Current mode |
 |---|---|---|
 | `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
-| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `dependencies-changed:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
+| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `dependencies-changed:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
 | `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
@@ -665,9 +665,15 @@ indentation heuristic (a def/class/function line through the next line indented 
 columns, a tab reaching the next multiple of eight) — a heuristic, not a parse. A whole-file entry
 in a structured field (`files_touched`, `scope_allow`, `oracle_scope`) keeps the whole file in
 scope even when the record also names a symbol in it; a bare path mentioned only in prose does not
-widen a symbol scope. Related tests are the tests the record named plus tests sharing a
-scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are manifests and
-lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the
+widen a symbol scope. In working-tree mode an empty `git diff` is never trusted for a scoped
+path: `git diff` answers from the index, which an assume-unchanged or skip-worktree flag or a
+stale stat cache keeps from the file, so each scoped file (or every tracked file under a scoped
+directory) is compared with the source revision's blob byte for byte — a difference in line
+endings alone is checkout conversion, not an edit — and a file that cannot be compared (unreadable,
+or absent from disk in a sparse checkout) is `scope-unverifiable`. Related tests are the tests the
+record named plus tests sharing a scoped file's stem (`diff_scope.py`'s test-path rule); dependency
+files are manifests and lockfiles anywhere in the tree. Those two still come from `git diff` and the
+untracked listing alone, so a flagged test or lockfile edit is not seen. An artifact is modified when its tracked manifest differs from the
 archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
 to the archive root); an archive outside git has no committed bytes to check, so every entry it
 yields is `artifact-unversioned`, and an evidence file that cannot be read leaves only its own

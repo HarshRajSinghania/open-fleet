@@ -445,6 +445,7 @@ class LiveSource:
             raise ProvenanceError(f"live source {repo}: cannot resolve {rev or 'HEAD'}")
         self.rev = head.stdout.strip()
         self._cache = {}
+        self._watched = {}
 
     def label(self):
         return f"repo={self.root.name} rev={self.rev[:12]}{'+worktree' if self.worktree else ''}"
@@ -488,11 +489,85 @@ class LiveSource:
             # An unreadable live file is unknown for the hints scoped to it, not fatal to the rest.
             raise ProvenanceError(f"cannot read {path} in the live source") from exc
 
+    def worktree_differs(self, rev, path):
+        """Working-tree mode: do the bytes on disk for ``path`` -- a file, or every tracked file under
+        a directory -- differ from ``rev``? ``git diff`` answers from the index, and an
+        assume-unchanged or skip-worktree flag, or a stale stat cache, keeps it from looking at the
+        file at all (PR #639 review), so an empty diff is never trusted for a scoped path. True or
+        False; None when no direct comparison is possible (unreadable, or nothing on disk: a
+        sparse-checkout hole). A difference in line endings alone is checkout conversion, not an
+        edit. Submodules are left to the diff."""
+        def compute():
+            kind = git(self.root, "cat-file", "-t", f"{rev}:{path}")
+            kind = kind.stdout.strip() if _ok(kind) else None
+            if kind == "blob":
+                files = [path]
+            elif kind == "tree":
+                listed = git(self.root, "ls-files", "-s", "-z", "--", path)
+                if not _ok(listed):
+                    return None
+                files = [entry.split("\t", 1)[1] for entry in listed.stdout.split("\0")
+                         if "\t" in entry and not entry.startswith("160000 ")]
+            else:
+                return False if kind == "commit" else None
+            ids = self._blob_ids(rev, files)
+            if ids is None:
+                return None
+            for rel in files:
+                try:
+                    data = self._disk_bytes(rel)
+                except OSError:
+                    return None
+                if data is None:
+                    return None
+                if _blob_id(data, len(ids[rel])) == ids[rel]:
+                    continue
+                blob = git(self.root, "cat-file", "-p", ids[rel], text=False)
+                if not _ok(blob):
+                    return None
+                if data.replace(b"\r\n", b"\n") != blob.stdout.replace(b"\r\n", b"\n"):
+                    return True
+            return False
+        return self._memo(("disk", rev, path), compute)
+
+    def _blob_ids(self, rev, files):
+        """{path: blob id at rev}, from rev-parse in chunks; None when any path cannot be resolved."""
+        ids = {}
+        for start in range(0, len(files), 200):
+            chunk = files[start:start + 200]
+            if any("\n" in rel for rel in chunk):
+                return None
+            proc = git(self.root, "rev-parse", *[f"{rev}:{rel}" for rel in chunk])
+            found = proc.stdout.split() if _ok(proc) else []
+            if len(found) != len(chunk):
+                return None
+            ids.update(zip(chunk, found, strict=True))
+        return ids
+
+    def _disk_bytes(self, rel):
+        """What git would hash for ``rel`` in the working tree: a symlink's target, a file's bytes;
+        None when nothing is there. Confined to the checkout (a parent cannot point outside)."""
+        parent = _inside(self.root, os.path.dirname(rel) or ".")
+        if parent is None:
+            return None
+        leaf = parent / os.path.basename(rel)
+        if leaf.is_symlink():
+            return os.fsencode(os.readlink(leaf))
+        return leaf.read_bytes() if leaf.is_file() else None
+
+    def watch(self, rev, paths):
+        """Name the paths a hint is scoped to: in working-tree mode changes_since(rev) compares
+        each with the disk itself instead of trusting an empty diff for it."""
+        self._watched.setdefault(rev, set()).update(paths)
+
     def changes_since(self, rev):
         """{path: (status, new_path)} from source rev to the live tree/rev, renames detected:
         a renamed path maps to ("R", its new name). In working-tree mode an UNTRACKED file is a
         change too (git diff never lists one): a new test or dependency file is part of what the
-        worker will run against (PR #639 review)."""
+        worker will run against (PR #639 review). And a WATCHED path the diff leaves out is
+        compared byte for byte (worktree_differs): ("M", None) when the disk differs from rev,
+        ("?", None) when it cannot be compared -- the diff answers from the index, which an
+        assume-unchanged or skip-worktree flag or a stale stat cache keeps from the file."""
         def compute():
             args = ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-M", "-z", rev]
             if not self.worktree:
@@ -521,7 +596,23 @@ class LiveSource:
                     # Removed from the index yet present on disk: changed, not deleted.
                     out[path] = ("M", None) if out.get(path, ("A",))[0] == "D" else out.get(path, ("A", None))
             return out
-        return self._memo(("diff", rev), compute)
+        changes = self._memo(("diff", rev), compute)
+        if not self.worktree:
+            return changes
+        out = dict(changes)
+        for path in sorted(self._watched.get(rev, ())):
+            if _changed_under(changes, path) is None:
+                differs = self.worktree_differs(rev, path)
+                if differs is not False:
+                    out[path] = ("M" if differs else "?", None)
+        return out
+
+
+def _blob_id(data, width):
+    """The git object id of ``data`` as a blob, in the repository's hash (40 hex: sha1, else
+    sha256) -- so an unchanged file costs no git call."""
+    digest = hashlib.sha1 if width == 40 else hashlib.sha256
+    return digest(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
 
 
 def _changed_under(changes, path):
@@ -536,6 +627,7 @@ def _changed_under(changes, path):
 
 def _scope_reasons(live, rev, paths, symbols):
     reasons = []
+    live.watch(rev, [path for path in paths if live.exists_at(rev, path)])
     changes = live.changes_since(rev)
     for path in paths:
         if not live.exists_at(rev, path):
@@ -545,7 +637,9 @@ def _scope_reasons(live, rev, paths, symbols):
         if entry is None:
             continue
         status, new = entry
-        if status == "R":
+        if status == "?":
+            reasons.append((UNKNOWN, f"scope-unverifiable:{path}"))
+        elif status == "R":
             reasons.append((STALE, f"path-renamed:{path}->{new}"))
         elif status == "D":
             reasons.append((STALE, f"path-deleted:{path}"))

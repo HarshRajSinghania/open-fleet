@@ -830,11 +830,85 @@ class RepositoryIdentity(QueueCase):
             "dir/with:colon": str((base / "dir/with:colon").resolve()),
             "../remote.git": str((base / "../remote.git").resolve()),
             "~/r.git": str(Path(home, "r.git").resolve()),  # git expands ~ for a local remote
-            "https://github.com/Owner/Repo.git": "github.com/Owner/Repo",
+            "https://github.com/Owner/Repo.git": "github.com/owner/repo",  # GitHub names fold case
         }
         for url, want in cases.items():
             with self.subTest(url=url):
                 self.assertEqual(mq_mod.repo_identity(url, base, home=home), want)
+
+
+class IdentityNormalisation(QueueCase):
+    """Two spellings of one GitHub repository are one queue (PR #647: casing split the queue)."""
+
+    mode = "git"
+
+    def test_github_identities_are_normalised(self):
+        same = ["https://github.com/Team/Repo.git", "https://github.com/team/repo", "https://GitHub.com/team/repo/",
+                "https://www.github.com/Team/Repo.git/", "git@GitHub.com:Team/Repo.git", "ssh://git@github.com/team/REPO.git",
+                "github.com:team/repo.git/"]
+        self.assertEqual({mq_mod.repo_identity(u) for u in same}, {"github.com/team/repo"})
+        # A GitHub Enterprise host folds case only once it is configured as GitHub.
+        self.assertEqual(mq_mod.repo_identity("https://GHE.example/Team/Repo.git"), "ghe.example/Team/Repo")
+        self.assertEqual(mq_mod.repo_identity("https://GHE.example/Team/Repo.git", github_hosts={"ghe.example"}),
+                         "ghe.example/team/repo")
+        # Another forge keeps its casing; only the host is lowercased.
+        self.assertEqual(mq_mod.repo_identity("https://Forge.example/Team/Repo.git"), "forge.example/Team/Repo")
+
+    def test_local_paths_keep_their_bytes_or_their_on_disk_case(self):
+        real = self.w.tmp / "CaseDir.git"
+        real.mkdir()
+        spelled = self.w.tmp / "casedir.GIT"
+        folded = mq_mod.repo_identity(str(spelled))
+        if spelled.exists():  # a case-insensitive filesystem: the on-disk spelling is the identity
+            self.assertEqual(folded, str(real.resolve()))
+        else:  # case-sensitive: byte-exact, never lowercased
+            self.assertEqual(folded, str(spelled.resolve()))
+        self.assertEqual(mq_mod.repo_identity(str(real)), str(real.resolve()))
+
+    def test_two_clones_spelling_one_github_repository_differently_share_one_queue(self):
+        other = self.w.tmp / "other-clone"
+        self.w.git(self.w.tmp, "clone", "-q", str(self.w.bare), str(other))
+        self.w.point(self.w.conductor, "origin", "github.com/Team/Repo", self.w.bare)
+        self.w.point(other, "origin", "github.com/team/repo", self.w.bare)
+        rc1, first = self.w.cli(*self.w.init_args())
+        rc2, second = self.w.cli("--repo-dir", str(other), *self.w.init_args())
+        self.assertEqual((rc1, rc2), (0, 0), (first, second))
+        self.assertEqual((first["repo"], second["repo"], second["created"]), ("github.com/team/repo",) * 2 + (False,))
+        rc, one = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1")
+        self.assertEqual(rc, 0, one)
+        rc, two = self.w.cli("--repo-dir", str(other), "acquire", "--base", W.BASE, "--holder", "c2")
+        self.assertEqual((rc, two.get("code")), (3, "lease_held"), "a differently cased clone got its own lease")
+        rc, two = self.w.cli("--repo", "github.com/TEAM/Repo", "status", "--base", W.BASE)
+        self.assertEqual((rc, two.get("repo")), (0, "github.com/team/repo"), two)
+
+    def test_a_store_holding_an_older_cased_identity_is_migrated_in_place(self):
+        db = self.w.tmp / "old.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(mq_mod.Store.SCHEMA)
+        conn.execute("INSERT INTO mq_queues VALUES ('github.com/Team/Repo', 'integration', 'main', 'git', 'origin', "
+                     "'github.com', 'grant:x', 3, 0)")
+        conn.execute("INSERT INTO mq_leases VALUES ('github.com/Team/Repo', 'integration', 'c1', 'tok', 4, 1, 'h', 60, 0, "
+                     "9e12, NULL)")
+        conn.execute("INSERT INTO mq_tokens VALUES ('tok', 'github.com/Team/Repo', 'integration', 4, 'c1', 0)")
+        conn.commit()
+        conn.close()
+        mq_mod.Store(db)
+        conn = sqlite3.connect(db)
+        rows = {t: conn.execute(f"SELECT repo FROM {t}").fetchall() for t in ("mq_queues", "mq_leases", "mq_tokens")}
+        conn.close()
+        self.assertEqual(rows, {t: [("github.com/team/repo",)] for t in rows}, "the lease would split from its queue")
+
+    def test_a_store_already_split_by_casing_is_refused_not_guessed(self):
+        db = self.w.tmp / "split.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(mq_mod.Store.SCHEMA)
+        for repo in ("github.com/Team/Repo", "github.com/team/repo"):
+            conn.execute("INSERT INTO mq_queues VALUES (?, 'integration', 'main', 'git', 'origin', 'github.com', "
+                         "'grant:x', 1, 0)", (repo,))
+        conn.commit()
+        conn.close()
+        rc, out = self.w.cli("--db", str(db), "--repo", "github.com/team/repo", "status", "--base", W.BASE)
+        self.assertEqual((rc, out.get("code")), (2, "queue_split"), out)
 
 
 class GitLaneRepositoryBinding(QueueCase):

@@ -1043,7 +1043,7 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 
 The persisted, fenced single-conductor merge queue (#599), the mechanism behind
 [`runtime/merge-serialization.md`](../runtime/merge-serialization.md). Source
-`runtime/scripts/merge_queue.py:1-71`; behavior pinned by `tests/test_merge_queue.py`, and the
+`runtime/scripts/merge_queue.py:1-72`; behavior pinned by `tests/test_merge_queue.py`, and the
 process-level drills (two conductors, pause-transfer-resume, crash restarts, mutation controls)
 by `tests/test_merge_queue_drills.py`.
 
@@ -1058,7 +1058,14 @@ for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's iden
 configured URL names, as `host/owner/name` or a real local path, and the default). Identities
 follow git's own URL rules: `host:path` is ssh even without `user@`, `~` is expanded, and a relative
 local path resolves against the clone's toplevel, as git resolves it, never the working directory,
-so conductors started from different directories share one queue and one lease. `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
+so conductors started from different directories share one queue and one lease. Every identity
+is stored in one spelling: the host lowercased (`www.github.com` is `github.com`), a trailing `/`
+and `.git` dropped, and on a GitHub host the owner and name lowercased too. GitHub hosts are
+`github.com`, any listed in `$OPEN_FLEET_GITHUB_HOSTS` (comma-separated), and any a gh-lane queue
+names. Another forge keeps its casing. A local path is spelled as the disk spells it: byte-exact
+on a case-sensitive filesystem. A store written with an older spelling is respelled when it opens.
+A store already holding one repository as two queues is refused (`queue_split`), never merged
+by guess. `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,
 `--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--gate-timeout`, `--ack`,
 `--max-steps`, `--keep-branch`. `status` and `receipts` are read-only and take `--base` (`receipts` adds

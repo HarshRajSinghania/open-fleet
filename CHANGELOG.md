@@ -28,7 +28,7 @@ truth is `.claude-plugin/plugin.json`.
   - Every GitHub and git call is bound to the queue's repository: `gh` gets an explicit `--repo`,
     and the remote's fetch and push URLs must name the repository the lease does. Identities follow
     git's own URL rules (a relative path resolves against the clone, not the working directory), so
-    one remote is one queue from any directory. The gh lane
+    one remote is one queue from any directory, and GitHub names fold case. The gh lane
     merges through GitHub's merges endpoint, which names BASE, so a PR retargeted after the last
     check cannot take the merge to the default branch. A merged head branch is deleted only from
     the queue's own repository, never a fork's, behind its own egress receipt. The request is

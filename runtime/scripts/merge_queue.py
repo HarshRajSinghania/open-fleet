@@ -31,7 +31,8 @@ What holds, and for whom
     URLs must name the repository the lease names, and every `gh` call passes it as `--repo`
     (never GH_REPO or gh's own default), so no call can act on a fork or another repository.
     Identities follow git's own URL rules, a relative path resolved against the clone's toplevel
-    as git resolves it, so one remote is one queue from whatever directory a conductor starts.
+    as git resolves it, in one spelling (`normalize_identity`: GitHub names fold case), so one
+    remote is one queue from whatever directory or spelling a conductor starts with.
   * Scope: cooperating fleet writers that share this store on one host. A local lease cannot
     fence an arbitrary GitHub user, or a writer that bypasses this script. Their writes surface
     as a moved BASE or a moved head, which the guards refuse; they never land untested content
@@ -168,7 +169,57 @@ def default_db_path(env: dict[str, str]) -> Path:
     return Path.home() / ".open-fleet" / "state" / "merge-queue.db"
 
 
-def repo_identity(url: str, base: str | Path | None = None, home: str | None = None) -> str:
+# Hosts whose owner and repository names are case-insensitive, as GitHub's are. github.com always;
+# a GitHub Enterprise host once configured here (comma-separated) or once a gh-lane queue names it.
+GITHUB_HOSTS_ENV = "OPEN_FLEET_GITHUB_HOSTS"
+DEFAULT_GITHUB_HOSTS = frozenset({"github.com"})
+
+
+def normalize_identity(identity: str, github_hosts: frozenset[str] | set[str] = frozenset()) -> str:
+    """One spelling per repository (PR #647: `Team/Repo` and `team/repo` split the queue).
+
+    A network identity's host is lowercased (`www.github.com` is `github.com`), a trailing `/`
+    and `.git` are dropped, and on a GitHub host the owner and name are lowercased too, because
+    GitHub serves every casing as the same repository. Another forge keeps its casing. A local
+    path is returned as it is: `repo_identity` has already spelled it as the disk does.
+    """
+    if identity.startswith("/"):
+        return identity
+    host, _, path = identity.partition("/")
+    host = host.lower()
+    host = "github.com" if host == "www.github.com" else host
+    path = path.strip("/")
+    path = path[:-4].rstrip("/") if path.endswith(".git") else path
+    if host in DEFAULT_GITHUB_HOSTS or host in {h.lower() for h in github_hosts}:
+        path = path.lower()
+    return f"{host}/{path}"
+
+
+def _on_disk_case(path: Path) -> Path:
+    """The path with each existing component spelled as its directory lists it.
+
+    On a case-insensitive filesystem `Remote.git` and `remote.git` are one directory, so they must
+    be one identity. A component is respelled only when the listed name is the SAME file, so on
+    a case-sensitive filesystem the path stays byte-exact.
+    """
+    out = Path(path.parts[0])
+    parts = path.parts[1:]
+    for i, name in enumerate(parts):
+        try:
+            entries = os.listdir(out)
+        except OSError:
+            return out.joinpath(*parts[i:])
+        if name not in entries:
+            same = [e for e in entries if e.casefold() == name.casefold()]
+            with contextlib.suppress(OSError):  # the spelled path does not exist: keep its bytes
+                if len(same) == 1 and os.path.samefile(out / same[0], out / name):
+                    name = same[0]
+        out = out / name
+    return out
+
+
+def repo_identity(url: str, base: str | Path | None = None, home: str | None = None,
+                  github_hosts: frozenset[str] | set[str] = frozenset()) -> str:
     """The repository a remote URL names, by git's own rules: `host/owner/name`, or a local path
     resolved to its real absolute path.
 
@@ -197,10 +248,8 @@ def repo_identity(url: str, base: str | Path | None = None, home: str | None = N
         path_ = Path(local)
         if not path_.is_absolute():
             path_ = Path(base if base is not None else os.getcwd()) / path_
-        return str(path_.resolve())
-    path = path.strip("/")
-    path = path[:-4] if path.endswith(".git") else path
-    return f"{host.lower()}/{path}"
+        return str(_on_disk_case(path_.resolve()))
+    return normalize_identity(f"{host}/{path}", github_hosts)
 
 
 def identity_host(identity: str) -> str:
@@ -273,8 +322,11 @@ class Store:
 
     BUSY_SECONDS = 30.0
 
-    def __init__(self, path: Path):
+    IDENTITY_TABLES = ("mq_queues", "mq_leases", "mq_tokens", "mq_entries", "mq_receipts")
+
+    def __init__(self, path: Path, github_hosts: frozenset[str] | set[str] = DEFAULT_GITHUB_HOSTS):
         self.path = Path(path)
+        self.github_hosts = frozenset(h.lower() for h in github_hosts) | DEFAULT_GITHUB_HOSTS
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.tx() as conn:
             # Not executescript: it COMMITs first and runs each statement in autocommit, which
@@ -283,6 +335,29 @@ class Store:
                 if statement.strip():
                     conn.execute(statement)
             self._migrate(conn)
+            self._normalize_identities(conn)
+
+    def hosts(self, conn: sqlite3.Connection) -> frozenset[str]:
+        """The GitHub hosts: configured ones, plus every host a gh-lane queue already names."""
+        named = {r["repo"].split("/", 1)[0] for r in conn.execute("SELECT repo FROM mq_queues WHERE mode = 'gh'")}
+        return self.github_hosts | frozenset(named)
+
+    def _normalize_identities(self, conn: sqlite3.Connection) -> None:
+        """Respell an identity an older store holds the way `normalize_identity` does (PR #647).
+
+        Every table that carries the identity moves together, so a lease never splits from its
+        queue. When the normalized spelling is already a queue of its own, nothing is merged: the
+        store holds one repository as two queues, and `MergeQueue._config` refuses it by name.
+        """
+        hosts = self.hosts(conn)
+        for row in conn.execute("SELECT repo, base FROM mq_queues").fetchall():
+            folded = normalize_identity(row["repo"], hosts)
+            if folded == row["repo"]:
+                continue
+            if conn.execute("SELECT 1 FROM mq_queues WHERE repo = ? AND base = ?", (folded, row["base"])).fetchone():
+                continue
+            for table in self.IDENTITY_TABLES:
+                conn.execute(f"UPDATE {table} SET repo = ? WHERE repo = ? AND base = ?", (folded, row["repo"], row["base"]))
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=self.BUSY_SECONDS, isolation_level=None,
@@ -508,7 +583,8 @@ class MergeQueue:
     def __init__(self, db_path: str | Path | None = None, repo_dir: str | Path = ".", env: dict[str, str] | None = None):
         self.env = dict(os.environ if env is None else env)
         self.db_path = Path(db_path) if db_path else default_db_path(self.env)
-        self.store = Store(self.db_path)
+        configured = {h.strip().lower() for h in self.env.get(GITHUB_HOSTS_ENV, "").split(",") if h.strip()}
+        self.store = Store(self.db_path, DEFAULT_GITHUB_HOSTS | configured)
         self.repo_dir = Path(repo_dir).resolve()
         self.git = Git(self.repo_dir, self.env)
         self.gh = Gh(self.repo_dir, self.env)
@@ -530,9 +606,19 @@ class MergeQueue:
                     else self.repo_dir
         return self._url_base_cached
 
-    def _identity(self, url: str) -> str:
-        """`repo_identity` of a URL configured in this clone, resolved exactly as git resolves it."""
-        return repo_identity(url, self._url_base(), home=self.env.get("HOME"))
+    def github_hosts(self) -> frozenset[str]:
+        with self.store.connect() as conn:
+            return self.store.hosts(conn)
+
+    def normalize(self, identity: str) -> str:
+        """An identity as the queue stores it (`--repo` given by hand included)."""
+        return normalize_identity(identity, self.github_hosts())
+
+    def _identity(self, url: str, extra_github_host: str | None = None) -> str:
+        """`repo_identity` of a URL configured in this clone, resolved exactly as git resolves it,
+        in the one spelling the queue stores (`normalize_identity`)."""
+        hosts = self.github_hosts() | ({extra_github_host} if extra_github_host else set())
+        return repo_identity(url, self._url_base(), home=self.env.get("HOME"), github_hosts=hosts)
 
     def default_repo(self, remote: str = "origin") -> str:
         urls, _push = self.git.remote_urls(remote)
@@ -541,7 +627,7 @@ class MergeQueue:
                              exit_code=EXIT_USAGE)
         return self._identity(urls[0])
 
-    def _bound_remote(self, cfg: dict[str, Any]) -> str:
+    def _bound_remote(self, cfg: dict[str, Any], extra_github_host: str | None = None) -> str:
         """The queue's remote, after proving it still names the queue's repository (PR #647).
 
         The lease, the entries and every receipt name `cfg["repo"]`. A remote re-pointed after
@@ -551,8 +637,8 @@ class MergeQueue:
         """
         remote = cfg["remote"]
         urls, push = self.git.remote_urls(remote)
-        named = {f"url {u}": self._identity(u) for u in urls}
-        named.update({f"pushurl {u}": self._identity(u) for u in push})
+        named = {f"url {u}": self._identity(u, extra_github_host) for u in urls}
+        named.update({f"pushurl {u}": self._identity(u, extra_github_host) for u in push})
         wrong = {k: v for k, v in named.items() if v != cfg["repo"]}
         if not urls or wrong:
             raise QueueError(
@@ -563,7 +649,19 @@ class MergeQueue:
             )
         return remote
 
+    def _split_check(self, conn: sqlite3.Connection, repo: str, base: str) -> None:
+        """Refuse a store that holds this repository as two queues for one BASE (PR #647)."""
+        hosts = self.store.hosts(conn)
+        mine = normalize_identity(repo, hosts)
+        twins = [r["repo"] for r in conn.execute("SELECT repo FROM mq_queues WHERE base = ? AND repo != ?", (base, repo))
+                 if normalize_identity(r["repo"], hosts) == mine]
+        if twins:
+            raise QueueError("queue_split", f"the store holds {mine} as more than one queue for BASE {base!r} "
+                             f"({', '.join(sorted([repo, *twins]))}); one remote must be one queue: settle and merge them "
+                             "by hand", {"spellings": sorted([repo, *twins])}, exit_code=EXIT_USAGE)
+
     def _config(self, conn: sqlite3.Connection, repo: str, base: str) -> dict[str, Any]:
+        self._split_check(conn, repo, base)
         row = conn.execute("SELECT * FROM mq_queues WHERE repo = ? AND base = ?", (repo, base)).fetchone()
         if row is None:
             raise QueueError("queue_not_found", f"no merge queue for {repo} BASE {base!r}: run init first",
@@ -606,7 +704,10 @@ class MergeQueue:
             raise QueueError("usage", "--consent names the standing grant every merge's egress receipt cites",
                              exit_code=EXIT_USAGE)
         urls, _push = self.git.remote_urls(remote)
-        named = self._identity(urls[0]) if urls else None
+        # The gh lane's host IS a GitHub host (GitHub Enterprise included): its names fold case.
+        gh_host = identity_host(self._identity(urls[0])) if mode == "gh" and urls else None
+        named = self._identity(urls[0], gh_host) if urls else None
+        repo = normalize_identity(repo, self.github_hosts() | ({gh_host} if gh_host else set()))
         if named != repo:
             raise QueueError("repo_mismatch", f"--repo {repo} is not the repository remote {remote!r} names "
                              f"({named or 'no URL'}): the lease and every merge must name one repository",
@@ -616,13 +717,14 @@ class MergeQueue:
                              f"{repo}, not a host/owner/name repository (use --mode git for a local remote)",
                              {"repo": repo, "remote": remote}, exit_code=EXIT_USAGE)
         try:
-            self._bound_remote({"remote": remote, "repo": repo})
+            self._bound_remote({"remote": remote, "repo": repo}, gh_host)
         except QueueError as exc:
             raise QueueError(exc.code, exc.message, exc.data, exit_code=EXIT_USAGE) from exc
         if host is None:
             host = identity_host(repo)
         want = {"default_branch": default, "mode": mode, "remote": remote, "host": host, "consent": consent}
         with self.store.tx() as conn:
+            self._split_check(conn, repo, base)
             row = conn.execute("SELECT * FROM mq_queues WHERE repo = ? AND base = ?", (repo, base)).fetchone()
             if row is None:
                 conn.execute(
@@ -1345,7 +1447,7 @@ class MergeQueue:
         head_repo = st.get("headRepository")
         if head_repo is None:
             return {**out, "outcome": "retained: GitHub reported no head repository"}
-        if st.get("crossRepository") or head_repo.casefold() != cfg["repo"].casefold():
+        if st.get("crossRepository") or self.normalize(head_repo) != cfg["repo"]:
             return {**out, "outcome": "retained: head branch in a fork"}
         if st.get("headRefName") != e["branch"]:
             return {**out, "outcome": "retained: the PR's head branch is not the entry's branch"}
@@ -1704,7 +1806,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace, mq: MergeQueue) -> dict[str, Any]:
     cmd = args.command
     if cmd in ("init", "acquire", "drain", "status", "receipts"):
-        repo = args.repo or mq.default_repo(getattr(args, "remote", "origin"))
+        repo = mq.normalize(args.repo) if args.repo else mq.default_repo(getattr(args, "remote", "origin"))
     if cmd == "init":
         return mq.init(repo=repo, base=args.base, default=args.default, consent=args.consent, mode=args.mode,
                        remote=args.remote, host=args.host)

@@ -140,7 +140,12 @@ them automatically, except an `unknown` one, which waits for an explicit `launch
 When the owner is alive, or on another host, the intent is reported `pending` or `unknown` and
 left untouched, unless `--takeover` is passed. A takeover swaps the owner token
 and bumps the epoch, so the old writer's next commit fails with `launch_fenced`. A fenced writer
-releases nothing, deletes nothing and terminates nothing; the new owner decides. Reconciliation
+releases nothing, deletes nothing and terminates nothing; the new owner decides. One reconciler
+settles an intent at a time: every settler, a takeover included, first holds the exclusive
+`<state dir>/intents/<intent>.recovery.lock`. Without that lock, a takeover settles while the
+fenced owner still holds the launch lease, and once that owner exits, a `worker-list` could
+settle the same intent beside it. A second reconciler that finds the lock held reports `pending`
+and changes nothing. A lease or lock file is removed only by its holder. Reconciliation
 never mints ids, so the run, task, dispatch and terminal ids the worker was launched with are the
 ones that the receipt and the dispatch row keep. Launch fencing is per intent, and it is separate
 from the mailbox fencing of `run-use --takeover-legacy`.

@@ -326,6 +326,7 @@ class _IntentLease:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self.held = False
         self.fd: int | None = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
 
     def try_acquire(self) -> bool:
@@ -335,14 +336,16 @@ class _IntentLease:
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             return False
+        self.held = True
         return True
 
     def release(self, *, unlink: bool) -> None:
         if self.fd is None:
             return
-        if unlink:
-            # Only the owner's own bookkeeping: an undeletable lock file is harmless (an open
-            # intent is judged by acquiring the lock, never by the file's presence).
+        if unlink and self.held:
+            # Only the holder's own bookkeeping, never a lock someone else holds (a takeover's
+            # lease, #597 review): an undeletable lock file is harmless (an open intent is
+            # judged by acquiring the lock, never by the file's presence).
             with contextlib.suppress(OSError):
                 self.path.unlink()
         os.close(self.fd)
@@ -1515,6 +1518,9 @@ if {repr(self.backend)} == "cmux":
     def _intent_lock_path(self, intent_id: str) -> Path:
         return self.state.db_path.parent / "intents" / f"{intent_id}.lock"
 
+    def _recovery_lock_path(self, intent_id: str) -> Path:
+        return self.state.db_path.parent / "intents" / f"{intent_id}.recovery.lock"
+
     def _planned_worktree_path(self, worktree_sel: str, name: str) -> str:
         """Where `_resolve_worktree_path` will put the worktree, computed WITHOUT creating it."""
         if worktree_sel in ("new-child", "new-top-level"):
@@ -1768,6 +1774,7 @@ if {repr(self.backend)} == "cmux":
                 it, resolution="already_settled", previous=previous, outcome=it["outcome"], settled=json.loads(it["receipt_json"] or "{}")
             )
         lease = _IntentLease(self._intent_lock_path(intent_id))
+        recovery: _IntentLease | None = None
         final = False
         try:
             owner_gone = lease.try_acquire()
@@ -1788,6 +1795,18 @@ if {repr(self.backend)} == "cmux":
                         f"only if it is wedged: orchestration launch-reconcile --intent {intent_id} --takeover (fences that writer)",
                     ],
                 )
+            # One settler at a time, a takeover included (#597 review). A takeover cannot hold the
+            # launch lease (its live owner does, and drops it the moment it stops, letting a poll's
+            # reconcile in beside the takeover), so every settler first holds the recovery lock.
+            recovery = _IntentLease(self._recovery_lock_path(intent_id))
+            if not recovery.try_acquire():
+                return self._recovery_receipt(
+                    it,
+                    resolution="pending",
+                    previous=previous,
+                    requestState="pending",
+                    nextSteps=["another reconciler is settling this launch now: wait for its receipt (request-show / worker-show)"],
+                )
             token = uuid.uuid4().hex
             with self.state._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1805,6 +1824,8 @@ if {repr(self.backend)} == "cmux":
             final = receipt["resolution"] != "unknown"
             return receipt
         finally:
+            if recovery is not None:
+                recovery.release(unlink=final)
             lease.release(unlink=final)
 
     def _settle_intent(self, it: dict[str, Any], token: str, previous: dict[str, Any], *, takeover: bool) -> dict[str, Any]:

@@ -705,5 +705,90 @@ class TestSandboxCommitsSurviveCrash(CrashRecoveryBase):
         self.assertEqual(r["dispatch"]["after"], "died")
 
 
+class TestOneSettlerPerIntent(CrashRecoveryBase):
+    """One reconciler settles an intent at a time, a takeover included (#597 review).
+
+    The seam is the settling reconciler's own `_settle_intent`: a second reconciler runs from
+    inside it, after the first one won the owner swap and before it decided anything.
+    """
+
+    def settle_with(self, prov, during):
+        settle = prov._settle_intent
+
+        def paused(it, token, previous, *, takeover):
+            during()
+            return settle(it, token, previous, takeover=takeover)
+
+        prov._settle_intent = paused
+
+    def reconcile(self, prov, intent_id, **kw):
+        try:
+            return prov.launch_reconcile(intent=intent_id, **kw)["reconciled"][0]
+        except self.providers.ProviderError as exc:
+            return {"raised": exc.code}
+
+    def test_takeover_keeps_recovery_when_the_old_owner_exits_mid_settlement(self):
+        c = self.coordinator("registered", retry_request="req-1")
+        info = c.until("registered")["info"]
+        seen = {}
+
+        def owner_exits_then_a_poll_reconciles():
+            # The live owner goes on, is fenced at its next commit and releases its launch lease.
+            c.proc.stdin.write("\n")
+            c.proc.stdin.flush()
+            seen["owner"] = c.finish()
+            other = self.restart()
+            seen["reconcile"] = self.reconcile(other, info["intentId"])
+            other.worker_list()
+            seen["epoch"] = other.state.launch_intent(info["intentId"])["epoch"]
+            seen["dispatch"] = other.state.dispatch_state(info["dispatchId"])
+
+        taker = self.restart()
+        self.settle_with(taker, owner_exits_then_a_poll_reconciles)
+        r = self.reconcile(taker, info["intentId"], takeover=True)
+        self.assertEqual(seen["owner"][-1].get("error"), "launch_fenced", seen["owner"])
+        self.assertEqual(seen["reconcile"].get("resolution"), "pending", "a second reconciler never settles beside a takeover")
+        self.assertEqual((seen["epoch"], seen["dispatch"]), (2, "ready"), "nothing moved while the takeover held recovery")
+        self.assertEqual((r.get("resolution"), r.get("takeover")), ("failed", True), r)
+        self.assertEqual(r["owner"]["epoch"], 2)
+        prov = self.restart()
+        self.assertEqual(prov.request_show("req-1")["state"], "failed")
+        self.assertEqual(prov.state.dispatch_state(info["dispatchId"]), "abandoned")
+        self.assertEqual(self.task_status(prov), "ready")
+        self.assertEqual(prov.launch_reconcile()["count"], 0)
+        locks = prov.state.db_path.parent / "intents"
+        self.assertFalse((locks / f"{info['intentId']}.recovery.lock").exists(), "a settled intent keeps no recovery lock")
+        self.assert_no_worker_ran()
+
+    def test_takeover_leaves_the_live_owners_lease_to_it(self):
+        c = self.coordinator("registered", retry_request="req-1")
+        info = c.until("registered")["info"]
+        lease = self.restart().state.db_path.parent / "intents" / f"{info['intentId']}.lock"
+        r = self.reconcile(self.restart(), info["intentId"], takeover=True)
+        self.assertEqual(r.get("resolution"), "failed", r)
+        self.assertTrue(lease.exists(), "a takeover never unlinks a lease it does not hold")
+        c.proc.stdin.write("\n")
+        c.proc.stdin.flush()
+        self.assertEqual(c.finish()[-1].get("error"), "launch_fenced")
+        self.assertFalse(lease.exists(), "its holder removes it")
+
+    def test_takeover_never_steals_a_settlement_in_progress(self):
+        info = self.crash_at("registered", retry_request="req-1")
+        seen = {}
+
+        def takeover_arrives():
+            seen["takeover"] = self.reconcile(self.restart(), info["intentId"], takeover=True)
+            seen["epoch"] = self.restart().state.launch_intent(info["intentId"])["epoch"]
+
+        settler = self.restart()
+        self.settle_with(settler, takeover_arrives)
+        r = self.reconcile(settler, info["intentId"])
+        self.assertEqual(seen["takeover"].get("resolution"), "pending", "the settling reconciler is live: a takeover waits")
+        self.assertEqual(seen["epoch"], 2)
+        self.assertEqual((r.get("resolution"), r.get("takeover")), ("failed", False), r)
+        self.assertEqual(self.restart().request_show("req-1")["state"], "failed")
+        self.assert_no_worker_ran()
+
+
 if __name__ == "__main__":
     unittest.main()

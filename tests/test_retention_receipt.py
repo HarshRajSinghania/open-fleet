@@ -431,6 +431,22 @@ class Rejections(ReceiptCase):
     def test_a_missing_inventory_is_refused(self):
         self.refused("s_inventory_missing", "inventory document", "is missing")
 
+    def test_an_inventory_that_is_not_utf8_text_is_refused(self):
+        self.write("run/binary.md", b"\xff\xfe not an inventory\n")
+        self.receipt(inventory_rel="run/binary.md", inventory_sha256="00" * 32)
+        self.assertRefused(self.check(), "run/binary.md is not UTF-8 text", "fail-closed")
+
+    def test_a_verifier_without_inventory_py_fails_closed(self):
+        # inventory.py owns the receipt and inventory forms; a verifier that cannot load it has
+        # nothing to check a claim against, and must not read that as nothing claimed.
+        scripts = Path(tempfile.mkdtemp(dir=self._td.name))
+        for name in verify._Transcript.TOOLCHAIN:
+            if name != "inventory.py":
+                shutil.copy2(SCRIPTS / name, scripts / name)
+        lone = _load(f"verify_608_no_inventory_{next(_SEQ)}", scripts / "verify.py")
+        self.assertRefused(self.check(mod=lone), "which owns the receipt and inventory forms",
+                           "fail-closed")
+
     # trust material
     def test_a_claim_with_no_trust_material_is_refused(self):
         self.refused("s_claim_without_key", "no trust material was supplied",

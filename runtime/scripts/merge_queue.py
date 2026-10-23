@@ -243,6 +243,9 @@ class Store:
             "tested_tree": "TEXT", "prefix_commit": "TEXT", "gate_json": "TEXT",
             "merging_epoch": "INTEGER", "merging_pid": "INTEGER", "merge_sha": "TEXT",
             "merged_tree": "TEXT", "tree_matches_tested": "INTEGER", "reviewed_tree_source": "TEXT",
+            # The branch teardown, persisted with the merge intent so a restart finishes it (PR #647):
+            # 'delete' or 'keep' while owed, then its final outcome. NULL: none (the no-gh lane).
+            "teardown": "TEXT",
         },
     }
 
@@ -948,13 +951,40 @@ class MergeQueue:
     def settle_in_flight(self, token: str) -> list[dict[str, Any]]:
         """The owner's own reconcile: settle a `merging` entry an earlier attempt left behind."""
         cfg, _lease = self._owner(token)
-        if not self._entries(cfg["repo"], cfg["base"], (MERGING,)):
+        settled: list[dict[str, Any]] = []
+        if self._entries(cfg["repo"], cfg["base"], (MERGING,)):
+            lock = self._lock(cfg["repo"], cfg["base"])
+            try:
+                if not lock.acquire(30.0):
+                    raise QueueError("merge_in_flight", "another process holds the merge boundary")
+                settled = self._settle_locked(token, cfg)
+            finally:
+                lock.release()
+        self.retry_teardowns(token, cfg)
+        return settled
+
+    def retry_teardowns(self, token: str, cfg: dict[str, Any], entry_id: str | None = None) -> list[dict[str, Any]]:
+        """Finish every branch teardown still owed by a merged entry, inside the merge boundary (PR #647).
+
+        The request was persisted with the merge intent, so a conductor that died after the remote
+        merge, or before its acknowledgement, leaves it for the next owner. Idempotent: an entry
+        whose teardown already has an outcome is not revisited, and a deletion is still a
+        compare-and-swap on the merged head in the PR's own head repository.
+        """
+        q = ("SELECT * FROM mq_entries WHERE repo = ? AND base = ? AND state IN (?, ?) "
+             "AND teardown IN ('delete', 'keep')")
+        params: list[Any] = [cfg["repo"], cfg["base"], MERGED, LANDED]
+        if entry_id:
+            q += " AND entry_id = ?"
+            params.append(entry_id)
+        owed = self.store.read(q + " ORDER BY seq ASC", tuple(params))
+        if not owed:
             return []
         lock = self._lock(cfg["repo"], cfg["base"])
         try:
             if not lock.acquire(30.0):
                 raise QueueError("merge_in_flight", "another process holds the merge boundary")
-            return self._settle_locked(token, cfg)
+            return [{"entry": e["entry_id"], "outcome": self._teardown_branch(token, cfg, e)} for e in owed]
         finally:
             lock.release()
 
@@ -1205,22 +1235,23 @@ class MergeQueue:
         # The fenced compare-and-set: the merge intent is recorded under THIS conductor's token,
         # inside the effect lock. A conductor taken over since its lease check stops here.
         now = self.clock()
+        teardown = ("delete" if delete_branch else "keep") if cfg["mode"] == "gh" else None
         with self.store.tx() as conn:
             lease = self._fence(conn, token)
             # The compare-and-set binds the plan validated above: the tested tree and the gate record
             # (a concurrent re-plan by this owner changes one of them, and the write is refused).
             cur = conn.execute("UPDATE mq_entries SET state = ?, accepted_head = ?, expected_base = ?, merging_epoch = ?, "
-                               "merging_pid = ?, updated_at = ? WHERE entry_id = ? AND state = ? AND tested_tree = ? "
-                               "AND COALESCE(gate_json, '') = ?",
-                               (MERGING, accepted, base_head, lease["epoch"], os.getpid(), now, e["entry_id"], QUEUED,
-                                e["tested_tree"], e["gate_json"] or ""))
+                               "merging_pid = ?, teardown = ?, updated_at = ? WHERE entry_id = ? AND state = ? "
+                               "AND tested_tree = ? AND COALESCE(gate_json, '') = ?",
+                               (MERGING, accepted, base_head, lease["epoch"], os.getpid(), teardown, now, e["entry_id"],
+                                QUEUED, e["tested_tree"], e["gate_json"] or ""))
             if cur.rowcount != 1:
                 raise QueueError("queue_changed", f"{e['entry_id']} is no longer queued as it was validated")
             self._receipt(conn, repo, base, "merge_intent", {"acceptedHead": accepted, "how": how, "expectedBase": base_head,
                                                              "testedTree": e["tested_tree"], "mode": cfg["mode"],
                                                              "localMerge": local_merge, "repository": cfg["repo"]},
                           e["entry_id"], lease)
-        e = {**e, "state": MERGING, "accepted_head": accepted, "expected_base": base_head}
+        e = {**e, "state": MERGING, "accepted_head": accepted, "expected_base": base_head, "teardown": teardown}
         try:
             self._egress(cfg, e)
         except egress.EgressError as exc:
@@ -1248,7 +1279,7 @@ class MergeQueue:
                 self._clear_tested(conn, repo, base, 0 if decision["resolution"] == "requeued" else e["seq"])
         if decision["resolution"] == "merged":
             self._boundary("merged_recorded", info)
-            branch = self._teardown_branch(token, cfg, e) if delete_branch and cfg["mode"] == "gh" else "retained"
+            branch = self._teardown_branch(token, cfg, e)
             return {"ok": True, "result": "merged", "entry": e["entry_id"], "unit": e["unit"], **decision,
                     "noGh": cfg["mode"] == "git", "branch": branch}
         if decision["resolution"] == "unknown":
@@ -1263,10 +1294,13 @@ class MergeQueue:
         Only when GitHub reports THIS PR merged into BASE (a PR retargeted elsewhere stays open,
         and deleting its head would close it), only when its head branch lives in the queue's own
         repository (a fork's branch is never touched, and a same-named branch in the queue's
-        repository is not the PR's: PR #647), and only that branch.
+        repository is not the PR's: PR #647), and only that branch. A PR GitHub has not yet
+        marked merged is `final: False`: the teardown stays owed and is retried.
         """
         st = self._unit_state(cfg, e)
-        out = {"branch": e["branch"], "headRepository": st.get("headRepository"), "delete": False}
+        out = {"branch": e["branch"], "headRepository": st.get("headRepository"), "delete": False, "final": True}
+        if st["state"] == "OPEN" and st["baseRefName"] == cfg["base"]:
+            return {**out, "final": False, "outcome": "pending: GitHub has not marked the PR merged yet"}
         if st["state"] != "MERGED" or st["baseRefName"] != cfg["base"]:
             return {**out, "outcome": f"retained: PR is {st['state'].lower()} on {st['baseRefName']}"}
         head_repo = st.get("headRepository")
@@ -1279,36 +1313,63 @@ class MergeQueue:
         return {**out, "delete": True, "outcome": "delete"}
 
     def _teardown_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any]) -> str:
-        """Delete the merged unit's head branch, or record why it was kept. Never fails the merge.
+        """Carry out the entry's persisted teardown request, once. Never fails the merge.
 
-        The deletion is an off-repo write like the merge: fenced first (a conductor taken over
-        never deletes), egress-receipted before it is sent, aimed at the bound remote, and a
-        compare-and-swap on the merged head, so a branch moved since is kept for re-review.
+        `keep` (the merge's --keep-branch) records that the branch was kept. `delete` deletes the
+        head branch when `_teardown_decide` allows it. The deletion is an off-repo write like the
+        merge: fenced first (a conductor taken over never deletes), egress-receipted before it is
+        sent, aimed at the bound remote, and a compare-and-swap on the merged head, so a branch
+        moved since is kept for re-review. A final outcome is written once, with a
+        `branch_teardown` receipt. A transient one (GitHub not caught up, offline) leaves the
+        request owed for `retry_teardowns`.
         """
-        try:
-            d = self._teardown_decide(cfg, e)
-            if d["delete"]:
-                remote = self._bound_remote(cfg)
-                self._owner(token)
-                body = json.dumps({"repo": cfg["repo"], "branch": e["branch"], "head": e["accepted_head"]},
-                                  sort_keys=True).encode()
-                explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
-                egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
-                                     "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
-                                     payload_sha256=hashlib.sha256(body).hexdigest())
-                proc = self.git.run("push", "--porcelain",
-                                    f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
-                                    remote, f":refs/heads/{e['branch']}", check=False)
-                d["outcome"] = "deleted" if proc.returncode == 0 else "retained: branch moved or already gone"
-        except egress.EgressError as exc:
-            d = {"branch": e["branch"], "headRepository": None, "outcome": f"retained: no egress receipt ({exc})"}
-        except QueueError as exc:
-            if exc.exit_code == EXIT_FENCED:
-                raise
-            d = {"branch": e["branch"], "headRepository": None, "outcome": f"retained: {exc.code}"}
+        request = e.get("teardown")
+        if request not in ("delete", "keep"):
+            return request or "retained: no teardown requested"
+        d: dict[str, Any] = {"branch": e["branch"], "headRepository": None, "final": True,
+                             "outcome": "kept: --keep-branch"}
+        if request == "delete":
+            try:
+                d = self._teardown_decide(cfg, e)
+                if d["delete"]:
+                    d["outcome"], d["final"] = self._delete_branch(token, cfg, e)
+            except egress.EgressError as exc:
+                d.update(final=False, outcome=f"pending: no egress receipt ({exc})")
+            except QueueError as exc:
+                if exc.exit_code == EXIT_FENCED:
+                    raise
+                d.update(final=False, outcome=f"pending: {exc.code}")
+        if not d.pop("final"):
+            return d["outcome"]
         d.pop("delete", None)
-        self._record(token, cfg, e, "branch_teardown", d)
+        with self.store.tx() as conn:
+            lease = self._fence(conn, token)
+            cur = conn.execute("UPDATE mq_entries SET teardown = ?, updated_at = ? WHERE entry_id = ? AND teardown = ?",
+                               (d["outcome"], self.clock(), e["entry_id"], request))
+            if cur.rowcount == 1:
+                self._receipt(conn, cfg["repo"], cfg["base"], "branch_teardown", d, e["entry_id"], lease)
         return d["outcome"]
+
+    def _delete_branch(self, token: str, cfg: dict[str, Any], e: dict[str, Any]) -> tuple[str, bool]:
+        """(outcome, final) of the compare-and-swap deletion of the merged head branch."""
+        remote = self._bound_remote(cfg)
+        self._owner(token)
+        body = json.dumps({"repo": cfg["repo"], "branch": e["branch"], "head": e["accepted_head"]},
+                          sort_keys=True).encode()
+        explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
+        egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
+                             "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
+                             payload_sha256=hashlib.sha256(body).hexdigest())
+        proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{e['branch']}:{e['accepted_head']}",
+                            remote, f":refs/heads/{e['branch']}", check=False)
+        if proc.returncode == 0:
+            return "deleted", True
+        now = self.git.fetch(remote, f"refs/heads/{e['branch']}", f"teardown/{e['branch']}")
+        if now is None:
+            return "gone: deleted elsewhere", True
+        if now != e["accepted_head"]:
+            return f"retained: branch moved to {now}", True
+        return f"pending: deletion refused ({proc.stderr.strip()[-120:]})", False
 
     def _refusal(self, cfg: dict[str, Any], e: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
         """A send that did not land: a moved head or BASE returns to plan; anything else freezes."""
@@ -1403,6 +1464,7 @@ class MergeQueue:
         if not self.git.is_ancestor(e["merge_sha"], base_head):
             raise QueueError("merge_not_on_base", f"{e['merge_sha']} is not an ancestor of {cfg['base']} "
                              f"({base_head}); BASE was rewritten", {"entry": entry_id})
+        teardown = self.retry_teardowns(token, cfg, entry_id)
         with self.store.tx() as conn:
             lease = self._fence(conn, token)
             cur = conn.execute("UPDATE mq_entries SET state = ?, updated_at = ? WHERE entry_id = ? AND state = ?",
@@ -1415,7 +1477,7 @@ class MergeQueue:
             if cfg["mode"] == "git":
                 body["ledger"] = "no-gh: local-merge"
             self._receipt(conn, cfg["repo"], cfg["base"], "acknowledged", body, entry_id, lease)
-        return {"ok": True, "entry": entry_id, "landed": True, **body}
+        return {"ok": True, "entry": entry_id, "landed": True, "teardown": teardown, **body}
 
     def resolve(self, token: str, entry_id: str, *, action: str, reason: str) -> dict[str, Any]:
         """The conductor's recorded decision on the failed entry the train is frozen behind."""
@@ -1444,7 +1506,7 @@ class MergeQueue:
     def _entry_view(e: dict[str, Any]) -> dict[str, Any]:
         keys = ("entry_id", "seq", "state", "run_id", "unit", "pr", "branch", "reviewed_sha", "reviewed_tree",
                 "accepted_head", "expected_base", "tested_base_tree", "tested_tree", "prefix_commit", "merge_sha",
-                "merged_tree", "tree_matches_tested", "reason")
+                "merged_tree", "tree_matches_tested", "reason", "teardown")
         return {k: e.get(k) for k in keys}
 
     def status(self, repo: str, base: str) -> dict[str, Any]:
@@ -1484,6 +1546,7 @@ class MergeQueue:
         token, steps = acq["token"], []
         stop: QueueError | None = None
         try:
+            self.settle_in_flight(token)  # owed teardowns too, even when the train is already empty
             for _ in range(max_steps):
                 line = self._line(repo, base)
                 if not line:

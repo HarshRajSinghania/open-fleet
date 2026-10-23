@@ -29,7 +29,8 @@ truth is `.claude-plugin/plugin.json`.
     and the remote's fetch and push URLs must name the repository the lease does. The gh lane
     merges through GitHub's merges endpoint, which names BASE, so a PR retargeted after the last
     check cannot take the merge to the default branch. A merged head branch is deleted only from
-    the queue's own repository, never a fork's, behind its own egress receipt. A saved plan is
+    the queue's own repository, never a fork's, behind its own egress receipt. The request is
+    persisted with the merge, so a restart finishes it and never overrides `--keep-branch`. A saved plan is
     reused only for the gate it passed, so `drain --gate-cmd` never skips a requested gate.
   - What is tested: two competing conductor processes, pause-transfer-resume, and crash restarts
     before the merge, after the remote merge and before the acknowledgement, on the gh lane and

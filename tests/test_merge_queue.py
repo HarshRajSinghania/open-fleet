@@ -702,6 +702,18 @@ class BranchTeardown(QueueCase):
         (entry,) = self.board(token, u)
         return token, u, entry
 
+    def _crash_at(self, token, stage, **merge):
+        """A conductor that dies at one merge boundary (no finally, no teardown of its own)."""
+        self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
+        mq = self.w.queue(mq_mod)
+
+        def die(at, _info):
+            if at == stage:
+                raise SystemExit(f"conductor died at {at}")
+        mq.on_boundary = die
+        with self.assertRaises(SystemExit):
+            mq.merge(token, **merge)
+
     def test_a_fork_head_branch_is_never_deleted_from_the_queues_repository(self):
         token, u, entry = self._boarded()
         fork = self.w.fork(self.FORK)  # the fork carries `alpha` at the same commit as upstream does
@@ -725,6 +737,59 @@ class BranchTeardown(QueueCase):
         self.assertEqual([x["payload_class"] for x in sends], ["pr-merge", "branch-delete"],
                          "the branch deletion left the machine without an egress receipt")
 
+
+    def test_a_restart_after_the_remote_merge_still_tears_the_branch_down(self):
+        token, _u, entry = self._boarded()
+        self._crash_at(token, "remote_merged")
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"))
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.state_of(entry), "landed")
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"), "the restart left the merged branch behind")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+
+    def test_a_restart_before_the_ack_still_tears_the_branch_down(self):
+        token, _u, entry = self._boarded()
+        self._crash_at(token, "merged_recorded")
+        self.assertEqual(self.state_of(entry), "merged")
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"), "the restart left the merged branch behind")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+
+    def test_keep_branch_is_honoured_across_a_restart(self):
+        token, _u, entry = self._boarded()
+        self._crash_at(token, "remote_merged", delete_branch=False)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")  # no --keep-branch this time
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "--keep-branch was forgotten on restart")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["kept: --keep-branch"])
+
+    def test_a_teardown_github_has_not_caught_up_with_is_retried_later(self):
+        token, u, entry = self._boarded()
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("branch")), (0, "pending: GitHub has not marked the PR merged yet"), out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"))
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        rc, out = self.w.cli("reconcile", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"))
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+        rc, out = self.w.cli("reconcile", "--token", token)  # idempotent: nothing left to tear down
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+
+    def test_a_stale_conductor_never_tears_a_branch_down(self):
+        token, u, entry = self._boarded()
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        self.acquire("c2", "--takeover")
+        rc, out = self.w.cli("reconcile", "--token", token)
+        self.assertEqual((rc, out.get("code")), (3, "fenced"), out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "a fenced conductor deleted a branch")
 
 class GitLaneRepositoryBinding(QueueCase):
     mode = "git"

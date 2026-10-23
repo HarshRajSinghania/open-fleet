@@ -1104,7 +1104,11 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   branch in the queue's own repository: a fork's branch, or a same-named branch of the queue's
   repository behind a cross-repository PR, is never touched. The deletion is fenced and
   egress-receipted like the merge, and a `branch_teardown` receipt records each outcome
-  (`--keep-branch` keeps the branch). Only the head of the train merges (`not_head`), and a merged entry must be
+  (`--keep-branch` keeps the branch). The request, delete or keep, is persisted with the merge
+  intent, so a conductor that dies after the remote merge or before its `ack` leaves it owed. The
+  next `reconcile`, `plan`, `merge`, `ack` or `drain` finishes it once, still as a compare-and-swap,
+  and a teardown GitHub has not caught up with yet stays owed until it has. A restart cannot turn
+  a recorded `--keep-branch` into a deletion. Only the head of the train merges (`not_head`), and a merged entry must be
   acknowledged (`ack`) before the next merge (`ack_owed`).
 - **One repository.** The lease, the entries and the receipts name one repository, the one the
   remote's configured URL names (`init` refuses any other `--repo`; the gh lane needs a

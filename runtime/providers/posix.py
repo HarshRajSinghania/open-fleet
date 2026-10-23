@@ -1860,12 +1860,16 @@ if {repr(self.backend)} == "cmux":
         elif d["state"] in FENCED_DISPATCH_STATES:
             # An operator fenced it while it was starting: finish that fence, as the live path would.
             mon = self._monitor_process(d, lane)
-            if mon["alive"] is False:
-                # Confirmed dead: no exit.json can ever come, and waiting the sync grace for one
-                # stalled recovery (#597). Salvage as for any vanished monitor (container removal,
-                # then the sync) with its unknown exit; only the mux session is left to close.
+            never_ran = self._gate_proves_never_ran(d)
+            if never_ran:
+                mon["gate"] = "closed"
+            if mon["alive"] is False or (never_ran and mon["alive"] is None):
+                # Confirmed dead, or a gate closed before any claim (no monitor ever ran and none
+                # can): no exit.json can ever come, and waiting the sync grace for one stalled
+                # recovery (#597). Salvage as for any vanished monitor (container removal, then
+                # the sync) with its unknown exit; only the mux session is left to close.
                 vanished = self._report_vanished(d)
-                mon["action"] = "reported_dead"
+                mon["action"] = "refused_at_gate" if never_ran else "reported_dead"
                 mon["termination"] = self._terminate_backend(d["backend"] or self.backend, handle, 0, backend_ref=d["backend_ref"])
                 self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
                 if vanished.get("retry"):
@@ -1878,7 +1882,8 @@ if {repr(self.backend)} == "cmux":
                     int(mon.get("pid") or 0) if mon.get("alive") else 0,
                     backend_ref=d["backend_ref"],
                     container=self._dispatch_container(d),
-                    lane_dir=d["lane_dir"],
+                    # A live process under a closed gate is a refused monitor: it never syncs.
+                    lane_dir=None if never_ran else d["lane_dir"],
                 )
             processes.append(mon)
             if not resolution:
@@ -2020,6 +2025,21 @@ if {repr(self.backend)} == "cmux":
         if lane.is_dir():
             (lane / "recovery.json").write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         return receipt
+
+    def _gate_proves_never_ran(self, d: Any) -> bool:
+        """Whether the launch gate proves no monitor ever ran this dispatch and none ever can (#597).
+
+        A fence before any claim closed the gate for good, and a `worker-start` dispatch (it
+        carries an intent) runs its worker only after its monitor passes that gate. An injected
+        runner or an injected dispatch starts work without the gate, so the gate proves nothing there.
+        """
+        return (
+            d is not None
+            and self.runner is None
+            and _col(d, "intent_id") is not None
+            and _col(d, "gate_closed_at") is not None
+            and _col(d, "monitor_started_at") is None
+        )
 
     @staticmethod
     def _record_salvage(
@@ -2416,7 +2436,9 @@ if {repr(self.backend)} == "cmux":
                     "WHERE dispatch_id = ? AND monitor_started_at IS NULL",
                     (time.time(), dispatch_id),
                 )
+            gated = conn.execute("SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)).fetchone()
             conn.execute("COMMIT")
+        never_ran = self._gate_proves_never_ran(gated)
         out: dict[str, Any] = {"dispatchId": dispatch_id, "state": new_state, "terminalState": term_state}
         finished = r["state"] in ("completed", "died", *FENCED_DISPATCH_STATES) or (
             bool(r["lane_dir"]) and (Path(r["lane_dir"]) / "exit.json").is_file()
@@ -2438,8 +2460,11 @@ if {repr(self.backend)} == "cmux":
                 int(r["pid"] or 0) or int(_col(r, "monitor_pid") or 0),
                 backend_ref=r["backend_ref"],
                 container=container,
-                lane_dir=r["lane_dir"],
+                # A gate closed before any claim: no monitor ran or can, so no sync is coming (#597).
+                lane_dir=None if never_ran else r["lane_dir"],
             )
+            if never_ran:
+                out["termination"]["gate"] = "closed"
         return out
 
     def vm_recipe_doctor(self, recipe_id: str) -> dict[str, Any]:

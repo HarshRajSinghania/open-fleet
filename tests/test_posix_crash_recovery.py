@@ -1179,5 +1179,146 @@ class TestFenceClosesTheGate(CrashRecoveryBase):
         self.assertFalse(store.claim_monitor("disp_old", os.getpid()), "a fenced row still refuses the gate")
 
 
+class TestClosedGateSkipsTheSyncGrace(CrashRecoveryBase):
+    """A gate closed before any claim proves no monitor ran or can run, so no exit.json can come (#597).
+
+    Fake clock: a grace is measured, never waited. Fixture tier: a FAKE `docker` CLI whose `run`
+    sleeps like a live container client; no daemon is ever contacted.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.env["OPEN_FLEET_SANDBOX_SYNC_GRACE_S"] = "120"
+        self.docker_log = self.base / "docker.log"
+        fake = self.bin / "docker"
+        fake.write_text(
+            f'#!/bin/sh\necho "$*" >> "{self.docker_log}"\n'
+            f'if [ "$1" = run ]; then echo "sandbox run $$" >> "{self.agent_log}"; exec sleep 60; fi\nexit 0\n',
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+
+    def unlaunched_danger(self, **start):
+        """A coordinator killed after registering a `danger` dispatch and before any monitor spawn."""
+        return self.crash_at("registered", profile="danger", on_env="sandbox-img", **start)
+
+    def died_payloads(self, prov, dispatch_id):
+        return [json.loads(m["payload"]) for m in prov.check_messages(terminal="coordinator", run="run-r04")["messages"]
+                if m["subject"].startswith(f"worker_died:{dispatch_id}")]
+
+    def test_stop_and_abandon_of_a_never_launched_dispatch_do_not_wait_the_grace(self):
+        tasks = {"stop": self.task, "abandon": self.restart().task_create(spec="inert work 2")["task"]["id"]}
+        for verb, task in tasks.items():
+            info = self.unlaunched_danger(task_id=task)
+            prov = self.restart()
+            self.assertEqual(self.dispatch(prov, info["dispatchId"])["pid"], 0)
+            clock = FakeClock()
+            with mock.patch.object(self.posix, "time", clock):
+                out = prov.worker_fence(verb, info["dispatchId"])
+            self.assertLess(clock.slept, 1.0, f"{verb}: the gate closed before any claim, so no sync can ever be reported")
+            self.assertEqual(out["termination"].get("gate"), "closed", out)
+            self.assertEqual(out["termination"]["container"]["name"], f"openfleet-{info['dispatchId']}", "removed all the same")
+        self.assert_no_worker_ran()
+
+    def test_setsid_recovery_of_a_fenced_never_launched_dispatch_does_not_wait_the_grace(self):
+        info = self.unlaunched_danger(retry_request="req-1")
+        prov = self.restart()
+        clock = FakeClock()
+        with mock.patch.object(self.posix, "time", clock):
+            prov.worker_fence("abandon", info["dispatchId"])
+            fenced = clock.slept
+            r = prov.launch_reconcile()["reconciled"][0]
+        self.assertLess(clock.slept - fenced, 1.0, "recovery: the closed gate is as good as a confirmed death")
+        monitor = [p for p in r["processes"] if p["role"] == "monitor"][0]
+        self.assertEqual((monitor["alive"], monitor["action"], monitor["gate"]), (None, "refused_at_gate", "closed"))
+        self.assertEqual((r["resolution"], r["error"]["code"]), ("failed", "dispatch_fenced"))
+        self.assertEqual((r["dispatch"]["after"], r["task"]["after"]), ("abandoned", "ready"))
+        self.assertIn({"kind": "container", "target": f"openfleet-{info['dispatchId']}", "action": "removed", "rc": 0}, r["cleanup"])
+        self.assertEqual(self.died_payloads(prov, info["dispatchId"]), [])
+        self.assertEqual(prov.request_show("req-1")["state"], "failed")
+        self.assert_no_worker_ran()
+
+    def test_a_retain_after_the_gate_closed_never_turns_into_a_false_worker_died(self):
+        info = self.unlaunched_danger()
+        prov = self.restart()
+        disp = info["dispatchId"]
+        with mock.patch.object(self.posix, "time", FakeClock()):
+            prov.worker_fence("abandon", disp)
+        prov.worker_fence("retain", disp)  # inspection, after the gate closed
+        died = prov.state.ensure_terminal_or_died(dispatch_id=disp, worker_handle=info["terminalHandle"], exit_code=-1, run_id="run-r04")
+        self.assertIs(died["syntheticDied"], False, died)
+        self.assertEqual(prov.state.dispatch_state(disp), "retained", "nothing ran under it, so nothing died")
+        self.assertEqual(self.died_payloads(prov, disp), [])
+
+    def test_a_retain_landing_mid_recovery_never_declares_a_never_launched_dispatch_dead(self):
+        info = self.unlaunched_danger()
+        prov = self.restart()
+        disp = info["dispatchId"]
+        clock = FakeClock()
+        with mock.patch.object(self.posix, "time", clock):
+            prov.worker_fence("abandon", disp)
+        fenced, vanish, retained = clock.slept, prov._report_vanished, []
+
+        def retain_lands_first(r):
+            retained.append(prov.worker_fence("retain", disp)["state"])
+            return vanish(r)
+
+        prov._report_vanished = retain_lands_first
+        with mock.patch.object(self.posix, "time", clock):
+            r = prov.launch_reconcile()["reconciled"][0]
+        self.assertLess(clock.slept - fenced, 1.0)
+        self.assertEqual(retained, ["retained"], "the retain landed between the reconciler's read and its settlement")
+        self.assertEqual(r["dispatch"]["after"], "retained", "the operator's retain stands, never turned into a death")
+        self.assertEqual(self.died_payloads(prov, disp), [])
+        self.assert_no_worker_ran()
+
+    def test_a_fence_that_never_closed_the_gate_still_waits_the_whole_grace(self):
+        # A fence recorded before the gate could be closed (an older store or provider): nothing
+        # proves no monitor started, so the monitor that cannot be probed keeps the whole grace.
+        info = self.unlaunched_danger()
+        prov = self.restart()
+        with prov.state._connect() as conn:
+            conn.execute("UPDATE dispatches SET state = 'abandoned', terminal_state = 'abandoned' WHERE dispatch_id = ?", (info["dispatchId"],))
+        clock = FakeClock()
+        with mock.patch.object(self.posix, "time", clock):
+            r = prov.launch_reconcile()["reconciled"][0]
+        monitor = [p for p in r["processes"] if p["role"] == "monitor"][0]
+        self.assertEqual((monitor["alive"], monitor["action"]), (None, "terminated"))
+        self.assertNotIn("gate", monitor)
+        self.assertGreaterEqual(clock.slept, 120, "an unproven gate keeps the whole grace")
+
+    def test_stop_of_a_monitor_that_claimed_still_waits_the_whole_grace(self):
+        info = self.crash_at("published", profile="danger", on_env="sandbox-img")
+        self.assertTrue(_wait_for(lambda: len(self.agent_lines()) == 1), "the fake container client never ran")
+        prov = self.restart()
+        pid = self.dispatch(prov, info["dispatchId"])["pid"]
+        clock = FakeClock()
+        with mock.patch.object(self.posix, "time", clock):
+            out = prov.worker_fence("stop", info["dispatchId"])
+        self.assertNotIn("gate", out["termination"])
+        self.assertGreaterEqual(clock.slept, 120, "a monitor that passed the gate may still be syncing: the whole grace")
+        self.assertTrue(_wait_for(lambda: not _alive(pid)), "and is stopped after it")
+
+    def test_the_gate_proves_nothing_for_work_started_without_it(self):
+        prov = self.restart()
+        with prov.state._connect() as conn:  # injected work: a dispatch with no launch intent
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, terminal_handle, state, pid, backend, "
+                "created_at, updated_at) VALUES ('disp_inj', ?, 'run-r04', '', 'custom', 'term_inj', 'ready', 0, 'setsid', 0, 0)",
+                (self.task,),
+            )
+        self.assertNotIn("gate", prov.worker_fence("stop", "disp_inj")["termination"])
+        prov.worker_fence("retain", "disp_inj")
+        died = prov.state.ensure_terminal_or_died(dispatch_id="disp_inj", worker_handle="term_inj", exit_code=-1, run_id="run-r04")
+        self.assertIs(died["syntheticDied"], True, "its work never needed the gate, so the gate cannot vouch it never ran")
+        info = self.unlaunched_danger()
+        with mock.patch.object(self.posix, "time", FakeClock()):
+            prov.worker_fence("abandon", info["dispatchId"])
+        row = self.dispatch(prov, info["dispatchId"])
+        self.assertTrue(prov._gate_proves_never_ran(row))
+        runner = self.posix.PosixWorktreeProvider(env=self.env, runner=lambda **kw: {"pid": 0})
+        self.assertFalse(runner._gate_proves_never_ran(row), "an injected runner starts work without the gate")
+
+
 if __name__ == "__main__":
     unittest.main()

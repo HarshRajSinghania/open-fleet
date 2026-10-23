@@ -189,8 +189,14 @@ the refusal, and the sandbox git dir stays in the lane. An operator may stop or 
 dispatch while recovery is pending. If the monitor of that `danger` dispatch is confirmed dead,
 recovery runs the same removal and sync. It no longer waits the sandbox sync grace
 (`OPEN_FLEET_SANDBOX_SYNC_GRACE_S`, default 120 s) for an `exit.json` that cannot come, and the
-task is handed back only once both steps succeed. A live monitor still gets the whole grace to
-finish its own sync. A monitor writes `<lane>/exit.json` before it
+task is handed back only once both steps succeed. A launch gate closed before any claim counts the
+same as a confirmed death. It proves that no monitor ever ran the dispatch and none ever can, for
+any backend, including a setsid monitor that cannot be probed. It holds only for a `worker-start`
+dispatch run without an injected runner, because only that worker has to pass the gate. Such a
+dispatch is settled without the wait (monitor action `refused_at_gate`). A `worker-stop` or
+`worker-abandon` of it also skips the wait. It never gets a synthetic `worker_died`, even after a
+later `worker-retain`. A live monitor, or one whose gate never closed (a fence recorded by an
+older store), still gets the whole grace to finish its own sync. A monitor writes `<lane>/exit.json` before it
 settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
 exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
 recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a

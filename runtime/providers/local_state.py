@@ -1322,7 +1322,10 @@ class LocalStateStore:
         senders = [s for s in {dispatch_id, worker_handle or ""} if s]
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            disp = conn.execute("SELECT state, run_id FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)).fetchone()
+            disp = conn.execute(
+                "SELECT state, run_id, intent_id, gate_closed_at, monitor_started_at FROM dispatches WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
             if disp is None:
                 # Withdrawn before it launched (claim released): nothing died that anyone owns.
                 conn.execute("COMMIT")
@@ -1330,6 +1333,11 @@ class LocalStateStore:
             if disp["state"] in FENCED_DISPATCH_STATES:
                 conn.execute("COMMIT")
                 return {"syntheticDied": False, "fenced": disp["state"]}
+            if disp["intent_id"] and disp["gate_closed_at"] is not None and disp["monitor_started_at"] is None:
+                # A fence closed its launch gate before any monitor claimed it, and a later retain
+                # never reopens it: no gated worker ever ran under it, so none died (#597).
+                conn.execute("COMMIT")
+                return {"syntheticDied": False, "gateClosed": True}
             if disp and disp["state"] == "died":
                 conn.execute("COMMIT")
                 return {"syntheticDied": False, "alreadyDied": True}

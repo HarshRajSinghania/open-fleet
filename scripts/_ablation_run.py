@@ -553,6 +553,12 @@ def preflight(args, api, prereg):
     if stale:
         raise Refused(f"the registered payloads no longer match the catalog: {stale} — check out "
                       "the registered commit, or re-register (a new version) before spending")
+    # Current means measured == registered, so the registered flag is the variant as it is now.
+    failing = sorted(m for m, pinned in prereg["registered_payloads"].items()
+                     if not pinned.get("obligations_held"))
+    if failing:
+        raise Refused(f"{failing}: the variant fails the obligation check; a live run never "
+                      "spends on a disqualified variant")
     return tier
 
 

@@ -191,6 +191,14 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         self.refused(self.live("--cost-cap-usd", "5", "--repeats", "1"), "whole registered design",
                      self.authorised())
 
+    def test_a_live_run_never_spends_on_a_variant_that_drops_an_obligation(self):
+        prereg = self.authorised()
+        prereg["reduction"]["missions"]["ship-it"]["drop_sections"] = ["Related", "Gates (only these)"]
+        prereg["registered_payloads"] = ablation.measure(prereg)  # current, and honestly failing
+        self.assertFalse(prereg["registered_payloads"]["ship-it"]["obligations_held"])
+        self.refused(self.live("--cost-cap-usd", "5"), "['ship-it']: the variant fails the obligation check",
+                     prereg)
+
     def test_a_live_run_refuses_a_stale_registration(self):
         prereg = self.authorised()
         prereg["registered_payloads"]["ship-it"]["reduced_sha256"] = "0" * 64

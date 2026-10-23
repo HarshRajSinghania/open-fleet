@@ -202,7 +202,11 @@ older store), still gets the whole grace to finish its own sync. A monitor write
 settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
 exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
 recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a
-dispatch, which stayed `ready` with no `worker_died`.
+dispatch, which stayed `ready` with no `worker_died`. A dispatch its own monitor DID settle and the
+coordinator then retained is not that case. Its terminal mail already exists, so neither path
+settles it again, and it keeps reading `retained` (`LocalStateStore.terminal_report`). Settling it
+again turned every retain of a finished worker into `completed` on the next read, a `died` one
+included (#596 review).
 
 **What is tested** ([`tests/test_posix_crash_recovery.py`](../tests/test_posix_crash_recovery.py),
 [`tests/test_posix_docker_crash.py`](../tests/test_posix_docker_crash.py)):

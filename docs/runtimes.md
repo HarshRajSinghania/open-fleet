@@ -4,6 +4,8 @@
 
 `open-fleet` decouples mission outcomes, phase playbooks, and verification gates from any single orchestrator binary through the **Runtime Provider Interface (RPI)**. Every general mission runs unchanged across 14 orchestrator providers and dispatches workers across 10+ coding-agent harnesses under uniform least-privilege sandbox profiles (`ro`, `rw`, `danger`).
 
+> **Advertised is not certified.** Every provider, profile and harness listed below has an entry in [Provider and harness certification](certification.md). That page records how far each route is proven: live-witnessed, fixture-tested, source-only, refused, or unknown. It also gives the upstream version each route was checked against, and a first run you can reproduce. Today only Orca with Claude Code is live-witnessed.
+
 ---
 
 ## Selecting a runtime provider

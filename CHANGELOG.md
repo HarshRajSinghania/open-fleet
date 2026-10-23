@@ -6,6 +6,31 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Provider and harness routes are certified cell by cell, with a reproducible first run**
+  (#596). `runtime/providers/certification.json` classifies each of the 218 advertised routes:
+  every `(provider, profile, harness)` in `capabilities.json`, and every `(harness, profile)` of
+  `base.py`'s launch table. A route is `live-witnessed`, `fixture-tested`, `source-only`,
+  `unsupported` (with its typed refusal) or `unavailable`. Each cell carries its upstream version
+  (`unknown` when none was recorded), evidence paths and limitations.
+  `runtime/scripts/certification.py` checks the following:
+  - every cell is covered exactly once;
+  - every evidence path resolves;
+  - a live claim rests on a run report that binds;
+  - a moved `pins.json` pin turns the provider's cells `stale` until they are rechecked.
+  Only Orca with Claude Code (`ro` and `rw`) is live-witnessed. The 12 external adapters remain
+  fixture-tested at `unknown` upstream versions. The record shows three gaps: the Orca `ro` rows
+  for crush, hermes and jcode are weaker than the posix rows; opencode, omp and pi are refused on
+  Orca; a posix `ro` worker's clean exit is recorded as `worker_died (exit=0)`.
+  `runtime/scripts/first_run.py` drives one review unit through the public wrappers on the posix
+  route: create → dispatch → delivery → result → independent `verify.py` → retain/release. With
+  the default inert worker it calls no model; `--worker live` uses the real harness. Its `probes`
+  mode checks that unsupported profile, privilege escalation, unarmed deny hook, malformed
+  runtime response and missing capability are each refused before launch.
+  `tests/test_certification.py` runs that subset in CI for every posix harness, with no paid
+  agent. `docs/certification.md` keeps mocked and live results apart and holds the clean-host
+  first-run guide. Not done yet: a live posix first run, a clean-host record, and live witnesses
+  for other providers.
+
 ## [0.8.0] - 2026-10-23
 
 - **The project is renamed orca-fleet → open-fleet.** The repository is `ravidsrk/open-fleet`

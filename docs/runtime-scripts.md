@@ -31,6 +31,8 @@ boundary rather than assembling a gate command from its flags alone.
 | Check whether a run report binds | [`run_report.py`](../runtime/scripts/run_report.py) | [What binding means](run-submission-guide.md#what-binding-means) |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
 | Review a pack pin bump for rug-pulls | [`pin_review.py`](#pin_reviewpy) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), [`pins.json`](#pinsjson), plus the section below |
+| See how far a provider/harness route is proven, or which cells a re-pin voids | [`certification.py`](#certificationpy) | [Certification](certification.md) |
+| Reproduce a first run on the posix route, inert or live, and its negative probes | [`first_run.py`](#first_runpy) | [First run on a clean host](certification.md#first-run-on-a-clean-host) |
 
 The remaining reference sections cover:
 
@@ -47,6 +49,7 @@ The remaining reference sections cover:
   [egress receipts](#egresspy), [component quarantine](#quarantine_checkpy),
   [quarantine registry](#quarantinejson).
 - **Runtime compatibility and liveness:** [CLI adapter](#orca_clipy), [upstream probe](#upstream_probepy),
+  [route certification](#certificationpy), [reproducible first run](#first_runpy),
   [pin rug-pull review](#pin_reviewpy), [upstream pin registry](#pinsjson),
   [watchdog](#watchdogpy), [watchdog registry](#watchdogjson).
 - **Signing and internal primitives:** [Ed25519 library](#ed25519py),
@@ -133,6 +136,41 @@ Exits: n/a (library).
 > counts a SyntaxError raised by an in-test import as `1 failed`, and Jest/Vitest count a suite
 > that never loaded as a failed suite, so `runtime/scripts/_verify_sig.py:STILLBORN_SHAPE_RE`
 > runs whatever the summary says (2026-10-23 review, P1-1).
+
+## `certification.py`
+
+Validator and renderer for the provider/harness certification record,
+`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-48`;
+behavior pinned by `tests/test_certification.py`.
+
+Usage: `certification.py [check|matrix|markdown] [--root DIR] [--record FILE] [--pins FILE] [--json]`
+
+Modes: `check` (default) validates the record; `matrix` prints one line per cell with its
+effective tier and upstream version (`--json` for objects); `markdown` prints the block
+`docs/certification.md` carries between its `certification-matrix` markers.
+
+`check` fails (one `FAIL:` line each) when the route groups of a provider do not partition its
+advertised `supported_profiles` x `supported_harnesses` exactly, or the harness groups do not
+partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any of these:
+
+- an evidence path that does not resolve, or a `path::Name` whose file defines no `class`/`def Name`;
+- a group with no limitation;
+- an `unsupported` group with no typed `refusal`;
+- a `live-witnessed` group without `witnessed`, without an exact upstream version, or without a
+  `docs/runs/*.md` report whose `RUN:` header records `verifier=GREEN` and which binds under
+  `run_report.py` (needs full git history, like `validate.py`);
+- a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
+
+A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
+check at a candidate pins file, so a re-pin can preview the cells it voids.
+
+Exits: 0 valid and fresh · 1 invalid or stale (`matrix`/`markdown` still print) · 2 unreadable or
+usage.
+
+> Why: "supported" meant "an adapter exists", and the matrix could not say which routes had ever
+> run against a real upstream (#596). One record, one cell per advertised route, gives a fixture a
+> place to say what it proves and stops it from claiming more. Freshness is bound to
+> `runtime/pins.json`, so a re-pin cannot leave a stale live claim in place.
 
 ## `chain_check.py`
 
@@ -454,6 +492,42 @@ Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
 > genesis — a rewritten history links correctly — so `verify` prints the head
 > (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
 > output says so rather than reading as a clean bill.
+
+## `first_run.py`
+
+A reproducible first run of the posix route (#596). One review unit goes through the public
+wrappers: `preflight.py`, `task_ops.py create`, `spawn_worker.sh` (`OPEN_FLEET_RUNTIME=posix`,
+`setsid`), the installed guard checked with `deny-hook.sh --verify-settings`, delivery of the
+spec, the worker result (`worker_ops.py`, `check_reply.py`), `verify.py --unit-class report-only`
+in a checkout the coordinator cuts at the evidence head, and `worker_ops.py retain` then
+`release`. Source `runtime/scripts/first_run.py:1-52`; behavior pinned by
+`tests/test_certification.py`.
+
+Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert|live]
+[--target <repo> [--base <rev>] [--head <rev>]] [--workdir <dir>] [--keep] [--timeout <s>] [--json]`
+and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
+
+`--worker inert` (the default) puts a stand-in for the harness first on PATH, behind tripwires
+for every other harness name. It calls no model and its receipt reads `fixture-tested`.
+`--worker live` uses the operator's real harness. That run spends, and its receipt reads
+`live-unreviewed` until a maintainer binds it into `docs/runs/`.
+
+`ro` (the default, the review-it shape) takes the report from the transcript and commits it on
+the coordinator's evidence branch. `rw` has the worker commit the report and send `worker_done`;
+the coordinator re-reads its HEAD from git and refuses a claim that git contradicts.
+
+`probes` runs five probes: unsupported profile, privilege escalation, unarmed deny hook,
+malformed runtime response, and missing capability. Each must refuse before a launch.
+
+Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
+command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
+after a NO-GO it is kept whole.
+
+Exits: 0 GO · 1 NO-GO · 2 usage.
+
+> Why: the provider matrix was certified by adapter unit tests alone, and no documented path
+> took a fresh clone through dispatch to independently verified evidence (#596). The inert and
+> live modes share one code path, so the live first run is one flag away from the fixture CI runs.
 
 ## `floor_guard.py`
 
@@ -1274,6 +1348,9 @@ Keys:
 | `gstack` | `garrytan/gstack` worker-playbook pack pin (requires a `docs/research/pin-reviews/gstack-<full-commit>.md` rug-pull review on bump) |
 | `addyosmani` | `addyosmani/agent-skills` worker-playbook pack pin (requires a `docs/research/pin-reviews/addyosmani-<full-commit>.md` rug-pull review on bump) |
 | `mattpocock` | `mattpocock/skills` worker-playbook pack pin (requires a `docs/research/pin-reviews/mattpocock-<full-commit>.md` rug-pull review on bump) |
+
+A bump of the `orca` entry voids every `orca` certification cell until they are rechecked
+(`certification.py check` reads `stale`; see [`certification.py`](#certificationpy)).
 
 > Why: when the pinned Orca floor or upstream pack commit lived in prose, the installer,
 > the validator, and the pin record drifted apart silently. Centralizing `runtime/pins.json:orca`

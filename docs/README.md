@@ -44,6 +44,7 @@ local tests requires Git and Python; see [local setup](development.md#local-setu
 | [Architecture](../ARCHITECTURE.md) | Why are missions, playbooks and runtime policies separate? |
 | [Runtime scripts](runtime-scripts.md) | Which helper handles an operation, and what are its flags and exits? |
 | [Multi-runtime & harness guide](runtimes.md) | Which orchestrator providers, coding-agent harnesses and capabilities are supported? |
+| [Provider and harness certification](certification.md) | How far is each provider/harness route proven, and how do I reproduce a first run? |
 | [Verify gate](verify-gate.md) | What does the completion hook check, and where is it advisory? |
 | [Distribution](distribution.md) | How are installs packaged, and what do proof records establish? |
 | [Platform design](platform-ride.md) | Which platform capabilities informed the design at the recorded date? |

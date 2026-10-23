@@ -71,7 +71,9 @@ VALIDATED_TYPES = frozenset({"string", "bool", "google.protobuf.Struct"})
 CORE_BINDINGS = ("JSONRPC", "GRPC", "HTTP+JSON")
 # a2a.proto APIKeySecurityScheme.location: 'Valid values are "query", "header", or "cookie".' (#636)
 API_KEY_LOCATIONS = ("query", "header", "cookie")
-_PROTOCOL_VERSION = re.compile(r"^\d+\.\d+$")
+# Form checks use fullmatch: `$` also matches before a final "\n", and `\d` matches any Unicode
+# digit, so "1.0\n" or Arabic-Indic digits passed (#636).
+_PROTOCOL_VERSION = re.compile(r"[0-9]+\.[0-9]+")
 # A media type (RFC 9110 section 8.3.1): RFC 6838 restricted-name type/subtype, then any number of
 # `;` parameters, each token=token or token="quoted-string" (#636). Used with fullmatch.
 _RESTRICTED_NAME = r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}"
@@ -80,7 +82,7 @@ _QUOTED_STRING = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
 _MEDIA_TYPE = re.compile(
     _RESTRICTED_NAME + "/" + _RESTRICTED_NAME
     + r"(?:[ \t]*;[ \t]*" + _HTTP_TOKEN + "=(?:" + _HTTP_TOKEN + "|" + _QUOTED_STRING + "))*")
-_BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
+_BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 # RFC 3986 section 3, parsed by component (#636): scheme ":" hier-part ["?" query] ["#" fragment].
 # An identifier needs no network host (`tag:`, `urn:`); brackets appear only around an IP-literal
 # host, and every `%` is followed by two hex digits.
@@ -163,7 +165,7 @@ class Schema:
     @property
     def major(self):
         """The protocol major the package names (`lf.a2a.v1` -> "1")."""
-        m = re.search(r"\.v(\d+)$", self.package)
+        m = re.search(r"\.v([0-9]+)\Z", self.package)
         return m.group(1) if m else ""
 
 
@@ -743,7 +745,7 @@ def semantic_errors(card, schema=None):
         if binding not in CORE_BINDINGS and not _absolute_uri(binding):
             errors.append(f"{where}.protocolBinding: {binding!r} is neither a core binding "
                           f"({', '.join(CORE_BINDINGS)}) nor a custom-binding URI")
-        if not _PROTOCOL_VERSION.match(iface.get("protocolVersion", "")):
+        if not _PROTOCOL_VERSION.fullmatch(iface.get("protocolVersion", "")):
             errors.append(f"{where}.protocolVersion: expected Major.Minor such as '1.0'")
         if not (binding == "GRPC" and grpc_address(url)) and not _absolute_url(url):
             errors.append(f"{where}.url: expected an absolute URL"
@@ -777,7 +779,7 @@ def semantic_errors(card, schema=None):
                 errors.append(f"{where}: names scheme {name!r} that securitySchemes does not declare")
     for i, sig in enumerate(card.get("signatures") or []):
         for part in ("protected", "signature"):
-            if not _BASE64URL.match(sig.get(part, "")):
+            if not _BASE64URL.fullmatch(sig.get(part, "")):
                 errors.append(f"$.signatures[{i}].{part}: expected unpadded base64url")
     uris = [e.get("uri", "") for e in (card.get("capabilities") or {}).get("extensions") or []]
     for i, uri in enumerate(uris):

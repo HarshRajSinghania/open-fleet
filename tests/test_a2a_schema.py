@@ -573,6 +573,34 @@ class TestReviewFindings(unittest.TestCase):
                 card = export.build_standard_card(f"{host}:443", "GRPC", mission="review-it")
                 self.assertEqual(self.mod.card_errors(card), [])
 
+    def test_anchored_forms_refuse_a_trailing_newline(self):
+        # PR #636 review: `re.match` with a pattern ending in `$` also matches just before a final
+        # "\n", so "1.0\n" passed as Major.Minor and "abc\n" as base64url. Every form check now
+        # uses fullmatch, and ASCII digits only: `\d` also matches Arabic-Indic digits.
+        export = load(EXPORT, "a2a_export_anchor_review")
+
+        def version(v):
+            return lambda c: c["supportedInterfaces"][0].update(protocolVersion=v)
+
+        for bad in ("1.0\n", "1.0\r\n", "١.٠", "1.0 ", "1.", "v1.0"):
+            with self.subTest(version=bad):
+                self.assertIn("$.supportedInterfaces[0].protocolVersion: expected Major.Minor "
+                              "such as '1.0'", self.errors_for(version(bad)))
+        for good in ("1.0", "10.25", "0.3"):
+            with self.subTest(version=good):
+                self.assertEqual(self.errors_for(version(good)), [])
+        for part in ("protected", "signature"):
+            for bad in ("abc\n", "abc\r\n", "abc=", "ab c", "abc١"):
+                with self.subTest(part=part, bad=bad):
+                    errs = self.errors_for(lambda c, p=part, b=bad: c["signatures"][0].update({p: b}))
+                    self.assertIn(f"$.signatures[0].{part}: expected unpadded base64url", errs)
+        with self.assertRaisesRegex(export.ExportError, "expected Major.Minor"):
+            export.build_standard_card("https://fleet.corp.internal/a2a", "JSONRPC",
+                                       protocol_version="1.0\n")
+        self.assertEqual(self.mod.load_schema().major, "1")
+        self.assertEqual(self.mod.Schema(package="lf.a2a.v1\n", imports=[], messages={},
+                                         enums={}, services={}).major, "")
+
 
 if __name__ == "__main__":
     unittest.main()

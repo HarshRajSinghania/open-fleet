@@ -1111,14 +1111,13 @@ def _grade_asset(asset, run, files):
         return seqs, blob is None or hashlib.sha256(blob).hexdigest() != asset["sha256"]
     if kind == "decision":
         did = asset["decision_id"]
-        marker = f"· {did} ·"
         for r in run.log:
             if r["outcome"] == "withheld":
                 continue
-            if r["tool"] == "DecisionsAppend" and f"--id {shlex.quote(did)}" in r["payload"]:
+            if r["tool"] == "DecisionsAppend" and did in _appended_ids(shlex.split(r["payload"])):
                 seqs.append(r["seq"])
-            elif r["tool"] in ("Write", "Edit") and run.reaches(r, DECISIONS_LOG) \
-                    and marker in r["payload"]:
+            elif r["tool"] in ("Write", "Edit") and run.reaches(r, DECISIONS_LOG) and any(
+                    _record_fields(line)[:1] == [did] for line in r["payload"].splitlines()):
                 seqs.append(r["seq"])
         base = {line for line in run.base_state.get(DECISIONS_LOG, "").splitlines()}
         landed = files.get(DECISIONS_LOG, b"").decode("utf-8", "replace").splitlines()
@@ -1144,6 +1143,25 @@ def _grade_asset(asset, run, files):
     seqs = [m["seq"] for m in run.manifests if not frozen <= _addressed(m["manifest"])]
     accepted = run.gate.get("manifest") if run.gate.get("go") else None
     return seqs, accepted is not None and not frozen <= _addressed(accepted)
+
+
+def _appended_ids(args):
+    """The decision id `decisions.py append <args>` acts on, read by decisions.py's own parser,
+    so `--id X`, `--id=X`, an abbreviation (`--i X`) and a repeated flag all mean what the CLI
+    takes them to mean, not one joined-string spelling (PR #644 review, P2). The parser is the
+    CLI's grammar, never its policy, and no mutation control patches it. Arguments the parser
+    refuses (decisions.py would then not run) still count by any id they name."""
+    parser = guards().decisions.build_parser()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return {parser.parse_args(["append", *args]).id.strip()}
+    except SystemExit:
+        named = set()
+        for i, arg in enumerate(args):
+            flag, eq, value = arg.partition("=")
+            if flag in ("--id", "--i"):
+                named.add((value if eq else (args[i + 1] if i + 1 < len(args) else "")).strip())
+        return named
 
 
 def _addressed(manifest):

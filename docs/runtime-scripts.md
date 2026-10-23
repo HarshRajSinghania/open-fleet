@@ -215,7 +215,9 @@ Usage: `python3 runtime/scripts/decisions.py [--file PATH] [--doors PATH] <subco
 Subcommands: `append`, `active`, `tally`, `check`, `grant-keygen`, `sign-grant`.
 
 Flags: `--file` (log path, default `docs/DECISIONS.md`), `--doors` (door registry,
-default `runtime/one-way-doors.json`). `append` takes `--id`, `--class`, `--answer`,
+default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
+git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
+the checked tree could have been written by a worker). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `tally` takes `--lens`, `--json`;
 `sign-grant` takes `--key`, `--id`, `--answer`, `--why`, `--task`, `--ts`.
 

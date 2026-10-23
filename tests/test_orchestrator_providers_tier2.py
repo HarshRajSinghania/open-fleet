@@ -49,6 +49,12 @@ GIT_ENV = {
     **os.environ,
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+    # No background maintenance in fixture repos: a commit can spawn a detached `git gc --auto`
+    # that is still writing .git/objects/pack when Base.tearDown removes the temp dir, which
+    # surfaced on CI as `OSError: [Errno 39] Directory not empty: 'pack'` (PR #611).
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "gc.auto", "GIT_CONFIG_VALUE_0": "0",
+    "GIT_CONFIG_KEY_1": "maintenance.auto", "GIT_CONFIG_VALUE_1": "false",
 }
 
 

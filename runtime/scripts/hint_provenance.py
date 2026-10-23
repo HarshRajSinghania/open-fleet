@@ -194,6 +194,17 @@ def recorded_time(manifest, unit, run_id):
     return _epoch(found.group(1) + "T00:00:00+00:00") if found else None
 
 
+LEADING = re.compile(r"[ \t]*")
+
+
+def _indent(line):
+    """A line's leading indentation in COLUMNS, a tab advancing to the next multiple of eight as in
+    Python's tokenizer. Every indentation comparison here goes through it (PR #639 review: the def
+    was measured with tabs expanded and its body in raw characters, so a tab-indented method's
+    body read as shallower than its def, was cut off, and a changed body stayed CURRENT)."""
+    return len(LEADING.match(line).group().expandtabs())
+
+
 def _decorator_start(lines, i, indent):
     """Index of the first decorator line directly above lines[i] (i itself when none). A decorator
     is part of the definition: changing or adding one changes behavior with the body untouched
@@ -202,7 +213,7 @@ def _decorator_start(lines, i, indent):
     start, j = i, i - 1
     while j >= 0:
         stripped = lines[j].strip()
-        depth = len(lines[j].expandtabs()) - len(lines[j].expandtabs().lstrip())
+        depth = _indent(lines[j])
         if stripped.startswith("@") and depth == indent:
             start = j
         elif not (stripped == "" or depth > indent or stripped[0] in ")]}"):
@@ -233,15 +244,14 @@ def _definition_block(text, symbol):
         return None
     lines = text.splitlines()
     pattern = re.compile(DEF_LINE.format(sym=re.escape(symbol)))
-    hits = [(len(found.group("indent").expandtabs()), i) for i, found in
-            ((i, pattern.match(line)) for i, line in enumerate(lines)) if found]
+    hits = [(_indent(line), i) for i, line in enumerate(lines) if pattern.match(line)]
     if not hits:
         return None
     indent, i = min(hits)
     block = lines[_decorator_start(lines, i, indent):i + 1]
     for nxt in lines[i + 1:]:
         stripped = nxt.strip()
-        if stripped and len(nxt) - len(nxt.lstrip()) <= indent and not stripped.startswith((")", "}", "]")):
+        if stripped and _indent(nxt) <= indent and not stripped.startswith((")", "}", "]")):
             break
         block.append(nxt)
     while block and not block[-1].strip():

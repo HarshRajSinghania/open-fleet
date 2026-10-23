@@ -929,6 +929,52 @@ class QuotedKeysAreAssignments(unittest.TestCase):
         self.assertNotIn("Bash(*)", "\n".join(packet))
         self.assertIn(watchdog.HANDOVER_GRANT_WITHHELD, "\n".join(packet))
 
+class TabIndentedDefinitions(unittest.TestCase):
+    """PR #639 review: _definition_block() measured a definition's indentation with tabs expanded
+    but each body line in raw characters, so a tab-indented method's body (two tabs: 2) read as
+    shallower than its def (one tab: 8). The block ended at the def line, a body change left it
+    byte-identical, and the hint stayed CURRENT. A tab is eight columns, as in Python's tokenizer."""
+
+    CLASS = "class A:\n\tdef close(self):\n\t\tx = 1\n\t\treturn x\n\n\tdef other(self):\n\t\treturn 2\n"
+
+    def test_a_tab_indented_method_keeps_its_body(self):
+        close = "\tdef close(self):\n\t\tx = 1\n\t\treturn x"
+        self.assertEqual(hp.symbol_block(self.CLASS, "close"), close)
+        self.assertEqual(hp.symbol_block(self.CLASS, "A.close"), close)
+        self.assertEqual(hp.symbol_block(self.CLASS, "A.other"), "\tdef other(self):\n\t\treturn 2")
+        self.assertEqual(hp.symbol_block(self.CLASS, "A"), self.CLASS.rstrip("\n"))
+
+    def test_mixed_tabs_and_spaces_compare_in_columns(self):
+        # A one-tab def (8) with a tab+4-space body (12): deeper, though only 5 raw characters.
+        src = "class A:\n\tdef m(self):\n\t    y = 1\n\t    return y\n\tdef n(self):\n\t\treturn 2\n"
+        self.assertEqual(hp.symbol_block(src, "m"), "\tdef m(self):\n\t    y = 1\n\t    return y")
+        # Four spaces then a tab is column 8, inside a four-space def; the next four-space def ends it.
+        src = "class B:\n    def m(self):\n    \treturn 1\n    def n(self):\n        return 2\n"
+        self.assertEqual(hp.symbol_block(src, "m"), "    def m(self):\n    \treturn 1")
+
+    def test_a_tab_indented_decorator_starts_the_block(self):
+        src = ("class A:\n\tx = 0\n\n\t@app.route(\n\t\t\"/a\",\n\t)\n\t@login_required\n\tdef view(self):\n"
+               "\t\treturn 1\n\n\tdef after(self):\n\t\treturn 2\n")
+        self.assertEqual(hp.symbol_block(src, "view"),
+                         "\t@app.route(\n\t\t\"/a\",\n\t)\n\t@login_required\n\tdef view(self):\n\t\treturn 1")
+
+    def test_a_changed_tab_indented_body_is_stale(self):
+        changed = self.CLASS.replace("\t\tx = 1\n", "\t\tx = 0\n")
+        fx = Fixture(scenario(
+            [{"name": "c0", "files": dict(BASE, **{"src/models.py": self.CLASS})},
+             {"name": "c1", "files": {"src/models.py": changed}}],
+            [unit_run("2026-02-01-run-a", "TAB-1", "@c0", ["src/models.py::close"], note="close returns x"),
+             unit_run("2026-02-01-run-b", "TAB-2", "@c0", ["src/models.py::A.close"], note="close, qualified"),
+             unit_run("2026-02-01-run-c", "TAB-3", "@c0", ["src/models.py::other"], note="other is untouched")],
+            query=["src/models.py"]))
+        try:
+            entries = {e["unit"]: (e["currency"], e["reasons"]) for e in fx.select(paths=("src/models.py",))["entries"]}
+        finally:
+            fx.close()
+        self.assertEqual(entries["TAB-1"], ("STALE", ["symbol-changed:src/models.py::close"]))
+        self.assertEqual(entries["TAB-2"], ("STALE", ["symbol-changed:src/models.py::A.close"]))
+        self.assertEqual(entries["TAB-3"], ("CURRENT", []))
+
 
 if __name__ == "__main__":
     unittest.main()

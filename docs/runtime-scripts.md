@@ -656,8 +656,9 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 The worst reason is the label. Scope is the concrete path a match resolves to (a basename or
 directory match checks the query's path; two patterns cannot be resolved); a `path::symbol` or
 `path#symbol` token (or a unit's `symbols` list) keeps a changed file's entry current while that
-symbol's own definition block — its decorators included — is byte-identical (indentation-scoped:
-exact for Python, a heuristic for brace languages); `Cls.meth` resolves the class, then the method
+symbol's own definition block — its decorators included — is byte-identical (indentation-scoped
+in columns, a tab reaching the next multiple of eight as in Python: exact for Python, a heuristic
+for brace languages); `Cls.meth` resolves the class, then the method
 in it, and an unqualified name picks its shallowest definition. Related tests are the tests the record named plus tests sharing a
 scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are manifests and
 lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the

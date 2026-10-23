@@ -151,9 +151,9 @@ neighbouring control was GREEN on both sides.
 
 ### The isolated invariant traps (#600)
 
-The 2026-10-23 review listed the legs the bench still did not sample. Each is now a trap built the
-#369 way: the full, otherwise-valid fixture shape with exactly one planted defect, and beside it a
-named `neighbour` — a valid control on the SAME fixture that differs only in that defect. Each trap
+The 2026-10-23 review listed the legs the bench still did not sample. Each is now a trap built
+the way #369 built its rebuilds: the full, otherwise-valid fixture shape with exactly one planted
+defect, and beside it a named `neighbour` — a valid control on the SAME fixture that differs only in that defect. Each trap
 declares the refusal it exists to earn (`expect_reason`), and the bench scores a RED for any other
 reason as a failure. `tests/test_vfbench_guards.py` then deletes that ONE guard from a throwaway
 copy of `verify.py` and requires the trap to turn GREEN while its neighbour stays GREEN — so every

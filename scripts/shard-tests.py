@@ -128,6 +128,7 @@ WEIGHTS = {
     "test_superset_provider": 0.8,
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,
+    "test_trajectory_evals": 22.6,  # #602, measured 2026-10-23 (macOS, python 3.13)
     "test_upstream_probe": 4.1,
     "test_validate": 9.6,
     "test_validate_catalog_grammar": 0.3,

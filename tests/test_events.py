@@ -77,8 +77,12 @@ def scenario_clean():
         t4: done@D1 12:20 -> pass@D1 12:40 = 20 m (the conductor's rebase D2 re-verifies a head no
             worker reported); approval at D1 survives the close at D2: same tree W1
         latency median (5+20)/2 = 12.50m, max 20.00m; rework 0/2; freshness 0
-      usage: input 1000+1500+500+400+600 = 4000, output 200+300+100+80+120 = 800;
-        cost 0.50+0.25+0.10+0.15 known = 1.00 but d2 never reported one -> null, never 0
+      usage: builders (claude-fixture) input 1000+1500+500+400+600 = 4000, output
+        200+300+100+80+120 = 800; cost 0.50+0.25+0.10+0.15 known = 1.00 but d2 never reported
+        one -> null, never 0. Reviewers r1..r4 (claude-review-fixture) input 300+200+250+150 =
+        900, output 60+40+50+30 = 180, cost 0.05+0.04+0.05+0.03 = 0.17. Every dispatch the
+        record names is covered, so the run total is the whole run's: input 4000+900 = 4900,
+        output 800+180 = 980; cost stays null (d2)
     """
     c = {"run": "run-a", "epoch": 1, "clock": "host-a"}
     st = {"producer": "local_state", "basis": "occurred"}
@@ -86,12 +90,12 @@ def scenario_clean():
     done_t1 = ev("task.done", "10:20:00", task="t1", dispatch="d1", data={"head_sha": a1},
                  event_id="local-state:message:m1", **st, **c)
 
-    def usage(dispatch, task, inp, out, cost, line):
+    def usage(dispatch, task, inp, out, cost, line, model="claude-fixture"):
         prov = f"fixture stream {dispatch} result line {line}"
         if cost is None:
             prov += "; not reported: cost_usd"
         return ev("model.usage", "13:05:00", task=task, dispatch=dispatch,
-                  data={"model": "claude-fixture", "input_tokens": inp, "output_tokens": out,
+                  data={"model": model, "input_tokens": inp, "output_tokens": out,
                         "cost_usd": cost, "provenance": prov},
                   event_id=f"usage:{dispatch}:{line}", producer="claude-stream-json", **c)
     usage_d3 = usage("d3", "t2", 500, 100, "0.25", 22)
@@ -153,6 +157,11 @@ def scenario_clean():
         usage_d3,  # duplicate delivery: must not add 500 more input tokens
         usage("d4", "t3", 400, 80, "0.10", 18),
         usage("d5", "t4", 600, 120, "0.15", 27),
+        # the reviewers are dispatches too: their spend is part of the run total
+        usage("r1", "t1", 300, 60, "0.05", 9, model="claude-review-fixture"),
+        usage("r2", "t2", 200, 40, "0.04", 7, model="claude-review-fixture"),
+        usage("r3", "t2", 250, 50, "0.05", 8, model="claude-review-fixture"),
+        usage("r4", "t4", 150, 30, "0.03", 6, model="claude-review-fixture"),
     ]
 
 
@@ -388,7 +397,7 @@ class TestOrderAndDuplicates(Base):
         model = report["usage"]["models"]["claude-fixture"]
         self.assertEqual(model["observations"], 5)
         self.assertEqual(model["input_tokens"], {"value": 4000})
-        self.assertEqual(report["usage"]["run_total"]["output_tokens"], {"value": 800})
+        self.assertEqual(report["usage"]["run_total"]["output_tokens"], {"value": 980})
 
     def test_a_re_observation_never_moves_an_interval_endpoint(self):
         # t1's done is seen twice (10:20 at the store, 10:21 by the coordinator); latency is 20m.
@@ -852,6 +861,27 @@ class TestUsage(Base):
                                 total)
         # Control: once the excluded worker's own usage is observed, its coverage is known.
         report = self.derive(fenced + [usage("d9", 7, epoch=2)])
+        self.assertEqual(report["usage"]["run_total"]["input_tokens"], {"value": 12})
+
+    def test_a_reviewer_dispatch_without_usage_leaves_the_run_total_unknown(self):
+        # PR #638 review (P1, coverage): coverage counted only dispatches a launch, worker_done
+        # or death names, so a reviewer named only on its review events fell outside it and the
+        # builders' tokens read as the whole run's. Every dispatch the record admits counts.
+        def usage(dispatch, tokens):
+            return ev("model.usage", "10:41:00", task="t", dispatch=dispatch,
+                      data={"model": "m", "input_tokens": tokens, "provenance": "p"}, **ONE)
+        evs = unit_stream() + [
+            ev("review.started", "10:12:00", task="t", dispatch="r1", data={"head_sha": sha("aa")}, **ONE),
+            ev("review.verdict", "10:16:00", task="t", dispatch="r2",
+               data={"verdict": "approve", "reviewed_sha": sha("aa")}, **ONE),
+            usage("d", 5)]
+        report = self.derive(evs)
+        total = report["usage"]["run_total"]["input_tokens"]
+        self.assertIsNone(total["value"], total)
+        self.assertIn("dispatch(es) ['r1', 'r2'] have no usage observation", total["unavailable"])
+        self.assertEqual(report["usage"]["unobserved_dispatches"], ["r1", "r2"])
+        # Control: with the reviewers' own usage observed, the total is the whole run's.
+        report = self.derive(evs + [usage("r1", 3), usage("r2", 4)])
         self.assertEqual(report["usage"]["run_total"]["input_tokens"], {"value": 12})
 
     def test_a_wave_only_excluded_evidence_opens_is_reported_not_dropped(self):

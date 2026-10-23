@@ -91,7 +91,7 @@
     "run_total": {
       "cache_creation_input_tokens": {
         "unavailable": [
-          "5 dispatch(es) have no usage observation",
+          "dispatch(es) ['x1', 'x2', 'x3', 'x4', 'xr1'] have no usage observation",
           "model (unreported): 1 observation(s) did not report it",
           "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
         ],
@@ -99,7 +99,7 @@
       },
       "cache_read_input_tokens": {
         "unavailable": [
-          "5 dispatch(es) have no usage observation",
+          "dispatch(es) ['x1', 'x2', 'x3', 'x4', 'xr1'] have no usage observation",
           "model (unreported): 1 observation(s) did not report it",
           "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
         ],
@@ -107,7 +107,7 @@
       },
       "cost_usd": {
         "unavailable": [
-          "5 dispatch(es) have no usage observation",
+          "dispatch(es) ['x1', 'x2', 'x3', 'x4', 'xr1'] have no usage observation",
           "model (unreported): 1 observation(s) did not report it",
           "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
         ],
@@ -115,14 +115,14 @@
       },
       "input_tokens": {
         "unavailable": [
-          "5 dispatch(es) have no usage observation",
+          "dispatch(es) ['x1', 'x2', 'x3', 'x4', 'xr1'] have no usage observation",
           "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
         ],
         "value": null
       },
       "output_tokens": {
         "unavailable": [
-          "5 dispatch(es) have no usage observation",
+          "dispatch(es) ['x1', 'x2', 'x3', 'x4', 'xr1'] have no usage observation",
           "model (unreported): 1 observation(s) did not report it",
           "model.usage recorded under epoch 3, which no run.start or coordinator.resume declared before it"
         ],

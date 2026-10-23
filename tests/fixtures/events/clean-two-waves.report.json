@@ -16,11 +16,11 @@
     "conflicts": 0,
     "duplicates": 2,
     "fenced": 0,
-    "head": "3618702b3330710e733b69331416fb2f1adeca1f2a59ae288b800265525a9e63",
-    "lines": 40,
-    "log_sha256": "a26ce8a719d6808126643e8f03e4f4f106f92f088457e497485771b8579c937e",
+    "head": "78970c4c61c5aa08baa964c23fdfcb3040bd212825787c96aa1a9b96888b040d",
+    "lines": 44,
+    "log_sha256": "2ee35fc6b701161929f76e2c9df84435d47c70e63c4c7528a9186fa23936ab02",
     "other_run_events": 0,
-    "run_events": 38
+    "run_events": 42
   },
   "run": "run-a",
   "schema": "open-fleet.events-report/1",
@@ -57,18 +57,48 @@
           "fixture stream d4 result line 18",
           "fixture stream d5 result line 27"
         ]
+      },
+      "claude-review-fixture": {
+        "cache_creation_input_tokens": {
+          "known_sum": null,
+          "unavailable": "4 of 4 observation(s) did not report it",
+          "value": null
+        },
+        "cache_read_input_tokens": {
+          "known_sum": null,
+          "unavailable": "4 of 4 observation(s) did not report it",
+          "value": null
+        },
+        "cost_usd": {
+          "value": "0.17"
+        },
+        "input_tokens": {
+          "value": 900
+        },
+        "observations": 4,
+        "output_tokens": {
+          "value": 180
+        },
+        "provenance": [
+          "fixture stream r1 result line 9",
+          "fixture stream r2 result line 7",
+          "fixture stream r3 result line 8",
+          "fixture stream r4 result line 6"
+        ]
       }
     },
     "run_total": {
       "cache_creation_input_tokens": {
         "unavailable": [
-          "model claude-fixture: 5 observation(s) did not report it"
+          "model claude-fixture: 5 observation(s) did not report it",
+          "model claude-review-fixture: 4 observation(s) did not report it"
         ],
         "value": null
       },
       "cache_read_input_tokens": {
         "unavailable": [
-          "model claude-fixture: 5 observation(s) did not report it"
+          "model claude-fixture: 5 observation(s) did not report it",
+          "model claude-review-fixture: 4 observation(s) did not report it"
         ],
         "value": null
       },
@@ -79,10 +109,10 @@
         "value": null
       },
       "input_tokens": {
-        "value": 4000
+        "value": 4900
       },
       "output_tokens": {
-        "value": 800
+        "value": 980
       }
     },
     "unobserved_dispatches": []

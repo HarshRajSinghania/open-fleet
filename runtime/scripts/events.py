@@ -137,7 +137,6 @@ KINDS = {
                                    "cost_usd": ("money", _O), "provenance": ("text", _R)}),
 }
 DECLARES_EPOCH = ("run.start", "coordinator.resume")
-DISPATCH_KINDS = ("dispatch.launched", "task.done", "dispatch.died")  # what names a dispatch
 VERDICTS = ("approve", "changes")
 # What a unit has to have reached before each wave metric is final (see derive_unit).
 CLOSED_OR_PARKED = ("verified-closed", "closed-unverified", "parked")
@@ -913,7 +912,7 @@ def usage_summary(events, dispatches, tainted, unsure=()):
     for field in USAGE_FIELDS:
         reasons = list(totals[field][1])
         if unobserved:
-            reasons.append(f"{len(unobserved)} dispatch(es) have no usage observation")
+            reasons.append(f"dispatch(es) {unobserved} have no usage observation")
         if unknown:
             reasons.append(f"dispatch(es) {unknown} appear only in fenced or conflicting evidence "
                            "and have no usage observation, so the run's usage coverage is unknown")
@@ -1042,10 +1041,13 @@ def derive(events, run=None, file_sha="", head=""):
             "metrics": metrics, "outcomes": outcomes,
             "units": [_unit_view(u) for u in wave_units],
         })
-    dispatches = sorted({e["dispatch"] for e in kept if e["dispatch"] and e["kind"] in DISPATCH_KINDS})
+    # Usage coverage is every dispatch the record admits — builders, reviewers, any other — so
+    # the run total is the whole run's or unavailable, never the builders' alone (PR #638
+    # review, P1). A model.usage event's dispatch is what covers one, not one to cover.
+    dispatches = sorted({e["dispatch"] for e in kept if e["dispatch"] and e["kind"] != "model.usage"})
     # A dispatch only excluded evidence names still ran, as far as the record can tell: its
     # usage is part of the run's coverage, never dropped from it (PR #638 review, P1).
-    unsure = sorted({e["dispatch"] for e in excluded if e["dispatch"] and e["kind"] in DISPATCH_KINDS}
+    unsure = sorted({e["dispatch"] for e in excluded if e["dispatch"] and e["kind"] != "model.usage"}
                     - set(dispatches))
     usage = usage_summary([e for e in kept if e["kind"] == "model.usage"], dispatches,
                           taints.get(("usage",), []) + taints.get(("run",), []), unsure)

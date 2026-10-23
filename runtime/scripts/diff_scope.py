@@ -168,7 +168,9 @@ class ScopeError(Exception):
 GIT = shutil.which("git") or "git"
 
 
-def _git_env():
+def _git_env(blanks=()):
+    """gitexec.env's floor, inlined; ``blanks`` (_driver_blanks pairs) ride as further env
+    pairs, so a driver name holding `=` or a non-UTF-8 byte reaches git exactly (PR #649)."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
            and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT")}
@@ -178,7 +180,8 @@ def _git_env():
              ("core.hooksPath", os.devnull), ("diff.external", ""),
              # floor_guard's DIFF_RENDERING pins: inert for -z --name-only, kept for parity.
              ("diff.noprefix", "false"), ("diff.mnemonicPrefix", "false"), ("diff.srcPrefix", "a/"),
-             ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"))
+             ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"),
+             *blanks)
     env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
@@ -190,9 +193,10 @@ def _git_env():
 
 # gitexec.driver_blanks, inlined (verify.py loads this file by path; see the module note on
 # _git_env). Blanks every filter/diff driver command the repo DECLARES — the attribute-selected
-# exec channel a fixed -c cannot name (#629).
+# exec channel a fixed -c cannot name (#629). Bytes in, os.fsdecode'd keys out (PR #649).
 _DRIVER_KEY_RE = re.compile(
-    r"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z")
+    rb"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z",
+    re.S)
 
 
 def _driver_blanks(repo):
@@ -203,20 +207,17 @@ def _driver_blanks(repo):
         return []
     if r.returncode != 0:
         return []
-    tokens = []
-    for key in r.stdout.decode("utf-8", "replace").split("\0"):
-        if _DRIVER_KEY_RE.match(key):
-            tokens += ["-c", f"{key}="]
-    return tokens
+    return [(os.fsdecode(key), "") for key in r.stdout.split(b"\0")
+            if _DRIVER_KEY_RE.match(key)]
 
 
-def git(repo, *args, tolerate=False):
+def git(repo, *args, tolerate=False, blanks=()):
     try:
         # surrogateescape: a non-UTF-8 path round-trips instead of raising
         # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
         r = subprocess.run([GIT, "-C", str(repo), *args], capture_output=True, text=True,
                            encoding="utf-8", errors="surrogateescape",
-                           timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
+                           timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 and not tolerate:
@@ -259,9 +260,9 @@ def changed_files(repo, base):
     # filter a .gitattributes selects — the one channel --no-ext-diff/--no-textconv leave open
     # (#629). Blank every declared driver command first.
     blanks = _driver_blanks(repo)
-    absorb(git(repo, *blanks, "diff", *options, f"{base}...HEAD", "--"), "committed diff")
+    absorb(git(repo, "diff", *options, f"{base}...HEAD", "--", blanks=blanks), "committed diff")
     # Working tree (staged + unstaged); fails on a repo with no commits.
-    absorb(git(repo, *blanks, "diff", *options, "HEAD", "--"), "working-tree diff")
+    absorb(git(repo, "diff", *options, "HEAD", "--", blanks=blanks), "working-tree diff")
     # Untracked: the new migration/component is untracked right up until commit.
     absorb(git(repo, "ls-files", "-z", "--others", "--exclude-standard"), "untracked enumeration")
     return sorted(names)

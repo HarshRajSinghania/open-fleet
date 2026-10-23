@@ -247,13 +247,15 @@ def _text(raw):
     return raw.decode("utf-8", "replace")
 
 
-def git(repo, *args):
-    """Run git with argv only. Returns stdout, or None when git exits non-zero."""
+def git(repo, *args, blanks=()):
+    """Run git with argv only. Returns stdout, or None when git exits non-zero. ``blanks`` are
+    gitexec.driver_blanks pairs, carried in the env so a driver name reaches git byte-exact."""
     try:
         # No stdin (#629): an inherited, never-closed one would let a hook or filter block the guard.
         r = subprocess.run(
             gitexec.argv("-C", str(repo), *args),
-            capture_output=True, timeout=60, env=gitexec.env(), stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
@@ -316,7 +318,7 @@ def collect_diff(repo, mb):
     # every filter/diff driver command the repo declares (the only place such a command lives)
     # before any diff that touches a worktree file.
     blanks = gitexec.driver_blanks(repo)
-    tracked = git(repo, *blanks, *DIFF_RENDERING, "diff", *diff_options, mb, "--")
+    tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--", blanks=blanks)
     if tracked is None:
         raise GuardError("tracked/staged diff acquisition failed")
     others = git(repo, "ls-files", "-z", "--others", "--exclude-standard")
@@ -330,9 +332,10 @@ def collect_diff(repo, mb):
         # go through subprocess directly rather than git() (which returns None).
         try:
             r = subprocess.run(
-                gitexec.argv("-C", str(repo), *blanks, *DIFF_RENDERING, "diff", "--no-index",
+                gitexec.argv("-C", str(repo), *DIFF_RENDERING, "diff", "--no-index",
                              *diff_options, "--", "/dev/null", name),
-                capture_output=True, timeout=60, env=gitexec.env(), stdin=subprocess.DEVNULL,
+                capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
+                stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError) as err:
             raise GuardError("untracked diff acquisition failed to run") from err

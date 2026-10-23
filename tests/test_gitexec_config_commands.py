@@ -125,12 +125,11 @@ class GitexecDriverBlanks(unittest.TestCase):
         p._git("config", "diff.jpg.command", "danger command")
         # A driver name with a dot is still one subsection, so it is still covered.
         p._git("config", "filter.my.lfs.clean", "danger clean")
-        blanks = gitexec.driver_blanks(p.repo)
-        tokens = {blanks[i + 1] for i in range(0, len(blanks), 2)}
-        self.assertEqual({t for t in blanks if t == "-c"}, {"-c"})
-        self.assertEqual(tokens, {
-            "filter.media.clean=", "filter.media.smudge=", "filter.media.process=",
-            "diff.jpg.textconv=", "diff.jpg.command=", "filter.my.lfs.clean="})
+        # (key, value) pairs for gitexec.env(blanks=...), each key exactly as declared, each
+        # value empty (git runs no command): an env pair, never a `-c` token (PR #649 review).
+        self.assertEqual(set(gitexec.driver_blanks(p.repo)), {
+            ("filter.media.clean", ""), ("filter.media.smudge", ""), ("filter.media.process", ""),
+            ("diff.jpg.textconv", ""), ("diff.jpg.command", ""), ("filter.my.lfs.clean", "")})
 
     def test_a_non_command_key_is_not_blanked(self):
         p = self._repo()
@@ -150,7 +149,7 @@ class GitexecDriverBlanks(unittest.TestCase):
             p._git("config", key, "danger")
         p._git("config", "filter.media.required", "true")
         want = gitexec.driver_blanks(p.repo)
-        self.assertEqual(len(want), 12)
+        self.assertEqual(len(want), 6)
         self.assertEqual(diff_scope._driver_blanks(p.repo), want)
         self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
 
@@ -265,10 +264,13 @@ class WtreeFingerprint(unittest.TestCase):
         # so the planted channels prove they were dormant only because of the hardening.
         p = self._repo()
         src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
-        stripped = src.replace('git -C "$TOP" "$@" add -A', 'git -C "$TOP" add -A')
-        stripped = stripped.replace('git -C "$TOP" "$@" write-tree', 'git -C "$TOP" write-tree')
-        # Drop the env belt so core.fsmonitor is honoured again.
-        stripped = stripped.replace("GIT_CONFIG_COUNT=3", "GIT_CONFIG_COUNT=0")
+        # Drop the env belt so core.fsmonitor is honoured again, and the driver-blank arm so no
+        # filter key is ever appended (the blanks ride exported GIT_CONFIG_* pairs, PR #649).
+        stripped = src.replace("GIT_CONFIG_COUNT=3", "GIT_CONFIG_COUNT=0")
+        stripped = stripped.replace(
+            "filter.*.clean|filter.*.smudge|filter.*.process|diff.*.textconv|diff.*.command)",
+            "__never_a_config_key__)")
+        self.assertEqual(stripped.count("__never_a_config_key__"), 1, "the blank arm moved")
         self.assertNotEqual(stripped, src, "the control did not change wtree.sh")
         mutant = p.dir / "wtree_control.sh"
         mutant.write_text(stripped, encoding="utf-8")
@@ -276,6 +278,92 @@ class WtreeFingerprint(unittest.TestCase):
                        stdin=subprocess.DEVNULL)
         self.assertTrue(p.fired() & {"clean", "fsmonitor"},
                         "control: the stripped wtree.sh must run a planted channel")
+
+
+# PR #649 review (PRRT_kwDOTWxN9c6vvony): a driver name is BYTES. git accepts 0xff, an invalid
+# UTF-8 sequence, a `.` or an `=` in a `filter.<driver>.*` subsection, and a .gitattributes line
+# selects that exact name. A blank that decodes the name as text (0xff -> U+FFFD) names a
+# different driver, and one passed as `-c <key>=` splits a name holding `=` at its first `=`;
+# either way the planted command still runs. Whitespace cannot be selected by an attribute, so
+# those names are checked at the enumeration only.
+_SELECTABLE = (b"\xff", b"\xc3\x28", b"x\x80y", b"\xed\xa0\x80", b"a.b", b"a=b")
+_UNSELECTABLE = (b"a b", b"a\tb")
+
+
+def _bgit(repo, *args):
+    """git with BYTES argv, so a non-UTF-8 driver name reaches git exactly."""
+    argv = [b"git", b"-C", os.fsencode(str(repo))]
+    argv += [a if isinstance(a, bytes) else a.encode("utf-8") for a in args]
+    return subprocess.run(argv, env=_CLEAN_ENV, capture_output=True, stdin=subprocess.DEVNULL,
+                          timeout=60)
+
+
+class ByteExactDriverNames(unittest.TestCase):
+    """Every gate blanks the driver the attribute ACTUALLY selects, byte for byte."""
+
+    def _repo(self, name, filtered="*.txt"):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        r = _bgit(p.repo, b"config", b"filter." + name + b".clean", os.fsencode(str(p.probe)) + b" clean")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        info = p.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_bytes(filtered.encode() + b" filter=" + name + b"\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        # Positive control: plain git runs the planted filter, so a GREEN below is not vacuous.
+        _bgit(p.repo, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--")
+        self.assertIn("clean", p.fired(), f"the planted {name!r} filter is not live on bare git")
+        return p, base
+
+    def test_floor_guard_runs_no_filter_whatever_its_name(self):
+        for name in _SELECTABLE:
+            with self.subTest(name=name):
+                p, base = self._repo(name)
+                floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))
+                self.assertEqual(p.fired(), set(), f"floor_guard ran the {name!r} filter")
+
+    def test_diff_scope_runs_no_filter_whatever_its_name(self):
+        for name in _SELECTABLE:
+            with self.subTest(name=name):
+                p, base = self._repo(name)
+                diff_scope.scope(p.repo, base)
+                self.assertEqual(p.fired(), set(), f"diff_scope ran the {name!r} filter")
+
+    def test_the_wtree_fingerprint_runs_no_filter_whatever_its_name(self):
+        for name in _SELECTABLE:
+            with self.subTest(name=name):
+                p, _ = self._repo(name)
+                out, err = evidence_run.working_tree_fingerprint(str(p.repo))
+                self.assertIsNone(err, err)
+                self.assertEqual(p.fired(), set(), f"wtree.sh ran the {name!r} filter")
+
+    def test_the_enumeration_names_the_exact_declared_bytes(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        for name in _SELECTABLE + _UNSELECTABLE:
+            self.assertEqual(_bgit(p.repo, b"config", b"filter." + name + b".clean", b"x").returncode, 0)
+        keys = {os.fsencode(k) for k, v in gitexec.driver_blanks(p.repo) if v == ""}
+        for name in _SELECTABLE + _UNSELECTABLE:
+            self.assertIn(b"filter." + name + b".clean", keys, f"{name!r} is not blanked byte-exactly")
+
+    def test_the_toolchain_copies_enumerate_the_same_bytes(self):
+        verify = _load("verify_bytes_parity", "verify.py")
+        verify._Authority.reset()
+        self.addCleanup(verify._Authority.reset)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        for name in _SELECTABLE + _UNSELECTABLE:
+            _bgit(p.repo, b"config", b"filter." + name + b".clean", b"x")
+        want = gitexec.driver_blanks(p.repo)
+        self.assertTrue(want)
+        self.assertEqual(diff_scope._driver_blanks(p.repo), want)
+        self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
 
 
 if __name__ == "__main__":

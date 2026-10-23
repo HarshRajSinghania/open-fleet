@@ -6179,5 +6179,30 @@ class ConfigFilterNeverRunsInTheControl(MutationFixture):
                         "control: with the driver blanks removed the filter must fire")
 
 
+class ConfigFilterByteNameNeverRunsInTheControl(ConfigFilterNeverRunsInTheControl):
+    """PR #649 review (PRRT_kwDOTWxN9c6vvony): the same two cases with the selected driver named
+    by a byte git accepts and a text decode cannot round-trip (0xff -> U+FFFD names another
+    driver; a strict locale decode raised inside _run instead). The planted command must still
+    never run in a verifier git leg, and its mutation control must still fire it."""
+
+    NAME = b"\xff"
+
+    def setUp(self):
+        super().setUp()
+        for var in (b"clean", b"smudge"):
+            subprocess.run([b"git", b"config", b"filter." + self.NAME + b"." + var,
+                            os.fsencode(str(self.probe)) + b" " + var],
+                           cwd=self.repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        (self.repo / ".git" / "info" / "attributes").write_bytes(
+            b"*.py filter=" + self.NAME + b"\n")
+
+
+class ConfigFilterEqualsNameNeverRunsInTheControl(ConfigFilterByteNameNeverRunsInTheControl):
+    """A driver name holding `=`: `-c filter.a=b.clean=` is split at its FIRST `=` and blanks a
+    different key, so only an env pair (key and value apart) blanks this driver."""
+
+    NAME = b"a=b"
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

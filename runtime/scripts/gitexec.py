@@ -41,7 +41,7 @@ cannot enumerate an unknown ``<driver>`` name, and ``$GIT_DIR/info/attributes`` 
 any ``--attr-source`` the belt could set). ``driver_blanks(repo)`` closes them by reading
 the driver names the repo's OWN config declares and blanking each — the only place such a
 command can come from. A worktree-materialising read (floor_guard's and diff_scope's
-``diff`` of the working tree, verify.py's negative-control ``checkout``) passes its tokens;
+``diff`` of the working tree, verify.py's negative-control ``checkout``) passes its pairs;
 a read of committed objects alone (inventory, decisions ``--pin-ref``) never selects a
 filter and does not need them.
 
@@ -90,9 +90,12 @@ HARDENED = {
 # A config key whose VALUE is a command git runs when a .gitattributes line selects its
 # <driver>: a clean/smudge/process filter, or a textconv/command diff driver. The command
 # can come from NOWHERE else, so blanking every such key the repo DECLARES closes the
-# channel for driver names no fixed -c could have named (#629).
+# channel for driver names no fixed -c could have named (#629). Matched as BYTES: a driver
+# name is whatever bytes git accepts (0xff, an invalid UTF-8 sequence, a `.`, an `=`), and
+# a .gitattributes line selects that exact name (PR #649 review).
 _DRIVER_KEY_RE = re.compile(
-    r"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z")
+    rb"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z",
+    re.S)
 
 
 def argv(*args):
@@ -102,18 +105,26 @@ def argv(*args):
     return [GIT, *args]
 
 
-def env(base=None):
-    """The hardened environment for one git child (see module docstring)."""
+def env(base=None, blanks=()):
+    """The hardened environment for one git child (see module docstring), plus ``blanks`` —
+    ``driver_blanks``'s ``(key, value)`` pairs — appended as further GIT_CONFIG_KEY_n/VALUE_n
+    pairs. An env pair carries a key and a value separately, so a key holding ``=`` (which a
+    ``-c <key>=<value>`` splits at its FIRST ``=``) or any non-UTF-8 byte reaches git intact."""
     out = {k: v for k, v in (os.environ if base is None else base).items()
            if k != "GIT_EXTERNAL_DIFF"
            and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
     out.update(HARDENED)
+    first = int(HARDENED["GIT_CONFIG_COUNT"])
+    for i, (key, value) in enumerate(blanks, start=first):
+        out[f"GIT_CONFIG_KEY_{i}"], out[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    out["GIT_CONFIG_COUNT"] = str(first + len(blanks))
     return out
 
 
 def driver_blanks(repo):
-    """``-c <key>=`` tokens that blank the command of every filter/diff driver DECLARED in
-    ``repo``'s config — the attribute-selected exec channel a fixed ``-c`` cannot name (#629).
+    """``(key, value)`` config pairs that blank the command of every filter/diff driver DECLARED
+    in ``repo``'s config — the attribute-selected exec channel a fixed ``-c`` cannot name (#629).
+    Pass them as ``env(blanks=...)``; never as ``-c`` argv, which splits a key at its first ``=``.
 
     A clean/smudge/process filter or a textconv/command diff driver runs only when a
     ``.gitattributes`` (or ``$GIT_DIR/info/attributes``) line selects a ``<driver>`` AND a
@@ -126,8 +137,11 @@ def driver_blanks(repo):
     content selects no filter and may skip this.
 
     Fail-closed to the EMPTY list only on a git error (never a reason to trust a planted
-    driver): callers add these tokens on top of ``--no-ext-diff``/``--no-textconv`` and the
-    static belt, so an empty list leaves those in force."""
+    driver): callers add these pairs on top of ``--no-ext-diff``/``--no-textconv`` and the
+    static belt, so an empty list leaves those in force. The config is read as BYTES and each
+    key is handed back through ``os.fsdecode``, which ``subprocess`` reverses with
+    ``os.fsencode`` — so git receives exactly the bytes it declared, never a decoded stand-in
+    that names a different driver (PR #649 review)."""
     try:
         out = subprocess.run(argv("-C", str(repo), "config", "--list", "-z", "--name-only"),
                              capture_output=True, timeout=30, env=env(),
@@ -136,8 +150,5 @@ def driver_blanks(repo):
         return []
     if out.returncode != 0:
         return []
-    tokens = []
-    for key in out.stdout.decode("utf-8", "replace").split("\0"):
-        if _DRIVER_KEY_RE.match(key):
-            tokens += ["-c", f"{key}="]
-    return tokens
+    return [(os.fsdecode(key), "") for key in out.stdout.split(b"\0")
+            if _DRIVER_KEY_RE.match(key)]

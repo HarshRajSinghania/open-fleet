@@ -964,28 +964,42 @@ class _Authority:
     # every verifier git leg runs the custody-pinned git_bin() under git_env() — so does this.
     # A config key named here is the ONLY source of a filter/diff-driver command, and `-c`
     # cannot wildcard the <driver>. tests/test_gitexec_config_commands.py holds it to gitexec's.
+    # BYTES: a driver name is any bytes git accepts, and the attribute selects exactly those.
     _DRIVER_KEY_RE = re.compile(
-        r"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z")
+        rb"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z",
+        re.S)
 
     @classmethod
     def driver_blanks(cls, repo):
-        """`-c <key>=` tokens blanking every filter/diff driver command `repo`'s config declares
-        (#629). A negative-control `checkout`/`apply`/`worktree add` MATERIALISES worker content,
+        """`(key, value)` config pairs blanking every filter/diff driver command `repo`'s config
+        declares (#629), for blanked_env(). A negative-control `checkout`/`apply`/`worktree add` MATERIALISES worker content,
         which runs a clean/smudge filter a `.gitattributes` (or `$GIT_DIR/info/attributes`, past
         any `--attr-source`) line selects — the one channel git_env's fixed belt and
         `--no-textconv`/`--no-ext-diff` cannot close. The command comes only from a declared
         `filter.<n>.*`/`diff.<n>.*` key, so the names are read from the repo's own config (listed
         under the scrubbed env, repo-local keys only) and each blanked; empty = git runs no
-        command. Fail-closed to the empty list on a git error — the fixed belt stays in force."""
-        code, out, _ = _run([cls.git_bin(), "-C", str(repo), "config", "--list", "-z",
-                             "--name-only"], env=cls.git_env())
+        command. Fail-closed to the empty list on a git error — the fixed belt stays in force.
+        Read as BYTES (_run_bytes: a text decode of a 0xff name either raises or names another
+        driver) and each key handed back through os.fsdecode, which subprocess reverses, so git
+        gets exactly the bytes it declared (PR #649 review)."""
+        code, out, _ = _run_bytes([cls.git_bin(), "-C", str(repo), "config", "--list", "-z",
+                                   "--name-only"], env=cls.git_env())
         if code != 0:
             return []
-        tokens = []
-        for key in out.split("\0"):
-            if cls._DRIVER_KEY_RE.match(key):
-                tokens += ["-c", f"{key}="]
-        return tokens
+        return [(os.fsdecode(key), "") for key in out.split(b"\0")
+                if cls._DRIVER_KEY_RE.match(key)]
+
+    @classmethod
+    def blanked_env(cls, blanks):
+        """git_env() with driver_blanks pairs appended as further GIT_CONFIG_KEY_n/VALUE_n: an env
+        pair keeps a key and value apart, so a driver name holding `=` (which `-c <key>=` splits
+        at its first `=`) is blanked as itself, not as a different, shorter key."""
+        env = cls.git_env()
+        first = int(env["GIT_CONFIG_COUNT"])
+        for i, (key, value) in enumerate(blanks, start=first):
+            env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
+        env["GIT_CONFIG_COUNT"] = str(first + len(blanks))
+        return env
 
     @classmethod
     def api(cls, repo, endpoint, *flags, timeout=20):
@@ -2017,9 +2031,9 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
             bind_err = _bind_paths_to_change(paths, m, "negative_control.paths", nc_command)
             if bind_err:
                 return bind_err
-            code, _, gerr = _run_at(wt, [_Authority.git_bin(), *blanks, "--literal-pathspecs",
+            code, _, gerr = _run_at(wt, [_Authority.git_bin(), "--literal-pathspecs",
                                          "checkout", str(base), "--", *paths],
-                                    env=_Authority.git_env())
+                                    env=_Authority.blanked_env(blanks))
             if code != 0:
                 return f"could not restore {paths} from base_sha in the control worktree: {gerr.strip()}"
             # --cached: the INDEX is what _seal_control's write-tree commits, so the check reads
@@ -2059,9 +2073,9 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
                     "fix. The bound command would then go RED because its oracle is gone, not "
                     "because the behaviour came back. Name the production paths the control should "
                     "restore (#280)")
-        code, _, gerr = _run_at(wt, [_Authority.git_bin(), *blanks, "revert", "--no-commit",
+        code, _, gerr = _run_at(wt, [_Authority.git_bin(), "revert", "--no-commit",
                                      f"{base}..{head}"],
-                                timeout=60, env=_Authority.git_env())
+                                timeout=60, env=_Authority.blanked_env(blanks))
         if code != 0:
             return f"git revert of base_sha..head_sha failed in the control worktree: {gerr.strip()}"
         return None
@@ -2083,9 +2097,9 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
     bind_err = _bind_hunks_to_change(diff, m)
     if bind_err:
         return bind_err
-    code, _, gerr = _run_at(wt, [_Authority.git_bin(), *blanks, "apply", "--index",
+    code, _, gerr = _run_at(wt, [_Authority.git_bin(), "apply", "--index",
                                  "--whitespace=nowarn", "-"],
-                            stdin_bytes=diff.encode("utf-8"), env=_Authority.git_env())
+                            stdin_bytes=diff.encode("utf-8"), env=_Authority.blanked_env(blanks))
     if code != 0:
         return ("the hand mutant quoted in negative_control.artifact does not apply at head_sha "
                 f"({gerr.strip()}) — the quoted diff is not the diff that was run")
@@ -2149,8 +2163,8 @@ def execute_negative_control(m, nc_command=None):
         # #629: a racily-clean index entry (its mtime matching the index's after the control's
         # checkout) is re-hashed by write-tree, which re-runs a selected clean filter — so the
         # driver blanks must ride this call, as they do the checkout that produced the index.
-        blanks = _Authority.driver_blanks(wt)
-        code, tree, gerr = _run_at(wt, [git, *blanks, "write-tree"], env=env)
+        code, tree, gerr = _run_at(wt, [git, "write-tree"],
+                                   env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
         tree = tree.strip()
         if code != 0 or not HEX40_RE.match(tree):
             return None, f"cannot record the applied control's tree: {gerr.strip()}"
@@ -2186,9 +2200,9 @@ def execute_negative_control(m, nc_command=None):
         wt = str(Path(holder) / "wt")
         # #629: `worktree add` populates the worktree from head_sha, running a repo-config
         # smudge filter a tracked .gitattributes selects. Blank every declared driver command.
-        blanks = _Authority.driver_blanks(top)
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, *blanks, "worktree", "add",
-                              "--detach", wt, str(head)], timeout=120, env=_Authority.git_env())
+        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add",
+                              "--detach", wt, str(head)], timeout=120,
+                             env=_Authority.blanked_env(_Authority.driver_blanks(top)))
         try:
             if code != 0:
                 return None, f"could not create the control worktree at head_sha: {gerr.strip()}"

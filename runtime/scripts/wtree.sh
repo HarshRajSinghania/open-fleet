@@ -88,23 +88,35 @@ TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
 
 # #629: `git add -A` below materialises worktree content, running a repo-config clean/smudge
 # filter a .gitattributes selects. The command comes only from a declared filter.<n>.* key, and
-# -c cannot wildcard the <n>, so read the declared names (repo-local only, under the belt above)
-# and blank each into $@. A filter runs only for a file whose stat changed since the index, so a
-# clean checkout re-stages nothing and this never alters the fingerprint; it bites only on a
-# currently-dirty filtered file, whose content is uncommitted anyway. $1 is already in $TARGET.
-set --
+# -c cannot wildcard the <n>, so read the declared names and blank each. A filter runs only for a
+# file whose stat changed since the index, so a clean checkout re-stages nothing and this never
+# alters the fingerprint; it bites only on a currently-dirty filtered file (uncommitted anyway).
+# The names are BYTES (PR #649 review): git accepts 0xff, an invalid UTF-8 sequence, `.` or `=` in
+# one, and an attribute selects that exact name. So the keys are handled under LC_ALL=C (a UTF-8
+# `tr` aborts at the first invalid byte and drops every key after it), split on newline with
+# globbing off, and appended as GIT_CONFIG_KEY_n/VALUE_n pairs: an env pair keeps key and value
+# apart, where `-c <key>=` splits a name holding `=` at its first `=` and blanks another key.
+LC_ALL=C
+export LC_ALL
+_n=$GIT_CONFIG_COUNT
 if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0' '\n'); then
   OLDIFS=$IFS
   IFS='
 '
+  set -f
   for _k in $BLANK_KEYS; do
     case "$_k" in
       filter.*.clean|filter.*.smudge|filter.*.process|diff.*.textconv|diff.*.command)
-        set -- "$@" -c "$_k=" ;;
+        # `\$_k` stays literal in the eval'd text, so the key's bytes are assigned, never parsed.
+        eval "GIT_CONFIG_KEY_$_n=\$_k; GIT_CONFIG_VALUE_$_n=; export GIT_CONFIG_KEY_$_n GIT_CONFIG_VALUE_$_n"
+        _n=$((_n + 1)) ;;
     esac
   done
+  set +f
   IFS=$OLDIFS
 fi
+GIT_CONFIG_COUNT=$_n
+export GIT_CONFIG_COUNT
 
 # Resolve the REAL index path BEFORE exporting GIT_INDEX_FILE: with the variable set,
 # `rev-parse --git-path index` returns the temp index itself and the stat-cache seed self-copies.
@@ -132,8 +144,8 @@ else
   seed_from_head || exit 1
 fi
 
-git -C "$TOP" "$@" add -A 2>/dev/null || exit 1
+git -C "$TOP" add -A 2>/dev/null || exit 1
 # write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
-# above makes likely) is re-hashed here, which re-runs the clean filter — so the blanks (#629)
-# must ride this call as well, not only `add -A`.
-git -C "$TOP" "$@" write-tree 2>/dev/null || exit 1
+# above makes likely) is re-hashed here, which re-runs the clean filter — the blanks (#629) ride
+# every git call from here on in the exported GIT_CONFIG_* pairs, this one included.
+git -C "$TOP" write-tree 2>/dev/null || exit 1

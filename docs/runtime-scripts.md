@@ -819,10 +819,14 @@ transport, and — with the two object-rewrite env vars — a planted `refs/repl
 `filter.<driver>.clean/smudge/process` or `diff.<driver>.textconv`/`command` git runs when a
 `.gitattributes` (or `$GIT_DIR/info/attributes`, which outranks any `--attr-source`) line selects
 `<driver>`. `-c` cannot enumerate an unknown `<driver>`, so it reads the driver names the repo's
-OWN config declares — the only source of such a command — and returns `-c <key>=` tokens blanking
-each (empty value = git runs no command, passing content through). A read that MATERIALISES
-working-tree content passes its tokens; a read of committed objects alone selects no filter and
-skips it. stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+OWN config declares — the only source of such a command — and returns `(key, "")` pairs blanking
+each (empty value = git runs no command, passing content through), which a caller passes as
+`env(blanks=...)`: appended GIT_CONFIG_KEY_n/VALUE_n pairs, never `-c <key>=` argv, which splits a
+name holding `=` at its first `=` and blanks a different key. The config is read as bytes and each
+key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any
+bytes git accepts (`0xff`, an invalid UTF-8 sequence) and an attribute selects exactly those; a
+text decode named a different driver (PR #649 review). A read that MATERIALISES working-tree
+content passes its pairs; a read of committed objects alone selects no filter and skips it. stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL`, as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its

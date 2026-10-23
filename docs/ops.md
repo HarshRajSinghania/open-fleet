@@ -327,9 +327,10 @@ environment holds.
    host must be awake and Codex open; this is not an always-on hosted service.
    The [external drill](completion/evidence/T-13-external-monitor-drill.txt) detected the
    real no-runner outage from the local host and filed/closed
-   [#537](https://github.com/ravidsrk/open-fleet/issues/537). That receipt proves the poller
-   and durable-issue alert path; it does not claim email delivery or a scheduled heartbeat
-   firing. The Codex heartbeat is the backup: it runs only while the Mac is awake.
+   [#537](https://github.com/ravidsrk/open-fleet/issues/537). That September drill proves the
+   poller and durable-issue alert path; it claims neither email delivery nor a scheduled Codex
+   heartbeat firing. The scheduled firing on record is the cloud task's, below, in the same
+   receipt. The Codex heartbeat is the backup: it runs only while the Mac is awake.
 
    The always-on watch is a **Claude Code scheduled task**, "open-fleet main CI monitor"
    (claude.ai → Code → Scheduled tasks, on the maintainer's account), firing daily at

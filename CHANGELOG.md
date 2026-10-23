@@ -6,6 +6,27 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The provider-certification first run's five findings are fixed** (#596). Each was
+  reproduced by a failing test first:
+  - `verify.py`: a file tracked at `head_sha` that the manifest's `artifacts[]` also pins must
+    match that sha256 at `head_sha`. A wrong pin, or one taken over the working-tree overlay, is
+    refused. Before, the tracked blob was read without consulting the pin.
+  - `spawn_worker.sh` on Orca: the `ro` rows for jcode and hermes carry base.py's ro
+    restriction. For jcode that is the `--tools` allowlist and the full `--disabled-tools` set.
+    For hermes it is `HERMES_WRITE_SAFE_ROOT=/dev/null` with `--toolsets file,web,session_search`.
+    No flag makes crush read-only (its ro mode is a data-dir config only posix installs), so crush
+    `ro` now refuses on Orca instead of launching an auto-approving `crush run`.
+  - `capabilities.json` no longer claims opencode, omp or pi for Orca, where `spawn_worker.sh`
+    refuses all three. `tests/test_capability_launch_agreement.py` fails when any claimed
+    provider/harness pair does not launch through the wrapper.
+  - posix `ro` workers can report completion. Where an exit monitor runs, a ro assignment names the line
+    `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`, and the exit monitor relays it as
+    the worker's `worker_done`. The worker gains no tool or writable path. A clean exit without
+    the line is still `worker_died (exit=0)`.
+  - gastown's claude `ro` alias carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`.
+    `tests/test_claude_ro_launches.py` checks every claude ro row and alias for that set. The one
+    exemption is the live-witnessed Orca TUI row, which is unchanged.
+
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

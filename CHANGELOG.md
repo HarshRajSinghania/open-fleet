@@ -25,6 +25,9 @@ truth is `.claude-plugin/plugin.json`.
     tree returns to review; a content-identical move keeps it. A conflict, failed gate or refused
     merge freezes the train behind it until `resolve`.
   - Promotion to the default branch stays human: the queue refuses it as a BASE or a target.
+  - Every GitHub and git call is bound to the queue's repository: `gh` gets an explicit `--repo`,
+    and the remote's fetch and push URLs must name the repository the lease does. A saved plan is
+    reused only for the gate it passed, so `drain --gate-cmd` never skips a requested gate.
   - What is tested: two competing conductor processes, pause-transfer-resume, and crash restarts
     before the merge, after the remote merge and before the acknowledgement, on the gh lane and
     the local no-gh lane. All of them run over disposable repositories with a fake `gh`. Mutation

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """A fake `gh` for the merge-queue tests (#599). No network: GitHub is a JSON file plus a bare repo.
 
-State lives in $FAKE_GH_STATE: {"bare": <bare repo>, "offline": bool, "prs": {"<n>": {...}}}. A PR
+State lives in $FAKE_GH_STATE: {"repo": "<host/owner/name>", "bare": <bare repo>, "offline": bool,
+"prs": {"<n>": {...}}, "forks": {"<host/owner/name>": {"bare": ..., "prs": {...}}}}. The repository
+a call acts on is resolved as the real CLI resolves it: `--repo`/`-R`, else $GH_REPO, else the
+default ("repo"); a fork shares the upstream's objects and may carry a PR with the same head. A PR
 names its `headRefName` and `baseRefName`; its head is read live from the bare repo, and every
 `pr view` mirrors it to `refs/pull/<n>/head` as GitHub does. `pr merge` merges the way GitHub's
 merge button does: an in-memory merge onto the CURRENT base head, refused when
@@ -42,20 +45,20 @@ def ref(bare, name):
     return proc.stdout.strip() or None
 
 
-def present(state, num, pr):
-    bare = state["bare"]
+def present(scope, num, pr, target):
+    bare = scope["bare"]
     head = ref(bare, f"refs/heads/{pr['headRefName']}") or pr.get("mergedHead") or pr.get("head")
     if head and pr["state"] == "OPEN":
         git(bare, "update-ref", f"refs/pull/{num}/head", head)
     return {"number": int(num), "state": pr["state"], "headRefOid": head, "headRefName": pr["headRefName"],
-            "baseRefName": pr["baseRefName"],
+            "baseRefName": pr["baseRefName"], "url": f"https://{pr.get('urlRepo') or target}/pull/{num}",
             "mergeCommit": {"oid": pr["mergeCommit"]} if pr.get("mergeCommit") else None}
 
 
-def merge(state, num, argv):
-    pr, bare = state["prs"][num], state["bare"]
+def merge(state, scope, num, argv, target):
+    pr, bare = scope["prs"][num], scope["bare"]
     match = argv[argv.index("--match-head-commit") + 1] if "--match-head-commit" in argv else None
-    head = present(state, num, pr)["headRefOid"]
+    head = present(scope, num, pr, target)["headRefOid"]
     if pr["state"] != "OPEN":
         return 1, f"Pull request #{num} is not open"
     if match and head != match:
@@ -89,25 +92,35 @@ def main(argv):
             return 1
         if argv[:2] == ["auth", "status"]:
             return 0
+        full, target = list(argv), os.environ.get("GH_REPO") or state["repo"]
+        for flag in ("--repo", "-R"):
+            if flag in argv:
+                i = argv.index(flag)
+                target, argv = argv[i + 1], argv[:i] + argv[i + 2:]
+        scope = state if target == state["repo"] else state.get("forks", {}).get(target)
+        if scope is None:
+            print(f"GraphQL: Could not resolve to a Repository with the name '{target}'.", file=sys.stderr)
+            return 1
         if argv[:2] == ["pr", "view"]:
             num = argv[2]
-            if num not in state["prs"]:
+            if num not in scope["prs"]:
                 print(f"no pull requests found for {num}", file=sys.stderr)
                 return 1
             fields = argv[argv.index("--json") + 1].split(",")
-            view = present(state, num, state["prs"][num])
+            view = present(scope, num, scope["prs"][num], target)
             print(json.dumps({k: view.get(k) for k in fields}))
             return 0
         if argv[:2] == ["pr", "merge"]:
             num = argv[2]
             with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as log:
-                log.write(json.dumps({"event": "start", "pr": int(num), "caller": os.getppid(), "argv": argv}) + "\n")
+                log.write(json.dumps({"event": "start", "pr": int(num), "repo": target, "caller": os.getppid(),
+                                      "argv": full}) + "\n")
             time.sleep(float(os.environ.get("FAKE_GH_MERGE_DELAY", "0") or 0))
-            code, message = merge(state, num, argv)
+            code, message = merge(state, scope, num, argv, target)
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(state, fh)
             with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as log:
-                log.write(json.dumps({"event": "merged" if code == 0 else "refused", "pr": int(num),
+                log.write(json.dumps({"event": "merged" if code == 0 else "refused", "pr": int(num), "repo": target,
                                       "caller": os.getppid(), "message": message}) + "\n")
             print(message, file=sys.stdout if code == 0 else sys.stderr)
             return code

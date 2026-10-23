@@ -26,6 +26,9 @@ What holds, and for whom
     moved to different content is returned to review. A content-identical move
     (reviewed-sha-freshness.md) keeps the review and pins the new head. A moved BASE, or a merge
     tree that is no longer the tested one, returns the entry to `plan` (`retest_required`).
+  * Every remote read and write is bound to the queue's repository: the remote's fetch and push
+    URLs must name the repository the lease names, and every `gh` call passes it as `--repo`
+    (never GH_REPO or gh's own default), so no call can act on a fork or another repository.
   * Scope: cooperating fleet writers that share this store on one host. A local lease cannot
     fence an arbitrary GitHub user, or a writer that bypasses this script. Their writes surface
     as a moved BASE or a moved head, which the guards refuse; they never land untested content
@@ -99,6 +102,8 @@ MODES = ("gh", "git")
 RESOLVE_ACTIONS = {"requeue": QUEUED, "bounce": BOUNCED, "drop": DROPPED}
 DEFAULT_TTL = 900.0
 OBJECT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# A repository GitHub can name: exactly host/owner/name (the shape `gh --repo HOST/OWNER/REPO` takes).
+GH_REPO_RE = re.compile(r"[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 # A branch name that is safe inside a refspec: no `:`, whitespace, `..`, glob or revision syntax.
 BRANCH_RE = re.compile(r"(?!-)(?!refs/)(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9._/-]+")
 PRIVATE_REFS = "refs/open-fleet/merge-queue"
@@ -384,6 +389,13 @@ class Git:
             raise Offline(f"git remote {remote!r}", proc.stderr)
         return self.out("rev-parse", "--verify", f"{dst}^{{commit}}")
 
+    def remote_urls(self, remote: str) -> tuple[list[str], list[str]]:
+        """The remote's configured fetch URLs and push URLs, as written (before `insteadOf`)."""
+        def values(key: str) -> list[str]:
+            proc = self.run("config", "--get-all", key, check=False)
+            return [v.strip() for v in proc.stdout.splitlines() if v.strip()]
+        return values(f"remote.{remote}.url"), values(f"remote.{remote}.pushurl")
+
     def has_commit(self, sha: str | None) -> bool:
         return bool(sha) and self.run("cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode == 0
 
@@ -414,7 +426,7 @@ class Git:
 class Gh:
     """The GitHub seam: the `gh` CLI, resolved once to an absolute path from the caller's PATH."""
 
-    FIELDS = "number,state,headRefOid,headRefName,baseRefName,mergeCommit"
+    FIELDS = "number,state,headRefOid,headRefName,baseRefName,mergeCommit,url"
 
     def __init__(self, repo_dir: Path, env: dict[str, str]):
         found = shutil.which("gh", path=env.get("PATH"))
@@ -425,13 +437,16 @@ class Gh:
         if self.bin is None:
             raise Offline("GitHub (no gh on PATH)")
         try:
+            # GH_REPO dropped: every call names its repository with --repo, so nothing in the
+            # environment can redirect a read or a merge to another repository (PR #647).
+            env = {k: v for k, v in self.env.items() if k != "GH_REPO"}
             return subprocess.run([self.bin, *args], capture_output=True, text=True, cwd=self.repo_dir,
-                                  env={**self.env, "GH_PROMPT_DISABLED": "1"}, pass_fds=pass_fds, timeout=300)
+                                  env={**env, "GH_PROMPT_DISABLED": "1"}, pass_fds=pass_fds, timeout=300)
         except (OSError, subprocess.SubprocessError) as exc:
             raise Offline("GitHub", str(exc)) from exc
 
-    def pr_view(self, pr: int) -> dict[str, Any]:
-        proc = self._run(["pr", "view", str(pr), "--json", self.FIELDS])
+    def pr_view(self, repo: str, pr: int) -> dict[str, Any]:
+        proc = self._run(["pr", "view", str(pr), "--repo", repo, "--json", self.FIELDS])
         if proc.returncode != 0:
             raise Offline("GitHub", proc.stderr)
         try:
@@ -442,8 +457,9 @@ class Gh:
             raise Offline("GitHub", "pr view returned no headRefOid")
         return data
 
-    def pr_merge(self, pr: int, head: str, delete_branch: bool, pass_fds: tuple[int, ...]) -> subprocess.CompletedProcess:
-        args = ["pr", "merge", str(pr), "--merge", "--match-head-commit", head]
+    def pr_merge(self, repo: str, pr: int, head: str, delete_branch: bool,
+                 pass_fds: tuple[int, ...]) -> subprocess.CompletedProcess:
+        args = ["pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head]
         if delete_branch:
             args.append("--delete-branch")
         return self._run(args, pass_fds=pass_fds)
@@ -465,11 +481,33 @@ class MergeQueue:
 
     # --- identity, config, receipts -------------------------------------------------------
     def default_repo(self, remote: str = "origin") -> str:
-        proc = self.git.run("remote", "get-url", remote, check=False)
-        if proc.returncode != 0 or not proc.stdout.strip():
+        urls, _push = self.git.remote_urls(remote)
+        if not urls:
             raise QueueError("usage", f"no --repo given and remote {remote!r} has no URL in {self.repo_dir}",
                              exit_code=EXIT_USAGE)
-        return repo_identity(proc.stdout)
+        return repo_identity(urls[0])
+
+    def _bound_remote(self, cfg: dict[str, Any]) -> str:
+        """The queue's remote, after proving it still names the queue's repository (PR #647).
+
+        The lease, the entries and every receipt name `cfg["repo"]`. A remote re-pointed after
+        `init`, or a push URL aimed elsewhere, would read one repository and write another, so
+        every URL the remote is configured with (fetch and push, as written) must name it.
+        Called before every remote read and write; a mismatch refuses before anything is sent.
+        """
+        remote = cfg["remote"]
+        urls, push = self.git.remote_urls(remote)
+        named = {f"url {u}": repo_identity(u) for u in urls}
+        named.update({f"pushurl {u}": repo_identity(u) for u in push})
+        wrong = {k: v for k, v in named.items() if v != cfg["repo"]}
+        if not urls or wrong:
+            raise QueueError(
+                "repo_mismatch",
+                f"remote {remote!r} does not name the queue's repository {cfg['repo']} "
+                f"({', '.join(f'{k} -> {v}' for k, v in wrong.items()) or 'no URL'}); nothing was read or sent",
+                {"remote": remote, "queue": cfg["repo"], "named": named},
+            )
+        return remote
 
     def _config(self, conn: sqlite3.Connection, repo: str, base: str) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM mq_queues WHERE repo = ? AND base = ?", (repo, base)).fetchone()
@@ -513,9 +551,22 @@ class MergeQueue:
         if not consent or not consent.strip():
             raise QueueError("usage", "--consent names the standing grant every merge's egress receipt cites",
                              exit_code=EXIT_USAGE)
+        urls, _push = self.git.remote_urls(remote)
+        named = repo_identity(urls[0]) if urls else None
+        if named != repo:
+            raise QueueError("repo_mismatch", f"--repo {repo} is not the repository remote {remote!r} names "
+                             f"({named or 'no URL'}): the lease and every merge must name one repository",
+                             {"repo": repo, "remote": remote, "named": named}, exit_code=EXIT_USAGE)
+        if mode == "gh" and not GH_REPO_RE.fullmatch(repo):
+            raise QueueError("repo_mismatch", f"the gh lane merges through GitHub, but remote {remote!r} names "
+                             f"{repo}, not a host/owner/name repository (use --mode git for a local remote)",
+                             {"repo": repo, "remote": remote}, exit_code=EXIT_USAGE)
+        try:
+            self._bound_remote({"remote": remote, "repo": repo})
+        except QueueError as exc:
+            raise QueueError(exc.code, exc.message, exc.data, exit_code=EXIT_USAGE) from exc
         if host is None:
-            url = self.git.run("remote", "get-url", remote, check=False).stdout.strip()
-            host = "github.com" if mode == "gh" else (remote_host(url) if url else "localhost")
+            host = repo.split("/", 1)[0] if mode == "gh" else remote_host(urls[0])
         want = {"default_branch": default, "mode": mode, "remote": remote, "host": host, "consent": consent}
         with self.store.tx() as conn:
             row = conn.execute("SELECT * FROM mq_queues WHERE repo = ? AND base = ?", (repo, base)).fetchone()
@@ -684,10 +735,12 @@ class MergeQueue:
             bad.append("reviewed_wtree (a full tree id, or absent)")
         if pr is not None and not (type(pr) is int and pr > 0):
             bad.append("pr (a positive integer, or null on the no-gh lane)")
+        if p.get("repo") is not None and not (isinstance(p["repo"], str) and p["repo"].strip()):
+            bad.append("repo (the repository identity, or absent)")
         if bad:
             raise QueueError("invalid_payload", f"merge_ready payload: bad {', '.join(bad)}", exit_code=EXIT_USAGE)
         return {"unit": unit, "branch": branch, "base": base, "reviewed_sha": sha, "reviewed_tree": tree,
-                "pr": pr, "run": p.get("run")}
+                "pr": pr, "run": p.get("run"), "repo": p.get("repo")}
 
     def enqueue(self, token: str, payload: str | dict[str, Any], *, run: str | None = None,
                 delivery: str | None = None) -> dict[str, Any]:
@@ -712,6 +765,11 @@ class MergeQueue:
                                  "promotion is a one-way human gate", exit_code=EXIT_USAGE)
             if p["base"] != base:
                 raise QueueError("wrong_base", f"payload targets {p['base']!r}, this queue is {base!r}",
+                                 exit_code=EXIT_USAGE)
+            if p["repo"] is not None and p["repo"] != repo:
+                # An optional field, checked when a sender states it (PR #647): a PR number means
+                # nothing outside its repository.
+                raise QueueError("repo_mismatch", f"payload names repository {p['repo']}, this queue is {repo}",
                                  exit_code=EXIT_USAGE)
             if cfg["mode"] == "gh" and p["pr"] is None:
                 raise QueueError("invalid_payload", "the gh lane needs a PR number (null is the no-gh lane)",
@@ -765,40 +823,50 @@ class MergeQueue:
 
     # --- authoritative remote state ----------------------------------------------------------
     def _base_head(self, cfg: dict[str, Any]) -> str:
-        head = self.git.fetch(cfg["remote"], f"refs/heads/{cfg['base']}", f"base/{cfg['base']}")
+        head = self.git.fetch(self._bound_remote(cfg), f"refs/heads/{cfg['base']}", f"base/{cfg['base']}")
         if head is None:
             raise QueueError("base_missing", f"BASE {cfg['base']!r} does not exist on {cfg['remote']!r}")
         return head
 
     def _unit_state(self, cfg: dict[str, Any], e: dict[str, Any]) -> dict[str, Any]:
         """The unit's head and PR facts, read from GitHub (gh) or the remote branch (git)."""
+        remote = self._bound_remote(cfg)
         if cfg["mode"] == "gh":
-            view = self.gh.pr_view(e["pr"])
+            view = self.gh.pr_view(cfg["repo"], e["pr"])
+            reported = repo_identity(str(view.get("url") or "").split("/pull/", 1)[0]) if view.get("url") else None
+            if reported != cfg["repo"]:
+                raise QueueError("repo_mismatch", f"GitHub reported PR #{e['pr']} in {reported or 'no repository'}, "
+                                 f"not the queue's {cfg['repo']}; nothing was sent",
+                                 {"queue": cfg["repo"], "reported": reported, "pr": e["pr"]})
             head = view["headRefOid"]
             if not self.git.has_commit(head):
-                got = self.git.fetch(cfg["remote"], f"refs/pull/{e['pr']}/head", f"pr/{e['pr']}")
+                got = self.git.fetch(remote, f"refs/pull/{e['pr']}/head", f"pr/{e['pr']}")
                 if got != head and view.get("headRefName"):
-                    self.git.fetch(cfg["remote"], f"refs/heads/{view['headRefName']}", f"pr/{e['pr']}")
+                    self.git.fetch(remote, f"refs/heads/{view['headRefName']}", f"pr/{e['pr']}")
             merge = view.get("mergeCommit") or {}
             return {"head": head if self.git.has_commit(head) else None, "reported": head,
                     "state": str(view.get("state", "")).upper(), "baseRefName": view.get("baseRefName"),
+                    "headRefName": view.get("headRefName"),
                     "mergeCommit": merge.get("oid") if isinstance(merge, dict) else None}
-        head = self.git.fetch(cfg["remote"], f"refs/heads/{e['branch']}", f"branch/{e['branch']}")
+        head = self.git.fetch(remote, f"refs/heads/{e['branch']}", f"branch/{e['branch']}")
         return {"head": head, "reported": head, "state": "OPEN" if head else "MISSING",
                 "baseRefName": cfg["base"], "mergeCommit": None}
 
     def _reviewed_tree(self, e: dict[str, Any]) -> tuple[str | None, str]:
         """The reviewed content's tree: recomputed when the reviewed commit is at hand, else the payload's."""
         if not self.git.has_commit(e["reviewed_sha"]):
+            remote = self._cfg_remote(e)  # a repository mismatch refuses; only the fetch is best-effort
             with contextlib.suppress(QueueError):
-                self.git.fetch(self._cfg_remote(e), e["reviewed_sha"], f"entry/{e['entry_id']}/reviewed")
+                self.git.fetch(remote, e["reviewed_sha"], f"entry/{e['entry_id']}/reviewed")
         if self.git.has_commit(e["reviewed_sha"]):
             return self.git.tree(e["reviewed_sha"]), "recomputed"
         return e["reviewed_tree"], "payload"
 
     def _cfg_remote(self, e: dict[str, Any]) -> str:
-        rows = self.store.read("SELECT remote FROM mq_queues WHERE repo = ? AND base = ?", (e["repo"], e["base"]))
-        return rows[0]["remote"] if rows else "origin"
+        rows = self.store.read("SELECT * FROM mq_queues WHERE repo = ? AND base = ?", (e["repo"], e["base"]))
+        if not rows:
+            raise QueueError("queue_not_found", f"no merge queue for {e['repo']} BASE {e['base']!r}")
+        return self._bound_remote(rows[0])
 
     def _fresh_head(self, e: dict[str, Any], head: str) -> tuple[str | None, str | None]:
         """reviewed-sha-freshness.md: (accepted head, how) or (None, why it returns to review).
@@ -821,6 +889,8 @@ class MergeQueue:
             return "closed_unmerged"
         if st["baseRefName"] != cfg["base"] or st["baseRefName"] == cfg["default_branch"]:
             return "wrong_base"
+        if st.get("headRefName") is not None and st["headRefName"] != e["branch"]:
+            return "pr_branch_mismatch"  # the PR number names another unit's PR
         if st["head"] is None:
             return "head_unavailable"
         return None
@@ -1129,7 +1199,8 @@ class MergeQueue:
                 raise QueueError("queue_changed", f"{e['entry_id']} is no longer queued as it was validated")
             self._receipt(conn, repo, base, "merge_intent", {"acceptedHead": accepted, "how": how, "expectedBase": base_head,
                                                              "testedTree": e["tested_tree"], "mode": cfg["mode"],
-                                                             "localMerge": local_merge}, e["entry_id"], lease)
+                                                             "localMerge": local_merge, "repository": cfg["repo"]},
+                          e["entry_id"], lease)
         e = {**e, "state": MERGING, "accepted_head": accepted, "expected_base": base_head}
         try:
             self._egress(cfg, e)
@@ -1182,14 +1253,15 @@ class MergeQueue:
               local_merge: str | None) -> tuple[bool, dict[str, Any]]:
         """The remote merge, with the effect lock inherited by the child that performs it."""
         fds = (lock.fd,) if lock.fd is not None else ()
+        remote = self._bound_remote(cfg)  # re-proved at the send: the push URL is read here
         if cfg["mode"] == "gh":
             try:
-                proc = self.gh.pr_merge(e["pr"], e["accepted_head"], delete_branch, fds)
+                proc = self.gh.pr_merge(cfg["repo"], e["pr"], e["accepted_head"], delete_branch, fds)
             except Offline as exc:  # never sent, or sent with no answer: reconcile decides which
                 return False, {"exit": None, "stderr": exc.message}
         else:
             proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{cfg['base']}:{e['expected_base']}",
-                                cfg["remote"], f"{local_merge}:refs/heads/{cfg['base']}", check=False, pass_fds=fds)
+                                remote, f"{local_merge}:refs/heads/{cfg['base']}", check=False, pass_fds=fds)
         return proc.returncode == 0, {"exit": proc.returncode, "stderr": (proc.stderr or "")[-300:]}
 
     def _egress(self, cfg: dict[str, Any], e: dict[str, Any]) -> None:

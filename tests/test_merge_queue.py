@@ -544,6 +544,109 @@ class NonCooperatingWriters(QueueCase):
         self.assertEqual((rc, out["acceptedUntestedTree"]), (0, True), out)
 
 
+class RepositoryBinding(QueueCase):
+    """Every GitHub and git call acts on the repository the queue and its lease name (PR #647)."""
+
+    FORK = "github.invalid/fork/repo"
+
+    def _boarded(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        self.board(token, u)
+        self.w.cli("release", "--token", token)
+        return u
+
+    def _drain(self):
+        return self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+
+    def test_github_calls_name_the_bound_repository_whatever_gh_would_default_to(self):
+        u = self._boarded()
+        fork = self.w.fork(self.FORK)
+        self.w.mirror_pr(u, self.FORK, fork)
+        fork_base = self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE)
+        self.w.env["GH_REPO"] = self.FORK  # gh's own default would now be the fork
+        rc, out = self._drain()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual({m["repo"] for m in self.w.merge_log("start")}, {W.SLUG}, "a merge reached another repository")
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE), fork_base)
+        self.assertEqual(self.w.merged_heads(), [u["reviewed_sha"]])
+        call = self.w.merge_log("start")[0]["argv"]
+        self.assertEqual(call[call.index("--repo") + 1], W.SLUG)
+
+    def test_a_queue_whose_identity_is_not_its_remote_is_refused(self):
+        rc, out = self.w.cli("--repo", "github.invalid/other/repo", *self.w.init_args())
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+
+    def test_a_remote_repointed_after_init_is_refused_before_any_remote_call(self):
+        u = self._boarded()
+        fork = self.w.fork(self.FORK)
+        self.w.mirror_pr(u, self.FORK, fork)
+        self.w.point(self.w.conductor, "origin", self.FORK, fork)
+        rc, out = self.w.cli("--repo", self.repo, "drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual((rc, out.get("code")), (1, "repo_mismatch"), out)
+        self.assertEqual(self.w.merge_log("start"), [])
+        self.assertEqual(self.w.merged_heads(), [])
+
+    def test_a_pull_request_github_reports_for_another_repository_is_refused(self):
+        u = self._boarded()
+        self.w.set_gh(lambda s: s["prs"][str(u["pr"])].__setitem__("urlRepo", self.FORK))
+        rc, out = self._drain()
+        self.assertEqual((rc, out.get("code")), (1, "repo_mismatch"), out)
+        self.assertEqual(self.w.merge_log("start"), [])
+
+    def test_the_gh_lane_needs_a_github_repository_identity(self):
+        self.w.git(self.w.conductor, "remote", "add", "local", str(self.w.bare))
+        rc, out = self.w.cli("--repo", str(self.w.bare.resolve()), "init", "--base", "integration-2", "--default",
+                             W.DEFAULT, "--consent", "grant:x", "--remote", "local")
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+
+    def test_a_payload_that_names_another_repository_is_refused(self):
+        token = self.acquire()
+        u = {**self.w.unit("alpha"), "repo": self.FORK}
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(u))
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+        self.assertEqual(self.status()["all"], [])
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**u, "repo": W.SLUG}))
+        self.assertEqual(rc, 0, out)
+
+    def test_a_pr_number_whose_head_is_another_branch_returns_to_review(self):
+        token = self.acquire()
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        (entry,) = self.board(token, {**a, "pr": b["pr"]})
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual([(x["result"], x["reason"]) for x in out["planned"]], [("bounce", "pr_branch_mismatch")], out)
+        self.assertEqual(self.state_of(entry), "bounced")
+
+
+class GitLaneRepositoryBinding(QueueCase):
+    mode = "git"
+
+    def _fork_and_board(self):
+        fork = self.w.tmp / "fork.git"
+        self.w.git(self.w.tmp, "clone", "-q", "--bare", str(self.w.bare), str(fork))
+        token = self.acquire()
+        self.board(token, self.w.unit("alpha"))
+        self.w.cli("release", "--token", token)
+        return fork, self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE)
+
+    def _refused(self, fork, fork_base):
+        rc, out = self.w.cli("--repo", self.repo, "drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual((rc, out.get("code")), (1, "repo_mismatch"), out)
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE), fork_base,
+                         "the merge was pushed to another repository")
+        self.assertEqual(self.w.merged_heads(), [])
+
+    def test_a_push_url_to_another_repository_is_refused(self):
+        fork, fork_base = self._fork_and_board()
+        self.w.git(self.w.conductor, "config", "remote.origin.pushurl", str(fork))
+        self._refused(fork, fork_base)
+
+    def test_a_remote_repointed_after_init_is_refused(self):
+        fork, fork_base = self._fork_and_board()
+        self.w.git(self.w.conductor, "remote", "set-url", "origin", str(fork))
+        self._refused(fork, fork_base)
+
+
 class GitLaneOffline(QueueCase):
     mode = "git"
 
@@ -551,12 +654,12 @@ class GitLaneOffline(QueueCase):
         token = self.acquire()
         (entry,) = self.board(token, self.w.unit("alpha"))
         self.w.cli("plan", "--token", token)
-        url = self.w.git(self.w.conductor, "remote", "get-url", "origin")
-        self.w.git(self.w.conductor, "remote", "set-url", "origin", str(self.w.tmp / "gone.git"))
+        away = self.w.bare.with_name("remote.away")
+        self.w.bare.rename(away)  # the same repository, unreachable (re-pointing origin is a binding refusal)
         rc, out = self.w.cli("merge", "--token", token)
         self.assertEqual((rc, out.get("code")), (1, "offline"), out)
         self.assertEqual(self.state_of(entry), "queued")
-        self.w.git(self.w.conductor, "remote", "set-url", "origin", url)
+        away.rename(self.w.bare)
         rc, out = self.w.cli("merge", "--token", token)
         self.assertEqual((rc, out["noGh"]), (0, True), out)
         rc, out = self.w.cli("ack", "--token", token, "--entry", entry)

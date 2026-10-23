@@ -19,6 +19,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SCRIPT = ROOT / "runtime" / "scripts" / "merge_queue.py"
 BASE, DEFAULT = "integration", "main"
+# The gh lane's repository. Its conductor clone names it by a GitHub-style URL that git rewrites
+# (`url.<bare>.insteadOf`) to the bare repo, so the queue derives the same identity GitHub uses.
+SLUG = "github.invalid/fleet/repo"
 IDENTITY = {"GIT_AUTHOR_NAME": "Fleet Maintainer", "GIT_AUTHOR_EMAIL": "maintainer@fleet.invalid",
             "GIT_COMMITTER_NAME": "Fleet Maintainer", "GIT_COMMITTER_EMAIL": "maintainer@fleet.invalid"}
 
@@ -54,7 +57,8 @@ class World:
             "FAKE_GH_STATE": str(self.state_file), "FAKE_GH_LOG": str(self.log_file),
             "OPEN_FLEET_MERGE_QUEUE_DB": str(self.db), "OPEN_FLEET_EGRESS_LEDGER": str(self.ledger),
         }
-        self.state_file.write_text(json.dumps({"bare": str(self.bare), "offline": False, "prs": {}}), encoding="utf-8")
+        self.state_file.write_text(json.dumps({"repo": SLUG, "bare": str(self.bare), "offline": False, "prs": {},
+                                               "forks": {}}), encoding="utf-8")
         self.log_file.write_text("", encoding="utf-8")
         self.git(self.tmp, "init", "--bare", "-q", "-b", DEFAULT, str(self.bare))
         self.git(self.tmp, "clone", "-q", str(self.bare), str(self.worker))
@@ -64,7 +68,28 @@ class World:
         self.git(self.worker, "push", "-q", "origin", f"HEAD:refs/heads/{DEFAULT}")
         self.git(self.worker, "push", "-q", "origin", f"HEAD:refs/heads/{BASE}")
         self.git(self.tmp, "clone", "-q", str(self.bare), str(self.conductor))
+        if mode == "gh":
+            self.point(self.conductor, "origin", SLUG, self.bare)
         self.next_pr = 1
+
+    def point(self, clone: Path, remote: str, slug: str, bare: Path) -> None:
+        """Name `slug` as the remote's URL, rewritten by git to the local bare repo `bare`."""
+        url = f"https://{slug}.git"
+        self.git(clone, "config", f"url.{bare}.insteadOf", url)
+        self.git(clone, "remote", "set-url", remote, url)
+
+    def fork(self, slug: str = "github.invalid/fork/repo") -> Path:
+        """A fork on the fake GitHub that shares every object the upstream has."""
+        bare = self.tmp / f"{slug.replace('/', '-')}.git"
+        self.git(self.tmp, "clone", "-q", "--bare", str(self.bare), str(bare))
+        self.set_gh(lambda s: s["forks"].__setitem__(slug, {"bare": str(bare), "prs": {}}))
+        return bare
+
+    def mirror_pr(self, u: dict, slug: str, bare: Path) -> None:
+        """The same reviewed head, open as the same PR number in the fork."""
+        self.git(self.worker, "push", "-q", "-f", str(bare), f"{u['branch']}:refs/heads/{u['branch']}")
+        self.set_gh(lambda s: s["forks"][slug]["prs"].__setitem__(str(u["pr"]), {
+            "headRefName": u["branch"], "baseRefName": BASE, "state": "OPEN", "mergeCommit": None}))
 
     # --- git and the fake GitHub ---------------------------------------------------------
     def git(self, cwd: Path, *args: str, check: bool = True) -> str:

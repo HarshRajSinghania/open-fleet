@@ -788,7 +788,7 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 
 The persisted, fenced single-conductor merge queue (#599), the mechanism behind
 [`runtime/merge-serialization.md`](../runtime/merge-serialization.md). Source
-`runtime/scripts/merge_queue.py:1-62`; behavior pinned by `tests/test_merge_queue.py`, and the
+`runtime/scripts/merge_queue.py:1-65`; behavior pinned by `tests/test_merge_queue.py`, and the
 process-level drills (two conductors, pause-transfer-resume, crash restarts, mutation controls)
 by `tests/test_merge_queue_drills.py`.
 
@@ -799,8 +799,8 @@ Subcommands: `init`, `acquire`, `release`, `enqueue`, `plan`, `merge`, `ack`, `r
 
 Flags: `--db` (default `$OPEN_FLEET_MERGE_QUEUE_DB`, else `$OPEN_FLEET_STATE_DIR/merge-queue.db`,
 else `~/.open-fleet/state/merge-queue.db`: one store per host, so conductors in two clones contend
-for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's identity; default the
-origin URL as `host/owner/name`). `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
+for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's identity: the repository the remote's
+configured URL names, as `host/owner/name`, and the default). `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,
 `--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--gate-timeout`, `--ack`,
 `--max-steps`, `--keep-branch`. `status` and `receipts` are read-only and take `--base` (`receipts` adds
@@ -842,10 +842,17 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
 - **`merge` revalidates first.** A BASE whose tree moved, or a merge tree that is no longer the
   tested one, gets `retest_required`. A head that moved to new content is returned to review
   (`bounced`). A content-identical move (reviewed-sha-freshness.md) keeps the review and pins the
-  new head. Then it sends `gh pr merge <n> --merge --match-head-commit <head>`, or on the git lane
+  new head. Then it sends `gh pr merge <n> --repo <host/owner/name> --merge --match-head-commit <head>`, or on the git lane
   pushes a `commit-tree` of the tested tree with `--force-with-lease=<BASE>:<expected>`. Ancestry
   verifies the result. Only the head of the train merges (`not_head`), and a merged entry must be
   acknowledged (`ack`) before the next merge (`ack_owed`).
+- **One repository.** The lease, the entries and the receipts name one repository, the one the
+  remote's configured URL names (`init` refuses any other `--repo`; the gh lane needs a
+  `host/owner/name` one). Before every remote read and write, each fetch and push URL of the remote
+  must still name it, and every `gh` call passes it as `--repo` with `GH_REPO` dropped. A PR that
+  GitHub reports in another repository, a payload `repo` naming another one, or a PR number whose
+  head is not the payload's branch is refused (`repo_mismatch`, or `pr_branch_mismatch` back to
+  review). Git's `insteadOf` rewrites stay the operator's own transport configuration.
 - **Default-branch promotion stays human.** `init` refuses a BASE equal to `--default`, and
   boarding refuses a payload aimed at it. A PR retargeted there is bounced, and no command writes
   to it.

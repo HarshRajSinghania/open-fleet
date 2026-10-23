@@ -57,7 +57,8 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
-    "test_certification": 39.5,  # #596, measured 2026-10-23 (macOS arm64): 20 posix first runs
+    "test_certification": 50.3,  # #596, re-measured 2026-10-23 (macOS arm64, mean of 51.4 and 49.3):
+    # 20 posix first runs plus the report-format, committed-report and interrupt/signal runs
     "test_capability_harnesses": 0.5,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,

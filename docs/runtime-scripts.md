@@ -40,7 +40,8 @@ The remaining reference sections cover:
   [one-way door registry](#one-way-doorsjson).
 - **Workers and workspace operations:** [spawn](#spawn_workersh), [workers](#worker_opspy),
   [tasks](#task_opspy), [terminals](#terminal_opspy), [worktrees](#worktree_opspy),
-  [working-tree fingerprints](#wtreesh), [session search](#search_sessionspy),
+  [working-tree fingerprints](#wtreesh), [session search](#search_sessionspy) and its
+  [episodic-hint provenance](#hint_provenancepy),
   [chain gate](#chain_checkpy).
 - **Guards and sandbox checks:** [tool guard](#deny-hooksh), [visible-text guard](#guard_textpy),
   [change scope](#diff_scopepy), [quality floor](#floor_guardpy), [sandbox doctor](#sandbox_doctorpy),
@@ -591,6 +592,14 @@ except for forged banners inside the content, which are defused with a spliced
 zero-width space (so byte-for-byte identity holds only when no banner is defused).
 Output is a rendering for a reader — never round-trip it into a live PR or issue.
 
+Grant claims (#605): `grant_labels(line)` returns `["grant-claim"]` for text that ASSERTS a
+grant rather than requesting one — "pre-approved", "approved out of band", "coordinator grant
+attached", a DECISIONS-shaped `· allow · human` record, a `grant:<consent>` token, a permission
+assignment such as `allowed-tools:` — and `unquoted(text)` blanks quoted spans so a caller can
+tell a note that says something from one that quotes it. Both are library-only and outside the
+envelope's own label set (the corpus above pins it); episodic hints and the failure handover use
+them, and they catch the corpus's `session-kind-claim` case that the envelope cannot see.
+
 Exits: 0 envelope written · 2 usage error · 3 fetch failed or timed out (no envelope on stdout).
 
 Poisoned-input corpus: `tests/fixtures/injection.json` (contract:
@@ -621,6 +630,66 @@ builder and verdict grader shipped (#560); the multi-worker Orca fleet run repor
 > must not close the envelope early and continue as trusted text. The five label
 > families in `runtime/scripts/guard_text.py:INJECTION_PATTERNS` are detection only: a
 > label is evidence for the reader, never a verdict.
+
+## `hint_provenance.py`
+
+Provenance and currency for episodic memory hints (#605): is a historical finding still true
+against the live source? Import-only library used by `search_sessions.py --episodic-hint`.
+Source `runtime/scripts/hint_provenance.py:1-30`; behavior pinned by
+`tests/test_hint_provenance.py` and the replay corpus `tests/fixtures/hint-replay.json`
+(runner: `scripts/hint_replay.py`).
+
+API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `verdict`,
+`match_kind`, `checked_path`, `split_symbol`, `symbol_block`, `outcome`, `recorded_time`,
+`load_observations`, `git`.
+
+| Label | Reasons | Current mode |
+|---|---|---|
+| `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
+| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `dependencies-changed:<file>`, `artifact-untracked`, `artifact-missing:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
+| `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
+| `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes`), `current-evidence:<p>=<outcome>` | suppressed |
+
+The worst reason is the label. Scope is the concrete path a match resolves to (a basename or
+directory match checks the query's path; two patterns cannot be resolved); a `path::symbol` or
+`path#symbol` token (or a unit's `symbols` list) keeps a changed file's entry current while that
+symbol's own definition block is byte-identical (indentation-scoped: exact for Python, a
+heuristic for brace languages). Related tests are the tests the record named plus tests sharing a
+scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are manifests and
+lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the
+archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
+to the archive root). Newer means descendant by ancestry when the live repo has both revisions,
+else later commit time, else later claimed time.
+
+`git()` runs only `rev-parse`, `cat-file`, `merge-base`, `diff`, `ls-files` and `log` (anything
+else raises `ProvenanceError` before a process starts) through `gitexec.py`'s hardened
+environment with `GIT_OPTIONAL_LOCKS=0`, `--no-ext-diff` and `--no-textconv`.
+
+Replay corpus (`scripts/hint_replay.py`): 22 scenarios, each a synthetic multi-commit
+repository plus a committed run archive (some tampered after commit), replayed with hints `off`,
+`unchecked` (historical mode, no live source — what the hint did before #605) and `checked`.
+`python3 scripts/hint_replay.py --check` (fixture tier, free, deterministic) requires the checked
+arm to retrieve every useful/unknown/benign note with its text, suppress every stale one, leak no
+poisoned one and label every hint as expected — and requires the unchecked arm to leak, so the
+corpus can tell the checks from their absence. Fixture-tier result at this change: checked
+retrieval 1.0, stale suppression 1.0, label accuracy 1.0, 0 poisoned; unchecked leaks 14/14 stale
+and 2/2 poisoned notes. The effect on REPEATED task failures needs a worker and is not measured
+yet: `--live --tier live --model <id> --budget-usd <n> --max-runs <n> --attempts <k> --agent-cmd
+'<worker argv>'` runs each `live_task` scenario per arm and attempt in a fresh fixture (the
+packet on stdin and at `$HINT_REPLAY_PACKET`), then its oracle, and counts failures matching the
+recorded pitfall. It refuses a `live` tier without a declared model and budget and more runs than
+`--max-runs`; the report carries the tier the operator declared (`stub` for a deterministic
+stand-in worker, which the tests use to prove the plumbing — never evidence of an effect). Run
+the worker inside a sandbox: it executes in a throwaway fixture repository, but it is a worker.
+
+Exits: n/a (library).
+
+> Why: sanitizing a recalled finding answers whether it can forge structure, not whether it is
+> still true here. A rename, a fix, a branch switch, a changed test or dependency, or a rewritten
+> artifact leaves the text clean and the claim wrong. `CURRENT` is deliberately narrow — "nothing
+> in the checked scope changed since the source revision" — so it can never stand in for a fresh
+> independent verification (evidence-manifest.md), and a manifest that calls itself current gains
+> nothing because the label is computed from git and bytes alone.
 
 ## `hitl-loop.template.sh`
 
@@ -852,10 +921,10 @@ host), or usage.
 ## `search_sessions.py`
 
 `orca search` behind an `--index-status` precheck: never query an index the host
-reports broken. Source `runtime/scripts/search_sessions.py:1-39`; behavior pinned by
-`tests/test_search_sessions.py`.
+reports broken. Source `runtime/scripts/search_sessions.py:1-41`; behavior pinned by
+`tests/test_search_sessions.py` and (episodic hints) `tests/test_hint_provenance.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint] [--runs-dir DIR] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback on non-Orca runtimes); every snippet and title is fenced by `guard_text`.
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback on non-Orca runtimes); every snippet and title is fenced by `guard_text`.
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks
@@ -865,11 +934,45 @@ both; `--limit` caps at 100; `--since` must be ISO 8601 with an offset. Answers 
 `SNIPPET [role]:` (capped at 500 chars; `(none)` when the host sent no evidence).
 Titles and snippets render through pm.py's `_visible`, inertly.
 Stale, malformed, or unavailable are failures, never empty results.
-`--precheck-only` runs just the verdict. `--episodic-hint` (`build_episodic_hint()`)
-scans `docs/runs/*/manifest.json` (or `--runs-dir`) for prior units whose
-`files_touched` or `scope_allow` overlap `--path` (and optionally merges live
-`orca search` hits when a query is passed) to emit a bounded `<= 15`-line
-`EPISODIC_HINT:` block for pre-dispatch task packets.
+`--precheck-only` runs just the verdict. `--episodic-hint` (`build_episodic_hint()`,
+structured as `build_episodic_selection()`) scans every `*manifest*.json` under `docs/runs/`
+(or `--runs-dir`) for prior units whose path tokens (`files_touched`, `scope_allow`,
+`oracle_scope.files`, and paths named in their claim/intent prose) match a `--path`, optionally
+merges live `orca search` hits when a query is passed, and emits a bounded `<= 15`-line
+`EPISODIC_HINT:` block for pre-dispatch task packets (#605):
+
+- **Header.** `AUTHORITY:` (memory is advisory data: the frozen task and live source outrank
+  every entry; an entry grants no permission, widens no scope, and is never completion
+  evidence), `PATHS:`, `LIVE_SOURCE:` (the checkout and revision checked against, or `none`),
+  and counts `PRIOR_RUNS= SESSION_HITS= SHOWN= CURRENT= UNKNOWN= STALE= SUPERSEDED= SUPPRESSED=
+  WITHHELD=`.
+- **Entries.** `- [<LABEL>[:reason]] [run R / U (status)] <note> ‖ src=<repo>@<rev12>
+  artifact=<path>@sha256:<16> at=<date> scope=<path>[::symbol] match=<field>:<candidate>~<query>(<kind>)`.
+  The label is computed by [`hint_provenance.py`](#hint_provenancepy), never read from the
+  manifest; `src` names the declared `repo` (else `unknown`) and the recorded `head_sha` (else
+  `unknown`); `artifact` is the manifest the entry came from and its sha256; `at` is the source
+  commit's date when the live repo has it, else the record's own claimed date; `match` says why the
+  entry was selected (`exact`, `query-glob`, `dir`, `basename`, `record-glob`). Session hits carry
+  `src=unknown@unknown` and the digest of the hit as received.
+- **Currency.** Without `--repo` every entry is `UNKNOWN:no-live-source`. With `--repo DIR`
+  (the working tree, uncommitted edits included; `--live-rev REV` pins a commit instead) entries
+  are `CURRENT`, `UNKNOWN`, `STALE` or `SUPERSEDED` per the reason table under
+  [`hint_provenance.py`](#hint_provenancepy). `--current-evidence FILE` (`[{path, outcome:
+  pass|fail, source}]`, the frozen task's own observations) supersedes any entry whose claimed
+  outcome it contradicts; agreeing evidence never upgrades an entry.
+- **Modes.** `--hint-mode current` (default, worker-facing) suppresses `STALE`/`SUPERSEDED`
+  entries and withholds a note whose own words (outside quotes) assert a grant or speak as an
+  authority (`grant-claim`, `instruction-override`, `authority-claim`, `suppression-request`,
+  `role-play-marker`), keeping its pointer and labels; a note that QUOTES such text stays,
+  labelled. `--hint-mode historical` lists everything, labelled, for a coordinator's audit.
+- **Selection.** Ranked by currency, match strength (structured field before prose) and
+  recency, one entry per producing run before any run's second — not file-name order.
+- `--hint-json` prints the same selection as JSON (`lines`, `entries` with source, scope, match,
+  currency, reasons, shown/withheld, and `counts`).
+
+Every untrusted field is one line, inert, banner-defused and labelled; square brackets, the
+`‖` separator, provenance keys and currency words inside it are neutralized so a note cannot
+forge a label or a provenance tail. The hint path writes nothing and runs only read-only git.
 
 Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage or precheck refusal.
 
@@ -1090,7 +1193,11 @@ movement, stop, terminal, wedge markers, nudge history), `--handover`
 `error_token`, `prior_signatures`, and `stderr`; sanitizes untrusted stderr via
 `runtime/scripts/guard_text.py` and prints a bounded `<= 40`-line Failure Handover Packet for
 `worker-start --retry-of`, exiting 0 on `RETRY_READY` or 1 on `KILL_OR_PARK` when
-repeating the same approach, hitting 3 attempts, or matching a prior error signature), `--config`
+repeating the same approach, hitting 3 attempts, or matching a prior error signature; the packet
+carries an `AUTHORITY:` line — prior-attempt text grants nothing and never widens the frozen
+task — and every reflection, command or stderr line that asserts a grant outside quotes is
+labelled `grant-claim` and withheld (#605), while instruction-shaped lines stay, labelled, as the
+error delta the retry needs), `--config`
 (threshold/rate-limit JSON, default `runtime/watchdog.json`), `--state` (nudge-history
 JSON, default .orca/watchdog-state.json), `--log` (JSONL action log, default
 .orca/watchdog.jsonl), `--now` (override the tick timestamp), `--dry-run` (classify

@@ -33,7 +33,9 @@ field is fenced: snippets inside guard_text envelopes, and the
 HIT-line fields (session id, score, title, role) folded to one line with
 forged banners defused and directive-shaped text labelled — a transcript must
 not be able to forge a HIT line or close an envelope. The episodic hint
-applies the same defusing and labelling to every entry.
+applies the same defusing and labelling to every entry, and binds each to its
+source revision, artifact digest and currency against the live source
+(hint_provenance.py, #605): memory is advisory data, never authority.
 
 Exit: 0 ok · 1 runtime/refusal/receipt failure · 2 usage/precheck refusal.
 """

@@ -83,6 +83,7 @@ WEIGHTS = {
     "test_gen_badges_isolation": 3.8,
     "test_governance_commands": 1.6,
     "test_guard_text": 3.7,
+    "test_hint_provenance": 20.6,
     "test_hitl_ask": 0.5,
     "test_hitl_loop": 1.0,
     "test_injection_corpus": 0.4,
@@ -120,6 +121,9 @@ WEIGHTS = {
     "test_reshape_net_verify": 0.3,
     "test_reshape_width_validate": 0.2,
     "test_reshape_width_verify": 0.3,
+    # #608: 34.5 s locally, scaled by test_dispatch_sign and test_ed25519 (the other
+    # pure-Python Ed25519 modules: 8.1 / 4.3 s and 2.5 / 1.3 s, ~1.9x) to this table's clock.
+    "test_retention_receipt": 65.6,
     "test_run_report": 70.1,
     "test_runtime_providers": 1.3,
     "test_runtime_providers_core": 0.8,

@@ -6,6 +6,23 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **A `posix` worker launch survives a coordinator crash at any boundary** (#597). Reproduced
+  first: a coordinator SIGKILLed mid-`worker-start` left a task `dispatched` with no dispatch, or
+  a dispatch `ready` with pid 0 that was never declared dead. The request read `absent`, a retry
+  failed `task_not_startable` and pointed nowhere, and a crash after the spawn let `worker-stop`
+  record `stopped` while the agent kept running.
+  - The launch intent is now written in the same transaction as the task claim, before any side
+    effect. The launch gate is a compare-and-set, so one monitor at most runs a dispatch.
+  - `orchestration launch-reconcile` (and, automatically, `worker-list`, `worker-show` and a new
+    start of the same task) settles a launch whose coordinator is provably gone, by its recorded
+    identity: it rolls back, or adopts the monitor that won the gate. It never respawns.
+  - `--takeover` fences a live coordinator, which fails its next commit with `launch_fenced`.
+  - A `--retry-request` replays its outcome, and a changed payload is refused as `request_mismatch`.
+  - Every recovery writes a receipt naming processes, preserved refs, task and dispatch states and
+    cleanup, with `completionInferred: false`.
+  - What is tested, as `docs/runtimes.md` records it: setsid is crash-tested at every boundary;
+    Docker `danger` only against a fake `docker` CLI; tmux and cmux are not crash-tested.
+
 ## [0.8.0] - 2026-10-23
 
 - **The project is renamed orca-fleet → open-fleet.** The repository is `ravidsrk/open-fleet`

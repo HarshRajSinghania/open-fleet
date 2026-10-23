@@ -1726,5 +1726,222 @@ class TestStateDBNotTouched(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+SEEDS = range(64)
+
+
+def random_unit_life(seed):
+    """A seeded life of task t across W planning waves (2 or 3), beside u (wave 1 only), on one
+    clock: replacements, heads reused or new, worker_done or none, reviews, and each earlier wave
+    ending in a park, a pass or a carry; the last passes and closes.
+
+    Returns (lifecycle events, W, dispatches of t, measured): `measured` is how many latency
+    intervals the stated rules measure, written from the rules and not from the derivation — a
+    pass at a head ends its interval, a park ends one only after a worker_done at that head, an
+    interval already ended is never measured again, and a measurement needs a known worker_done."""
+    rng = random.Random(seed)
+    c = {"run": "rp", "epoch": 1, "clock": "host-a"}
+    u = sha("ee")
+    life = [ev("dispatch.launched", wave_at(1, 2), task="u", dispatch="du", **c),
+            ev("task.done", wave_at(1, 5), task="u", dispatch="du", data={"head_sha": u}, **c),
+            ev("review.verdict", wave_at(1, 6), task="u", dispatch="ru",
+               data={"verdict": "approve", "reviewed_sha": u}, **c),
+            ev("verify.verdict", wave_at(1, 7), task="u", data={"exit": 0, "head_sha": u}, **c),
+            ev("unit.closed", wave_at(1, 8), task="u", data={"head_sha": u}, **c)]
+    waves, dispatches, head, heads = rng.choice([2, 3]), [], None, 0
+    known, ended, measured = set(), set(), 0
+    for k in range(1, waves + 1):
+        if k == 1 or rng.random() < 0.4:
+            dispatches.append(f"d{len(dispatches) + 1}")
+            life.append(ev("dispatch.launched", wave_at(k, 1), task="t", dispatch=dispatches[-1], **c))
+        if head is None or rng.random() < 0.5:
+            heads += 1
+            head = sha(f"{heads:02x}")
+        if rng.random() < 0.65:
+            life.append(ev("task.done", wave_at(k, 10), task="t", dispatch=dispatches[-1],
+                           data={"head_sha": head}, **c))
+            known.add(head)
+        if rng.random() < 0.5:
+            life.append(ev("review.started", wave_at(k, 11), task="t", dispatch=f"r{k}",
+                           data={"head_sha": head}, **c))
+        last = k == waves
+        if last or rng.random() < 0.7:
+            life.append(ev("review.verdict", wave_at(k, 12), task="t", dispatch=f"r{k}",
+                           data={"verdict": "approve", "reviewed_sha": head}, **c))
+        end = "pass" if last else rng.choice(["park", "pass", "carry"])
+        if end == "pass":
+            life.append(ev("verify.verdict", wave_at(k, 20), task="t",
+                           data={"exit": 0, "head_sha": head}, **c))
+            measured += head not in ended and head in known
+            ended.add(head)
+        elif end == "park":
+            life.append(ev("unit.parked", wave_at(k, 20), task="t",
+                           data={"park_class": "needs-human", "head_sha": head}, **c))
+            if head not in ended and head in known:
+                measured += 1
+                ended.add(head)
+        if last:
+            life.append(ev("unit.closed", wave_at(k, 30), task="t", data={"head_sha": head}, **c))
+    return life, waves, dispatches, measured
+
+
+def wave_at(k, minute):
+    """Wave k opens at 10:00 + 60(k-1) minutes; `minute` is minutes after that."""
+    total = (k - 1) * 60 + minute
+    return f"{10 + total // 60:02d}:{total % 60:02d}:00"
+
+
+def planned(life, waves):
+    """The life planned across `waves` waves (t in each, u in wave 1 only), or in one wave."""
+    c = {"run": "rp", "epoch": 1, "clock": "host-a"}
+    frame = [ev("run.start", "09:59:00", data={"coordinator": "c1"}, **c)]
+    for k in range(1, waves + 1):
+        frame += [ev("wave.open", wave_at(k, 0), data={"wave": k, "builders": 1, "reviewers": 1,
+                                                       "tasks": ["t", "u"] if k == 1 else ["t"]}, **c),
+                  ev("wave.close", wave_at(k, 55), data={"wave": k}, **c)]
+    if waves == 1:  # one wave holding the whole life: it closes after the last event
+        frame[-1] = ev("wave.close", wave_at(3, 59), data={"wave": 1}, **c)
+    return frame + life
+
+
+class TestProperties(Base):
+    """Property-style checks over seeded multi-wave lives (PR #638 review, fifth round): the
+    same facts in any order and imported again derive the same rows, and counts are conserved
+    across waves — each dispatch, void, close and latency counted once, in one wave."""
+
+    def unit_t(self, report):
+        return [u for w in report["waves"] for u in w["units"] if u["task"] == "t"]
+
+    def test_any_order_and_any_re_import_derive_the_same_report(self):
+        for seed in SEEDS:
+            life, waves, _d, _m = random_unit_life(seed)
+            evs = planned(life, waves)
+            with self.subTest(seed=seed):
+                rng = random.Random(1000 + seed)
+                log = self.tmp / f"s{seed}" / "events.jsonl"
+                shuffled = evs[:1] + rng.sample(evs[1:], len(evs) - 1)
+                first = events.append_events(log, shuffled)
+                raw = log.read_bytes()
+                again = events.append_events(log, evs[:1] + rng.sample(evs[1:], len(evs) - 1))
+                self.assertEqual({s for _i, s in first}, {"appended"})
+                self.assertEqual({s for _i, s in again}, {"duplicate"})
+                self.assertEqual(log.read_bytes(), raw, "a re-import appends nothing")
+                recorded, _sha, _head = events.read_log(log)
+                # Everything but the raw line digests a unit cites, which follow append order.
+                canonical, derived = self.derive(evs), events.derive(recorded, "rp")
+                for report in (canonical, derived):
+                    for unit in (u for w in report["waves"] for u in w["units"]):
+                        unit.pop("events")
+                self.assertEqual(derived["waves"], canonical["waves"])
+                self.assertEqual(derived["usage"], canonical["usage"])
+
+    def test_counts_are_conserved_across_waves(self):
+        for seed in SEEDS:
+            life, waves, dispatches, measured = random_unit_life(seed)
+            multi, single = self.derive(planned(life, waves)), self.derive(planned(life, 1))
+            with self.subTest(seed=seed, waves=waves):
+                self.assertEqual(multi["record"]["conflicts"], 0)
+                units = self.unit_t(multi)
+                self.assertEqual(len(units), waves)
+                # each dispatch seen once, and each after the first is one retry, somewhere
+                self.assertEqual(sorted({d for u in units for d in u["dispatches"]}), dispatches)
+                self.assertEqual(sum(int(w["metrics"]["retries"]["value"]) for w in multi["waves"]),
+                                 len(dispatches) - 1)
+                self.assertEqual(single["waves"][0]["metrics"]["retries"]["value"],
+                                 str(len(dispatches) - 1))
+                # the close is verified-CLOSED once, and every voided review is counted once
+                self.assertEqual(sum(u["outcome"] == "verified-closed" for u in units), 1)
+                self.assertEqual(sum(int(w["metrics"]["freshness"]["value"]) for w in multi["waves"]),
+                                 int(single["waves"][0]["metrics"]["freshness"]["value"]))
+                # each latency interval is measured once, in the wave its end is placed in
+                self.assertEqual(sum(u["latency"]["value"] is not None for u in units), measured)
+
+    def test_re_importing_a_store_after_every_change_it_allows_never_conflicts(self):
+        """Seeded walks over the changes the local-state store allows a worker-start dispatch —
+        register, claim, abandon before any claim, worker_done with and without a head, exit
+        or death, publication touching updated_at, a provider rewriting the head — importing
+        after each. No import conflicts; the last one is all duplicates; a dispatch is
+        recorded as launched once iff a monitor claimed it."""
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        LocalStateStore = importlib.import_module("runtime.providers.local_state").LocalStateStore
+        ten = calendar.timegm((2026, 10, 20, 10, 0, 0))
+        for seed in range(10):
+            rng = random.Random(seed)
+            root = self.tmp / f"store-{seed}"
+            root.mkdir()
+            store, log = LocalStateStore(root / "runtime.db", env={}), root / "events.jsonl"
+            events.append_events(log, [ev("run.start", "09:00:00", data={"coordinator": "c1"},
+                                          run="run_x", epoch=1, clock="host-a")])
+            rows, statuses = {}, []
+
+            def ingest(log=log, root=root):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    code = events.main(["--log", str(log), "ingest-state", "--db",
+                                        str(root / "runtime.db"), "--run", "run_x", "--epoch", "1",
+                                        "--clock", "host-a"])
+                return code, [ln.split()[0] for ln in out.getvalue().splitlines()]
+            for step in range(20):
+                now = ten + 60 * step
+                ready = [d for d, r in rows.items() if r == "ready"]
+                running = [d for d, r in rows.items() if r == "claimed"]
+                exited = [d for d, r in rows.items() if r == "exited"]
+                ops = ["register"] + ["claim", "abandon"] * bool(ready) \
+                    + ["done", "exit"] * bool(running) + ["touch"] * bool(rows) + ["rewrite"] * bool(exited)
+                op = rng.choice(ops)
+                if op == "register":
+                    disp = f"disp_{len(rows)}"
+                    with store._connect() as conn:
+                        conn.execute("INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, "
+                                     "agent, terminal_handle, state, created_at, updated_at, intent_id) "
+                                     "VALUES (?, ?, 'run_x', '/w', 'claude', ?, 'ready', ?, ?, ?)",
+                                     (disp, f"task_{len(rows) % 2}", f"term_{disp}", now, now, f"i_{disp}"))
+                    rows[disp] = "ready"
+                elif op == "claim":
+                    disp = rng.choice(ready)
+                    self.assertTrue(store.claim_monitor(disp, 4242))
+                    rows[disp] = "claimed"
+                elif op == "abandon":
+                    disp = rng.choice(ready)
+                    self.assertTrue(store.abandon_unlaunched(disp))
+                    rows[disp] = "abandoned"
+                elif op == "done":
+                    disp = rng.choice(running)
+                    attrs = {"headSha": sha("c4")} if rng.random() < 0.5 else None
+                    sent = store.send_message(subject="done", msg_type="worker_done",
+                                              sender=f"term_{disp}", run="run_x", attrs=attrs)
+                    with store._connect() as conn:
+                        conn.execute("UPDATE messages SET created_at = ? WHERE id = ?",
+                                     (now, sent["messageId"]))
+                elif op == "exit":
+                    disp = rng.choice(running)
+                    store.ensure_terminal_or_died(dispatch_id=disp, worker_handle=f"term_{disp}",
+                                                  exit_code=0, worktree_head_sha=sha("d5"),
+                                                  run_id="run_x")
+                    rows[disp] = "exited"
+                elif op == "touch":  # mostly an exited row: publication after a fast death
+                    target = rng.choice(exited if exited and rng.random() < 0.7 else sorted(rows))
+                    with store._connect() as conn:
+                        conn.execute("UPDATE dispatches SET updated_at = ? WHERE dispatch_id = ?",
+                                     (now + 30, target))
+                else:
+                    with store._connect() as conn:
+                        conn.execute("UPDATE dispatches SET head_sha = ? WHERE dispatch_id = ?",
+                                     (sha(f"{step:02x}"), rng.choice(exited)))
+                code, out = ingest()
+                statuses += out
+                with self.subTest(seed=seed, step=step, op=op):
+                    self.assertIn(code, (0, 1))
+                    self.assertNotIn("conflict", out)
+            code, last = ingest()
+            recorded = events.read_log(log)[0]
+            launched = sorted(e["dispatch"] for e in recorded if e["kind"] == "dispatch.launched")
+            with self.subTest(seed=seed):
+                self.assertNotIn("conflict", statuses)
+                self.assertEqual(set(last) - {"duplicate"}, set())
+                self.assertEqual(launched, sorted(d for d, r in rows.items() if r in ("claimed", "exited")))
+                self.assertEqual(events.derive(recorded, "run_x")["record"]["conflicts"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

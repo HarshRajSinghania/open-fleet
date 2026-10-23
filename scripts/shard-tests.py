@@ -75,7 +75,7 @@ WEIGHTS = {
     "test_escape_probe": 0.6,
     "test_eval_coverage": 0.1,
     "test_evals": 12.9,
-    "test_events": 3.2,
+    "test_events": 4.7,
     "test_evidence_run": 7.9,
     "test_external_ci_monitor": 0.1,
     "test_floor_guard": 9.7,

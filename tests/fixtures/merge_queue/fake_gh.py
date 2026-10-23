@@ -7,7 +7,8 @@ names its `headRefName` and `baseRefName`; its head is read live from the bare r
 merge button does: an in-memory merge onto the CURRENT base head, refused when
 `--match-head-commit` does not name the PR head. Every merge call is appended to $FAKE_GH_LOG
 with the pid of the conductor that ran it, so a test can prove which conductor sent and how often.
-$FAKE_GH_MERGE_DELAY holds a merge open for that many seconds (the killed-mid-call drill).
+$FAKE_GH_MERGE_DELAY holds a merge open for that many seconds (the killed-mid-call drill), and a
+state `race_base_write` makes a non-cooperating writer move the base just before one merge lands.
 """
 import fcntl
 import json
@@ -20,9 +21,20 @@ IDENTITY = {"GIT_AUTHOR_NAME": "GitHub", "GIT_AUTHOR_EMAIL": "noreply@github.inv
             "GIT_COMMITTER_NAME": "GitHub", "GIT_COMMITTER_EMAIL": "noreply@github.invalid"}
 
 
-def git(bare, *args, check=True):
+def git(bare, *args, check=True, stdin=None):
     env = {**os.environ, **IDENTITY, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-    return subprocess.run(["git", "-C", bare, *args], capture_output=True, text=True, check=check, env=env)
+    return subprocess.run(["git", "-C", bare, *args], capture_output=True, text=True, check=check, env=env,
+                          input=stdin)
+
+
+def race_base_write(bare, base):
+    """Someone outside the fleet pushes to the base between the queue's checks and the merge."""
+    head = ref(bare, f"refs/heads/{base}")
+    blob = git(bare, "hash-object", "-w", "--stdin", stdin="raced\n").stdout.strip()
+    listing = git(bare, "ls-tree", head).stdout + f"100644 blob {blob}\traced.txt\n"
+    tree = git(bare, "mktree", stdin=listing).stdout.strip()
+    commit = git(bare, "commit-tree", tree, "-p", head, "-m", "external race").stdout.strip()
+    git(bare, "update-ref", f"refs/heads/{base}", commit, head)
 
 
 def ref(bare, name):
@@ -50,6 +62,8 @@ def merge(state, num, argv):
         return 1, "Head branch was modified. Review and try the merge again."
     if pr.get("refuse"):
         return 1, pr["refuse"]
+    if state.pop("race_base_write", False):
+        race_base_write(bare, pr["baseRefName"])
     base_head = ref(bare, f"refs/heads/{pr['baseRefName']}")
     proc = git(bare, "merge-tree", "--write-tree", base_head, head, check=False)
     if proc.returncode != 0:

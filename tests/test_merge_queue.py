@@ -451,6 +451,24 @@ class OfflineAndPromotion(QueueCase):
         self.assertEqual(self.state_of(entry), "queued")
 
 
+class NonCooperatingWriters(QueueCase):
+    def test_a_merge_github_landed_on_a_moved_base_needs_an_explicit_ack(self):
+        # GitHub, not the queue, picks the base commit it merges onto: a write that bypasses the
+        # queue between revalidation and the merge cannot be fenced, only surfaced.
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        self.w.cli("plan", "--token", token)
+        self.w.set_gh(lambda s: s.__setitem__("race_base_write", True))
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out["result"], out["treeMatchesTested"]), (0, "merged", False), out)
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry)
+        self.assertEqual((rc, out["code"]), (1, "untested_tree_merged"), out)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual(out["code"], "ack_owed")
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry, "--accept-untested-tree", "--note", "re-gated")
+        self.assertEqual((rc, out["acceptedUntestedTree"]), (0, True), out)
+
+
 class GitLaneOffline(QueueCase):
     mode = "git"
 

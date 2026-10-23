@@ -1038,6 +1038,14 @@ class MergeQueue:
         if not pred["clean"] or pred["tree_oid"] != e["tested_tree"]:
             return self._retest(token, cfg, e, "merge_tree_changed",
                                 {"baseHead": base_head, "acceptedHead": accepted, "tree": pred["tree_oid"]})
+        local_merge = None
+        if cfg["mode"] == "git":
+            # Built before the intent is recorded: a failure here leaves nothing in flight. Its
+            # tree is the TESTED tree by construction, so the git lane merges exactly what was tested.
+            local_merge = self.git.commit_tree(
+                e["tested_tree"], [base_head, accepted],
+                f"Merge {e['branch']} into {base} (merge queue {e['entry_id']}, unit {e['unit']})")
+            self.git.keep(f"entry/{e['entry_id']}/merge", local_merge)
         # The fenced compare-and-set: the merge intent is recorded under THIS conductor's token,
         # inside the effect lock. A conductor taken over since its lease check stops here.
         now = self.clock()
@@ -1049,8 +1057,8 @@ class MergeQueue:
             if cur.rowcount != 1:
                 raise QueueError("queue_changed", f"{e['entry_id']} is no longer queued")
             self._receipt(conn, repo, base, "merge_intent", {"acceptedHead": accepted, "how": how, "expectedBase": base_head,
-                                                             "testedTree": e["tested_tree"], "mode": cfg["mode"]},
-                          e["entry_id"], lease)
+                                                             "testedTree": e["tested_tree"], "mode": cfg["mode"],
+                                                             "localMerge": local_merge}, e["entry_id"], lease)
         e = {**e, "state": MERGING, "accepted_head": accepted, "expected_base": base_head}
         try:
             self._egress(cfg, e)
@@ -1062,7 +1070,7 @@ class MergeQueue:
                 self._receipt(conn, repo, base, "egress_refused", {"message": str(exc)}, e["entry_id"], lease)
             raise QueueError("egress_failed", f"the egress receipt could not be written, so nothing was sent: {exc}") from exc
         self._boundary("intent_recorded", info)
-        sent, detail = self._send(cfg, e, lock, delete_branch)
+        sent, detail = self._send(cfg, e, lock, delete_branch, local_merge)
         if sent:
             self._boundary("remote_merged", info)
         decision = self._reconcile_decision(cfg, e)
@@ -1099,7 +1107,8 @@ class MergeQueue:
             return {**out, "resolution": "requeued", "reason": "base_moved" if moved_base else "head_moved"}
         return {**out, "resolution": "failed", "reason": "merge_refused", "stderr": detail.get("stderr", "")[-300:]}
 
-    def _send(self, cfg: dict[str, Any], e: dict[str, Any], lock: EffectLock, delete_branch: bool) -> tuple[bool, dict[str, Any]]:
+    def _send(self, cfg: dict[str, Any], e: dict[str, Any], lock: EffectLock, delete_branch: bool,
+              local_merge: str | None) -> tuple[bool, dict[str, Any]]:
         """The remote merge, with the effect lock inherited by the child that performs it."""
         fds = (lock.fd,) if lock.fd is not None else ()
         if cfg["mode"] == "gh":
@@ -1108,12 +1117,8 @@ class MergeQueue:
             except Offline as exc:  # never sent, or sent with no answer: reconcile decides which
                 return False, {"exit": None, "stderr": exc.message}
         else:
-            commit = self.git.commit_tree(
-                e["tested_tree"], [e["expected_base"], e["accepted_head"]],
-                f"Merge {e['branch']} into {cfg['base']} (merge queue {e['entry_id']}, unit {e['unit']})")
-            self.git.keep(f"entry/{e['entry_id']}/merge", commit)
             proc = self.git.run("push", "--porcelain", f"--force-with-lease=refs/heads/{cfg['base']}:{e['expected_base']}",
-                                cfg["remote"], f"{commit}:refs/heads/{cfg['base']}", check=False, pass_fds=fds)
+                                cfg["remote"], f"{local_merge}:refs/heads/{cfg['base']}", check=False, pass_fds=fds)
         return proc.returncode == 0, {"exit": proc.returncode, "stderr": (proc.stderr or "")[-300:]}
 
     def _egress(self, cfg: dict[str, Any], e: dict[str, Any]) -> None:

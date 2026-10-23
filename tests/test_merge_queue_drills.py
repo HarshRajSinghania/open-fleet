@@ -196,6 +196,24 @@ class PauseTransferResume(DrillCase):
         self.assertEqual(rc, 0, out)
         self.assert_landed_once(units)
 
+    def test_an_in_flight_merge_nobody_can_read_blocks_the_handoff(self):
+        units = self.boarded("alpha", "beta")
+        a = self.conductor("A", park_at=[("intent_recorded", 1)])
+        parked = a.until("intent_recorded")
+        a.kill()
+        self.w.set_gh(lambda s: s.__setitem__("offline", True))
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover")
+        self.assertEqual((rc, out["code"]), (1, "in_flight_unknown"), out)
+        lease = self.status()["lease"]
+        self.assertEqual((lease["holder"], lease["epoch"]), ("A", parked["info"]["epoch"]), "handed off on a guess")
+        self.assertEqual(self.status()["inFlight"], [self.status()["line"][0]["entry_id"]])
+        self.w.set_gh(lambda s: s.__setitem__("offline", False))
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "B", "--takeover")
+        self.assertEqual((rc, [d["resolution"] for d in out["reconciled"]]), (0, ["requeued"]), out)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "B", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assert_landed_once(units)
+
 
 class TwoConductors(DrillCase):
     def test_two_competing_conductors_merge_each_unit_exactly_once(self):

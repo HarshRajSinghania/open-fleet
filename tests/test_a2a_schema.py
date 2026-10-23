@@ -427,6 +427,21 @@ class TestReviewFindings(unittest.TestCase):
         self.assertEqual(self.errors_for(lambda c: c["supportedInterfaces"][0].update(
             protocolBinding="tag:acme.org,2026:binding-v1")), [])
 
+    def test_api_key_location_is_query_header_or_cookie(self):
+        # a2a.proto APIKeySecurityScheme.location: 'Valid values are "query", "header", or
+        # "cookie".' Anything else gives a client no defined place to send the key.
+        def api_key(location):
+            return lambda c: c["securitySchemes"].update(
+                key={"apiKeySecurityScheme": {"location": location, "name": "X-API-Key"}})
+
+        for good in ("query", "header", "cookie"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors_for(api_key(good)), [])
+        for bad in ("body", "Header", "path"):
+            with self.subTest(bad=bad):
+                self.assertIn(f"$.securitySchemes['key'].apiKeySecurityScheme.location: {bad!r} "
+                              "is not one of query, header, cookie", self.errors_for(api_key(bad)))
+
 
 if __name__ == "__main__":
     unittest.main()

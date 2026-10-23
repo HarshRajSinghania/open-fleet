@@ -80,10 +80,12 @@ the pin and never fetches anything. It checks:
 - **Semantic rules.** Rules the proto cannot express run once the shape passes:
   - interface URL, binding and `Major.Minor` protocol-version forms;
   - unique skill ids;
-  - `type/subtype` media types;
+  - `type/subtype` media types, with optional `; name=value` parameters;
   - each security requirement names a declared scheme, and each scheme sets one variant;
+  - an API-key scheme's `location` is `query`, `header` or `cookie`, the values the proto allows;
   - signature parts are unpadded base64url;
-  - extension URIs are absolute and unique.
+  - extension URIs and custom binding identifiers are RFC 3986 absolute URIs (a scheme, not
+    necessarily a host, so `tag:` and `urn:` identifiers pass), and extension URIs are unique.
 
 The parser accepts only the constructs that the pinned proto uses. A re-pin that adds
 `reserved`, a nested type, `json_name` or a new option fails to parse. A field type the

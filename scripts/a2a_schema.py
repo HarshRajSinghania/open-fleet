@@ -17,8 +17,9 @@ scripts/vendor/a2a/PIN.json, refused when the bytes drift -- and checks a ProtoJ
   refused (roadmap verification note G4).
 
 Semantic checks the proto cannot express run once the shape passes: interface URL, binding and
-protocol-version forms, unique skill ids, media types, security requirements that name a declared
-scheme, base64url signature parts and unique absolute extension URIs.
+protocol-version forms, unique skill ids, media types (parameters allowed), security requirements
+that name a declared scheme, API-key locations the proto lists, base64url signature parts and
+unique RFC 3986 extension URIs.
 
 The parser covers exactly the proto constructs the pinned file uses and raises on anything else,
 and the validator refuses a message whose field closure holds a type it does not check. A re-pin
@@ -68,6 +69,8 @@ WELL_KNOWN = frozenset({
 VALIDATED_TYPES = frozenset({"string", "bool", "google.protobuf.Struct"})
 
 CORE_BINDINGS = ("JSONRPC", "GRPC", "HTTP+JSON")
+# a2a.proto APIKeySecurityScheme.location: 'Valid values are "query", "header", or "cookie".' (#636)
+API_KEY_LOCATIONS = ("query", "header", "cookie")
 _PROTOCOL_VERSION = re.compile(r"^\d+\.\d+$")
 # A media type (RFC 9110 section 8.3.1): RFC 6838 restricted-name type/subtype, then any number of
 # `;` parameters, each token=token or token="quoted-string" (#636). Used with fullmatch.
@@ -663,6 +666,10 @@ def semantic_errors(card, schema=None):
     for name, scheme in (card.get("securitySchemes") or {}).items():
         if len([v for v in scheme.values() if v is not None]) != 1:
             errors.append(f"$.securitySchemes[{name!r}]: expected exactly one scheme variant")
+        location = (scheme.get("apiKeySecurityScheme") or {}).get("location")
+        if location is not None and location not in API_KEY_LOCATIONS:
+            errors.append(f"$.securitySchemes[{name!r}].apiKeySecurityScheme.location: "
+                          f"{location!r} is not one of {', '.join(API_KEY_LOCATIONS)}")
     requirement_sets = [("$.securityRequirements", card.get("securityRequirements"))]
     requirement_sets += [(f"$.skills[{i}].securityRequirements", s.get("securityRequirements"))
                          for i, s in enumerate(card.get("skills") or [])]

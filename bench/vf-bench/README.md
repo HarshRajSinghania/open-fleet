@@ -520,8 +520,9 @@ decodes text, not containers: a gzip or otherwise compressed copy, a base64- or 
 (inside a JSON string too), an encrypted one, or a case with a value edited is not matched, and is
 found only if its canary survives as text (a canary written with JSON `\uXXXX` escapes counts as
 text). What the scan cannot look into is never reported clean: a JSON document over the parse limit
-(20 MiB; `--max-json-bytes` raises it), a Git LFS pointer and a submodule are each named
-`UNSCANNED` and fail the check (PR #645 review). The protocol states these limits beside each
+(20 MiB; `--max-json-bytes` raises it) or nested too deep to parse, a Git LFS pointer and a
+submodule are each named `UNSCANNED` and fail the check, and the other files are still reported
+(PR #645 review). The protocol states these limits beside each
 check, and `validate` refuses a scan that states none. The tests run it against a synthetic holder built in a
 temp directory; no held-out content is committed anywhere.
 

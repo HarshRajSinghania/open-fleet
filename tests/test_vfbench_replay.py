@@ -1154,5 +1154,44 @@ class TheReferenceAdapterNeverMistakesAMissingVerifierForARed(unittest.TestCase)
         self.assertEqual(r.stdout.strip(), "")
 
 
+
+def _deep_list(depth):
+    node = []
+    for _ in range(depth):
+        node = [node]
+    return node
+
+
+class DeepJsonNeverStopsTheReplay(unittest.TestCase):
+    """Sweep of PR #645 review P2 PRRT_kwDOTWxN9c6vuQzk in replay.py: wherever the replay reads
+    JSON it did not write (an adapter's answer, a report, a corpus case) depth must not escape as
+    an uncaught RecursionError."""
+
+    def test_a_deep_adapter_answer_is_malformed(self):
+        rec = replay.parse_adapter_response("[" * 100_000 + "]" * 100_000)
+        self.assertEqual(rec["status"], "malformed")
+
+    def test_a_deep_report_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:
+            deep = Path(tmp) / "deep.json"
+            deep.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+            with self.assertRaises(replay.ReplayError):
+                replay.load_report(deep)
+            r = _cli("compare", str(deep), str(deep))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_reports_too_deep_to_compare_are_never_a_match(self):
+        a = {"schema": replay.SCHEMA, "versions": _deep_list(5_000)}
+        self.assertTrue(replay.compare(a, json.loads(json.dumps({"schema": replay.SCHEMA}))))
+        self.assertTrue(replay.compare(a, a), "a report too deep to compare was called a match")
+
+    def test_a_deep_corpus_case_does_not_stop_the_preflight(self):
+        trap = {"id": "deep-1", "manifest": {"nest": _deep_list(5_000)},
+                "contract_source": "bench/vf-bench/fixtures/no-such.md"}
+        failures = replay.fixture_failures(ROOT, [trap], set())
+        self.assertEqual([f["kind"] for f in failures], ["fixture-missing"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

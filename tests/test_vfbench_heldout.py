@@ -508,5 +508,68 @@ class TheHolderToolAcceptsWhatTheScannerFinds(unittest.TestCase):
         self.assertTrue(any("JSON object" in p for p in problems), problems)
 
 
+
+def _nested(depth, inner="null"):
+    """A JSON text `depth` arrays deep around `inner`."""
+    return "[" * depth + inner + "]" * depth
+
+
+class DeepJsonNeverStopsTheTools(unittest.TestCase):
+    """PR #645 review (P2): a small, deeply nested JSON file raised RecursionError out of json.loads,
+    the object walk or the canonical form, which nothing caught, so one unrelated file stopped the
+    whole leakage check before it reported the rest. Every JSON read here now survives depth: the
+    scan walks without recursion and names what it still cannot read UNSCANNED, and the holder's
+    tool and the digests and protocol readers refuse such input instead of crashing."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.cases = _holder_cases(self.tmp / "holder", n=1)
+        self.digests, _ = heldout.digest_cases(self.tmp / "holder", CANARY)
+        (self.tmp / "digests.json").write_text(json.dumps(self.digests), encoding="utf-8")
+        self.case_text = self.cases[0].read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_document_too_deep_to_parse_is_unscanned(self):
+        kinds = {k for k, _ in heldout.scan(_nested(100_000).encode(), self.digests)}
+        self.assertEqual(kinds, {"unscanned"})
+
+    def test_a_deep_document_around_a_case_is_never_clean(self):
+        # Parseable on some interpreters, not on others; found or unscanned, never clean.
+        kinds = {k for k, _ in heldout.scan(_nested(1_500, self.case_text).encode(), self.digests)}
+        self.assertTrue(kinds & {"embedded", "unscanned"}, kinds)
+
+    def test_one_deep_file_does_not_stop_the_check(self):
+        repo = self.tmp / "solver"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / "deep.json").write_text(_nested(100_000), encoding="utf-8")
+        (repo / "leak.json").write_text(self.case_text, encoding="utf-8")
+        _commit(repo, "a deep file beside a leak")
+        r = _cli("check", "--digests", str(self.tmp / "digests.json"), "--repo", str(repo))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("UNSCANNED: deep.json", r.stdout)
+        self.assertIn("LEAK verbatim: leak.json", r.stdout)
+
+    def test_the_holder_tool_refuses_a_case_too_deep_to_read(self):
+        where = self.tmp / "deep-holder"
+        where.mkdir()
+        (where / "case.json").write_text(_nested(100_000, json.dumps(CANARY)), encoding="utf-8")
+        _, problems = heldout.digest_cases(where, CANARY)
+        self.assertTrue(any("too deep" in p for p in problems), problems)
+
+    def test_deep_digests_and_protocol_files_are_usage_errors(self):
+        deep = self.tmp / "deep.json"
+        deep.write_text(_nested(100_000), encoding="utf-8")
+        for args in (["check", "--digests", str(deep)], ["validate", "--protocol", str(deep)]):
+            with self.subTest(args=args[0]):
+                r = _cli(*args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

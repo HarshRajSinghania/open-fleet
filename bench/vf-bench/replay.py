@@ -295,6 +295,8 @@ def parse_adapter_response(stdout):
         obj = json.loads(stdout)
     except ValueError:
         return malformed("stdout is not exactly one JSON object")
+    except RecursionError:  # an answer nested past the parser's depth is still no answer
+        return malformed("stdout is JSON nested too deep to read")
     if not isinstance(obj, dict):
         return malformed("stdout is JSON but not an object")
     extra = sorted(set(obj) - {"contract", "verdict", "reasons", "verifier"})
@@ -433,13 +435,19 @@ def driver_main(args):
 # ---------------------------------------------------------------------------------------------
 
 def _named_fixture_paths(obj):
-    if isinstance(obj, str):
-        return [obj] if obj.startswith(FIXTURE_PREFIX) else []
-    if isinstance(obj, list):
-        return [p for x in obj for p in _named_fixture_paths(x)]
-    if isinstance(obj, dict):
-        return [p for x in obj.values() for p in _named_fixture_paths(x)]
-    return []
+    """Every committed-fixture path a case names, walked with an explicit stack: json.loads
+    accepts cases nested deeper than Python's recursion limit (PR #645 review)."""
+    found, stack = [], [obj]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if node.startswith(FIXTURE_PREFIX):
+                found.append(node)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+    return found
 
 
 def fixture_failures(export, traps, builders):
@@ -1012,7 +1020,7 @@ def diff(a, b, path="$"):
 def load_report(path):
     try:
         report = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise ReplayError(f"cannot read report {path}: {exc}") from None
     if not isinstance(report, dict) or report.get("schema") != SCHEMA:
         raise ReplayError(f"{path} is not a {SCHEMA} report")
@@ -1020,7 +1028,12 @@ def load_report(path):
 
 
 def compare(a, b):
-    return diff(comparable(a), comparable(b))
+    """Every mismatch between two reports. Reports too deep to walk are never a match: the
+    comparison fails closed instead of crashing (PR #645 review)."""
+    try:
+        return diff(comparable(a), comparable(b))
+    except RecursionError:
+        return ["$: a report is nested too deep to compare, so it cannot be called a match"]
 
 
 def _write(report, out, summary):

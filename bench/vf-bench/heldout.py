@@ -164,16 +164,20 @@ def validate(protocol, gate=None, traps_dir=None):
 # ---------------------------------------------------------------------------------------------
 
 def _strings(node):
-    """Every string in a parsed JSON value, keys included."""
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for key, value in node.items():
-            yield key
-            yield from _strings(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _strings(value)
+    """Every string in a parsed JSON value, keys included. Walked with an explicit stack, never
+    recursion: json.loads accepts documents nested deeper than Python's recursion limit
+    (PR #645 review)."""
+    stack = [node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            yield node
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                yield key
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
 
 
 def digest_cases(case_dir, canary):
@@ -195,13 +199,19 @@ def digest_cases(case_dir, canary):
         except ValueError:
             problems.append(f"{f.name}: not JSON")
             continue
+        except RecursionError:
+            problems.append(f"{f.name}: nested too deep to read")
+            continue
         if not isinstance(obj, dict):
             problems.append(f"{f.name}: not a JSON object; the scan matches objects, so it could "
                             "never find this case")
             continue
         if not any(canary in s.lower() for s in _strings(obj)):
             problems.append(f"{f.name}: does not carry the split's canary GUID")
-        entries.append({"raw_sha256": sha256(raw), "canonical_sha256": sha256(canonical(obj))})
+        try:
+            entries.append({"raw_sha256": sha256(raw), "canonical_sha256": sha256(canonical(obj))})
+        except RecursionError:
+            problems.append(f"{f.name}: nested too deep to put in canonical form")
     doc = {"kind": DIGESTS_KIND, "protocol": PROTOCOL_ID,
            "canary_sha256": sha256(canary.encode("utf-8")),
            "cases": sorted(entries, key=lambda e: e["raw_sha256"])}
@@ -211,7 +221,7 @@ def digest_cases(case_dir, canary):
 def load_digests(path):
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise UsageError(f"cannot read digests {path}: {exc}") from None
     hexd = re.compile(r"^[0-9a-f]{64}$")
     ok = (isinstance(doc, dict) and doc.get("kind") == DIGESTS_KIND
@@ -278,13 +288,16 @@ def read_blobs(repo, shas):
 
 
 def _objects(node, depth=0):
-    if isinstance(node, dict):
-        yield node, depth
-        for v in node.values():
-            yield from _objects(v, depth + 1)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _objects(v, depth + 1)
+    """Every object in a parsed JSON value with its depth, walked with an explicit stack: a
+    recursive walk died on documents json.loads itself accepts (PR #645 review)."""
+    stack = [(node, depth)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            yield node, depth
+            stack.extend((v, depth + 1) for v in node.values())
+        elif isinstance(node, list):
+            stack.extend((v, depth + 1) for v in node)
 
 
 def decoded_text(blob):
@@ -323,14 +336,30 @@ def scan(blob, digests):
         hits.append(("unscanned", f"a {len(blob)}-byte JSON document over the {JSON_PARSE_LIMIT}-"
                                   "byte parse limit: the canonical and embedded checks did not run"))
     elif text is not None and JSON_START.match(text):
+        # Depth is a reason the scan could not look, never a reason to stop the whole check: one
+        # deeply nested file raised RecursionError out of the scan and ended it before any later
+        # file was reported (PR #645 review). What cannot be parsed or put in canonical form is
+        # named UNSCANNED; everything else in the document is still checked.
         try:
             doc = json.loads(text)
         except ValueError:
             doc = None
+        except RecursionError:
+            doc = None
+            hits.append(("unscanned", "a JSON document nested too deep to parse: the canonical "
+                                      "and embedded checks did not run"))
+        too_deep = False
         for node, depth in _objects(doc) if doc is not None else ():
-            h = sha256(canonical(node))
+            try:
+                h = sha256(canonical(node))
+            except RecursionError:
+                too_deep = True
+                continue
             if h in canon_set:
                 hits.append(("canonical" if depth == 0 else "embedded", h[:16]))
+        if too_deep:
+            hits.append(("unscanned", "objects nested too deep to put in canonical form: the "
+                                      "canonical and embedded checks did not cover them"))
     return sorted(set(hits))
 
 
@@ -385,7 +414,7 @@ def main(argv=None):
         if a.cmd == "validate":
             try:
                 protocol = json.loads(Path(a.protocol).read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, RecursionError) as exc:
                 raise UsageError(f"cannot read {a.protocol}: {exc}") from None
             errors = validate(protocol)
             for e in errors:

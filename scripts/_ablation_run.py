@@ -35,7 +35,9 @@ FAILED cell, kept in the denominator; cells never run (cap, stop) make the pair 
 Harness contract (stub and live): the agent command reads the task on stdin, runs with the cell's
 workspace as cwd, prints Claude stream-json on stdout, and — for a trajectory cell — has its
 wrapper write the #602 event vocabulary to $ABLATION_OUT/trajectory.jsonl. Environment it gets:
-ABLATION_OUT, ABLATION_CELL, ABLATION_ARM, ABLATION_SEED, ABLATION_CATALOG; SHELL=/bin/sh.
+ABLATION_OUT, ABLATION_CELL, ABLATION_ARM, ABLATION_SEED, ABLATION_CATALOG; SHELL=/bin/sh. Every
+path it is handed is absolute: --out is resolved before any cell, and a relative path in the
+harness command is resolved against the invocation's cwd, never the workspace's.
 """
 import contextlib
 import hashlib
@@ -436,6 +438,7 @@ def run_cell(ctx, pair, arm):
     text = fill(prompt["template"], {"payload": ctx["payloads"][mission][arm],
                                      "run_protocol": ctx["protocol"], "task": task_text})
     env = dict(ctx["sandbox"].env)
+    # Absolute by construction (out was resolved before any cell): the command's cwd is the workspace.
     env.update({"ABLATION_OUT": str(cell_dir), "ABLATION_CELL": cell_id, "ABLATION_ARM": arm,
                 "ABLATION_SEED": str(pair["seed"]), "ABLATION_CATALOG": str(ctx["catalog"])})
     if case is not None and ctx["tier"] == "fixture":
@@ -507,6 +510,20 @@ def _catalog(dest):
         for src in sorted((ROOT / sub).glob(pattern)):
             shutil.copyfile(src, target / src.name)
             (target / src.name).chmod(0o444)
+
+
+def absolute_argv(argv):
+    """A cell's command runs with the cell's workspace as its cwd, so a relative path in it would
+    resolve there (#652 review, P1). Every token that names an existing path relative to the
+    invocation's cwd (one with a path separator, not an option) is made absolute first; a bare
+    command name is left for PATH to resolve, as a shell would."""
+    out = []
+    for token in argv:
+        if (not token.startswith("-") and not os.path.isabs(token) and os.sep in token
+                and Path(token).exists()):
+            token = str(Path(token).resolve())
+        out.append(token)
+    return out
 
 
 def _git_head():
@@ -592,9 +609,10 @@ def run(args, api):
     if tier == "fixture":
         ctx["agent_cmd"] = [str(sandbox.stand_in), "-p", "--output-format", "stream-json"]
     else:
-        ctx["agent_cmd"] = shlex.split(args.harness_cmd)
+        ctx["agent_cmd"] = absolute_argv(shlex.split(args.harness_cmd))
     ctx["grader_cmd"] = (f"{shlex.quote(str(sandbox.stand_in))} -p" if tier != "live"
-                         else args.grader_cmd or eval_mod().DEFAULT_GRADER_CMD)
+                         else shlex.join(absolute_argv(shlex.split(args.grader_cmd or
+                                                                   eval_mod().DEFAULT_GRADER_CMD))))
     variants = {}
     for mission in missions:
         rec = api.generate(mission, prereg, out / "variants")
@@ -646,7 +664,7 @@ def run(args, api):
         "schema": RESULTS_SCHEMA, "tier": tier,
         "evidence": NOT_EVIDENCE if tier != "live" else
         "live-unreviewed: becomes evidence only once bound into a run report under docs/runs/",
-        "prereg": {"path": str(args.prereg), "version": prereg["version"],
+        "prereg": {"path": str(Path(args.prereg).resolve()), "version": prereg["version"],
                    "sha256": api.prereg_sha256(prereg),
                    "registration": api.registration_status(prereg)},
         "model": args.model if tier == "live" else ("inert-stand-in" if tier == "fixture" else "stub"),

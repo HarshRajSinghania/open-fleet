@@ -76,11 +76,25 @@ def run_main(argv):
 # deliberately tries to, so the tripwire can be seen catching it.
 STUB = textwrap.dedent(r'''
     import json, os, re, subprocess, sys
-    mode = sys.argv[sys.argv.index("--mode") + 1]
+    args = sys.argv[1:]
+    def opt(name, default=None):
+        return args[args.index(name) + 1] if name in args else default
+    mode = opt("--mode")
     task = sys.stdin.read()
-    if mode == "grader":
-        print("not json")
+    if mode.startswith("grader"):
+        sink = os.environ.get("ABLATION_GRADER_USAGE")
+        if sink:
+            with open(sink + ".argv.json", "w", encoding="utf-8") as fh:
+                json.dump(sys.argv, fh)
+        if mode == "grader-json":
+            print(json.dumps({"type": "result", "result": "not a verdict",
+                              "total_cost_usd": float(opt("--cost", "0"))}))
+        else:
+            print("not json")
         sys.exit(0)
+    out = os.environ["ABLATION_OUT"]
+    with open(os.path.join(out, "stub-env.json"), "w", encoding="utf-8") as fh:
+        json.dump({"argv": sys.argv, "out": out, "catalog": os.environ["ABLATION_CATALOG"]}, fh)
     cues = re.findall(r"([A-Za-z0-9-]+)\.md at ([A-Z][A-Z0-9_-]*)", "\n".join(
         p for p in task.split("\n\n") if p.startswith("DEFERRED READS")))
     catalog = os.environ["ABLATION_CATALOG"]
@@ -100,7 +114,7 @@ STUB = textwrap.dedent(r'''
             fh.write("- AC-2 dropped: out of scope\n")
     elif mode == "call-claude":
         subprocess.run(["claude", "-p", "hello"], input="", capture_output=True)
-    cost = 1.0 if mode == "spend" else 0
+    cost = float(opt("--cost", "1.0" if mode == "spend" else "0"))
     if mode != "no-usage":
         print(json.dumps({"type": "result", "result": "done", "total_cost_usd": cost,
                           "usage": {"input_tokens": len(task) // 4, "output_tokens": 1,
@@ -120,10 +134,18 @@ class SafetyNet(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         return tmp
 
-    def stub_cmd(self, mode):
+    def stub_cmd(self, mode, *extra):
         script = self.tmpdir() / "stub_harness.py"
         script.write_text(STUB, encoding="utf-8")
-        return f"{sys.executable} {script} --mode {mode}"
+        return " ".join([sys.executable, str(script), "--mode", mode, *extra])
+
+    def in_tmp_cwd(self):
+        """A fresh directory as the process cwd for this test (restored after)."""
+        tmp = self.tmpdir()
+        cwd = os.getcwd()
+        os.chdir(tmp)
+        self.addCleanup(os.chdir, cwd)
+        return tmp
 
 
 class RefusalsBeforeAnythingRuns(SafetyNet):
@@ -339,6 +361,39 @@ class TheStubTierMeasuresWhatTheHarnessDid(SafetyNet):
         code, results, _text = self.run_stub("spend")
         self.assertEqual(code, 1)
         self.assertTrue(results["stopped"].startswith("CAP_EXCEEDED"), results["stopped"])
+
+
+class RelativePathsSurviveTheCellCwd(SafetyNet):
+    """#652 review, P1: a cell's command runs with the cell's workspace as cwd, so any relative
+    path the run hands it (--out, ABLATION_OUT, ABLATION_CATALOG, the harness) resolved there."""
+
+    def test_a_relative_out_runs_every_cell(self):
+        tmp = self.in_tmp_cwd()
+        code, _out, err = run_main(["run", "--dry-run", "--cost-cap-usd", "0", "--mission", "review-it",
+                                    "--task", "behavioral-4", "--repeats", "1", "--out", "results"])
+        self.assertEqual(code, 0, err)
+        results = json.loads((tmp / "results" / "results.json").read_text())
+        self.assertEqual(results["safety"]["stand_in_runs"]["agent"], 2)
+        for cell in results["cells"]:
+            self.assertEqual(cell["errors"], [], cell["cell"])
+        self.assertTrue(os.path.isabs(results["agent_cmd"][0]))
+        self.assertTrue(os.path.isabs(results["prereg"]["path"]))
+
+    def test_a_relative_harness_gets_absolute_paths(self):
+        tmp = self.in_tmp_cwd()
+        (tmp / "tools").mkdir()
+        (tmp / "tools" / "stub.py").write_text(STUB, encoding="utf-8")
+        code, _out, err = run_main(["run", "--tier", "stub", "--harness-cmd",
+                                    f"{sys.executable} tools/stub.py --mode plain",
+                                    "--cost-cap-usd", "0", "--mission", "review-it", "--task", "behavioral-4",
+                                    "--repeats", "1", "--out", "results"])
+        self.assertEqual(code, 0, err)
+        for arm in ("baseline", "reduced"):
+            cell_dir = tmp / "results" / "cells" / "review-it" / "behavioral-4" / "r0" / arm
+            seen = json.loads((cell_dir / "stub-env.json").read_text())
+            self.assertTrue(os.path.isabs(seen["out"]) and os.path.isabs(seen["catalog"]), seen)
+            self.assertTrue(Path(seen["catalog"], "runtime", "evidence-manifest.md").is_file())
+            self.assertTrue(os.path.isabs(seen["argv"][0]))
 
 
 class TheLiveGateEnforcesTheCap(SafetyNet):

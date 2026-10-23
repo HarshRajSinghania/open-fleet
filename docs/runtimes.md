@@ -171,7 +171,11 @@ deletes a worktree or a branch. Its receipt always carries `completionInferred: 
 only becomes `completed` through the worker's own terminal mail
 (`ensure_terminal_or_died`). A monitor that vanished gets the synthetic `worker_died`. When that
 monitor ran a `danger` sandbox, its private git dir is first synced back (`docker rm -f`, then
-`sync_sandbox_git`), so the worker's commits survive.
+`sync_sandbox_git`), so the worker's commits survive. A monitor writes `<lane>/exit.json` before it
+settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
+exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
+recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a
+dispatch, which stayed `ready` with no `worker_died`.
 
 **What is tested** ([`tests/test_posix_crash_recovery.py`](../tests/test_posix_crash_recovery.py),
 [`tests/test_posix_docker_crash.py`](../tests/test_posix_docker_crash.py)):

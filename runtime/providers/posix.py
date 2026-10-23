@@ -1893,11 +1893,17 @@ if {repr(self.backend)} == "cmux":
                     d = self._dispatch_row(disp_id) or d  # a monitor claimed the gate first: adopt it
             if not resolution:
                 mon = self._monitor_process(d, lane)
+                recorded = None
+                if not mon["alive"] and d["state"] not in ("died", "completed") and exit_file.is_file():
+                    # Its monitor recorded the exit, then died before settling it (#597 review).
+                    recorded = self._settle_recorded_exit(d)
                 if mon["alive"]:
                     self._publish_adopted(d, mon)
                     mon["action"], resolution = "adopted", "live"
-                elif exit_file.is_file() or d["state"] in ("died", "completed"):
+                elif d["state"] in ("died", "completed"):
                     mon["action"], resolution = "none", "exited"  # its own monitor already settled the dispatch
+                elif recorded is not None:
+                    mon["action"], mon["exit"], resolution = "settled_recorded_exit", recorded, "exited"
                 elif mon["alive"] is False:
                     vanished = self._report_vanished(d)
                     mon["action"], resolution = "reported_dead", "exited"
@@ -2079,6 +2085,38 @@ if {repr(self.backend)} == "cmux":
             out["error"] = str(exc)[:300]
         return out
 
+    def _settle_recorded_exit(self, r: Any) -> dict[str, Any] | None:
+        """Finish what a monitor that died after writing `exit.json` never did (#597 review).
+
+        The monitor records the exit and only THEN settles the dispatch, so a death between the
+        two left it `ready` with no `worker_died`. The recorded exit code and head settle it through
+        `ensure_terminal_or_died` (atomic: a monitor still finishing and this call never both
+        report), so completion is still only ever the worker's own mail. None: no readable record.
+        """
+        lane = Path(r["lane_dir"]) if r["lane_dir"] else None
+        if lane is None:
+            return None
+        try:
+            rec = json.loads((lane / "exit.json").read_text(encoding="utf-8"))
+            rc = int(rec["rc"])
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        head = str(rec.get("headSha") or "")
+        tail = ""
+        with contextlib.suppress(OSError):
+            tail = (lane / "events.jsonl").read_text(encoding="utf-8", errors="replace")[-500:]
+        with self.state._connect() as conn:
+            conn.execute("UPDATE terminals SET state = 'exited' WHERE handle = ? AND state = 'running'", (r["terminal_handle"],))
+        died = self.state.ensure_terminal_or_died(
+            dispatch_id=r["dispatch_id"],
+            worker_handle=r["terminal_handle"],
+            exit_code=rc,
+            last_tail=tail,
+            worktree_head_sha=head,
+            run_id=r["run_id"],
+        )
+        return {"exitCode": rc, "headSha": head, "died": died}
+
     def _report_vanished(self, r: Any) -> dict[str, Any]:
         """A monitor that died without reporting: salvage a sandbox's commits, then `worker_died`."""
         salvage = self._salvage_sandbox(r)
@@ -2200,7 +2238,12 @@ if {repr(self.backend)} == "cmux":
         for r in rows:
             if r["state"] not in ("ready", "running", "retained") or r["task_id"] is None:
                 continue
-            if self._backend_alive(r) is False and not (Path(r["lane_dir"] or "/nonexistent") / "exit.json").is_file():
+            if self._backend_alive(r) is not False:
+                continue
+            # A monitor that died between recording its exit and settling it is settled from the
+            # record; skipping it left the dispatch live forever (#597 review).
+            exit_file = Path(r["lane_dir"] or "/nonexistent") / "exit.json"
+            if not exit_file.is_file() or self._settle_recorded_exit(r) is None:
                 self._report_vanished(r)
 
     def _dispatch_rows(self, where: str = "", params: tuple[Any, ...] = ()) -> list[Any]:

@@ -790,5 +790,71 @@ class TestOneSettlerPerIntent(CrashRecoveryBase):
         self.assert_no_worker_ran()
 
 
+class TestRecordedExitIsSettled(CrashRecoveryBase):
+    """A monitor that wrote `exit.json` and died before `ensure_terminal_or_died` (#597 review).
+
+    Staged without a real monitor: a pid that has exited claims the launch gate and the lane
+    gets the exit record the generated monitor writes, so the death between the two is exact.
+    """
+
+    def dead_pid(self):
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        return proc.pid
+
+    def record_exit(self, lane, *, rc, head, pid):
+        lane.mkdir(parents=True, exist_ok=True)
+        (lane / "events.jsonl").write_text(json.dumps({"type": "turn_started"}) + "\nagent said goodbye\n", encoding="utf-8")
+        (lane / "exit.json").write_text(json.dumps({"rc": rc, "ts": time.time(), "headSha": head, "monitorPid": pid}), encoding="utf-8")
+
+    def died_payloads(self, prov, dispatch_id):
+        return [json.loads(m["payload"]) for m in prov.check_messages(terminal="coordinator", run="run-r04")["messages"]
+                if m["subject"].startswith(f"worker_died:{dispatch_id}")]
+
+    def test_reconcile_settles_an_exit_the_dead_monitor_recorded(self):
+        info = self.crash_at("registered", retry_request="req-1")
+        prov = self.restart()
+        pid = self.dead_pid()
+        self.assertTrue(prov.state.claim_monitor(info["dispatchId"], pid), "the monitor passed the launch gate")
+        head = _git("rev-parse", "HEAD", cwd=info["worktree"]).stdout.strip()
+        self.record_exit(Path(info["laneDir"]), rc=0, head=head, pid=pid)
+        r = prov.launch_reconcile(request="req-1")["reconciled"][0]
+        monitor = [p for p in r["processes"] if p["role"] == "monitor"][0]
+        self.assertEqual((r["resolution"], monitor["alive"]), ("exited", False))
+        self.assertEqual(r["dispatch"], {"id": info["dispatchId"], "before": "ready", "after": "died"},
+                         "a recorded exit is settled, never left ready")
+        self.assertEqual(monitor["action"], "settled_recorded_exit")
+        self.assertEqual(monitor["exit"]["exitCode"], 0)
+        died = self.died_payloads(prov, info["dispatchId"])
+        self.assertEqual([(d["exitCode"], d["headSha"]) for d in died], [(0, head)], "the recorded exit, not a guess")
+        self.assertIn("agent said goodbye", died[0]["lastTail"])
+        self.assertEqual(r["task"]["after"], "dispatched", "an exit 0 without terminal mail never completes the task")
+        self.assertIs(r["completionInferred"], False)
+        self.assertEqual(prov.request_show("req-1")["state"], "completed")
+        self.assertEqual([w["state"] for w in prov.worker_list()["workers"]], ["died"])
+        self.assertEqual(len(self.died_payloads(prov, info["dispatchId"])), 1, "settling twice never sends twice")
+
+    def test_liveness_sweep_settles_an_exit_the_dead_monitor_recorded(self):
+        prov = self.restart()
+        rows = {}
+        for label, pid in (("dead", self.dead_pid()), ("finishing", os.getpid())):
+            disp, lane = f"disp_{label}", self.base / "state" / "lanes" / f"disp_{label}"
+            self.record_exit(lane, rc=3, head="abc123", pid=pid)
+            with prov.state._connect() as conn:
+                conn.execute(
+                    "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, terminal_handle, state, pid, backend, "
+                    "lane_dir, monitor_pid, created_at, updated_at) VALUES (?, ?, 'run-r04', '', 'claude', ?, 'ready', ?, 'setsid', ?, ?, 0, 0)",
+                    (disp, self.task, f"term_{label}", pid, str(lane), pid),
+                )
+            rows[label] = disp
+        states = {w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}
+        self.assertEqual(states[rows["dead"]], "died", "the sweep settles what the dead monitor recorded")
+        self.assertEqual(states[rows["finishing"]], "ready", "a live monitor still settles its own exit")
+        self.assertEqual([(d["exitCode"], d["headSha"]) for d in self.died_payloads(prov, rows["dead"])], [(3, "abc123")])
+        self.assertEqual(self.died_payloads(prov, rows["finishing"]), [])
+        self.assertEqual(prov.worker_show(rows["dead"])["worker"]["state"], "died")
+        self.assertEqual(len(self.died_payloads(prov, rows["dead"])), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

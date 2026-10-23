@@ -472,6 +472,8 @@ class TestFirstRunFixture(Tripwired):
             with self.subTest(harness=h, profile=prof):
                 self.assert_go(p, receipt)
                 self.assertEqual(receipt["route"]["harness"], h)
+                if prof == "ro":  # #596: the relay finds the completion line in every output shape
+                    self.assertEqual(receipt["facts"]["settled"], {"state": "completed", "signal": "worker_done"})
 
     def in_process(self, *args):
         """first_run.main() in this process, so a test can mutate what it binds."""
@@ -510,6 +512,32 @@ class TestFirstRunFixture(Tripwired):
             rc, receipt = self.in_process("--profile", "rw")
         self.assertEqual((rc, receipt["failure"]["step"]), (1, "evidence"))
         self.assertIn("the claim is not evidence", receipt["failure"]["recovery"])
+
+    # The stand-in reads the completion line its ro assignment names, as a compliant model would.
+    FOOTER = 'done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)'
+
+    def test_a_ro_worker_that_reports_completion_settles_completed_and_is_go(self):
+        # #596 follow-up: posix relays a ro worker's completion line as its worker_done, so a ro
+        # unit may now settle `completed`; the run must take that as the worker's own report.
+        rc, receipt = self.in_process("--profile", "ro")
+        self.assertEqual(rc, 0, json.dumps(receipt.get("failure"), indent=1))
+        self.assertEqual(receipt["facts"]["settled"], {"state": "completed", "signal": "worker_done"})
+
+    def test_a_ro_worker_deaf_to_the_footer_is_still_go_on_a_clean_death(self):
+        self.assertIn(self.FOOTER, first_run.INERT_WORKER)
+        deaf = first_run.INERT_WORKER.replace(self.FOOTER, "done = None")
+        with mock.patch.object(first_run, "INERT_WORKER", deaf):
+            rc, receipt = self.in_process("--profile", "ro")
+        self.assertEqual(rc, 0, json.dumps(receipt.get("failure"), indent=1))
+        self.assertEqual(receipt["facts"]["settled"], {"state": "died", "signal": "worker_died"})
+
+    def test_a_ro_worker_that_reports_failure_is_no_go(self):
+        failed = first_run.INERT_WORKER.replace("{done.group(1)} succeeded", "{done.group(1)} failed")
+        self.assertNotEqual(failed, first_run.INERT_WORKER, "the mutant must change the stand-in")
+        with mock.patch.object(first_run, "INERT_WORKER", failed):
+            rc, receipt = self.in_process("--profile", "ro")
+        self.assertEqual((rc, receipt["failure"]["step"]), (1, "result"))
+        self.assertIn("reported failed", receipt["failure"]["detail"])
 
     def test_live_mode_without_the_harness_stops_at_prerequisites(self):
         bare = os.pathsep.join([os.path.dirname(sys.executable), "/usr/bin", "/bin"])

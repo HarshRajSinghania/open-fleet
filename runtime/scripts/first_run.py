@@ -28,9 +28,10 @@ ONE code path, two kinds of worker:
       binds it into docs/runs/ (runtime/providers/certification.json says which cells hold).
 
 Profiles: `ro` (default; the review-it shape — the worker prints its report and has no tool to
-send mail, so posix records its clean exit as `worker_died (exit=0)` and the coordinator commits
-the report it read from the transcript) and `rw` (the worker commits the report itself and sends
-`worker_done`; its HEAD is re-read from git, never taken from the claim).
+send mail. posix relays the completion line its assignment names as its `worker_done` and records a
+clean exit without that line as `worker_died (exit=0)`; either settles the unit, and the
+coordinator commits the report it read from the transcript, #596) and `rw` (the worker commits the
+report itself and sends `worker_done`; its HEAD is re-read from git, never taken from the claim).
 
 The reviewed target is a two-commit repository the run synthesizes, or `--target <repo>`
 (cloned into the sandbox, never modified) with `--base/--head`. Every artifact lives in one
@@ -269,6 +270,11 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
                          "scripts", "send_msg.py"), "--type", "worker_done", "--outcome", "succeeded",
                          "--subject", f"worker_done:{dispatch}",
                          "--payload", json.dumps({"head": head, "report": rel})]).returncode
+# A ro launch cannot send mail; its assignment ends with the provider's completion footer, and
+# a compliant worker ends its answer with the line it names (posix relays it as worker_done, #596).
+done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
+if done:
+    report += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
 answer(report)
 sys.exit(rc)
 '''
@@ -648,20 +654,28 @@ class FirstRun:
         mail = self.rec.run(py("check_reply.py", "check", "--terminal", "coordinator"))
         msgs = parse_mail(mail.stdout)
         mine = [m for m in msgs if disp in m["subject"]]
-        expected = "completed" if self.args.profile == "rw" else "died"
-        if state["v"] != expected:
-            raise StepFailed(f"dispatch settled {state['v']!r}, expected {expected!r}: {mine}",
+        # rw reports with send_msg.py. A ro worker has no tool to send mail: posix relays the
+        # completion line its assignment names as its worker_done (#596), and records a clean exit
+        # without that line as worker_died (exit=0). Either is the ro worker's settled report.
+        expected = ("completed",) if self.args.profile == "rw" else ("completed", "died")
+        if state["v"] not in expected:
+            raise StepFailed(f"dispatch settled {state['v']!r}, expected {' or '.join(map(repr, expected))}: {mine}",
                              f"worker_ops.py read --dispatch {disp} --source transcript")
-        if self.args.profile == "rw":
+        if state["v"] == "completed":
             done = [m for m in mine if m["type"] == "worker_done"]
             if not done:
                 raise StepFailed("no worker_done from this dispatch", "the worker never reported; read its transcript")
-            self.facts["worker_claim"] = done[0]["payload"]
+            if self.args.profile == "rw":
+                self.facts["worker_claim"] = done[0]["payload"]
+            elif (outcome := (done[0]["payload"] or {}).get("outcome")) != "succeeded":
+                raise StepFailed(f"the ro worker reported {outcome or 'no outcome'}, not succeeded: {done[0]}",
+                                 f"worker_ops.py read --dispatch {disp} --source transcript")
+            self.facts["settled"] = {"state": "completed", "signal": "worker_done"}
         else:
-            # A ro worker has no tool to send mail: posix records its CLEAN exit as worker_died.
             died = [m for m in mine if m["type"] == "escalation" and m["subject"].startswith("worker_died:")]
             if not died or (died[0]["payload"] or {}).get("exitCode") != 0:
                 raise StepFailed(f"ro worker did not exit cleanly: {died}", f"worker_ops.py read --dispatch {disp}")
+            self.facts["settled"] = {"state": "died", "signal": "worker_died"}
         read = self.rec.run(py("worker_ops.py", "read", "--dispatch", disp, "--source", "transcript"))
         if read.returncode != 0 or "SOURCE=transcript" not in read.stdout:
             raise StepFailed(f"transcript read not certified: {(read.stderr or read.stdout).strip()[:200]}")

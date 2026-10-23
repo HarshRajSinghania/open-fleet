@@ -1441,8 +1441,9 @@ class LocalStateStore:
                 msg_type="worker_done",
                 subject=f"worker_done:{dispatch_id}",
                 outcome=outcome,
-                payload=json.dumps({"dispatchId": dispatch_id, "headSha": head_sha, "via": "ro-completion-line"},
-                                   sort_keys=True),
+                # The outcome rides the payload too: check_reply.py prints the payload, not the column.
+                payload=json.dumps({"dispatchId": dispatch_id, "headSha": head_sha, "outcome": outcome,
+                                    "via": "ro-completion-line"}, sort_keys=True),
                 attrs={"relayed": "ro-completion-line", "dispatchId": dispatch_id},
             )
             conn.execute("COMMIT")

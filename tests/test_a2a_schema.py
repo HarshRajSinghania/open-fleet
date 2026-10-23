@@ -601,6 +601,80 @@ class TestReviewFindings(unittest.TestCase):
         self.assertEqual(self.mod.Schema(package="lf.a2a.v1\n", imports=[], messages={},
                                          enums={}, services={}).major, "")
 
+    def test_struct_values_are_walked_and_every_number_is_finite(self):
+        # PR #636 review: the Struct check stopped at the outer object, and valid JSON such as
+        # 1e999 reads as infinity. google.protobuf.Struct carries numbers as IEEE doubles, so NaN,
+        # an infinity or an integer past the double range has no faithful ProtoJSON form.
+        params = "$.capabilities.extensions[0].params"
+        header = "$.signatures[0].header"
+
+        def struct(value, field="params"):
+            if field == "header":
+                return lambda c: c["signatures"][0].update(header=value)
+            return lambda c: c["capabilities"].update(
+                extensions=[{"uri": "https://e.org/x/v1", "params": value}])
+
+        cases = {
+            "1e999": (struct({"value": float("inf")}),
+                      f"{params}['value']: inf is not a finite number"),
+            "-Infinity": (struct({"value": float("-inf")}),
+                          f"{params}['value']: -inf is not a finite number"),
+            "NaN nested in a list": (struct({"a": {"b": [1, float("nan")]}}),
+                                     f"{params}['a']['b'][1]: nan is not a finite number"),
+            "integer past a double": (struct({"big": 2 ** 1024}),
+                                      f"{params}['big']: integer overflows a double"),
+            "not a JSON value": (struct({"t": (1, 2)}), f"{params}['t']: tuple is not a JSON value"),
+            "non-string key": (struct({1: "x"}), f"{params}: key 1 is not a string"),
+            "signature header": (struct({"jwk": {"x": [float("inf")]}}, "header"),
+                                 f"{header}['jwk']['x'][0]: inf is not a finite number"),
+        }
+        for label, (fn, expected) in cases.items():
+            with self.subTest(label):
+                errs = self.errors_for(fn)
+                self.assertTrue(any(e.startswith(expected) for e in errs), errs)
+        deep = {}
+        cursor = deep
+        for _ in range(5000):  # a stack walk, so nesting depth is no RecursionError
+            cursor["a"] = {}
+            cursor = cursor["a"]
+        cursor["n"] = 1.5
+        good = {"null": None, "bool": True, "text": "x", "max": 1.7976931348623157e308,
+                "negative zero": -0.0, "int": 2 ** 64, "int near max": 10 ** 308,
+                "lists": [[], {}, [1.5, None, "y", False]], "deep": deep}
+        for field in ("params", "header"):
+            with self.subTest(good=field):
+                self.assertEqual(self.errors_for(struct(good, field)), [])
+
+    def test_the_cli_reports_unrepresentable_or_unreadable_json_without_a_traceback(self):
+        # 1e999 and the NaN/Infinity tokens parse to non-finite floats; a 5000-digit integer, deep
+        # nesting and non-UTF-8 bytes raise ValueError or RecursionError while reading (#636).
+        def with_params(token):
+            card = sample()
+            card["capabilities"]["extensions"] = [{"uri": "https://e.org/x/v1",
+                                                   "params": {"value": "@N@"}}]
+            return json.dumps(card).replace('"@N@"', token).encode("utf-8")
+
+        files = {
+            "overflow.json": (with_params("1e999"), "inf is not a finite number"),
+            "nan.json": (with_params("NaN"), "nan is not a finite number"),
+            "infinity.json": (with_params("-Infinity"), "-inf is not a finite number"),
+            "digits.json": (with_params("9" * 5000), "unreadable"),
+            "deep.json": (b"[" * 100000, "unreadable"),
+            "latin1.json": (b'{"name": "caf\xe9"}', "unreadable"),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, (data, expected) in files.items():
+                with self.subTest(name):
+                    path = Path(tmp) / name
+                    path.write_bytes(data)
+                    p = subprocess.run([sys.executable, str(SCRIPT), str(path), str(SAMPLE)],
+                                       capture_output=True, text=True)
+                    self.assertEqual(p.returncode, 1, p.stderr)
+                    self.assertNotIn("Traceback", p.stderr)
+                    self.assertIn(f"A2A_CARD=invalid {path}", p.stderr)
+                    self.assertIn(expected, p.stderr)
+                    self.assertIn(f"A2A_CARD=valid {SAMPLE}", p.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

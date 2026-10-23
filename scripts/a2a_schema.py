@@ -11,7 +11,8 @@ scripts/vendor/a2a/PIN.json, refused when the bytes drift -- and checks a ProtoJ
 * every key is a field of the message, by its lowerCamelCase JSON name or its proto name but not
   both; an unknown key is refused, as a ProtoJSON parser refuses it by default;
 * every value has the field's JSON shape (string, bool, object, array, map,
-  google.protobuf.Struct), and at most one member of a oneof is set;
+  google.protobuf.Struct, every nested Value walked and every number a finite double), and at
+  most one member of a oneof is set;
 * `(google.api.field_behavior) = REQUIRED` is enforced, including the part proto3 parsing alone
   cannot see: a required string or repeated field that is empty is unset on the wire, so it is
   refused (roadmap verification note G4).
@@ -37,6 +38,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -513,6 +515,41 @@ def _is_unset(f, value):
     return value in ("", False)
 
 
+def _check_struct(value, path, errors):
+    """A google.protobuf.Struct with every nested google.protobuf.Value checked (#636).
+
+    Struct carries numbers as IEEE doubles, so NaN, an infinity (Python's json reads the NaN and
+    Infinity tokens, and 1e999 overflows to inf) or an integer past the double range has no
+    faithful ProtoJSON form. Walked with a stack, so nesting depth cannot raise RecursionError.
+    """
+    if not isinstance(value, dict):
+        errors.append(f"{path}: expected a JSON object (google.protobuf.Struct)")
+        return
+    todo = [(path, value)]
+    while todo:
+        where, val = todo.pop()
+        if isinstance(val, dict):
+            for key in [k for k in val if not isinstance(k, str)]:
+                errors.append(f"{where}: key {key!r} is not a string (google.protobuf.Struct)")
+            todo.extend(reversed([(f"{where}[{k!r}]", v) for k, v in val.items()
+                                  if isinstance(k, str)]))
+        elif isinstance(val, list):
+            todo.extend(reversed([(f"{where}[{i}]", v) for i, v in enumerate(val)]))
+        elif val is None or isinstance(val, (str, bool)):
+            continue
+        elif isinstance(val, float):
+            if not math.isfinite(val):
+                errors.append(f"{where}: {val!r} is not a finite number (google.protobuf.Value)")
+        elif isinstance(val, int):
+            try:
+                float(val)
+            except OverflowError:
+                errors.append(f"{where}: integer overflows a double (google.protobuf.Value)")
+        else:
+            errors.append(f"{where}: {type(val).__name__} is not a JSON value "
+                          "(google.protobuf.Value)")
+
+
 def _check_single(schema, type_name, value, path, errors):
     if type_name == "string":
         if not isinstance(value, str):
@@ -521,8 +558,7 @@ def _check_single(schema, type_name, value, path, errors):
         if not isinstance(value, bool):
             errors.append(f"{path}: expected true or false")
     elif type_name == "google.protobuf.Struct":
-        if not isinstance(value, dict):
-            errors.append(f"{path}: expected a JSON object (google.protobuf.Struct)")
+        _check_struct(value, path, errors)
     elif type_name in schema.messages:
         _check_message(schema, schema.messages[type_name], value, path, errors)
     else:
@@ -840,7 +876,9 @@ def main(argv=None):
         for path in ns.cards:
             try:
                 card = json.loads(Path(path).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            # ValueError covers bad JSON, non-UTF-8 bytes and an integer past Python's digit
+            # limit; RecursionError covers nesting too deep to decode (#636).
+            except (OSError, ValueError, RecursionError) as exc:
                 print(f"A2A_CARD=invalid {path}\n  unreadable: {exc}", file=sys.stderr)
                 status = 1
                 continue

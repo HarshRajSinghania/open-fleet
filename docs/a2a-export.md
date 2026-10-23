@@ -73,7 +73,8 @@ the pin and never fetches anything. It checks:
   name or the proto name is accepted, but not both. An unknown key is refused, as a ProtoJSON
   parser refuses it by default.
 - **Shapes.** Each value must have the field's JSON shape, and at most one member of a `oneof`
-  may be set.
+  may be set. A `google.protobuf.Struct` is checked all the way down: every nested value is a
+  JSON value and every number a finite double, so `NaN`, `Infinity` and `1e999` are refused.
 - **Required fields.** A field annotated `(google.api.field_behavior) = REQUIRED` must be
   present and must not be empty. An empty required string or list is refused because proto3
   does not send it, so successful proto3 parsing alone cannot catch it.

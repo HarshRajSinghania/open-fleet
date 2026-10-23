@@ -42,6 +42,21 @@ truth is `.claude-plugin/plugin.json`.
     controls that delete the fencing check or the freshness check make the drills fail. No live
     GitHub run has exercised the gh lane, and the guarantee covers one host's cooperating writers,
     not arbitrary GitHub users.
+- **Concurrent openers of one `posix` state store no longer die with `database is locked`.**
+  `LocalStateStore` switched every connection to WAL first, and SQLite refuses a contender for
+  that one-time switch at once rather than through the busy handler. So when several processes
+  opened a fresh store, or one an older schema wrote in rollback-journal mode, an opener that
+  lost the switch failed. On `main` at `4def361f69`, with eight openers per store, 35 of 160
+  fresh-store and 65 of 160 older-store openers failed, and 139 of 400 and 76 of 400 under CPU
+  load. Setting `busy_timeout` before the switch alone still lost 35 and 44 of 160, because
+  `connect(timeout=30)` already set it. Each connection now sets `busy_timeout` first, then backs
+  off and re-reads the mode until the first switch lands; schema creation and the column
+  migration run in one `BEGIN IMMEDIATE` transaction that re-reads the columns under the lock, so
+  a failed upgrade no longer leaves a half-upgraded store. This is PR #647's fix for the same race
+  in #599's queue. `tests/test_local_state_open_race.py` races eight barrier-released openers over
+  fresh and older-schema stores, round after round. The rest of `runtime/` opens SQLite read-only
+  (`events.py`, `watchdog.py`, `search_sessions.py`), through this store (the providers, and
+  `multiclaude.py`'s own table), or not at all (`egress.py`, `decisions.py`).
 - **VF-Bench replays in one command, at a pinned revision, in a clean environment** (#601).
   `bench/vf-bench/replay.py run --rev <commit>` exports the commit into a fresh repository by a
   local fetch, runs every case N times under a built environment (only `git` and `python` on

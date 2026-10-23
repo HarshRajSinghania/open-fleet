@@ -29,6 +29,8 @@ What holds, and for whom
   * Every remote read and write is bound to the queue's repository: the remote's fetch and push
     URLs must name the repository the lease names, and every `gh` call passes it as `--repo`
     (never GH_REPO or gh's own default), so no call can act on a fork or another repository.
+    Identities follow git's own URL rules, a relative path resolved against the clone's toplevel
+    as git resolves it, so one remote is one queue from whatever directory a conductor starts.
   * Scope: cooperating fleet writers that share this store on one host. A local lease cannot
     fence an arbitrary GitHub user, or a writer that bypasses this script. Their writes surface
     as a moved BASE or a moved head, which the guards refuse; they never land untested content
@@ -165,25 +167,44 @@ def default_db_path(env: dict[str, str]) -> Path:
     return Path.home() / ".open-fleet" / "state" / "merge-queue.db"
 
 
-def repo_identity(url: str) -> str:
-    """A remote URL as `host/owner/name`; a local path as its resolved absolute path."""
+def repo_identity(url: str, base: str | Path | None = None, home: str | None = None) -> str:
+    """The repository a remote URL names, by git's own rules: `host/owner/name`, or a local path
+    resolved to its real absolute path.
+
+    The rules are git's, not a guess (PR #647: one remote must never be two queues):
+      * `scheme://` is a network URL, except `file://`, which is a local path;
+      * otherwise a colon BEFORE any slash is scp syntax, `[user@]host:path`, which git sends
+        over ssh with or without `user@`; a slash first (`./a:b`, `dir/with:colon`) is local;
+      * a local path is expanded for `~` (git does) and, when relative, resolved against `base`:
+        git resolves it against the toplevel of the worktree it runs in (the git dir of a bare
+        repository), never the caller's working directory. The queue passes its clone's
+        (`MergeQueue._identity`); `base=None` means the current directory, for callers outside.
+    """
     u = url.strip()
-    scp = re.match(r"^[\w.-]+@([^:/]+):(.+)$", u)
-    if scp:
-        host, path = scp.group(1), scp.group(2)
-    elif "://" in u and not u.startswith("file://"):
+    if "://" in u and not u.startswith("file://"):
         parts = urllib.parse.urlsplit(u)
         host, path = parts.hostname or "", parts.path
+    elif "://" not in u and 0 < u.find(":") and (u.find("/") == -1 or u.find(":") < u.find("/")):
+        hostpart, path = u.split(":", 1)
+        host = hostpart.rsplit("@", 1)[-1].strip("[]")
     else:
-        return str(Path(u.removeprefix("file://")).expanduser().resolve())
+        local = urllib.parse.unquote(urllib.parse.urlsplit(u).path) if u.startswith("file://") else u
+        if local == "~" or local.startswith("~/"):
+            local = (home or os.path.expanduser("~")) + local[1:]
+        elif local.startswith("~"):
+            local = os.path.expanduser(local)
+        path_ = Path(local)
+        if not path_.is_absolute():
+            path_ = Path(base if base is not None else os.getcwd()) / path_
+        return str(path_.resolve())
     path = path.strip("/")
     path = path[:-4] if path.endswith(".git") else path
     return f"{host.lower()}/{path}"
 
 
-def remote_host(url: str) -> str:
-    ident = repo_identity(url)
-    return ident.split("/", 1)[0] if not ident.startswith("/") else "localhost"
+def identity_host(identity: str) -> str:
+    """The host of an identity (`localhost` for a local path)."""
+    return identity.split("/", 1)[0] if not identity.startswith("/") else "localhost"
 
 
 def _digest(*parts: Any) -> str:
@@ -495,12 +516,29 @@ class MergeQueue:
         self.on_boundary: Callable[[str, dict[str, Any]], None] | None = None
 
     # --- identity, config, receipts -------------------------------------------------------
+    def _url_base(self) -> Path:
+        """Where git resolves a relative remote URL for this clone: its worktree toplevel, or the
+        git dir of a bare repository. Never this process's working directory (PR #647)."""
+        if getattr(self, "_url_base_cached", None) is None:
+            top = self.git.run("rev-parse", "--show-toplevel", check=False)
+            if top.returncode == 0 and top.stdout.strip():
+                self._url_base_cached = Path(top.stdout.strip())
+            else:
+                gitdir = self.git.run("rev-parse", "--absolute-git-dir", check=False)
+                self._url_base_cached = Path(gitdir.stdout.strip()) if gitdir.returncode == 0 and gitdir.stdout.strip() \
+                    else self.repo_dir
+        return self._url_base_cached
+
+    def _identity(self, url: str) -> str:
+        """`repo_identity` of a URL configured in this clone, resolved exactly as git resolves it."""
+        return repo_identity(url, self._url_base(), home=self.env.get("HOME"))
+
     def default_repo(self, remote: str = "origin") -> str:
         urls, _push = self.git.remote_urls(remote)
         if not urls:
             raise QueueError("usage", f"no --repo given and remote {remote!r} has no URL in {self.repo_dir}",
                              exit_code=EXIT_USAGE)
-        return repo_identity(urls[0])
+        return self._identity(urls[0])
 
     def _bound_remote(self, cfg: dict[str, Any]) -> str:
         """The queue's remote, after proving it still names the queue's repository (PR #647).
@@ -512,8 +550,8 @@ class MergeQueue:
         """
         remote = cfg["remote"]
         urls, push = self.git.remote_urls(remote)
-        named = {f"url {u}": repo_identity(u) for u in urls}
-        named.update({f"pushurl {u}": repo_identity(u) for u in push})
+        named = {f"url {u}": self._identity(u) for u in urls}
+        named.update({f"pushurl {u}": self._identity(u) for u in push})
         wrong = {k: v for k, v in named.items() if v != cfg["repo"]}
         if not urls or wrong:
             raise QueueError(
@@ -567,7 +605,7 @@ class MergeQueue:
             raise QueueError("usage", "--consent names the standing grant every merge's egress receipt cites",
                              exit_code=EXIT_USAGE)
         urls, _push = self.git.remote_urls(remote)
-        named = repo_identity(urls[0]) if urls else None
+        named = self._identity(urls[0]) if urls else None
         if named != repo:
             raise QueueError("repo_mismatch", f"--repo {repo} is not the repository remote {remote!r} names "
                              f"({named or 'no URL'}): the lease and every merge must name one repository",
@@ -581,7 +619,7 @@ class MergeQueue:
         except QueueError as exc:
             raise QueueError(exc.code, exc.message, exc.data, exit_code=EXIT_USAGE) from exc
         if host is None:
-            host = repo.split("/", 1)[0] if mode == "gh" else remote_host(urls[0])
+            host = identity_host(repo)
         want = {"default_branch": default, "mode": mode, "remote": remote, "host": host, "consent": consent}
         with self.store.tx() as conn:
             row = conn.execute("SELECT * FROM mq_queues WHERE repo = ? AND base = ?", (repo, base)).fetchone()
@@ -848,7 +886,7 @@ class MergeQueue:
         remote = self._bound_remote(cfg)
         if cfg["mode"] == "gh":
             view = self.gh.pr_view(cfg["repo"], e["pr"])
-            reported = repo_identity(str(view.get("url") or "").split("/pull/", 1)[0]) if view.get("url") else None
+            reported = self._identity(str(view.get("url") or "").split("/pull/", 1)[0]) if view.get("url") else None
             if reported != cfg["repo"]:
                 raise QueueError("repo_mismatch", f"GitHub reported PR #{e['pr']} in {reported or 'no repository'}, "
                                  f"not the queue's {cfg['repo']}; nothing was sent",

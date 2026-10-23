@@ -1039,7 +1039,7 @@ Exits: 0 answered · 1 timeout/runtime/receipt failure · 2 usage.
 
 The persisted, fenced single-conductor merge queue (#599), the mechanism behind
 [`runtime/merge-serialization.md`](../runtime/merge-serialization.md). Source
-`runtime/scripts/merge_queue.py:1-68`; behavior pinned by `tests/test_merge_queue.py`, and the
+`runtime/scripts/merge_queue.py:1-70`; behavior pinned by `tests/test_merge_queue.py`, and the
 process-level drills (two conductors, pause-transfer-resume, crash restarts, mutation controls)
 by `tests/test_merge_queue_drills.py`.
 
@@ -1051,7 +1051,10 @@ Subcommands: `init`, `acquire`, `release`, `enqueue`, `plan`, `merge`, `ack`, `r
 Flags: `--db` (default `$OPEN_FLEET_MERGE_QUEUE_DB`, else `$OPEN_FLEET_STATE_DIR/merge-queue.db`,
 else `~/.open-fleet/state/merge-queue.db`: one store per host, so conductors in two clones contend
 for one lease), `--repo-dir` (the conductor's clone), `--repo` (the queue's identity: the repository the remote's
-configured URL names, as `host/owner/name`, and the default). `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
+configured URL names, as `host/owner/name` or a real local path, and the default). Identities
+follow git's own URL rules: `host:path` is ssh even without `user@`, `~` is expanded, and a relative
+local path resolves against the clone's toplevel, as git resolves it, never the working directory,
+so conductors started from different directories share one queue and one lease. `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,
 `--holder`, `--ttl`, `--takeover`, `--wait`; `drain` adds `--gate-cmd`, `--gate-timeout`, `--ack`,
 `--max-steps`, `--keep-branch`. `status` and `receipts` are read-only and take `--base` (`receipts` adds

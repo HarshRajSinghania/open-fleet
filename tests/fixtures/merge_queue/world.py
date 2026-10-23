@@ -172,9 +172,9 @@ class World:
         return ["init", "--base", BASE, "--default", DEFAULT, "--consent", "grant:merge-to-integration",
                 "--mode", self.mode, "--host", "github.invalid"]
 
-    def cli(self, *args: str, timeout: float = 120.0) -> tuple[int, dict]:
+    def cli(self, *args: str, timeout: float = 120.0, cwd: Path | None = None) -> tuple[int, dict]:
         proc = subprocess.run([sys.executable, str(self.script), "--repo-dir", str(self.conductor), *args],
-                              env=self.env, capture_output=True, text=True, timeout=timeout)
+                              env=self.env, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         try:
             out = json.loads(proc.stdout) if proc.stdout.strip() else {}
         except ValueError as exc:

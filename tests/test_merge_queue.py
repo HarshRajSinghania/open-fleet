@@ -791,6 +791,52 @@ class BranchTeardown(QueueCase):
         self.assertEqual((rc, out.get("code")), (3, "fenced"), out)
         self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "a fenced conductor deleted a branch")
 
+class RepositoryIdentity(QueueCase):
+    """One remote is one queue, whatever directory a conductor starts from (PR #647)."""
+
+    mode = "git"
+
+    def test_conductors_started_from_two_directories_share_one_identity_and_one_lease(self):
+        # The clone names its remote relative to its own toplevel, which is where git resolves it.
+        self.w.git(self.w.conductor, "remote", "set-url", "origin", "../remote.git")
+        here = self.w.conductor
+        elsewhere = self.w.tmp / "elsewhere" / "deeper"
+        elsewhere.mkdir(parents=True)
+        sub = self.w.conductor / "sub"
+        sub.mkdir()
+        rc1, first = self.w.cli(*self.w.init_args(), cwd=here)
+        rc2, second = self.w.cli(*self.w.init_args(), cwd=elsewhere)
+        rc3, third = self.w.cli("--repo-dir", str(sub), *self.w.init_args(), cwd=elsewhere)
+        self.assertEqual((rc1, rc2, rc3), (0, 0, 0), (first, second, third))
+        self.assertEqual({first["repo"], second["repo"], third["repo"]}, {str(self.w.bare.resolve())},
+                         "one remote was given more than one queue identity")
+        self.assertEqual((second["created"], third["created"]), (False, False))
+        rc, one = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1", cwd=here)
+        self.assertEqual(rc, 0, one)
+        rc, two = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2", cwd=elsewhere)
+        self.assertEqual((rc, two.get("code")), (3, "lease_held"), "a second conductor got its own lease")
+        rc, two = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2", "--takeover", cwd=elsewhere)
+        self.assertEqual((rc, two.get("epoch")), (0, one["epoch"] + 1), two)
+        rc, stale = self.w.cli("plan", "--token", one["token"], cwd=here)
+        self.assertEqual((rc, stale.get("code")), (3, "fenced"), stale)
+
+    def test_identity_follows_gits_own_url_rules(self):
+        base = self.w.tmp / "clone-top"
+        home = str(self.w.tmp / "home")
+        cases = {
+            "host:repo.git": "host/repo",  # scp-style, no user@: git uses ssh
+            "user@Host.example:team/repo.git": "host.example/team/repo",
+            "./host:repo.git": str((base / "host:repo.git").resolve()),  # a slash first: a local path
+            "dir/with:colon": str((base / "dir/with:colon").resolve()),
+            "../remote.git": str((base / "../remote.git").resolve()),
+            "~/r.git": str(Path(home, "r.git").resolve()),  # git expands ~ for a local remote
+            "https://github.com/Owner/Repo.git": "github.com/Owner/Repo",
+        }
+        for url, want in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(mq_mod.repo_identity(url, base, home=home), want)
+
+
 class GitLaneRepositoryBinding(QueueCase):
     mode = "git"
 

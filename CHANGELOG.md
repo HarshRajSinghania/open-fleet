@@ -6,6 +6,28 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **VF-Bench replays in one command, at a pinned revision, in a clean environment** (#601).
+  `bench/vf-bench/replay.py run --rev <commit>` exports the commit into a fresh repository by a
+  local fetch, runs every case N times under a built environment (only `git` and `python` on
+  `PATH`, empty `HOME`, no system git config), one process per case with a timeout, and writes a
+  JSON report and a text summary: the exact versions (corpus digest beside `gate.py`'s pin, the
+  blob ids of `gate.py`, `verify.py` and `vfbench.py`, `VERSION`), skipped, unsupported, timed-out
+  and unscored cases by name, and per configuration the false acceptance, false rejection, wrong
+  reasons, coverage of the README's verifier-check inventory, wall time and run-to-run spread with
+  every case whose verdict moved. The naive self-scorer is labelled the synthetic baseline, never
+  a product score. `compare` fails on any difference outside host facts, raw refusal text and wall
+  time; `reproduce` replays what a published report pins; `drill` requires a deleted or edited
+  corpus case or pinned fixture to fail the replay. `replay-reference.json` publishes a three-run
+  macOS replay of the #600 corpus at `27b5ed613949` (verify.py 0/53 and 0/19 in every run), and
+  the new `vfbench_replay` job, which `gates` needs, reproduces it on the GitHub runner and uploads
+  its report. External verifiers plug in through a documented stdin/stdout adapter contract
+  (`verify.py` itself behind it is the reference adapter; malformed, timed-out and crashing
+  adapters are listed, never scored); none has been measured, and reports say so with a null
+  score. `heldout-protocol.json` predeclares the development and held-out splits, their digests,
+  planned release dates, leakage checks and an unfilled holder role, and `heldout.py check`
+  verifies no committed blob is a held-out case. Not done: a real external verifier, an actual
+  holder and held-out set, and the CI reproduction's first run on a pull request.
+
 - **VF-Bench samples the verifier invariants it used to name as unsampled** (#600). Twenty-eight
   isolated traps join the corpus — signed-dispatch tamper on a profile-signed record, class
   substitution and replay; hidden criteria in a table and in JSON; unaddressed and dropped

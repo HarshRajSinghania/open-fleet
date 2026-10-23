@@ -84,7 +84,9 @@ How to wire
     crashed run, not from one coordinator's memory. An independent verifier runs
     ``check`` over the file: a line that trips the one-way net without the class
     and the human source fails the run, which is the machine form of "one-way is
-    never auto-resolved".
+    never auto-resolved". Over a tree a worker could have written, it runs
+    ``decisions.py --pin-ref origin/<default> check`` so the grant key comes from the
+    trusted ref, not from a pin the change swapped in.
 
     Example: ``decisions.py append --id lens-tally:security --class mechanical
     --answer 0 --why "diff touched no auth surface" --task t-14``
@@ -94,6 +96,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -270,20 +273,27 @@ def grant_payload(ident, answer, why_core, task_id="", *, ts, klass="one-way"):
         [ts, ident, klass, answer, why_core, task_id or ""])).encode("utf-8")
 
 
-def grant_pubkey(log_path):
+def grant_pubkey(log_path, pin_ref=None):
     """Pinned human-grant pubkey bytes for this log, or None when unpinned.
 
     Only the owning repository ROOT's pin counts (the first ancestor of the
     log carrying `.git`, else this script's own repo). A key dropped beside
     the log by a worker must never outrank the committed root pin — the
     ancestor search this replaced let `docs/.orca/…` override the human's
-    key (PR #546 review). A malformed pin is could-not-run, never a pass."""
+    key (PR #546 review). A malformed pin is could-not-run, never a pass.
+
+    With `pin_ref` the pin is read from that git ref instead, and a working-tree pin that differs
+    from it (or exists where the ref pins none) is could-not-run: a change under check that swaps
+    `.orca/human-grant-pubkey` would otherwise verify grants it signed for itself. floor_guard.py
+    already reads the pin at its base ref; `--pin-ref` gives `check`, `active` and `append` the
+    same trust anchor when they run over a tree a worker could have written."""
     resolved = Path(log_path).resolve()
     root = Path(__file__).resolve().parent.parent.parent
     for parent in resolved.parents:
         if (parent / ".git").exists():
             root = parent
             break
+    tree = None
     for pin in [root / GRANT_PUBKEY_REL]:
         try:
             if not pin.exists():
@@ -291,8 +301,45 @@ def grant_pubkey(log_path):
             text = pin.read_text(encoding="utf-8").strip()
         except OSError as err:
             raise DecisionsError(f"{pin} is unreadable: {err}") from err
-        return parse_grant_pubkey(text, pin)
-    return None
+        tree = parse_grant_pubkey(text, pin)
+    if pin_ref is None:
+        return tree
+    trusted = _pin_at_ref(root, pin_ref)
+    if tree != trusted:
+        raise DecisionsError(
+            f"the working tree's {GRANT_PUBKEY_REL.as_posix()} differs from the one pinned at "
+            f"{pin_ref} — a pin the checked tree swapped in is not a trust anchor (--pin-ref)")
+    return trusted
+
+
+def _pin_at_ref(root, ref):
+    """The grant pubkey committed at `ref` in `root`'s repository, or None when it pins none.
+
+    Read through the hardened git executor (no repo config, no hooks); an unresolvable ref is
+    could-not-run, never "unpinned"."""
+    if not ref or ref.startswith("-"):
+        raise DecisionsError(f"--pin-ref {ref!r} must name a git ref, not an option")
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location("gitexec", here / "gitexec.py")
+    gitexec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gitexec)
+
+    def git(*args):
+        try:
+            return subprocess.run(gitexec.argv("-C", str(root), *args), capture_output=True,
+                                  timeout=60, env=gitexec.env())
+        except (OSError, subprocess.SubprocessError) as err:
+            raise DecisionsError(f"git {args[0]} failed to run: {err}") from err
+
+    if git("rev-parse", "--verify", "-q", ref + "^{commit}").returncode != 0:
+        raise DecisionsError(f"--pin-ref {ref!r} does not resolve to a commit in {root}")
+    rel = GRANT_PUBKEY_REL.as_posix()
+    if git("cat-file", "-e", f"{ref}:{rel}").returncode != 0:
+        return None
+    blob = git("cat-file", "blob", f"{ref}:{rel}")
+    if blob.returncode != 0:
+        raise DecisionsError(f"{ref}:{rel} is unreadable")
+    return parse_grant_pubkey(blob.stdout.decode("utf-8", "replace"), f"{ref}:{rel}")
 
 
 def parse_grant_pubkey(text, where):
@@ -539,7 +586,7 @@ def tally(records, lens):
 
 
 def cmd_append(args, net):
-    pub = grant_pubkey(args.file)
+    pub = grant_pubkey(args.file, args.pin_ref)
     ts = args.ts or _now().strftime("%Y-%m-%dT%H:%M:%SZ")
     why = args.why
     if args.grant_sig and args.klass != "one-way":
@@ -636,7 +683,7 @@ def cmd_append(args, net):
 
 def cmd_active(args, _net):
     records = read_lines(args.file)
-    rows = active(standing(records, grant_pubkey(args.file)))
+    rows = active(standing(records, grant_pubkey(args.file, args.pin_ref)))
     if args.json:
         print(json.dumps([{k: r[k] for k in ("ts", "id", "class", "answer", "why", "task_id")}
                           for r in rows], indent=2))
@@ -660,7 +707,7 @@ def cmd_tally(args, _net):
 
 
 def cmd_check(args, net):
-    pub = grant_pubkey(args.file)
+    pub = grant_pubkey(args.file, args.pin_ref)
     records = read_lines(args.file)
     failures = []
     for record in records:
@@ -760,6 +807,10 @@ def build_parser():
     p.add_argument("--file", default=decisions_path(),
                    help=f"DECISIONS log path (default ${PRIMARY_DECISIONS_ENV}, ${DECISIONS_ENV}, or {DEFAULT_LOG})")
     p.add_argument("--doors", default=None, help="one-way door registry (default runtime/one-way-doors.json)")
+    p.add_argument("--pin-ref", default=None,
+                   help="read .orca/human-grant-pubkey from this git ref (e.g. origin/main) and "
+                        "refuse a working tree whose pin differs; use it whenever the tree "
+                        "being checked could have been written by a worker")
     sub = p.add_subparsers(dest="command", required=True)
 
     a = sub.add_parser("append", help="validate and append one decision line")

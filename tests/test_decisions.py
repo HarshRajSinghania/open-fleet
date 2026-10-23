@@ -1053,6 +1053,64 @@ class TestPinnedKeyRequiresEverySignatureP18(PinnedLedger):
         self.assertIn("gate-p18", self.run_dec("active").stdout)
 
 
+class TestPinRefIsTheTrustAnchor(PinnedLedger):
+    """A change under check could swap `.orca/human-grant-pubkey` for a key it holds and sign
+    its own one-way grants: `check` read the pin from the working tree. `--pin-ref` reads it
+    from a trusted ref and refuses a tree whose pin differs (#602 trajectory probe)."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("checkout", "-q", "-b", "main")
+        self.git("commit", "-q", "--allow-empty", "-m", "before the pin")
+        self.git("branch", "unpinned")
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "pin the human grant key")
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", self.tmp, "-c", "user.name=t", "-c", "user.email=t@x",
+                               "-c", "commit.gpgsign=false", *args],
+                              capture_output=True, text=True, check=True)
+
+    def swap_pin(self):
+        rogue = os.urandom(32)
+        (Path(self.tmp) / ".orca" / "human-grant-pubkey").write_text(
+            self.ed.publickey(rogue).hex() + "\n", encoding="utf-8")
+        self.seed_bytes = rogue  # signed() now signs with the swapped-in key
+
+    def test_a_pin_matching_the_ref_checks_as_before(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        r = self.run_dec("--pin-ref", "main", "check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("gate-pin", self.run_dec("--pin-ref", "main", "active").stdout)
+
+    def test_a_pin_swapped_in_the_tree_is_refused_against_the_ref(self):
+        self.swap_pin()
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        # Without a trusted ref the swapped key verifies its own grant: the gap.
+        self.assertEqual(self.run_dec("check").returncode, 0)
+        r = self.run_dec("--pin-ref", "main", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("differs from the one pinned at main", r.stderr)
+        r = self.run_dec("--pin-ref", "main", "active")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertNotIn("gate-pin", r.stdout)
+
+    def test_a_tree_pin_where_the_ref_pins_none_is_refused(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        r = self.run_dec("--pin-ref", "unpinned", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("differs", r.stderr)
+
+    def test_an_unresolvable_or_option_shaped_ref_is_could_not_run(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        for ref, why in (("no-such-ref", "does not resolve to a commit"),
+                         ("--output=/tmp/x", "must name a git ref, not an option")):
+            with self.subTest(ref=ref):
+                r = self.run_dec(f"--pin-ref={ref}", "check")
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn(why, r.stderr)
+
+
 class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):
     """P2-3: a signature binds when the decision was taken, so it cannot be re-dated."""
 

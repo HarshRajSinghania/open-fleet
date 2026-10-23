@@ -7,6 +7,8 @@ by a person or left unfilled — never a placeholder name. The leakage check is 
 SYNTHETIC holder made at test time in a temp dir: held-out cases are generated, digested and
 planted into throwaway repositories, and nothing held-out ever touches this checkout.
 """
+import base64
+import gzip
 import importlib.util
 import json
 import subprocess
@@ -265,6 +267,115 @@ class TheHolderToolRefusesBadInput(unittest.TestCase):
     def test_a_non_guid_canary_is_a_usage_error(self):
         r = _cli("digest", str(ROOT), "--canary", "not-a-guid", "--out", "/dev/null")
         self.assertEqual(r.returncode, 2)
+
+
+
+# PR #645 review (P1): the encodings json.loads itself reads (RFC 8259 / 7159: UTF-8, UTF-16 and
+# UTF-32, a BOM or the null-byte pattern of an ASCII first character). A held-out case saved in
+# any of them is the same case, so the scan must find it as one.
+ENCODINGS = {
+    "utf-8 with a BOM": lambda text: b"\xef\xbb\xbf" + text.encode("utf-8"),
+    "utf-16 with a BOM": lambda text: text.encode("utf-16"),
+    "utf-16-le, no BOM": lambda text: text.encode("utf-16-le"),
+    "utf-16-be, no BOM": lambda text: text.encode("utf-16-be"),
+    "utf-32 with a BOM": lambda text: text.encode("utf-32"),
+    "utf-32-le, no BOM": lambda text: text.encode("utf-32-le"),
+    "utf-32-be, no BOM": lambda text: text.encode("utf-32-be"),
+}
+
+
+class EncodedCopiesOfACaseAreCaught(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.cases = _holder_cases(self.tmp / "holder")
+        doc, problems = heldout.digest_cases(self.tmp / "holder", CANARY)
+        self.assertEqual(problems, [])
+        self.digests = doc
+        self.case = json.loads(self.cases[0].read_text(encoding="utf-8"))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _kinds(self, blob):
+        return {kind for kind, _ in heldout.scan(blob, self.digests)}
+
+    def test_each_encoding_json_reads_is_caught_as_the_case(self):
+        text = json.dumps(self.case, indent=2)
+        for label, encode in ENCODINGS.items():
+            with self.subTest(encoding=label):
+                blob = encode(text)
+                self.assertEqual(json.loads(blob), self.case, "json.loads reads this copy")
+                kinds = self._kinds(blob)
+                self.assertIn("canonical", kinds)
+                self.assertIn("canary", kinds)
+
+    def test_an_encoded_case_inside_a_larger_document_is_embedded(self):
+        text = json.dumps({"corpus": [self.case]})
+        for label, encode in ENCODINGS.items():
+            with self.subTest(encoding=label):
+                self.assertIn("embedded", self._kinds(encode(text)))
+
+    def test_the_canary_in_an_encoded_text_file_is_caught(self):
+        text = f"# notes copied from the held-out set\nmarker {CANARY}\n"
+        for label, encode in ENCODINGS.items():
+            with self.subTest(encoding=label):
+                self.assertEqual(self._kinds(encode(text)), {"canary"})
+
+    def test_the_check_reports_an_encoded_commit(self):
+        repo = self.tmp / "solver"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / "case.utf16.json").write_bytes(json.dumps(self.case).encode("utf-16"))
+        _commit(repo, "a held-out case, re-encoded")
+        out = self.tmp / "digests.json"
+        out.write_text(json.dumps(self.digests), encoding="utf-8")
+        r = _cli("check", "--digests", str(out), "--repo", str(repo))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("LEAK canonical: case.utf16.json", r.stdout)
+        self.assertIn("LEAK canary: case.utf16.json", r.stdout)
+
+
+class TheScanStatesWhatItDoesNotCatch(unittest.TestCase):
+    """The protocol may promise only what the scan does. It decodes text, not containers: a
+    compressed or base64-encoded copy is a stated limit, never an implied catch."""
+
+    def _scan_checks(self):
+        return [c for c in _protocol()["leakage_checks"] if "heldout.py" in c["command"]]
+
+    def test_no_check_claims_any_format(self):
+        for check in _protocol()["leakage_checks"]:
+            with self.subTest(check=check["id"]):
+                self.assertNotIn("any format", check["detects"])
+
+    def test_every_scan_names_its_limits(self):
+        checks = self._scan_checks()
+        self.assertTrue(checks)
+        for check in checks:
+            with self.subTest(check=check["id"]):
+                limits = check.get("limits", "")
+                for word in ("gzip", "base64", "UTF-16"):
+                    self.assertIn(word, limits + " " + check["detects"])
+
+    def test_validate_refuses_a_scan_with_no_stated_limits(self):
+        doc = _protocol()
+        for check in doc["leakage_checks"]:
+            if "heldout.py" in check["command"]:
+                check.pop("limits", None)
+        errors = heldout.validate(doc)
+        self.assertTrue(any("limits" in e for e in errors), errors)
+
+    def test_the_stated_limits_are_the_real_ones(self):
+        with tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-") as tmp:
+            _holder_cases(Path(tmp) / "holder", n=1)
+            digests, _ = heldout.digest_cases(Path(tmp) / "holder", CANARY)
+            raw = next((Path(tmp) / "holder").glob("*.json")).read_bytes()
+        hidden = {"gzip": gzip.compress(raw),
+                  "base64": json.dumps({"blob": base64.b64encode(raw).decode()}).encode()}
+        for label, blob in hidden.items():
+            with self.subTest(container=label):
+                self.assertEqual(heldout.scan(blob, digests), [],
+                                 "the scan now decodes this: update the protocol's limits")
 
 
 if __name__ == "__main__":

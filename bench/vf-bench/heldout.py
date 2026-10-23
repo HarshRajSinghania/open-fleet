@@ -34,6 +34,7 @@ PROTOCOL = HERE / "heldout-protocol.json"
 PROTOCOL_ID = "vf-bench-heldout@1"
 DIGESTS_KIND = "vf-bench-heldout-digests"
 GUID_RE = re.compile(rb"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+GUID_TEXT_RE = re.compile(GUID_RE.pattern.decode("ascii"))
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # A role is filled by a person or left empty; these are what an empty role looks like in disguise.
 PLACEHOLDERS = {"", "tbd", "tba", "n/a", "na", "none", "null", "unknown", "someone", "anyone",
@@ -133,6 +134,9 @@ def validate(protocol, gate=None, traps_dir=None):
         if not str(c.get("detects") or "").strip():
             errors.append(f"leakage check {c.get('id')!r} does not say what it detects")
         command = str(c.get("command") or "")
+        if "heldout.py" in command and not str(c.get("limits") or "").strip():
+            errors.append(f"leakage check {c.get('id')!r} runs a scan but states no limits: a "
+                          "check may promise only what it catches (PR #645 review)")
         if "heldout.py" in command and not (HERE / "heldout.py").is_file():
             errors.append(f"leakage check {c.get('id')!r} names a command that does not exist")
     holder = protocol.get("holder") or {}
@@ -256,20 +260,35 @@ def _objects(node, depth=0):
             yield from _objects(v, depth + 1)
 
 
+def decoded_text(blob):
+    """The blob as text, decoded the way json.loads decodes bytes (RFC 8259 / 7159): a BOM, or the
+    null-byte pattern an ASCII first character leaves, picks UTF-8, UTF-16 or UTF-32, either byte
+    order (PR #645 review). None when it does not decode: binary content keeps its raw checks."""
+    try:
+        return blob.decode(json.detect_encoding(blob))
+    except (UnicodeDecodeError, LookupError):
+        return None
+
+
 def scan(blob, digests):
-    """The ways one blob leaks a held-out case: (kind, digest prefix)."""
+    """The ways one blob leaks a held-out case: (kind, digest prefix). The canary and the
+    canonical digest are checked on the DECODED text, so a case re-saved as UTF-16 or behind a BOM
+    is still the case. Text is decoded; containers are not: a compressed, base64- or hex-encoded
+    copy is outside this scan, and heldout-protocol.json states that limit beside each check."""
     raw_set = {c["raw_sha256"] for c in digests["cases"]}
     canon_set = {c["canonical_sha256"] for c in digests["cases"]}
     hits = []
     if sha256(blob) in raw_set:
         hits.append(("verbatim", sha256(blob)[:16]))
-    for guid in set(GUID_RE.findall(blob)):
-        if sha256(guid.lower()) == digests["canary_sha256"]:
-            hits.append(("canary", digests["canary_sha256"][:16]))
-    if len(blob) <= JSON_PARSE_LIMIT and blob.lstrip()[:1] in (b"{", b"["):
+    text = decoded_text(blob)
+    guids = {g.decode("ascii").lower() for g in GUID_RE.findall(blob)}
+    guids |= {g.lower() for g in GUID_TEXT_RE.findall(text)} if text else set()
+    if any(sha256(g.encode("ascii")) == digests["canary_sha256"] for g in guids):
+        hits.append(("canary", digests["canary_sha256"][:16]))
+    if text is not None and len(blob) <= JSON_PARSE_LIMIT and text.lstrip()[:1] in ("{", "["):
         try:
-            doc = json.loads(blob)
-        except (ValueError, UnicodeDecodeError):
+            doc = json.loads(text)
+        except ValueError:
             doc = None
         for node, depth in _objects(doc) if doc is not None else ():
             h = sha256(canonical(node))

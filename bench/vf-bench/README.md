@@ -492,8 +492,14 @@ A holder publishes digests, never content: each case's raw sha256, its canonical
 the sha256 of the split's canary GUID, which every held-out case must carry (`digest` refuses one
 that does not). `check` fails if any committed blob at the revision (or reachable from any ref,
 with `--all-history`) is a held-out case verbatim, the same case reformatted, the case embedded as
-an object in a larger JSON document, or a file carrying the held-out canary. The tests run it
-against a synthetic holder built in a temp directory; no held-out content is committed anywhere.
+an object in a larger JSON document, or a file carrying the held-out canary. Each blob is checked
+as text in every encoding `json.loads` reads (UTF-8 with or without a BOM, UTF-16 and UTF-32 in
+either byte order), so re-saving a case in another encoding does not hide it (PR #645 review). It
+decodes text, not containers: a gzip or otherwise compressed copy, a base64- or hex-encoded one
+(inside a JSON string too), an encrypted one, or a case with a value edited is not matched, and is
+found only if its canary survives as text. The protocol states these limits beside each check, and
+`validate` refuses a scan that states none. The tests run it against a synthetic holder built in a
+temp directory; no held-out content is committed anywhere.
 
 ## Add a gate
 

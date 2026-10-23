@@ -512,5 +512,30 @@ class TestRuntimesDocumentationAndCompatibility(unittest.TestCase):
                 self.assertIn("open-fleet RPI runtime (Orca, posix,", text)
 
 
+class TestDangerNeedsACertifiableSandbox(unittest.TestCase):
+    """2026-10-23 review (#627): superset, paperclip and openhands advertised PROFILE=danger with
+    no cap:sandbox-vm. sandbox-policy.md runs danger only in a sandbox a `vm recipe doctor`
+    certifies, and cap:sandbox-vm is claimed only where one exists — so advertising danger
+    without it invites a coordinator to plan a lane preflight will never certify."""
+
+    def test_every_provider_advertising_danger_carries_sandbox_vm(self):
+        data = json.loads(CAPABILITIES_JSON.read_text(encoding="utf-8"))
+        over_claims = sorted(
+            name for name, p in data["providers"].items()
+            if "danger" in p.get("supported_profiles", [])
+            and "cap:sandbox-vm" not in set(p.get("native_capabilities", [])) | set(p.get("fallback_capabilities", []))
+        )
+        self.assertEqual(over_claims, [], "danger advertised without cap:sandbox-vm")
+
+    def test_danger_is_advertised_only_where_preflight_can_certify_a_sandbox(self):
+        data = json.loads(CAPABILITIES_JSON.read_text(encoding="utf-8"))
+        for name, p in data["providers"].items():
+            if "danger" not in p.get("supported_profiles", []):
+                continue
+            with self.subTest(provider=name):
+                refusal, info = preflight._capabilities_refusal("offload-it", name, which=_ALL_TOOLS)
+                self.assertIsNone(refusal, f"{name} advertises danger but cannot pass a sandbox-vm preflight")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

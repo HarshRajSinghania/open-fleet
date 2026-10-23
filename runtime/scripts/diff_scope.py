@@ -162,7 +162,9 @@ class ScopeError(Exception):
 # git is resolved ONCE to an absolute path and run with replacement objects and the
 # config-driven execution channels off. The rule is gitexec.py's, inlined here because
 # verify.py loads this file by path: a sibling import would join the signed verifier
-# toolchain (verify._Transcript.TOOLCHAIN / run_report.TOOLCHAIN_FILES).
+# toolchain (verify._Transcript.TOOLCHAIN / run_report.TOOLCHAIN_FILES). The copy is
+# the WHOLE floor — no global/system config, safe.directory — and a test pins it to
+# gitexec.HARDENED so it cannot fall behind again (2026-10-23 review, §5).
 GIT = shutil.which("git") or "git"
 
 
@@ -170,8 +172,12 @@ def _git_env():
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
            and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT")}
-    pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"))
+    pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"), ("safe.directory", "*"),
+             # floor_guard's DIFF_RENDERING pins: inert for -z --name-only, kept for parity.
+             ("diff.noprefix", "false"), ("diff.mnemonicPrefix", "false"), ("diff.srcPrefix", "a/"),
+             ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"))
     env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+                "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_COUNT": str(len(pairs))})
     for i, (k, v) in enumerate(pairs):
         env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = k, v
@@ -220,7 +226,9 @@ def changed_files(repo, base):
                 names.add(name)
     # A failed merge-base diff cannot license a different comparison. Unrelated
     # histories and other git failures both mean the requested scope is unknown.
-    options = ("--no-ext-diff", "--no-textconv", "-z", "--name-only")
+    # --no-renames: a rename is its delete AND its add, so a file moved OUT of db/migrate/
+    # or away from session_guard.py still earns the lens its old path did (P2-9).
+    options = ("--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-only")
     absorb(git(repo, "diff", *options, f"{base}...HEAD", "--"), "committed diff")
     # Working tree (staged + unstaged); fails on a repo with no commits.
     absorb(git(repo, "diff", *options, "HEAD", "--"), "working-tree diff")

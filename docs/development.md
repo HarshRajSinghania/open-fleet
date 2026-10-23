@@ -67,6 +67,10 @@ python3 -m unittest tests.test_docs_navigation tests.test_wire_docs tests.test_r
 Then run the validator and **full suite before committing**, as required by
 [AGENTS.md](../AGENTS.md). A focused pass does not replace the full check.
 
+The suite runs on Linux and macOS. Tests that start real workers (tmux included, when it is
+installed) launch a fake agent from a temporary `bin` and put a tripwire ahead of every real
+harness on `PATH`, so a test never starts your installed `claude` or other agent CLI.
+
 The full suite creates temporary Git repositories and can take several minutes. To run one
 CI-sized partition locally, use `python3 scripts/shard-tests.py --shard 1 --of 4`; run all four
 partitions for full coverage. `python3 scripts/shard-tests.py --check` verifies the partition.

@@ -10,12 +10,20 @@ keeps the catalog honest: every bold terminal a mission declares must carry
 the "(degraded)" label exactly when this classification calls it degraded, so
 a new terminal cannot drift past the rule unlabelled.
 
+Names are compared in one canonical spelling — upper case, with every run of `-`, `_`
+and whitespace read as one `-` — so `Done-With-Parked`, `done_with_parked` and
+`DONE-WITH-PARKED` are one degraded terminal, and `PROMOTION_READY` in a chain
+header matches a reported `PROMOTION-READY`. A name that is not a terminal's
+shape, or carries a `-WITH-` qualifier this rule does not know, classifies
+`unknown` and never proceeds (2026-10-23 review, §5: the old case- and
+spelling-sensitive match let `Done-With-Parked` read clean).
+
 Subcommands
-    classify <terminal>            print clean | degraded | handoff
+    classify <terminal>            print clean | degraded | handoff | unknown
     gate --allowed A,B <terminal>  exit 0 + PROCEED, or exit 1 + STOP <why>
     audit [--root DIR]             check every skills/*/SKILL.md terminal label
 
-Exit codes: 0 ok / proceed · 1 stop or audit failure · 2 usage / could not run.
+Exit codes: 0 ok / proceed · 1 stop, an unknown terminal, or audit failure · 2 usage / could not run.
 """
 import argparse
 import re
@@ -31,25 +39,38 @@ HANDOFF = frozenset({"awaiting-maintainer-merge"})
 HANDOFF_SUFFIX = "-WITH-HANDOFF"
 
 _TERMINAL_RE = re.compile(r"^- \*\*([A-Z][A-Z0-9-]*)\*\*(\s*\(degraded\b)?", re.M)
+_SEPARATORS = re.compile(r"[-_\s]+")
+_TERMINAL_SHAPE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
+
+
+def canonical(terminal):
+    """The one spelling a terminal is compared in: upper case, `-`/`_`/space runs as `-`."""
+    return _SEPARATORS.sub("-", str(terminal or "").strip()).strip("-").upper()
 
 
 def classify(terminal):
-    """clean | degraded | handoff for one named mission terminal."""
-    name = (terminal or "").strip()
+    """clean | degraded | handoff | unknown for one named mission terminal."""
+    name = canonical(terminal)
+    if not _TERMINAL_SHAPE.match(name):
+        return "unknown"
     if name in DEGRADED_STANDALONE or name.endswith(DEGRADED_SUFFIXES):
         return "degraded"
-    if name in HANDOFF or name.endswith(HANDOFF_SUFFIX):
+    if name in {canonical(h) for h in HANDOFF} or name.endswith(HANDOFF_SUFFIX):
         return "handoff"
+    if "-WITH-" in f"-{name}-":
+        return "unknown"  # a qualifier this rule never classified: fail closed, not clean
     return "clean"
 
 
 def gate(terminal, allowed):
-    """(proceed, why). Degraded always stops; anything else proceeds only
-    when the chain declared it allowed up front."""
+    """(proceed, why). Degraded and unknown always stop; anything else proceeds
+    only when the chain declared it allowed up front (compared canonically)."""
     cls = classify(terminal)
     if cls == "degraded":
         return False, f"{terminal} is degraded — the chain stops and parks"
-    if terminal not in allowed:
+    if cls == "unknown":
+        return False, f"{terminal!r} is not a recognised terminal — the chain stops (fail closed)"
+    if canonical(terminal) not in {canonical(a) for a in allowed}:
         return False, f"{terminal} ({cls}) is not in the chain's allowed set {sorted(allowed)}"
     return True, f"{terminal} ({cls}) is declared allowed"
 
@@ -62,6 +83,10 @@ def audit(root=None):
         text = skill_md.read_text(encoding="utf-8")
         for name, label in _TERMINAL_RE.findall(text):
             cls = classify(name)
+            if cls == "unknown":
+                problems.append(f"{skill_md.parent.name}: {name} is not a terminal this rule "
+                                "classifies (an unknown -WITH- qualifier?)")
+                continue
             if label and cls != "degraded":
                 problems.append(f"{skill_md.parent.name}: {name} is labelled (degraded) "
                                 f"but classifies {cls}")
@@ -83,8 +108,9 @@ def main(argv=None):
     a.add_argument("--root", default=None)
     args = parser.parse_args(argv)
     if args.command == "classify":
-        print(classify(args.terminal))
-        return 0
+        cls = classify(args.terminal)
+        print(cls)
+        return 1 if cls == "unknown" else 0
     if args.command == "gate":
         allowed = {t.strip() for t in args.allowed.split(",") if t.strip()}
         proceed, why = gate(args.terminal, allowed)

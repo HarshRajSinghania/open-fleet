@@ -191,7 +191,7 @@
     "superset": {
       "tier": 1,
       "upstream": "superset-sh/superset",
-      "description": "`superset` CLI: ro via `terminals create`, rw via `agents create --prompt`, danger via `workspaces create --environment` (cloud).",
+      "description": "`superset` CLI: ro via `terminals create`, rw via `agents create --prompt`, danger via `workspaces create --environment` (cloud). The adapter's danger path is NOT advertised: no `vm recipe doctor` certifies that sandbox, so the provider carries no cap:sandbox-vm and the fleet may not plan a danger lane on it (2026-10-23 review, #627).",
       "native_capabilities": [
         "cap:core-orchestration"
       ],
@@ -213,8 +213,7 @@
       ],
       "supported_profiles": [
         "ro",
-        "rw",
-        "danger"
+        "rw"
       ]
     },
     "gastown": {
@@ -358,7 +357,7 @@
     "paperclip": {
       "tier": 2,
       "upstream": "paperclipai/paperclip",
-      "description": "Paperclip control plane (port 3100): adapterConfig permission flags read back, atomic issue checkout, bwrap for danger.",
+      "description": "Paperclip control plane (port 3100): adapterConfig permission flags read back, atomic issue checkout, bwrap for danger. The adapter's danger path is NOT advertised: no `vm recipe doctor` certifies that sandbox, so the provider carries no cap:sandbox-vm and the fleet may not plan a danger lane on it (2026-10-23 review, #627).",
       "native_capabilities": [
         "cap:core-orchestration"
       ],
@@ -375,8 +374,7 @@
       ],
       "supported_profiles": [
         "ro",
-        "rw",
-        "danger"
+        "rw"
       ]
     },
     "multiclaude": {
@@ -404,7 +402,7 @@
     "openhands": {
       "tier": 2,
       "upstream": "OpenHands/software-agent-sdk",
-      "description": "OpenHands agent-server REST conversations with request-level deny-hook config; danger only when the server reports a docker runtime.",
+      "description": "OpenHands agent-server REST conversations with request-level deny-hook config; danger only when the server reports a docker runtime. The adapter's danger path is NOT advertised: no `vm recipe doctor` certifies that sandbox, so the provider carries no cap:sandbox-vm and the fleet may not plan a danger lane on it (2026-10-23 review, #627).",
       "native_capabilities": [
         "cap:core-orchestration"
       ],
@@ -420,8 +418,7 @@
       ],
       "supported_profiles": [
         "ro",
-        "rw",
-        "danger"
+        "rw"
       ]
     }
   },

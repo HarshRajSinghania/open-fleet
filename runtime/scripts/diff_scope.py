@@ -173,15 +173,41 @@ def _git_env():
            if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
            and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT")}
     pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"), ("safe.directory", "*"),
+             # #629: the repo-config command channels a fixed key can close — hooks (post-checkout
+             # on a worktree read) and the global external-diff program.
+             ("core.hooksPath", os.devnull), ("diff.external", ""),
              # floor_guard's DIFF_RENDERING pins: inert for -z --name-only, kept for parity.
              ("diff.noprefix", "false"), ("diff.mnemonicPrefix", "false"), ("diff.srcPrefix", "a/"),
              ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"))
-    env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+    env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_COUNT": str(len(pairs))})
     for i, (k, v) in enumerate(pairs):
         env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = k, v
     return env
+
+
+# gitexec.driver_blanks, inlined (verify.py loads this file by path; see the module note on
+# _git_env). Blanks every filter/diff driver command the repo DECLARES — the attribute-selected
+# exec channel a fixed -c cannot name (#629).
+_DRIVER_KEY_RE = re.compile(
+    r"\A(?:filter\.(?:.+)\.(?:clean|smudge|process)|diff\.(?:.+)\.(?:textconv|command))\Z")
+
+
+def _driver_blanks(repo):
+    try:
+        r = subprocess.run([GIT, "-C", str(repo), "config", "--list", "-z", "--name-only"],
+                           capture_output=True, timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    tokens = []
+    for key in r.stdout.decode("utf-8", "replace").split("\0"):
+        if _DRIVER_KEY_RE.match(key):
+            tokens += ["-c", f"{key}="]
+    return tokens
 
 
 def git(repo, *args, tolerate=False):
@@ -229,9 +255,13 @@ def changed_files(repo, base):
     # --no-renames: a rename is its delete AND its add, so a file moved OUT of db/migrate/
     # or away from session_guard.py still earns the lens its old path did (P2-9).
     options = ("--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-only")
-    absorb(git(repo, "diff", *options, f"{base}...HEAD", "--"), "committed diff")
+    # The working-tree diff materialises tracked files, which runs a repo-config clean/smudge
+    # filter a .gitattributes selects — the one channel --no-ext-diff/--no-textconv leave open
+    # (#629). Blank every declared driver command first.
+    blanks = _driver_blanks(repo)
+    absorb(git(repo, *blanks, "diff", *options, f"{base}...HEAD", "--"), "committed diff")
     # Working tree (staged + unstaged); fails on a repo with no commits.
-    absorb(git(repo, "diff", *options, "HEAD", "--"), "working-tree diff")
+    absorb(git(repo, *blanks, "diff", *options, "HEAD", "--"), "working-tree diff")
     # Untracked: the new migration/component is untracked right up until commit.
     absorb(git(repo, "ls-files", "-z", "--others", "--exclude-standard"), "untracked enumeration")
     return sorted(names)

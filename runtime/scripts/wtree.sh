@@ -59,8 +59,49 @@ if [ "${2:-}" = "predict-merge" ]; then
   exec python3 "$(dirname -- "$0")/diff_scope.py" --repo "$1" --predict-merge "$3" "$4"
 fi
 
+# #629: this script runs git over a repo it does not own (evidence-run.py, verify.py predict-merge
+# both point it at a worker's worktree), so close the repo-config command channels before any git
+# call. Set at command-line precedence (GIT_CONFIG_COUNT), which overrides the repo's own
+# .git/config: core.fsmonitor (a program git runs on `add`/`status`), core.hooksPath (every hook),
+# and the ext:: transport; plus replacement objects and grafts off, so a planted refs/replace or
+# .git/info/grafts cannot change the tree this fingerprints. The attribute-selected filters are
+# deliberately LEFT in force here: this value is compared to a commit's tree, and that tree was
+# built WITH the repo's filters, so disabling them would make every filtered repo read as stale.
+# Global/system config is left alone for the same fidelity reason (a global core.excludesFile
+# governs what the committed tree omits). The coordinator's clean-env re-run is the backstop.
+GIT_TERMINAL_PROMPT=0
+GIT_NO_REPLACE_OBJECTS=1
+GIT_GRAFT_FILE=/dev/null
+GIT_CONFIG_COUNT=3
+GIT_CONFIG_KEY_0=core.fsmonitor;   GIT_CONFIG_VALUE_0=false
+GIT_CONFIG_KEY_1=core.hooksPath;   GIT_CONFIG_VALUE_1=/dev/null
+GIT_CONFIG_KEY_2=protocol.ext.allow; GIT_CONFIG_VALUE_2=never
+export GIT_TERMINAL_PROMPT GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE GIT_CONFIG_COUNT
+export GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
+export GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
+
 TARGET="${1:-.}"
 TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
+
+# #629: `git add -A` below materialises worktree content, running a repo-config clean/smudge
+# filter a .gitattributes selects. The command comes only from a declared filter.<n>.* key, and
+# -c cannot wildcard the <n>, so read the declared names (repo-local only, under the belt above)
+# and blank each into $@. A filter runs only for a file whose stat changed since the index, so a
+# clean checkout re-stages nothing and this never alters the fingerprint; it bites only on a
+# currently-dirty filtered file, whose content is uncommitted anyway. $1 is already in $TARGET.
+set --
+if BLANK_KEYS=$(git -C "$TOP" config --list -z --name-only 2>/dev/null | tr '\0' '\n'); then
+  OLDIFS=$IFS
+  IFS='
+'
+  for _k in $BLANK_KEYS; do
+    case "$_k" in
+      filter.*.clean|filter.*.smudge|filter.*.process|diff.*.textconv|diff.*.command)
+        set -- "$@" -c "$_k=" ;;
+    esac
+  done
+  IFS=$OLDIFS
+fi
 
 # Resolve the REAL index path BEFORE exporting GIT_INDEX_FILE: with the variable set,
 # `rev-parse --git-path index` returns the temp index itself and the stat-cache seed self-copies.
@@ -88,5 +129,8 @@ else
   seed_from_head || exit 1
 fi
 
-git -C "$TOP" add -A 2>/dev/null || exit 1
-git -C "$TOP" write-tree 2>/dev/null || exit 1
+git -C "$TOP" "$@" add -A 2>/dev/null || exit 1
+# write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
+# above makes likely) is re-hashed here, which re-runs the clean filter — so the blanks (#629)
+# must ride this call as well, not only `add -A`.
+git -C "$TOP" "$@" write-tree 2>/dev/null || exit 1

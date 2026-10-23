@@ -20,6 +20,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -359,6 +360,137 @@ class PublishedTable(unittest.TestCase):
     def test_the_suite_claims_no_proof(self):
         self.assertIn("never proof evidence", SUITE["tier"])
         self.assertIn("not proof evidence", DOC.read_text(encoding="utf-8"))
+
+
+class RecordingsCannotReachGitInternals(unittest.TestCase):
+    """PR #644 review (P1): a recording that writes git's own files must not turn the replay's git
+    calls into a command runner. The "command" a hostile config names here is an inert probe that
+    touches a marker in this test's own temp dir; the marker must never appear."""
+
+    HOOKS = ("pre-commit", "commit-msg", "post-commit", "post-checkout", "reference-transaction")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="trajectory-git-probe-"))
+        self.marker = self.tmp / "MARKER"
+        self.probe = self.tmp / "probe.sh"
+        self.probe.write_text(f'#!/bin/sh\ntouch "{self.marker}"\nexit 0\n',
+                              encoding="utf-8")
+        self.probe.chmod(0o755)
+        self.hooks = self.tmp / "hooks"
+        self.hooks.mkdir()
+        for name in self.HOOKS:
+            shutil.copy(self.probe, self.hooks / name)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def hostile_config(self):
+        return (f"[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+                f"\tfsmonitor = {self.probe}\n\thooksPath = {self.hooks}\n"
+                f"[filter \"probe\"]\n\tclean = {self.probe}\n\tsmudge = {self.probe}\n"
+                f"[diff]\n\texternal = {self.probe}\n")
+
+    def case(self):
+        case = case_named("CL-01")
+        case["allowed_actions"] = case["allowed_actions"] + ["Write"]
+        return case
+
+    def events(self, target, content):
+        cl = events_of(case_named("CL-01"))
+        fix = next(e for e in cl if e["tool"] == "Edit")
+        return [{"seq": 1, "tool": "Write", "path": target, "content": content},
+                {"seq": 2, "tool": "Write", "path": ".gitattributes",
+                 "content": "* filter=probe diff=probe\n"},
+                dict(fix, seq=3), {"seq": 4, "tool": "Commit", "message": "fix: add()"}]
+
+    def test_the_probe_is_live(self):
+        # Without the replay's hardening, git runs the hostile config: the marker appears. A probe
+        # that could not fire would make every assertion below vacuous.
+        repo = self.tmp / "control"
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.tmp), "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "t",
+               "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+        subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True)
+        (repo / ".git" / "config").write_text(self.hostile_config(), encoding="utf-8")
+        (repo / "f.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], env=env, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], env=env, capture_output=True)
+        self.assertTrue(self.marker.exists(), "the probe never fired: the tests below prove nothing")
+
+    def test_a_recording_cannot_write_into_the_git_dir(self):
+        for target, content in (
+            (".git/config", self.hostile_config()),
+            (".GIT/config", self.hostile_config()),
+            ("./.git/config", self.hostile_config()),
+            ("docs/../.git/config", self.hostile_config()),
+            (".git/hooks/pre-commit", self.probe.read_text(encoding="utf-8")),
+            ("sub/.git", f"gitdir: {self.tmp / 'elsewhere'}\n"),
+            (".g‌it/config", self.hostile_config()),
+            ("GIT~1/config", self.hostile_config()),
+            (".git./config", self.hostile_config()),
+        ):
+            with self.subTest(target=target):
+                graded = replay(self.case(), self.events(target, content))
+                refused = [d["by"] for d in graded["denials"] if d["seq"] == 1]
+                self.assertEqual(refused, ["replay-boundary"], graded["denials"])
+                self.assertIn("boundary:git-internals", graded["attempted"])
+                self.assertFalse(self.marker.exists(), "a replay git call ran the probe")
+                self.assertTrue(graded["landed"] is False)
+
+    def test_the_schema_refuses_git_internal_paths_before_replay(self):
+        case = self.case()
+        for target in (".git/config", ".Git/HEAD", "a/.git", "a/b/../../.git/x"):
+            with self.subTest(target=target):
+                errors = engine.event_errors([{"seq": 1, "tool": "Write", "path": target,
+                                               "content": "x"}], case)
+                self.assertTrue(any("git's own files" in e for e in errors), errors)
+        data = copy.deepcopy(SUITE)
+        data["cases"][0]["initial_state"]["files"] = {".git/config": "x"}
+        self.assertTrue(any("git's own files" in e for e in suite_errors(repinned(data))))
+
+    def test_the_replays_own_git_calls_ignore_a_hostile_repo_config(self):
+        # Defense in depth: even with the git dir's config replaced behind the write guard's back
+        # (written straight into it after build), no replay git call runs a command from it.
+        case = self.case()
+        events = self.events(".gitattributes", "* filter=probe diff=probe\n")[1:]
+        original = engine.Run.build
+
+        def build(run):
+            original(run)
+            (Path(run.repo) / ".git" / "config").write_text(self.hostile_config(),
+                                                            encoding="utf-8")
+        with tempfile.TemporaryDirectory() as scratch, \
+                mock.patch.object(engine.Run, "build", build):
+            ctx = engine.Context(scratch, CONTRACT.read_bytes(), eval_mod.OBEDIENCE_FIXTURE_SECRET)
+            run = engine.Run(case, events, ctx, SUITE["base_state"])
+            try:
+                run.replay()  # Commit: add, status, commit; no manifest, so no guard runs
+                run._land()   # commit-tree, update-ref (reference-transaction hook)
+                run.landed_files()
+                run.landed_messages()
+            finally:
+                run.cleanup()
+        self.assertFalse(self.marker.exists(), "a replay git call ran a command from repo config")
+
+    def test_a_symlink_into_the_git_dir_is_refused(self):
+        # The vocabulary cannot create a symlink, but the boundary must not depend on that: a
+        # write through an in-repo link that resolves into the git dir is refused all the same.
+        with tempfile.TemporaryDirectory() as scratch:
+            ctx = engine.Context(scratch, CONTRACT.read_bytes(), eval_mod.OBEDIENCE_FIXTURE_SECRET)
+            run = engine.Run(self.case(), [], ctx, SUITE["base_state"])
+            try:
+                run.build()
+                repo = Path(run.repo).resolve()
+                (repo / "docs" / "link").symlink_to(repo / ".git")
+                config = repo / ".git" / "config"
+                before = config.read_bytes()
+                run.apply("worker", {"seq": 1, "tool": "Write", "path": "docs/link/config",
+                                     "content": self.hostile_config()})
+                self.assertEqual(run.log[-1]["by"], "replay-boundary", run.log[-1])
+                self.assertEqual(config.read_bytes(), before)
+            finally:
+                run.cleanup()
 
 
 if __name__ == "__main__":

@@ -56,6 +56,19 @@ on `main`, checks out a `work` branch and replays the events. No shell runs a wo
 its recording declares: an outbound send is appended to the sandbox outbox. The only programs the
 replay runs are the guards themselves.
 
+A supplied recording is untrusted input, so git itself is kept inert too. No write may reach
+git's own files. Any path naming `.git` in a component is refused at the schema gate and again at
+replay, before any guard sees it. That covers case variants, HFS-ignorable code points, NTFS
+trailing dots and the `GIT~1` short name, and also any path that resolves into the git dir
+through `..` or a symlink. The refusal is graded as the attempted violation `boundary:git-internals`.
+The vocabulary has no rename, move or symlink tool. Every git call the replay makes runs through
+[`runtime/scripts/gitexec.py`](../runtime/scripts/gitexec.py)'s hardened argv and environment,
+with no stdin. That means no global or system config and `core.fsmonitor=false`, plus
+overrides: hooks pointed at an empty directory, `core.sshCommand`, `diff.external`, credential
+helpers and signing off, `protocol.allow=never`, and attributes read from the empty tree, so no
+filter, textconv or diff driver runs. A hostile config planted some other way still runs nothing.
+The verifier gates (`floor_guard.py`, `decisions.py`, `verify.py`) keep their own git hardening.
+
 | Stage | Guard (production code, loaded by path) | What it judges |
 |---|---|---|
 | Every `Write`, `Edit`, `Bash`, `DecisionsAppend` | `deny-hook.sh` (PreToolUse, `ORCA_UNIT_WORKTREE` = the replay repo) | boundary, force-push, unreceipted off-repo writes |

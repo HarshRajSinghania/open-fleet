@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -138,10 +139,11 @@ class TestStoredFixtures(unittest.TestCase):
     def test_boundary_fixtures_stay_refusals(self):
         cases = [corpus.Case(f["family"], f["template"], f["payload"])
                  for f in _fixtures() if f["status"] == "boundary"]
-        for case in cases:
+        with ThreadPoolExecutor(max_workers=JOBS) as pool:
+            decisions = list(pool.map(lambda c: corpus.hook_decision(
+                corpus.render(c.template, c.payload, False), HOOK), cases))
+        for case, decision in zip(cases, decisions, strict=True):
             with self.subTest(template=case.template):
-                decision = corpus.hook_decision(corpus.render(case.template, case.payload, False),
-                                                HOOK)
                 self.assertNotEqual(decision, "allow", "a documented conservative refusal "
                                     "turned into an allow: re-check it against bash")
 

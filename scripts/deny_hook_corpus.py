@@ -357,6 +357,10 @@ class BashOracle:
 
     def run(self, text, args=""):
         """(sentinel ran with args leading its argv, bash reported a parse error) for a safe form."""
+        return self.observe(text, args)[:2]
+
+    def observe(self, text, args=""):
+        """run(), plus whether the sentinel ran at all (with any argv)."""
         if not safe_form_ok(text):
             raise ValueError(f"a safe form may reach only the sentinel: {text!r}")
         with self._lock:
@@ -385,10 +389,11 @@ class BashOracle:
                                 r"bad substitution|here-document .* delimited by end-of-file",
                                 err))
         want = args.split()
-        ran = mark.exists() and any(line.split()[:len(want)] == want
-                                    for line in mark.read_text(encoding="utf-8").splitlines())
+        touched = mark.exists()
+        ran = touched and any(line.split()[:len(want)] == want
+                              for line in mark.read_text(encoding="utf-8").splitlines())
         shutil.rmtree(work, ignore_errors=True)
-        return ran, syntax
+        return ran, syntax, touched
 
 
 def safe_form_ok(text):
@@ -489,7 +494,9 @@ def minimize(result, oracle, hook=HOOK):
         if (HEAD in template and ARGS not in template) or not safe_form_ok(safe) \
                 or _GLUED.search(template):
             return False   # never run a real tool name; never glue text onto the payload words
-        ran, syntax = oracle.run(safe, PAYLOADS[result["payload"]][1])
+        ran, syntax, touched = oracle.observe(safe, PAYLOADS[result["payload"]][1])
+        if want == "false-deny" and touched:
+            return False   # the sentinel ran with other words: a shrink that changed the command
         decision = hook_decision(render(template, result["payload"], False), hook)
         return classify(ran, syntax, decision, result["payload"]) == want
 

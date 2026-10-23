@@ -64,7 +64,7 @@ WEIGHTS = {
     "test_cross_runtime_upgrades": 2.4,
     "test_decisions": 11.9,
     "test_deny_hook": 134.4,
-    "test_deny_hook_conformance": 100.0,   # #598: measured 2026-10-23 (88-112 s, macOS, shared host)
+    "test_deny_hook_conformance": 105.0,   # #598: measured 2026-10-23 (88-125 s, macOS, shared host)
     "test_deny_hook_multi_harness": 25.1,
     "test_diff_scope": 10.3,
     "test_dispatch_sign": 8.1,

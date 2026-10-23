@@ -104,3 +104,18 @@ exit=1
 $ python3 scripts/external-ci-monitor.py --transport rest --drill-run 36146072394
 {"conclusion": "failure", "drill": true, "runId": 36146072394, "sha": "f78ef91e8abaf255b1bda46924722010f73b4e34", "status": "red", "updatedAt": "2026-09-25T14:13:51Z", "url": "https://github.com/ravidsrk/orca-fleet/actions/runs/36146072394"}
 exit=1
+
+Scheduled heartbeat observed (#528, H-09) at 2026-10-23T14:46:17Z
+Host: Claude Code cloud routine trig_01LHVNVyoRrPFtKPwYzTPBoP "open-fleet main CI monitor"
+(Anthropic cloud sandbox, outside GitHub Actions; no connectors; tools Bash, Read). Created
+2026-10-23T14:28:23Z with an hourly commissioning cron (45 * * * *) so one firing could be
+observed, then moved to the documented daily 13:17 UTC (17 13 * * *); next run 2026-10-24T13:17Z.
+The firing was the scheduler's, not a manual run: session cse_015URvHfDuWv4mRggZg6JWCa created
+2026-10-23T14:46:17Z for the 14:45 slot. Condensed run log (RemoteTrigger get_run_log):
+  14:46:19Z env: Cloning repository ravidsrk/open-fleet
+  14:46:31Z Bash: python3 scripts/external-ci-monitor.py --transport rest --quiet-when-current
+  14:46:32Z {"conclusion": "success", "drill": false, "runId": 39968585630, "sha": "5fcab11f9325b76c0fbd8d82879a789b98ef8027", "status": "healthy", "updatedAt": "2026-10-23T14:27:41Z", "url": "https://github.com/ravidsrk/open-fleet/actions/runs/39968585630"} EXIT:0
+  14:46:34Z result: healthy: 5fcab11f9325b76c0fbd8d82879a789b98ef8027 https://github.com/ravidsrk/open-fleet/actions/runs/39968585630
+That closes the remaining H-09 observation: a scheduled heartbeat fired from an always-on host
+outside Actions and returned the authoritative poller result. Alert delivery on a non-healthy
+result is the routine's ALERT: summary; the red path itself is the drill above (#537).

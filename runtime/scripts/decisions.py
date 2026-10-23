@@ -266,7 +266,7 @@ def grant_payload(ident, answer, why_core, task_id="", *, ts, klass="one-way"):
     v2 binds the line's exact ``ts`` and its class beside id/answer/why/task: active() ranks
     by ts, so a signature that did not cover it let a signed `approved` be replayed under a
     later stamp to out-rank a later signed `superseded` (2026-10-23 review, P2-3)."""
-    return ("orca-fleet human grant v2\n" + "\n".join(
+    return ("open-fleet human grant v2\n" + "\n".join(
         [ts, ident, klass, answer, why_core, task_id or ""])).encode("utf-8")
 
 

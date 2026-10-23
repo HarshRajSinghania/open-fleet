@@ -82,8 +82,8 @@ _RUNTIME_REF = r"runtime/(?:scripts/[A-Za-z0-9_][A-Za-z0-9_.-]*|[A-Za-z0-9_][A-Z
 RUNTIME_LINK_RE = re.compile(rf"\[([^\]]*)\]\((?:\.\./)*({_RUNTIME_REF})(#[^)]*)?\)")
 RUNTIME_PATH_RE = re.compile(rf"(?<![\w/$.-])({_RUNTIME_REF})")
 # The installed-root variable every vendored command names. ORCA_FLEET_ROOT is its pre-rename
-# spelling; a source document that still carries it (docs/runs/TEMPLATE.md is kept byte-identical
-# with the run archive it sits in) is normalised in the copy, so one bundle never names two roots.
+# spelling; a source document that still carries it is normalised in the copy, so one bundle never
+# names two roots.
 ROOT_VAR = "OPEN_FLEET_ROOT"
 LEGACY_ROOT_VAR_RE = re.compile(r"\bORCA_FLEET_ROOT\b")
 # The template states the substitution as a manual step. The bundled copy has already had it made,

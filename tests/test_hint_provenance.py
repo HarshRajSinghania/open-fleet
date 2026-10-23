@@ -231,6 +231,15 @@ class CurrencyAgainstTheLiveSource(unittest.TestCase):
         currency, reasons, shown = self.label("contradicted-by-current-evidence", "2026-01-10-run-a/CACHE-2")
         self.assertEqual((currency, reasons, shown), ("SUPERSEDED", ["current-evidence:src/cache.py=fail"], False))
 
+    def test_records_failing_their_own_checks_supersede_nothing(self):
+        # PR #639 review: a contradicting record ahead of the live checkout, or with a rewritten
+        # artifact, used to mark the checkout's valid record SUPERSEDED, and current mode hid all.
+        scn = "invalid-record-cannot-supersede"
+        self.assertEqual(self.label(scn, "2026-01-10-run-a/LIMIT-1"), ("CURRENT", [], True))
+        self.assertEqual(self.label(scn, "2026-01-11-run-b/LIMIT-1"), ("STALE", ["ahead-of-live"], False))
+        self.assertEqual(self.label(scn, "2026-01-12-run-c/LIMIT-1"),
+                         ("STALE", ["artifact-modified:negctrl.txt"], False))
+
     def test_unknown_stays_visible_and_is_never_upgraded(self):
         for scn, key, reason in (("dependencies-changed-source-unchanged", "2026-01-10-run-a/HTTP-1",
                                   "dependencies-changed:requirements.txt"),
@@ -595,6 +604,9 @@ class MutationControls(unittest.TestCase):
     def test_contradiction_check(self):
         self.red(["superseded-same-unit", "contradicted-by-current-evidence"],
                  (hp, "supersede", lambda hints, live, observations=(): None))
+
+    def test_superseder_eligibility(self):
+        self.red(["invalid-record-cannot-supersede"], (hp, "provenance_failed", lambda hint: False))
 
     def test_withholding(self):
         self.red(["poisoned-grant-note", "poisoned-instruction-note"], (ss, "WITHHOLD_LABELS", frozenset()))

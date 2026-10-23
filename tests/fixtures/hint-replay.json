@@ -1409,6 +1409,128 @@
     ],
     "pitfall": "legacy"
    }
+  },
+  {
+   "id": "invalid-record-cannot-supersede",
+   "about": "Newer contradicting records that fail their own source/artifact checks (one ahead of the live checkout, one with a rewritten artifact) cannot supersede a valid record (PR #639 review).",
+   "commits": [
+    {
+     "name": "c0",
+     "files": {
+      "README.md": "# fixture\n",
+      "src/__init__.py": "",
+      "src/auth.py": "def refresh(token):\n    return token + 1\n",
+      "tests/test_auth.py": "import unittest\n\n\nclass Refresh(unittest.TestCase):\n    def test_once(self):\n        self.assertEqual(1 + 1, 2)\n",
+      "src/limit.py": "LIMIT = 10\n"
+     }
+    },
+    {
+     "name": "c1",
+     "files": {
+      "README.md": "# fixture v2\n"
+     }
+    },
+    {
+     "name": "c2",
+     "files": {
+      "README.md": "# fixture v3\n"
+     }
+    }
+   ],
+   "live": "c1",
+   "runs": [
+    {
+     "run": "2026-01-10-run-a",
+     "manifest": {
+      "unit": "LIMIT-1",
+      "status": "verified",
+      "files_touched": [
+       "src/limit.py"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-10T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c0",
+      "base_sha": "@c0",
+      "intent": {
+       "invariant": "limit holds at ten per second"
+      }
+     }
+    },
+    {
+     "run": "2026-01-11-run-b",
+     "manifest": {
+      "unit": "LIMIT-1",
+      "status": "regressed",
+      "files_touched": [
+       "src/limit.py"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-11T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c2",
+      "base_sha": "@c2",
+      "parking_reason": "limit regressed under burst traffic"
+     }
+    },
+    {
+     "run": "2026-01-12-run-c",
+     "manifest": {
+      "unit": "LIMIT-1",
+      "status": "failed",
+      "files_touched": [
+       "src/limit.py"
+      ],
+      "commands": [
+       {
+        "label": "tests",
+        "ts": "2026-01-12T12:00:00Z",
+        "exit": 0
+       }
+      ],
+      "head_sha": "@c1",
+      "base_sha": "@c1",
+      "parking_reason": "limit fails the soak test"
+     },
+     "artifacts": {
+      "negctrl.txt": "RED: m1 killed\n"
+     },
+     "tamper_artifacts": {
+      "negctrl.txt": "rewritten after the run\n"
+     }
+    }
+   ],
+   "query": [
+    "src/limit.py"
+   ],
+   "expect": {
+    "2026-01-10-run-a/LIMIT-1": {
+     "currency": "CURRENT",
+     "reason": null,
+     "class": "useful",
+     "marker": "holds at ten per second"
+    },
+    "2026-01-11-run-b/LIMIT-1": {
+     "currency": "STALE",
+     "reason": "ahead-of-live",
+     "class": "stale",
+     "marker": "regressed under burst"
+    },
+    "2026-01-12-run-c/LIMIT-1": {
+     "currency": "STALE",
+     "reason": "artifact-modified:negctrl.txt",
+     "class": "stale",
+     "marker": "fails the soak test"
+    }
+   }
   }
  ]
 }

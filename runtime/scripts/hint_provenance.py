@@ -460,6 +460,18 @@ def assess(hint, live, archive=None):
     return reasons
 
 
+# A record whose OWN provenance failed -- no or a foreign revision, a revision off the live line of
+# history, an artifact that is not what was recorded -- proves nothing about what came after a
+# valid record, so it never supersedes one (PR #639 review: an ahead-of-live record used to hide
+# the checkout's valid record, and current mode then showed neither).
+DISQUALIFYING = ("no-revision", "revision-malformed", "revision-not-in-live-repo", "divergent-branch",
+                 "ahead-of-live", "artifact-", "provenance-unreadable")
+
+
+def provenance_failed(hint):
+    return any(reason.startswith(DISQUALIFYING) for _label, reason in hint.get("reasons") or [])
+
+
 def _newer(a, b, live):
     """True when record b is strictly newer than record a: by ancestry when the live repo knows
     both revisions, else by commit time, else by the records' own claimed time."""
@@ -476,11 +488,12 @@ def _newer(a, b, live):
 def supersede(hints, live, observations=()):
     """Contradictory evidence (#605): a hint is SUPERSEDED when a strictly newer record of the
     same unit claims the opposite outcome, when a newer record lists it in ``supersedes``, or when
-    a CURRENT observation of its scope (the frozen task's own evidence) says the opposite.
-    Mutates each hint's ``reasons``; a contradiction only ever demotes, never promotes."""
+    a CURRENT observation of its scope (the frozen task's own evidence) says the opposite. Only a
+    record whose own provenance held can supersede (provenance_failed). Mutates each hint's
+    ``reasons``; a contradiction only ever demotes, never promotes."""
     for old in hints:
         for new in hints:
-            if new is old:
+            if new is old or provenance_failed(new):
                 continue
             names = {str(s).strip().lower() for s in new.get("supersedes") or []}
             explicit = old["unit_key"] in names or f"{old['run_key']}/{old['unit_key']}" in names

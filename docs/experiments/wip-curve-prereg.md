@@ -74,6 +74,8 @@ These fields are filled at run time and recorded in every run's `run.json`:
   must equal the pin.
 
 Builders run with `PROFILE=rw`. Reviewers run with `PROFILE=ro` on the same harness and model.
+After every spawn, the runner checks that the deny hook the provider installed in the worker's
+tree is armed, as `first_run.py` does. If it is not, the runner stops the worker and the run fails.
 
 ## WIP settings and reviewer availability
 
@@ -87,8 +89,10 @@ Builders run with `PROFILE=rw`. Reviewers run with `PROFILE=ro` on the same harn
 A wave dispatches at most `builders` units, and carried (bounced) units go first.
 `reviewers=<n>` is the number of build-blind review units in flight at once. A done unit waits
 for a free reviewer in worker_done order. The reviewer rubric is fixed: the reviewer receives the
-task statement and the diff, and answers `approve` or `changes` on one `WIP-REVIEW` line. No
-human reviewer sits in the measured loop. Human review capacity is a separate experiment.
+task statement and the diff, and answers `approve` or `changes` on one `WIP-REVIEW` line. The line
+may be wrapped in markdown, but it must carry the review's nonce and the reviewed head. A review
+with no such line ends the attempt `review-failed`, and the unit is rebuilt like any other bounced
+unit. No human reviewer sits in the measured loop. Human review capacity is a separate experiment.
 
 ## Repetitions, order and isolation
 
@@ -123,8 +127,8 @@ worktree, branch, store or transcript is shared between runs.
 
 - A run is complete when every task is CLOSED (verified, reviewed and landed by the merge queue)
   or parked.
-- A task is bounced when the oracle fails, the review asks for changes, the merge conflicts, the
-  merge gate fails, or the builder fails. A task bounced three times is parked
+- A task is bounced when the oracle fails, the review asks for changes or gives no verdict, the
+  merge conflicts, the merge gate fails, or the builder fails. A task bounced three times is parked
   `attempts-exhausted`.
 - Dispatch timeouts are 30 minutes for a builder and 15 minutes for a reviewer. A run's
   wall-clock limit is 180 minutes.
@@ -275,7 +279,9 @@ It re-checks every CLOSED unit against git and review authority:
   retained answer still hashes to the recorded bytes and ends in that verdict.
 - A retained oracle transcript records a pass at that head.
 - The oracle passes again on a fresh extraction of that head.
-- Every recorded conflict re-derives with `git merge-tree`.
+
+It also checks that every parked unit's head is in the bundle and is not on the integration
+branch, and that every recorded conflict re-derives with `git merge-tree`.
 
 `verify` recomputes the report from the same sources. It names every JSON field and every
 `report.md` line that disagrees. A deliberately altered metric row is therefore caught. It then

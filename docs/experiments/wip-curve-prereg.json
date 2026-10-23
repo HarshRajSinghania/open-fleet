@@ -64,7 +64,7 @@
   "stopping_rule": {
     "run_complete": "every task is CLOSED (verified, reviewed, merged by the merge queue) or parked",
     "max_attempts_per_task": 3,
-    "attempts": "a task bounced max_attempts_per_task times (failed oracle, review asks for changes, merge conflict, failed merge gate, builder failure) is parked attempts-exhausted",
+    "attempts": "a task bounced max_attempts_per_task times (failed oracle, a review that asks for changes or gives no verdict, merge conflict, failed merge gate, builder failure) is parked attempts-exhausted",
     "dispatch_timeout_minutes": {"builder": 30, "reviewer": 15},
     "run_wall_clock_minutes": 180,
     "cost": "before each wave, observed spend plus the reservation for the wave's worst case (two dispatches per unit) must stay within the cap given to the runner; otherwise the run stops, every unit still in flight is parked stopped-cost-cap so the record stays derivable, and no further run starts",

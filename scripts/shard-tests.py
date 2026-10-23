@@ -111,7 +111,7 @@ WEIGHTS = {
     "test_pin_review": 1.0,
     "test_pins": 0.1,
     "test_pm": 0.1,
-    "test_posix_crash_recovery": 46.0,
+    "test_posix_crash_recovery": 47.3,  # +1.3 s: #596 review's recorded ro-relay window (5 tests)
     "test_posix_docker_crash": 0.3,
     "test_posix_provider": 10.7,
     "test_preflight": 5.4,

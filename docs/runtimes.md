@@ -204,8 +204,12 @@ dispatch is settled without the wait (monitor action `refused_at_gate`). A `work
 later `worker-retain`. A live monitor, or one whose gate never closed (a fence recorded by an
 older store), still gets the whole grace to finish its own sync. A monitor writes `<lane>/exit.json` before it
 settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
-exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
-recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a
+exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). For a
+`ro` dispatch that exited 0, recovery first re-reads the completion line from the recorded
+transcript, with the monitor's own final-answer reader, and relays it. A worker that printed
+`failed` is therefore reported `failed`, never as `worker_died (exit=0)`. The relay is idempotent:
+if the monitor relayed before it died, recovery settles on that mail and adds nothing (#596
+review). Both recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a
 dispatch, which stayed `ready` with no `worker_died`. A dispatch its own monitor DID settle and the
 coordinator then retained is not that case. Its terminal mail already exists, so neither path
 settles it again, and it keeps reading `retained` (`LocalStateStore.terminal_report`). Settling it

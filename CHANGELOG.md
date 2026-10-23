@@ -142,7 +142,12 @@ truth is `.claude-plugin/plugin.json`.
   - posix `ro` workers can report completion. Where an exit monitor runs, a ro assignment names the line
     `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`, and the exit monitor relays it as
     the worker's `worker_done`. The worker gains no tool or writable path. A clean exit without
-    the line is still `worker_died (exit=0)`.
+    the line is still `worker_died (exit=0)`. The line counts only as the last line of the
+    harness's final answer. That answer is read by the same reader as the first-run report, now
+    `runtime/providers/transcript.py`, so a marker in reasoning, in a tool result or in an echoed
+    prompt does not count. A monitor can die after recording the exit but before relaying.
+    Recovery then relays the line from the recorded transcript, so a reported `failed` is never
+    lost (#650 review).
   - gastown's claude `ro` alias carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`.
     `tests/test_claude_ro_launches.py` checks every claude ro row and alias for that set. The one
     exemption is the live-witnessed Orca TUI row, which is unchanged.

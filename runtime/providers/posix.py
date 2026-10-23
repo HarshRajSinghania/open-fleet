@@ -26,6 +26,7 @@ import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import time
 import uuid
@@ -2302,6 +2303,11 @@ if {repr(self.backend)} == "cmux":
         tail = ""
         with contextlib.suppress(OSError):
             tail = (lane / "events.jsonl").read_text(encoding="utf-8", errors="replace")[-500:]
+        if rc == 0 and _col(r, "profile") == "ro":
+            # The monitor relays a ro worker's completion line AFTER exit.json; one that died in
+            # between must not turn a printed `failed` into worker_died (exit=0) (#596 review). Same
+            # reader as the monitor's; idempotent, so a monitor that did relay is never doubled.
+            self._relay_recorded_completion(r, lane, head)
         with self.state._connect() as conn:
             conn.execute("UPDATE terminals SET state = 'exited' WHERE handle = ? AND state = 'running'", (r["terminal_handle"],))
         died = self.state.ensure_terminal_or_died(
@@ -2313,6 +2319,25 @@ if {repr(self.backend)} == "cmux":
             run_id=r["run_id"],
         )
         return {"exitCode": rc, "headSha": head, "died": died}
+
+    def _relay_recorded_completion(self, r: Any, lane: Path, head: str) -> dict[str, Any] | None:
+        """relay_ro_completion over a dead monitor's recorded transcript; a failure is logged, never
+        raised, so the exit still settles (as worker_died when no line could be read)."""
+        try:
+            return relay_ro_completion(
+                self.state,
+                dispatch_id=r["dispatch_id"],
+                worker_handle=r["terminal_handle"],
+                agent=str(_col(r, "agent") or ""),
+                run_id=r["run_id"],
+                log_path=lane / "events.jsonl",
+                head_sha=head,
+            )
+        except (ProviderError, sqlite3.Error, OSError) as exc:
+            with contextlib.suppress(OSError), open(lane / "events.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "ro_relay_failed", "dispatchId": r["dispatch_id"],
+                                     "error": str(exc)[:500], "by": "recovery"}) + "\n")
+            return None
 
     def _report_vanished(self, r: Any) -> dict[str, Any]:
         """A monitor that died without reporting: salvage a sandbox's commits, then `worker_died`.

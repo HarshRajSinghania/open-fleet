@@ -581,7 +581,8 @@ def screen(events):
     return screened, duplicates, conflicts, fenced, epochs, taints, excluded
 
 
-def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=()):
+def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=(),
+                counted_voids=()):
     """One planned unit's outcome and per-unit measurements in one wave, from the set of its
     events placed there.
 
@@ -592,7 +593,8 @@ def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=
     measured in the wave its END is placed in, so each is counted once. `carried_out`: a later
     wave plans the unit again, so every later event is placed there and what it reached here
     is final for this wave — it no longer leaves this wave pending. `ended_before` are the heads
-    whose latency interval an earlier wave actually ended (each unit returns its own `ended`)."""
+    whose latency interval an earlier wave actually ended (each unit returns its own `ended`);
+    `counted_voids` the reviewed heads an earlier wave already counted as voided reviews."""
     by = {kind: [] for kind in KINDS}
     for event in events:
         by[event["kind"]].append(event)
@@ -739,8 +741,9 @@ def derive_unit(task, wave, events, history=(), carried_out=False, ended_before=
         moved = close_head and sha != close_head and not (tree and tree == close_tree)
         if moved or sha in explicit:
             voided.append(sha)
-    # A void observed without the approval it voided is still one voided review.
-    voided += sorted(explicit - {r["data"]["reviewed_sha"] for r in approvals})
+    # A void observed without the approval it voided is still one voided review — unless an
+    # earlier wave counted it: a reopened unit's late record of that void is the same one.
+    voided += sorted(explicit - {r["data"]["reviewed_sha"] for r in approvals} - set(counted_voids))
 
     # Retries: a dispatch first seen in this wave that follows an earlier dispatch of the task,
     # in this wave or one that planned it before. This wave's dispatches minus one read d1 in
@@ -875,11 +878,14 @@ def _zero(field):
     return Decimal(0) if field == "cost_usd" else 0
 
 
-def usage_summary(events, dispatches, tainted, unsure=()):
+def usage_summary(events, dispatches, tainted, unsure=(), relaunched=None):
     """Observed model usage. A field any observation left unreported is null, with the
     observations' own provenance — never zero, never a partial sum presented as a total.
     `unsure` are dispatches named only by fenced or conflicting evidence: one with no usage
-    observation of its own leaves the run's coverage unknown, so the run total is too."""
+    observation of its own leaves the run's coverage unknown, so the run total is too.
+    `relaunched` maps a dispatch id launched several times to its launches' tasks: unless each
+    of those tasks has a usage observation naming it, and no two share a task, which launch an
+    observation belongs to is unknown."""
     models = {}
     for event in events:
         name = event["data"]["model"] or "(unreported)"
@@ -915,6 +921,13 @@ def usage_summary(events, dispatches, tainted, unsure=()):
     covered = {e["dispatch"] for e in events if e["dispatch"]}
     unobserved = sorted(set(dispatches) - covered)
     unknown = sorted(set(unsure) - covered)
+    shared = []
+    for did, tasks in sorted((relaunched or {}).items()):
+        named = {e["task"] for e in events if e["dispatch"] == did and e["task"]}
+        if len(set(tasks)) < len(tasks) or not set(tasks) <= named:
+            shared.append(f"dispatch {did} was launched {len(tasks)} times under one id (tasks "
+                          f"{sorted(set(tasks))}) and usage names task(s) {sorted(named)} only, so "
+                          "which launch each observation covers is unknown")
     run_total = {}
     for field in USAGE_FIELDS:
         reasons = list(totals[field][1])
@@ -923,6 +936,7 @@ def usage_summary(events, dispatches, tainted, unsure=()):
         if unknown:
             reasons.append(f"dispatch(es) {unknown} appear only in fenced or conflicting evidence "
                            "and have no usage observation, so the run's usage coverage is unknown")
+        reasons += shared
         if not events:
             reasons.append("no model.usage observed")
         reasons += tainted
@@ -1021,12 +1035,13 @@ def derive(events, run=None, file_sha="", head=""):
                 taints.setdefault(("unit", task), []).append(why)
             else:
                 parts[k].append(event)
-        history, ended = [], set()
+        history, ended, counted = [], set(), set()
         for i, k in enumerate(ks):  # a planned unit never observed is open, not missing
             units[(task, k)] = derive_unit(task, k, parts[k], history, carried_out=i < len(ks) - 1,
-                                           ended_before=ended)
+                                           ended_before=ended, counted_voids=counted)
             history = history + parts[k]
             ended |= set(units[(task, k)]["ended"])
+            counted |= set(units[(task, k)]["voided_reviews"])
     unplanned = [{"task": t, "events": len(evs)} for t, evs in sorted(lifecycle.items())
                  if t not in plan]
     waves = []
@@ -1066,8 +1081,16 @@ def derive(events, run=None, file_sha="", head=""):
     # usage is part of the run's coverage, never dropped from it (PR #638 review, P1).
     unsure = sorted({e["dispatch"] for e in excluded if e["dispatch"] and e["kind"] != "model.usage"}
                     - set(dispatches))
+    # A store row recorded again under its id (INSERT OR REPLACE) is several launches of one
+    # dispatch id, one per creation time. Usage names the dispatch and, at best, the task, so
+    # each of those launches needs a usage observation naming its task (PR #638 review, sweep).
+    relaunched = {}
+    for e in kept:
+        if e["kind"] == "dispatch.launched" and e["source"]["ref"] == f"local-state:dispatches/{e['dispatch']}":
+            relaunched.setdefault(e["dispatch"], {})[e["observed_at"]] = e["task"]
+    relaunched = {d: list(by_time.values()) for d, by_time in relaunched.items() if len(by_time) > 1}
     usage = usage_summary([e for e in kept if e["kind"] == "model.usage"], dispatches,
-                          taints.get(("usage",), []) + taints.get(("run",), []), unsure)
+                          taints.get(("usage",), []) + taints.get(("run",), []), unsure, relaunched)
     report = {
         "schema": REPORT_SCHEMA, "run": run,
         "record": {"log_sha256": file_sha, "head": head, "lines": len(events),

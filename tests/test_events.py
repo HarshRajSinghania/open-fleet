@@ -713,6 +713,25 @@ class TestCarriedUnits(Base):
         self.assertEqual(report["waves"][1]["units"][0]["voided_reviews"], [a])
         self.assertEqual(self.metric(report, 2, "latency_max")["value"], "5.00m")
 
+    def test_a_void_counted_in_an_earlier_wave_is_not_counted_again_after_a_reopen(self):
+        # Sweep (cross-wave counts): t closed at B in wave 1, which voided the approval of A
+        # there; it was reopened in wave 2, where the void of A was recorded late. Wave 2 counted
+        # it again as "a void without its approval": one voided review, two violations.
+        a, b, c = sha("a1"), sha("b1"), sha("c1")
+        report = self.derive(two_wave_stream(
+            wave1=[("task.done", "10:05:00", {"dispatch": "d1", "data": {"head_sha": a}}),
+                   ("review.verdict", "10:06:00", {"data": {"verdict": "approve", "reviewed_sha": a}}),
+                   ("task.done", "10:08:00", {"dispatch": "d1", "data": {"head_sha": b}}),
+                   ("review.verdict", "10:09:00", {"data": {"verdict": "approve", "reviewed_sha": b}}),
+                   ("verify.verdict", "10:10:00", {"data": {"exit": 0, "head_sha": b}}),
+                   ("unit.closed", "10:12:00", {"data": {"head_sha": b}})],
+            wave2=[("review.voided", "10:35:00", {"data": {"reviewed_sha": a, "head_sha": b}}),
+                   ("task.done", "10:40:00", {"dispatch": "d1", "data": {"head_sha": c}}),
+                   ("review.verdict", "10:42:00", {"data": {"verdict": "approve", "reviewed_sha": c}}),
+                   ("verify.verdict", "10:45:00", {"data": {"exit": 0, "head_sha": c}}),
+                   ("unit.closed", "10:50:00", {"data": {"head_sha": c}})]))
+        self.assertEqual([self.metric(report, k, "freshness")["value"] for k in (1, 2)], ["1", "0"])
+
     def test_a_park_before_any_worker_done_ended_no_interval(self):
         # PR #638 review (P1): every earlier park at a head counted as an interval already
         # measured. t parked at A in wave 1 before any worker_done (that wave measured nothing),
@@ -942,6 +961,27 @@ class TestUsage(Base):
         self.assertEqual(report["usage"]["unobserved_dispatches"], ["r1", "r2"])
         # Control: with the reviewers' own usage observed, the total is the whole run's.
         report = self.derive(evs + [usage("r1", 3), usage("r2", 4)])
+        self.assertEqual(report["usage"]["run_total"]["input_tokens"], {"value": 12})
+
+    def test_a_dispatch_id_launched_for_two_tasks_needs_usage_for_each(self):
+        # Sweep (coverage): a dispatch id an external provider recorded again for another task
+        # is two launches under one id. Usage was covered per dispatch id, so one task's usage
+        # observation made the run total read complete without the other task's spend.
+        def launch(task, at):
+            return ev("dispatch.launched", at, task=task, dispatch="agent-7", producer="local_state",
+                      basis="occurred", ref="local-state:dispatches/agent-7",
+                      event_id=f"local-state:dispatch:agent-7@{at}", **ONE)
+
+        def usage(task, tokens):
+            return ev("model.usage", "11:00:00", task=task, dispatch="agent-7",
+                      data={"model": "m", "input_tokens": tokens, "provenance": f"p {task}"}, **ONE)
+        base = [ev("run.start", "10:00:00", data={"coordinator": "c1"}, **ONE),
+                launch("t1", "10:01:00"), launch("t2", "10:30:00")]
+        total = self.derive(base + [usage("t1", 5)])["usage"]["run_total"]["input_tokens"]
+        self.assertIsNone(total["value"], total)
+        self.assertTrue(any("agent-7" in r and "t2" in r for r in total["unavailable"]), total)
+        # Control: with each task's usage observed, the total is known.
+        report = self.derive(base + [usage("t1", 5), usage("t2", 7)])
         self.assertEqual(report["usage"]["run_total"]["input_tokens"], {"value": 12})
 
     def test_a_wave_only_excluded_evidence_opens_is_reported_not_dropped(self):

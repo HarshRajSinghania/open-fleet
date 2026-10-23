@@ -525,7 +525,8 @@ Throughput is verified-CLOSED units per hour of `wave.open` → `wave.close`; re
 of units with a failing verdict (exit 2), a SUSPECT or a re-dispatch (a replaced worker, or a
 replacement dispatched into a later wave — a worker carried into it is neither); freshness counts
 approving reviews (one per reviewer dispatch and head) voided by a closing head that moved,
-unless both trees are recorded and equal. Retries count each dispatch of a task after its first,
+unless both trees are recorded and equal (a void an earlier wave counted is not counted again
+when a reopened unit's later wave records it). Retries count each dispatch of a task after its first,
 in the wave it is first seen in — so a replacement that carried the unit into a later wave is a
 retry there, and a worker carried into it is not. An interval needs one clock, no
 `recovered` endpoint and a non-negative difference. Coordinator history must be whole —
@@ -565,8 +566,9 @@ the run total; it is never 0. The run total covers every dispatch the record adm
 reviewers named on their review events, any other — so it is the whole run's usage or
 unavailable with the uncovered dispatches named. Excluded evidence never shrinks coverage: a
 dispatch named only by fenced or conflicting events still counts, so without a usage
-observation of its own the run total is unavailable, and a wave named only by excluded events
-is listed, unavailable, rather than dropped (once the run has declared an epoch).
+observation of its own the run total is unavailable; a dispatch id launched several times (a
+re-recorded row) is covered only when usage names each launch's task; and a wave named only
+by excluded events is listed, unavailable, rather than dropped (once the run has declared an epoch).
 
 `report` prints the rows in docs/runs/TEMPLATE.md's table, `unavailable` in any cell the record
 cannot support (`runtime/scripts/run_report.py` then refuses the row, which is the point),

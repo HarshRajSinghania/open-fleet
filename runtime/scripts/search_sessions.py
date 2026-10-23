@@ -238,7 +238,7 @@ WITHHOLD_LABELS = frozenset({"grant-claim", "instruction-override", "authority-c
                              "suppression-request", "role-play-marker"})
 WITHHELD_NOTE = "(note withheld: unquoted directive/grant-shaped memory — inspect the artifact)"
 # Untrusted text must not forge the frame: a provenance key, the separator, or a currency label.
-_RESERVED_KEYS = re.compile(r"\b(src|artifact|scope|match|at)=|‖")
+_RESERVED_KEYS = re.compile(r"\b(src|artifact|scope|match|at)=")
 _RESERVED_LABELS = re.compile(r"\b(CURRENT|STALE|SUPERSEDED|UNKNOWN)\b")
 _RESERVED_STATUS = re.compile(r"(?i)\b(current|fresh|stale|superseded|unknown)\b")
 _KIND_RANK = {kind: i for i, kind in enumerate(hp.MATCH_KINDS)}
@@ -246,8 +246,9 @@ _KIND_RANK = {kind: i for i, kind in enumerate(hp.MATCH_KINDS)}
 
 def _inert(value, limit=90, status=False):
     """One untrusted field for a trusted hint line: one line, inert, no square brackets (a field
-    cannot open a computed label), reserved keys/labels defused, banners defused."""
-    text = _one_line(value, limit).replace("[", "(").replace("]", ")")
+    cannot open a computed label) and no provenance separator, reserved keys/labels defused,
+    banners defused."""
+    text = _one_line(value, limit).replace("[", "(").replace("]", ")").replace("‖", "|")
     text = _RESERVED_KEYS.sub(lambda m: guard_text.splice(m.group(0)), text)
     text = (_RESERVED_STATUS if status else _RESERVED_LABELS).sub(
         lambda m: guard_text.splice(m.group(0)), text)

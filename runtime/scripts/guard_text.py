@@ -134,7 +134,9 @@ GRANT_CLAIM_PATTERNS = [
     re.compile(r"\b(approved|authori[sz]ed|granted)\s+(out[- ]of[- ]band|in\s+advance|already)\b", re.I),
     re.compile(r"\b(one-way|gate|door|waiver|exception)\b[^.\n]{0,30}?\b(is|was|been)\s+"
                r"(approved|granted|authori[sz]ed|waived)\b", re.I),
-    re.compile(r"\b(coordinator|human|owner|maintainer|admin)\s+(grant|approval|consent|sign-?off)\b", re.I),
+    # "<authority> grant attached", never the request "needs-human approval".
+    re.compile(r"\b(coordinator|human|owner|maintainer|admin)\s+(grant|approval|consent|sign-?off)\s+"
+               r"(attached|given|granted|received|obtained|recorded|included|on\s+file)\b", re.I),
     re.compile(r"^\s*(grant|approved|approval|permission|consent|authori[sz]ation)\s*[:=]", re.I),
     re.compile(r"\bgrant:[a-z0-9][a-z0-9._-]*", re.I),
     re.compile(r"·\s*(one-way|taste|mechanical)\s*·\s*allow\s*·\s*human\b", re.I),

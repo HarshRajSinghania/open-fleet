@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "a2a_export.py"
@@ -135,6 +136,12 @@ class TestA2AStandardBoundary(unittest.TestCase):
             with self.subTest(label):
                 errs = self.mod.offline_claim_errors({**card, **patch})
                 self.assertTrue(any(e.startswith(expected) for e in errs), errs)
+
+    def test_build_refuses_a_descriptor_the_claim_guard_flags(self):
+        flagged = ["capabilities.streaming: True, but an offline descriptor serves no A2A task"]
+        with mock.patch.object(self.mod, "offline_claim_errors", return_value=flagged):
+            with self.assertRaisesRegex(self.mod.ExportError, "makes transport claims"):
+                self.mod.build_catalog_cards(mission="ship-it")
 
     def test_the_offline_descriptor_fails_the_pinned_schema_as_a_transport_card(self):
         card = self.mod.build_catalog_cards(mission="clean-sweep")

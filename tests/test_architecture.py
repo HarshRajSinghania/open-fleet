@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Contract tests for the orca-fleet architecture (ARCHITECTURE.md).
+Contract tests for the open-fleet architecture (ARCHITECTURE.md).
 
 These lock in the invariants that justify the repo existing separately from a pile
 of vendor-named skills. They use only the standard library. Run:
@@ -1316,7 +1316,7 @@ class TestBundleForCopyInstallers(unittest.TestCase):
             root = Path(tmp)
             manifest = _json.loads(
                 (root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["name"], "orca-fleet")
+            self.assertEqual(manifest["name"], "open-fleet")
             hooks = _json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
             commands = [h["command"] for groups in hooks["hooks"].values()
                         for g in groups for h in g["hooks"]]

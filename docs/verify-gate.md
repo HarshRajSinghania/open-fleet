@@ -32,9 +32,9 @@ it runs the same `verify.py` no matter which surface fires it.
 
 | Install | `${CLAUDE_PLUGIN_ROOT}` | Gate |
 |---|---|---|
-| `/plugin install orca-fleet@orca-fleet` | set by Claude Code | declared by [`hooks/hooks.json`](../hooks/hooks.json); confirm activation in the plugin manager |
+| `/plugin install open-fleet@open-fleet` | set by Claude Code | declared by [`hooks/hooks.json`](../hooks/hooks.json); confirm activation in the plugin manager |
 | `ln -s … ~/.claude/skills/<mission>` | **unset** | **none until you wire it**: `sh hooks/print-settings-snippet.sh` and merge the output into `settings.json` |
-| `npx skills add …` (copy installer) | unset | **not supported today** — the copy severs the mission's bare-name lookups and its `../../ARCHITECTURE.md` link ([#294](https://github.com/ravidsrk/orca-fleet/issues/294)); see [Install](../README.md#install) |
+| `npx skills add …` (copy installer) | unset | **not supported today** — the copy severs the mission's bare-name lookups and its `../../ARCHITECTURE.md` link ([#294](https://github.com/ravidsrk/open-fleet/issues/294)); see [Install](../README.md#install) |
 
 This is issue #262: the README recommends the symlink path for trying the catalog out, and that
 path loads no plugin, so the hook file below never fires. A mission installed that way runs with

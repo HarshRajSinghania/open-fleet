@@ -2,7 +2,7 @@
 
 Run it: `python3 scripts/release_check.py` (add `--fast` to skip the suite).
 
-The bar for orca-fleet 1.0, resolved to commands a second person can run. This
+The bar for open-fleet 1.0, resolved to commands a second person can run. This
 file DEFINES the release; [`scripts/release_check.py`](../scripts/release_check.py)
 RUNS it (#414). Every gate below is a command with its expected output — prose
 approvals do not count — and the script runs those same commands from the repo
@@ -18,7 +18,7 @@ not get waived in chat. A command changed here changes in the script in the same
 PR: `tests/test_release_check.py` runs the script against this repository and
 holds the doc's commands to the script's checks.
 
-Sources: roadmap epic [#407](https://github.com/ravidsrk/orca-fleet/issues/407)
+Sources: roadmap epic [#407](https://github.com/ravidsrk/open-fleet/issues/407)
 Definition of Done (gates 1–6), [ops.md](ops.md) release mechanics.
 
 ## Gate 0 — tree and catalog gates green
@@ -162,7 +162,7 @@ python3 scripts/release_check.py              # all six gates again, at the reve
 git tag --list 'v1.0.*'                       # v1.0.0 still present, v1.0.1 beside it
 ```
 
-Plugin consumers pick up the fix by reinstalling (`/plugin install orca-fleet`
+Plugin consumers pick up the fix by reinstalling (`/plugin install open-fleet`
 re-copies the repo at the new tip); symlink consumers `git pull` and re-run
 `sh scripts/install.sh --check`. If the bad 1.0 was a *release-process* failure
 (wrong cut, lightweight tag) rather than a code failure, stop after recording:

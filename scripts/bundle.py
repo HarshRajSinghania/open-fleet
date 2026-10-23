@@ -18,7 +18,7 @@ This makes a distribution tree where each mission carries its own copies:
     dist/skills/<name>/docs/runs/TEMPLATE.md        mandatory run-report template
 
 Every `runtime/scripts/<file>` a vendored document names becomes
-`"$ORCA_FLEET_ROOT/runtime/scripts/<file>"`, so a worker running from the project repository
+`"$OPEN_FLEET_ROOT/runtime/scripts/<file>"`, so a worker running from the project repository
 can execute the documented command as written instead of substituting the root by hand.
 
 It also rewrites the SKILL.md so nothing points outside the mission directory:
@@ -35,7 +35,7 @@ between edits. Build it at release time, or before running a copy installer.
     python3 scripts/bundle.py --out /tmp/x    # build somewhere else
     python3 scripts/bundle.py --check         # build to a temp dir and verify only
 
-A build records every file it writes in `<out>/.orca-fleet-bundle.json`; a rebuild deletes only
+A build records every file it writes in `<out>/.open-fleet-bundle.json`; a rebuild deletes only
 those, and refuses (exit 2, nothing deleted) when anything else sits where it would write.
 
 Exit: 0 built and verified · 1 a reference could not be resolved · 2 could not run (or refused
@@ -74,20 +74,25 @@ REFERENCES = "references"
 # A runtime path as a protocol spells it: repo-root-relative, because in the repository that is
 # where it is. Beside an installed mission it is not, and the worker runs from the PROJECT
 # repository, where `runtime/scripts/` is absent or belongs to someone else. The index used to ask
-# for the `$ORCA_FLEET_ROOT` substitution by hand, which is a step a protocol followed literally
+# for the `$OPEN_FLEET_ROOT` substitution by hand, which is a step a protocol followed literally
 # never takes: the documented command looked in the project checkout while --check stayed green
 # (#322 review, P1). `runtime/scripts/` with no filename is prose about the directory, not an
 # invocation, so a name character after the slash is required.
 _RUNTIME_REF = r"runtime/(?:scripts/[A-Za-z0-9_][A-Za-z0-9_.-]*|[A-Za-z0-9_][A-Za-z0-9_.-]*\.json)"
 RUNTIME_LINK_RE = re.compile(rf"\[([^\]]*)\]\((?:\.\./)*({_RUNTIME_REF})(#[^)]*)?\)")
 RUNTIME_PATH_RE = re.compile(rf"(?<![\w/$.-])({_RUNTIME_REF})")
+# The installed-root variable every vendored command names. ORCA_FLEET_ROOT is its pre-rename
+# spelling; a source document that still carries it is normalised in the copy, so one bundle never
+# names two roots.
+ROOT_VAR = "OPEN_FLEET_ROOT"
+LEGACY_ROOT_VAR_RE = re.compile(r"\bORCA_FLEET_ROOT\b")
 # The template states the substitution as a manual step. The bundled copy has already had it made,
 # so the instruction would send a reader hunting for invocations that are no longer there.
 MANUAL_SUBSTITUTION_RE = re.compile(
     r"Replace every `runtime/scripts/<file>` invocation below with\s+"
-    r"`\"\$ORCA_FLEET_ROOT/runtime/scripts/<file>\"`;\s+")
+    r"`\"\$OPEN_FLEET_ROOT/runtime/scripts/<file>\"`;\s+")
 MANUAL_SUBSTITUTION_NOTE = ('Runtime invocations below already name\n'
-                            '`"$ORCA_FLEET_ROOT/runtime/scripts/<file>"`; ')
+                            '`"$OPEN_FLEET_ROOT/runtime/scripts/<file>"`; ')
 # The distribution's runtime interface, independent of what survived in the input tree.
 # Ship additional runtime files too, but never let discovery shrink this required floor.
 REQUIRED_RUNTIME = tuple(f"runtime/scripts/{name}" for name in (
@@ -193,7 +198,7 @@ def absolutize_runtime(text, shipped):
     to nothing beside the copy, and a backticked absolute path is what the reader runs.
     """
     def installed(path):
-        return f'"$ORCA_FLEET_ROOT/{path}"'
+        return f'"$OPEN_FLEET_ROOT/{path}"'
 
     def link(match):
         return f"`{installed(match.group(2))}`" if match.group(2) in shipped else match.group(0)
@@ -201,6 +206,7 @@ def absolutize_runtime(text, shipped):
     def bare(match):
         return installed(match.group(1)) if match.group(1) in shipped else match.group(0)
 
+    text = LEGACY_ROOT_VAR_RE.sub(ROOT_VAR, text)
     text = MANUAL_SUBSTITUTION_RE.sub(MANUAL_SUBSTITUTION_NOTE, text)
     return RUNTIME_PATH_RE.sub(bare, RUNTIME_LINK_RE.sub(link, text))
 
@@ -231,25 +237,25 @@ def reference_index(mission, names):
         f"directories out of the tree severs that path, so the copies live here instead —\n"
         f"resolve bare protocol names throughout the mission and its protocols against this list.\n\n"
         "## Installed runtime\n\n"
-        "Set `ORCA_FLEET_ROOT` to the absolute installed mission directory (the directory\n"
+        "Set `OPEN_FLEET_ROOT` to the absolute installed mission directory (the directory\n"
         "containing SKILL.md). Run commands from the PROJECT repository being worked on;\n"
         "keep manifests, contracts and other project paths relative to that repository.\n"
         "These protocols already name their runtime as\n"
-        '`"$ORCA_FLEET_ROOT/runtime/scripts/<file>"`, so export that variable and run the\n'
+        '`"$OPEN_FLEET_ROOT/runtime/scripts/<file>"`, so export that variable and run the\n'
         "commands as written; no path is left to substitute by hand. Runtime JSON lives under\n"
-        '`"$ORCA_FLEET_ROOT/runtime/"`; helpers locate it relative to themselves.\n'
+        '`"$OPEN_FLEET_ROOT/runtime/"`; helpers locate it relative to themselves.\n'
         "Read the mandatory `docs/runs/TEMPLATE.md` from\n"
-        '`"$ORCA_FLEET_ROOT/docs/runs/TEMPLATE.md"` ([run-report template](../docs/runs/TEMPLATE.md));\n'
+        '`"$OPEN_FLEET_ROOT/docs/runs/TEMPLATE.md"` ([run-report template](../docs/runs/TEMPLATE.md));\n'
         "write the filled report and its evidence into the PROJECT repository.\n"
         "Follow its target-project gates and integrity inventory procedure. The separate\n"
-        "catalog proof-promotion section applies only in an orca-fleet catalog clone;\n"
+        "catalog proof-promotion section applies only in an open-fleet catalog clone;\n"
         "recording an external run does not promote the installed mission's proof tier.\n"
         "Python 3, a POSIX shell and git are host prerequisites; live operations also\n"
         "require the external tools and permissions named by their protocols (Orca, gh, etc.).\n\n"
         "```sh\n"
-        'python3 "$ORCA_FLEET_ROOT/runtime/scripts/verify.py" --help\n'
-        'python3 "$ORCA_FLEET_ROOT/runtime/scripts/evidence-run.py" --help\n'
-        'python3 "$ORCA_FLEET_ROOT/runtime/scripts/preflight.py" --help\n'
+        'python3 "$OPEN_FLEET_ROOT/runtime/scripts/verify.py" --help\n'
+        'python3 "$OPEN_FLEET_ROOT/runtime/scripts/evidence-run.py" --help\n'
+        'python3 "$OPEN_FLEET_ROOT/runtime/scripts/preflight.py" --help\n'
         "```\n\n"
         "[Payload inventory](bundle-files.json) lists every required installed file.\n\n"
         f"{rows}\n"
@@ -282,7 +288,10 @@ def plugin_files():
 # root of --out; a rebuild deletes only files that marker lists, and never a directory tree.
 # Anything else where the build would write — a file the marker does not list, a symlink, a
 # symlinked parent — is a collision, and the build refuses before deleting or writing anything.
-MARKER = ".orca-fleet-bundle.json"
+MARKER = ".open-fleet-bundle.json"
+# The marker's pre-rename name: read when MARKER is absent and replaced by MARKER on the next
+# build, so a tree an earlier build wrote keeps rebuilding (PR #633 review, P2).
+LEGACY_MARKER = ".orca-fleet-bundle.json"
 
 
 class BundleRefused(Exception):
@@ -305,6 +314,8 @@ def _entries_under(path):
 def _owned(out):
     """The out-relative files a previous build recorded (empty when there is no marker)."""
     marker = out / MARKER
+    if not os.path.lexists(marker):
+        marker = out / LEGACY_MARKER
     if not os.path.lexists(marker):
         return set()
     try:
@@ -361,6 +372,8 @@ def _record(out, planned):
                    for rel in planned for entry in _entries_under(out / rel))
     (out / MARKER).write_text(json.dumps({"generator": "scripts/bundle.py", "files": files},
                                          indent=2) + "\n", encoding="utf-8")
+    if os.path.lexists(out / LEGACY_MARKER):
+        (out / LEGACY_MARKER).unlink()  # migrated: MARKER now lists everything this build owns
 
 
 def build(out_dir):
@@ -467,7 +480,7 @@ def relink_vendored(mission_dir):
                 target = (_dir / target).relative_to(mission_dir).as_posix()
             if label.strip().strip("`") in (target, name):
                 return f"`{target}`"   # the label WAS the path; saying it twice helps nobody
-            return f"{label} (`{target}` in the orca-fleet repository)"
+            return f"{label} (`{target}` in the open-fleet repository)"
 
         # Runtime paths first: a `](runtime/scripts/verify.py)` left to `fix` would be de-linked
         # as living in the repository, when the bundle ships it right there beside the mission.

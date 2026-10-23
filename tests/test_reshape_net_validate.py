@@ -68,7 +68,7 @@ class CountLintSeamNet(unittest.TestCase):
     def test_failure_message_names_the_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "README.md").write_text(
-                "orca-fleet ships eleven missions.\n", encoding="utf-8")
+                "open-fleet ships eleven missions.\n", encoding="utf-8")
             with mock.patch.object(validate, "ROOT", Path(tmp)), \
                  mock.patch.object(validate, "COUNT_LINT_FILES", ("README.md",)):
                 failures = validate.check_doc_counts()

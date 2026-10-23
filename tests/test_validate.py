@@ -763,7 +763,7 @@ class TestCountAgnosticGuards(unittest.TestCase):
 
     def test_check_doc_counts_flags_hardcoded_count(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "README.md").write_text("orca-fleet ships eleven missions.\n",
+            (Path(tmp) / "README.md").write_text("open-fleet ships eleven missions.\n",
                                                  encoding="utf-8")
             with mock.patch.object(validate, "ROOT", Path(tmp)), \
                  mock.patch.object(validate, "COUNT_LINT_FILES", ("README.md",)):

@@ -2704,12 +2704,14 @@ def main():
     with open(os.path.join(scratch, "fields"), encoding="utf-8", errors="replace") as fh:
         fields = fh.read()
     roots = [Path(self_path).resolve().parent.parent.parent]
-    if os.environ.get("OPEN_FLEET_ROOT"):
-        roots.append(Path(os.environ["OPEN_FLEET_ROOT"]).expanduser().resolve())
+    # OPEN_FLEET_ROOT, else the pre-rename ORCA_FLEET_ROOT installed users still export.
+    fleet_root = os.environ.get("OPEN_FLEET_ROOT") or os.environ.get("ORCA_FLEET_ROOT")
+    if fleet_root:
+        roots.append(Path(fleet_root).expanduser().resolve())
     root = next((r for r in roots if (r / "runtime" / "providers" / "local_state.py").is_file()), None)
     if root is None:
         print("deny-hook: NOTE file touch not recorded: runtime/providers/local_state.py not "
-              "found beside the hook or under OPEN_FLEET_ROOT", file=sys.stderr)
+              "found beside the hook or under OPEN_FLEET_ROOT (or ORCA_FLEET_ROOT)", file=sys.stderr)
         return
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))

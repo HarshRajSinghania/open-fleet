@@ -1,4 +1,4 @@
-# CONSTRAINTS — the orca-fleet quality bar (frozen)
+# CONSTRAINTS — the open-fleet quality bar (frozen)
 
 Status: **FROZEN by the human.** This table retains the phase-1 freeze and its baseline
 measurements. Its WIRE targets and measured values describe that checkpoint; current job

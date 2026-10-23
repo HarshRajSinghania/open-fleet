@@ -4,7 +4,7 @@
 build() used to rmtree <out>/.claude-plugin, hooks, runtime and skills whenever they were not
 the source's own tree, so `--out ~/.claude` deleted the user's own skills/ (where the README's
 symlink install puts missions), hooks/ and runtime/ with exit 0. A build now records what it
-writes in <out>/.orca-fleet-bundle.json, a rebuild deletes only those files, and anything else
+writes in <out>/.open-fleet-bundle.json, a rebuild deletes only those files, and anything else
 where the build would write makes it refuse — exit 2, nothing deleted, nothing written.
 """
 import contextlib
@@ -118,6 +118,22 @@ class UserContentSurvives(unittest.TestCase):
             self.assertEqual((elsewhere / "SKILL.md").read_text(encoding="utf-8"),
                              "another checkout's mission\n")
             self.assertEqual(snapshot(out), before, "a refused rebuild changed the tree")
+
+    def test_a_tree_marked_before_the_rename_still_rebuilds(self):
+        """PR #633 review, P2: a bundle an earlier build marked with the pre-rename marker name
+        must rebuild, not read as foreign; the rebuild migrates it to the new marker."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            (out / bundle.MARKER).rename(out / bundle.LEGACY_MARKER)
+            (out / "notes.txt").write_text("mine\n", encoding="utf-8")
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertTrue((out / bundle.MARKER).is_file())
+            self.assertFalse((out / bundle.LEGACY_MARKER).exists())
+            self.assertEqual((out / "notes.txt").read_text(encoding="utf-8"), "mine\n")
+            self.assertTrue((out / "skills" / "ship-it" / "SKILL.md").is_file())
 
     def test_a_malformed_marker_refuses(self):
         for contents in ("{", "[]", '{"files": "x"}', '{"files": ["../../etc/passwd"]}'):

@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO_URL = "https://github.com/ravidsrk/orca-fleet"
+REPO_URL = "https://github.com/ravidsrk/open-fleet"
 
 # Tracker snapshot at the 2026-09-30 sweep T0 (independently triaged): the release-readiness
 # review's findings were filed as #510-#525 under this label; three were still open. The

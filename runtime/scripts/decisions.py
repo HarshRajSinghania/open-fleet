@@ -266,7 +266,7 @@ def grant_payload(ident, answer, why_core, task_id="", *, ts, klass="one-way"):
     v2 binds the line's exact ``ts`` and its class beside id/answer/why/task: active() ranks
     by ts, so a signature that did not cover it let a signed `approved` be replayed under a
     later stamp to out-rank a later signed `superseded` (2026-10-23 review, P2-3)."""
-    return ("orca-fleet human grant v2\n" + "\n".join(
+    return ("open-fleet human grant v2\n" + "\n".join(
         [ts, ident, klass, answer, why_core, task_id or ""])).encode("utf-8")
 
 
@@ -697,7 +697,7 @@ def cmd_grant_keygen(args, _net):
         print("decisions: grant-keygen refuses to write a human seed inside a git "
               "work tree that does not ignore it (it is a private key — one "
               "`git add -A` would publish it; keep it with your other keys, e.g. "
-              "~/.orca-fleet/human-grant-key; --in-repo-ok overrides)", file=sys.stderr)
+              "~/.open-fleet/human-grant-key; --in-repo-ok overrides)", file=sys.stderr)
         return EXIT_VIOLATION
     if out.exists() or pub_path.exists():
         print(f"decisions: refusing to overwrite {out} or {pub_path}", file=sys.stderr)
@@ -786,7 +786,7 @@ def build_parser():
     sub.add_parser("check", help="validate an existing log")
 
     k = sub.add_parser("grant-keygen", help="generate the human grant keypair (seed off-repo)")
-    k.add_argument("--out", required=True, help="seed path, e.g. ~/.orca-fleet/human-grant-key")
+    k.add_argument("--out", required=True, help="seed path, e.g. ~/.open-fleet/human-grant-key")
     k.add_argument("--in-repo-ok", action="store_true",
                    help="allow writing the seed inside this repo (not recommended)")
 

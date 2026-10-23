@@ -45,7 +45,7 @@ def resolve(value):
     if isinstance(value, list):
         return [resolve(v) for v in value]
     if isinstance(value, str):
-        return re.sub(r"__ORCA_FLEET_ROOT__(\S*)", lambda m: shlex.quote(root + m.group(1)), value)
+        return re.sub(r"__OPEN_FLEET_ROOT__(\S*)", lambda m: shlex.quote(root + m.group(1)), value)
     return value
 
 

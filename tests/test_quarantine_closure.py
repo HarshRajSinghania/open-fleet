@@ -121,7 +121,7 @@ class EveryGateRefusesAReachedQuarantine(unittest.TestCase):
             root = Path(tmp)
             catalog(root, self.BODY, ["playbook:risk-review"], PLAYBOOKS)
             subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=60)
-            env = {**os.environ, "ORCA_FLEET_ROOT": str(root)}
+            env = {**os.environ, "OPEN_FLEET_ROOT": str(root)}
             result = subprocess.run(
                 [sys.executable, str(PREFLIGHT), "--mode", "readonly", "--mission", "ship-it"],
                 capture_output=True, text=True, cwd=root, env=env, timeout=60)

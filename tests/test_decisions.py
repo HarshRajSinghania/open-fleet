@@ -1071,7 +1071,7 @@ class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):
     def test_the_payload_binds_ts_and_class(self):
         base = dict(ident="g", answer="approved", why_core="w", task_id="t")
         v2 = decisions.grant_payload(**base, ts="2026-09-01T00:00:00Z", klass="one-way")
-        self.assertTrue(v2.startswith(b"orca-fleet human grant v2\n"))
+        self.assertTrue(v2.startswith(b"open-fleet human grant v2\n"))
         self.assertIn(b"2026-09-01T00:00:00Z", v2)
         self.assertNotEqual(v2, decisions.grant_payload(**base, ts="2026-09-02T00:00:00Z",
                                                         klass="one-way"))

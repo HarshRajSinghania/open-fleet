@@ -15,7 +15,7 @@ evidence does not yet carry.
 Each row is a witnessed act, not a code change. The issue holds the evidence.
 
 - [x] The release being announced is tagged, its provenance commit is recorded, and its GitHub
-      Release exists ([#511](https://github.com/ravidsrk/orca-fleet/issues/511); the ops.md tag
+      Release exists ([#511](https://github.com/ravidsrk/open-fleet/issues/511); the ops.md tag
       and record blocks, then the "Publishing Releases" block for the historical tags). The
       candidate is `v0.7.0` on `8a5211b`; the size row below can move it to a later tag, and
       then every version and SHA in this file changes with it before posting. Done twice over:
@@ -25,7 +25,7 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
 - [x] The `dist` branch holds the 0.7.0 bundle (`publish-dist.yml` ran on the tag push) and the
       plugin install has been witnessed on a clean machine, transcript under
       `docs/completion/evidence/` per [the witness procedure](../completion/PLUGIN-INSTALL-WITNESS.md)
-      ([#518](https://github.com/ravidsrk/orca-fleet/issues/518)). Done in #539: dist populated
+      ([#518](https://github.com/ravidsrk/open-fleet/issues/518)). Done in #539: dist populated
       with 22 self-contained bundles at the cut; `CF-02b-plugin-install.txt` /
       `CF-02b-plugin-uninstall.txt` retained; #518 closed.
 - [x] The receipt trees under `docs/runs/` and `docs/reports/` are shrunk or relocated out of
@@ -50,12 +50,12 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
       SHA (`docs/runs/2026-10-13-review-it-linux.md`, #527); the sentence below names it.
 - [ ] An external monitor polls the Actions API for `main`'s latest `validate` conclusion
       (`docs/ops.md`, incident step 1), so a no-runner outage is seen by something outside
-      Actions ([#520](https://github.com/ravidsrk/orca-fleet/issues/520)'s outer layer).
+      Actions ([#520](https://github.com/ravidsrk/open-fleet/issues/520)'s outer layer).
       Status 2026-10-13: NOT done — the poller and guide landed (#540), the watch is
       configured but paused pending maintainer activation (#528).
 - [ ] The proof paragraph below still matches the README's generated proof-status sentence on
       the day of posting. If an external `ship-it` run has bound by then
-      ([#515](https://github.com/ravidsrk/orca-fleet/issues/515)), say so; if not, the
+      ([#515](https://github.com/ravidsrk/open-fleet/issues/515)), say so; if not, the
       paragraph makes no such claim and needs no edit. Refreshed 2026-10-17: both the external
       `ship-it` run (#549) and the external `review-it` run (#529) have bound, so the paragraph
       now names both; this box is ticked only by re-checking the match on the day of posting.
@@ -64,11 +64,11 @@ Each row is a witnessed act, not a code change. The issue holds the evidence.
 
 ### Title
 
-orca-fleet 0.7.1: outcome-named autonomous fleets for the Orca runtime, now in public beta
+open-fleet 0.7.1: outcome-named autonomous fleets for the Orca runtime, now in public beta
 
 ### Body
 
-orca-fleet is a catalog of missions for the [Orca](https://github.com/stablyai/orca) runtime.
+open-fleet is a catalog of missions for the [Orca](https://github.com/stablyai/orca) runtime.
 Each mission is named for an outcome, never for a technique: `ship-it` turns a spec into a
 released, verified change; `clean-sweep` drains a backlog; `harden-it` closes a security loop;
 `prove-it` closes a test gap. A mission dispatches workers into isolated git worktrees, holds

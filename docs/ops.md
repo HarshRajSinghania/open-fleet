@@ -11,9 +11,9 @@ missions already have those.
 
 | Surface | Account / handle | Lives in | Notes |
 |---|---|---|---|
-| GitHub | `ravidsrk` | [ravidsrk/orca-fleet](https://github.com/ravidsrk/orca-fleet) | source of truth, Actions (`validate` gates + `negative-control-demo` pinned-demo gate; `alert-on-failure` files a `ci-failure` issue when either fails on `main`), private vulnerability reporting |
-| GitHub peer review | `agentsalpha` (designated second maintainer) | [Repository invitations](https://github.com/ravidsrk/orca-fleet/invitations) | write invitation `335422854` sent 2026-09-30; acceptance and an actual approving review still pending; role boundaries below |
-| Claude plugin marketplace | GitHub self-host + buildwithclaude auto-index | [`.claude-plugin/`](../.claude-plugin/plugin.json) | `/plugin marketplace add ravidsrk/orca-fleet`; external listing history and submission status are in [distribution](distribution.md) |
+| GitHub | `ravidsrk` | [ravidsrk/open-fleet](https://github.com/ravidsrk/open-fleet) | source of truth, Actions (`validate` gates + `negative-control-demo` pinned-demo gate; `alert-on-failure` files a `ci-failure` issue when either fails on `main`), private vulnerability reporting |
+| GitHub peer review | `agentsalpha` (designated second maintainer) | [Repository invitations](https://github.com/ravidsrk/open-fleet/invitations) | write invitation `335422854` sent 2026-09-30; acceptance and an actual approving review still pending; role boundaries below |
+| Claude plugin marketplace | GitHub self-host + buildwithclaude auto-index | [`.claude-plugin/`](../.claude-plugin/plugin.json) | `/plugin marketplace add ravidsrk/open-fleet`; external listing history and submission status are in [distribution](distribution.md) |
 | greptile | maintainer CLI | [greptile.com](https://greptile.com/) | pre-push review on the maintainer machine; GitHub check on PRs |
 | agentskills.io listing | not submitted | local `uvx --from skills-ref agentskills validate` | repository claims (`proof`, `autonomy`, `proof_evidence`) live under `metadata:` — [CONTRIBUTING](../CONTRIBUTING.md) |
 | Maintainer email | `ravidsrk@gmail.com` | [SECURITY.md](../SECURITY.md) | security reports (72h ack) and ops contact |
@@ -55,7 +55,7 @@ The intended trusted check for a GO verdict is the `verdict-gate` commit status,
 `verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR,
 where the PR can rewrite it.
 
-Activation remains pending in [#594](https://github.com/ravidsrk/orca-fleet/issues/594).
+Activation remains pending in [#594](https://github.com/ravidsrk/open-fleet/issues/594).
 The 2026-10-20 API read-back found `main` still requiring `verdict` from GitHub Actions
 (app 15368), rather than `verdict-gate` from a dedicated app. Until step 3 lands, `verdict` is
 satisfied without a GO: GitHub counts a skipped job as a passing required check, and the
@@ -167,7 +167,7 @@ status=$(git status --porcelain)
 test -z "$status"
 python3 -c 'import json, os; assert json.load(open("docs/releases.json"))["preparing"]["version"] == os.environ["RELEASE_VERSION"]'
 cut_sha=$(git rev-parse HEAD)
-git tag -a "v$RELEASE_VERSION" "$cut_sha" -m "orca-fleet $RELEASE_VERSION"
+git tag -a "v$RELEASE_VERSION" "$cut_sha" -m "open-fleet $RELEASE_VERSION"
 python3 -m unittest tests.test_docs_navigation.TestDocsNavigation tests.test_docs_navigation.EveryReleaseHasTheTagItDescribes
 )
 ```
@@ -261,7 +261,7 @@ a tag ruleset, a repository-settings change made only on the owner's word. In fo
 owner alone. To recreate it:
 
 ```bash
-gh api --method POST repos/ravidsrk/orca-fleet/rulesets --input - <<'JSON'
+gh api --method POST repos/ravidsrk/open-fleet/rulesets --input - <<'JSON'
 {
   "name": "release tags: maintainer only",
   "target": "tag",
@@ -271,7 +271,7 @@ gh api --method POST repos/ravidsrk/orca-fleet/rulesets --input - <<'JSON'
   "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
 }
 JSON
-gh api repos/ravidsrk/orca-fleet/rulesets   # read back: one active tag ruleset on refs/tags/v*
+gh api repos/ravidsrk/open-fleet/rulesets   # read back: one active tag ruleset on refs/tags/v*
 ```
 
 `actor_id` 5 is GitHub's built-in admin repository role. Neither step closes one path: a
@@ -282,7 +282,7 @@ environment holds.
 ## Incident (2 a.m.)
 
 1. A red `validate` or `negative-control-demo` run on `main` files (or updates) an issue labeled
-   [`ci-failure`](https://github.com/ravidsrk/orca-fleet/issues?q=label%3Aci-failure)
+   [`ci-failure`](https://github.com/ravidsrk/open-fleet/issues?q=label%3Aci-failure)
    — that issue is the alert; it arrives through normal issue
    notifications, not the opt-in Actions setting. Open the run it links —
    catalog gates (`scripts/validate.py`, `tests/`, `proof_status.py --check`)
@@ -303,18 +303,18 @@ environment holds.
    (the query `main-health` runs, so an in-progress run never pages) and
    paging you when the result is absent (no completed run), stale
    (`updatedAt` older than a day), or its conclusion is not `success`
-   (#528). An hourly **Orca fleet external CI monitor** heartbeat is configured in
+   (#528). An hourly **open-fleet external CI monitor** heartbeat is configured in
    Codex on the maintainer's macOS host, outside Actions. Its current recorded state is
    **paused**: activate it in Codex Automations before relying on scheduled checks. It
    uses [`scripts/external-ci-monitor.py`](../scripts/external-ci-monitor.py), installed
-   at `~/.codex/automations/orca-fleet-external-ci-monitor/external-ci-monitor.py`, and
+   at `~/.codex/automations/open-fleet-external-ci-monitor/external-ci-monitor.py`, and
    must be refreshed from a trusted, updated `main` checkout before activation and
    after any poller change. From that checkout, copy, compare, then query the installed copy:
 
    ```sh
-   mkdir -p "$HOME/.codex/automations/orca-fleet-external-ci-monitor"
-   cp scripts/external-ci-monitor.py "$HOME/.codex/automations/orca-fleet-external-ci-monitor/external-ci-monitor.py"
-   cmp scripts/external-ci-monitor.py "$HOME/.codex/automations/orca-fleet-external-ci-monitor/external-ci-monitor.py" && python3 "$HOME/.codex/automations/orca-fleet-external-ci-monitor/external-ci-monitor.py"
+   mkdir -p "$HOME/.codex/automations/open-fleet-external-ci-monitor"
+   cp scripts/external-ci-monitor.py "$HOME/.codex/automations/open-fleet-external-ci-monitor/external-ci-monitor.py"
+   cmp scripts/external-ci-monitor.py "$HOME/.codex/automations/open-fleet-external-ci-monitor/external-ci-monitor.py" && python3 "$HOME/.codex/automations/open-fleet-external-ci-monitor/external-ci-monitor.py"
    ```
 
    Record the matching script hash and result when refreshing. The heartbeat
@@ -325,11 +325,11 @@ environment holds.
    host must be awake and Codex open; this is not an always-on hosted service.
    The [external drill](completion/evidence/T-13-external-monitor-drill.txt) detected the
    real no-runner outage from the local host and filed/closed
-   [#537](https://github.com/ravidsrk/orca-fleet/issues/537). That receipt proves the poller
+   [#537](https://github.com/ravidsrk/open-fleet/issues/537). That receipt proves the poller
    and durable-issue alert path; it does not claim email delivery or a scheduled heartbeat
    firing. The Codex heartbeat is the backup: it runs only while the Mac is awake.
 
-   The always-on watch is a **Claude Code scheduled task**, "orca-fleet main CI monitor"
+   The always-on watch is a **Claude Code scheduled task**, "open-fleet main CI monitor"
    (claude.ai → Code → Scheduled tasks, on the maintainer's account), firing daily at
    13:17 UTC in a fresh cloud session. Nothing in it runs on a GitHub runner, so a
    no-runner outage cannot silence it. Each run clones `main` and runs the same poller with

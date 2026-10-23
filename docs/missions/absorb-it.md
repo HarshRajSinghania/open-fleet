@@ -60,7 +60,7 @@ an absorbed commit keeps its original author, because that is the credit. Everyt
 maintainer-authored commit** on top, so the history shows exactly who wrote what. The repo's merge
 policy is read before the first absorption: a squash-only repo breaks the ancestry-verified merge
 the convergence proof requires, so its units park `needs-human` — the fleet never squashes
-([#360](https://github.com/ravidsrk/orca-fleet/issues/360)). DCO/CLA state is checked per
+([#360](https://github.com/ravidsrk/open-fleet/issues/360)). DCO/CLA state is checked per
 PR — unsigned is `needs-contributor`, never a fleet signature.
 
 ## When to reach for it

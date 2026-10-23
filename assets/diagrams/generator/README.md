@@ -42,3 +42,7 @@ card's IT STOPS AT line (and its `-light` variant, edited from its own render) w
 way through the Antigravity CLI's image generator (`agy -p`, the existing JPEG passed as the image
 to edit, 16:9), then fitted to the spec's `dims` with `gen.fit` and saved exactly as `gen.py`
 saves. Update the spec in the same change, so a later full regeneration renders the same text.
+The rename to open-fleet (2026-10-23) edited the wordmark in the hero, social-preview,
+negative-control and install-stack images (and their `-light` variants) the same way; inputs
+that are not 16:9 were padded to 16:9 for the edit and cropped back, and only the renamed
+region was composited into the full-resolution render, so every other pixel is the original.

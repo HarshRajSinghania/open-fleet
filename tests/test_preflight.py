@@ -283,8 +283,9 @@ class TestHungGh(unittest.TestCase):
 
 class TestQuarantineInvariant(unittest.TestCase):
     """#558: --mission refuses (exit 2) on a quarantined mission, in readonly
-    mode too. The deny-list resolves from the fleet catalog ($ORCA_FLEET_ROOT
-    here), never from the target repo in cwd."""
+    mode too. The deny-list resolves from the fleet catalog ($OPEN_FLEET_ROOT
+    here; the pre-rename $ORCA_FLEET_ROOT when it is unset), never from the
+    target repo in cwd."""
 
     def _repo_with_quarantine(self, tmp, quarantined, layout="catalog"):
         repo = Path(tmp) / "repo"
@@ -300,7 +301,7 @@ class TestQuarantineInvariant(unittest.TestCase):
         return repo
 
     def _run(self, repo, *extra):
-        env = {**os.environ, "ORCA_FLEET_ROOT": str(repo)}
+        env = {**os.environ, "OPEN_FLEET_ROOT": str(repo)}
         return run_preflight("--mode", "readonly", "--mission", "ship-it",
                              *extra, cwd=repo, env=env)
 
@@ -430,10 +431,51 @@ class TestQuarantineInvariant(unittest.TestCase):
             (target / "runtime").mkdir()
             (target / "runtime" / "quarantine.json").write_text(
                 json.dumps({"quarantined": []}))
-            env = {**os.environ, "ORCA_FLEET_ROOT": str(fleet)}
+            env = {**os.environ, "OPEN_FLEET_ROOT": str(fleet)}
             result = run_preflight("--mode", "readonly", "--mission", "ship-it",
                                    cwd=target, env=env)
             self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_the_pre_rename_root_name_still_binds_the_fleet_list(self):
+        # Installed users still export ORCA_FLEET_ROOT. With OPEN_FLEET_ROOT unset it must
+        # still name the catalog: the fleet's list refuses the mission, where this script's
+        # own catalog (the fallback were the old name ignored) would let it start.
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet = self._repo_with_quarantine(tmp, [{
+                "component": "mission:ship-it", "ref": "*",
+                "reason": "compromised", "date": "2026-10-14",
+                "by": "human:maintainer"}])
+            target = Path(tmp) / "target"
+            make_repo(target)
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("OPEN_FLEET_ROOT", "CLAUDE_PLUGIN_ROOT")}
+            env["ORCA_FLEET_ROOT"] = str(fleet)
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=target, env=env)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("QUARANTINED", result.stderr)
+            del env["ORCA_FLEET_ROOT"]
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=target, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_both_root_names_naming_different_catalogs_refuses(self):
+        # Which deny-list binds the run must not depend on which spelling is read first.
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet = self._repo_with_quarantine(tmp, [])
+            other = Path(tmp) / "other"
+            other.mkdir()
+            env = {**os.environ, "OPEN_FLEET_ROOT": str(fleet), "ORCA_FLEET_ROOT": str(other)}
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=fleet, env=env)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("ORCA_FLEET_ROOT", result.stderr)
+            self.assertIn("disagree", result.stderr)
+            # One catalog under both names is no conflict.
+            env["ORCA_FLEET_ROOT"] = str(fleet)
+            result = run_preflight("--mode", "readonly", "--mission", "ship-it",
+                                   cwd=fleet, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

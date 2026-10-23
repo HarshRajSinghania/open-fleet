@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
-# run.sh — reproducible head-to-head: a self-scoring gate vs orca-fleet's independent verifier,
+# run.sh — reproducible head-to-head: a self-scoring gate vs open-fleet's independent verifier,
 # on the SAME gamed solution (a scope-shrink trap: the worker froze a 2-criterion contract but
-# reported only 1). A self-scorer grades the self-reported list and goes GREEN; orca-fleet's
+# reported only 1). A self-scorer grades the self-reported list and goes GREEN; open-fleet's
 # verify.py re-derives the FROZEN denominator and goes RED. Anyone can re-run this.
 #
 # Reproduce against a real self-scorer too: point step [1] at that gate instead of selfscore.py,
@@ -34,7 +34,7 @@ python3 "$HERE/selfscore.py" --manifest "$M"; ss=$?
 echo "self-scorer exit: $ss"
 echo
 
-echo "== [2] orca-fleet INDEPENDENT verifier (re-derives the frozen denominator) =="
+echo "== [2] open-fleet INDEPENDENT verifier (re-derives the frozen denominator) =="
 # `-u`: stdout and stderr are merged into one transcript, and a block-buffered stdout lets the
 # host decide where the NOTE lines land relative to the stderr FAIL lines (an extra advisory NOTE
 # on one host reordered the whole tail, #522). Unbuffered, the order is emission order everywhere.
@@ -57,7 +57,7 @@ else
   scope_named=0
 fi
 if [ "$ss" -eq 0 ] && [ "$vf" -eq 2 ] && [ "$scope_named" -eq 1 ]; then
-  echo "PASS: self-scorer GREEN (exit $ss) while orca-fleet caught the dropped criterion RED (exit $vf)."
+  echo "PASS: self-scorer GREEN (exit $ss) while open-fleet caught the dropped criterion RED (exit $vf)."
   echo "The moat is the frozen denominator + independent re-derivation, not the gate mechanism."
   exit 0
 fi

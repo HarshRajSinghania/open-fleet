@@ -2,7 +2,7 @@
 """Contract tests for VF-Bench v0 (#79).
 
 VF-Bench measures verifier SOUNDNESS (false-done rate), not agent capability. The property under
-test: orca-fleet's sound verifier is fooled by NO trap (0% false-done), a self-scoring gate is
+test: open-fleet's sound verifier is fooled by NO trap (0% false-done), a self-scoring gate is
 fooled by at least one (else there is no contrast), and the sound gate still passes a valid control
 (it is not trivially always-RED).
 """
@@ -48,7 +48,7 @@ class VFBenchSoundness(unittest.TestCase):
         cls.res = vfbench.run()
 
     def test_sound_gate_scores_zero_false_done(self):
-        sound = self.res["orca-fleet verify.py (sound)"]
+        sound = self.res["open-fleet verify.py (sound)"]
         self.assertEqual(sound["false_done"], 0, "the sound verifier must not be fooled by any trap")
 
     def test_naive_self_scorer_is_fooled(self):
@@ -56,7 +56,7 @@ class VFBenchSoundness(unittest.TestCase):
         self.assertGreater(naive["false_done"], 0, "a self-scoring gate must be fooled (else no contrast)")
 
     def test_sound_gate_passes_the_valid_control(self):
-        rows = {r["id"]: r for r in self.res["orca-fleet verify.py (sound)"]["rows"]}
+        rows = {r["id"]: r for r in self.res["open-fleet verify.py (sound)"]["rows"]}
         self.assertEqual(rows["valid-control-1"]["verdict"], "GREEN", "sound gate must not be always-RED")
 
     def test_sound_gate_passes_the_mutation_valid_control(self):
@@ -64,7 +64,7 @@ class VFBenchSoundness(unittest.TestCase):
         # mutation authority at once — an executed revert, an independent APPROVED review, a
         # pinned artifact inventory, a fresh commands ledger — so "not always-RED" is proven for
         # the class docs/reviews/2026-09-10-review.md's bypass log broke.
-        rows = {r["id"]: r for r in self.res["orca-fleet verify.py (sound)"]["rows"]}
+        rows = {r["id"]: r for r in self.res["open-fleet verify.py (sound)"]["rows"]}
         self.assertIn("mutation-valid-control-1", rows,
                       "the mutation-class positive control was skipped or dropped")
         self.assertEqual(rows["mutation-valid-control-1"]["verdict"], "GREEN",
@@ -73,17 +73,17 @@ class VFBenchSoundness(unittest.TestCase):
     def test_waiver_lane_traps_are_red(self):
         # #256: dark-eligible and no-gh both waive the review; with a merely-READ control they
         # must be RED. These are docs/reviews/2026-09-10-review.md A1/A2/A4/A6/A9 in the corpus.
-        rows = {r["id"]: r for r in self.res["orca-fleet verify.py (sound)"]["rows"]}
+        rows = {r["id"]: r for r in self.res["open-fleet verify.py (sound)"]["rows"]}
         for trap_id in ("fabricated-nc-dark-eligible-1", "fabricated-nc-no-gh-1"):
             self.assertEqual(rows[trap_id]["verdict"], "RED", trap_id)
 
     def test_readme_result_table_matches_computed(self):
         # #125: the hand-typed result table must match the computed corpus (was a stale 4/4·0/4).
-        if self.res["orca-fleet verify.py (sound)"]["skipped"]:
+        if self.res["open-fleet verify.py (sound)"]["skipped"]:
             self.skipTest("traps were skipped on this checkout — the corpus totals the README "
                           "pins are the FULL-clone ones (see test_shallow_skips_are_named)")
         readme = (ROOT / "bench" / "vf-bench" / "README.md").read_text(encoding="utf-8")
-        naive, sound = self.res["self-scoring (naive)"], self.res["orca-fleet verify.py (sound)"]
+        naive, sound = self.res["self-scoring (naive)"], self.res["open-fleet verify.py (sound)"]
         self.assertRegex(readme, rf"self-scoring \(naive\)\s*\|\s*{naive['false_done']}/{naive['red_total']}\b")
         self.assertRegex(readme, rf"verify\.py.*\|\s*{sound['false_done']}/{sound['red_total']}\b")
 

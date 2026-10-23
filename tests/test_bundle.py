@@ -75,13 +75,13 @@ class BundleClosureTests(unittest.TestCase):
             protocol = (installed / "references/build-change.md").read_text()
             invocation = next(
                 line for line in protocol.splitlines()
-                if line.startswith('"$ORCA_FLEET_ROOT/runtime/scripts/evidence-run.py" --label'))
+                if line.startswith('"$OPEN_FLEET_ROOT/runtime/scripts/evidence-run.py" --label'))
             invocation = invocation.replace("<m.json>", '"$2"').replace(
                 "<criterion-bound command>", shlex.join(
                     [sys.executable, "-I", "-c", "print('installed recorder executed')"]))
             self.assertFalse((project / "runtime").exists())
             result = self.run_command(
-                project, "/bin/sh", "-c", "ORCA_FLEET_ROOT=$1\n" + invocation,
+                project, "/bin/sh", "-c", "OPEN_FLEET_ROOT=$1\n" + invocation,
                 "installed-flow", str(installed), str(manifest))
             self.assertEqual(result.returncode, 0, result.stderr)
             record = json.loads(manifest.read_text())["commands"][0]
@@ -94,7 +94,7 @@ class BundleClosureTests(unittest.TestCase):
                 self.assertEqual((installed / relative).read_bytes(), (ROOT / relative).read_bytes())
             index = (installed / "references/README.md").read_text()
             for name in ("verify.py", "evidence-run.py", "preflight.py"):
-                self.assertIn(f'"$ORCA_FLEET_ROOT/runtime/scripts/{name}"', index)
+                self.assertIn(f'"$OPEN_FLEET_ROOT/runtime/scripts/{name}"', index)
             self.assert_installed_verification(installed, project, manifest)
 
     def assert_installed_verification(self, installed, project, manifest):
@@ -198,12 +198,15 @@ class BundleClosureTests(unittest.TestCase):
                         for match in bundle.RUNTIME_PATH_RE.finditer(document.read_text()):
                             self.assertNotIn(match.group(1), shipped)
             template = (Path(tmp) / "skills/ship-it/docs/runs/TEMPLATE.md").read_text()
-            self.assertIn('`python3 "$ORCA_FLEET_ROOT/runtime/scripts/inventory.py" write <report>`',
+            self.assertIn('`python3 "$OPEN_FLEET_ROOT/runtime/scripts/inventory.py" write <report>`',
                           template)
             # The manual-substitution instruction would send the reader hunting for what is gone.
             self.assertNotIn("Replace every `runtime/scripts/<file>` invocation", template)
+            # The source template still spells the pre-rename root; the copy names one root only.
+            self.assertNotIn("ORCA_FLEET_ROOT", template)
+            self.assertIn("`OPEN_FLEET_ROOT` to the absolute catalog clone", template)
             self.assertIn("already name", template)
-            self.assertIn('"$ORCA_FLEET_ROOT/runtime/scripts/preflight.py"',
+            self.assertIn('"$OPEN_FLEET_ROOT/runtime/scripts/preflight.py"',
                           (Path(tmp) / "skills/ship-it/SKILL.md").read_text())
 
     def test_a_runtime_path_that_reverts_to_the_repository_form_fails_the_check(self):
@@ -213,7 +216,7 @@ class BundleClosureTests(unittest.TestCase):
             shipped = bundle.shipped_runtime(root)
             document = root / "references/build-change.md"
             saved = document.read_text()
-            document.write_text(saved.replace('"$ORCA_FLEET_ROOT/runtime/scripts/verify.py"',
+            document.write_text(saved.replace('"$OPEN_FLEET_ROOT/runtime/scripts/verify.py"',
                                               "runtime/scripts/verify.py", 1))
             try:
                 problems = bundle.unbound_runtime(root, shipped)
@@ -235,14 +238,22 @@ class BundleClosureTests(unittest.TestCase):
         self.assertEqual(bundle.absolutize_runtime("see runtime/*.md and runtime/scripts/,", shipped),
                          "see runtime/*.md and runtime/scripts/,")
         self.assertEqual(bundle.absolutize_runtime("python3 runtime/scripts/verify.py --help", shipped),
-                         'python3 "$ORCA_FLEET_ROOT/runtime/scripts/verify.py" --help')
+                         'python3 "$OPEN_FLEET_ROOT/runtime/scripts/verify.py" --help')
         # A link resolves to nothing beside the copy; replace it whole, and only once.
         self.assertEqual(bundle.absolutize_runtime("[the verifier](runtime/scripts/verify.py)", shipped),
-                         '`"$ORCA_FLEET_ROOT/runtime/scripts/verify.py"`')
+                         '`"$OPEN_FLEET_ROOT/runtime/scripts/verify.py"`')
         self.assertEqual(bundle.absolutize_runtime("[pins](../../runtime/pins.json)", shipped),
-                         '`"$ORCA_FLEET_ROOT/runtime/pins.json"`')
+                         '`"$OPEN_FLEET_ROOT/runtime/pins.json"`')
         once = bundle.absolutize_runtime("python3 runtime/scripts/verify.py", shipped)
         self.assertEqual(bundle.absolutize_runtime(once, shipped), once)
+
+    def test_a_pre_rename_root_variable_is_normalised_in_the_copy(self):
+        # A vendored document naming ORCA_FLEET_ROOT beside commands that read OPEN_FLEET_ROOT
+        # would have the reader export one variable and run commands that expand the other.
+        shipped = {"runtime/scripts/verify.py"}
+        self.assertEqual(
+            bundle.absolutize_runtime('set `ORCA_FLEET_ROOT`, then "$ORCA_FLEET_ROOT/x"', shipped),
+            'set `OPEN_FLEET_ROOT`, then "$OPEN_FLEET_ROOT/x"')
 
     def test_installed_verifier_oracle_rejects_a_usage_only_decoy(self):
         copy = shutil.copy2
@@ -348,7 +359,7 @@ class BundleClosureTests(unittest.TestCase):
             protocol = protocol_path.read_text()
             self.assertIn("docs/runs/TEMPLATE.md", protocol)
             index = (root / "references/README.md").read_text()
-            matches = re.findall(r'"\$ORCA_FLEET_ROOT/([^"\n]*TEMPLATE.md)"', index)
+            matches = re.findall(r'"\$OPEN_FLEET_ROOT/([^"\n]*TEMPLATE.md)"', index)
             self.assertTrue(matches, "mandatory template needs an explicit installed path")
             template = root / matches[0]
             self.assertTrue(template.is_file())
@@ -405,10 +416,10 @@ class BundleClosureTests(unittest.TestCase):
                 command = command.replace(placeholder, value)
             command = command.replace(".txt --", suffix + ".txt --")
             # The command runs as written: the reader rewrites no paths, it only exports
-            # ORCA_FLEET_ROOT, so expand that and nothing else (#322 review, P1).
+            # OPEN_FLEET_ROOT, so expand that and nothing else (#322 review, P1).
             # shlex.join preserves a spaced install path.
             argv = [sys.executable if p == "python3" else
-                    p.replace("$ORCA_FLEET_ROOT", str(installed))
+                    p.replace("$OPEN_FLEET_ROOT", str(installed))
                     for p in shlex.split(command)]
             self.assertFalse(any(p.startswith("runtime/scripts/") for p in argv), command)
             result = self.run_command(project, *argv)

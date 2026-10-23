@@ -16,7 +16,7 @@ a resumed session's memory of the conflict is not the conflict.
 
 For every conflicting hunk, both sides have an intent. Recover it from the sources that own it: the
 commit message, the PR that carried it, the issue or finding it closes, and the intent packet on
-its evidence manifest (evidence-manifest.md) — orca-fleet's builders record `goal` · `ruled_out` ·
+its evidence manifest (evidence-manifest.md) — open-fleet's builders record `goal` · `ruled_out` ·
 `why` precisely so this step is not archaeology. A hunk whose intent cannot be recovered from any
 of these is escalated, not guessed.
 

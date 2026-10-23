@@ -102,6 +102,32 @@ class TestBaseHarnessAndMonotonicProfile(unittest.TestCase):
         self.assertIn("--exclude-tools", pi_ro["command"])
 
 
+class TestPreRenameEnvNames(unittest.TestCase):
+    """orca-fleet became open-fleet: every reader takes the OPEN_FLEET_* name and still reads
+    the pre-rename ORCA_FLEET_* spelling installed users export when the new one is unset;
+    the new name wins when both are set."""
+
+    def test_runtime_selection_reads_the_legacy_name(self):
+        providers = _load_providers()
+        self.assertEqual(providers.active_provider_name(env={"ORCA_FLEET_RUNTIME": "posix"}),
+                         "posix")
+        self.assertEqual(providers.active_provider_name(
+            env={"OPEN_FLEET_RUNTIME": "posix", "ORCA_FLEET_RUNTIME": "superset"}), "posix")
+        self.assertEqual(providers.active_provider_name(env={}), "orca")
+
+    def test_state_store_location_reads_the_legacy_names(self):
+        local_state = _load_local_state()
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy_db, new_db = Path(tmp) / "legacy.db", Path(tmp) / "new.db"
+            self.assertEqual(local_state.default_db_path({"ORCA_FLEET_STATE_DB": str(legacy_db)}),
+                             legacy_db.resolve())
+            self.assertEqual(local_state.default_db_path(
+                {"OPEN_FLEET_STATE_DB": str(new_db), "ORCA_FLEET_STATE_DB": str(legacy_db)}),
+                new_db.resolve())
+            self.assertEqual(local_state.default_db_path({"ORCA_FLEET_STATE_DIR": tmp}),
+                             Path(tmp).resolve() / "runtime.db")
+
+
 class TestLocalStateStore(unittest.TestCase):
     def setUp(self):
         self.ls = _load_local_state()

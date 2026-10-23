@@ -52,10 +52,10 @@ class FreshHomeInstallation(unittest.TestCase):
                     with self.subTest(doc=doc.name, snippet=index, existing=existing):
                         with tempfile.TemporaryDirectory(prefix="fleet fresh home ") as tmp:
                             home = Path(tmp)
-                            (home / "orca-fleet").symlink_to(ROOT, target_is_directory=True)
+                            (home / "open-fleet").symlink_to(ROOT, target_is_directory=True)
                             if existing:
                                 (home / ".claude/skills").mkdir(parents=True)
-                            cwd = ROOT if "cd orca-fleet" in block else home
+                            cwd = ROOT if "cd open-fleet" in block else home
                             run = subprocess.run(
                                 ["sh", "-c", "\n".join(commands)], cwd=cwd,
                                 env={**os.environ, "HOME": tmp}, capture_output=True, text=True,

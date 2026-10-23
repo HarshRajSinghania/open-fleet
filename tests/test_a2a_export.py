@@ -37,7 +37,7 @@ class TestA2AExport(unittest.TestCase):
     def test_single_mission_card_binds_evidence_manifest_and_one_way_doors(self):
         card = self.mod.build_catalog_cards(mission="ship-it")
         self.assertEqual(card["schema"], "a2a-agent-card/v1")
-        self.assertEqual(card["id"], "orca-fleet:ship-it")
+        self.assertEqual(card["id"], "open-fleet:ship-it")
         self.assertEqual(card["name"], "ship-it")
         self.assertTrue(card["proof"]["mutating"])
         self.assertEqual(
@@ -80,7 +80,7 @@ class TestA2AExport(unittest.TestCase):
             )
             self.assertEqual(p_out.returncode, 0, p_out.stderr)
             written = json.loads(out_file.read_text(encoding="utf-8"))
-            self.assertEqual(written["id"], "orca-fleet:clean-sweep")
+            self.assertEqual(written["id"], "open-fleet:clean-sweep")
 
     def test_unknown_mission_exits_1(self):
         p = subprocess.run(

@@ -675,7 +675,7 @@ class SymlinkInstallGate(unittest.TestCase):
         for event, entries in snippet["hooks"].items():
             for matcher in entries:
                 for hook in matcher["hooks"]:
-                    self.assertIn("__ORCA_FLEET_ROOT__", hook["command"])
+                    self.assertIn("__OPEN_FLEET_ROOT__", hook["command"])
                     self.assertIn("verify-gate.sh", hook["command"])
 
     def test_the_printer_resolves_the_placeholder_to_a_real_script(self):
@@ -687,7 +687,7 @@ class SymlinkInstallGate(unittest.TestCase):
         for event in emitted["hooks"].values():
             for matcher in event:
                 for hook in matcher["hooks"]:
-                    self.assertNotIn("__ORCA_FLEET_ROOT__", hook["command"])
+                    self.assertNotIn("__OPEN_FLEET_ROOT__", hook["command"])
                     script = hook["command"].split(" --event")[0]
                     self.assertTrue(Path(script).is_file(), script)
 

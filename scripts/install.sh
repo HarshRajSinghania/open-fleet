@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
-# install.sh — one-command orca-fleet install (issue #414).
+# install.sh — one-command open-fleet install (issue #414).
 #
 # From a clone:
 #   sh scripts/install.sh
 # From anywhere (the documented one-command install):
-#   git clone https://github.com/ravidsrk/orca-fleet.git && cd orca-fleet && sh scripts/install.sh
+#   git clone https://github.com/ravidsrk/open-fleet.git && cd open-fleet && sh scripts/install.sh
 #
 # What it does:
 #   1. HARD prerequisites: git present, python3 >= 3.11, catalog gates green
@@ -44,7 +44,7 @@ for arg in "$@"; do
     --skills-dir=*) SKILLS_DIR="${arg#--skills-dir=}" ;;
     -h|--help)
       echo "usage: sh scripts/install.sh [--check] [--force] [--skills-dir=DIR]"
-      echo "  --force  repoint mission links that currently belong to another orca-fleet clone"
+      echo "  --force  repoint mission links that currently belong to another open-fleet clone"
       exit 0
       ;;
     *) echo "install.sh: unknown argument $arg" >&2; exit 1 ;;
@@ -61,9 +61,9 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH (Python >= 
 # 3.11 is the measured floor (#514): the suite is green on 3.11, 3.12 and 3.13 in CI; 3.10
 # compiles but two tests depend on 3.11 interpreter behaviour, so it is not supported.
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
-  || die "python3 is $(python3 -V 2>&1); orca-fleet requires Python >= 3.11"
+  || die "python3 is $(python3 -V 2>&1); open-fleet requires Python >= 3.11"
 [ -d "$ROOT/skills" ] && [ -d "$ROOT/playbooks" ] && [ -d "$ROOT/runtime" ] \
-  || die "not an orca-fleet checkout: $ROOT lacks skills/, playbooks/ or runtime/"
+  || die "not an open-fleet checkout: $ROOT lacks skills/, playbooks/ or runtime/"
 
 # --- soft prerequisites (warn, never fail: the catalog installs without them) -
 ORCA_MIN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["orca"]["version"].lstrip("v"))' "$ROOT/runtime/pins.json" 2>/dev/null || true)"

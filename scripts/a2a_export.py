@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export orca-fleet missions as A2A (Agent2Agent) outcome cards (a2a-agent-card/v1).
+"""Export open-fleet missions as A2A (Agent2Agent) outcome cards (a2a-agent-card/v1).
 
 Projects each `skills/<name>/SKILL.md` frontmatter and composition clause into a
 deterministic A2A Agent Card descriptor whose input/output schemas are bound to
@@ -104,7 +104,7 @@ def build_mission_card(skill_dir, door_ids=None):
     mutating = name in validate.MUTATING_MISSIONS
     return {
         "schema": CARD_SCHEMA,
-        "id": f"orca-fleet:{name}",
+        "id": f"open-fleet:{name}",
         "name": name,
         "description": description,
         "compatibility": compatibility,
@@ -171,7 +171,7 @@ def build_catalog_cards(skills_dir=SKILLS_DIR, doors_path=DOORS_PATH, mission=No
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="a2a_export.py",
-        description="Export orca-fleet missions as A2A (a2a-agent-card/v1) JSON descriptors.",
+        description="Export open-fleet missions as A2A (a2a-agent-card/v1) JSON descriptors.",
     )
     parser.add_argument("--mission", default=None, help="Export a single mission by name.")
     parser.add_argument("--skills-dir", default=str(SKILLS_DIR), help="Path to skills/ directory.")

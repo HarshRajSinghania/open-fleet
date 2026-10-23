@@ -157,7 +157,7 @@
       "type": "string"
     }
   },
-  "$id": "https://github.com/ravidsrk/orca-fleet/blob/main/runtime/schemas/gate-batch.schema.json",
+  "$id": "https://github.com/ravidsrk/open-fleet/blob/main/runtime/schemas/gate-batch.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Run-close human-gate batch (#419). The JSON file is the store; gate-batch.md is a rendered view (gate-batch.py render regenerates it byte-for-byte when no gate carries answer text).",

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Contract tests for the orca-fleet eval layer.
+Contract tests for the open-fleet eval layer.
 
 Locks in:
 - every mission has a valid per-skill evals.json (ported from marketingskills)

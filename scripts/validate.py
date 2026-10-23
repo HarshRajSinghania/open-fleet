@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Validate orca-fleet against its own architecture (see ARCHITECTURE.md).
+Validate open-fleet against its own architecture (see ARCHITECTURE.md).
 
 Three things are checked:
 

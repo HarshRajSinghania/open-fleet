@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-orca-fleet eval runner — CATALOG TOOLING ONLY.
+open-fleet eval runner — CATALOG TOOLING ONLY.
 
 What this measures is whether the catalog's own text routes: every mission is
 scored as the frontmatter `description` (plus its `name`, weighted) that a host
@@ -1479,7 +1479,7 @@ def run_behavioral_eval(mission: str, dry_run: bool = False) -> dict:
             case["grader_cmd"] = grader_cmd
             cases.append(case)
             continue
-        with tempfile.TemporaryDirectory(prefix=f"orca-fleet-eval-{mission}-") as tmp:
+        with tempfile.TemporaryDirectory(prefix=f"open-fleet-eval-{mission}-") as tmp:
             workspace = Path(tmp)
             try:
                 case["fixtures"] = _materialize(ev, workspace, mission_dir)
@@ -1653,7 +1653,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="orca-fleet eval runner (catalog tooling)")
+    parser = argparse.ArgumentParser(description="open-fleet eval runner (catalog tooling)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("validate", help="validate all eval JSON files")

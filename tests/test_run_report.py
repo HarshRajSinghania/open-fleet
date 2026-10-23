@@ -955,7 +955,7 @@ class RunReportBinding(unittest.TestCase):
 
     def test_an_interpreter_inside_the_graded_tree_is_the_runs_own(self):
         # The temp repo above lives under /tmp, where the scratch rule would mask this one.
-        root = "/opt/checkouts/orca-fleet"
+        root = "/opt/checkouts/open-fleet"
         for token in (f"{root}/python3", f"{root}/.venv/bin/python3",
                       f"{root}/runtime/scripts/python"):
             with self.subTest(token=token):

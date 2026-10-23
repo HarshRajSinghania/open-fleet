@@ -18,7 +18,7 @@ n("negative-control", """Content: a head-to-head of two gates on the same input.
 Top centre, one small box: the same gamed manifest — the worker quietly reported only AC-1, with a caption beneath: the frozen spec says AC-1 + AC-2
 Two large panels side by side beneath it, each fed by an arrow from that box.
 Left panel, header: A SELF-SCORING GATE, body: grades the worker's own criteria list — no frozen denominator, no second session, then a large green badge: GREEN — exit 0, caption: it never sees the dropped AC-2
-Right panel, header: ORCA-FLEET'S VERIFIER, body: re-derives the criterion set from the frozen spec, in a fresh session, then a large red badge: RED — exit 2, caption: scope: AC-2 not addressed
+Right panel, header: OPEN-FLEET'S VERIFIER, body: re-derives the criterion set from the frozen spec, in a fresh session, then a large red badge: RED — exit 2, caption: scope: AC-2 not addressed
 A strip beneath both panels, small: and for every fix, the negative control — revert it in a fresh worktree and the proof must go RED; a proof that stays GREEN proves nothing
 Footer, small, centred: reproduce it: sh demo/negative-control/run.sh"""),
 
@@ -26,7 +26,7 @@ n("install-stack", """Content: left two-thirds: a vertical stack of five wide ro
 Layer 1, the bottom: Orca app, caption: orchestration experimental feature enabled
 Layer 2: orca CLI, caption: orca-ide on Linux outside Orca terminals
 Layer 3: orchestration skill + orca-cli skill, caption: the substrate — worktrees, terminals, task DAG, worker_done
-Layer 4, drawn with a brighter glow: orca-fleet missions, caption: this repo — the outcome layer
+Layer 4, drawn with a brighter glow: open-fleet missions, caption: this repo — the outcome layer
 Layer 5, the top: upstream packs, caption: mattpocock/skills · garrytan/gstack · addyosmani/agent-skills — one pack per worker, never two
 Right third, header: THREE INSTALL PATHS, three cards stacked vertically:
 Card 1: symlink into ~/.claude/skills, caption: references preserved · the completion gate is OFF until you paste the settings snippet, with an amber badge: wire the gate

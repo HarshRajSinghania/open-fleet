@@ -1,6 +1,6 @@
 # Platform-ride architecture & absorption-risk register
 
-*How orca-fleet builds on the Claude Code / Agent SDK / MCP substrate: ride the native primitives
+*How open-fleet builds on the Claude Code / Agent SDK / MCP substrate: ride the native primitives
 for topology and isolation, keep the verification + ops-hardening layer as the differentiator.*
 
 > Companion to [`docs/research/2026-08-28-forward-roadmap-and-defensibility-plan.md`](research/2026-08-28-forward-roadmap-and-defensibility-plan.md).
@@ -27,7 +27,7 @@ budget on B + D, which the platform does not provide.
 
 ## Ride vs. keep
 
-| orca-fleet concept | Native primitive to ride | Keep as the differentiator |
+| open-fleet concept | Native primitive to ride | Keep as the differentiator |
 |---|---|---|
 | Coordinator + workers | agent teams: **lead + teammates**, shared task list (deps + file-lock claim), plan-first | coordinator-**never-writes-code** discipline; single **merge conductor** |
 | Isolated worker | subagents with **`isolation: worktree`** (enforced) | — (isolation is free now) |

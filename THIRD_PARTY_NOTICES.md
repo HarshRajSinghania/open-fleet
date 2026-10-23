@@ -1,10 +1,10 @@
 # Third-party notices
 
-orca-fleet is MIT-licensed ([LICENSE](LICENSE)). It composes recipes from, and runs on, the
+open-fleet is MIT-licensed ([LICENSE](LICENSE)). It composes recipes from, and runs on, the
 projects below. Each playbook names the recipe it adapts in its first lines; this file carries
 the upstream notices in one place, as the MIT license asks of substantial portions.
 
-orca-fleet is an independent, community-maintained project. It is not affiliated with or
+open-fleet is an independent, community-maintained project. It is not affiliated with or
 endorsed by Stably (the maker of Orca) or by the authors of the packs below.
 
 | Project | Role here | License | Copyright |

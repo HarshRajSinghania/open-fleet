@@ -1,4 +1,4 @@
-# Developing orca-fleet
+# Developing open-fleet
 
 [Documentation](README.md) · [Contribution rules](../CONTRIBUTING.md)
 
@@ -11,8 +11,8 @@ Use Git, Python 3.11 or newer, and a POSIX shell for the shell examples below. T
 and `unittest` suite use the standard library. CI also runs the suite on Python 3.12 and 3.13.
 
 ```bash
-git clone https://github.com/ravidsrk/orca-fleet.git
-cd orca-fleet
+git clone https://github.com/ravidsrk/open-fleet.git
+cd open-fleet
 git switch -c codex/improve-setup
 python3 --version
 python3 scripts/validate.py

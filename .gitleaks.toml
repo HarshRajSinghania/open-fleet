@@ -18,7 +18,7 @@
 # them in a new commit all still fail. The workflow negative-controls this after
 # every clean scan.
 
-title = "orca-fleet"
+title = "open-fleet"
 
 [extend]
 useDefault = true

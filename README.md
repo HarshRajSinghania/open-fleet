@@ -2,16 +2,16 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/hero-light.jpg">
-    <img alt="orca-fleet — a pod of orcas swimming in formation through a dark ocean of node graphs" src="assets/hero-light.jpg" width="1000">
+    <img alt="open-fleet — a pod of orcas swimming in formation through a dark ocean of node graphs" src="assets/hero-light.jpg" width="1000">
   </picture>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://agentskills.io/specification"><img src="https://img.shields.io/badge/spec-agentskills.io-orange.svg" alt="agentskills.io spec"></a>
-  <a href="skills/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/orca-fleet/main/assets/badges/missions.json" alt="missions"></a>
-  <a href="tests/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/orca-fleet/main/assets/badges/tests.json" alt="contract tests"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/ravidsrk/orca-fleet/main/.claude-plugin/plugin.json&query=$.version&label=version&color=8957e5" alt="version"></a>
+  <a href="skills/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/assets/badges/missions.json" alt="missions"></a>
+  <a href="tests/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/assets/badges/tests.json" alt="contract tests"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/.claude-plugin/plugin.json&query=$.version&label=version&color=8957e5" alt="version"></a>
 </p>
 
 <p align="center">
@@ -43,7 +43,7 @@
 **Install — one command** (needs `git` + Python ≥ 3.11; to *run* missions add an [open-fleet RPI runtime](docs/runtimes.md) such as Orca ≥ v1.4.229 or standalone `posix`, `gh`, and a supported coding-agent harness — [pinned list](docs/distribution.md#prerequisites-pinned)):
 
 ```bash
-git clone https://github.com/ravidsrk/orca-fleet.git && cd orca-fleet && sh scripts/install.sh
+git clone https://github.com/ravidsrk/open-fleet.git && cd open-fleet && sh scripts/install.sh
 ```
 
 The installer validates the catalog, links every mission into `~/.claude/skills`, and tells you how to wire the completion gate. Verified from a clean container ([transcript](docs/completion/evidence/414-clean-container-install.txt)); every install-path PR re-runs it in CI.
@@ -145,7 +145,7 @@ What a mission does on your machine, stated before the first one:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/install-stack.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/install-stack-light.jpg">
-    <img src="assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the orca-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today" width="900">
+    <img src="assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the open-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today" width="900">
   </picture>
 </p>
 
@@ -161,7 +161,7 @@ Every mission has a hard dependency on companions not published in this repo
    recorded `review-it` run on Ubuntu, [2026-10-13](docs/runs/2026-10-13-review-it-linux.md)).
 3. **Orca's two public skills, `orchestration` and `orca-cli`**, installed for the agent host —
    they provide the worktrees, terminals, task DAG, ask/reply and `worker_done` primitives.
-   orca-fleet is the *outcome* layer; those two are the *substrate*, and without them no mission
+   open-fleet is the *outcome* layer; those two are the *substrate*, and without them no mission
    can dispatch.
 4. **`git` and `gh`**, authenticated — or a tracker reachable via `orca linear` / `orca jira`.
 5. **Python 3.11 or newer** for the catalog gates and the runtime scripts; stdlib only. CI runs
@@ -174,8 +174,8 @@ in [Getting started](docs/getting-started.md#prerequisites).
 
 ```bash
 # 1. Clone
-git clone https://github.com/ravidsrk/orca-fleet.git
-cd orca-fleet
+git clone https://github.com/ravidsrk/open-fleet.git
+cd open-fleet
 
 # 2. Link the review and build missions into Claude Code — link, don't copy. A mission names its
 #    playbooks and runtime policies by bare name and finds them in playbooks/ and
@@ -196,7 +196,7 @@ sh hooks/print-settings-snippet.sh   # merge the output into ~/.claude/settings.
 > **Step 3 is not optional if you want the gate.** `hooks/hooks.json` wires the verifier through
 > `${CLAUDE_PLUGIN_ROOT}`, which Claude Code sets only for **plugin** installs. A `ln -s` into
 > `~/.claude/skills/` loads no plugin, so without the snippet above the missions run with
-> no completion gate at all ([#262](https://github.com/ravidsrk/orca-fleet/issues/262)).
+> no completion gate at all ([#262](https://github.com/ravidsrk/open-fleet/issues/262)).
 > A plugin install declares these hooks itself; confirm activation in the plugin manager.
 
 [Getting started](docs/getting-started.md) walks a first run end to end: what the coordinator
@@ -268,8 +268,8 @@ The [run archive](docs/runs/) records every run
 that really happened and says, per run, whether and why it binds. Be precise about what the gate
 buys: it hashes, it does not re-run the verifier, and [the 2026-09-11 review](docs/reviews/2026-09-11-review.md) showed
 that a fabricated run can pass it; closing that is
-[#281](https://github.com/ravidsrk/orca-fleet/issues/281) and
-[#286](https://github.com/ravidsrk/orca-fleet/issues/286). Why the number went *down* as the
+[#281](https://github.com/ravidsrk/open-fleet/issues/281) and
+[#286](https://github.com/ravidsrk/open-fleet/issues/286). Why the number went *down* as the
 mechanism got stronger is explained in [docs/concepts.md](docs/concepts.md#proof-status).
 
 ## Which mission do I want?
@@ -456,7 +456,7 @@ GREEN and the verifier goes RED, reproducibly
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/negative-control.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/negative-control-light.jpg">
-    <img src="assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; orca-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="900">
+    <img src="assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="900">
   </picture>
 </p>
 
@@ -504,8 +504,8 @@ Two paths work today and a third does not yet; each is walked step by step in
   `sh scripts/install.sh` validates the catalog and links every mission, or hand-roll one
   `ln -s` per mission as in the Quick start above — then wire the completion gate with
   `sh hooks/print-settings-snippet.sh`.
-- **Claude Code plugin** (whole catalog): `/plugin marketplace add ravidsrk/orca-fleet`, then
-  `/plugin install orca-fleet@orca-fleet`. The plugin declares the gate hooks; confirm activation
+- **Claude Code plugin** (whole catalog): `/plugin marketplace add ravidsrk/open-fleet`, then
+  `/plugin install open-fleet@open-fleet`. The plugin declares the gate hooks; confirm activation
   as described in [Install](docs/install.md#claude-code-plugin).
 - **skills CLI**: not from this repository, today. A copy installer severs the tree a mission
   resolves its playbooks against. It needs a published `dist/` bundle; publication and
@@ -606,7 +606,7 @@ mechanism. Every fleet works on an integration BASE that `runtime/scripts/prefli
 *not* the default branch, and the BASE → default promotion is a one-way human gate: the fleet opens
 the promotion PR and stops. But `preflight.py` is invoked by a sentence in each mission rather than
 by anything that refuses to proceed without it, and `deny-hook.sh`, written to refuse a push to the
-default branch, is unregistered by construction ([#284](https://github.com/ravidsrk/orca-fleet/issues/284)).
+default branch, is unregistered by construction ([#284](https://github.com/ravidsrk/open-fleet/issues/284)).
 If a fleet touches your default branch, that is a bug — file it. The full trust boundary is in
 [docs/verify-gate.md](docs/verify-gate.md#trust-boundary).
 

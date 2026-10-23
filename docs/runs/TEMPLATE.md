@@ -7,9 +7,9 @@ explain any inapplicable section. Recording a run does not advance the catalog's
 Use `tier=doctrine-only` unless the separate **Catalog proof promotion** procedure below passes.
 
 Run commands from the target project's Git root. In a source-clone install, set
-`ORCA_FLEET_ROOT` to the absolute catalog clone; in a copied install, use the absolute mission
+`OPEN_FLEET_ROOT` to the absolute catalog clone; in a copied install, use the absolute mission
 directory containing `SKILL.md`. Replace every `runtime/scripts/<file>` invocation below with
-`"$ORCA_FLEET_ROOT/runtime/scripts/<file>"`; project commands, manifests, contracts, reports, and
+`"$OPEN_FLEET_ROOT/runtime/scripts/<file>"`; project commands, manifests, contracts, reports, and
 artifact paths stay relative to the target project. Protocol names resolve through the installed
 `references/README.md` index (or the catalog's playbooks/runtime directories for a source install).
 
@@ -138,7 +138,7 @@ gates. An external project uses its own validation/test tools, without requiring
 
 ## Catalog proof promotion
 
-This additional procedure applies only when maintaining or promoting proof in the **orca-fleet
+This additional procedure applies only when maintaining or promoting proof in the **open-fleet
 catalog**. It is not a prerequisite for recording an external project's run. Preserve the original
 project evidence and its verifier outcome; a copied installation's receipt alone does not meet
 the catalog's repository-verifier binding rule. Catalog maintainers must satisfy that binding

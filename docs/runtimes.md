@@ -30,7 +30,9 @@ Every runtime helper honors `OPEN_FLEET_*` primary environment variables while p
 | Primary (`open-fleet`) | Legacy fallback (`orca-fleet`) | Purpose |
 |---|---|---|
 | `OPEN_FLEET_RUNTIME` | `ORCA_FLEET_RUNTIME` | Active RPI orchestrator provider (`orca`, `posix`, `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, `openhands`, or `auto`) |
-| `OPEN_FLEET_ROOT` | `ORCA_FLEET_ROOT` | Fleet catalog root directory |
+| `OPEN_FLEET_ROOT` | `ORCA_FLEET_ROOT` | Fleet catalog root directory (`preflight.py` refuses when both are set to different paths) |
+| `OPEN_FLEET_STATE_DB` | `ORCA_FLEET_STATE_DB` | `posix` state store database path |
+| `OPEN_FLEET_STATE_DIR` | `ORCA_FLEET_STATE_DIR` | Directory holding the `posix` state store's `runtime.db` |
 | `OPEN_FLEET_SANDBOX_PROFILE` | `ORCA_SANDBOX_PROFILE` | Worker sandbox profile (`ro`, `rw`, `danger`) |
 | `OPEN_FLEET_PARENT_PROFILE` | `ORCA_PARENT_PROFILE` | Parent worker's sandbox profile for monotonic narrowing (`ro < rw < danger`) |
 | `OPEN_FLEET_UNIT_WORKTREE` | `ORCA_UNIT_WORKTREE` | Active worker worktree boundary enforced by `deny-hook.sh` |

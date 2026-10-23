@@ -16,7 +16,9 @@ Verifies the invariants that, if wrong, silently corrupt a whole run:
        on PATH; otherwise a soft warning is fine.
     7. If `--mission <name>` is passed, that mission and the playbooks it composes are
        not quarantined (#558). The deny-list resolves from the FLEET catalog —
-       $ORCA_FLEET_ROOT, then $CLAUDE_PLUGIN_ROOT, then this script's own catalog —
+       $OPEN_FLEET_ROOT (else the pre-rename $ORCA_FLEET_ROOT; the two set to
+       different paths refuses, exit 2), then $CLAUDE_PLUGIN_ROOT, then this
+       script's own catalog —
        never from the target repo in cwd, which must not be able to shadow it. A
        present-but-malformed deny-list refuses the run; none anywhere means no
        quarantine is in force. Runs in readonly mode too: report-only fleets
@@ -195,13 +197,33 @@ def _tip_sha(ref: str) -> str | None:
     return None
 
 
+class FleetRootConflict(Exception):
+    """$OPEN_FLEET_ROOT and the pre-rename $ORCA_FLEET_ROOT name different catalogs."""
+
+
+def _fleet_root_env() -> str | None:
+    """$OPEN_FLEET_ROOT, else the pre-rename $ORCA_FLEET_ROOT that installed users still export.
+
+    Both set to different paths raises FleetRootConflict rather than picking one: which
+    deny-list and capability table bind the run must not hinge on which spelling is read
+    first (verify-gate.sh's _pick rule). The same catalog spelled two ways is no conflict.
+    """
+    new, legacy = os.environ.get("OPEN_FLEET_ROOT"), os.environ.get("ORCA_FLEET_ROOT")
+    if new and legacy and (os.path.realpath(os.path.expanduser(new))
+                           != os.path.realpath(os.path.expanduser(legacy))):
+        raise FleetRootConflict(
+            f"OPEN_FLEET_ROOT ({new}) and the legacy ORCA_FLEET_ROOT ({legacy}) are both set "
+            "and disagree — refusing (fail-closed: one spelling must not silently override "
+            "the other; set one)")
+    return new or legacy
+
+
 def _catalog_roots() -> list[Path]:
     """Where the fleet catalog may live, most explicit first. The target repo
     in cwd is NEVER a candidate: it must not shadow the fleet's deny-list with
     one of its own (read at call time so tests can patch the environment)."""
     roots = []
-    for var in ("OPEN_FLEET_ROOT", "ORCA_FLEET_ROOT", "CLAUDE_PLUGIN_ROOT"):
-        value = os.environ.get(var)
+    for value in (_fleet_root_env(), os.environ.get("CLAUDE_PLUGIN_ROOT")):
         if value:
             roots.append(Path(value))
     roots.append(Path(__file__).resolve().parents[2])
@@ -509,6 +531,14 @@ def main(argv: list[str]) -> int:
         help="Emit structured JSON summary alongside preflight status.",
     )
     args = parser.parse_args(argv)
+
+    # The catalog root binds the deny-list and capability table below: two spellings naming
+    # two catalogs is refused before either is read.
+    try:
+        _fleet_root_env()
+    except FleetRootConflict as err:
+        print(f"preflight: ERROR: {err}", file=sys.stderr)
+        return 2
 
     runtime_provider = _active_runtime(args.runtime)
     effective_mode = args.mode

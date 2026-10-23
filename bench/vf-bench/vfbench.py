@@ -9,7 +9,7 @@ RED. A sound gate scores 0% false-done; a self-scoring gate scores high.
 
 Gates measured:
   - self-scoring (naive): grades the worker's OWN self-reported criteria (the trace-as-oracle pattern).
-  - orca-fleet verify.py (sound): re-derives the frozen denominator + checks git, in a separate process.
+  - open-fleet verify.py (sound): re-derives the frozen denominator + checks git, in a separate process.
 
 Drop in another gate by adding it to GATES (e.g. a subprocess wrapper around `ruflo verify`).
 
@@ -514,7 +514,7 @@ def fixture_gate(trap):
 
 
 def sound_gate(trap):
-    """orca-fleet's verifier, run as a separate process, given the trap's AUTHORITATIVE contract
+    """open-fleet's verifier, run as a separate process, given the trap's AUTHORITATIVE contract
     (the coordinator role) — never the manifest's own contract fields."""
     if trap.get("fixture") in FIXTURES:
         return fixture_gate(trap)
@@ -555,7 +555,7 @@ def sound_gate(trap):
 
 GATES = {
     "self-scoring (naive)": naive_gate,
-    "orca-fleet verify.py (sound)": sound_gate,
+    "open-fleet verify.py (sound)": sound_gate,
 }
 
 

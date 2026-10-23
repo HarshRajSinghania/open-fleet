@@ -6,6 +6,17 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The deny-hook closes two more PR #648 review findings** (#598). Every heredoc and
+  here-string a shell reads is judged for its receipt, not only the first on the line:
+  `sh <<A <<B` runs the second body, and `cat <<< … | sh` and a heredoc inside `$(…)` are fed
+  programs too. A launcher that may run its command more than once (`watch`, `find -exec`/
+  `-execdir`/`-ok` with `;` or `+`, `fd -x`/`-X`, `xargs`, `parallel`, `entr`, zsh `repeat`, a
+  `while`/`until` condition) is never armed by an outer receipt: one receipt covers one send,
+  so the receipt must sit inside the repeated command. The sweep also found `fd -x`/`-X`, `entr`
+  and zsh `repeat` were not read as launchers at all, so any refused command behind them was
+  allowed. The corpus gains a receipt mode (a receipt sentinel counted per send at run time), a
+  multiple-heredoc family and a repeat family; each finding is a fixture RED at `78fa56bc1e`,
+  with mutation controls for the new safeguards.
 - **The deny-hook closes eight PR #648 review findings** (#598). A filtered `find … -delete` or
   `find … -exec` reaching a pinned key now denies unless the whole predicate chain proves the key
   unmatched (case-folding `-iname`/`-ipath`, matching `-path` as `find` prints it); `printf`/`echo`

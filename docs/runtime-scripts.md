@@ -318,9 +318,9 @@ Every Bash segment is judged after one peeler strips what launches it — `VAR=`
 command line that runs later or elsewhere is judged as segments of its own (#598): a `sh -c` or
 `eval` body, a `trap` action, an `alias` value, a `gh alias set --shell` expansion, the string
 or command of `flock`, `su -c`, `runuser`, `script -c`, `watch`, `parallel` (its template
-completed with each `:::` argument, `{}` substituted or the argument appended), `ssh host cmd`
-and `find -exec`, a literal that `python -c`/`perl -e`/`node -e` code — from `-c`, stdin or a
-heredoc — hands to `os.system`/`subprocess`, a program fed to a shell on stdin (`echo …`/
+completed with each `:::` argument, `{}` substituted or the argument appended), `ssh host cmd`,
+`find -exec`, `fd -x`/`-X`, `entr` and zsh `repeat`, a literal that `python -c`/`perl -e`/
+`node -e` code — from `-c`, stdin or a heredoc — hands to `os.system`/`subprocess`, a program fed to a shell on stdin (`echo …`/
 `printf …`/`cat` piped into `sh`, `bash <<EOF`, `bash <<< …`) or written to a file and run in
 the same command (tracked by resolved path, so two files named `run.sh` do not share), and a
 command head built from a variable or a substitution — its literal value on the
@@ -342,7 +342,12 @@ however launched, `sh -c`/`eval` bodies and programs fed to a shell by a pipe or
 included, that is not immediately `&&`-preceded in the same command by its `egress.py write`
 receipt (#561 — reads stay free; one receipt covers one send). A DEFERRED send (a `trap`
 action, an `alias` value, a `gh alias set` expansion) runs later, so an outer receipt never
-covers it — its receipt must sit inside the saved action (PR #648 review). Push long options
+covers it — its receipt must sit inside the saved action (PR #648 review). Nor does it cover a
+REPEATED send: `watch`, `find -exec`/`-execdir`/`-ok` (`;` or `+`), `fd -x`/`-X`, `xargs`,
+`parallel`, `entr`, zsh `repeat` and a `while`/`until` condition may run the command again, so
+its receipt must sit inside the repeated command (`find . -exec sh -c 'egress.py write … && gh …'
+\;`). Every heredoc and here-string a shell reads is judged, not only the first on the line
+(`sh <<A <<B` runs the second body). Push long options
 are read the way git reads them, so an unambiguous abbreviation
 (`--del`, `--mi`, `--no-force-w`) is the option it expands to. An effective
 `--force-with-lease` exempts a force-push but never a deletion.
@@ -384,8 +389,11 @@ wall limits), while the same hole holding `git push --force origin main` (HIGH),
 `gh issue close 34` (rule 5) or `rm -r -f ./build` (Never list) is only ever fed to the hook.
 The grid covers quote state, backslash parity, continuations, heredoc delimiter quoting,
 spacing and tabs, comments, nested substitutions and the deferred or relaunched forms above;
-seed 598 stacks those contexts. A miss fails CI outright; a false denial is scored apart and
-must be a minimized boundary in `tests/fixtures/deny_hook_conformance.json` (pinned exactly on
+seed 598 stacks those contexts. A receipt mode puts an `egress.py write` sentinel (exiting 0,
+then 1 in a second run) before `gh issue close 34` and counts at run time whether every send
+consumed a fresh successful receipt; it covers several heredocs on one line, here-strings,
+fed shells and repeating launchers (PR #648 review). A miss fails CI outright; a false denial
+is scored apart and must be a minimized boundary in `tests/fixtures/deny_hook_conformance.json` (pinned exactly on
 bash 3.2, the recording host; held to a small slack on bash 5.x, where CI runs). Switching off
 each parser safeguard in a copy of the hook must make the corpus disagree with bash (the
 mutation control in the same test module). Supported: POSIX sh and bash 3.2 through 5.x
@@ -393,8 +401,10 @@ command grammar — the fixtures were recorded on bash 3.2.57 and CI runs the co
 5.x — plus bash 5.3 `${ cmd; }` read as a substitution. Deliberately conservative (refused,
 recorded as boundaries): a function body or trap action judged as if called or fired, an alias
 value judged where aliases are not expanded, a quoted `"$c"` head judged by its split value,
-`coproc` read as bash 4+ reads it, a heredoc delimiter word holding `$(`, a delimiter followed
-by `)` inside a substitution (bash 3.2 closes both there), and a comment that swallows a
+`coproc` read as bash 4+ reads it, a refused command in a heredoc body bash discards (the
+first of `bash <<A <<B`), a send under a repeating launcher that happens to run once (one
+`find -exec … +` or `xargs` batch, a one-match `find`, an `until` a successful send ends), a
+heredoc delimiter word holding `$(`, a delimiter followed by `)` inside a substitution (bash 3.2 closes both there), and a comment that swallows a
 substitution's `)`. Unsupported, left to the Never list and the sandbox: a script already on
 disk, a program a download or a decoder produces (`base64 -d | sh` is not read), a shell
 reading a file on stdin (`sh < f`), an alias, function or `gh` alias defined in an EARLIER

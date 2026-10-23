@@ -30,8 +30,9 @@
 # line run later or elsewhere is judged as segments of its own (#598): a `sh -c`
 # or `eval` body, a trap action, an alias value, a gh shell alias, the string or
 # command of flock, su, runuser, script, watch, parallel (its template completed
-# with each ::: argument), ssh and find -exec, interpreter code handing a literal
-# to os.system/subprocess (from -c, stdin or a heredoc), a program fed to a shell
+# with each ::: argument), ssh, find -exec, fd -x/-X, entr and zsh repeat,
+# interpreter code handing a literal to os.system/subprocess (from -c, stdin or a
+# heredoc), a program fed to a shell
 # on stdin (pipe from echo/printf/cat, heredoc, here-string) or written to a file
 # and run in the same command, and a head built from a variable or a substitution
 # (its literal value on the line, what echo prints, else each refused head).
@@ -39,8 +40,11 @@
 # read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
 # refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10;
 # PR #648 review). An egress receipt &&-before a command arms the send it runs now
-# — including one fed to a shell by a pipe or heredoc — but never a DEFERRED send
-# (a trap, alias or gh alias set runs later, so its receipt must sit inside it).
+# — including one fed to a shell by a pipe or heredoc, where every heredoc and
+# here-string on the line is judged — but never a DEFERRED send (a trap, alias or
+# gh alias set runs later) or a REPEATED one (watch, find -exec, fd -x, xargs,
+# parallel, entr, zsh repeat and a while/until condition may run it again, and
+# one receipt covers one send): those need the receipt inside the command.
 # The parser is differential-tested against real bash (scripts/deny_hook_corpus.py,
 # tests/test_deny_hook_conformance.py). Still string matching: a script already on
 # disk, a program a download or decoder produces, an alias or function defined in

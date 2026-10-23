@@ -6,6 +6,7 @@ test: open-fleet's sound verifier is fooled by NO trap (0% false-done), a self-s
 fooled by at least one (else there is no contrast), and the sound gate still passes a valid control
 (it is not trivially always-RED).
 """
+import ast
 import contextlib
 import importlib.util
 import io
@@ -699,6 +700,159 @@ class TheInventoryHasNoSilentOmissions(unittest.TestCase):
                        for n in re.findall(r"`([^`]+)`", row[3])}
         red = {t["class"] for t in vfbench.load_traps() if t["sound_expected"] == "RED"}
         self.assertEqual(sorted(red - inventoried), [], "a corpus trap is missing from the inventory")
+
+
+def _message(node, names):
+    """The text of a message expression, an f-string's values read as `{}`; None if it is not one.
+    A local name bound to a literal, a `.format` template and the left side of `"..." + suffix`
+    resolve to their literal."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    if isinstance(node, ast.Name):
+        return names.get(node.id)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+        text = _message(node.func.value, names)
+        return None if text is None else re.sub(r"\{[^{}]*\}", "{}", text)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _message(node.left, names)
+    return None
+
+
+def _messages(node, names):
+    """Every message a returned or appended expression can carry: list items, a comprehension's
+    element, both arms of a conditional, both sides of a list concatenation, and each operand of
+    an `or` (`gerr.strip() or "fallback"`)."""
+    if isinstance(node, ast.List):
+        for item in node.elts:
+            yield from _messages(item, names)
+    elif isinstance(node, ast.BoolOp):
+        for operand in node.values:
+            yield from _messages(operand, names)
+    elif isinstance(node, ast.ListComp):
+        yield from _messages(node.elt, names)
+    elif isinstance(node, ast.IfExp):
+        yield from _messages(node.body, names)
+        yield from _messages(node.orelse, names)
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and _message(node, names) is None:
+        yield from _messages(node.left, names)
+        yield from _messages(node.right, names)
+    else:
+        text = _message(node, names)
+        if text is not None:
+            yield text
+
+
+def refusal_sites(source, functions):
+    """#600, PR #643 review: every message verify.py can refuse with, read from its SOURCE, per
+    named function (`Class.method` for a method), nested helpers included. A site is a message a
+    function returns in a list, returns as the error half of a `(value, error)` pair, appends /
+    extends onto a list, or assigns as a list inside an exception handler. A message composed in
+    a helper outside the inventory and forwarded whole is that helper's, not a site here. Lines
+    starting `NOTE:` are advisories, not refusals, and come back apart.
+    Returns ({function: {refusal}}, {function: {note}})."""
+    defs = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef):
+            defs[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            defs.update((f"{node.name}.{sub.name}", sub) for sub in node.body
+                        if isinstance(sub, ast.FunctionDef))
+    refusals, notes = {}, {}
+    for name in functions:
+        names = {n.targets[0].id: _message(n.value, {}) for n in ast.walk(defs[name])
+                 if isinstance(n, ast.Assign) and len(n.targets) == 1
+                 and isinstance(n.targets[0], ast.Name) and _message(n.value, {}) is not None}
+        found = set()
+        for n in ast.walk(defs[name]):
+            if isinstance(n, ast.Return) and n.value is not None:
+                found.update(_messages(n.value.elts[-1] if isinstance(n.value, ast.Tuple)
+                                       else n.value, names))
+            elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                  and n.func.attr in ("append", "extend") and isinstance(n.func.value, ast.Name)):
+                for arg in n.args:
+                    found.update(_messages(arg, names))
+            elif isinstance(n, ast.ExceptHandler):  # an exception turned into a refusal list
+                for stmt in n.body:
+                    if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.List):
+                        found.update(_messages(stmt.value, names))
+        refusals[name] = {m for m in found if not m.startswith("NOTE:")}
+        notes[name] = found - refusals[name]
+    return refusals, notes
+
+
+class EveryRefusalSiteHasAnInventoryRow(unittest.TestCase):
+    """#600, PR #643 review: comparing FUNCTION names let a guard's row vanish unnoticed — delete
+    check_scope's digest-mismatch row and check_scope is still named by its other rows. The unit
+    is the refusal SITE (refusal_sites, read from verify.py's source): each inventory row cites,
+    after `Sites:`, the sites it owns by a stem of their message. A site no row cites, a stem that
+    names no site or several, and a row whose deletion nothing would notice all fail here."""
+
+    # verify()'s unknown-class handling is an advisory, not a refusal (its fail-safe is the row
+    # above it); the NOTE it prints is that row's anchor, pinned so the row cannot vanish either.
+    ANCHORING_NOTES = {"verify": ("unknown unit class",)}
+
+    def setUp(self):
+        source = (ROOT / "runtime" / "scripts" / "verify.py").read_text(encoding="utf-8")
+        checks = set(re.findall(r"^def (check_\w+)\(", source, re.M))
+        self.refusals, notes = refusal_sites(source, checks | TheInventoryHasNoSilentOmissions.HELPERS)
+        self.anchors = {(f, n) for f, stems in self.ANCHORING_NOTES.items() for stem in stems
+                        for n in notes[f] if stem in n}
+        self.sites = {(f, s) for f, found in self.refusals.items() for s in found} | self.anchors
+        self.rows = TheInventoryHasNoSilentOmissions._rows(self)
+
+    @staticmethod
+    def _stems(row):
+        return re.findall(r"`([^`]+)`", row[1].partition("Sites:")[2])
+
+    def _resolve(self, row, stem):
+        """The sites a row's stem names: in the functions the row names, an exact message before a
+        substring match; a predicate that prints nothing itself (review_ok) cites the refusal its
+        caller prints, so its stems are looked up everywhere."""
+        funcs = set(re.findall(r"`([\w.]+)`", row[0]))
+        pool = {site for site in self.sites if site[0] in funcs} or self.sites
+        return {site for site in pool if site[1] == stem} or {site for site in pool if stem in site[1]}
+
+    def _cited(self, rows):
+        return {site for row in rows for stem in self._stems(row) for site in self._resolve(row, stem)}
+
+    @staticmethod
+    def _cases(rows):
+        return {n for row in rows if row[2] == "trap" for n in re.findall(r"`([^`]+)`", row[3])}
+
+    def test_the_sites_are_read_from_source(self):
+        # A broken extractor would make every check below pass on an empty set.
+        self.assertGreater(len(self.sites), 100)
+        self.assertIn(("check_scope", "scope: authoritative source does not match --contract-digest "
+                                      "({} != {})"), self.sites)
+        self.assertEqual(sorted(f for f, found in self.refusals.items() if not found), ["review_ok"],
+                         "only review_ok, a predicate, may refuse without a message of its own")
+        self.assertEqual(len(self.anchors), sum(map(len, self.ANCHORING_NOTES.values())),
+                         "an anchoring NOTE no longer names exactly one NOTE in verify.py")
+
+    def test_every_stem_names_exactly_one_site(self):
+        for row in self.rows:
+            for stem in self._stems(row):
+                with self.subTest(row=row[:2], stem=stem):
+                    self.assertEqual(len(self._resolve(row, stem)), 1,
+                                     "a stem must name exactly one refusal site of its row's check")
+
+    def test_every_refusal_site_has_a_row(self):
+        uncited = sorted(f"{f}: {s}" for f, s in self.sites - self._cited(self.rows))
+        self.assertEqual(uncited, [], "a refusal site in verify.py has no inventory row")
+
+    def test_no_row_can_be_deleted_unnoticed(self):
+        # What a row alone contributes: a site or a corpus case no other row covers. Deleting a
+        # row with neither would leave every other test here, and the corpus check, green.
+        red = {t["class"] for t in vfbench.load_traps() if t["sound_expected"] == "RED"}
+        cited, cases = self._cited(self.rows) & self.sites, self._cases(self.rows) & red
+        for i, row in enumerate(self.rows):
+            with self.subTest(row=row[:2]):
+                rest = self.rows[:i] + self.rows[i + 1:]
+                lost = (cited - self._cited(rest)) | (cases - self._cases(rest))
+                self.assertTrue(lost, "deleting this row fails no test: cite a site no other row "
+                                "cites, or name a corpus case no other row names")
 
 
 if __name__ == "__main__":

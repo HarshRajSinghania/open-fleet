@@ -283,7 +283,9 @@ class TestEverySafeguardIsCaughtWhenSwitchedOff(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(source.count(anchor), 1, f"safeguard anchor moved: {anchor!r}")
                 mutant = tmp / "deny-hook.sh"
-                mutant.write_text(source.replace(anchor, replacement), encoding="utf-8")
+                mutated = source.replace(anchor, replacement)
+                mutant.write_text(mutated, encoding="utf-8")
+                _assert_well_formed(self, mutated, mutant)
                 focus = [c for c in every if c.family.startswith(families)]
                 # Every payload on the focus cases: a safeguard may matter on one judging path.
                 focus = [corpus.Case(c.family, c.template, p) for c in focus
@@ -319,9 +321,14 @@ HOOK_ONLY_MUTANTS = (
      "for _code in dict.fromkeys(_FED_INTERP):",
      "for _code in dict.fromkeys(()):",
      [("python3 <<XEOF\nopen('.orca/dispatch-pubkey','w').write('x')\nXEOF", "deny", "allow")]),
+    # Switched off = the pre-fix reading: every literal of the program is a command whenever any
+    # exec-shaped call appears. (An earlier replacement spelled r'()' -- its apostrophes closed
+    # the single-quoted sh string that carries the reader, so the mutant was a BROKEN script:
+    # bash 3.2 parses $(...) late and failed closed to deny, dash parses it early and exited 2
+    # with no output, which reads as allow. _assert_well_formed now refuses such a mutant.)
     ("only exec-call literals are commands (Rm)",
-     "    for m in _EXEC_CALL.finditer(code):",
-     "    for m in re.finditer(r'()', code):",
+     "        argtext = _call_args(code, m.end() - 1)",
+     "        argtext = code",
      [("python3 -c \"import subprocess; subprocess.run(['git','status']); "
        "print('git push --force origin main')\"", "allow", "deny")]),
     ("parallel completes its command before judging (ZVr)",
@@ -352,7 +359,9 @@ class TestHookOnlySafeguardsFlipWhenSwitchedOff(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(self.source.count(anchor), 1, f"anchor moved: {anchor!r}")
                 mutant = tmp / "deny-hook.sh"
-                mutant.write_text(self.source.replace(anchor, replacement), encoding="utf-8")
+                mutated = self.source.replace(anchor, replacement)
+                mutant.write_text(mutated, encoding="utf-8")
+                _assert_well_formed(self, mutated, mutant)
                 for command, armed, flipped in pins:
                     command = command.replace("RCPT", self.rcpt)
                     self.assertEqual(_decision(command, cwd=self.wt)[0], armed, command)
@@ -361,6 +370,22 @@ class TestHookOnlySafeguardsFlipWhenSwitchedOff(unittest.TestCase):
 
 
 # --- hook-only pins: launchers and constructs the throwaway bash cannot run (#598) ----------
+def _assert_well_formed(case, source, mutant):
+    """A mutant must still be a working hook, or a flip proves nothing: its embedded reader may
+    hold no apostrophe (it would close the single-quoted sh string), and a benign command must
+    come back allowed with exit 0 under this host's sh (dash on Linux, bash 3.2 on macOS)."""
+    start = source.index("FIELDS=$(printf")
+    reader = source[start:source.index("\n' 2>/dev/null) || {", start)].split("python3 -I -c '", 1)[1]
+    case.assertNotIn("'", reader, "the mutant embeds an apostrophe in the payload reader")
+    environ = {k: v for k, v in os.environ.items() if k not in corpus._SCRUB}
+    payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                          "tool_input": {"command": "ls -la"}})
+    r = subprocess.run(["sh", str(mutant)], input=payload, capture_output=True, text=True,
+                       env=environ, cwd=str(ROOT), timeout=60)
+    case.assertEqual((r.returncode, r.stdout.strip()), (0, ""),
+                     f"the mutant is not a working hook: {r.stderr[-300:]}")
+
+
 def _decision(command, env=None, cwd=None, hook=None):
     environ = {k: v for k, v in os.environ.items() if k not in corpus._SCRUB}
     environ.update(env or {})

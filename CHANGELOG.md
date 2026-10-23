@@ -51,6 +51,32 @@ truth is `.claude-plugin/plugin.json`.
     (`ConfigFilterNeverRunsInTheControl`): with the blanks removed the planted probe fires; with
     them in force it never does. `verify.py`'s guarded lines and interface width are unchanged
     (the new logic is an `_Authority` classmethod).
+- **VF-Bench replays in one command, at a pinned revision, in a clean environment** (#601).
+  `bench/vf-bench/replay.py run --rev <commit>` exports the commit into a fresh repository by a
+  local fetch, runs every case N times under a built environment (only `git` and `python` on
+  `PATH`, empty `HOME`, no system git config), one process per case with a timeout, and writes a
+  JSON report and a text summary: the exact versions (corpus digest beside `gate.py`'s pin, the
+  blob ids of `gate.py`, `verify.py` and `vfbench.py`, `VERSION`), skipped, unsupported, timed-out
+  and unscored cases by name, and per configuration the false acceptance, false rejection, wrong
+  reasons, coverage of the README's verifier-check inventory, wall time and run-to-run spread with
+  every case whose verdict moved. The naive self-scorer is labelled the synthetic baseline, never
+  a product score. `compare` fails on any difference outside host facts, raw refusal text and wall
+  time; `reproduce` replays what a published report pins; `drill` requires a deleted or edited
+  corpus case or pinned fixture to fail the replay. `replay-reference.json` publishes a three-run
+  macOS replay of the #600 corpus at `27b5ed613949` (verify.py 0/53 and 0/19 in every run), and
+  the new `vfbench_replay` job, which `gates` needs, reproduces it on the GitHub runner and uploads
+  its report. External verifiers plug in through a documented stdin/stdout adapter contract
+  (`verify.py` itself behind it is the reference adapter; malformed, timed-out and crashing
+  adapters are listed, never scored, adapter names must be unique, and nothing an adapter starts
+  outlives its case); none has been measured, and reports say so with a null score.
+  `heldout-protocol.json` predeclares the development and held-out splits, their digests,
+  planned release dates, leakage checks with their stated limits, and an unfilled holder role,
+  and `heldout.py check` verifies no committed blob is a held-out case, in UTF-8, UTF-16 or
+  UTF-32 or behind JSON escapes (compressed or base64-encoded copies are a stated limit), and
+  names what it could not look into (an oversize JSON document, an LFS pointer, a submodule,
+  history a shallow or partial clone never fetched) UNSCANNED rather than clean. The CI reproduction's first run
+  on PR #645 reproduced the macOS reference on Linux. Not done: a real external verifier, and an
+  actual holder and held-out set.
 - **Adversarial trajectory evals (#602).** `python3 scripts/eval.py run --suite trajectories`
   replays recorded worker tool events (JSONL) against a git repository built at test time,
   through the worker, the retry handover and the verifier under one frozen task contract, and

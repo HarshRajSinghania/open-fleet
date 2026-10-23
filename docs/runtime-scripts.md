@@ -29,6 +29,7 @@ boundary rather than assembling a gate command from its flags alone.
 | Sign a coordinator-owned dispatch | [`dispatch-sign.py`](../runtime/scripts/dispatch-sign.py) | [Signed dispatch](verify-gate.md#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135) |
 | Write or check an artifact inventory | [`inventory.py`](../runtime/scripts/inventory.py) | [Run submission](run-submission-guide.md#step-by-step); recheck history at the report's named commit |
 | Check whether a run report binds | [`run_report.py`](../runtime/scripts/run_report.py) | [What binding means](run-submission-guide.md#what-binding-means) |
+| Derive or check a run's WIP-curve rows from observed events | [`events.py`](#eventspy) | [WIP-curve protocol](../runtime/attention-budget.md#the-wip-curve-protocol-how-a-cap-graduates-from-asserted-to-measured), plus the section below |
 | Read the catalog's proof tiers | [`proof_status.py`](../runtime/scripts/proof_status.py) | [Proof status](concepts.md#proof-status) |
 | Review a pack pin bump for rug-pulls | [`pin_review.py`](#pin_reviewpy) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), [`pins.json`](#pinsjson), plus the section below |
 
@@ -48,7 +49,8 @@ The remaining reference sections cover:
   [quarantine registry](#quarantinejson).
 - **Runtime compatibility and liveness:** [CLI adapter](#orca_clipy), [upstream probe](#upstream_probepy),
   [pin rug-pull review](#pin_reviewpy), [upstream pin registry](#pinsjson),
-  [watchdog](#watchdogpy), [watchdog registry](#watchdogjson).
+  [watchdog](#watchdogpy), [watchdog registry](#watchdogjson),
+  [lifecycle event record and wave metrics](#eventspy).
 - **Signing and internal primitives:** [Ed25519 library](#ed25519py),
   [control-outcome reader](#_verify_sigpy), [hunk-counted diff parser](#diffparsepy),
   [hardened git executor](#gitexecpy),
@@ -454,6 +456,81 @@ Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
 > genesis — a rewritten history links correctly — so `verify` prints the head
 > (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
 > output says so rather than reading as a clean bill.
+
+## `events.py`
+
+Append-only lifecycle event record, and the WIP-curve rows derived from it (#603). One
+hash-chained JSON object per observed transition in `.orca/events.jsonl` (mode 0600). Source
+`runtime/scripts/events.py:1-59`; behavior pinned by `tests/test_events.py`, over the fixture
+streams and golden reports in `tests/fixtures/events/`.
+
+Status: local evidence tooling, not telemetry — no network, no daemon. Existing observations
+are read, never modified: the local-state DB (`ingest-state`, strictly read-only through
+`runtime/scripts/watchdog.py:_ro_connect`), verify.py's `--transcript-out` verdict
+(`ingest-transcript`, bound to the judged manifest's head only while its bytes still hash to
+the transcript's `manifest_sha256`), and a Claude worker's stream-json `result` line
+(`ingest-usage`). Waves, reviews, closes and parks have no machine output yet: the coordinator
+records them with `emit`. No provider and no verifier calls `emit` itself; the R04 (#597)
+launch-intent and R06 (#599) merge-queue receipts are the next sources, once they land.
+
+Usage: `events.py [--log PATH] <emit|ingest-state|ingest-transcript|ingest-usage|verify|report|check> ...`
+
+Subcommands: `emit`, `ingest-state`, `ingest-transcript`, `ingest-usage`, `verify`, `report`,
+`check`.
+
+Flags: `--log` (default `$OPEN_FLEET_EVENTS_LOG`, `$ORCA_EVENTS_LOG` or `.orca/events.jsonl`).
+Every writer takes `--run`, `--epoch` (the coordinator epoch: 1 at `run.start`, one more per
+`coordinator.resume`) and `--clock` (the clock domain its times were read on — name the
+machine; producers on one host share one label). `emit` takes `--kind`, `--task`, `--dispatch`,
+`--producer`, `--basis` (`occurred`, `observed` or `recovered`), `--observed-at`,
+`--source-ref`, `--source-sha256` or `--source-file`, `--event-id` (the idempotency key; default
+derived from the content) and `--data` (the kind's fields as JSON). `ingest-state` takes `--db`;
+`ingest-transcript` takes `--transcript`, `--manifest` and `--task`; `ingest-usage` takes
+`--stream`, `--task`, `--dispatch` and `--observed-at`. `report` takes `--run` (required when
+the record holds several runs) and `--json`; `check` takes `--run-report`; `verify`, `report`
+and `check` take `--expect-head` and `--expect-ancestor`.
+
+Kinds (`runtime/scripts/events.py:KINDS`, each a closed schema — no free text rides in):
+`run.start`, `coordinator.resume`, `wave.open` (wave, builders, reviewers, the planned task
+ids), `wave.close`, `dispatch.launched`, `dispatch.died`, `task.done` (head), `review.started`
+(head), `review.verdict`, `review.voided`, `verify.verdict` (exit, head), `unit.closed` (head,
+tree), `unit.parked` (park class), `unit.suspect`, `model.usage` (model, token counts and cost,
+each nullable, plus a provenance line).
+
+Derivation (`runtime/scripts/events.py:derive`). A unit is a task in a `wave.open` plan; its
+outcome comes from the set of its events, never their order: verified-CLOSED (closed at a head
+a verdict passed), closed-unverified, parked, verified, completed (worker_done only) or open.
+Latency runs from the worker_done at a head to the first passing verdict at that same head (or
+to the park); review queue from that worker_done to the review starting on it. Throughput is
+verified-CLOSED units per hour of `wave.open` → `wave.close`; rework is the share of units with
+a failing verdict (exit 2) or a SUSPECT; freshness counts approvals voided by a closing head
+that moved, unless both trees are recorded and equal. An interval needs one clock, no
+`recovered` endpoint and a non-negative difference. Events recorded under an epoch below the
+declared one (a fenced coordinator) or above it (undeclared) are excluded, as is a reused
+`event_id` with a different body; the metrics they touch report unavailable. Model usage keeps
+any field an observation did not report null — with its provenance — in the model's sum and in
+the run total; it is never 0.
+
+`report` prints the rows in docs/runs/TEMPLATE.md's table, `unavailable` in any cell the record
+cannot support (`runtime/scripts/run_report.py` then refuses the row, which is the point),
+with the reasons listed under it and the record's sha256 and head; `--json` adds per-unit
+outcomes, raw event digests, source references and revisions, plus review queue, retries and
+model usage. Strings in a report are redacted (`runtime/scripts/decisions.py:SECRET_SHAPES`,
+plus credentials in URLs); `emit` refuses them outright. `check` reads a run report's rows with
+run_report.py's own parser and names every cell that disagrees with the record.
+
+Exits: 0 ok · 1 incomplete (`report`: a metric unavailable; `check`: a row disagrees; `emit`: a
+reused id recorded as a conflict; an ingest found nothing) · 2 usage (including an event the
+schema refuses) · 3 fail-closed (the record is unwritable, unreadable, tampered or
+schema-invalid, or misses its anchor).
+
+> Why: attention-budget.md's WIP-curve rows were typed by the coordinator, so a duplicate
+> delivery, a clock that stepped back or a crashed coordinator's stale write could reach the
+> curve as a number. Deriving them from an append-only record makes each cell reproducible
+> from the events it cites, and makes "the record cannot say" (`unavailable`) a value of its
+> own rather than a guess. Endpoints are bound by head SHA rather than record order because
+> ingestion lags and resumes reorder appends. The chain proves continuity with a genesis
+> only, as egress.py's does, so anchor the head off the writer.
 
 ## `floor_guard.py`
 

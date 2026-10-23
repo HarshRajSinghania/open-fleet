@@ -1,0 +1,1208 @@
+#!/usr/bin/env python3
+"""Behavior of the persisted, fenced merge queue (#599; runtime/scripts/merge_queue.py).
+
+Every test builds disposable repositories (a bare "remote", a worker clone, a conductor clone)
+and a fake GitHub (tests/fixtures/merge_queue/fake_gh.py) over the bare repo. Nothing touches the
+network. The process-level drills (two conductors, pause-transfer-resume, crash restarts, the
+mutation controls) are tests/test_merge_queue_drills.py.
+"""
+from __future__ import annotations
+
+import importlib.util
+import hashlib
+import json
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+# The fixture harness sits beside its fake gh, loaded by path (it is not a package CI installs).
+_spec = importlib.util.spec_from_file_location("mq_world", ROOT / "tests" / "fixtures" / "merge_queue" / "world.py")
+W = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(W)
+
+mq_mod = W.load_module()
+egress = mq_mod.egress
+
+
+class QueueCase(unittest.TestCase):
+    mode = "gh"
+
+    def setUp(self):
+        self.w = W.World(Path(tempfile.mkdtemp(prefix="mq-test-")), mode=self.mode)
+        self.addCleanup(self.w.cleanup)
+        rc, out = self.w.cli(*self.w.init_args())
+        self.assertEqual(rc, 0, out)
+        self.repo = out["repo"]
+
+    def acquire(self, holder="c1", *extra):
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", holder, *extra)
+        self.assertEqual(rc, 0, out)
+        return out["token"]
+
+    def board(self, token, *units, run="r1"):
+        ids = []
+        for u in units:
+            rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(u), "--run", run)
+            self.assertEqual(rc, 0, out)
+            ids.append(out["entry"]["entry_id"])
+        return ids
+
+    def status(self):
+        # --repo pins the queue's identity: the offline drills point origin somewhere else.
+        rc, out = self.w.cli("--repo", self.repo, "status", "--base", W.BASE)
+        self.assertEqual(rc, 0, out)
+        return out
+
+    def receipts(self, entry=None):
+        args = ["receipts", "--base", W.BASE] + (["--entry", entry] if entry else [])
+        return self.w.cli(*args)[1]["receipts"]
+
+    def state_of(self, entry):
+        return next(e["state"] for e in self.status()["all"] if e["entry_id"] == entry)
+
+
+class LeaseAndFencing(QueueCase):
+    def test_one_conductor_per_repository_and_base(self):
+        self.acquire("c1")
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2")
+        self.assertEqual((rc, out.get("code")), (3, "lease_held"), out)
+        self.assertEqual(out["data"]["holder"], "c1")
+        # A second BASE in the same repository is a second queue with its own conductor.
+        self.w.git(self.w.worker, "push", "-q", "origin", f"origin/{W.BASE}:refs/heads/integration-2")
+        rc, out = self.w.cli("init", "--base", "integration-2", "--default", W.DEFAULT, "--consent", "grant:x",
+                             "--host", "github.invalid")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.w.cli("acquire", "--base", "integration-2", "--holder", "c2")
+        self.assertEqual((rc, out["epoch"]), (0, 1), out)
+
+    def test_a_stale_owner_cannot_board_plan_dequeue_merge_ack_resolve_or_release(self):
+        old = self.acquire("c1")
+        (entry,) = self.board(old, self.w.unit("alpha"))
+        new = self.acquire("c2", "--takeover")
+        before = self.status()["all"]
+        attempts = {
+            "enqueue": ["enqueue", "--token", old, "--payload", json.dumps(self.w.unit("beta"))],
+            "plan": ["plan", "--token", old],
+            "merge": ["merge", "--token", old],
+            "ack": ["ack", "--token", old, "--entry", entry],
+            "resolve": ["resolve", "--token", old, "--entry", entry, "--action", "drop", "--reason", "x"],
+            "reconcile": ["reconcile", "--token", old],
+            "release": ["release", "--token", old],
+        }
+        for name, args in attempts.items():
+            with self.subTest(op=name):
+                rc, out = self.w.cli(*args)
+                self.assertEqual((rc, out.get("code")), (3, "fenced"), out)
+                self.assertEqual(out["data"]["currentEpoch"], 2)
+        self.assertEqual(self.status()["all"], before, "a fenced write changed queue state")
+        self.assertEqual(self.w.merge_log("start"), [], "a fenced conductor reached GitHub")
+        stale = [r for r in self.receipts() if r["epoch"] == 1 and r["kind"] not in ("lease_acquired", "boarded")]
+        self.assertEqual(stale, [], "epoch 1 wrote a receipt after it was fenced")
+        rc, out = self.w.cli("plan", "--token", new)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_restart_under_the_same_holder_fences_the_older_process(self):
+        first = self.acquire("c1")
+        second = self.acquire("c1")
+        rc, out = self.w.cli("plan", "--token", first)
+        self.assertEqual((rc, out.get("code")), (3, "fenced"))
+        self.assertEqual(self.w.cli("plan", "--token", second)[0], 0)
+
+    def test_an_expired_lease_is_acquirable_without_takeover(self):
+        mq = self.w.queue(mq_mod)
+        now = [1000.0]
+        mq.clock = lambda: now[0]
+        mq.acquire(repo=self.repo, base=W.BASE, holder="c1", ttl=60)
+        with self.assertRaises(mq_mod.QueueError) as held:
+            mq.acquire(repo=self.repo, base=W.BASE, holder="c2", ttl=60)
+        self.assertEqual(held.exception.code, "lease_held")
+        now[0] += 61
+        self.assertEqual(mq.acquire(repo=self.repo, base=W.BASE, holder="c2", ttl=60)["epoch"], 2)
+
+    def test_every_owner_write_renews_the_lease(self):
+        mq = self.w.queue(mq_mod)
+        now = [1000.0]
+        mq.clock = lambda: now[0]
+        token = mq.acquire(repo=self.repo, base=W.BASE, holder="c1", ttl=60)["token"]
+        for _ in range(3):
+            now[0] += 50
+            mq.enqueue(token, self.w.unit(f"u{int(now[0])}"))
+        with self.assertRaises(mq_mod.QueueError) as held:
+            mq.acquire(repo=self.repo, base=W.BASE, holder="c2", ttl=60)
+        self.assertEqual(held.exception.code, "lease_held")
+
+    def test_an_unknown_token_is_not_an_owner(self):
+        rc, out = self.w.cli("plan", "--token", "0" * 32)
+        self.assertEqual((rc, out.get("code")), (3, "unknown_token"))
+
+
+class Boarding(QueueCase):
+    def test_an_entry_binds_run_unit_pr_branch_reviewed_sha_tree_base_and_arrival(self):
+        token = self.acquire()
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        ids = self.board(token, a, b, run="run-7")
+        line = self.status()["line"]
+        self.assertEqual([e["entry_id"] for e in line], ids)
+        self.assertEqual([e["seq"] for e in line], [1, 2])
+        got = line[0]
+        self.assertEqual((got["run_id"], got["unit"], got["pr"], got["branch"], got["reviewed_sha"], got["reviewed_tree"]),
+                         ("run-7", "alpha", a["pr"], "alpha", a["reviewed_sha"], a["reviewed_wtree"]))
+        boarded = [r for r in self.receipts(ids[0]) if r["kind"] == "boarded"][0]["body"]
+        self.assertEqual((boarded["base"], boarded["seq"], boarded["reviewedSha"], boarded["reviewedTree"]),
+                         (W.BASE, 1, a["reviewed_sha"], a["reviewed_wtree"]))
+
+    def test_a_duplicate_merge_ready_delivery_is_idempotent(self):
+        token = self.acquire()
+        a = self.w.unit("alpha")
+        rc1, first = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(a), "--run", "r1", "--delivery", "d1")
+        rc2, again = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(a), "--run", "r1", "--delivery", "d2")
+        self.assertEqual((rc1, rc2), (0, 0))
+        self.assertEqual((first["duplicate"], again["duplicate"]), (False, True))
+        self.assertEqual(again["entry"]["entry_id"], first["entry"]["entry_id"])
+        self.assertEqual(len(self.status()["all"]), 1)
+        # No arrival slot was consumed by the duplicate.
+        (nxt,) = self.board(token, self.w.unit("beta"))
+        self.assertEqual(next(e["seq"] for e in self.status()["all"] if e["entry_id"] == nxt), 2)
+        kinds = [r["kind"] for r in self.receipts(first["entry"]["entry_id"])]
+        self.assertEqual(kinds.count("boarded"), 1)
+        self.assertEqual(kinds.count("duplicate_delivery"), 1)
+
+    def test_the_same_delivery_key_with_another_payload_is_refused(self):
+        token = self.acquire()
+        a = self.w.unit("alpha")
+        self.board(token, a)
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**a, "branch": "elsewhere"}), "--run", "r1")
+        self.assertEqual((rc, out.get("code")), (2, "payload_mismatch"))
+
+    def test_reboarding_a_unit_supersedes_it_and_joins_the_back(self):
+        token = self.acquire()
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        old_a, _ = self.board(token, a, b)
+        moved = {**a, "reviewed_sha": self.w.push_change(a), }
+        moved["reviewed_wtree"] = self.w.tree(moved["reviewed_sha"])
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(moved), "--run", "r1")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["superseded"], [old_a])
+        self.assertEqual([e["unit"] for e in self.status()["line"]], ["beta", "alpha"])
+        self.assertEqual(self.state_of(old_a), "superseded")
+
+    def test_a_redelivery_after_landing_is_a_no_op(self):
+        a = self.w.unit("alpha")
+        token = self.acquire()
+        self.board(token, a)
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        token = self.acquire()
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(a), "--run", "r1")
+        self.assertEqual((rc, out["duplicate"], out["entry"]["state"]), (0, True, "landed"))
+        self.assertEqual(len(self.w.merge_log()), 1)
+
+    def test_payloads_are_validated_before_any_write(self):
+        token = self.acquire()
+        a = self.w.unit("alpha")
+        bad = {"not json": "{", "no unit": json.dumps({**a, "unit": ""}),
+               "short sha": json.dumps({**a, "reviewed_sha": "abc"}),
+               "bool pr": json.dumps({**a, "pr": True}), "no pr on gh lane": json.dumps({**a, "pr": None}),
+               "refspec in branch": json.dumps({**a, "branch": "alpha:refs/heads/integration"}),
+               "option as branch": json.dumps({**a, "branch": "--upload-pack=x"})}
+        for name, payload in bad.items():
+            with self.subTest(name):
+                rc, out = self.w.cli("enqueue", "--token", token, "--payload", payload)
+                self.assertEqual(rc, 2, out)
+        forged = {**a, "reviewed_wtree": self.w.tree(f"{W.DEFAULT}")}
+        self.w.git(self.w.conductor, "fetch", "-q", "origin", "alpha")
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(forged))
+        self.assertEqual((rc, out.get("code")), (2, "reviewed_tree_mismatch"))
+        self.assertEqual(self.status()["all"], [])
+
+
+class FifoAndFreeze(QueueCase):
+    def test_units_merge_once_each_in_arrival_order(self):
+        units = [self.w.unit(n) for n in ("alpha", "beta", "gamma")]
+        token = self.acquire()
+        ids = self.board(token, *units)
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.merged_heads(), [u["reviewed_sha"] for u in units])
+        self.assertEqual([x["pr"] for x in self.w.merge_log()], [u["pr"] for u in units])
+        intents = [r["entry_id"] for r in self.receipts() if r["kind"] == "merge_intent"]
+        self.assertEqual(intents, ids)
+        self.assertEqual({self.state_of(i) for i in ids}, {"landed"})
+
+    def test_only_the_head_of_the_train_may_merge(self):
+        token = self.acquire()
+        _a, b = self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
+        self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
+        rc, out = self.w.cli("merge", "--token", token, "--entry", b)
+        self.assertEqual((rc, out.get("code")), (2, "not_head"))
+        self.assertEqual(self.w.merge_log("start"), [])
+
+    def test_a_merged_entry_must_be_acknowledged_before_the_next_merge(self):
+        token = self.acquire()
+        a, _b = self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "ack_owed"))
+        rc, out = self.w.cli("ack", "--token", token, "--entry", a, "--note", "ledgered")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+
+    def test_a_failed_gate_freezes_the_train_behind_it_until_resolved(self):
+        a, b, c = (self.w.unit(n) for n in ("alpha", "beta", "gamma"))
+        token = self.acquire()
+        ids = self.board(token, a, b, c)
+        rc, out = self.w.cli("plan", "--token", token, "--gate-cmd", "test ! -f beta.txt")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([p["result"] for p in out["planned"]], ["tested", "fail"])
+        self.assertEqual(out["planned"][1]["reason"], "gate_failed")
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        self.w.cli("ack", "--token", token, "--entry", ids[0])
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code"), out["data"]["entry"]), (1, "queue_frozen", ids[1]))
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "queue_frozen"))
+        self.assertEqual(self.status()["frozen"]["entry"], ids[1])
+        self.assertEqual(self.w.merged_heads(), [a["reviewed_sha"]], "a unit merged past a frozen predecessor")
+        failed = [r for r in self.receipts(ids[1]) if r["kind"] == "failed"][0]["body"]
+        self.assertTrue(failed["frozen"])
+        self.assertEqual(failed["gate"]["exit"], 1)
+        rc, out = self.w.cli("resolve", "--token", token, "--entry", ids[1], "--action", "drop", "--reason", "gate red")
+        self.assertEqual(rc, 0, out)
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.merged_heads(), [a["reviewed_sha"], c["reviewed_sha"]])
+        self.assertIn("resolved", [r["kind"] for r in self.receipts(ids[1])])
+
+    def test_a_refused_remote_merge_freezes_the_train(self):
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        token = self.acquire()
+        ids = self.board(token, a, b)
+        self.w.set_gh(lambda s: s["prs"][str(a["pr"])].__setitem__("refuse", "Required status check is failing"))
+        self.w.cli("plan", "--token", token)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "merge_refused"), out)
+        self.assertEqual(self.state_of(ids[0]), "failed")
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual(out.get("code"), "queue_frozen")
+        self.w.set_gh(lambda s: s["prs"][str(a["pr"])].pop("refuse"))
+        self.w.cli("resolve", "--token", token, "--entry", ids[0], "--action", "requeue", "--reason", "checks fixed")
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.merged_heads(), [a["reviewed_sha"], b["reviewed_sha"]])
+
+    def test_a_conflicting_unit_fails_at_plan_and_freezes(self):
+        a = self.w.unit("alpha", {"shared.txt": "alpha\n"})
+        b = self.w.unit("beta", {"shared.txt": "beta\n"})
+        token = self.acquire()
+        ids = self.board(token, a, b)
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual([(p["result"], p.get("reason")) for p in out["planned"]], [("tested", None), ("fail", "conflict")])
+        self.assertEqual(out["planned"][1]["conflicts"], ["shared.txt"])
+        self.assertEqual(self.state_of(ids[1]), "failed")
+
+
+class GateSelection(QueueCase):
+    """A gate the conductor asks for runs on the prefix that merges, or nothing merges (PR #647)."""
+
+    def _plan(self, *gate):
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        rc, out = self.w.cli("plan", "--token", token, *gate)
+        self.assertEqual(rc, 0, out)
+        return token, entry
+
+    def _frozen_on_the_gate(self, entry, out, rc):
+        self.assertEqual((rc, out.get("code")), (1, "queue_frozen"), out)
+        self.assertEqual(self.w.merge_log("start"), [], "the unit merged without the requested gate")
+        self.assertEqual(self.state_of(entry), "failed")
+        failed = [r["body"] for r in self.receipts(entry) if r["kind"] == "failed"][0]
+        self.assertEqual((failed["reason"], failed["gate"]["cmd"]), ("gate_failed", "exit 1"))
+
+    def test_drain_runs_a_requested_gate_the_saved_plan_never_ran(self):
+        token, entry = self._plan()
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", "exit 1", "--ack")
+        self._frozen_on_the_gate(entry, out, rc)
+
+    def test_drain_runs_the_requested_gate_when_the_saved_plan_ran_another(self):
+        token, entry = self._plan("--gate-cmd", "true")
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", "exit 1", "--ack")
+        self._frozen_on_the_gate(entry, out, rc)
+
+    def test_a_saved_plan_that_passed_the_same_gate_is_reused(self):
+        ran = self.w.tmp / "gate.log"
+        gate = f"echo ran >> {ran}"
+        token, _entry = self._plan("--gate-cmd", gate)
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", gate, "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(ran.read_text().splitlines(), ["ran"], "a passed gate ran again for the same prefix")
+        self.assertEqual(len(self.w.merge_log()), 1)
+
+    def test_merge_refuses_a_plan_that_did_not_pass_the_required_gate(self):
+        token, entry = self._plan()
+        rc, out = self.w.cli("merge", "--token", token, "--require-gate", "true")
+        self.assertEqual((rc, out.get("code")), (1, "gate_not_run"), out)
+        self.assertEqual((self.w.merge_log("start"), self.state_of(entry)), ([], "queued"))
+        self.assertEqual(self.w.cli("plan", "--token", token, "--gate-cmd", "true")[0], 0)
+        rc, out = self.w.cli("merge", "--token", token, "--require-gate", "true")
+        self.assertEqual((rc, out.get("result")), (0, "merged"), out)
+
+    def test_drain_passes_its_gate_timeout_to_the_gate(self):
+        token, entry = self._plan()
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--gate-cmd", "sleep 5",
+                             "--gate-timeout", "0.5", "--ack")
+        self.assertEqual((rc, out.get("code")), (1, "queue_frozen"), out)
+        failed = [r["body"] for r in self.receipts(entry) if r["kind"] == "failed"][0]
+        self.assertEqual(failed["gate"]["exit"], 124)
+        self.assertEqual(self.w.merge_log("start"), [])
+
+    def test_a_timed_out_gate_is_stopped_with_everything_it_started(self):
+        token, entry = self._plan()
+        late = self.w.tmp / "late.txt"
+        rc, out = self.w.cli("plan", "--token", token, "--gate-cmd", f"sh -c 'sleep 2; echo late > {late}'; true",
+                             "--gate-timeout", "0.5")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([(x["result"], x["gate"]["exit"]) for x in out["planned"]], [("fail", 124)])
+        self.assertEqual(self.state_of(entry), "failed")
+        time.sleep(3)
+        self.assertFalse(late.exists(), "a timed-out gate's child kept running after the gate was failed")
+
+class Freshness(QueueCase):
+    def _planned(self, *units):
+        token = self.acquire()
+        ids = self.board(token, *units)
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual(rc, 0, out)
+        return token, ids
+
+    def test_a_changed_tree_returns_to_review_and_never_merges(self):
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        token, ids = self._planned(a, b)
+        moved = self.w.push_change(a)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("result"), out.get("reason")), (1, "returned_to_review", "content_changed"), out)
+        self.assertEqual(out["head"], moved)
+        self.assertEqual(self.state_of(ids[0]), "bounced")
+        self.assertEqual(self.w.merge_log("start"), [], "unreviewed content reached GitHub")
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.merged_heads(), [b["reviewed_sha"]])
+        self.assertNotIn(moved, self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "rev-list", W.BASE).split())
+
+    def test_a_unit_changed_before_its_first_plan_returns_to_review(self):
+        # The conductor never fetched the reviewed commit, so the payload's tree is the reference.
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        token = self.acquire()
+        ids = self.board(token, a, b)
+        self.w.push_change(a)
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual([(p["result"], p.get("reason")) for p in out["planned"]],
+                         [("bounce", "content_changed"), ("tested", None)], out)
+        self.assertEqual(self.state_of(ids[0]), "bounced")
+
+    def test_a_content_identical_move_keeps_the_review_and_pins_the_new_head(self):
+        a = self.w.unit("alpha")
+        token, ids = self._planned(a)
+        moved = self.w.amend_same_tree(a)
+        self.assertNotEqual(moved, a["reviewed_sha"])
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out["result"], out["acceptedHead"]), (0, "merged", moved), out)
+        intent = [r for r in self.receipts(ids[0]) if r["kind"] == "merge_intent"][0]["body"]
+        self.assertEqual(intent["how"], "content_equivalent")
+        call = self.w.merge_log("start")[0]["argv"]
+        self.assertIn(f"head={moved}", call)  # the merges-endpoint write pins the newly accepted head
+        self.assertEqual(self.w.merged_heads(), [moved])
+
+    def test_a_moved_base_makes_the_tested_prefix_stale(self):
+        a = self.w.unit("alpha")
+        token, ids = self._planned(a)
+        self.w.external_base_write()
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code"), out["data"]["reason"]), (1, "retest_required", "base_moved"), out)
+        self.assertEqual(self.w.merge_log("start"), [])
+        self.assertIn("retest_required", [r["kind"] for r in self.receipts(ids[0])])
+        self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out["treeMatchesTested"]), (0, True), out)
+
+
+class GitLaneFreshness(Freshness):
+    mode = "git"
+
+    def test_a_content_identical_move_keeps_the_review_and_pins_the_new_head(self):
+        a = self.w.unit("alpha")
+        token, _ids = self._planned(a)
+        moved = self.w.amend_same_tree(a)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out["acceptedHead"], out["noGh"]), (0, moved, True), out)
+        self.assertEqual(self.w.merged_heads(), [moved])
+
+
+class OfflineAndPromotion(QueueCase):
+    def test_offline_github_blocks_the_merge_and_loses_nothing(self):
+        a = self.w.unit("alpha")
+        token = self.acquire()
+        (entry,) = self.board(token, a)
+        self.w.cli("plan", "--token", token)
+        self.w.set_gh(lambda s: s.__setitem__("offline", True))
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "offline"), out)
+        self.assertEqual(self.state_of(entry), "queued")
+        self.assertEqual([r["body"]["step"] for r in self.receipts(entry) if r["kind"] == "offline"], ["revalidate"])
+        # The lease itself needs no network: a handoff with nothing in flight succeeds offline.
+        token = self.acquire("c2", "--takeover")
+        self.w.set_gh(lambda s: s.__setitem__("offline", False))
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.w.merge_log()), 1)
+
+    def test_the_default_branch_is_never_a_merge_queue_base(self):
+        rc, out = self.w.cli("init", "--base", W.DEFAULT, "--default", W.DEFAULT, "--consent", "grant:x")
+        self.assertEqual((rc, out.get("code")), (2, "promotion_is_human"))
+
+    def test_a_payload_aimed_at_the_default_branch_is_refused(self):
+        token = self.acquire()
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**self.w.unit("alpha"), "base": W.DEFAULT}))
+        self.assertEqual((rc, out.get("code")), (2, "promotion_is_human"))
+
+    def test_a_pr_retargeted_at_the_default_branch_returns_to_review(self):
+        a = self.w.unit("alpha")
+        token = self.acquire()
+        (entry,) = self.board(token, a)
+        self.w.set_gh(lambda s: s["prs"][str(a["pr"])].__setitem__("baseRefName", W.DEFAULT))
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual([(p["result"], p["reason"]) for p in out["planned"]], [("bounce", "wrong_base")])
+        self.assertEqual(self.state_of(entry), "bounced")
+        self.assertEqual(self.w.merge_log("start"), [])
+
+    def test_a_drained_train_leaves_promotion_to_a_human(self):
+        main_before = self.w.remote_ref(W.DEFAULT)
+        token = self.acquire()
+        ids = self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["promotion"], {"from": W.BASE, "by": "human", "automated": False})
+        self.assertEqual(self.w.remote_ref(W.DEFAULT), main_before, "the queue moved the default branch")
+        self.assertEqual(self.status()["promotion"]["automated"], False)
+        acks = [r["body"]["promotion"] for r in self.receipts() if r["kind"] == "acknowledged"]
+        self.assertEqual(len(acks), len(ids))
+        self.assertTrue(all("human gate" in p for p in acks))
+        sub = subprocess.run([sys.executable, str(W.SCRIPT), "--help"], capture_output=True, text=True).stdout
+        self.assertNotIn("promote", sub)
+
+    def test_an_egress_receipt_precedes_every_merge(self):
+        token = self.acquire()
+        self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
+        self.w.cli("release", "--token", token)
+        self.assertEqual(self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")[0], 0)
+        ok, count, _line, _why = egress.verify_ledger(self.w.ledger)
+        self.assertEqual((ok, count), (True, 4))  # each merge, then its branch deletion: one receipt per send
+        lines = [json.loads(x) for x in self.w.ledger.read_text().splitlines()]
+        self.assertEqual([(x["sink"], x["payload_class"], x["consent"]) for x in lines],
+                         [("merge-queue", kind, "grant:merge-to-integration") for kind in ("pr-merge", "branch-delete") * 2])
+
+    def test_no_receipt_means_no_send(self):
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        self.w.cli("plan", "--token", token)
+        self.w.ledger.mkdir()  # the ledger path is a directory: the receipt cannot be written
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "egress_failed"), out)
+        self.assertEqual(self.w.merge_log("start"), [])
+        self.assertEqual(self.state_of(entry), "queued")
+
+
+class NonCooperatingWriters(QueueCase):
+    def test_a_merge_github_landed_on_a_moved_base_needs_an_explicit_ack(self):
+        # GitHub, not the queue, picks the base commit it merges onto: a write that bypasses the
+        # queue between revalidation and the merge cannot be fenced, only surfaced.
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        self.w.cli("plan", "--token", token)
+        self.w.set_gh(lambda s: s.__setitem__("race_base_write", True))
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out["result"], out["treeMatchesTested"]), (0, "merged", False), out)
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry)
+        self.assertEqual((rc, out.get("code")), (1, "untested_tree_merged"), out)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual(out.get("code"), "ack_owed")
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry, "--accept-untested-tree", "--note", "re-gated")
+        self.assertEqual((rc, out["acceptedUntestedTree"]), (0, True), out)
+
+
+class RepositoryBinding(QueueCase):
+    """Every GitHub and git call acts on the repository the queue and its lease name (PR #647)."""
+
+    FORK = "github.invalid/fork/repo"
+
+    def _boarded(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        self.board(token, u)
+        self.w.cli("release", "--token", token)
+        return u
+
+    def _drain(self):
+        return self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+
+    def test_github_calls_name_the_bound_repository_whatever_gh_would_default_to(self):
+        u = self._boarded()
+        fork = self.w.fork(self.FORK)
+        self.w.mirror_pr(u, self.FORK, fork)
+        fork_base = self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE)
+        self.w.env["GH_REPO"] = self.FORK  # gh's own default would now be the fork
+        rc, out = self._drain()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual({m["repo"] for m in self.w.merge_log("start")}, {W.SLUG}, "a merge reached another repository")
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE), fork_base)
+        self.assertEqual(self.w.merged_heads(), [u["reviewed_sha"]])
+        call = self.w.merge_log("start")[0]["argv"]
+        host, owner_name = W.SLUG.split("/", 1)  # the merges-endpoint write names the bound repository
+        self.assertEqual((call[call.index("--hostname") + 1], f"repos/{owner_name}/merges" in call), (host, True))
+
+    def test_a_queue_whose_identity_is_not_its_remote_is_refused(self):
+        rc, out = self.w.cli("--repo", "github.invalid/other/repo", *self.w.init_args())
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+
+    def test_a_remote_repointed_after_init_is_refused_before_any_remote_call(self):
+        u = self._boarded()
+        fork = self.w.fork(self.FORK)
+        self.w.mirror_pr(u, self.FORK, fork)
+        self.w.point(self.w.conductor, "origin", self.FORK, fork)
+        rc, out = self.w.cli("--repo", self.repo, "drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual((rc, out.get("code")), (1, "repo_mismatch"), out)
+        self.assertEqual(self.w.merge_log("start"), [])
+        self.assertEqual(self.w.merged_heads(), [])
+
+    def test_a_pull_request_github_reports_for_another_repository_is_refused(self):
+        u = self._boarded()
+        self.w.set_gh(lambda s: s["prs"][str(u["pr"])].__setitem__("urlRepo", self.FORK))
+        rc, out = self._drain()
+        self.assertEqual((rc, out.get("code")), (1, "repo_mismatch"), out)
+        self.assertEqual(self.w.merge_log("start"), [])
+
+    def test_the_gh_lane_needs_a_github_repository_identity(self):
+        self.w.git(self.w.conductor, "remote", "add", "local", str(self.w.bare))
+        rc, out = self.w.cli("--repo", str(self.w.bare.resolve()), "init", "--base", "integration-2", "--default",
+                             W.DEFAULT, "--consent", "grant:x", "--remote", "local")
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+
+    def test_a_payload_that_names_another_repository_is_refused(self):
+        token = self.acquire()
+        u = {**self.w.unit("alpha"), "repo": self.FORK}
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps(u))
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+        self.assertEqual(self.status()["all"], [])
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**u, "repo": W.SLUG}))
+        self.assertEqual(rc, 0, out)
+
+    def test_a_pr_number_whose_head_is_another_branch_returns_to_review(self):
+        token = self.acquire()
+        a, b = self.w.unit("alpha"), self.w.unit("beta")
+        (entry,) = self.board(token, {**a, "pr": b["pr"]})
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual([(x["result"], x["reason"]) for x in out["planned"]], [("bounce", "pr_branch_mismatch")], out)
+        self.assertEqual(self.state_of(entry), "bounced")
+
+
+class MergeTargetBinding(QueueCase):
+    """The remote write names the queue's BASE; nothing about the PR can redirect it (PR #647)."""
+
+    def test_a_pr_retargeted_after_the_last_check_cannot_redirect_the_merge(self):
+        main_before = self.w.remote_ref(W.DEFAULT)
+        base_before = self.w.remote_ref(W.BASE)
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        (entry,) = self.board(token, u)
+        self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
+        # Retargeted at the default branch after every read the conductor makes, as GitHub gets the merge.
+        self.w.set_gh(lambda s: s.__setitem__("retarget_before_merge", {"pr": u["pr"], "to": W.DEFAULT}))
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual(self.w.remote_ref(W.DEFAULT), main_before, "the merge reached the default branch")
+        self.assertEqual((rc, out.get("result")), (0, "merged"), out)
+        self.assertEqual(self.w.merged_heads(), [u["reviewed_sha"]])
+        merge_sha = self.w.remote_ref(W.BASE)
+        parents = self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "rev-list", "--parents", "-n", "1", merge_sha)
+        self.assertEqual(parents.split()[1:], [base_before, u["reviewed_sha"]])
+        pr = self.w.gh_state()["prs"][str(u["pr"])]
+        self.assertEqual((pr["baseRefName"], pr["state"]), (W.DEFAULT, "OPEN"), "a PR aimed at the default was merged")
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "branch", "--list", u["branch"]),
+                         u["branch"], "the head branch of a PR not merged on GitHub was deleted")
+
+    def test_the_github_write_names_the_base_and_the_accepted_commit(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        self.board(token, u)
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        call = self.w.merge_log("start")[0]["argv"]
+        self.assertIn(f"base={W.BASE}", call)
+        self.assertIn(f"head={u['reviewed_sha']}", call)
+        self.assertEqual(self.w.gh_state()["prs"][str(u["pr"])]["state"], "MERGED")
+
+    def test_a_base_that_is_not_a_plain_branch_name_is_refused_at_init(self):
+        for bad in ("integration:refs/heads/main", "refs/heads/main", "-main", "a..b"):
+            with self.subTest(bad=bad):
+                rc, out = self.w.cli("init", f"--base={bad}", "--default", W.DEFAULT, "--consent", "grant:x",
+                                     "--host", "github.invalid")
+                self.assertEqual((rc, out.get("code")), (2, "usage"), out)
+
+    def test_an_in_flight_merge_github_landed_elsewhere_is_never_adopted(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        (entry,) = self.board(token, u)
+        self.w.cli("plan", "--token", token)
+        mq = self.w.queue(mq_mod)
+        mq._send = lambda *a, **k: (_ for _ in ()).throw(SystemExit("conductor died before the send"))
+        with self.assertRaises(SystemExit):
+            mq.merge(token)
+        self.assertEqual(self.state_of(entry), "merging")
+        # Meanwhile the PR is retargeted at the default branch and merged there, outside the fleet.
+        self.w.set_gh(lambda s: s["prs"][str(u["pr"])].__setitem__("baseRefName", W.DEFAULT))
+        subprocess.run([str(self.w.tmp / "bin" / "gh"), "pr", "merge", str(u["pr"]), "--merge"], env=self.w.env,
+                       capture_output=True, check=True)
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2", "--takeover")
+        self.assertEqual(rc, 0, out)
+        decision = out["reconciled"][0]
+        self.assertEqual((decision["resolution"], decision["reason"]), ("failed", "merged_not_on_base"), decision)
+        self.assertEqual(self.state_of(entry), "failed")
+        self.assertEqual(self.w.merged_heads(), [])
+
+
+class BranchTeardown(QueueCase):
+    """The merged head branch is deleted from the right repository, once, even across a restart (PR #647)."""
+
+    FORK = "github.invalid/fork/repo"
+
+    def _branch_exists(self, bare, branch):
+        return self.w.git(self.w.tmp, "--git-dir", str(bare), "branch", "--list", branch) == branch
+
+    def _teardowns(self, entry):
+        return [r["body"] for r in self.receipts(entry) if r["kind"] == "branch_teardown"]
+
+    def _boarded(self):
+        token = self.acquire()
+        u = self.w.unit("alpha")
+        (entry,) = self.board(token, u)
+        return token, u, entry
+
+    def _crash_at(self, token, stage, **merge):
+        """A conductor that dies at one merge boundary (no finally, no teardown of its own)."""
+        self.assertEqual(self.w.cli("plan", "--token", token)[0], 0)
+        mq = self.w.queue(mq_mod)
+
+        def die(at, _info):
+            if at == stage:
+                raise SystemExit(f"conductor died at {at}")
+        mq.on_boundary = die
+        with self.assertRaises(SystemExit):
+            mq.merge(token, **merge)
+
+    def test_a_fork_head_branch_is_never_deleted_from_the_queues_repository(self):
+        token, u, entry = self._boarded()
+        fork = self.w.fork(self.FORK)  # the fork carries `alpha` at the same commit as upstream does
+        self.w.set_gh(lambda s: s["prs"][str(u["pr"])].__setitem__("headRepo", self.FORK))
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "an upstream branch was deleted for a fork's PR")
+        self.assertTrue(self._branch_exists(fork, "alpha"), "a fork's branch was touched")
+        (teardown,) = self._teardowns(entry)
+        self.assertEqual((teardown["outcome"], teardown["headRepository"]), ("retained: head branch in a fork", self.FORK))
+
+    def test_a_same_repository_head_branch_is_deleted_once_with_a_receipt(self):
+        token, u, entry = self._boarded()
+        self.w.cli("release", "--token", token)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"))
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+        sends = [json.loads(x) for x in self.w.ledger.read_text().splitlines()]
+        self.assertEqual([x["payload_class"] for x in sends], ["pr-merge", "branch-delete"],
+                         "the branch deletion left the machine without an egress receipt")
+
+
+    def test_a_restart_after_the_remote_merge_still_tears_the_branch_down(self):
+        token, _u, entry = self._boarded()
+        self._crash_at(token, "remote_merged")
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"))
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.state_of(entry), "landed")
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"), "the restart left the merged branch behind")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+
+    def test_a_restart_before_the_ack_still_tears_the_branch_down(self):
+        token, _u, entry = self._boarded()
+        self._crash_at(token, "merged_recorded")
+        self.assertEqual(self.state_of(entry), "merged")
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"), "the restart left the merged branch behind")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+
+    def test_keep_branch_is_honoured_across_a_restart(self):
+        token, _u, entry = self._boarded()
+        self._crash_at(token, "remote_merged", delete_branch=False)
+        rc, out = self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")  # no --keep-branch this time
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "--keep-branch was forgotten on restart")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["kept: --keep-branch"])
+
+    def test_a_teardown_github_has_not_caught_up_with_is_retried_later(self):
+        token, u, entry = self._boarded()
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("branch")), (0, "pending: GitHub has not marked the PR merged yet"), out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"))
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        rc, out = self.w.cli("reconcile", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self._branch_exists(self.w.bare, "alpha"))
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+        rc, out = self.w.cli("reconcile", "--token", token)  # idempotent: nothing left to tear down
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)], ["deleted"])
+
+    def test_a_deletion_whose_outcome_is_unknown_is_never_sent_twice(self):
+        token, u, entry = self._boarded()
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        mq = self.w.queue(mq_mod)
+        real_run = mq.git.run
+
+        def die_at_the_deletion(*args, **kw):
+            if args[:1] == ("push",) and any(a.startswith(":refs/heads/") for a in args):
+                raise SystemExit("conductor died as it sent the deletion")
+            return real_run(*args, **kw)
+        mq.git.run = die_at_the_deletion
+        with self.assertRaises(SystemExit):
+            mq.settle_in_flight(token)
+        # Whether that deletion left is unknown, and the branch is there (it never did, or was
+        # recreated at the same commit): a restart must not send a second one.
+        rc, out = self.w.cli("reconcile", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "a deletion of unknown outcome was sent again")
+        self.assertEqual([t["outcome"] for t in self._teardowns(entry)],
+                         ["retained: an earlier deletion's outcome is unknown and the branch exists"])
+
+    def test_a_stale_conductor_never_tears_a_branch_down(self):
+        token, u, entry = self._boarded()
+        self.w.set_gh(lambda s: s.__setitem__("defer_merged_mark", True))
+        self.w.cli("plan", "--token", token)
+        self.assertEqual(self.w.cli("merge", "--token", token)[0], 0)
+        self.w.set_gh(lambda s: (s.pop("defer_merged_mark"), s["prs"][str(u["pr"])].__setitem__("state", "MERGED")))
+        self.acquire("c2", "--takeover")
+        rc, out = self.w.cli("reconcile", "--token", token)
+        self.assertEqual((rc, out.get("code")), (3, "fenced"), out)
+        self.assertTrue(self._branch_exists(self.w.bare, "alpha"), "a fenced conductor deleted a branch")
+
+class RepositoryIdentity(QueueCase):
+    """One remote is one queue, whatever directory a conductor starts from (PR #647)."""
+
+    mode = "git"
+
+    def test_conductors_started_from_two_directories_share_one_identity_and_one_lease(self):
+        # The clone names its remote relative to its own toplevel, which is where git resolves it.
+        self.w.git(self.w.conductor, "remote", "set-url", "origin", "../remote.git")
+        here = self.w.conductor
+        elsewhere = self.w.tmp / "elsewhere" / "deeper"
+        elsewhere.mkdir(parents=True)
+        sub = self.w.conductor / "sub"
+        sub.mkdir()
+        rc1, first = self.w.cli(*self.w.init_args(), cwd=here)
+        rc2, second = self.w.cli(*self.w.init_args(), cwd=elsewhere)
+        rc3, third = self.w.cli("--repo-dir", str(sub), *self.w.init_args(), cwd=elsewhere)
+        self.assertEqual((rc1, rc2, rc3), (0, 0, 0), (first, second, third))
+        self.assertEqual({first["repo"], second["repo"], third["repo"]}, {str(self.w.bare.resolve())},
+                         "one remote was given more than one queue identity")
+        self.assertEqual((second["created"], third["created"]), (False, False))
+        rc, one = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1", cwd=here)
+        self.assertEqual(rc, 0, one)
+        rc, two = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2", cwd=elsewhere)
+        self.assertEqual((rc, two.get("code")), (3, "lease_held"), "a second conductor got its own lease")
+        rc, two = self.w.cli("acquire", "--base", W.BASE, "--holder", "c2", "--takeover", cwd=elsewhere)
+        self.assertEqual((rc, two.get("epoch")), (0, one["epoch"] + 1), two)
+        rc, stale = self.w.cli("plan", "--token", one["token"], cwd=here)
+        self.assertEqual((rc, stale.get("code")), (3, "fenced"), stale)
+
+    def test_identity_follows_gits_own_url_rules(self):
+        base = self.w.tmp / "clone-top"
+        home = str(self.w.tmp / "home")
+        cases = {
+            "host:repo.git": "host/repo",  # scp-style, no user@: git uses ssh
+            "user@Host.example:team/repo.git": "host.example/team/repo",
+            "./host:repo.git": str((base / "host:repo.git").resolve()),  # a slash first: a local path
+            "dir/with:colon": str((base / "dir/with:colon").resolve()),
+            "../remote.git": str((base / "../remote.git").resolve()),
+            "~/r.git": str(Path(home, "r.git").resolve()),  # git expands ~ for a local remote
+            "https://github.com/Owner/Repo.git": "github.com/owner/repo",  # GitHub names fold case
+        }
+        for url, want in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(mq_mod.repo_identity(url, base, home=home), want)
+
+
+class IdentityNormalisation(QueueCase):
+    """Two spellings of one GitHub repository are one queue (PR #647: casing split the queue)."""
+
+    mode = "git"
+
+    def test_github_identities_are_normalised(self):
+        same = ["https://github.com/Team/Repo.git", "https://github.com/team/repo", "https://GitHub.com/team/repo/",
+                "https://www.github.com/Team/Repo.git/", "git@GitHub.com:Team/Repo.git", "ssh://git@github.com/team/REPO.git",
+                "github.com:team/repo.git/"]
+        self.assertEqual({mq_mod.repo_identity(u) for u in same}, {"github.com/team/repo"})
+        # A GitHub Enterprise host folds case only once it is configured as GitHub.
+        self.assertEqual(mq_mod.repo_identity("https://GHE.example/Team/Repo.git"), "ghe.example/Team/Repo")
+        self.assertEqual(mq_mod.repo_identity("https://GHE.example/Team/Repo.git", github_hosts={"ghe.example"}),
+                         "ghe.example/team/repo")
+        # Another forge keeps its casing; only the host is lowercased.
+        self.assertEqual(mq_mod.repo_identity("https://Forge.example/Team/Repo.git"), "forge.example/Team/Repo")
+
+    def test_local_paths_keep_their_bytes_or_their_on_disk_case(self):
+        real = self.w.tmp / "CaseDir.git"
+        real.mkdir()
+        spelled = self.w.tmp / "casedir.GIT"
+        folded = mq_mod.repo_identity(str(spelled))
+        if spelled.exists():  # a case-insensitive filesystem: the on-disk spelling is the identity
+            self.assertEqual(folded, str(real.resolve()))
+        else:  # case-sensitive: byte-exact, never lowercased
+            self.assertEqual(folded, str(spelled.resolve()))
+        self.assertEqual(mq_mod.repo_identity(str(real)), str(real.resolve()))
+
+    def test_two_clones_spelling_one_github_repository_differently_share_one_queue(self):
+        other = self.w.tmp / "other-clone"
+        self.w.git(self.w.tmp, "clone", "-q", str(self.w.bare), str(other))
+        self.w.point(self.w.conductor, "origin", "github.com/Team/Repo", self.w.bare)
+        self.w.point(other, "origin", "github.com/team/repo", self.w.bare)
+        rc1, first = self.w.cli(*self.w.init_args())
+        rc2, second = self.w.cli("--repo-dir", str(other), *self.w.init_args())
+        self.assertEqual((rc1, rc2), (0, 0), (first, second))
+        self.assertEqual((first["repo"], second["repo"], second["created"]), ("github.com/team/repo",) * 2 + (False,))
+        rc, one = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1")
+        self.assertEqual(rc, 0, one)
+        rc, two = self.w.cli("--repo-dir", str(other), "acquire", "--base", W.BASE, "--holder", "c2")
+        self.assertEqual((rc, two.get("code")), (3, "lease_held"), "a differently cased clone got its own lease")
+        rc, two = self.w.cli("--repo", "github.com/TEAM/Repo", "status", "--base", W.BASE)
+        self.assertEqual((rc, two.get("repo")), (0, "github.com/team/repo"), two)
+
+    def test_a_store_holding_an_older_cased_identity_is_migrated_in_place(self):
+        db = self.w.tmp / "old.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(mq_mod.Store.SCHEMA)
+        conn.execute("INSERT INTO mq_queues VALUES ('github.com/Team/Repo', 'integration', 'main', 'git', 'origin', "
+                     "'github.com', 'grant:x', 3, 0)")
+        conn.execute("INSERT INTO mq_leases VALUES ('github.com/Team/Repo', 'integration', 'c1', 'tok', 4, 1, 'h', 60, 0, "
+                     "9e12, NULL)")
+        conn.execute("INSERT INTO mq_tokens VALUES ('tok', 'github.com/Team/Repo', 'integration', 4, 'c1', 0)")
+        conn.commit()
+        conn.close()
+        mq_mod.Store(db)
+        conn = sqlite3.connect(db)
+        rows = {t: conn.execute(f"SELECT repo FROM {t}").fetchall() for t in ("mq_queues", "mq_leases", "mq_tokens")}
+        conn.close()
+        self.assertEqual(rows, {t: [("github.com/team/repo",)] for t in rows}, "the lease would split from its queue")
+
+    def test_a_migration_waits_for_a_writer_holding_the_old_spellings_lock(self):
+        db = self.w.tmp / "held.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(mq_mod.Store.SCHEMA)
+        conn.execute("INSERT INTO mq_queues VALUES ('github.com/Team/Repo', 'integration', 'main', 'git', 'origin', "
+                     "'github.com', 'grant:x', 1, 0)")
+        conn.execute("INSERT INTO mq_leases VALUES ('github.com/Team/Repo', 'integration', 'c1', 'tok', 1, 1, 'h', 900, 0, "
+                     "9e12, NULL)")
+        conn.execute("INSERT INTO mq_tokens VALUES ('tok', 'github.com/Team/Repo', 'integration', 1, 'c1', 0)")
+        conn.commit()
+        conn.close()
+        # The lock an earlier conductor (or its still-running merge child) holds: the old spelling's.
+        name = hashlib.sha256("github.com/Team/Repo\0integration".encode()).hexdigest()[:24]
+        held = db.parent / "merge-queue-locks" / f"{name}.lock"
+        held.parent.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl,os,sys;fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT,0o600);"
+             "fcntl.flock(fd,fcntl.LOCK_EX);print('held',flush=True);sys.stdin.readline()", str(held)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        self.w.point(self.w.conductor, "origin", "github.com/team/repo", self.w.bare)
+        rc, out = self.w.cli("--db", str(db), "acquire", "--base", W.BASE, "--holder", "c2", "--takeover")
+        self.assertEqual((rc, out.get("code")), (1, "migration_blocked"), out)
+        conn = sqlite3.connect(db)
+        lease = conn.execute("SELECT repo, holder, epoch FROM mq_leases").fetchall()
+        conn.close()
+        self.assertEqual(lease, [("github.com/Team/Repo", "c1", 1)], "ownership moved under a held lock")
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        holder.wait(timeout=30)
+        holder.stdin.close()
+        holder.stdout.close()
+        rc, out = self.w.cli("--db", str(db), "acquire", "--base", W.BASE, "--holder", "c2", "--takeover")
+        self.assertEqual((rc, out.get("repo"), out.get("epoch")), (0, "github.com/team/repo", 2), out)
+
+    def test_every_spelling_of_one_repository_takes_one_lock(self):
+        mq = self.w.queue(mq_mod)
+        paths = {mq._lock(r, W.BASE).path for r in ("github.com/Team/Repo", "github.com/team/repo",
+                                                      "www.github.com/team/repo.git")}
+        self.assertEqual(len(paths), 1, paths)
+
+    def _github_queue(self):
+        self.w.point(self.w.conductor, "origin", "github.com/Team/Repo", self.w.bare)
+        rc, out = self.w.cli(*self.w.init_args())
+        self.assertEqual((rc, out.get("repo")), (0, "github.com/team/repo"), out)
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1")
+        self.assertEqual(rc, 0, out)
+        return out["token"]
+
+    def test_a_delivery_naming_another_spelling_of_the_queues_repository_is_accepted(self):
+        token = self._github_queue()
+        u = self.w.unit("alpha")
+        for spelling in ("github.com/Team/Repo", "https://www.GitHub.com/TEAM/repo.git", "git@github.com:Team/Repo.git"):
+            with self.subTest(spelling=spelling):
+                rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**u, "repo": spelling}))
+                self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.status_of("github.com/team/repo")["all"]), 1, "one unit boarded more than once")
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**u, "repo": "github.com/other/repo"}))
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+
+    def test_every_entry_point_accepts_any_spelling_of_the_repository(self):
+        self._github_queue()
+        mq = self.w.queue(mq_mod)
+        self.assertEqual(mq.status("github.com/Team/Repo", W.BASE)["repo"], "github.com/team/repo")
+        self.assertEqual(mq.receipts("www.github.com/TEAM/Repo.git", W.BASE)["ok"], True)
+        with self.assertRaises(mq_mod.QueueError) as held:
+            mq.acquire(repo="github.com/TEAM/repo", base=W.BASE, holder="c2")
+        self.assertEqual(held.exception.code, "lease_held", "another spelling got its own lease")
+        rc, out = self.w.cli("--repo", "https://github.com/Team/Repo.git", "status", "--base", W.BASE)
+        self.assertEqual((rc, out.get("repo")), (0, "github.com/team/repo"), out)
+
+    def status_of(self, repo):
+        rc, out = self.w.cli("--repo", repo, "status", "--base", W.BASE)
+        self.assertEqual(rc, 0, out)
+        return out
+
+    def test_a_store_already_split_by_casing_is_refused_not_guessed(self):
+        db = self.w.tmp / "split.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(mq_mod.Store.SCHEMA)
+        for repo in ("github.com/Team/Repo", "github.com/team/repo"):
+            conn.execute("INSERT INTO mq_queues VALUES (?, 'integration', 'main', 'git', 'origin', 'github.com', "
+                         "'grant:x', 1, 0)", (repo,))
+        conn.commit()
+        conn.close()
+        rc, out = self.w.cli("--db", str(db), "--repo", "github.com/team/repo", "status", "--base", W.BASE)
+        self.assertEqual((rc, out.get("code")), (2, "queue_split"), out)
+
+
+class GitLaneRepositoryBinding(QueueCase):
+    mode = "git"
+
+    def _fork_and_board(self):
+        fork = self.w.tmp / "fork.git"
+        self.w.git(self.w.tmp, "clone", "-q", "--bare", str(self.w.bare), str(fork))
+        token = self.acquire()
+        self.board(token, self.w.unit("alpha"))
+        self.w.cli("release", "--token", token)
+        return fork, self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE)
+
+    def _refused(self, fork, fork_base):
+        rc, out = self.w.cli("--repo", self.repo, "drain", "--base", W.BASE, "--holder", "c1", "--ack")
+        self.assertEqual((rc, out.get("code")), (1, "repo_mismatch"), out)
+        self.assertEqual(self.w.git(self.w.tmp, "--git-dir", str(fork), "rev-parse", W.BASE), fork_base,
+                         "the merge was pushed to another repository")
+        self.assertEqual(self.w.merged_heads(), [])
+
+    def test_a_push_url_to_another_repository_is_refused(self):
+        fork, fork_base = self._fork_and_board()
+        self.w.git(self.w.conductor, "config", "remote.origin.pushurl", str(fork))
+        self._refused(fork, fork_base)
+
+    def test_a_remote_repointed_after_init_is_refused(self):
+        fork, fork_base = self._fork_and_board()
+        self.w.git(self.w.conductor, "remote", "set-url", "origin", str(fork))
+        self._refused(fork, fork_base)
+
+
+class GitLaneOffline(QueueCase):
+    mode = "git"
+
+    def test_an_unreachable_remote_blocks_the_no_gh_lane_and_loses_nothing(self):
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        self.w.cli("plan", "--token", token)
+        away = self.w.bare.with_name("remote.away")
+        self.w.bare.rename(away)  # the same repository, unreachable (re-pointing origin is a binding refusal)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "offline"), out)
+        self.assertEqual(self.state_of(entry), "queued")
+        away.rename(self.w.bare)
+        rc, out = self.w.cli("merge", "--token", token)
+        self.assertEqual((rc, out["noGh"]), (0, True), out)
+        rc, out = self.w.cli("ack", "--token", token, "--entry", entry)
+        self.assertEqual((rc, out["ledger"]), (0, "no-gh: local-merge"))
+        merge = self.w.remote_ref(W.BASE)
+        author = self.w.git(self.w.tmp, "--git-dir", str(self.w.bare), "log", "-1", "--format=%an", merge)
+        self.assertEqual(author, "Fleet Maintainer")
+
+
+class StoreMigration(unittest.TestCase):
+    def test_an_older_store_gains_the_new_columns_in_place(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "mq.db"
+            conn = sqlite3.connect(db)
+            conn.executescript(mq_mod.Store.SCHEMA)
+            conn.execute("INSERT INTO mq_queues VALUES ('r', 'b', 'main', 'gh', 'origin', 'h', 'c', 1, 0)")
+            conn.commit()
+            have = {r[1] for r in conn.execute("PRAGMA table_info(mq_entries)")}
+            conn.close()
+            self.assertNotIn("tested_tree", have)
+            mq_mod.Store(db)
+            mq_mod.Store(db)  # idempotent: a second open adds nothing and raises nothing
+            conn = sqlite3.connect(db)
+            have = {r[1] for r in conn.execute("PRAGMA table_info(mq_entries)")}
+            kept = conn.execute("SELECT base FROM mq_queues").fetchall()
+            conn.close()
+            self.assertTrue(set(mq_mod.Store.COLUMNS["mq_entries"]) <= have)
+            self.assertEqual(kept, [("b",)])
+
+    def test_concurrent_openers_both_succeed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "mq.db"
+            code = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('m',sys.argv[1]);"
+                    "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.Store(sys.argv[2]);print('ok')")
+            procs = [subprocess.Popen([sys.executable, "-c", code, str(W.SCRIPT), str(db)], stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True) for _ in range(4)]
+            results = [p.communicate(timeout=60) for p in procs]
+            self.assertEqual([p.returncode for p in procs], [0] * 4, results)
+
+    OPENER = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('m',sys.argv[1]);"
+              "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.Store(sys.argv[2]);print('ok')")
+
+    def _open_together(self, db: Path, count: int) -> None:
+        procs = [subprocess.Popen([sys.executable, "-c", self.OPENER, str(W.SCRIPT), str(db)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) for _ in range(count)]
+        errors = [p.communicate(timeout=120)[1] for p in procs]
+        self.assertEqual([p.returncode for p in procs], [0] * count, [e for e in errors if e])
+
+    def test_many_openers_of_a_fresh_store_all_succeed_round_after_round(self):
+        # The CI race (PR #647): switching a fresh store to WAL refused a concurrent opener with
+        # `database is locked` instead of waiting. One round of four rarely shows it; eight
+        # openers over several rounds made it reproducible.
+        for _round in range(6):
+            with tempfile.TemporaryDirectory() as tmp:
+                self._open_together(Path(tmp) / "mq.db", 8)
+
+    def test_openers_racing_a_migration_all_succeed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "mq.db"
+            conn = sqlite3.connect(db)
+            conn.executescript(mq_mod.Store.SCHEMA)  # an older store: rollback journal, no new columns
+            conn.close()
+            self._open_together(db, 8)
+            conn = sqlite3.connect(db)
+            names = [r[1] for r in conn.execute("PRAGMA table_info(mq_entries)")]
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            conn.close()
+            self.assertTrue(set(mq_mod.Store.COLUMNS["mq_entries"]) <= set(names))
+            self.assertEqual(mode, "wal")
+
+
+class _ScriptedConnection:
+    """A connection whose journal-mode switch is scripted: `locked` refusals, then `answer`."""
+
+    def __init__(self, answer, locked=0, max_calls=40):
+        self.mode, self.answer, self.locked, self.max_calls = "delete", answer, locked, max_calls
+        self.calls = self.switches = 0
+
+    def execute(self, sql):
+        self.calls += 1
+        if self.calls > self.max_calls:
+            raise RuntimeError(f"the WAL switch is spinning ({self.calls} statements)")
+        if sql.strip() == "PRAGMA journal_mode=WAL;":
+            self.switches += 1
+            if self.locked:
+                self.locked -= 1
+                raise sqlite3.OperationalError("database is locked")
+            self.mode = self.answer
+        return self
+
+    def fetchone(self):
+        return (self.mode,)
+
+
+class WalSwitch(unittest.TestCase):
+    """The WAL switch retries a lock only, and ends on any mode SQLite answers (PR #647 follow-up)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = mq_mod.Store(Path(self.tmp.name) / "mq.db")
+
+    def test_a_store_sqlite_keeps_out_of_wal_opens_promptly(self):
+        code = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('m',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.Store(':memory:');print('ok')")
+        try:
+            proc = subprocess.run([sys.executable, "-c", code, str(W.SCRIPT)], capture_output=True, text=True,
+                                  timeout=20, cwd=self.tmp.name)
+        except subprocess.TimeoutExpired:
+            self.fail("opening an in-memory store spun in the WAL switch instead of returning")
+        self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "ok"), proc.stderr)
+
+    def test_a_mode_sqlite_answers_without_error_ends_the_switch(self):
+        conn = _ScriptedConnection(answer="delete")
+        self.store._wal(conn)
+        self.assertEqual(conn.switches, 1, "a mode SQLite settled on was asked for again")
+
+    def test_a_locked_switch_is_still_retried(self):
+        conn = _ScriptedConnection(answer="wal", locked=3)
+        self.store._wal(conn)
+        self.assertEqual((conn.switches, conn.mode), (4, "wal"))
+
+    def test_a_switch_locked_past_the_deadline_gives_up_clearly(self):
+        self.store.BUSY_SECONDS = 0.3
+        conn = _ScriptedConnection(answer="wal", locked=10**6, max_calls=10**6)
+        started = time.monotonic()
+        with self.assertRaises(mq_mod.QueueError) as refused:
+            self.store._wal(conn)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(refused.exception.code, "store_locked")
+        self.assertIn("WAL", refused.exception.message)
+
+    def test_a_schema_comment_holding_a_semicolon_is_not_a_statement_break(self):
+        class Commented(mq_mod.Store):
+            SCHEMA = "-- a note; with a semicolon in it\n" + mq_mod.Store.SCHEMA
+        Commented(Path(self.tmp.name) / "commented.db")
+
+
+class DoctrineWiring(unittest.TestCase):
+    def test_the_policy_names_the_mechanism_that_enforces_it(self):
+        text = (ROOT / "runtime" / "merge-serialization.md").read_text(encoding="utf-8")
+        self.assertIn("merge_queue.py", text, "merge serialization is doctrine with no mechanism named")
+
+    def test_the_reference_page_documents_the_script(self):
+        text = (ROOT / "docs" / "runtime-scripts.md").read_text(encoding="utf-8")
+        self.assertIn("## `merge_queue.py`", text)
+        self.assertIn("tests/test_merge_queue_drills.py", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

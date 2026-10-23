@@ -649,7 +649,7 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | Label | Reasons | Current mode |
 |---|---|---|
 | `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
-| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `dependencies-changed:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
+| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `dependencies-changed:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
 | `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
@@ -663,7 +663,8 @@ scoped file's stem (`diff_scope.py`'s test-path rule); dependency files are mani
 lockfiles anywhere in the tree. An artifact is modified when its tracked manifest differs from the
 archive's HEAD or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
 to the archive root); an archive outside git has no committed bytes to check, so every entry it
-yields is `artifact-unversioned`. Newer means descendant by ancestry when the live repo has both revisions,
+yields is `artifact-unversioned`, and an evidence file that cannot be read leaves only its own
+entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Newer means descendant by ancestry when the live repo has both revisions,
 else later commit time, else — equal commit times, as for two runs at one revision — later
 claimed time; two contradicting records of one unit that nothing orders are both
 `contradicted-by` the other.

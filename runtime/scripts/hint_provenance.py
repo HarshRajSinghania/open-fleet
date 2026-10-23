@@ -74,7 +74,8 @@ DEF_LINE = r"^(?P<indent>[ \t]*)(?:export\s+)?(?:async\s+)?(?:def|class|function
 
 
 class ProvenanceError(Exception):
-    """The live source cannot be read (not a repository, unknown revision, git absent)."""
+    """The live source cannot be read (not a repository, unknown revision, git absent, a file
+    that cannot be opened)."""
 
 
 def git(repo, *args, text=True):
@@ -284,7 +285,8 @@ class Archive:
 
     def artifact_reasons(self, manifest_path, records):
         """[(label, reason)] for the artifact's own integrity: a tracked manifest edited since its
-        commit, or an evidence file whose bytes no longer hash to the recorded sha256."""
+        commit, or an evidence file whose bytes no longer hash to the recorded sha256 (or cannot
+        be read at all: unknown, not fatal)."""
         reasons = []
         if self.top is not None:
             rel = os.path.relpath(Path(manifest_path).resolve(), self.top.resolve())
@@ -305,9 +307,17 @@ class Archive:
                     continue
                 seen.add(rel)
                 target = _inside(self.root, rel)
-                if target is None or not target.is_file():
+                try:
+                    present = target is not None and target.is_file()
+                    digest = sha256_file(target) if present else None
+                except OSError:
+                    # Unknown for THIS hint only (PR #639 review: the OSError escaped every handler
+                    # and one unreadable evidence file aborted the whole hint command).
+                    reasons.append((UNKNOWN, f"artifact-unreadable:{os.path.basename(rel)}"))
+                    continue
+                if not present:
                     reasons.append((UNKNOWN, f"artifact-missing:{os.path.basename(rel)}"))
-                elif sha256_file(target) != item["sha256"].removeprefix("sha256:").lower():
+                elif digest != item["sha256"].removeprefix("sha256:").lower():
                     reasons.append((STALE, f"artifact-modified:{os.path.basename(rel)}"))
         return reasons
 
@@ -365,9 +375,13 @@ class LiveSource:
         if not self.worktree:
             return self.text_at(self.rev, path)
         target = _inside(self.root, path)
-        if target is None or not target.is_file():
-            return None
-        return target.read_bytes().decode("utf-8", "replace")
+        try:
+            if target is None or not target.is_file():
+                return None
+            return target.read_bytes().decode("utf-8", "replace")
+        except OSError as exc:
+            # An unreadable live file is unknown for the hints scoped to it, not fatal to the rest.
+            raise ProvenanceError(f"cannot read {path} in the live source") from exc
 
     def changes_since(self, rev):
         """{path: (status, new_path)} from source rev to the live tree/rev, renames detected:

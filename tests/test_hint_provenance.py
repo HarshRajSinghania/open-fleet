@@ -833,6 +833,67 @@ class ArchiveIntegrityFailsClosed(unittest.TestCase):
                          ("UNKNOWN", ["artifact-unversioned"], True))
         self.assertTrue(entry_line(copied["lines"], "AUTH-1").startswith("- [UNKNOWN:artifact-unversioned]"))
 
+    def test_an_unreadable_evidence_file_is_unknown_for_its_own_hint_only(self):
+        # sha256_file() raised OSError past artifact_reasons() and the caller's ProvenanceError
+        # handler, so one unreadable evidence file aborted the whole hint command.
+        evidence = dict(unit_run("2026-02-01-run-a", "EVD-1", "@c0", ["src/auth.py"], note="has evidence"),
+                        artifacts={"negctrl.txt": "RED then GREEN\n"})
+        fx = Fixture(scenario([{"name": "c0", "files": BASE}],
+                              [evidence, unit_run("2026-02-01-run-b", "AUTH-2", "@c0", ["src/auth.py"],
+                                                  note="unrelated note")]))
+        original = hp.sha256_file
+
+        def unreadable(path):
+            if Path(path).name == "negctrl.txt":
+                raise PermissionError(13, "Permission denied", str(path))
+            return original(path)
+        try:
+            readable = {e["unit"]: e["currency"] for e in fx.select()["entries"]}
+            with mock.patch.object(hp, "sha256_file", unreadable):
+                entries = {e["unit"]: (e["currency"], e["reasons"]) for e in fx.select()["entries"]}
+        finally:
+            fx.close()
+        self.assertEqual(readable, {"EVD-1": "CURRENT", "AUTH-2": "CURRENT"})
+        self.assertEqual(entries["EVD-1"], ("UNKNOWN", ["artifact-unreadable:negctrl.txt"]))
+        self.assertEqual(entries["AUTH-2"], ("CURRENT", []))
+
+    def test_an_unstatable_evidence_path_is_unknown_too(self):
+        # Before 3.13, Path.is_file() raises on EACCES from a parent directory instead of answering.
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "docs" / "runs"
+            (runs / "r").mkdir(parents=True)
+            (runs / "r" / "negctrl.txt").write_text("x")
+            denied = PermissionError(13, "Permission denied")
+            with mock.patch.object(Path, "is_file", side_effect=denied):
+                reasons = hp.Archive(runs).artifact_reasons(
+                    runs / "r" / "manifest.json", [{"artifacts": [{"path": "docs/runs/r/negctrl.txt", "sha256": "0" * 64}]}])
+        self.assertIn(("UNKNOWN", "artifact-unreadable:negctrl.txt"), reasons)
+
+    def test_an_unreadable_live_file_is_unknown_for_its_own_hint_only(self):
+        # The same escape from the live side: a changed, symbol-scoped file read from the working
+        # tree raised OSError out of LiveSource.live_text() and aborted the whole hint command.
+        fx = Fixture(scenario([{"name": "c0", "files": BASE}],
+                              [unit_run("2026-02-01-run-a", "SYM-1", "@c0", ["src/auth.py::refresh"], note="symbol note"),
+                               unit_run("2026-02-01-run-b", "DOC-1", "@c0", ["README.md"], note="readme note")],
+                              worktree_edits={"src/auth.py": "# moved down\ndef refresh(t):\n    return t\n"}))
+        original = Path.read_bytes
+
+        def unreadable(path):
+            if path.name == "auth.py":
+                raise PermissionError(13, "Permission denied", str(path))
+            return original(path)
+        try:
+            readable = {e["unit"]: e["currency"] for e in fx.select(paths=("src/auth.py", "README.md"))["entries"]}
+            with mock.patch.object(Path, "read_bytes", unreadable):
+                entries = {e["unit"]: (e["currency"], e["reasons"])
+                           for e in fx.select(paths=("src/auth.py", "README.md"))["entries"]}
+        finally:
+            fx.close()
+        self.assertEqual(readable, {"SYM-1": "CURRENT", "DOC-1": "CURRENT"})
+        self.assertEqual(entries["SYM-1"],
+                         ("UNKNOWN", ["provenance-unreadable:cannot read src/auth.py in the live source"]))
+        self.assertEqual(entries["DOC-1"], ("CURRENT", []))
+
 
 class QuotedKeysAreAssignments(unittest.TestCase):
     """PR #639 review: unquoted() blanked every quoted span, so a JSON-style permission assignment

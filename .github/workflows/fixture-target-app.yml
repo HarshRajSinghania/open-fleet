@@ -9,10 +9,12 @@ on:
     paths:
       - "demo/target-app/**"
       - ".github/workflows/fixture-target-app.yml"
+      - ".github/ci-tools.lock"  # the ruff job installs from it: a lock bump re-runs the lint
   pull_request:
     paths:
       - "demo/target-app/**"
       - ".github/workflows/fixture-target-app.yml"
+      - ".github/ci-tools.lock"  # the ruff job installs from it: a lock bump re-runs the lint
 
 permissions:
   contents: read
@@ -35,8 +37,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - run: uvx ruff check demo/target-app
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
+        with:
+          python-version: "3.13"  # the lock is compiled for 3.13 (same pin as validate.yml)
+      - name: Install ruff from the hashed lock
+        # 2026-10-23 review, §5 CI: an unpinned uvx resolved whatever ruff the index served,
+        # the one tool install outside .github/ci-tools.lock. Same lock, same --require-hashes
+        # shape as validate.yml (#301), so this lint runs the ruff the catalog gate runs.
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+            -r .github/ci-tools.lock
+          ruff --version
+      - run: ruff check demo/target-app
 
   migrate:
     # F3 freeze proof: boot pins 0002 while 0003 sits pending on disk.

@@ -16,8 +16,10 @@ jobs:
     # the partition — file-level LPT, unittest stays the runner, stdlib only —
     # and tests/test_shard_tests.py proves the union of the shards equals live
     # discovery. fail-fast false: a red shard must not hide the other three.
-    # `gates` below NEEDS this job (branch protection requires the `gates`
-    # context, so suite failures block the merge through it).
+    # `gates` below NEEDS this job and runs `if: always()`, and its first step
+    # fails unless every need succeeded: branch protection requires the `gates`
+    # context, and a need that fails SKIPS a plain dependent, which GitHub counts
+    # as a passing required check (2026-10-23 review, P1-5).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -51,17 +53,20 @@ jobs:
             exit 1
           fi
       - name: Run suite shard without Gitleaks
+        env:
+          # Every expression reaches a script through env:, never inline (2026-10-23 review, §5 CI).
+          SHARD: ${{ matrix.shard }}
         run: |
           if command -v gitleaks >/dev/null; then
             echo "::error::the scanner-absent test environment unexpectedly contains Gitleaks"
             exit 1
           fi
-          python3 scripts/shard-tests.py --shard ${{ matrix.shard }} --of 4 --with-coverage
+          python3 scripts/shard-tests.py --shard "$SHARD" --of 4 --with-coverage
       - name: Upload the shard coverage data
         # One .coverage.<host>.<pid>.<random> per shard (--parallel-mode);
         # gates downloads all four and combines before the D9 report. No
-        # if:always: a red shard uploads nothing, gates skips on the failed
-        # need, and the suite failure itself blocks the merge.
+        # if:always: a red shard uploads nothing; gates still runs and its
+        # first step fails on the red need, so the combine never runs short.
         # include-hidden-files: dotfiles are EXCLUDED by default, and every
         # parallel-mode data file is one — without it the upload finds
         # nothing and fails the shard (PR #480, first CI run).
@@ -101,20 +106,58 @@ jobs:
         # Same invocation as the 3.13 matrix, coverage included, so the sharder's contract
         # (tests/test_shard_tests.py) holds for every lane; the data files are not uploaded —
         # the D9 gate reads the 3.13 matrix, this lane proves the floor.
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           python3 --version
-          python3 scripts/shard-tests.py --shard ${{ matrix.shard }} --of 4 --with-coverage
+          python3 scripts/shard-tests.py --shard "$SHARD" --of 4 --with-coverage
   gates:
-    needs: [tests, floor]
+    # The required context. A need that fails SKIPS a plain dependent, and GitHub counts a
+    # skipped required check as success, so `needs:` alone let a red shard merge (2026-10-23
+    # review, P1-5: runs 39386063357 and 38533245355). always() runs gates whatever its needs
+    # did, cancelled runs included, and the first step fails unless EVERY need succeeded —
+    # failure, cancelled and skipped all fail it. vfbench is a need for the same reason: a
+    # job no required context depends on is advisory, however it is described.
+    needs: [tests, floor, vfbench]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
+      - name: Every needed job succeeded (a failed, cancelled or skipped need fails gates)
+        # toJSON(needs) carries every job in `needs:`, so a need added later is covered without
+        # editing this step; an empty map fails too, rather than passing vacantly.
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = {job: (v or {}).get("result") for job, v in needs.items()
+                 if (v or {}).get("result") != "success"}
+          for job, result in sorted(bad.items()):
+              print(f"::error::needed job '{job}' ended '{result}'; gates fails so the merge stays blocked")
+          if not needs:
+              print("::error::gates sees no needed jobs; refusing to pass vacantly")
+          if bad or not needs:
+              sys.exit(1)
+          print("every needed job succeeded: " + ", ".join(sorted(needs)))
+          PY
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
-          fetch-depth: 0  # vf-bench review-leg pins need full history, not a depth-1 tip
+          fetch-depth: 0  # vf-bench review-leg pins and the trailer check's PR range need full history
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - name: No co-author or tool-attribution trailers in this PR's commits
+        # #628 / CONTRIBUTING.md "Commit and PR conventions": the rule was prose only, and 12 of
+        # the last 200 commits on main broke it (2026-10-23 review, §5 Commit hygiene). Only the
+        # PR's OWN commits (base..head) are read, so history already on main fails nothing.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check_trailers.py --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA"
       - name: Validate missions, playbooks, and evals
         run: python3 scripts/validate.py
       - name: Routing eval gate (description-based router)
@@ -223,8 +266,9 @@ jobs:
         # ratchet-only). The gate is the same number over the same tests —
         # collection fanned out, the bar did not move. Installed from the
         # hashed lock above (#301), not re-resolved here. gates NEEDS the
-        # matrix, so a red suite skips this step and the suite failure — not
-        # a missing data file — is what blocks the merge.
+        # matrix and its first step fails on a red shard, so this step never
+        # runs on partial data: the failed need — not a missing data file —
+        # is what fails gates and blocks the merge.
         run: |
           set -euo pipefail
           coverage combine
@@ -232,8 +276,9 @@ jobs:
       - name: Publish the gate summary (proof rollup + routing score)
         # Observability only (#213): the numbers land in the run summary even
         # when a gate is red. The routing GATE is the step above; this one
-        # swallows its exit code on purpose and can never fail the build.
-        if: always()
+        # swallows its exit code on purpose and can never fail the build. Not before a checkout:
+        # a red need stops gates at its first step, and a summary of no tree reads as a failure.
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           {
             echo "## Catalog gates @ $(git rev-parse --short HEAD)"

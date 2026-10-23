@@ -25,8 +25,13 @@ jobs:
       - name: Re-run the demo and diff against pinned expectations
         run: |
           set -uo pipefail
+          # The default shell is `bash -e`: with pipefail set, a red run.sh ended the step on this
+          # pipeline and the diagnostic below never printed (2026-10-23 review, §5 CI). Suspend -e
+          # for the pipeline alone and read PIPESTATUS before any other command resets it.
+          set +e
           sh demo/negative-control/run.sh 2>&1 | tee fresh-head-to-head.txt
           rc="${PIPESTATUS[0]}"
+          set -e
           if [ "$rc" -ne 0 ]; then
             echo "::error::demo/negative-control/run.sh exited $rc — the demo itself is RED, not just drifted"
             exit 1

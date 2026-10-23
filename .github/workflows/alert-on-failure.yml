@@ -83,16 +83,23 @@ jobs:
 
       - name: Close the drill issue
         if: env.DRILL == 'true'
+        # Step outputs reach the shell through env:, never inline: an expression is pasted into
+        # the script text before bash parses it (2026-10-23 review, §5 CI).
+        env:
+          ISSUE_NUMBER: ${{ steps.alert.outputs.number }}
         run: >-
-          gh issue close "${{ steps.alert.outputs.number }}"
+          gh issue close "${ISSUE_NUMBER}"
           --comment "Drill complete: the alert path filed this issue from ${RUN_URL} and closed it. Nothing is broken."
 
       - name: Summary
+        env:
+          ALERT_ACTION: ${{ steps.alert.outputs.action }}
+          ISSUE_NUMBER: ${{ steps.alert.outputs.number }}
         run: |
           {
             echo "## alert-on-failure"
             echo ""
-            echo "- action: \`${{ steps.alert.outputs.action }}\`"
-            echo "- issue: https://github.com/${GH_REPO}/issues/${{ steps.alert.outputs.number }}"
+            echo "- action: \`${ALERT_ACTION}\`"
+            echo "- issue: https://github.com/${GH_REPO}/issues/${ISSUE_NUMBER}"
             echo "- source run: ${RUN_URL} (\`${HEAD_BRANCH}\` @ \`${HEAD_SHA}\`)"
           } >> "$GITHUB_STEP_SUMMARY"

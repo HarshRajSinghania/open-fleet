@@ -41,6 +41,12 @@ review, recorded in HUMAN_ACTIONS.
 
 ## Merge gate
 
+Required contexts on `main` (API read-back, 2026-10-23): `gates`, `verdict`, `guard` and
+`pinned-demo` from GitHub Actions (app 15368), and `Greptile Review`; strict; admins enforced.
+`pinned-demo` became required that day so the demo gate the table above names actually blocks.
+No approving review is required: the owner is the only collaborator, and GitHub does not let an
+author approve their own PR, so requiring one would block every merge.
+
 The intended trusted check for a GO verdict is the `verdict-gate` commit status, posted by
 [`verdict-gate.yml`](../.github/workflows/verdict-gate.yml). GitHub loads that workflow from
 `main` on `workflow_run`, after every review that
@@ -51,7 +57,10 @@ where the PR can rewrite it.
 
 Activation remains pending in [#594](https://github.com/ravidsrk/orca-fleet/issues/594).
 The 2026-10-20 API read-back found `main` still requiring `verdict` from GitHub Actions
-(app 15368), rather than `verdict-gate` from a dedicated app. The `verdict-gate` environment
+(app 15368), rather than `verdict-gate` from a dedicated app. Until step 3 lands, `verdict` is
+satisfied without a GO: GitHub counts a skipped job as a passing required check, and the
+`verdict` job is skipped for every review without a trusted GO marker (PR #611 merged on five
+skipped `verdict` runs; 2026-10-23 review, P1-5). The `verdict-gate` environment
 exists, with no deployment branch restriction, variables, or secrets. An administrator must
 provide the dedicated app credential and complete the setup below before this trusted status
 enforces merge protection.
@@ -228,7 +237,7 @@ cut, recreate its tag, or reset published mappings to make a retry pass.
 `.github/workflows/release.yml` publishes a GitHub Release with the version's CHANGELOG
 section as notes on every `v*` tag push (idempotent; it never creates a tag — the tag is
 the authorization step above). The historical tags that predate it get their Releases once,
-by hand, from an account with write access:
+by hand, from the maintainer's account (both publishers refuse any other actor, below):
 
 ```bash
 for t in v0.1.0 v0.1.1 v0.2.0 v0.2.1 v0.3.0 v0.4.0 v0.5.0 v0.6.0 v0.6.1; do
@@ -241,6 +250,34 @@ gh release list --limit 20     # nine rows once the runs finish
 same tag pushes (a manual run must name an existing `v*` tag; it refuses a branch) and
 force-pushes it to the `dist` branch, the target copy installers point at
 ([docs/install.md](install.md)).
+
+Both publishers refuse to run unless the tag's commit is on `main` and the account that pushed
+or dispatched, and the one that started the attempt, is the repository owner (2026-10-23
+review, P2-23). That step lives in the workflow file at the tagged commit, so it binds only a
+reviewed copy: a writer can tag a commit whose own copy drops it. What binds the tag itself is
+a tag ruleset, a repository-settings change made only on the owner's word. In force since
+2026-10-23 (ruleset 25710508, created on the owner's instruction): creating, moving and deleting
+`v*` tags is restricted to the repository admin role, which on this personal repository is the
+owner alone. To recreate it:
+
+```bash
+gh api --method POST repos/ravidsrk/orca-fleet/rulesets --input - <<'JSON'
+{
+  "name": "release tags: maintainer only",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+  "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
+  "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
+}
+JSON
+gh api repos/ravidsrk/orca-fleet/rulesets   # read back: one active tag ruleset on refs/tags/v*
+```
+
+`actor_id` 5 is GitHub's built-in admin repository role. Neither step closes one path: a
+writer's own branch workflow can request a `contents: write` run token and push `dist`
+directly; closing that needs `dist` published with a credential only a tag-restricted
+environment holds.
 
 ## Incident (2 a.m.)
 

@@ -304,8 +304,10 @@ environment holds.
    paging you when the result is absent (no completed run), stale
    (`updatedAt` older than a day), or its conclusion is not `success`
    (#528). An hourly **open-fleet external CI monitor** heartbeat is configured in
-   Codex on the maintainer's macOS host, outside Actions. Its current recorded state is
-   **paused**: activate it in Codex Automations before relying on scheduled checks. It
+   Codex on the maintainer's macOS host, outside Actions. Its `automation.toml` records it
+   **ACTIVE** (2026-10-23), but no scheduled Codex firing has been observed (the automation
+   directory holds no `health-state.json` and no Codex session ran it), so treat it as an
+   unverified backup to the cloud task below. It
    uses [`scripts/external-ci-monitor.py`](../scripts/external-ci-monitor.py), installed
    at `~/.codex/automations/open-fleet-external-ci-monitor/external-ci-monitor.py`, and
    must be refreshed from a trusted, updated `main` checkout before activation and
@@ -325,9 +327,10 @@ environment holds.
    host must be awake and Codex open; this is not an always-on hosted service.
    The [external drill](completion/evidence/T-13-external-monitor-drill.txt) detected the
    real no-runner outage from the local host and filed/closed
-   [#537](https://github.com/ravidsrk/open-fleet/issues/537). That receipt proves the poller
-   and durable-issue alert path; it does not claim email delivery or a scheduled heartbeat
-   firing. The Codex heartbeat is the backup: it runs only while the Mac is awake.
+   [#537](https://github.com/ravidsrk/open-fleet/issues/537). That September drill proves the
+   poller and durable-issue alert path; it claims neither email delivery nor a scheduled Codex
+   heartbeat firing. The scheduled firing on record is the cloud task's, below, in the same
+   receipt. The Codex heartbeat is the backup: it runs only while the Mac is awake.
 
    The always-on watch is a **Claude Code scheduled task**, "open-fleet main CI monitor"
    (claude.ai → Code → Scheduled tasks, on the maintainer's account), firing daily at
@@ -342,7 +345,12 @@ environment holds.
    limited), ends the session with an `ALERT:` summary that reaches you by push
    notification and email. To drill it without touching `main`, fire the task with the
    text `DRILL: add --drill-run 36146072394` (the archived no-runner run the T-13 receipt
-   uses).
+   uses). The task is routine `trig_01LHVNVyoRrPFtKPwYzTPBoP`, created 2026-10-23 with no
+   connectors and only `Bash`/`Read`; its first scheduled firing ran at 2026-10-23T14:46:17Z
+   (session `cse_015URvHfDuWv4mRggZg6JWCa`) and reported `healthy` for `main` `5fcab11`, recorded
+   in the [T-13 receipt](completion/evidence/T-13-external-monitor-drill.txt) (#528). A routine
+   still named "orca-fleet main CI monitor" is the pre-rename duplicate; delete it at
+   claude.ai/code/routines.
 2. If a clone or plugin load is broken: `plugin.json` `version` must equal
    the latest **dated** [CHANGELOG](../CHANGELOG.md) heading
    (`## [x.y.z] - YYYY-MM-DD`), not `[Unreleased]`. Do not half-cut a

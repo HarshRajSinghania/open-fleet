@@ -28,9 +28,10 @@ ONE code path, two kinds of worker:
       binds it into docs/runs/ (runtime/providers/certification.json says which cells hold).
 
 Profiles: `ro` (default; the review-it shape — the worker prints its report and has no tool to
-send mail, so posix records its clean exit as `worker_died (exit=0)` and the coordinator commits
-the report it read from the transcript) and `rw` (the worker commits the report itself and sends
-`worker_done`; its HEAD is re-read from git, never taken from the claim).
+send mail. posix relays the completion line its assignment names as its `worker_done` and records a
+clean exit without that line as `worker_died (exit=0)`; either settles the unit, and the
+coordinator commits the report it read from the transcript, #596) and `rw` (the worker commits the
+report itself and sends `worker_done`; its HEAD is re-read from git, never taken from the claim).
 
 The reviewed target is a two-commit repository the run synthesizes, or `--target <repo>`
 (cloned into the sandbox, never modified) with `--base/--head`. Every artifact lives in one
@@ -80,25 +81,15 @@ HARNESS_BINARIES = {"antigravity": "agy"}
 LIVE_STATES = ("ready", "running", "retained")
 REPORT_HEAD = "FIRST-RUN-REPORT "
 READ_HEAD = "FIRST-RUN-READ "
-# Where each posix launch (base.build_harness_command) prints its final answer on stdout, which
-# posix records line by line as the transcript. A Claude-only reader discarded every other
-# harness's report and turned a finished paid run into NO-GO (#596 review).
-REPORT_FORMATS = {
-    "claude": "claude-stream-json",  # -p --output-format stream-json: {"type":"result","result":...}
-    "codex": "codex-exec-json",      # exec --json: item.completed {"item":{"type":"agent_message","text":...}}
-    "opencode": "opencode-json",     # run --format json: {"type":"text","part":{"text":...}}; step_start resets
-    "omp": "pi-json",                # -p --mode json: message_end {"message":{"role":"assistant","content":[...]}}
-    "pi": "pi-json",
-    "goose": "goose-stream-json",    # {"type":"message","message":{"id":...,"role":"assistant","content":[...]}}
-    "jcode": "jcode-ndjson",         # run --ndjson: {"type":"done","text":<every text delta of the run>}
-    "hermes": "text",                # chat --oneshot -Q: plain text
-    "crush": "text",                 # run -q: plain text
-    "gemini": "text",                # -p with no --output-format: plain text
-}
+# The per-harness final-answer reader is shared with the posix monitor's ro completion line, so the
+# two never disagree about what a worker answered (runtime/providers/transcript.py, #596 review).
+_spec = importlib.util.spec_from_file_location("of_first_run_transcript", ROOT / "runtime" / "providers" / "transcript.py")
+TRANSCRIPT = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(TRANSCRIPT)
+REPORT_FORMATS = TRANSCRIPT.FINAL_ANSWER_FORMATS
 # These carry every turn's text, not only the last answer: the report starts at its own header.
-ANCHORED_FORMATS = ("jcode-ndjson", "text")
-# Lines the posix monitor itself writes into the transcript, around the worker's own output.
-MONITOR_EVENTS = ("turn_started", "launch_refused", "sandbox_git_synced", "sandbox_git_sync_failed", "injected_prompt")
+ANCHORED_FORMATS = TRANSCRIPT.ALL_TURN_FORMATS
+MONITOR_EVENTS = TRANSCRIPT.MONITOR_EVENTS
 
 
 class StepFailed(Exception):
@@ -130,58 +121,10 @@ def posix_harnesses() -> list[str]:
     return list(caps["providers"]["posix"]["supported_harnesses"])
 
 
-def _text_blocks(content) -> str:
-    """The text blocks of a pi- or goose-style message content (a list, or pi's bare string)."""
-    if isinstance(content, str):
-        return content
-    blocks = content if isinstance(content, list) else []
-    return "".join(b["text"] for b in blocks
-                   if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
-
-
 def harness_report(agent: str, lines: list[str]) -> str:
     """The worker's final answer, read from its transcript lines in its harness's own format."""
     fmt = REPORT_FORMATS[agent]
-    answer, kept = "", []
-    parts: dict = {}  # opencode: the text parts of the current step
-    run_id, run = None, ""  # goose: the chunks of the message being streamed
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except ValueError:
-            event = None
-        if not isinstance(event, dict):
-            kept.append(line)
-            continue
-        kind = event.get("type")
-        if kind in MONITOR_EVENTS:
-            continue
-        kept.append(line)
-        item, message, part = event.get("item"), event.get("message"), event.get("part")
-        if fmt == "claude-stream-json" and kind == "result" and isinstance(event.get("result"), str):
-            answer = event["result"]
-        elif (fmt == "codex-exec-json" and kind == "item.completed" and isinstance(item, dict)
-              and item.get("type") == "agent_message" and isinstance(item.get("text"), str)):
-            answer = item["text"]
-        elif fmt == "opencode-json" and kind == "step_start":
-            parts = {}
-        elif fmt == "opencode-json" and kind == "text" and isinstance(part, dict) and isinstance(part.get("text"), str):
-            parts[part.get("id") or f"anon-{len(parts)}"] = part["text"]
-            answer = "\n".join(parts.values())
-        elif fmt == "jcode-ndjson" and kind == "done" and isinstance(event.get("text"), str):
-            answer = event["text"]
-        elif not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        elif fmt == "pi-json" and kind == "message_end":
-            answer = _text_blocks(message.get("content")) or answer
-        elif fmt == "goose-stream-json" and kind == "message":
-            # goose emits one message as chunks sharing its id; a new id starts a new message.
-            if message.get("id") is None or message.get("id") != run_id:
-                run_id, run = message.get("id"), ""
-            run += _text_blocks(message.get("content"))
-            answer = run or answer
-    if fmt == "text":
-        answer = "\n".join(kept)
+    answer = TRANSCRIPT.final_answer(agent, lines)
     if fmt in ANCHORED_FORMATS:
         heads = [i for i, ln in enumerate(answer.splitlines()) if ln.startswith(REPORT_HEAD)]
         if heads:
@@ -269,6 +212,11 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
                          "scripts", "send_msg.py"), "--type", "worker_done", "--outcome", "succeeded",
                          "--subject", f"worker_done:{dispatch}",
                          "--payload", json.dumps({"head": head, "report": rel})]).returncode
+# A ro launch cannot send mail; its assignment ends with the provider's completion footer, and
+# a compliant worker ends its answer with the line it names (posix relays it as worker_done, #596).
+done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
+if done:
+    report += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
 answer(report)
 sys.exit(rc)
 '''
@@ -648,20 +596,28 @@ class FirstRun:
         mail = self.rec.run(py("check_reply.py", "check", "--terminal", "coordinator"))
         msgs = parse_mail(mail.stdout)
         mine = [m for m in msgs if disp in m["subject"]]
-        expected = "completed" if self.args.profile == "rw" else "died"
-        if state["v"] != expected:
-            raise StepFailed(f"dispatch settled {state['v']!r}, expected {expected!r}: {mine}",
+        # rw reports with send_msg.py. A ro worker has no tool to send mail: posix relays the
+        # completion line its assignment names as its worker_done (#596), and records a clean exit
+        # without that line as worker_died (exit=0). Either is the ro worker's settled report.
+        expected = ("completed",) if self.args.profile == "rw" else ("completed", "died")
+        if state["v"] not in expected:
+            raise StepFailed(f"dispatch settled {state['v']!r}, expected {' or '.join(map(repr, expected))}: {mine}",
                              f"worker_ops.py read --dispatch {disp} --source transcript")
-        if self.args.profile == "rw":
+        if state["v"] == "completed":
             done = [m for m in mine if m["type"] == "worker_done"]
             if not done:
                 raise StepFailed("no worker_done from this dispatch", "the worker never reported; read its transcript")
-            self.facts["worker_claim"] = done[0]["payload"]
+            if self.args.profile == "rw":
+                self.facts["worker_claim"] = done[0]["payload"]
+            elif (outcome := (done[0]["payload"] or {}).get("outcome")) != "succeeded":
+                raise StepFailed(f"the ro worker reported {outcome or 'no outcome'}, not succeeded: {done[0]}",
+                                 f"worker_ops.py read --dispatch {disp} --source transcript")
+            self.facts["settled"] = {"state": "completed", "signal": "worker_done"}
         else:
-            # A ro worker has no tool to send mail: posix records its CLEAN exit as worker_died.
             died = [m for m in mine if m["type"] == "escalation" and m["subject"].startswith("worker_died:")]
             if not died or (died[0]["payload"] or {}).get("exitCode") != 0:
                 raise StepFailed(f"ro worker did not exit cleanly: {died}", f"worker_ops.py read --dispatch {disp}")
+            self.facts["settled"] = {"state": "died", "signal": "worker_died"}
         read = self.rec.run(py("worker_ops.py", "read", "--dispatch", disp, "--source", "transcript"))
         if read.returncode != 0 or "SOURCE=transcript" not in read.stdout:
             raise StepFailed(f"transcript read not certified: {(read.stderr or read.stdout).strip()[:200]}")

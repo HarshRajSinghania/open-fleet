@@ -792,5 +792,243 @@ class TestPosixDoctorFailsClosed(PosixRealProcessBase):
             base.RuntimeProvider().vm_recipe_doctor("anything")
 
 
+# A stand-in for a ro model: it can only PRINT (stream-json, like `claude -p`). It finds its own
+# dispatch id where a model would — in its assignment, never in an env var it has no tool to read.
+_RO_MODEL = r"""python3 - "$@" <<'PY'
+import json, re, sys
+prompt = sys.argv[-1]
+m = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", prompt)
+lines = ["REPORT: nothing to change."] + ([f"OPEN_FLEET_WORKER_DONE {m.group(1)} {OUTCOME}"] if m else [])
+print(json.dumps({"type": "result", "result": "\n".join(lines)}))
+PY"""
+
+
+class TestRoWorkerSignalsCompletion(PosixRealProcessBase):
+    """#596 certification finding: a PROFILE=ro worker could never send `worker_done`. Every ro
+    line strips the tool that would (no shell to run send_msg.py; codex's read-only sandbox and
+    hermes' /dev/null write root also deny the state-DB write it needs), so posix recorded its
+    clean exit as `worker_died (exit=0)`. Now the ro prompt names a completion line and the exit
+    monitor — which already holds the dispatch's identity and the state DB — relays it as that
+    worker's `worker_done`. The worker gains no tool and no writable path."""
+
+    def ro_model(self, outcome="succeeded", tail=""):
+        self.fake_agent("claude", _RO_MODEL.replace("{OUTCOME}", outcome) + tail)
+
+    def mine(self, disp):
+        return [m for m in self.prov.check_messages(terminal="coordinator")["messages"] if disp in m["subject"]]
+
+    def settled(self, disp, state):
+        self.assertTrue(self.wait_monitor_done(disp))
+        self.assertEqual(self.prov.worker_show(disp)["worker"]["state"], state)
+        return self.mine(disp)
+
+    def test_a_ro_completion_line_reaches_the_coordinator_as_worker_done(self):
+        for outcome in ("succeeded", "failed"):
+            with self.subTest(outcome=outcome):
+                self.ro_model(outcome)
+                _, res = self.start(profile="ro")
+                disp = res["dispatchId"]
+                mail = self.settled(disp, "completed")
+                self.assertEqual([(m["type"], m["outcome"]) for m in mail], [("worker_done", outcome)], mail)
+                self.assertEqual(mail[0]["from"], res["agentTerminalHandle"])
+                self.assertRegex(json.loads(mail[0]["payload"])["headSha"], r"^[0-9a-f]{40}$")
+
+    def test_a_clean_ro_exit_without_the_line_is_still_worker_died(self):
+        self.fake_agent("claude", 'echo \'{"type": "result", "result": "REPORT only"}\'')
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(mail[0]["payload"])["exitCode"], 0)
+
+    def test_echoed_instructions_and_other_dispatches_lines_are_not_relayed(self):
+        # The assignment itself (echoed back verbatim) and a line naming another dispatch.
+        self.fake_agent("claude", 'printf "%s\\n" "$@"; echo "OPEN_FLEET_WORKER_DONE disp_0123456789 succeeded"')
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+
+    def test_a_ro_worker_that_crashes_after_the_line_is_a_death(self):
+        self.ro_model("succeeded", "\nexit 3")
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(mail[0]["payload"])["exitCode"], 3)
+
+    def test_rw_gets_no_relay_and_no_footer(self):
+        # rw has its own mail tool (send_msg.py); the relay must not become a second channel.
+        seen = Path(self.tmp.name) / "rw-argv.json"
+        self.fake_agent("claude", f'python3 -c \'import json,sys; json.dump(sys.argv[1:], open("{seen}", "w"))\' "$@"; '
+                                  'echo "OPEN_FLEET_WORKER_DONE $OPEN_FLEET_DISPATCH_ID succeeded"')
+        _, res = self.start(spec="RW-SPEC", profile="rw")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(seen.read_text())[-1], "RW-SPEC")
+
+    def test_the_relay_widens_nothing_the_ro_launch_can_do(self):
+        import shlex
+        self.ro_model()
+        _, res = self.start(spec="RO-SPEC", profile="ro")
+        base = self.providers.build_harness_command("claude", "ro", "/w", prompt="RO-SPEC")
+        argv = shlex.split(res["launch"]["effective"]["command"])
+        self.assertEqual(argv[:-1], base["argv"][:-1], "the ro launch gained a flag")
+        self.assertTrue(argv[-1].startswith("RO-SPEC"), "the assignment must lead the prompt")
+        self.assertEqual(res["launch"]["effective"]["args"], base["profile_flag"])
+        self.settled(res["dispatchId"], "completed")
+
+    def test_a_marker_rehearsed_in_reasoning_is_not_a_completion(self):
+        # #596 review (PRRT_kwDOTWxN9c6vvwnW): the worker rehearses its completion line in a
+        # thinking block, then ends its FINAL answer without it. Exit 0 is still a clean death.
+        found = Path(self.tmp.name) / "footer-found"
+        self.fake_agent("claude", f"""python3 - "$@" <<'PY'
+import json, re, sys
+m = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", sys.argv[-1])
+if m:
+    open("{found}", "w").close()
+line = f"OPEN_FLEET_WORKER_DONE {{m.group(1)}} succeeded" if m else ""
+print(json.dumps({{"type": "assistant", "message": {{"role": "assistant",
+                  "content": [{{"type": "thinking", "thinking": line}}]}}}}))
+print(json.dumps({{"type": "result", "subtype": "success", "result": "REPORT: still reviewing."}}))
+PY""")
+        _, res = self.start(profile="ro")
+        mail = self.settled(res["dispatchId"], "died")
+        self.assertTrue(found.exists(), "the stand-in never saw its completion footer")
+        self.assertEqual([m["type"] for m in mail], ["escalation"])
+        self.assertEqual(json.loads(mail[0]["payload"])["exitCode"], 0)
+
+    def test_no_exit_monitor_no_promise(self):
+        # dry-run and an injected runner never run the monitor that relays the line, so a ro
+        # worker there is not told it has one: its prompt is exactly the spec. Each provider gets
+        # its OWN state DB, which _kill_all never fences (dry-run records a placeholder pid).
+        import shlex
+        for backend, runner in (("dry-run", None), ("setsid", lambda **_kw: {"pid": 0, "backend": "setsid"})):
+            with self.subTest(backend=backend, runner=runner is not None):
+                env = {**self.env, "OPEN_FLEET_POSIX_BACKEND": backend,
+                       "OPEN_FLEET_STATE_DB": str(Path(self.tmp.name) / f"own-{backend}" / "runtime.db")}
+                prov = self.providers.get_provider("posix", env=env)
+                prov.runner = runner
+                task = prov.dispatch(["orchestration", "task-create", "--spec", "RO-SPEC"])["task"]
+                res = prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="ro")
+                self.assertEqual(shlex.split(res["launch"]["effective"]["command"])[-1], "RO-SPEC")
+
+
+DISP = "disp_ab12"
+
+
+def _done(outcome="succeeded", disp=DISP):
+    return f"OPEN_FLEET_WORKER_DONE {disp} {outcome}"
+
+
+def _jl(*events):
+    return "\n".join(json.dumps(e) for e in events)
+
+
+def _goose(mid, role, *content):
+    return {"type": "message", "message": {"id": mid, "role": role, "content": list(content)}}
+
+
+# Per format: (transcript whose FINAL answer is `final`, with the marker planted only where it is
+# NOT the final answer: reasoning, a tool result, an echoed user message, an earlier turn). Shapes
+# follow test_certification.py's UPSTREAM_STDOUT, read from each harness's source.
+def _formats(final, m=None):
+    m = m or _done()
+    return {
+        "claude": _jl(
+            {"type": "system", "subtype": "init"},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": m}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": m}, {"type": "text", "text": m},
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": m}]}},
+            {"type": "result", "subtype": "success", "is_error": False, "result": final}),
+        "codex": _jl(
+            {"type": "thread.started", "thread_id": "t"}, {"type": "turn.started"},
+            {"type": "item.completed", "item": {"id": "i0", "type": "reasoning", "text": m}},
+            {"type": "item.completed", "item": {"id": "i1", "type": "agent_message", "text": m}},
+            {"type": "item.completed", "item": {"id": "i2", "type": "command_execution", "command": "cat x",
+                                                "aggregated_output": m, "exit_code": 0}},
+            {"type": "item.completed", "item": {"id": "i3", "type": "agent_message", "text": final}},
+            {"type": "turn.completed", "usage": {}}),
+        "opencode": _jl(
+            {"type": "step_start", "part": {"id": "p0", "type": "step-start"}},
+            {"type": "reasoning", "part": {"id": "p1", "type": "reasoning", "text": m}},
+            {"type": "text", "part": {"id": "p2", "type": "text", "text": m}},
+            {"type": "tool_use", "part": {"id": "p3", "type": "tool", "tool": "read", "state": {"output": m}}},
+            {"type": "step_finish", "part": {"id": "p4", "type": "step-finish", "reason": "tool-calls"}},
+            {"type": "step_start", "part": {"id": "p5", "type": "step-start"}},
+            {"type": "text", "part": {"id": "p6", "type": "text", "text": final}},
+            {"type": "step_finish", "part": {"id": "p7", "type": "step-finish", "reason": "stop"}}),
+        "pi": _jl(
+            {"type": "agent_start"},
+            {"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": m}]}},
+            {"type": "message_end", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": m}, {"type": "toolCall", "id": "c1", "name": "read", "arguments": {}}]}},
+            {"type": "message_end", "message": {"role": "toolResult", "toolCallId": "c1",
+                                                "content": [{"type": "text", "text": m}]}},
+            {"type": "message_end", "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": m}, {"type": "text", "text": final}]}},
+            {"type": "agent_end", "messages": []}),
+        "goose": _jl(
+            _goose("m1", "assistant", {"type": "text", "text": m}),
+            _goose("m2", "assistant", {"type": "toolRequest", "id": "r1"}),
+            _goose("m3", "user", {"type": "toolResponse", "id": "r1", "toolResult": {"value": [{"type": "text", "text": m}]}}),
+            _goose("m4", "assistant", {"type": "thinking", "thinking": m}, {"type": "text", "text": final}),
+            {"type": "complete", "total_tokens": 1}),
+        # jcode's done.text and plain text carry EVERY turn's text, so there only the final
+        # answer's last line separates a completion from a rehearsal of one.
+        "jcode": _jl(
+            {"type": "start"}, {"type": "text_delta", "text": m + "\n"},
+            {"type": "tool_start", "id": "t1", "name": "read"}, {"type": "tool_done", "id": "t1", "output": m},
+            {"type": "text_delta", "text": final},
+            {"type": "done", "text": m + "\n" + final}),
+        "gemini": "\n".join(["Loaded cached credentials.", m, "thinking it over", final]),
+    }
+
+
+class TestRoCompletionReadsTheFinalAnswer(unittest.TestCase):
+    """#596 review (PRRT_kwDOTWxN9c6vvwnW): the completion line counts only as the LAST line of the
+    harness's FINAL answer, read with first_run.py's per-harness reader (now shared in
+    runtime/providers/transcript.py). A marker rehearsed in reasoning, quoted from a tool result,
+    echoed back from the prompt, or said in an earlier turn is not the worker's completion."""
+
+    def setUp(self):
+        self.read = _posix().ro_completion_outcome
+
+    def test_the_final_answers_last_line_counts_in_every_format(self):
+        for outcome in ("succeeded", "failed"):
+            final = "REPORT: nothing to change.\n" + _done(outcome)
+            for agent, transcript in _formats(final).items():
+                with self.subTest(agent=agent, outcome=outcome):
+                    self.assertEqual(self.read(transcript, DISP, agent), outcome)
+
+    def test_reasoning_tool_results_echoes_and_earlier_turns_never_count(self):
+        for agent, transcript in _formats("REPORT: nothing to change.").items():
+            with self.subTest(agent=agent):
+                self.assertIn(_done(), transcript, "the marker must be planted somewhere")
+                self.assertIsNone(self.read(transcript, DISP, agent))
+
+    def test_a_marker_rehearsed_mid_answer_is_not_the_last_line(self):
+        final = f"I will end with:\n{_done()}\nbut first the report.\nREPORT: nothing to change."
+        for agent, transcript in _formats(final, m="unrelated").items():
+            with self.subTest(agent=agent):
+                self.assertIsNone(self.read(transcript, DISP, agent))
+
+    def test_markup_around_the_last_line_and_a_closing_fence(self):
+        for last, want in ((f"**{_done('failed')}**", "failed"), (f"> `{_done()}`.", "succeeded"),
+                           (f"```\n{_done()}\n```\n", "succeeded"), (f"`{DISP}`".join(["OPEN_FLEET_WORKER_DONE ", " failed"]), "failed")):
+            with self.subTest(last=last):
+                self.assertEqual(self.read(_formats("REPORT\n" + last, m="x")["claude"], DISP, "claude"), want)
+
+    def test_only_a_whole_line_naming_this_dispatch(self):
+        footer = _posix().ro_completion_footer(DISP)
+        for last in (_done(disp="disp_ab13"), footer, "done: " + _done(), _done() + " and more", ""):
+            with self.subTest(last=last[:40]):
+                for agent, transcript in _formats("REPORT\n" + last, m="x").items():
+                    self.assertIsNone(self.read(transcript, DISP, agent), agent)
+
+    def test_an_unknown_harness_reads_no_completion(self):
+        self.assertIsNone(self.read(_done(), DISP, "kilo"))
+
+
 if __name__ == "__main__":
     unittest.main()

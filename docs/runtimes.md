@@ -25,6 +25,8 @@ When `OPEN_FLEET_RUNTIME` is unset the runtime is `orca` (backward compatible, n
 
 The `posix` state store defaults to `~/.open-fleet/state/<repo-id>/runtime.db`, keyed on the git common dir (one store per repository, shared by its linked worktrees); override with `OPEN_FLEET_STATE_DB` or `OPEN_FLEET_STATE_DIR`.
 
+On `posix`, a worker reports completion with `send_msg.py --type worker_done`, and its exit monitor turns an exit without terminal mail into a synthetic `worker_died` escalation. A `PROFILE=ro` worker has no tool that can send mail: its launch strips the shell, and codex's read-only sandbox and hermes' `/dev/null` write root also deny the state-database write. So on a backend that runs an exit monitor (`setsid`, `tmux`, `cmux`; not `dry-run` or an injected runner), `worker_start` appends a completion instruction to a ro assignment, naming the line `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`. When the worker exits 0 and that line is the last line of its FINAL answer, the monitor relays it as the worker's `worker_done`. The final answer is read per harness by [`runtime/providers/transcript.py`](../runtime/providers/transcript.py), the reader `first_run.py` uses for its report. A marker in reasoning, in a tool result, in an echoed prompt, or earlier in the answer does not count. jcode and plain-text launches print every turn's text, so for them only the answer's last line separates a completion from a rehearsal of one. The relay comes from the worker's terminal handle, and the dispatch settles `completed`. Only a whole line naming that dispatch counts, and the dispatch id exists only once the worker starts, so neither the spec text nor an echoed prompt can complete it. A ro worker that exits 0 without the line is still `worker_died (exit=0)`, and a crash is a death whatever it printed. The worker gains no tool and no writable path, and an `rw` worker gets no relay. The relayed `worker_done` is a claim like any other: verify it (#596).
+
 ### Neutral environment variables
 
 Every runtime helper honors `OPEN_FLEET_*` primary environment variables while preserving backward compatibility with `ORCA_*`:
@@ -83,6 +85,8 @@ python3 runtime/scripts/preflight.py --mission offload-it --runtime posix --stri
 All 14 providers implement [`RuntimeProvider`](../runtime/providers/base.py) and return Orca-compatible JSON envelopes so existing coordinator scripts (`task_ops.py`, `worker_ops.py`, `worktree_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`, `hitl_ask.py`, `watchdog.py`) work without modification.
 
 Every adapter delivers the task spec to the worker (`resolve_task_prompt`), refuses unparseable upstream output instead of inventing ids, treats `worker-retain` as non-destructive, preserves the worker's real HEAD (`refs/open-fleet/preserved/<dispatch>`) before any destructive cleanup, and fails closed (`unsupported_operation` / `unsupported_profile`) where upstream has no verified way to honour a profile. Only `cap:core-orchestration` (plus Beads on `gastown`) is native on the external adapters; everything else is a portable fallback.
+
+A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) names only harnesses its adapter honours (`tests/test_capability_harnesses.py`) AND that `spawn_worker.sh` launches on it for some advertised profile (`tests/test_capability_launch_agreement.py`). Orca can host every harness, but the fleet's wrapper has no Orca row for `opencode`, `omp` or `pi` (Orca strips their launch arguments), so the `orca` entry does not claim them; run them on Orca only through a `WORKER_CMD` override, whose semantics are then the operator's assertion.
 
 ### Tier 1 — Primary providers
 
@@ -200,8 +204,12 @@ dispatch is settled without the wait (monitor action `refused_at_gate`). A `work
 later `worker-retain`. A live monitor, or one whose gate never closed (a fence recorded by an
 older store), still gets the whole grace to finish its own sync. A monitor writes `<lane>/exit.json` before it
 settles the dispatch. If it dies between the two, the dispatch is settled from that record: its
-exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). Both
-recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a
+exit code and head go through `ensure_terminal_or_died` (action `settled_recorded_exit`). For a
+`ro` dispatch that exited 0, recovery first re-reads the completion line from the recorded
+transcript, with the monitor's own final-answer reader, and relays it. A worker that printed
+`failed` is therefore reported `failed`, never as `worker_died (exit=0)`. The relay is idempotent:
+if the monitor relayed before it died, recovery settles on that mail and adds nothing (#596
+review). Both recovery and the `worker-list` / `worker-show` liveness sweep do this. Before, both skipped such a
 dispatch, which stayed `ready` with no `worker_died`. A dispatch its own monitor DID settle and the
 coordinator then retained is not that case. Its terminal mail already exists, so neither path
 settles it again, and it keeps reading `retained` (`LocalStateStore.terminal_report`). Settling it

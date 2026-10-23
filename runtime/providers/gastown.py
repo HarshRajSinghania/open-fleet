@@ -16,7 +16,9 @@ config,molecule_await_signal}.go` and steveyegge/beads `cmd/bd/{create,dep,show,
     adds `--review-only`; the alias is TOWN-wide and the polecat's clone does not exist until
     after the sling, so only a PATH-FREE ro line may become one (claude, codex, gemini) — a line
     that names a directory (`--cwd`, `--data-dir`, `-C`, `--in`, `--dir`, or any path) would
-    point every polecat at the wrong tree. PROFILE=danger is refused (polecats run on the host).
+    point every polecat at the wrong tree. The alias is base.py's ro `command`, which carries every
+    restriction flag: for claude `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit` ahead of
+    plan mode (#596). PROFILE=danger is refused (polecats run on the host).
   - Polecat names are REUSED: every read/show/fence first re-reads `gt polecat status --json`
     and requires its `issue` to still be the dispatch's bead, else `dispatch_superseded` (the
     name now belongs to another assignment and must not be peeked, stopped, or nuked).

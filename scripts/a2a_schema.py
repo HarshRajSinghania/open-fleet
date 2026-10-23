@@ -81,13 +81,22 @@ _MEDIA_TYPE = re.compile(
     _RESTRICTED_NAME + "/" + _RESTRICTED_NAME
     + r"(?:[ \t]*;[ \t]*" + _HTTP_TOKEN + "=(?:" + _HTTP_TOKEN + "|" + _QUOTED_STRING + "))*")
 _BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
-# An RFC 3986 URI: a scheme, `:`, then a non-empty run of unreserved, reserved or %HH characters
-# with at most one `#`. An identifier needs no network host (`tag:`, `urn:`) (#636).
-_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:(?:[A-Za-z0-9._~!$&'()*+,;=:@/?#\[\]-]|%[0-9A-Fa-f]{2})+")
+# RFC 3986 section 3, parsed by component (#636): scheme ":" hier-part ["?" query] ["#" fragment].
+# An identifier needs no network host (`tag:`, `urn:`); brackets appear only around an IP-literal
+# host, and every `%` is followed by two hex digits.
+_PCT = r"%[0-9A-Fa-f]{2}"
+_UNRESERVED_SUB_DELIMS = r"A-Za-z0-9\-._~!$&'()*+,;="
+_PCHAR = "(?:[" + _UNRESERVED_SUB_DELIMS + ":@]|" + _PCT + ")"
+_URI_SPLIT = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*):([^?#]*)(?:\?([^#]*))?(?:#(.*))?", re.S)
+_SEGMENT = re.compile(_PCHAR + "*")
+_QUERY_OR_FRAGMENT = re.compile("(?:" + _PCHAR + "|[/?])*")
+_USERINFO = re.compile("(?:[" + _UNRESERVED_SUB_DELIMS + ":]|" + _PCT + ")*")
+_REG_NAME = re.compile("(?:[" + _UNRESERVED_SUB_DELIMS + "]|" + _PCT + ")*")
+_IPV_FUTURE = re.compile(r"v[0-9A-Fa-f]+\.[" + _UNRESERVED_SUB_DELIMS + ":]+")
 # Schemes whose URI names a network authority: for these an empty host is not a URI (RFC 9110 4.2).
 _HOST_SCHEMES = ("http", "https", "ws", "wss")
 # gRPC `host:port`: a DNS name or IPv4 address, or a bracketed IPv6 literal (#636).
-_HOST_PORT = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(\d{1,5})")
+_HOST_PORT = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):([0-9]{1,5})")
 
 _TOKEN = re.compile(r"""
     (?P<ws>\s+)
@@ -603,11 +612,59 @@ def _absolute_url(text):
         return False
 
 
-def _absolute_uri(text):
-    """An RFC 3986 absolute URI such as an extension or custom-binding identifier (#636)."""
-    if not isinstance(text, str) or not _URI.fullmatch(text) or text.count("#") > 1:
+def _uri_host(authority):
+    """The host of an RFC 3986 authority (`[userinfo@]host[:port]`), or None if malformed."""
+    userinfo, at, hostport = authority.rpartition("@")
+    if at and not _USERINFO.fullmatch(userinfo):
+        return None
+    if hostport.startswith("["):
+        literal, close, port = hostport[1:].partition("]")
+        # An IP-literal is IPv6 or IPvFuture; RFC 3986 has no zone id, so `%` is refused.
+        if not close or "%" in literal or not (_ipv6(literal) or _IPV_FUTURE.fullmatch(literal)):
+            return None
+        host = "[" + literal + "]"
+    else:
+        host, colon, port = hostport.partition(":")
+        if not _REG_NAME.fullmatch(host):  # reg-name also covers the IPv4address form
+            return None
+        port = colon + port
+    if port and not re.fullmatch(r":[0-9]*", port):  # ASCII digits only, not any Unicode \d
+        return None
+    return host
+
+
+def _ipv6(text):
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
         return False
-    return text.split(":", 1)[0].lower() not in _HOST_SCHEMES or _absolute_url(text)
+    return True
+
+
+def _absolute_uri(text):
+    """An RFC 3986 absolute URI such as an extension or custom-binding identifier (#636).
+
+    Each component is parsed: the authority's userinfo, host (reg-name, IPv4 or bracketed
+    IPv6/IPvFuture literal) and port for every scheme; path segments, query and fragment as
+    pchar runs. The hier-part must be non-empty, and an http(s)/ws(s) URI needs a host.
+    """
+    m = _URI_SPLIT.fullmatch(text) if isinstance(text, str) else None
+    if not m or not m.group(2):
+        return False
+    scheme, hier, query, fragment = m.groups()
+    if any(part is not None and not _QUERY_OR_FRAGMENT.fullmatch(part)
+           for part in (query, fragment)):
+        return False
+    host = ""
+    if hier.startswith("//"):
+        authority, slash, path = hier[2:].partition("/")
+        host = _uri_host(authority)
+        if host is None:
+            return False
+        hier = slash + path
+    if not all(_SEGMENT.fullmatch(segment) for segment in hier.split("/")):
+        return False
+    return scheme.lower() not in _HOST_SCHEMES or bool(host)
 
 
 def grpc_address(text):

@@ -427,6 +427,34 @@ class TestReviewFindings(unittest.TestCase):
         self.assertEqual(self.errors_for(lambda c: c["supportedInterfaces"][0].update(
             protocolBinding="tag:acme.org,2026:binding-v1")), [])
 
+    def test_uri_identifiers_are_parsed_by_rfc3986_component(self):
+        # PR #636 review: a character-set check let brackets through anywhere and skipped the
+        # authority for non-HTTP schemes. RFC 3986 section 3: brackets only around an IP-literal
+        # host, an authority's host and port parsed for every scheme, `%` always two hex digits.
+        def ext(uri):
+            return lambda c: c["capabilities"].update(extensions=[{"uri": uri}])
+
+        for good in ("tag:acme.org,2026:mission-v1", "urn:example:a2a:ext:v1",
+                     "custom://[2606:4700::1111]:8443/binding", "custom://[v7.fe:1]/binding",
+                     "custom://user:pw@host.internal:/p?q=1/2?#f/?", "custom:///abs/path",
+                     "https://e.org/ext/%7Euser/v1;p=1", "mailto:ops@acme.org"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors_for(ext(good)), [])
+        for bad in ("tag:acme.org,2026:mission[v1", "custom://[not-an-ip]/binding",
+                    "custom://[2606:4700::1111/binding", "custom://[fe80::1%eth0]/b",
+                    "custom://[v7.]/b", "custom://host.internal:8x/b", "custom://a@b@c/x",
+                    "custom://h]st/b", "https://e.org/p?q=[x]", "https://e.org/p#f[1]",
+                    "tag:a%2", "tag:a%g1", "https://:443/x", "custom://host.internal:\u0664\u0664\u0663/b"):
+            with self.subTest(bad=bad):
+                self.assertIn("$.capabilities.extensions[0].uri: expected an absolute URI",
+                              self.errors_for(ext(bad)))
+        binding_errs = self.errors_for(lambda c: c["supportedInterfaces"][0].update(
+            protocolBinding="custom://[not-an-ip]/binding"))
+        self.assertTrue(any("protocolBinding" in e for e in binding_errs), binding_errs)
+        grpc_errs = self.errors_for(lambda c: c["supportedInterfaces"][1].update(
+            url="[2606:4700::1111]:\u0664\u0664\u0663"))  # Arabic-Indic digits are not a port
+        self.assertTrue(any(".url: expected an absolute URL" in e for e in grpc_errs), grpc_errs)
+
     def test_api_key_location_is_query_header_or_cookie(self):
         # a2a.proto APIKeySecurityScheme.location: 'Valid values are "query", "header", or
         # "cookie".' Anything else gives a client no defined place to send the key.

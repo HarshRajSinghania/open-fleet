@@ -16,6 +16,10 @@ The other half — with the guard in place the trap is RED for its declared reas
 neighbour GREEN — is the bench run itself (bench/vf-bench/gate.py; tests/test_vfbench.py).
 Each recipe is an exact-text edit that must match verify.py exactly once, so a refactor that
 moves a guard fails here by name instead of silently mutating nothing.
+
+A pair the bench cannot score on THIS host (vfbench.skip_reason: a pinned commit a shallow clone
+lacks, or no system-custody git for a signed-dispatch case) is not run at all. It fails under the
+host's cause instead, so it never reads as a guard that does not isolate its trap (PR #643 review).
 """
 import importlib.util
 import json
@@ -23,6 +27,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "runtime" / "scripts"
@@ -172,6 +177,23 @@ def _mutated_verifier(edits, dest):
     return scripts / "verify.py"
 
 
+def _host_cause(trap, neighbour):
+    """Why THIS HOST cannot measure the pair, or None (PR #643 review).
+
+    The guard-deletion run builds the bench's own command (vfbench.fixture_command), so a case the
+    bench declines to score here — skip_reason() names it, and the CI gate fails on that — would
+    be refused for the host's sake whatever guard was deleted, and read as a trap that does not
+    isolate its guard. The pair is therefore not run, and fails under the host's name. It is never
+    skipped: an unmeasured control is not a passed one, and an unexpected skip is not green."""
+    for case in (trap, neighbour):
+        reason = vfbench.skip_reason(case)
+        if reason:
+            return (f"HOST, not a verifier regression: {case['id']} cannot run on this host "
+                    f"({reason}). The guard-deletion control for {trap['id']} is UNMEASURED here, "
+                    "not passed; run it where VF-Bench scores the case (CI does).")
+    return None
+
+
 class EveryIsolatedTrapHasAGuardDeletionControl(unittest.TestCase):
     def test_the_recipes_cover_exactly_the_reasoned_traps(self):
         reasoned = {i for i, t in _corpus().items() if t.get("expect_reason")}
@@ -205,6 +227,9 @@ class DeletingTheGuardAdmitsItsTrap(unittest.TestCase):
         for trap_id, edits in GUARDS.items():
             with self.subTest(trap=trap_id):
                 trap = corpus[trap_id]
+                host = _host_cause(trap, corpus[trap["neighbour"]])
+                if host:  # fails this subtest by the host's name; the loop moves on
+                    self.fail(host)
                 with tempfile.TemporaryDirectory(prefix="vfbench-guard-") as tmp:
                     mutant = _mutated_verifier(edits, Path(tmp))
                     trap_detail, control_detail = {}, {}
@@ -216,6 +241,47 @@ class DeletingTheGuardAdmitsItsTrap(unittest.TestCase):
                                 f"{trap_detail.get('fails')}")
                 self.assertTrue(spared, f"deleting {trap_id}'s guard broke its neighbour "
                                 f"{trap['neighbour']}: {control_detail.get('fails')}")
+
+
+class AHostThatCannotRunAPairFailsUnderItsOwnName(unittest.TestCase):
+    """PR #643 review: on a host with no system-custody git, the signed-dispatch pairs ran on the
+    host's git and verify.py refused them for the HOST (h409 R2) whatever guard was deleted, so
+    each failed as "STILL refused — another leg catches it": a verifier regression that was not
+    one. Simulated through the seam skip_reason() itself consults (_system_git_dir), with the
+    fixture runner recording instead of running: the dispatch pairs must fail BEFORE any fixture
+    runs, each under the host's cause, and an ordinary pair beside them must run untouched."""
+
+    def test_a_host_without_system_git_fails_the_dispatch_pairs_by_the_host_cause(self):
+        corpus = _corpus()
+        dispatch = sorted(i for i in GUARDS if corpus[i].get("dispatch"))
+        self.assertEqual(len(dispatch), 3, "the signed-dispatch traps this pin is about")
+        ordinary = next(i for i in sorted(GUARDS) if not corpus[i].get("dispatch"))
+        ran = []
+
+        def recording_gate(case, detail=None, verify=None):
+            ran.append(case["id"])
+            return True
+
+        result = unittest.TestResult()
+        with mock.patch.object(vfbench, "_system_git_dir", return_value=None), \
+                mock.patch.object(vfbench, "fixture_gate", side_effect=recording_gate), \
+                mock.patch.dict(GUARDS, {i: GUARDS[i] for i in dispatch + [ordinary]}, clear=True):
+            DeletingTheGuardAdmitsItsTrap(
+                "test_deleting_each_guard_admits_its_trap_and_spares_its_neighbour").run(result)
+
+        failed = {sub.params["trap"]: text for sub, text in result.failures}
+        self.assertEqual(result.errors, [])
+        self.assertEqual(sorted(failed), dispatch, "only the pairs this host cannot run may fail")
+        for trap_id, text in failed.items():
+            with self.subTest(trap=trap_id):
+                self.assertIn("HOST, not a verifier regression", text)
+                self.assertIn("no system-custody git", text)
+                self.assertIn("UNMEASURED", text)
+                self.assertNotIn("STILL refused", text)
+        self.assertEqual(ran, [ordinary, corpus[ordinary]["neighbour"]],
+                         "a pair the host cannot run reached the fixture runner, or the "
+                         "ordinary pair did not")
+        self.assertEqual(len(result.skipped), 0, "a host cause is a named failure, never a skip")
 
 
 if __name__ == "__main__":

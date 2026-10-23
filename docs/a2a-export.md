@@ -156,7 +156,8 @@ prints nothing. The projection flags exit 2 if you give them without `--standard
 Before printing, the exporter runs these checks. Any failure exits 1 with no output.
 
 - **Endpoint.** HTTP bindings (`JSONRPC`, `HTTP+JSON`) need an absolute `https` URL without
-  credentials. `GRPC` also accepts `host:port`. Reserved placeholder and loopback hosts are
+  credentials. `GRPC` also accepts `host:port`, with an IPv6 host in brackets
+  (`[2606:4700::1111]:443`). Reserved placeholder and loopback hosts are
   refused: `example.com`/`.net`/`.org` and their subdomains, the `.example`, `.test`,
   `.invalid` and `.localhost` TLDs, `localhost`, and loopback, unspecified or link-local
   addresses. Another agent cannot reach any of these.

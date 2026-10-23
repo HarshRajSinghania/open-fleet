@@ -394,6 +394,21 @@ class TestReviewFindings(unittest.TestCase):
                 self.assertIn(f"$.defaultOutputModes: {bad!r} is not a media type (type/subtype)",
                               errs)
 
+    def test_grpc_host_port_accepts_a_bracketed_ipv6_literal(self):
+        # a2a.proto AgentInterface.url: gRPC uses "hostname:port"; an IPv6 host is written as a
+        # bracketed literal (RFC 3986 IP-literal), the form gRPC targets use.
+        def grpc(url):
+            return lambda c: c["supportedInterfaces"][1].update(url=url)
+
+        for good in ("[2606:4700:4700::1111]:443", "192.0.2.10:8443", "grpc.georoute.example.com:443"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors_for(grpc(good)), [])
+        for bad in ("[not-an-ip]:443", "2606:4700:4700::1111:443", "[2606:4700::1111]",
+                    "[2606:4700::1111]:0", "[2606:4700::1111]:70000", "host:port"):
+            with self.subTest(bad=bad):
+                self.assertIn("$.supportedInterfaces[1].url: expected an absolute URL or host:port",
+                              self.errors_for(grpc(bad)))
+
 
 if __name__ == "__main__":
     unittest.main()

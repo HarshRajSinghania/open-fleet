@@ -34,6 +34,7 @@ Exit: 0 valid · 1 invalid card or pin drift · 2 usage error.
 """
 import argparse
 import hashlib
+import ipaddress
 import json
 import re
 import sys
@@ -77,7 +78,8 @@ _MEDIA_TYPE = re.compile(
     _RESTRICTED_NAME + "/" + _RESTRICTED_NAME
     + r"(?:[ \t]*;[ \t]*" + _HTTP_TOKEN + "=(?:" + _HTTP_TOKEN + "|" + _QUOTED_STRING + "))*")
 _BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
-_HOST_PORT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?:\d{1,5}$")
+# gRPC `host:port`: a DNS name or IPv4 address, or a bracketed IPv6 literal (#636).
+_HOST_PORT = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(\d{1,5})")
 
 _TOKEN = re.compile(r"""
     (?P<ws>\s+)
@@ -593,6 +595,25 @@ def _absolute_url(text):
         return False
 
 
+def grpc_address(text):
+    """(host, port) of a gRPC `host:port` address, or None (a2a.proto AgentInterface.url).
+
+    The host is a DNS name, an IPv4 address or a bracketed IPv6 literal (`[2606:4700::1111]:443`);
+    an unbracketed IPv6 address is ambiguous and refused, and the port is 1-65535. The exporter's
+    endpoint check uses this same parser, so an address it accepts the card check accepts (#636).
+    """
+    m = _HOST_PORT.fullmatch(text) if isinstance(text, str) else None
+    if not m or not 0 < int(m.group(2)) < 65536:
+        return None
+    host = m.group(1)
+    if host.startswith("["):
+        try:
+            ipaddress.IPv6Address(host[1:-1])
+        except ValueError:
+            return None
+    return host, int(m.group(2))
+
+
 def _security_names(requirements):
     for req in requirements or []:
         yield from (req.get("schemes") or {}).keys()
@@ -611,8 +632,7 @@ def semantic_errors(card, schema=None):
                           f"({', '.join(CORE_BINDINGS)}) nor a custom-binding URI")
         if not _PROTOCOL_VERSION.match(iface.get("protocolVersion", "")):
             errors.append(f"{where}.protocolVersion: expected Major.Minor such as '1.0'")
-        grpc_address = binding == "GRPC" and _HOST_PORT.match(url)
-        if not grpc_address and not _absolute_url(url):
+        if not (binding == "GRPC" and grpc_address(url)) and not _absolute_url(url):
             errors.append(f"{where}.url: expected an absolute URL"
                           + (" or host:port" if binding == "GRPC" else ""))
     skill_ids = [s.get("id") for s in card.get("skills") or []]

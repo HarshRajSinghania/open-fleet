@@ -282,9 +282,11 @@ def endpoint_errors(endpoint, binding):
         return ["--endpoint is required: open-fleet serves no A2A endpoint of its own, so a "
                 "standard card needs the URL of one you operate"]
     if binding == "GRPC" and "://" not in endpoint:
-        host, _, port = endpoint.rpartition(":")
-        if not host or not port.isdigit() or not 0 < int(port) < 65536:
-            return [f"--endpoint {endpoint!r}: a GRPC endpoint is host:port or an https URL"]
+        address = a2a_schema.grpc_address(endpoint)  # the card check's own parser (#636)
+        if address is None:
+            return [f"--endpoint {endpoint!r}: a GRPC endpoint is host:port (an IPv6 host in "
+                    "brackets) or an https URL"]
+        host = address[0]
     else:
         try:
             parts = urlsplit(endpoint)

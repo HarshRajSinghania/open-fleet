@@ -213,6 +213,21 @@ class TestA2AStandardBoundary(unittest.TestCase):
                 with self.assertRaises(self.mod.ExportError):
                     self.mod.build_standard_card(endpoint, "GRPC")
 
+    def test_projection_publishes_a_bracketed_ipv6_grpc_endpoint(self):
+        # PR #636 review: endpoint_errors accepted this address and the card check then refused
+        # it, so no card could be published for an IPv6 gRPC endpoint.
+        endpoint = "[2606:4700:4700::1111]:443"
+        card = self.mod.build_standard_card(endpoint, "GRPC", mission="ship-it")
+        self.assertEqual(card["supportedInterfaces"][0]["url"], endpoint)
+        self.assertEqual(self.schema_mod.card_errors(card), [])
+        for bad, expected in (("[::1]:443", "reserved placeholder or loopback"),
+                              ("2606:4700:4700::1111:443", "host:port"),
+                              ("[2606:4700::1111]:0", "host:port")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(self.mod.ExportError) as ctx:
+                    self.mod.build_standard_card(bad, "GRPC")
+                self.assertIn(expected, str(ctx.exception))
+
     def test_projection_refuses_an_unknown_binding_or_another_protocol_major(self):
         with self.assertRaisesRegex(self.mod.ExportError, "--binding 'SOAP'"):
             self.mod.build_standard_card(ENDPOINT, "SOAP")

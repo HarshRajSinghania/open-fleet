@@ -528,14 +528,14 @@ the property, not the branding.**
 deterministic, evaluated by `verify.py`.
 
 **Shipped for #601:** the pinned clean-environment replay with per-configuration metrics and its
-published reference; the second-environment reproduction in CI; the missing/changed fixture drill;
+published reference; the second-environment reproduction in CI, whose first run on PR #645 (Linux,
+Python 3.13.16, git 2.55.0) reproduced the macOS reference; the missing/changed fixture drill;
 the external adapter contract with a reference adapter and hermetic fixtures; and the held-out
 protocol with its leakage check. **Not done, and what each needs:** a real external verifier
 measured through the adapter (a compatible verifier, its pinned version and its licence); an
 actual held-out set (a person who accepts the holder role, then cases authored under the temporal
-rule and their digests published); the CI reproduction's first run, which happens when the job
-runs on a pull request; and, still research-grade, a third-party runner wrapper (inspect-ai `Task`,
-Docker sandbox), a public leaderboard, and inter-verifier statistics, which need at least two
-measured verifiers.
+rule and their digests published); and, still research-grade, a third-party runner wrapper
+(inspect-ai `Task`, Docker sandbox), a public leaderboard, and inter-verifier statistics, which
+need at least two measured verifiers.
 
 Design rationale: [`docs/research/2026-08-28-forward-roadmap-and-defensibility-plan.md`](../../docs/research/2026-08-28-forward-roadmap-and-defensibility-plan.md).

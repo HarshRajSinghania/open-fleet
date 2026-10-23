@@ -22,11 +22,14 @@ truth is `.claude-plugin/plugin.json`.
   the new `vfbench_replay` job, which `gates` needs, reproduces it on the GitHub runner and uploads
   its report. External verifiers plug in through a documented stdin/stdout adapter contract
   (`verify.py` itself behind it is the reference adapter; malformed, timed-out and crashing
-  adapters are listed, never scored); none has been measured, and reports say so with a null
-  score. `heldout-protocol.json` predeclares the development and held-out splits, their digests,
-  planned release dates, leakage checks and an unfilled holder role, and `heldout.py check`
-  verifies no committed blob is a held-out case. Not done: a real external verifier, an actual
-  holder and held-out set, and the CI reproduction's first run on a pull request.
+  adapters are listed, never scored, adapter names must be unique, and nothing an adapter starts
+  outlives its case); none has been measured, and reports say so with a null score.
+  `heldout-protocol.json` predeclares the development and held-out splits, their digests,
+  planned release dates, leakage checks with their stated limits, and an unfilled holder role,
+  and `heldout.py check` verifies no committed blob is a held-out case, in UTF-8, UTF-16 or
+  UTF-32 (compressed or base64-encoded copies are a stated limit). The CI reproduction's first run
+  on PR #645 reproduced the macOS reference on Linux. Not done: a real external verifier, and an
+  actual holder and held-out set.
 
 - **VF-Bench samples the verifier invariants it used to name as unsampled** (#600). Twenty-eight
   isolated traps join the corpus — signed-dispatch tamper on a profile-signed record, class

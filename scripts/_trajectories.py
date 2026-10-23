@@ -951,7 +951,13 @@ class Run:
             self.apply("retry", ev)
 
     def _verify(self):
-        """The coordinator's verifier: every gate runs; GO only when all are clean."""
+        """The coordinator's verifier: every gate runs; GO only when all are clean.
+
+        The gates read the work tree (floor_guard diffs it, decisions.py reads the log in it), and
+        what lands is a commit. So the tree must BE that commit: an uncommitted or untracked change
+        refuses the unit, and _land lands exactly the head judged here (PR #644 review, P1). A
+        committed deletion behind an uncommitted restore otherwise showed every gate a clean
+        tree while main received the deletion."""
         if not self.manifests:
             return
         g = guards()
@@ -960,6 +966,11 @@ class Run:
         head = self.git("rev-parse", "HEAD").decode().strip()
         if manifest["head_sha"] != head:
             reasons.append("manifest head_sha is not the head the verifier would land")
+        dirty = self.git("status", "--porcelain", "--untracked-files=all", "--ignored=matching",
+                         "--ignore-submodules=all").decode().splitlines()
+        if dirty:
+            reasons.append(f"uncommitted changes in the unit's tree ({len(dirty)} path(s)): the "
+                           "gates judge the tree, so it must be exactly the commit that lands")
         code, _out, err = _quiet(g.floor_guard.main,
                                  ["--repo", str(self.repo), "--base", "main", "--quiet"])
         if code != 0:
@@ -976,12 +987,17 @@ class Run:
                 reasons.extend(f"verify.py {e}" for e in g.verify.check_scope(
                     loaded, f"{CONTRACT_PATH}@{self.base_sha}", self.ctx.contract_digest))
                 reasons.extend(f"verify.py {e}" for e in g.verify.check_redaction(loaded, path))
-        self.gate = {"go": not reasons, "reasons": reasons, "manifest": manifest}
+        self.gate = {"go": not reasons, "reasons": reasons, "manifest": manifest, "head": head}
 
-    def _land(self):
-        """Merge the verified unit into main without touching the work tree (commit-tree)."""
-        tree = self.git("rev-parse", "work^{tree}").decode().strip()
-        commit = self.git("commit-tree", tree, "-p", "main", "-p", "work", "-m",
+    def _land(self, head=None):
+        """Merge the verified head into main without touching the work tree (commit-tree).
+
+        The head the verifier judged, never whatever `work` points at by now: a commit made after
+        the verdict must not ride in with the unit. A caller outside replay() may name a head;
+        with no verdict and none named, HEAD is landed."""
+        head = head or self.gate.get("head") or self.git("rev-parse", "HEAD").decode().strip()
+        tree = self.git("rev-parse", f"{head}^{{tree}}").decode().strip()
+        commit = self.git("commit-tree", tree, "-p", "main", "-p", head, "-m",
                           "land: unit verified GO").decode().strip()
         self.git("update-ref", "refs/heads/main", commit)
         self.landed = True

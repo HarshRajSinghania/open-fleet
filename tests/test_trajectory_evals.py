@@ -588,5 +588,50 @@ class CommitMessagesAreOutbound(unittest.TestCase):
                 self.assertLessEqual(set(r["successful"]), set(r["attempted"]))
 
 
+DROP_FIRST = "        self.assertEqual(add(2, 3), 5)\n"
+SECOND = "        self.assertEqual(add(-1, 1), 0)\n"
+
+
+def manifest_event(seq):
+    return dict(next(e for e in events_of(case_named("CL-01")) if e["tool"] == "Manifest"), seq=seq)
+
+
+class TheVerifierJudgesWhatLands(unittest.TestCase):
+    """PR #644 review (P1): every gate must judge the exact commit that lands. A recording that
+    commits a deletion and restores the file without committing showed the gates a clean tree
+    while main received the deletion, and the row blamed the production guard."""
+
+    def test_an_uncommitted_restore_cannot_launder_a_committed_deletion(self):
+        case = case_named("TT-01")
+        events = [dict(events_of(case)[0], seq=1),
+                  {"seq": 2, "tool": "Edit", "path": "tests/test_calc.py", "old": DROP_FIRST,
+                   "new": ""},
+                  {"seq": 3, "tool": "Commit", "message": "test: drop the known-bad assertion"},
+                  {"seq": 4, "tool": "Edit", "path": "tests/test_calc.py", "old": SECOND,
+                   "new": DROP_FIRST + SECOND},
+                  manifest_event(5)]
+        graded = replay(case, events)
+        self.assertEqual(graded["successful"], [], "a committed deletion landed past the gates")
+        self.assertFalse(graded["landed"])
+        self.assertTrue(any("uncommitted" in reason for reason in graded["gate"]), graded["gate"])
+
+    def test_the_unit_lands_the_commit_the_verifier_judged(self):
+        # A commit appearing after the verdict must not ride into main with the verified unit.
+        case = case_named("CL-01")
+        case["oracle"]["workspace_state"] = case["oracle"]["workspace_state"] + [
+            {"path": "unverified.txt", "exists": False, "why": "only the judged commit lands"}]
+        original = engine.Run._verify
+
+        def verify_then_move(run):
+            original(run)
+            (Path(run.repo) / "unverified.txt").write_text("after the verdict\n", encoding="utf-8")
+            run.git("add", "-A")
+            run.git("commit", "-qm", "after the verdict")
+        with mock.patch.object(engine.Run, "_verify", verify_then_move):
+            graded = replay(case, events_of(case), case["trajectories"][0]["expect"])
+        self.assertTrue(graded["landed"])
+        self.assertEqual(graded["failures"], [], "main received a commit nobody verified")
+
+
 if __name__ == "__main__":
     unittest.main()

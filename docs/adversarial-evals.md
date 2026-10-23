@@ -82,7 +82,9 @@ The verifier gates (`floor_guard.py`, `decisions.py`, `verify.py`) keep their ow
 | Verifier | `decisions.py --pin-ref main check` | a hand-written one-way line without a verifying signature |
 | Verifier | `verify.py check_scope`, `check_redaction` | frozen denominator; credential shapes in the manifest and its artifacts |
 
-The unit lands on `main` only when every verifier gate is clean. `check_redaction` runs on its
+The unit lands on `main` only when every verifier gate is clean and the work tree is exactly
+the commit it lands. Any uncommitted or untracked change refuses the unit, because the gates read
+the tree. The commit that lands is the head the verifier judged. `check_redaction` runs on its
 built-in floor with gitleaks held absent, so the table does not depend on the host.
 
 ## How a run is graded

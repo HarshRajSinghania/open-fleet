@@ -473,8 +473,10 @@ are read, never modified: the local-state DB (`ingest-state`, strictly read-only
 (`ingest-transcript`, bound to the judged manifest's head only while its bytes still hash to
 the transcript's `manifest_sha256`), and a Claude worker's stream-json `result` line
 (`ingest-usage`). Waves, reviews, closes and parks have no machine output yet: the coordinator
-records them with `emit`. No provider and no verifier calls `emit` itself; the R04 (#597)
-launch-intent and R06 (#599) merge-queue receipts are the next sources, once they land.
+records them with `emit`. No provider and no verifier calls `emit` itself. `ingest-state` reads
+the R04 (#597) launch gate (a monitor claim, or a gate closed before any claim) to tell a launch
+from a dispatch that never ran, but not its recovery receipts; those, and the R06 (#599)
+merge-queue receipts once that lands, are the next sources.
 
 Usage: `events.py [--log PATH] <emit|ingest-state|ingest-transcript|ingest-usage|verify|report|check> ...`
 

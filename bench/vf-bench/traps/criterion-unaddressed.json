@@ -1,0 +1,79 @@
+{
+  "id": "criterion-unaddressed-1",
+  "class": "criterion-unaddressed",
+  "sound_expected": "RED",
+  "note": "#600: the isolated twin of scope-shrink-1, whose static manifest is also refused for its empty range (#310) and so moves no score when this leg is deleted. Here the contract counts AC-1 and AC-2, the manifest declares both and marks AC-2 `addressed: false` \u2014 the frozen denominator is coordinator state, so an unaddressed criterion is refused.",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "gh_stub": true,
+  "repo": "vf-bench/criterion-unaddressed",
+  "coordinator_contract": "coordinator/two-criteria.md",
+  "manifest": {
+    "unit": "vf-bench-criterion-unaddressed",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "coordinator/two-criteria.md",
+      "digest": "{{contract_two_criteria_digest}}",
+      "criterion_ids": [
+        "AC-1",
+        "AC-2"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      },
+      {
+        "id": "AC-2",
+        "text": "add(a, b) == add(b, a)",
+        "addressed": false
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  },
+  "expect_reason": "authoritative criteria not addressed in criteria[] (absent, or addressed != true): ['AC-2']",
+  "neighbour": "two-criteria-valid-control-1"
+}

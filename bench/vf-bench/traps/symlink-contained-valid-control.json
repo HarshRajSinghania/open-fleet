@@ -1,0 +1,74 @@
+{
+  "id": "symlink-contained-valid-control-1",
+  "class": "control-not-a-trap",
+  "sound_expected": "GREEN",
+  "note": "#600: the neighbour of nc-artifact-symlink-escape-1. The negative-control artifact is a SYMLINK that resolves INSIDE the clone (docs/reports/vf/nc-link.txt -> nc.txt), its bytes pinned in artifacts[]. Evidence an auditor can re-derive from a checkout, so it must stay GREEN: the #267 bound refuses where a path RESOLVES, not that it is a link.",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "gh_stub": true,
+  "repo": "vf-bench/symlink-contained-valid-control",
+  "manifest": {
+    "unit": "vf-bench-symlink-control",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/nc-link.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc-link.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  }
+}

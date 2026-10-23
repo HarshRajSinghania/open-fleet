@@ -1,0 +1,39 @@
+{
+  "id": "dispatch-valid-control-1",
+  "class": "control-not-a-trap",
+  "sound_expected": "GREEN",
+  "note": "#600: a genuine PROFILE-SIGNED dispatch record (#590), signed at run time with a fresh coordinator key the bench holds off-worker: manifest_id, contract_digest, unit_class and the profile pair, verified against the supplied pubkey on the report-only fixture. Must stay GREEN \u2014 before the 2026-10-23 review's P2-2 fix every profile-signed record read as forged, a false rejection no corpus case sampled. Neighbour of the three dispatch traps. Needs a system-custody git (a signed record is a lane claiming soundness, h409 R2); without one the case is skipped by name.",
+  "unit_class": "report-only",
+  "fixture": "report-only",
+  "dispatch": {
+    "record": {
+      "manifest_id": "review-it",
+      "contract_digest": "{{contract_digest}}",
+      "unit_class": "report-only",
+      "profile": "ro",
+      "parent_profile": "rw"
+    }
+  },
+  "manifest": {
+    "unit": "review-it",
+    "unit_class": "report-only",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "addressed": true
+      }
+    ],
+    "pr": {
+      "reviewed_sha": "{{head_sha}}"
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "id": "narrated-valid-control-1",
+  "class": "control-not-a-trap",
+  "sound_expected": "GREEN",
+  "note": "#600's neighbouring valid control for the single-field traps on the run-time mutation fixture: the full mutation-valid shape in the NARRATED lane (no --execute-nc) with no dispatch lighting \u2014 a real fix, a pinned revert control, a fresh commands[] record, an independent MEMBER approval at head_sha served by the stubbed gh. Each trap that names it differs from it in exactly the field its guard reads, so deleting that one guard turns the trap GREEN while this stays GREEN (tests/test_vfbench_guards.py).",
+  "unit_class": "mutation",
+  "fixture": "mutation-revert",
+  "gh_stub": true,
+  "repo": "vf-bench/narrated-valid-control",
+  "manifest": {
+    "unit": "vf-bench-narrated-control",
+    "base_sha": "{{base_sha}}",
+    "head_sha": "{{head_sha}}",
+    "lighting": "lit",
+    "reviewer_mode": "cross-vendor",
+    "intent": {
+      "goal": "make add() return the sum, as AC-1 requires",
+      "ruled_out": "widening the interface beyond AC-1",
+      "why": "AC-1 is the contracted denominator"
+    },
+    "contract": {
+      "source": "contract.md",
+      "digest": "{{contract_digest}}",
+      "criterion_ids": [
+        "AC-1"
+      ]
+    },
+    "criteria": [
+      {
+        "id": "AC-1",
+        "text": "add(a, b) returns a + b",
+        "addressed": true
+      }
+    ],
+    "commands": [
+      {
+        "label": "tests",
+        "cmd": "{{proof_cmd}}",
+        "exit": 0,
+        "wtree": "{{head_tree}}",
+        "artifact": "docs/reports/vf/nc.txt",
+        "cmd_sha256": "{{proof_cmd_sha256}}"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "docs/reports/vf/nc.txt",
+        "sha256": "{{nc_sha256}}"
+      },
+      {
+        "path": "docs/reports/vf/review.txt",
+        "sha256": "{{review_sha256}}"
+      }
+    ],
+    "pr": {
+      "number": 1,
+      "reviewed_sha": "{{head_sha}}"
+    },
+    "negative_control": {
+      "did": "restored mod.py from base_sha at head_sha",
+      "tool": "revert",
+      "result": "the criterion-bound test went RED (mutant KILLED)",
+      "artifact": "docs/reports/vf/nc.txt",
+      "command": "{{proof_cmd}}",
+      "paths": [
+        "mod.py"
+      ]
+    }
+  }
+}

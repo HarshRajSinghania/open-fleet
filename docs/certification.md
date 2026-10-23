@@ -74,7 +74,7 @@ works. They do not show how the upstream build or the harness behaves:
   them.
 
 <!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->
-Record version 2 (2026-10-23). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
+Record version 3 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
 
 | Provider | Upstream certified against | live-witnessed | fixture-tested | source-only | unsupported | unavailable | stale |
 |---|---|---|---|---|---|---|---|
@@ -84,7 +84,7 @@ Record version 2 (2026-10-23). Counts are cells: one (provider, profile, harness
 | `jcode-swarm` | unknown |  | 1 |  |  |  |  |
 | `multiclaude` | unknown |  | 2 |  |  |  |  |
 | `openhands` | unknown |  | 2 |  |  |  |  |
-| `orca` | v1.4.229 (a0cd1644f320) | 2 | 2 | 14 | 24 |  |  |
+| `orca` | v1.4.229 (a0cd1644f320) | 2 | 2 | 13 | 16 |  |  |
 | `overstory` | unknown |  | 9 |  | 5 |  |  |
 | `paperclip` | unknown |  | 3 |  | 1 |  |  |
 | `posix` | in-repo |  | 29 |  | 1 |  |  |
@@ -118,17 +118,32 @@ Live-witnessed cells (everything else is fixture, source or refusal evidence):
 
 ### What the record surfaces
 
-These limitations are recorded in the cells. They are not fixed here:
+The first run surfaced five defects, and record version 3 records them fixed (#596). The tiers did
+not move up: every changed cell is still `source-only` or `fixture-tested`, or is now a refusal.
 
-- **Three Orca read-only rows are weaker than the posix ones.** On Orca, `ro` for `crush`,
-  `hermes` and `jcode` uses spawn_worker.sh's pre-#580 rows. `crush run --quiet` auto-approves
-  every run. `hermes chat --Continue` keeps writes in its `file` toolset. The jcode row leaves
-  `replace` enabled. Treat those cells as unverified read-only.
-- **`opencode`, `omp` and `pi` are listed for Orca but refused there.** spawn_worker.sh has rows
-  for them only off Orca. Without a `WORKER_CMD` override, the wrapper refuses all six cells.
-- **A posix `ro` worker cannot report `worker_done`.** It has no tool to send mail, so posix
-  records its clean exit as `worker_died (exit=0)`. The coordinator reads the report from the
-  transcript. That is how `first_run.py --profile ro` works.
+- **Orca read-only rows for `jcode` and `hermes` now carry base.py's restriction.** jcode gets
+  its `--tools` allowlist and the full `--disabled-tools` set, `replace` included. hermes gets
+  `HERMES_WRITE_SAFE_ROOT=/dev/null` and `--toolsets file,web,session_search`. A test holds both
+  to base.py's flags, but nothing runs them against Orca, so the cells stay `source-only`.
+- **Orca `ro` for `crush` is refused.** No flag makes crush read-only. Its read-only mode is a
+  `crush.json` in its data dir, and only the posix provider writes that file. The Orca lane
+  installs nothing, so the wrapper refuses rather than launch an auto-approving `crush run`.
+- **`opencode`, `omp` and `pi` are no longer advertised for Orca.** spawn_worker.sh has no Orca
+  row for them, so `capabilities.json` stopped claiming them and their nine cells left the
+  record. `tests/test_capability_launch_agreement.py` fails if a claimed provider/harness pair
+  does not launch through the wrapper.
+- **A posix `ro` worker can report completion.** Where an exit monitor runs, its assignment
+  names the line `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>`. When that line ends
+  the worker's final answer, the monitor relays it as the worker's `worker_done`. The final
+  answer is read per harness by the same reader as the first-run report, so a marker in
+  reasoning, in a tool result or in an echoed prompt does not count. The inert stand-in prints the line in each harness's
+  own output shape, so `first_run.py --profile ro` settles `completed`. A worker that does not
+  print it still settles `worker_died (exit=0)`, and the run accepts either. Only the stand-in
+  has printed the line; no real harness has.
+- **gastown's claude `ro` alias carries `--disallowedTools`.** Every claude `ro` launch row and
+  alias carries `Edit,Write,MultiEdit,NotebookEdit`, except Orca's plan-mode row: that is the
+  live-witnessed route, whose worker wrote its report after the coordinator approved its plan.
+  Changing it needs a new witness.
 
 ## A refreshed pin voids cells
 

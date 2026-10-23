@@ -1,8 +1,8 @@
 {
   "_about": "Versioned certification record for every advertised Runtime Provider Interface route (#596). Provider cells are capabilities.json's supported_profiles x supported_harnesses per provider; harness cells are base.py's launch table x {ro, rw}. Each route group names its tier, evidence paths, explicit limitations and, for a refusal, the typed refusal. An upstream version or commit that was never recorded stays null (rendered `unknown`) and is never guessed. A provider bound to a pin (`upstream.pin`) goes STALE — every one of its cells reads `stale`, never its recorded tier — as soon as the pin's commit, version or live_receipts.version differs from `certified_against`; recheck the cells, bump record_version, re-record. runtime/scripts/certification.py validates and renders this file; docs/certification.md explains it and carries the first-run guide.",
   "schema_version": "open-fleet-certification/v1",
-  "record_version": 2,
-  "recorded": "2026-10-23",
+  "record_version": 3,
+  "recorded": "2026-10-24",
   "tiers": {
     "live-witnessed": "A real upstream build and a real harness ran this route end to end; the evidence is a docs/runs/ report whose RUN: header binds (verifier=GREEN, cited as a mission's proof_evidence) and whose own inventoried artifacts name this exact route, quoted in witnessed.route. Exact upstream and harness versions are recorded.",
     "fixture-tested": "The fleet's own code for this route runs in CI against an in-repo fixture — a scripted upstream transport or the first_run.py inert worker. Proves the fleet's side of the route; proves nothing about the upstream build or the harness.",
@@ -49,6 +49,7 @@
           "limitations": [
             "Witnessed on Linux only, at Orca 1.4.224; the current pin v1.4.229 carries these receipts through pins.json live_receipts after a source-delta re-witness, so the 1.4.229 delta itself ran no worker live.",
             "ro rides spawn_worker.sh's custom-argv lane (`claude --permission-mode plan`), never worker-start; turn start was not observable on that substrate and the workers were proven live by screen reads and their worker_done deliveries.",
+            "That Orca row is the one claude ro launch WITHOUT base.py's --disallowedTools Edit,Write,MultiEdit,NotebookEdit: the witnessed workflow wrote its report after the coordinator approved the plan in-pane, so adding the set changes this route and needs a re-witness (tests/test_claude_ro_launches.py names the exemption).",
             "macOS was not witnessed for this route."
           ]
         },
@@ -90,7 +91,7 @@
         },
         {
           "profiles": ["danger"],
-          "harnesses": ["claude", "codex", "opencode", "omp", "pi", "jcode", "goose", "hermes", "crush", "gemini", "cursor", "antigravity", "grok", "droid"],
+          "harnesses": ["claude", "codex", "jcode", "goose", "hermes", "crush", "gemini", "cursor", "antigravity", "grok", "droid"],
           "tier": "unsupported",
           "refusal": "has no supported authoritative placement binding",
           "evidence": [
@@ -114,19 +115,6 @@
           ],
           "limitations": [
             "Orca's agent map has no read-only mode for these harnesses; a WORKER_CMD override launches them on the operator's own assertion, outside this certification."
-          ]
-        },
-        {
-          "profiles": ["ro", "rw"],
-          "harnesses": ["opencode", "omp", "pi"],
-          "tier": "unsupported",
-          "refusal": "has no verified PROFILE=",
-          "evidence": [
-            "tests/test_certification.py::TestOrcaRouteCellsMatchTheWrapper",
-            "runtime/scripts/spawn_worker.sh"
-          ],
-          "limitations": [
-            "capabilities.json lists these for orca because Orca itself can host them, but spawn_worker.sh's rows for them exist only off Orca (Orca strips their launch arguments), so the fleet's wrapper refuses them on Orca without a WORKER_CMD override."
           ]
         },
         {
@@ -158,15 +146,29 @@
         },
         {
           "profiles": ["ro"],
-          "harnesses": ["jcode", "hermes", "crush"],
+          "harnesses": ["jcode", "hermes"],
           "tier": "source-only",
           "evidence": [
             "runtime/scripts/spawn_worker.sh",
+            "tests/test_spawn_worker.py::TestOrcaRoRowsCarryBasePyRestrictions",
             "tests/test_certification.py::TestOrcaRouteCellsMatchTheWrapper"
           ],
           "limitations": [
-            "NOT read-only by the standard #580 set off Orca: these Orca rows are the pre-#580 lines spawn_worker.sh replaced on every other runtime — `crush run --quiet` (crush auto-approves every run), `hermes chat --Continue` (hermes bundles writes into its `file` toolset), and a jcode row that leaves `replace` enabled. Treat these cells as unverified ro until the rows are brought to base.py's.",
-            "No test runs them against Orca."
+            "The Orca rows are TUI lines carrying base.py's ro restriction: jcode's --tools allowlist and --disabled-tools set (replace included), hermes' HERMES_WRITE_SAFE_ROOT=/dev/null with --toolsets file,web,session_search. A test holds the flags to base.py's; nothing runs them against Orca or a real binary.",
+            "No deny hook is installed on the Orca ro lane: the restriction is the launch flags alone."
+          ]
+        },
+        {
+          "profiles": ["ro"],
+          "harnesses": ["crush"],
+          "tier": "unsupported",
+          "refusal": "has no verified PROFILE=ro launch flag",
+          "evidence": [
+            "tests/test_spawn_worker.py::TestOrcaRoRowsCarryBasePyRestrictions",
+            "tests/test_certification.py::TestOrcaRouteCellsMatchTheWrapper"
+          ],
+          "limitations": [
+            "No flag makes crush read-only: base.py's ro is a <data-dir>/crush.json disabled_tools that only the posix provider's install_worktree_hooks writes, and `crush run` auto-approves every tool. The Orca custom-argv lane installs nothing, so it refuses; a WORKER_CMD override launches crush on the operator's own assertion."
           ]
         },
         {
@@ -198,13 +200,14 @@
             "runtime/scripts/first_run.py",
             "tests/test_certification.py::TestFirstRunFixture",
             "tests/test_posix_provider.py::TestSetsidWorkerLifecycle",
+            "tests/test_posix_provider.py::TestRoWorkerSignalsCompletion",
             "tests/test_spawn_worker.py::TestNonOrcaLaunchTableIsBasePy"
           ],
           "limitations": [
             "The provider is this repository's code, so each CI run certifies the commit it runs at; the first_run.py fixture drives create, dispatch, delivery, result, independent verify and retain/release through the public wrappers for every cell here.",
             "The worker is an inert stand-in answering to each harness name: no real harness binary runs, and the launch flags themselves are source-read (see the harness cells).",
             "CI runs the setsid backend only; tmux is exercised by tests/test_posix_provider.py on hosts that have it, and cmux by no test.",
-            "A ro worker has no tool to send worker_done: posix records its clean exit as worker_died (exit=0) and the coordinator takes the report from the transcript.",
+            "A ro worker has no tool to send mail. Where an exit monitor runs, its assignment names the line OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>, and when that line ends the harness's final answer (runtime/providers/transcript.py, the first-run report's reader) the monitor relays it as the worker's worker_done; the stand-in prints it in each harness's own output shape. A clean exit without the line is still worker_died (exit=0). Either way the coordinator takes the report from the transcript.",
             "No live first run is recorded yet: `first_run.py --worker live` is the one-command path and stays REMAINING until a maintainer binds its receipt."
           ]
         },
@@ -356,11 +359,12 @@
           "tier": "fixture-tested",
           "evidence": [
             "tests/test_gastown_worktrunk_providers.py::TestGastownProvider",
+            "tests/test_claude_ro_launches.py::EveryClaudeRoLaunchCarriesTheSet",
             "tests/test_certification.py::TestAdapterRefusalsMatchTheRecord"
           ],
           "limitations": [
             "Scripted gt/bd transport; upstream version unknown.",
-            "The ro alias is base.py's short `command` label (for claude `claude --permission-mode plan`), without the --disallowedTools list the full posix line carries."
+            "The ro alias is base.py's ro `command` label, which carries every restriction flag: for claude --disallowedTools=Edit,Write,MultiEdit,NotebookEdit ahead of plan mode."
           ]
         },
         {
@@ -576,7 +580,8 @@
             "runtime/providers/base.py",
             "tests/test_certification.py::TestHarnessCellsMatchTheLaunchTable",
             "tests/test_certification.py::TestFirstRunFixture",
-            "tests/test_spawn_worker.py::TestNonOrcaLaunchTableIsBasePy"
+            "tests/test_spawn_worker.py::TestNonOrcaLaunchTableIsBasePy",
+            "tests/test_claude_ro_launches.py::EveryClaudeRoLaunchCarriesTheSet"
           ],
           "limitations": [
             "base.py's claude line has never run against a real binary here; Claude Code 2.1.296 ran live only on the Orca route's own rows (see the orca cells).",

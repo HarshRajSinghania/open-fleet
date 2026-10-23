@@ -1491,5 +1491,72 @@ esac
             self.assertIn("fleet/rev-", wts)
 
 
+def run_orca_launch(agent, profile="ro", env_extra=None):
+    """spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) ON ORCA: the custom-argv rows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+               "SW_PRINT_LAUNCH": "1", "PROFILE": profile, **(env_extra or {})}
+        p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", agent, "high"],
+                           env=env, capture_output=True, text=True)
+        launch = next((ln[len("LAUNCH="):] for ln in p.stdout.splitlines() if ln.startswith("LAUNCH=")), None)
+        return p.returncode, launch, p.stderr
+
+
+def _has_run(tokens, want):
+    """`want` (a flag and its value) as a CONTIGUOUS run of `tokens`."""
+    return any(tokens[i:i + len(want)] == want for i in range(len(tokens) - len(want) + 1))
+
+
+class TestOrcaRoRowsCarryBasePyRestrictions(unittest.TestCase):
+    """#596 certification finding: on Orca, ro takes the custom-argv lane with spawn_worker.sh's
+    OWN row, and the crush, hermes and jcode rows were the pre-#580 lines #580 replaced on every
+    other runtime: `crush run --quiet` (`crush run` auto-approves every tool), `hermes chat
+    --Continue` (its `file` toolset writes) and a jcode row that left `replace` enabled. The
+    restriction each harness needs is read from base.py's source-audited ro line, so the Orca row
+    and the posix table cannot drift apart again."""
+
+    @staticmethod
+    def _base_ro(agent):
+        return provider_base.build_harness_command(agent, "ro", "/tmp/of-wt", None, effort="high")
+
+    @staticmethod
+    def _value(argv, flag):
+        return argv[argv.index(flag) + 1]
+
+    def test_jcode_ro_on_orca_disables_what_base_py_disables(self):
+        rc, launch, err = run_orca_launch("jcode")
+        self.assertEqual(rc, 0, err)
+        tokens = launch.split()
+        argv = self._base_ro("jcode")["argv"]
+        for flag in ("--tools", "--disabled-tools"):
+            with self.subTest(flag=flag):
+                self.assertTrue(_has_run(tokens, [flag, self._value(argv, flag)]), launch)
+        self.assertIn("replace", self._value(tokens, "--disabled-tools").split(","))
+
+    def test_hermes_ro_on_orca_has_no_write_root_and_no_write_toolset(self):
+        rc, launch, err = run_orca_launch("hermes")
+        self.assertEqual(rc, 0, err)
+        tokens = launch.split()
+        base = self._base_ro("hermes")
+        self.assertEqual(base["env"]["HERMES_WRITE_SAFE_ROOT"], "/dev/null")
+        self.assertIn("HERMES_WRITE_SAFE_ROOT=/dev/null", tokens[:tokens.index("hermes")])
+        self.assertTrue(_has_run(tokens, ["--toolsets", self._value(base["argv"], "--toolsets")]), launch)
+        self.assertNotIn("--Continue", tokens)
+
+    def test_crush_ro_on_orca_fails_closed(self):
+        # crush has no read-only FLAG: base.py's ro strength is `<data-dir>/crush.json`
+        # disabled_tools, which only posix's install_worktree_hooks writes. The Orca custom-argv
+        # lane has no install step, so it refuses rather than launch an auto-approving crush.
+        self.assertTrue(self._base_ro("crush")["profile_flag"].startswith("disabled_tools:"))
+        rc, launch, err = run_orca_launch("crush")
+        self.assertEqual(rc, 2, err)
+        self.assertIsNone(launch)
+        self.assertIn("no verified PROFILE=ro launch flag", err)
+        # Write tiers keep their verified-flag gate: crush stays on Orca's roster.
+        rc, launch, err = run_orca_launch("crush", "rw", {"ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("--yolo", launch.split())
+
+
 if __name__ == "__main__":
     unittest.main()

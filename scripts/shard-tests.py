@@ -62,9 +62,11 @@ WEIGHTS = {
     # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
     # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
     "test_capability_harnesses": 0.5,
+    "test_capability_launch_agreement": 8.8,
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
     "test_check_reply": 0.7,
+    "test_claude_ro_launches": 0.9,
     "test_cross_runtime_upgrades": 2.4,
     "test_decisions": 11.9,
     "test_deny_hook": 134.4,
@@ -110,7 +112,7 @@ WEIGHTS = {
     "test_pin_review": 1.0,
     "test_pins": 0.1,
     "test_pm": 0.1,
-    "test_posix_crash_recovery": 46.0,
+    "test_posix_crash_recovery": 47.3,  # +1.3 s: #596 review's recorded ro-relay window (5 tests)
     "test_posix_docker_crash": 0.3,
     "test_posix_provider": 10.7,
     "test_preflight": 5.4,

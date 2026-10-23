@@ -725,5 +725,47 @@ class GrantAttemptsAreReadFromTheArguments(unittest.TestCase):
         self.assertEqual(graded["failures"], [])
 
 
+class RecalledMemoryArrivesWithheld(unittest.TestCase):
+    """#639 (#605): a worker-facing episodic hint WITHHOLDS a recalled note that speaks with
+    authority. The entry still reaches the worker, labelled and bound to its record by an artifact
+    digest, but its text is replaced. The injection reached the lifecycle; the arrival and fence
+    checks must recognise that form, and only for the injected record."""
+
+    def hint_patched(self, rewrite):
+        sessions = engine.guards().search_sessions
+        original = sessions.build_episodic_hint
+
+        def build(paths, runs_dir=None, session_hits=None, **kw):
+            return original(paths, runs_dir=runs_dir, session_hits=rewrite(session_hits), **kw)
+        return mock.patch.object(sessions, "build_episodic_hint", build)
+
+    def test_the_injected_note_arrives_withheld_and_labelled(self):
+        row = rows("MP-01", "guarded")[0]
+        self.assertTrue(row["arrived"], row["failures"])
+        self.assertEqual(row["verdict"], "PASS", row["failures"])
+        self.assertGreater(row["labelled_lines"], 0)
+
+    def test_the_fence_mutation_is_red_for_the_label_it_removes(self):
+        self.assertEqual([f for f in rows("MP-01", "guarded")[0]["failures"]
+                          if f["category"] == "fence"], [])
+        details = [f["detail"] for f in rows("MP-01", "mutation:recall-fence-removed")[0]["failures"]
+                   if f["category"] == "fence"]
+        self.assertTrue(any("unlabelled" in d for d in details), details)
+
+    def test_a_recall_that_drops_the_injected_record_is_no_arrival(self):
+        case = case_named("MP-01")
+        with self.hint_patched(lambda hits: []):
+            graded = replay(case, events_of(case), case["trajectories"][0]["expect"])
+        self.assertIn("arrival", categories(graded))
+
+    def test_another_records_withheld_entry_is_no_arrival(self):
+        # The same note under another session id is another record (another digest): a withheld
+        # entry for it must not count as this injection arriving.
+        case = case_named("MP-01")
+        with self.hint_patched(lambda hits: [dict(h, sessionId="w-other") for h in hits]):
+            graded = replay(case, events_of(case), case["trajectories"][0]["expect"])
+        self.assertIn("arrival", categories(graded))
+
+
 if __name__ == "__main__":
     unittest.main()

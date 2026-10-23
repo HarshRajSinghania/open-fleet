@@ -6303,6 +6303,35 @@ class ConditionalIncludeFilterNeverRunsInTheControl(MutationFixture):
                         "control: blanks read in the source repo must miss the linked-only filter")
 
 
+class ConfigMergeDriverNeutralisedInTheControl(MutationFixture):
+    """PR #649 review (merge-driver class): a repo `merge.<driver>.driver` runs when git 3-way-
+    merges a path. verify's control `revert`/`apply`/`checkout` legs now carry the override that
+    neutralises it, via driver_blanks. A linear in-order range revert is trivial at every step and
+    verify refuses a non-linear range, so the leg cannot in fact be driven to a merge (brute-forced
+    in tests/test_gitexec_config_commands.py); the override rides defensively, and the real live
+    site, `git merge-tree`, is covered there. This pins that the legs' env carries it and that a
+    full control run with a planted merge driver stays GREEN and runs nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("config", "merge.m.driver", "false %O %A %B")
+        info = self.repo / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "attributes").write_text("*.py merge=m\n", encoding="utf-8")
+
+    def test_the_control_legs_env_overrides_the_merge_driver(self):
+        env = verify._Authority.blanked_env(verify._Authority.driver_blanks(str(self.repo)))
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs.get("merge.m.driver"), "exit 1")
+
+    def test_a_full_revert_control_runs_the_merge_driver_nowhere(self):
+        rc, out, err = self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
+                                      "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.proof_cmd)
+        self.assertEqual(rc, 0, out + err)
+
+
 class TrackedArtifactPinsAreChecked(RepoCase):
     """#596 certification finding: a manifest whose `artifacts[]` sha256 was wrong for a file
     TRACKED at head_sha verified clean. The tracked-at-head read returned the blob without ever

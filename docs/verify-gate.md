@@ -158,10 +158,10 @@ inherited `OPEN_FLEET_UNIT_CLASS` could downgrade a class the coordinator set as
   it as `N failed`, and even beside an assertion failing in another test: the control must leave
   the code loadable. The source repository's git hooks never run (`core.hooksPath=/dev/null` on
   every verifier git leg), and no repository-config command the worker planted runs either: a
-  `core.fsmonitor`, an external diff, and a `filter.<driver>.clean/smudge`/`diff.<driver>.textconv`
-  a `.gitattributes` selects are all neutralised before the control's `worktree add`/`checkout`/
-  `write-tree` materialises worker content (#629), so the only worker code the verifier runs is
-  the bound command itself. The drivers are read in the directory and ref state of each call that
+  `core.fsmonitor`, an external diff, a `filter.<driver>.clean/smudge`/`diff.<driver>.textconv`,
+  or a `merge.<driver>.driver` a `.gitattributes` selects are all neutralised before the control's
+  `worktree add`/`checkout`/`write-tree` materialises or merges worker content (#629), so the only
+  worker code the verifier runs is the bound command itself. The drivers are read in the directory and ref state of each call that
   could run them: the control worktree is created empty (`--no-checkout`) and populated only after
   its OWN config is read, since an `includeIf "gitdir:"`/`"onbranch:"` can declare a filter only
   in a linked worktree (PR #649 review). The bind is re-read from the sealed control tree itself, the

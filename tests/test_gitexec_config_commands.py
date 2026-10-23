@@ -156,11 +156,15 @@ class GitexecDriverBlanks(unittest.TestCase):
         self.addCleanup(verify._Authority.reset)
         p = self._repo()
         for key in ("filter.media.clean", "filter.media.smudge", "filter.media.process",
-                    "diff.jpg.textconv", "diff.jpg.command", "filter.my.lfs.clean"):
+                    "diff.jpg.textconv", "diff.jpg.command", "filter.my.lfs.clean",
+                    "merge.union.driver", "merge.union.recursive", "merge.inner.driver"):
             p._git("config", key, "danger")
         p._git("config", "filter.media.required", "true")
         want = gitexec.driver_blanks(p.repo)
-        self.assertEqual(len(want), 10)
+        # 8 filter + 2 diff + 2 merge (union, inner — one driver override per declared name).
+        self.assertEqual(len(want), 12)
+        self.assertIn(("merge.union.driver", "exit 1"), want)
+        self.assertIn(("merge.inner.driver", "exit 1"), want)
         self.assertEqual(diff_scope._driver_blanks(p.repo), want)
         self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
 
@@ -652,6 +656,77 @@ class ConditionalIncludesAreReadWhereGitRuns(unittest.TestCase):
         p, linked, _ = self._linked("gitdir", _CONDITIONS[0][1])
         self.assertFalse([k for k, _ in gitexec.driver_blanks(p.repo) if k.startswith("filter.gitdir.")])
         self.assertTrue([k for k, _ in gitexec.driver_blanks(linked) if k.startswith("filter.gitdir.")])
+
+
+# PR #649 review (merge-driver class): a `merge.<driver>.driver`, selected by a `merge=<driver>`
+# attribute, is a command git runs when it 3-way-merges a path — on the read side through
+# `git merge-tree` (diff_scope.predict_merge, and wtree.sh predict-merge, which execs it). It is
+# neutralised by overriding `merge.<driver>.driver` to `exit 1` (a shell builtin that runs nothing
+# and fails the merge closed). A linear in-order range revert is trivial at every step, so verify's
+# revert leg cannot reach a merge driver; it carries the override defensively all the same.
+class MergeDriverNeutralised(unittest.TestCase):
+
+    def _repo(self, recursive=False):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        # The probe RESOLVES the merge (writes a result and exits 0), so a merge that runs it looks
+        # clean; neutralised, the same merge is a genuine textual conflict. That difference is how a
+        # fired driver is told from a blanked one, independent of the marker.
+        p.probe.write_text("#!/bin/sh\necho merge >> " + _sh(p.marker) + "\n"
+                           ": > \"$2\"\nexit 0\n", encoding="utf-8")
+        p.probe.chmod(0o755)
+        p.commit("shared.txt", "base\n")
+        p._git("checkout", "-q", "-b", "side")
+        (p.repo / "shared.txt").write_text("side\n", encoding="utf-8")
+        p._git("commit", "-qam", "side")
+        p._git("checkout", "-q", "main" if p._git("rev-parse", "--verify", "-q", "main").returncode == 0 else "master")
+        (p.repo / "shared.txt").write_text("mainline\n", encoding="utf-8")
+        p._git("commit", "-qam", "main")
+        self.main = "main" if p._git("rev-parse", "--verify", "-q", "main").returncode == 0 else "master"
+        p._git("config", "merge.m.driver", f"{p.probe} %O %A %B")
+        if recursive:
+            p._git("config", "merge.m.recursive", "m2")
+            p._git("config", "merge.m2.driver", f"{p.probe} rec %O %A %B")
+        (p.repo / ".git" / "info" / "attributes").write_text("shared.txt merge=m\n", encoding="utf-8")
+        p.fired()
+        # Positive control: plain merge-tree runs the driver, which resolves (exit 0) — so a GREEN
+        # below both suppresses the marker AND flips the verdict back to a real conflict.
+        clean = p._git("merge-tree", "--write-tree", self.main, "side")
+        self.assertEqual(clean.returncode, 0, "fixture: the merge driver did not resolve on bare git")
+        self.assertIn("merge", p.fired())
+        return p
+
+    def test_predict_merge_runs_no_merge_driver(self):
+        p = self._repo()
+        # predict_merge returns (clean, conflicts, ...): neutralised, the divergent merge that the
+        # driver would have resolved is left as a real conflict — the fail-closed direction.
+        result = diff_scope.predict_merge(p.repo, self.main, "side")
+        self.assertEqual(p.fired(), set(), "diff_scope.predict_merge ran the merge driver")
+        self.assertFalse(result["clean"], "neutralised, the divergent merge must read as a conflict")
+        self.assertIn("shared.txt", result["conflicts"])
+
+    def test_mutation_control_without_the_blanks_the_merge_driver_runs(self):
+        p = self._repo()
+        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []):
+            diff_scope.predict_merge(p.repo, self.main, "side")
+        self.assertIn("merge", p.fired(),
+                      "control: with the blanks removed the merge driver must run")
+
+    def test_the_recursive_inner_driver_is_neutralised_too(self):
+        p = self._repo(recursive=True)
+        pairs = dict(gitexec.driver_blanks(p.repo))
+        self.assertEqual(pairs.get("merge.m.driver"), "exit 1")
+        self.assertEqual(pairs.get("merge.m2.driver"), "exit 1", "the recursive inner driver is not neutralised")
+
+    def test_wtree_predict_merge_entry_runs_no_merge_driver(self):
+        # `wtree.sh predict-merge` execs diff_scope.py --predict-merge; cover that entry point too.
+        p = self._repo()
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo), "predict-merge",
+                            self.main, "side"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(p.fired(), set(), "wtree.sh predict-merge ran the merge driver")
+        self.assertEqual(r.returncode, 1, "a divergent merge must predict a conflict (exit 1)")
 
 
 if __name__ == "__main__":

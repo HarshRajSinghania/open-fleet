@@ -36,6 +36,15 @@ truth is `.claude-plugin/plugin.json`.
     them: verify.py creates its control worktree `--no-checkout` and reads that worktree's own
     config before populating it, because an `includeIf "gitdir:**/worktrees/**"` can declare a
     filter only in a linked worktree (PR #649 review).
+  - The neutralised set covers merge drivers too: a repo `merge.<driver>.driver`, selected by a
+    `merge=<driver>` attribute, runs when git 3-way-merges a path — reachable through
+    `git merge-tree` (diff_scope's predict_merge, and `wtree.sh predict-merge`). `driver_blanks`
+    overrides `merge.<driver>.driver` to `exit 1`, a shell builtin that runs no repository
+    command and fails the merge closed, so the gate reads a conflict rather than running the
+    driver; `merge.<driver>.recursive` is covered because its inner driver's own `.driver` is
+    enumerated. verify.py's control revert/apply/checkout legs carry the override too, though a
+    linear in-order range revert is trivial per step and verify refuses a non-linear range, so
+    that leg cannot in fact be driven to a merge (PR #649 review).
   - `wtree.sh` gets the same env belt and driver blanks (its `add -A` and `write-tree` ran a
     selected filter and `core.fsmonitor`), built as `env(1)` arguments rather than shell code. It
     blanks only drivers the REPOSITORY declares; global/system config stays in force, so the

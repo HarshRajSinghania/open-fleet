@@ -974,9 +974,13 @@ class _Authority:
     # cannot wildcard the <driver>. tests/test_gitexec_config_commands.py holds it to gitexec's.
     # BYTES: a driver name is any bytes git accepts, and the attribute selects exactly those. A
     # filter is neutralised whole — commands blank AND required=false, or git dies on it (#649).
+    # A merge.<driver>.driver (run when revert/apply/checkout 3-way-merges a path) is overridden
+    # to `exit 1`: a shell builtin that fails the merge closed and runs no repo command (#649).
     _FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
     _DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
+    _MERGE_KEY_RE = re.compile(rb"\Amerge\.(.+)\.[^.]+\Z", re.S)
     _FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
+    _MERGE_DRIVER = "exit 1"
 
     @classmethod
     def driver_blanks(cls, repo):
@@ -997,14 +1001,21 @@ class _Authority:
                                    "--name-only"], env=cls.git_env())
         if code != 0:
             return []
-        pairs, named = [], set()
+        pairs, filt_seen, merge_seen = [], set(), set()
         for key in out.split(b"\0"):
             filt = cls._FILTER_KEY_RE.match(key)
-            if filt and filt.group(1) not in named:
-                named.add(filt.group(1))
-                pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
-                          for var, value in cls._FILTER_BLANKS]
-            elif not filt and cls._DIFF_COMMAND_KEY_RE.match(key):
+            merge = cls._MERGE_KEY_RE.match(key)
+            if filt:
+                if filt.group(1) not in filt_seen:
+                    filt_seen.add(filt.group(1))
+                    pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                              for var, value in cls._FILTER_BLANKS]
+            elif merge:
+                if merge.group(1) not in merge_seen:
+                    merge_seen.add(merge.group(1))
+                    pairs.append((os.fsdecode(b"merge." + merge.group(1) + b".driver"),
+                                  cls._MERGE_DRIVER))
+            elif cls._DIFF_COMMAND_KEY_RE.match(key):
                 pairs.append((os.fsdecode(key), ""))
         return pairs
 

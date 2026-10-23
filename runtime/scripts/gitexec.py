@@ -100,6 +100,19 @@ HARDENED = {
 _FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
 _DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
 _FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
+# A `merge.<driver>.*` key marks a custom merge driver a `merge=<driver>` attribute selects when
+# git 3-way-merges a path — reachable on the read side through `git merge-tree` (diff_scope's
+# predict_merge) and the control's `revert`/`apply`/`checkout` (PR #649 review). Its command
+# can come only from `merge.<driver>.driver`, so for every declared driver NAME we override that
+# to `exit 1`: git runs a merge driver as `sh -c "<command>"`, and `exit 1` is a POSIX shell
+# special builtin that terminates with status 1 before any word runs a program — no
+# repository-supplied command, no PATH or cwd lookup, nothing a worktree file could shadow — and
+# git reads the non-zero status as an unresolved (conflicting) merge, i.e. fails closed. This
+# also covers `merge.<driver>.recursive` (its named inner driver is itself declared, so its
+# `.driver` is overridden too) and a driver declared without a command (git would otherwise fatal
+# "lacks command line"). Only repo-declared drivers appear, since the scrubbed env drops global.
+_MERGE_KEY_RE = re.compile(rb"\Amerge\.(.+)\.[^.]+\Z", re.S)
+_MERGE_DRIVER = "exit 1"
 
 
 def argv(*args):
@@ -126,13 +139,18 @@ def env(base=None, blanks=()):
 
 
 def driver_blanks(repo):
-    """``(key, value)`` config pairs that blank the command of every filter/diff driver DECLARED
-    in ``repo``'s config — the attribute-selected exec channel a fixed ``-c`` cannot name (#629).
-    Pass them as ``env(blanks=...)``; never as ``-c`` argv, which splits a key at its first ``=``.
+    """``(key, value)`` config pairs that neutralise the command of every filter/diff/merge driver
+    DECLARED in ``repo``'s config — the attribute-selected exec channel a fixed ``-c`` cannot name
+    (#629). Pass them as ``env(blanks=...)``; never as ``-c`` argv, which splits a key at its
+    first ``=``. Filter and diff commands are blanked to empty; a merge driver is overridden to
+    ``exit 1`` (see ``_MERGE_KEY_RE``), so a git ``merge-tree``/``revert``/``apply``/``checkout``
+    that would run it reads a conflict instead and runs nothing.
 
     A clean/smudge/process filter or a textconv/command diff driver runs only when a
     ``.gitattributes`` (or ``$GIT_DIR/info/attributes``) line selects a ``<driver>`` AND a
-    ``filter.<driver>.*`` / ``diff.<driver>.*`` config key supplies the command. ``-c`` cannot
+    ``filter.<driver>.*`` / ``diff.<driver>.*`` config key supplies the command; a custom merge
+    driver likewise needs a ``merge=<driver>`` attribute and a ``merge.<driver>.driver``. ``-c``
+    cannot
     wildcard the ``<driver>`` name, and ``info/attributes`` outranks any ``--attr-source`` the
     belt could set, so neither the attribute side nor a fixed key closes it. The command side,
     though, is enumerable: the names come from the repo's OWN config (listed under the hardened
@@ -164,13 +182,19 @@ def driver_blanks(repo):
 
 def _blank_pairs(listing):
     """``git config --list -z --name-only`` bytes -> driver_blanks pairs (see its docstring)."""
-    pairs, named = [], set()
+    pairs, filt_seen, merge_seen = [], set(), set()
     for key in listing.split(b"\0"):
         filt = _FILTER_KEY_RE.match(key)
-        if filt and filt.group(1) not in named:
-            named.add(filt.group(1))
-            pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
-                      for var, value in _FILTER_BLANKS]
-        elif not filt and _DIFF_COMMAND_KEY_RE.match(key):
+        merge = _MERGE_KEY_RE.match(key)
+        if filt:
+            if filt.group(1) not in filt_seen:
+                filt_seen.add(filt.group(1))
+                pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                          for var, value in _FILTER_BLANKS]
+        elif merge:
+            if merge.group(1) not in merge_seen:
+                merge_seen.add(merge.group(1))
+                pairs.append((os.fsdecode(b"merge." + merge.group(1) + b".driver"), _MERGE_DRIVER))
+        elif _DIFF_COMMAND_KEY_RE.match(key):
             pairs.append((os.fsdecode(key), ""))
     return pairs

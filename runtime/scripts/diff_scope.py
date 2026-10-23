@@ -194,10 +194,14 @@ def _git_env(blanks=()):
 # gitexec.driver_blanks, inlined (verify.py loads this file by path; see the module note on
 # _git_env). Blanks every filter/diff driver command the repo DECLARES — the attribute-selected
 # exec channel a fixed -c cannot name (#629). Bytes in, os.fsdecode'd keys out, and each declared
-# filter neutralised whole — commands blank AND required=false, or git dies on it (PR #649).
+# filter neutralised whole — commands blank AND required=false, or git dies on it (PR #649). A
+# merge.<driver>.driver (selected when merge-tree 3-way-merges a path) is overridden to `exit 1`,
+# a shell builtin that fails the merge closed and runs no repository command (PR #649 review).
 _FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
 _DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
+_MERGE_KEY_RE = re.compile(rb"\Amerge\.(.+)\.[^.]+\Z", re.S)
 _FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
+_MERGE_DRIVER = "exit 1"
 
 
 def _driver_blanks(repo):
@@ -208,14 +212,20 @@ def _driver_blanks(repo):
         return []
     if r.returncode != 0:
         return []
-    pairs, named = [], set()
+    pairs, filt_seen, merge_seen = [], set(), set()
     for key in r.stdout.split(b"\0"):
         filt = _FILTER_KEY_RE.match(key)
-        if filt and filt.group(1) not in named:
-            named.add(filt.group(1))
-            pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
-                      for var, value in _FILTER_BLANKS]
-        elif not filt and _DIFF_COMMAND_KEY_RE.match(key):
+        merge = _MERGE_KEY_RE.match(key)
+        if filt:
+            if filt.group(1) not in filt_seen:
+                filt_seen.add(filt.group(1))
+                pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                          for var, value in _FILTER_BLANKS]
+        elif merge:
+            if merge.group(1) not in merge_seen:
+                merge_seen.add(merge.group(1))
+                pairs.append((os.fsdecode(b"merge." + merge.group(1) + b".driver"), _MERGE_DRIVER))
+        elif _DIFF_COMMAND_KEY_RE.match(key):
             pairs.append((os.fsdecode(key), ""))
     return pairs
 
@@ -446,11 +456,14 @@ def predict_merge(repo, base, branch):
             raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo}",
                              kind="no_base")
     try:
+        # #629 (PR #649 review): merge-tree 3-way-merges the two commits, running a repo-config
+        # merge driver a `merge=<driver>` attribute selects. Neutralise every declared driver,
+        # read in `repo` itself immediately before the call (same directory, same ref state).
         r = subprocess.run(
             [GIT, "-C", str(repo), "-c", "core.quotePath=false",
              "merge-tree", "--write-tree", base, branch],
             capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
-            timeout=60, env=_git_env(), stdin=subprocess.DEVNULL,
+            timeout=60, env=_git_env(_driver_blanks(repo)), stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         r = None

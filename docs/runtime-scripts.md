@@ -820,15 +820,20 @@ command-bearing repository-config key that has a FIXED name: a worker's own `.gi
 transport, and — with the two object-rewrite env vars — a planted `refs/replace`/graft (#629).
 
 `driver_blanks(repo)` closes the remaining channel a fixed `-c` cannot: a
-`filter.<driver>.clean/smudge/process` or `diff.<driver>.textconv`/`command` git runs when a
-`.gitattributes` (or `$GIT_DIR/info/attributes`, which outranks any `--attr-source`) line selects
-`<driver>`. `-c` cannot enumerate an unknown `<driver>`, so it reads the driver names the repo's
-OWN config declares — the only source of such a command — and returns `(key, value)` pairs that
-neutralise each: a declared filter gets `clean`/`smudge`/`process` blank AND `required=false`
-(git dies on a required filter that runs nothing — blanked, or with no command declared — so
-blanking alone let a planted `required=true` stop every gate; PR #649 review), a `diff.<driver>`
-gets its `textconv`/`command` blank; git then runs no command and passes the working-tree bytes
-through as they are. A caller passes them as
+`filter.<driver>.clean/smudge/process`, a `diff.<driver>.textconv`/`command`, or a
+`merge.<driver>.driver` git runs when a `.gitattributes` (or `$GIT_DIR/info/attributes`, which
+outranks any `--attr-source`) line selects `<driver>`. `-c` cannot enumerate an unknown
+`<driver>`, so it reads the driver names the repo's OWN config declares — the only source of such
+a command — and returns `(key, value)` pairs that neutralise each: a declared filter gets
+`clean`/`smudge`/`process` blank AND `required=false` (git dies on a required filter that runs
+nothing — blanked, or with no command declared — so blanking alone let a planted `required=true`
+stop every gate; PR #649 review), a `diff.<driver>` gets its `textconv`/`command` blank, and a
+declared merge driver gets `merge.<driver>.driver` overridden to `exit 1` — a shell builtin that
+runs no repository command and fails the merge closed, so a `git merge-tree` (diff_scope's
+predict_merge, and `wtree.sh predict-merge`) or a control 3-way merge reads a conflict instead of
+running the driver; this covers `merge.<driver>.recursive` too, since its named inner driver's own
+`merge.<driver>.driver` is enumerated and overridden. git then runs no command and passes the
+working-tree bytes through as they are. A caller passes them as
 `env(blanks=...)`: appended GIT_CONFIG_KEY_n/VALUE_n pairs, never `-c <key>=` argv, which splits a
 name holding `=` at its first `=` and blanks a different key. The config is read as bytes and each
 key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any

@@ -513,7 +513,7 @@ wrappers: `preflight.py`, `task_ops.py create`, `spawn_worker.sh` (`OPEN_FLEET_R
 `setsid`), the installed guard checked with `deny-hook.sh --verify-settings`, delivery of the
 spec, the worker result (`worker_ops.py`, `check_reply.py`), `verify.py --unit-class report-only`
 in a checkout the coordinator cuts at the evidence head, and `worker_ops.py retain` then
-`release`. Source `runtime/scripts/first_run.py:1-52`; behavior pinned by
+`release`. Source `runtime/scripts/first_run.py:1-53`; behavior pinned by
 `tests/test_certification.py`.
 
 Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert|live]
@@ -526,7 +526,10 @@ for every other harness name. It calls no model and its receipt reads `fixture-t
 `live-unreviewed` until a maintainer binds it into `docs/runs/`.
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
-the coordinator's evidence branch. `rw` has the worker commit the report and send `worker_done`;
+the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
+completion line its assignment names as the worker's `worker_done` (#596), which must report
+`succeeded`; any other relayed outcome is NO-GO. Otherwise the worker exits cleanly with no line
+and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report and send `worker_done`;
 the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
 profiles the report committed at the evidence head, the file `verify.py` binds, must open with
 the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.

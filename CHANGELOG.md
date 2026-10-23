@@ -135,6 +135,10 @@ truth is `.claude-plugin/plugin.json`.
   - gastown's claude `ro` alias carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`.
     `tests/test_claude_ro_launches.py` checks every claude ro row and alias for that set. The one
     exemption is the live-witnessed Orca TUI row, which is unchanged.
+  - The certification record (version 3) and `docs/certification.md` record these fixes. The
+    nine Orca opencode/omp/pi cells are gone, which leaves 209 cells. Orca crush `ro` is a
+    refusal. No cell moved up a tier. `first_run.py --profile ro` accepts the relayed
+    `worker_done` or a clean `worker_died (exit=0)`, and refuses a relayed `failed`.
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

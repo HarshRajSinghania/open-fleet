@@ -149,7 +149,10 @@ class TestStoredFixtures(unittest.TestCase):
 # Each parser safeguard, switched off in a copy of the hook, must make the corpus disagree with
 # bash on the cases that exercise it: (name, anchor text, replacement, family prefixes). The
 # anchor must occur exactly once, so a refactor that moves a safeguard fails here loudly
-# instead of leaving a mutation that changes nothing.
+# instead of leaving a mutation that changes nothing. A safeguard for grammar the local bash
+# reads differently (bash 3.2 rejects a case pattern inside $( ) and ${ cmd; }; bash 5.x may
+# not end a heredoc at DELIM)) also names PINS: a command the real hook refuses that the mutant
+# must let through. Either a disagreement with bash or a flipped pin catches the mutant.
 # _split removes a continuation too, but every text reaching it has been through
 # substitution_bodies, which removes it first: that one is the safeguard mutated here.
 MUTANTS = (
@@ -179,7 +182,14 @@ MUTANTS = (
      "quoted, started, k = False, True, end + 1\n        elif ch == DQ:", ("heredoc:",)),
     ("heredoc: DELIM) inside a substitution refuses",
      'raise ValueError("a heredoc delimiter that also closes its substitution")', "bare = bare",
-     ("heredoc-shape:paren-terminator",)),
+     ("heredoc-shape:paren-terminator",),
+     ("x=$(: <<'EOF'\nsafe\nEOF)\ngit push --force origin main\nEOF\n)",)),
+    ("substitution: a case pattern does not close $( )",
+     'and not (ch == ")" and case_depth and paren_level == 1)', "and True",
+     ("nested:case-in-sub",), ("echo $(case x in x) git push --force origin main;; esac)",)),
+    ("substitution: ${ cmd; } is a command substitution",
+     'elif not in_sq and text[i:i + 2] == "${" and text[i + 2:i + 3] in', "elif False and text[i + 2:i + 3] in",
+     ("nested:funsub", "nested:valsub"), ("echo ${ git push --force origin main; }",)),
     ("backtick: escapes removed before the nested body runs",
      "def _backtick_body(raw, in_dq=False):", "def _backtick_body(raw, in_dq=False):\n    return raw",
      ("nested:backtick",)),
@@ -212,7 +222,8 @@ class TestEverySafeguardIsCaughtWhenSwitchedOff(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="dh-mutant-"))
         self.addCleanup(shutil.rmtree, tmp, True)
         every = corpus.corpus()
-        for name, anchor, replacement, families in MUTANTS:
+        for name, anchor, replacement, families, *pins in MUTANTS:
+            pins = pins[0] if pins else ()
             with self.subTest(mutant=name):
                 self.assertEqual(source.count(anchor), 1, f"safeguard anchor moved: {anchor!r}")
                 mutant = tmp / "deny-hook.sh"
@@ -228,16 +239,20 @@ class TestEverySafeguardIsCaughtWhenSwitchedOff(unittest.TestCase):
                         focus[start:start + step], state["oracle"], mutant, JOBS, state["cache"]))
                     if caught:
                         break
+                for command in pins:
+                    self.assertEqual(_decision(command)[0], "deny", command)
+                    if not caught and _decision(command, hook=mutant)[0] == "allow":
+                        caught = [command]
                 self.assertTrue(caught, f"switching off '{name}' left the corpus green")
 
 
 # --- hook-only pins: launchers and constructs the throwaway bash cannot run (#598) ----------
-def _decision(command, env=None, cwd=None):
+def _decision(command, env=None, cwd=None, hook=None):
     environ = {k: v for k, v in os.environ.items() if k not in corpus._SCRUB}
     environ.update(env or {})
     payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
                           "tool_input": {"command": command}})
-    r = subprocess.run(["sh", str(HOOK)], input=payload, capture_output=True, text=True,
+    r = subprocess.run(["sh", str(hook or HOOK)], input=payload, capture_output=True, text=True,
                        env=environ, cwd=str(cwd or ROOT), timeout=60)
     if not r.stdout.strip():
         return "allow", ""

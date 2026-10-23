@@ -666,9 +666,20 @@ class MergeQueue:
         with self.store.connect() as conn:
             return self.store.hosts(conn)
 
-    def normalize(self, identity: str) -> str:
-        """An identity as the queue stores it (`--repo` given by hand included)."""
-        return normalize_identity(identity, self.github_hosts())
+    def normalize(self, value: str) -> str:
+        """Any spelling of a repository a caller or a payload gives, as the queue stores it (PR #647).
+
+        A URL (`scheme://`, scp `[user@]host:path`) or a local path (absolute or `~`) is read by
+        git's rules (`_identity`); anything else is an identity (`host/owner/name`) and is only
+        respelled. Every repository that enters from outside goes through here before it is
+        compared, looked up or hashed into a lock.
+        """
+        v = value.strip()
+        colon, slash = v.find(":"), v.find("/")
+        scp = "://" not in v and 0 < colon and (slash == -1 or colon < slash)
+        if "://" in v or scp or v.startswith(("/", "~")):
+            return self._identity(v)
+        return normalize_identity(v, self.github_hosts())
 
     def _identity(self, url: str, extra_github_host: str | None = None) -> str:
         """`repo_identity` of a URL configured in this clone, resolved exactly as git resolves it,
@@ -706,15 +717,19 @@ class MergeQueue:
         return remote
 
     def _split_check(self, conn: sqlite3.Connection, repo: str, base: str) -> None:
-        """Refuse a store that holds this repository as two queues for one BASE (PR #647)."""
+        """Refuse a store that holds this repository as two queues for one BASE (PR #647).
+
+        Two STORED spellings that normalize alike are a split. The caller's own spelling never
+        counts as one: a query in another spelling of a single stored queue is not a split.
+        """
         hosts = self.store.hosts(conn)
         mine = normalize_identity(repo, hosts)
-        twins = [r["repo"] for r in conn.execute("SELECT repo FROM mq_queues WHERE base = ? AND repo != ?", (base, repo))
-                 if normalize_identity(r["repo"], hosts) == mine]
-        if twins:
+        stored = sorted({r["repo"] for r in conn.execute("SELECT repo FROM mq_queues WHERE base = ?", (base,))
+                         if normalize_identity(r["repo"], hosts) == mine})
+        if len(stored) > 1:
             raise QueueError("queue_split", f"the store holds {mine} as more than one queue for BASE {base!r} "
-                             f"({', '.join(sorted([repo, *twins]))}); one remote must be one queue: settle and merge them "
-                             "by hand", {"spellings": sorted([repo, *twins])}, exit_code=EXIT_USAGE)
+                             f"({', '.join(stored)}); one remote must be one queue: settle and merge them by hand",
+                             {"spellings": stored}, exit_code=EXIT_USAGE)
 
     def _config(self, conn: sqlite3.Connection, repo: str, base: str) -> dict[str, Any]:
         self._split_check(conn, repo, base)
@@ -764,7 +779,7 @@ class MergeQueue:
         # The gh lane's host IS a GitHub host (GitHub Enterprise included): its names fold case.
         gh_host = identity_host(self._identity(urls[0])) if mode == "gh" and urls else None
         named = self._identity(urls[0], gh_host) if urls else None
-        repo = normalize_identity(repo, self.github_hosts() | ({gh_host} if gh_host else set()))
+        repo = normalize_identity(self.normalize(repo), self.github_hosts() | ({gh_host} if gh_host else set()))
         if named != repo:
             raise QueueError("repo_mismatch", f"--repo {repo} is not the repository remote {remote!r} names "
                              f"({named or 'no URL'}): the lease and every merge must name one repository",
@@ -841,6 +856,7 @@ class MergeQueue:
         still using the old token. The handoff holds the effect lock throughout, so no merge
         can be sent while it decides, and one still being sent blocks it.
         """
+        repo = self.normalize(repo)  # any spelling a caller holds is the one stored queue (PR #647)
         if not holder or not holder.strip():
             raise QueueError("usage", "--holder names the conductor (its terminal handle)", exit_code=EXIT_USAGE)
         if ttl <= 0:
@@ -979,7 +995,7 @@ class MergeQueue:
             if p["base"] != base:
                 raise QueueError("wrong_base", f"payload targets {p['base']!r}, this queue is {base!r}",
                                  exit_code=EXIT_USAGE)
-            if p["repo"] is not None and p["repo"] != repo:
+            if p["repo"] is not None and self.normalize(p["repo"]) != repo:
                 # An optional field, checked when a sender states it (PR #647): a PR number means
                 # nothing outside its repository.
                 raise QueueError("repo_mismatch", f"payload names repository {p['repo']}, this queue is {repo}",
@@ -1749,6 +1765,7 @@ class MergeQueue:
         return {k: e.get(k) for k in keys}
 
     def status(self, repo: str, base: str) -> dict[str, Any]:
+        repo = self.normalize(repo)
         with self.store.connect() as conn:
             cfg = self._config(conn, repo, base)
             lease = conn.execute("SELECT holder, epoch, expires_at, released_at FROM mq_leases WHERE repo = ? AND base = ?",
@@ -1769,6 +1786,7 @@ class MergeQueue:
         }
 
     def receipts(self, repo: str, base: str, entry_id: str | None = None) -> dict[str, Any]:
+        repo = self.normalize(repo)
         q, params = "SELECT * FROM mq_receipts WHERE repo = ? AND base = ?", [repo, base]
         if entry_id:
             q += " AND entry_id = ?"
@@ -1781,6 +1799,7 @@ class MergeQueue:
               wait: float = 10.0, gate_cmd: str | None = None, ack: bool = False, max_steps: int = 100,
               delete_branch: bool = True, gate_timeout: float = 1800.0) -> dict[str, Any]:
         """acquire -> (plan -> merge -> ack)* -> release: one conductor turn over the whole train."""
+        repo = self.normalize(repo)
         acq = self.acquire(repo=repo, base=base, holder=holder, ttl=ttl, takeover=takeover, wait=wait)
         token, steps = acq["token"], []
         stop: QueueError | None = None

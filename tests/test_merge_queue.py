@@ -965,6 +965,41 @@ class IdentityNormalisation(QueueCase):
                                                       "www.github.com/team/repo.git")}
         self.assertEqual(len(paths), 1, paths)
 
+    def _github_queue(self):
+        self.w.point(self.w.conductor, "origin", "github.com/Team/Repo", self.w.bare)
+        rc, out = self.w.cli(*self.w.init_args())
+        self.assertEqual((rc, out.get("repo")), (0, "github.com/team/repo"), out)
+        rc, out = self.w.cli("acquire", "--base", W.BASE, "--holder", "c1")
+        self.assertEqual(rc, 0, out)
+        return out["token"]
+
+    def test_a_delivery_naming_another_spelling_of_the_queues_repository_is_accepted(self):
+        token = self._github_queue()
+        u = self.w.unit("alpha")
+        for spelling in ("github.com/Team/Repo", "https://www.GitHub.com/TEAM/repo.git", "git@github.com:Team/Repo.git"):
+            with self.subTest(spelling=spelling):
+                rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**u, "repo": spelling}))
+                self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.status_of("github.com/team/repo")["all"]), 1, "one unit boarded more than once")
+        rc, out = self.w.cli("enqueue", "--token", token, "--payload", json.dumps({**u, "repo": "github.com/other/repo"}))
+        self.assertEqual((rc, out.get("code")), (2, "repo_mismatch"), out)
+
+    def test_every_entry_point_accepts_any_spelling_of_the_repository(self):
+        self._github_queue()
+        mq = self.w.queue(mq_mod)
+        self.assertEqual(mq.status("github.com/Team/Repo", W.BASE)["repo"], "github.com/team/repo")
+        self.assertEqual(mq.receipts("www.github.com/TEAM/Repo.git", W.BASE)["ok"], True)
+        with self.assertRaises(mq_mod.QueueError) as held:
+            mq.acquire(repo="github.com/TEAM/repo", base=W.BASE, holder="c2")
+        self.assertEqual(held.exception.code, "lease_held", "another spelling got its own lease")
+        rc, out = self.w.cli("--repo", "https://github.com/Team/Repo.git", "status", "--base", W.BASE)
+        self.assertEqual((rc, out.get("repo")), (0, "github.com/team/repo"), out)
+
+    def status_of(self, repo):
+        rc, out = self.w.cli("--repo", repo, "status", "--base", W.BASE)
+        self.assertEqual(rc, 0, out)
+        return out
+
     def test_a_store_already_split_by_casing_is_refused_not_guessed(self):
         db = self.w.tmp / "split.db"
         conn = sqlite3.connect(db)

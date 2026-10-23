@@ -1067,7 +1067,10 @@ on a case-sensitive filesystem. The effect lock is keyed on that one spelling, s
 of a repository takes one lock. A store written with an older spelling is respelled when it opens,
 but only while the opener holds the effect lock of the old spelling and the new one; a conductor
 or child still holding either refuses the opening (`migration_blocked`), so no handoff begins under
-a send in flight.
+a send in flight. Wherever a repository enters from outside (`--repo`, a payload's `repo`, the
+library API's `repo`), any spelling of it, a URL included, is normalized before it is compared,
+looked up or hashed into a lock, so a delivery naming `github.com/Team/Repo` boards on the queue
+stored as `github.com/team/repo`.
 A store already holding one repository as two queues is refused (`queue_split`), never merged
 by guess. `init` takes `--base`, `--default`, `--consent`, `--mode` (`gh`,
 or `git` for the no-gh lane), `--remote`, `--host`. `acquire` and `drain` take `--base`,

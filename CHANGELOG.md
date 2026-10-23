@@ -19,7 +19,6 @@ truth is `.claude-plugin/plugin.json`.
   verify.py transcripts and Claude stream-json result lines; waves, reviews, closes and parks
   are recorded by the coordinator with `emit`. Not wired into any provider or the verifier yet;
   the R04/R06 receipts (#597, #599) are later sources.
-||||||| 5fcab11f93
 - **`decisions.py --pin-ref REF`.** `check`, `active` and `append` can take the human-grant
   key from a trusted git ref instead of the working tree, and refuse a tree whose pin differs:
   a change that swapped `.orca/human-grant-pubkey` for its own key otherwise verified grants it

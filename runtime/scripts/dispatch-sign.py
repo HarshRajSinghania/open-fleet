@@ -84,8 +84,9 @@ def _load_ed25519():
     return mod
 
 
-# The signed fields — the dispatch tuple a worker must not be able to forge. Canonicalized the same
-# way here and in verify.py so the bytes over which the signature is computed are identical.
+# The signed fields — the dispatch tuple a worker must not be able to forge. Canonicalized HERE
+# only: verify.py loads this file and verifies over canonical_record, so the bytes the signature
+# covers cannot drift between signer and gate (2026-10-23 review, P2-2).
 #
 # The last three are the NEGATIVE-CONTROL inputs (#311). Signing the class and the contract binds
 # the denominator and leaves the worker choosing its own oracle: which files get reverted, and what
@@ -185,15 +186,23 @@ def toolchain_mismatch(record: dict) -> str | None:
     return None
 
 
+def signed_fields(record: dict, fields=_RECORD_FIELDS) -> tuple:
+    """The field list a record is signed over: `fields`, plus _PROFILE_FIELDS for a dispatch
+    record that carries a profile (#590). The ONE place that rule lives — canonical_subset and
+    envelope both read it here, and verify.py verifies through canonical_record rather than a
+    copy, because a copy that dropped the profile rule rejected every profile-signed record as
+    forged (2026-10-23 review, P2-2)."""
+    if fields is _RECORD_FIELDS and any(record.get(k) is not None for k in _PROFILE_FIELDS):
+        return (*_RECORD_FIELDS, *_PROFILE_FIELDS)
+    return fields
+
+
 def canonical_subset(record: dict, fields=_RECORD_FIELDS) -> dict:
     """The signed fields only, with nc_paths reduced to a sorted list of strings.
 
     A coordinator signs a SET of paths, not a listing order, so ["b","a"] and ["a","b"] must
     produce the same bytes — otherwise a re-ordered manifest reads as a forgery."""
-    active_fields = fields
-    if fields is _RECORD_FIELDS and any(record.get(k) is not None for k in _PROFILE_FIELDS):
-        active_fields = (*_RECORD_FIELDS, *_PROFILE_FIELDS)
-    subset = {k: record[k] for k in active_fields if record.get(k) is not None}
+    subset = {k: record[k] for k in signed_fields(record, fields) if record.get(k) is not None}
     if isinstance(subset.get("nc_paths"), list):
         subset["nc_paths"] = sorted(str(x) for x in subset["nc_paths"])
     return subset
@@ -338,11 +347,8 @@ def envelope(seed: bytes, record: dict, fields=_RECORD_FIELDS) -> dict:
     """{record, sig_b64}: the signed subset of `record` and an Ed25519 signature over its canonical
     bytes. One envelope shape for the dispatch tuple and the verifier transcript."""
     ed = _load_ed25519()
-    active_fields = fields
-    if fields is _RECORD_FIELDS and any(record.get(k) is not None for k in _PROFILE_FIELDS):
-        active_fields = (*_RECORD_FIELDS, *_PROFILE_FIELDS)
     sig = ed.signature(canonical_record(record, fields), seed, ed.publickey(seed))
-    return {"record": {k: record[k] for k in active_fields if record.get(k) is not None},
+    return {"record": {k: record[k] for k in signed_fields(record, fields) if record.get(k) is not None},
             "sig_b64": base64.b64encode(sig).decode("ascii")}
 
 

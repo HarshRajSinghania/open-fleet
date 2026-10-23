@@ -15,6 +15,7 @@ import io
 import itertools
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -5438,7 +5439,9 @@ class GitLegsRunUnderAScrubbedEnvironment(MutationFixture):
         self._green_executed_run()
         belt = {"GIT_TERMINAL_PROMPT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
                 "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2",
-                "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2"}
+                "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2",
+                # 2026-10-23 review, P1-2: the core.hooksPath=/dev/null pair.
+                "GIT_CONFIG_KEY_3", "GIT_CONFIG_VALUE_3"}
         for log in (self.git_seen, self.gitleaks_seen):
             seen = set(log.read_text().split())
             self.assertTrue(seen, f"{log.name}: the wrapper was never launched")
@@ -5457,13 +5460,15 @@ class GitLegsRunUnderAScrubbedEnvironment(MutationFixture):
                                    "GIT_NO_REPLACE_OBJECTS": "1",
                                    "GIT_GRAFT_FILE": os.devnull,
                                    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
-                                   "GIT_CONFIG_COUNT": "3",
+                                   "GIT_CONFIG_COUNT": "4",
                                    "GIT_CONFIG_KEY_0": "core.fsmonitor",
                                    "GIT_CONFIG_VALUE_0": "false",
                                    "GIT_CONFIG_KEY_1": "protocol.ext.allow",
                                    "GIT_CONFIG_VALUE_1": "never",
                                    "GIT_CONFIG_KEY_2": "safe.directory",
-                                   "GIT_CONFIG_VALUE_2": "*"})
+                                   "GIT_CONFIG_VALUE_2": "*",
+                                   "GIT_CONFIG_KEY_3": "core.hooksPath",
+                                   "GIT_CONFIG_VALUE_3": os.devnull})
         self.assertFalse({k for k in env if k.startswith(("GH_", "ORCA_"))}, env)
 
     def test_the_belt_closes_the_repo_local_fsmonitor_channel(self):
@@ -5528,6 +5533,574 @@ class MalformedEnvelopeSignaturesRefuseIdentically(RepoCase):
             self.assertTrue(calls, name)
             for call in calls:
                 self.assertIn("validate=True", call, (name, call))
+
+
+# ---------------------------------------------------------------------------------------------
+# 2026-10-23 end-to-end review: P1-1 (#612), P1-2 (#613), P2-1/P2-2 + verifier P3s (#614).
+# ---------------------------------------------------------------------------------------------
+
+# Runner output as the real runners print it (pytest 9, Jest 29.7, Vitest 2.1.9), captured from
+# the review's fixture shape and trimmed of absolute paths and stack frames.
+_PYTEST_INTEST_SYNTAX = (
+    "F                                                                        [100%]\n"
+    "=================================== FAILURES ===================================\n"
+    "___________________________________ test_add ___________________________________\n\n"
+    "    def test_add():\n>       import mod\n"
+    "E         File \"/w/mod.py\", line 1\n"
+    "E           def add(a, b) return a + b\n"
+    "E                         ^^^^^^\n"
+    "E       SyntaxError: expected ':'\n\n"
+    "test_mod.py:2: SyntaxError\n"
+    "=========================== short test summary info ============================\n"
+    "FAILED test_mod.py::test_add -   File \"/w/mod.py\", line 1\n"
+    "1 failed in 0.01s\n")
+_PYTEST_TB_NO = ("F                                                                        [100%]\n"
+                 "FAILED test_mod.py::test_add -   File \"/w/mod.py\", line 1\n1 failed in 0.00s\n")
+_PYTEST_MISSING_NAME = (
+    "    def test_add():\n>       from mod import add\n"
+    "E       ImportError: cannot import name 'add' from 'mod' (/w/mod.py)\n\n"
+    "test_mod.py:2: ImportError\n"
+    "FAILED test_mod.py::test_add - ImportError: cannot import name 'add' from 'mod' (/w/mod.py)\n"
+    "1 failed in 0.01s\n")
+_PYTEST_GONE_ATTRIBUTE = (
+    "    def test_add():\n        import mod\n>       assert mod.add(1, 2) == 3\n"
+    "               ^^^^^^^\nE       AttributeError: module 'mod' has no attribute 'add'\n\n"
+    "test_mod.py:3: AttributeError\n"
+    "FAILED test_mod.py::test_add - AttributeError: module 'mod' has no attribute 'add'\n"
+    "1 failed in 0.01s\n")
+_JEST_SUITE_SYNTAX = (
+    "FAIL ./mod.test.js\n  ● Test suite failed to run\n\n"
+    "    SyntaxError: /w/mod.js: Unexpected token, expected \"{\" (1:19)\n\n"
+    "    > 1 | function add(a, b) return a + b\n        |                    ^\n\n"
+    "Test Suites: 1 failed, 1 total\nTests:       0 total\nSnapshots:   0 total\n"
+    "Time:        0.152 s\nRan all test suites.\n")
+_JEST_SUITE_MISSING = (
+    "FAIL ./mod.test.js\n  ● Test suite failed to run\n\n"
+    "    Cannot find module './nope' from 'mod.test.js'\n\n"
+    "    > 1 | const { add } = require('./nope');\n        |                 ^\n\n"
+    "Test Suites: 1 failed, 1 total\nTests:       0 total\nRan all test suites.\n")
+_JEST_INTEST_REQUIRE = (
+    "FAIL ./mod.test.js\n  ✕ add (2 ms)\n\n  ● add\n\n"
+    "    SyntaxError: /w/mod.js: Unexpected token, expected \"{\" (1:19)\n\n"
+    "    > 1 | function add(a, b) return a + b\n\n"
+    "Test Suites: 1 failed, 1 total\nTests:       1 failed, 1 total\n")
+_VITEST_SUITE_PARSE = (
+    " RUN  v2.1.9 /w\n\n ❯ mod.test.js (0 test)\n\n"
+    "⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯\n\n"
+    " FAIL  mod.test.js [ mod.test.js ]\nError: Expected '{', got 'return'\n\n"
+    " Test Files  1 failed (1)\n      Tests  no tests\n")
+_VITEST_SUITE_MISSING = (
+    "⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯\n\n"
+    " FAIL  mod.test.js [ mod.test.js ]\n"
+    "Error: Failed to load url ./nope.js (resolved id: ./nope.js) in /w/mod.test.js. "
+    "Does the file exist?\n\n Test Files  1 failed (1)\n      Tests  no tests\n")
+_JEST_GENUINE = (
+    "FAIL ./mod.test.js\n  ● add\n\n"
+    "    expect(received).toBe(expected) // Object.is equality\n\n"
+    "    Expected: 3\n    Received: -1\n\n"
+    "FAIL ./other.test.js\n  ● add\n\n"
+    "    expect(received).toBe(expected) // Object.is equality\n\n"
+    "Test Suites: 2 failed, 2 total\nTests:       2 failed, 2 total\n")
+_VITEST_GENUINE = (
+    " ❯ mod.test.js (1 test | 1 failed) 4ms\n   × add 4ms\n"
+    "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯\n\n"
+    " FAIL  mod.test.js > add\nAssertionError: expected -1 to be 3 // Object.is equality\n\n"
+    " Test Files  1 failed (1)\n      Tests  1 failed (1)\n")
+_PYTEST_GENUINE = ("    def test_add():\n>       assert mod.add(1, 2) == 3\nE       assert -1 == 3\n\n"
+                   "FAILED test_mod.py::test_add - assert -1 == 3\n1 failed in 0.01s\n")
+
+
+class StillbornBesideCountedFailures(unittest.TestCase):
+    """P1-1 (#612): the stillborn reading ran only when the runner counted ZERO failures. pytest
+    counts a SyntaxError raised by an in-test import as `1 failed`, Jest and Vitest count a suite
+    that never loaded as a failed suite, and with one failure counted any "failed" in the output
+    read as an assertion failure."""
+
+    def refused(self, text):
+        ok, reason = verify._failure_signature(text, "")
+        self.assertFalse(ok, f"a stillborn control was read as a kill: {text[:80]!r}")
+        self.assertIn("STILLBORN", reason)
+        return reason
+
+    def test_a_pytest_in_test_import_syntax_error_is_stillborn(self):
+        reason = self.refused(_PYTEST_INTEST_SYNTAX)
+        self.assertIn("1 counted failure", reason)
+
+    def test_the_pytest_short_summary_alone_still_names_the_load_failure(self):
+        self.refused(_PYTEST_TB_NO)
+
+    def test_a_missing_name_or_attribute_under_pytest_is_stillborn(self):
+        for text in (_PYTEST_MISSING_NAME, _PYTEST_GONE_ATTRIBUTE):
+            with self.subTest(text=text[:40]):
+                self.refused(text)
+
+    def test_a_jest_or_vitest_suite_that_never_loaded_is_stillborn(self):
+        for text in (_JEST_SUITE_SYNTAX, _JEST_SUITE_MISSING, _VITEST_SUITE_PARSE,
+                     _VITEST_SUITE_MISSING):
+            with self.subTest(text=text[:40]):
+                self.refused(text)
+
+    def test_jests_cross_mark_does_not_vouch_for_a_require_that_blew_up(self):
+        # Jest marks the test whose in-test require raised a SyntaxError `✕`, the mark the strong
+        # assertion evidence reads; the load failure the runner reported still wins.
+        self.refused(_JEST_INTEST_REQUIRE)
+
+    def test_compile_failures_under_go_and_cargo_are_stillborn(self):
+        for text in ("# app\n./app.go:3:1: syntax error: unexpected }\n"
+                     "FAIL\tapp [build failed]\nFAIL\n",
+                     "error[E0308]: mismatched types\n  expected `i32`, found `&str`\n"
+                     "error: could not compile `app` (lib) due to 1 previous error\n"):
+            with self.subTest(text=text[:30]):
+                self.refused(text)
+
+    def test_a_real_assertion_beside_a_load_failure_is_refused_fail_closed(self):
+        # Decided: refused. Which failing test is the criterion-bound oracle is not knowable
+        # here, and a guarded import turns a stillborn module into an AssertionError.
+        mixed = ("    def test_add():\n>       assert mod.add(1, 2) == 3\nE       assert -1 == 3\n\n"
+                 "    def test_sub():\n>       from mod import sub\n"
+                 "E       ImportError: cannot import name 'sub' from 'mod' (/w/mod.py)\n\n"
+                 "2 failed in 0.02s\n")
+        reason = self.refused(mixed)
+        self.assertIn("2 counted failure", reason)
+
+    def test_a_genuine_assertion_failure_with_nothing_stillborn_is_still_a_kill(self):
+        for text in (_PYTEST_GENUINE, _JEST_GENUINE, _VITEST_GENUINE,
+                     "    def test_guard():\n>       with pytest.raises(ModuleNotFoundError):\n"
+                     "E       Failed: DID NOT RAISE <class 'ModuleNotFoundError'>\n1 failed in 0.01s\n",
+                     "FAIL: test_guard\nAssertionError: ModuleNotFoundError not raised\n\n"
+                     "FAILED (failures=1)\n"):
+            with self.subTest(text=text[:40]):
+                ok, reason = verify._failure_signature(text, "")
+                self.assertTrue(ok, f"a real assertion failure was refused: {reason}")
+
+
+# The review's fixture, end to end: the runner prints the REAL runner's output shape. pytest and
+# Jest are not in this suite's stdlib-only toolchain, so each is a script that imports the test
+# module the way the runner would and reports what the runner reports.
+_FAKE_PYTEST = """import importlib.util
+import sys
+import traceback
+
+spec = importlib.util.spec_from_file_location("test_mod", "test_mod.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+failed = ran = 0
+for name in sorted(n for n in dir(module) if n.startswith("test_")):
+    ran += 1
+    try:
+        getattr(module, name)()
+    except Exception as exc:
+        failed += 1
+        print("_" * 20, name, "_" * 20)
+        for chunk in traceback.format_exception_only(type(exc), exc):
+            for line in chunk.rstrip("\\n").splitlines():
+                print("E   " + line)
+print("=" * 10, f"{failed} failed" if failed else f"{ran} passed", "in 0.01s", "=" * 10)
+sys.exit(1 if failed else 0)
+"""
+_FAKE_JEST = """import sys
+
+try:
+    import mod
+except SyntaxError as exc:
+    print("FAIL ./mod.test.js")
+    print("  \\u25cf Test suite failed to run")
+    print()
+    print(f"    SyntaxError: {exc.filename}: {exc.msg} ({exc.lineno}:{exc.offset})")
+    print()
+    print("Test Suites: 1 failed, 1 total")
+    print("Tests:       0 total")
+    sys.exit(1)
+print("PASS ./mod.test.js")
+print("Test Suites: 1 passed, 1 total")
+print("Tests:       1 passed, 1 total")
+"""
+
+
+class StillbornUnderCountingRunnersEndToEnd(MutationFixture):
+    """P1-1 (#612), the reviewer's reproduction: a test that imports the module and asserts
+    nothing about the criterion, a `hand` control that breaks mod.py's syntax on the changed
+    line, the dark-eligible lane where the executed control is the only oracle. Before the fix:
+    `exited 1 on an assertion failure (RED, as required)`, `verify: OK`, exit 0."""
+
+    def _unit(self, runner, label):
+        self.write("mod.py", "def add(a, b):\n    return a - b\n")
+        self.write("test_mod.py", "def test_add():\n    import mod\n    assert True\n")
+        self.write("runner.py", runner)
+        base = self.commit("buggy add, a test that asserts nothing")
+        self.write("mod.py", "def add(a, b):\n    return a + b\n")
+        self.commit("the fix")
+        art = self.artifact("hand mutant RED:\n--- a/mod.py\n+++ b/mod.py\n@@ -2 +2 @@\n"
+                            "-    return a + b\n+    return a +\n",
+                            rel=f"docs/reports/u/nc-stillborn-{label}.txt")
+        head = self.commit("hand artifact")
+        cmd = f"{shlex.quote(sys.executable)} runner.py"
+        path = self._manifest(lighting="dark-eligible", nc={
+            "tool": "hand", "result": "RED", "artifact": art, "command": cmd})
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+        manifest.update(base_sha=base, head_sha=head)
+        manifest["pr"]["reviewed_sha"] = head
+        manifest["commands"] = [{"label": "tests", "cmd": cmd,
+                                 "cmd_sha256": hashlib.sha256(cmd.encode("utf-8")).hexdigest(),
+                                 "exit": 0, "wtree": self.git("rev-parse", f"{head}^{{tree}}")}]
+        Path(path).write_text(json.dumps(manifest), encoding="utf-8")
+        return path, cmd
+
+    def test_a_syntax_breaking_control_under_counting_runners_is_not_done(self):
+        for label, runner in (("pytest-shaped", _FAKE_PYTEST), ("jest-shaped", _FAKE_JEST)):
+            with self.subTest(runner=label):
+                path, cmd = self._unit(runner, label)
+                rc, out, err = self._run_main(path, "--lighting", "dark-eligible",
+                                              "--execute-nc", "--nc-command", cmd)
+                self.assertEqual(rc, 2, out + err)
+                self.assertIn("STILLBORN MUTANT", err)
+                self.assertNotIn("verify: OK", out)
+
+
+class SourceRepoHooksNeverRun(MutationFixture):
+    """P1-2 (#613): `worktree add` and `checkout <base> -- <paths>` ran the source repo's
+    post-checkout hook as the verifier, and the revert check read the WORK TREE while the seal
+    committed the INDEX — so a hook could stage a failing test into the control commit unseen.
+    The reviewer's fixture: a test that asserts nothing, a four-line hook. Before the fix:
+    hook not executable -> TAUTOLOGICAL, exit 2; hook executable -> `verify: OK`, exit 0."""
+
+    _FAILING_TEST = ("import unittest\n\nimport mod\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_add(self):\n        self.assertEqual(1, 2)\n")
+
+    def setUp(self):
+        super().setUp()
+        self.write("mod.py", "def add(a, b):\n    return a - b\n")
+        self.write("test_mod.py", "import unittest\n\nimport mod\n\n\nclass T(unittest.TestCase):\n"
+                                  "    def test_add(self):\n        self.assertTrue(True)\n")
+        self.base = self.commit("buggy add, a test that asserts nothing")
+        self.write("mod.py", "def add(a, b):\n    return a + b\n")
+        self.head = self.commit("the fix")
+        self.cmd = f"{shlex.quote(sys.executable)} -m unittest test_mod"
+        self.nc = {"tool": "revert", "result": "RED", "artifact": self.nc_artifact,
+                   "command": self.cmd, "paths": ["mod.py"]}
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.fired = Path(marks.name) / "hook-fired"
+
+    def _stage_failing_test(self, wt):
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=wt, check=True,
+                              input=self._FAILING_TEST, capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "update-index", "--cacheinfo", f"100644,{blob},test_mod.py"],
+                       cwd=wt, check=True, capture_output=True)
+
+    def _install_hook(self):
+        hook = self.repo / ".git" / "hooks" / "post-checkout"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text(
+            "#!/bin/sh\n"
+            f"touch {shlex.quote(str(self.fired))}\n"
+            f"blob=$(printf '%s' {shlex.quote(self._FAILING_TEST)} | git hash-object -w --stdin)\n"
+            'git update-index --cacheinfo "100644,$blob,test_mod.py"\n', encoding="utf-8")
+        hook.chmod(0o755)
+        # Positive control: the hook is live for any git that does not close the channel.
+        probe = Path(tempfile.mkdtemp(prefix="orca-hook-probe-"))
+        self.addCleanup(shutil.rmtree, probe, True)
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(probe / "wt"), self.head],
+                       cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "worktree", "remove", "--force", str(probe / "wt")],
+                       cwd=self.repo, check=True, capture_output=True)
+        self.assertTrue(self.fired.exists(), "the planted post-checkout hook did not fire on bare git")
+        self.fired.unlink()
+
+    def _manifest_for_unit(self):
+        path = self._manifest(lighting="dark-eligible", nc=self.nc)
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+        manifest.update(base_sha=self.base, head_sha=self.head)
+        manifest["pr"]["reviewed_sha"] = self.head
+        manifest["commands"] = [{"label": "tests", "cmd": self.cmd,
+                                 "cmd_sha256": hashlib.sha256(self.cmd.encode("utf-8")).hexdigest(),
+                                 "exit": 0, "wtree": self.git("rev-parse", f"{self.head}^{{tree}}")}]
+        Path(path).write_text(json.dumps(manifest), encoding="utf-8")
+        return path
+
+    def test_a_post_checkout_hook_cannot_fabricate_the_kill(self):
+        self._install_hook()
+        rc, out, err = self._run_main(self._manifest_for_unit(), "--lighting", "dark-eligible",
+                                      "--execute-nc", "--nc-command", self.cmd)
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("TAUTOLOGICAL", err)
+        self.assertFalse(self.fired.exists(), "the source repo's hook ran inside a verifier git leg")
+
+    def test_every_verifier_git_leg_points_hooks_at_nothing(self):
+        env = verify._Authority.git_env()
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs.get("core.hooksPath"), os.devnull)
+
+    def test_the_revert_check_reads_the_index_the_seal_commits(self):
+        # Content staged in the index but absent from the work tree is what write-tree commits;
+        # the check used to read the work tree and pass it.
+        holder = Path(tempfile.mkdtemp(prefix="orca-nc-idx-"))
+        self.addCleanup(shutil.rmtree, holder, True)
+        wt = holder / "wt"
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(wt), self.head],
+                       cwd=self.repo, check=True, capture_output=True)
+        self.addCleanup(subprocess.run, ["git", "worktree", "remove", "--force", str(wt)],
+                        cwd=self.repo, capture_output=True)
+        self._stage_failing_test(wt)
+        m = {"base_sha": self.base, "head_sha": self.head, "negative_control": self.nc}
+        err = verify._apply_control(str(wt), m, self.nc, "revert", self.cmd)
+        self.assertIsNotNone(err, "a staged test change beside the revert passed the check")
+        self.assertIn("test_mod.py", err)
+
+    def test_the_seal_binds_the_tree_it_commits(self):
+        # Whatever stages content after _apply_control's check, the sealed tree is re-bound.
+        real = verify._apply_control
+
+        def apply_then_stage(wt, m, nc, tool, nc_command=None):
+            err = real(wt, m, nc, tool, nc_command)
+            self._stage_failing_test(wt)
+            return err
+
+        m = {"base_sha": self.base, "head_sha": self.head, "negative_control": self.nc}
+        with mock.patch.object(verify, "_apply_control", side_effect=apply_then_stage):
+            ok, msgs = verify.execute_negative_control(m, self.cmd)
+        self.assertFalse(ok, msgs)
+        self.assertTrue(any("the sealed control" in e and "TEST path" in e for e in msgs), msgs)
+
+
+class ProfileSignedDispatchRecords(RepoCase):
+    """P2-2 (#614): verify.py canonicalised a dispatch record over _DISPATCH_FIELDS only, while
+    dispatch-sign.py appends _PROFILE_FIELDS to a record carrying a profile (#590). Every genuine
+    `--profile`/`--parent-profile` record was reported INVALID, and the parity tests sampled only
+    profile-free records."""
+
+    _SCRUB = ("OPEN_FLEET_PARENT_PROFILE", "ORCA_PARENT_PROFILE", "OPEN_FLEET_SANDBOX_PROFILE",
+              "ORCA_SANDBOX_PROFILE", "OPEN_FLEET_SIGNING_SEED", "ORCA_DISPATCH_SIGNING_SEED")
+
+    def _signed(self, *extra):
+        seed = bytes(range(9, 41))
+        env = {k: v for k, v in os.environ.items() if k not in self._SCRUB}
+        out = subprocess.run(
+            [sys.executable, str(ROOT / "runtime" / "scripts" / "dispatch-sign.py"), "sign",
+             "--key", self.seed_file(seed), "--manifest-id", "u", "--contract-digest", "sha256:a",
+             "--unit-class", "mutation", *extra],
+            capture_output=True, text=True, env=env, check=True).stdout
+        return (self.write(".orca/profile-record.json", out),
+                self.write(".orca/profile-pubkey", ed.publickey(seed).hex()))
+
+    def _check(self, rec, pk):
+        return verify.check_dispatch_provenance({"unit": "u"}, "sha256:a", "mutation", None, rec, pk)
+
+    def test_a_profile_signed_record_verifies(self):
+        for extra in (("--profile", "rw"), ("--profile", "ro", "--parent-profile", "rw"),
+                      ("--parent-profile", "danger")):
+            with self.subTest(extra=extra):
+                res = self._check(*self._signed(*extra))
+                self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
+
+    def test_a_tampered_or_stripped_profile_does_not(self):
+        rec, pk = self._signed("--profile", "ro", "--parent-profile", "rw")
+        env = json.loads((self.repo / rec).read_text(encoding="utf-8"))
+        for mutate in (lambda r: r.update(profile="danger"), lambda r: r.pop("profile"),
+                       lambda r: r.pop("parent_profile")):
+            with self.subTest(mutate=mutate):
+                tampered = json.loads(json.dumps(env))
+                mutate(tampered["record"])
+                (self.repo / rec).write_text(json.dumps(tampered), encoding="utf-8")
+                self.assertTrue(any("INVALID" in e for e in self._check(rec, pk)))
+
+    def test_canonical_parity_holds_for_profile_records(self):
+        ds = dispatch_sign
+        for record in ({"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation",
+                        "profile": "rw"},
+                       {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation",
+                        "lighting": "lit", "nc_paths": ["b.py", "a.py"], "profile": "ro",
+                        "parent_profile": "danger"},
+                       {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation",
+                        "parent_profile": "rw"}):
+            with self.subTest(record=record):
+                self.assertEqual(verify._canonical_dispatch(record), ds.canonical_record(record))
+                self.assertIn(b'"profile"' if "profile" in record else b'"parent_profile"',
+                              verify._canonical_dispatch(record))
+
+    def test_the_transcript_form_is_the_signers_too(self):
+        record = {k: f"v-{k}" for k in verify._Transcript.FIELDS}
+        self.assertEqual(verify._Transcript.canonical(record),
+                         dispatch_sign.canonical_transcript(record))
+
+
+class RunnerDiscoveryIsTheOracle(RepoCase):
+    """P2-1 (#614): "never revert the oracle" was a filename test. A test the runner collects
+    under any other name — `checks/add_check.py` under `python_files = *_check.py`, a test file
+    the bound command names as an operand — read as production, so `negative_control.paths`
+    could revert it and the RED came from the OLD oracle failing against head."""
+
+    PY = shlex.quote(sys.executable)
+
+    def unit(self, base_files, head_files=None):
+        for rel_path, text in base_files.items():
+            self.write(rel_path, text)
+        base = self.commit("base")
+        changes = {"calc.py": "def add(a, b):\n    return a + b\n",
+                   "checks/add_check.py": "import calc\n\n\ndef test_add():\n"
+                                          "    assert calc.add(2, 2) == 4\n"}
+        for rel_path, text in {**changes, **(head_files or {})}.items():
+            self.write(rel_path, text)
+        head = self.commit("head")
+        cache = getattr(verify._is_oracle_path, "discovery", {})  # read once per run
+        cache.clear()
+        self.addCleanup(cache.clear)
+        return {"base_sha": base, "head_sha": head}
+
+    def base(self):
+        return {"calc.py": "def add(a, b):\n    return a - b\n",
+                "checks/add_check.py": "import calc\n\n\ndef test_add():\n"
+                                       "    assert calc.add(2, 2) == 0\n"}
+
+    def bind(self, m, path, cmd):
+        return verify._bind_paths_to_change([path], m, "negative_control.paths", cmd)
+
+    def assert_oracle(self, m, path, cmd):
+        err = self.bind(m, path, cmd)
+        self.assertIsNotNone(err, f"{path} was revertible under {cmd!r}")
+        self.assertIn("TEST path", err)
+
+    def test_python_files_in_every_pytest_config_makes_the_check_a_test(self):
+        for name, text in (("pytest.ini", "[pytest]\npython_files = *_check.py\n"),
+                           ("pyproject.toml", '[tool.pytest.ini_options]\npython_files = ["*_check.py"]\n'),
+                           ("setup.cfg", "[tool:pytest]\npython_files = *_check.py\n"),
+                           ("tox.ini", "[pytest]\npython_files = *_check.py test_*.py\n")):
+            with self.subTest(config=name):
+                for stale in ("pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"):
+                    (self.repo / stale).unlink(missing_ok=True)
+                m = self.unit({**self.base(), name: text})
+                for cmd in (f"{self.PY} -m pytest -q", "pytest -q", f"{self.PY} -m pytest -q -k add"):
+                    self.assert_oracle(m, "checks/add_check.py", cmd)
+                    self.assertIsNone(self.bind(m, "calc.py", cmd), "the production fix stays revertible")
+
+    def test_overrides_and_a_named_config_file_count(self):
+        m = self.unit({**self.base(), "ci/custom.ini": "[pytest]\npython_files = *_check.py\n"})
+        self.assert_oracle(m, "checks/add_check.py", f"{self.PY} -m pytest -q -c ci/custom.ini")
+        self.assert_oracle(m, "checks/add_check.py", f"{self.PY} -m pytest -o python_files=*_check.py")
+        self.assertIsNone(self.bind(m, "checks/add_check.py", f"{self.PY} -m pytest -q"))
+
+    def test_a_test_file_the_command_names_is_the_oracle(self):
+        m = self.unit(self.base())
+        for cmd in (f"{self.PY} -m pytest -q checks/add_check.py",
+                    f"{self.PY} -m pytest -q checks/add_check.py::test_add",
+                    f"{self.PY} -m pytest -q -- checks/add_check.py",
+                    f"{self.PY} -m unittest checks.add_check",
+                    f"{self.PY} -m unittest discover -s checks -p *_check.py",
+                    f"{self.PY} -m unittest discover checks *_check.py"):
+            with self.subTest(cmd=cmd):
+                self.assert_oracle(m, "checks/add_check.py", cmd)
+                self.assertIsNone(self.bind(m, "calc.py", cmd))
+
+    def test_testpaths_scope_discovery_and_operands_widen_it(self):
+        m = self.unit({**self.base(),
+                       "pytest.ini": "[pytest]\npython_files = *_check.py\ntestpaths = tests\n"})
+        # pytest collects under testpaths only, so a *_check.py elsewhere is not its oracle...
+        self.assertIsNone(self.bind(m, "checks/add_check.py", f"{self.PY} -m pytest -q"))
+        # ...until the command names that tree, when pytest collects there instead.
+        self.assert_oracle(m, "checks/add_check.py", f"{self.PY} -m pytest -q checks")
+        self.assert_oracle(m, "checks/add_check.py", f"{self.PY} -m pytest -q .")
+
+    def test_jest_test_match_and_test_regex_in_package_json(self):
+        js = {"calc.js": "module.exports = (a, b) => a - b;\n",
+              "qa/add.js": "test('add', () => {});\n", "src/add.test.js": "test('x', () => {});\n"}
+        default_match = ["**/__tests__/**/*.[jt]s?(x)", "**/?(*.)+(spec|test).[jt]s?(x)"]
+        for jest in ({"testMatch": ["**/qa/**/*.js", *default_match]},
+                     {"testRegex": "/qa/.*\\.js$"}, {"testRegex": ["/qa/[^/]*\\.js$"]}):
+            with self.subTest(jest=jest):
+                self.write("package.json", json.dumps({"name": "x", "jest": jest}))
+                m = self.unit(js, {"calc.js": "module.exports = (a, b) => a + b;\n",
+                                   "qa/add.js": "test('add', () => { });\n",
+                                   "src/add.test.js": "test('x', () => { });\n"})
+                cmd = "node node_modules/jest/bin/jest.js"
+                self.assert_oracle(m, "qa/add.js", cmd)
+                self.assertIsNone(self.bind(m, "calc.js", cmd), "the default testMatch over-matched")
+
+    def test_unreadable_discovery_configuration_fails_closed(self):
+        m = self.unit({**self.base(), "pyproject.toml": "[tool.pytest.ini_options\npython_files =\n"})
+        err = self.bind(m, "calc.py", f"{self.PY} -m pytest -q")
+        self.assertIsNotNone(err)
+        self.assertIn("pyproject.toml", err)
+        self.assertIn("fail-closed", err)
+
+    def test_the_reviewers_reproduction_end_to_end(self):
+        # A runner that collects checks/*_check.py, as pytest does under that config; the revert
+        # restores the OLD check, which fails against the fixed head — a RED about nothing.
+        runner = ("import importlib.util\nimport pathlib\nimport sys\n\nsys.path.insert(0, '.')\n"
+                  "failed = 0\nfor path in sorted(pathlib.Path('checks').glob('*_check.py')):\n"
+                  "    spec = importlib.util.spec_from_file_location(path.stem, path)\n"
+                  "    module = importlib.util.module_from_spec(spec)\n"
+                  "    spec.loader.exec_module(module)\n"
+                  "    for name in sorted(n for n in dir(module) if n.startswith('test_')):\n"
+                  "        try:\n            getattr(module, name)()\n"
+                  "        except AssertionError as exc:\n            failed += 1\n"
+                  "            print(f'FAIL: {path}::{name}')\n            print(f'AssertionError: {exc}')\n"
+                  "print(f'FAILED (failures={failed})' if failed else 'OK')\nsys.exit(1 if failed else 0)\n")
+        m = self.unit({**self.base(), "pytest.ini": "[pytest]\npython_files = *_check.py\n",
+                       "runner.py": runner})
+        cmd = f"{self.PY} runner.py"
+        art = self.artifact("RED\n", "docs/reports/u/nc-oracle-revert.txt")
+        m.update(artifacts=[self.pin(art)], negative_control={
+            "tool": "revert", "result": "RED", "artifact": art, "command": cmd,
+            "paths": ["checks/add_check.py"]})
+        errors, executed = verify.check_negative_control(m, True, execute=True, nc_command=cmd)
+        self.assertFalse(executed, errors)
+        self.assertTrue(any("TEST path" in e for e in errors), errors)
+
+
+class PrNumberIsAPositiveInteger(MutationFixture):
+    """P3 (#614): pr.number came from the worker's manifest and was interpolated into the gh api
+    PATH (`repos/<slug>/pulls/<n>/reviews`) unvalidated; github.com rejects dot-segments today,
+    and the gate no longer relies on that."""
+
+    def test_anything_but_a_positive_integer_is_refused_before_any_lookup(self):
+        calls = []
+        verify.fetch_reviews = lambda repo_, n: calls.append(n) or (
+            [{"state": "APPROVED", "author_association": "MEMBER", "commit_id": self.head_sha,
+              "user": {"login": "carol"}}], None)
+        m = json.loads(Path(self._manifest()).read_text(encoding="utf-8"))
+        for number in ("7/../../8", "7?per_page=1", "7", 7.0, -7, True, [7]):
+            with self.subTest(number=number):
+                m["pr"]["number"] = number
+                res = verify.check_review(m, "o/r", True)
+                self.assertTrue(any("not a positive integer" in e for e in res), res)
+        self.assertEqual(calls, [], "a review lookup ran on an unvalidated pr.number")
+        m["pr"]["number"] = 7
+        self.assertFalse([e for e in verify.check_review(m, "o/r", True) if not e.startswith("NOTE:")])
+        self.assertEqual(calls, [7])
+
+    def test_the_fetchers_refuse_it_too(self):
+        verify.fetch_reviews, verify.fetch_pr_author = self._orig_r, self._orig_a
+        verify._Authority.gh, verify._Authority.custody = "/nonexistent/gh", "system"
+        with mock.patch.object(verify, "_run", return_value=(0, "[]", "")) as run:
+            reviews, err = verify.fetch_reviews("o/r", "7/../8")
+            self.assertIsNone(reviews)
+            self.assertIn("positive integer", err)
+            self.assertIsNone(verify.fetch_pr_author("o/r", "7/../8"))
+            run.assert_not_called()
+
+
+class VerifierDocsMatchTheCode(unittest.TestCase):
+    """P3 (#614): docs/verify-gate.md budgeted "2 checkouts + 2 runs" for an executed control
+    that runs the bound command three times (clean, control, clean) and checks out four times
+    (the scratch worktree plus one repository per phase); _fresh_command_records said the NC
+    replay bound to the ledger, which #279 ended."""
+
+    def test_the_budget_counts_the_phases_the_code_runs(self):
+        src = (ROOT / "runtime" / "scripts" / "verify.py").read_text(encoding="utf-8")
+        phases = re.search(r"for phase, commit in \(((?:\(\"\w+\", \w+\),? ?)+)\):", src)
+        self.assertIsNotNone(phases, "the phase loop moved; re-pin this test against it")
+        runs = phases.group(1).count("(")
+        doc = (ROOT / "docs" / "verify-gate.md").read_text(encoding="utf-8")
+        flat = " ".join(doc.split())
+        self.assertIn(f"{runs} runs of the bound command", flat)
+        self.assertIn(f"{runs + 1} checkouts", flat)
+        self.assertNotIn("2 runs of the bound command", flat)
+
+    def test_the_ledger_helper_no_longer_claims_the_replay_binds_to_it(self):
+        doc = " ".join(verify._fresh_command_records.__doc__.split())
+        self.assertNotIn("replay binds to", doc)
+        self.assertIn("--nc-command", doc)
 
 
 if __name__ == "__main__":

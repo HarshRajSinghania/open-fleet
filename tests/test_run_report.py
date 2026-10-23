@@ -188,7 +188,8 @@ class WipCurveObligation(unittest.TestCase):
         self.assertIn("absorb-it", missions)
         self.assertNotIn("review-it", missions)  # report-only: no dispatch waves
         self.assertNotIn("map-it", missions)     # planning
-        self.assertEqual(len(missions), 17)
+        self.assertIn("offload-it", missions)    # lands a recipe through a PR since #626
+        self.assertEqual(len(missions), 18)
 
     def test_a_mutating_report_without_a_wip_row_does_not_bind(self):
         errs = run_report._wip_curve_errors("RUN: x\nno curve here\n", "ship-it", ROOT, "r.md")
@@ -1065,6 +1066,20 @@ class RunReportBinding(unittest.TestCase):
             "exit": 0, "wtree": "0" * 40}]})
         errs = self._check()
         self.assertTrue(any("does not resolve to a tree object" in e for e in errs), errs)
+
+    def test_a_verifier_record_naming_the_empty_tree_is_refused(self):
+        # 2026-10-23 review, P3 (#614): git resolves its built-in empty tree in EVERY repository
+        # without storing it, so a hand-written record naming it passed "resolves to a real tree"
+        # while binding the run to no content at all.
+        cmd = f"python3 runtime/scripts/verify.py --manifest {self.manifest}"
+        empty = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        self.assertEqual(run_report.tree_of(empty, self.repo), empty)  # it does resolve here
+        self._remanifest({"unit": "u1", "commands": [{
+            "label": "verify", "cmd": cmd,
+            "cmd_sha256": hashlib.sha256(cmd.encode("utf-8")).hexdigest(),
+            "exit": 0, "wtree": empty}]})
+        errs = self._check()
+        self.assertTrue(any("EMPTY tree" in e for e in errs), errs)
 
     def test_a_recorded_red_verifier_run_still_counts_as_a_run(self):
         # A RED is a legitimate recorded outcome — the point is that the verifier RAN.

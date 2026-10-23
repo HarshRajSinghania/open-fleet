@@ -706,5 +706,60 @@ class SymlinkInstallGate(unittest.TestCase):
         self.assertIn("no completion gate", readme)
 
 
+class GateAliasesNeverOverrideSilently(GateCase):
+    """2026-10-23 review, P3 (#614): verify-gate.sh read an OPEN_FLEET_* alias family that took
+    precedence over every documented ORCA_* input unannounced — an inherited
+    OPEN_FLEET_UNIT_CLASS downgraded the class the coordinator set as ORCA_UNIT_CLASS, and
+    OPEN_FLEET_NO_GH added a review waiver. Either spelling still sets an input; two that
+    disagree BLOCK."""
+
+    ALIASES = (("OPEN_FLEET_GATE_MANIFEST", "ORCA_MANIFEST"), ("OPEN_FLEET_MANIFEST", "ORCA_MANIFEST"),
+               ("OPEN_FLEET_CONTRACT_SOURCE", "ORCA_CONTRACT_SOURCE"),
+               ("OPEN_FLEET_CONTRACT_DIGEST", "ORCA_CONTRACT_DIGEST"), ("OPEN_FLEET_REPO", "ORCA_REPO"),
+               ("OPEN_FLEET_BASE", "ORCA_BASE"), ("OPEN_FLEET_SYMBOL", "ORCA_SYMBOL"),
+               ("OPEN_FLEET_UNIT_CLASS", "ORCA_UNIT_CLASS"), ("OPEN_FLEET_NO_GH", "ORCA_NO_GH"),
+               ("OPEN_FLEET_LIGHTING", "ORCA_LIGHTING"), ("OPEN_FLEET_UNIT_LANE", "ORCA_UNIT_LANE"),
+               ("OPEN_FLEET_DISPATCH_RECORD", "ORCA_DISPATCH_RECORD"),
+               ("OPEN_FLEET_DISPATCH_PUBKEY", "ORCA_DISPATCH_PUBKEY"),
+               ("OPEN_FLEET_EXECUTE_NC", "ORCA_EXECUTE_NC"), ("OPEN_FLEET_NC_COMMAND", "ORCA_NC_COMMAND"),
+               ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE"))
+
+    def run_env(self, **env):
+        return subprocess.run([str(GATE)], capture_output=True, text=True, cwd=self.repo,
+                              env={"PATH": os.environ.get("PATH", ""), **env})
+
+    def good_report(self):
+        src = self.src(["AC-1"])
+        return {"ORCA_MANIFEST": self.manifest(src, ["AC-1"], ["AC-1"]),
+                "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src)}
+
+    def test_an_alias_cannot_downgrade_the_coordinators_class(self):
+        r = self.run_env(**self.good_report(), ORCA_UNIT_CLASS="mutation",
+                         OPEN_FLEET_UNIT_CLASS="report-only")
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("disagree", r.stderr)
+        self.assertNotIn("verify: OK", r.stdout)
+
+    def test_every_pair_that_disagrees_blocks_before_the_verifier_runs(self):
+        for alias, documented in self.ALIASES:
+            with self.subTest(alias=alias):
+                r = self.run_env(**{alias: "one", documented: "two"})
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn(f"{alias} and {documented}", r.stderr.replace("  ", " "))
+
+    def test_either_spelling_alone_or_both_agreeing_is_honoured(self):
+        base = self.good_report()
+        for env in ({**base, "ORCA_UNIT_CLASS": "report-only"},
+                    {**base, "OPEN_FLEET_UNIT_CLASS": "report-only"},
+                    {**base, "ORCA_UNIT_CLASS": "report-only", "OPEN_FLEET_UNIT_CLASS": "report-only"},
+                    {"OPEN_FLEET_GATE_MANIFEST": base["ORCA_MANIFEST"],
+                     "ORCA_CONTRACT_SOURCE": base["ORCA_CONTRACT_SOURCE"],
+                     "OPEN_FLEET_CONTRACT_DIGEST": base["ORCA_CONTRACT_DIGEST"],
+                     "ORCA_UNIT_CLASS": "report-only"}):
+            with self.subTest(env=sorted(env)):
+                r = self.run_env(**env)
+                self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -31,8 +31,31 @@ ASSERTION_MARKERS = (
 STRONG_ASSERTION_RE = re.compile(
     r"^[ \t]*(?:e[ \t]+)?assertionerror\b"      # AssertionError raised (pytest prefixes E)
     r"|^[ \t]*e[ \t]+assert\b"                   # pytest's failing assertion line
+    r"|^[ \t]*e[ \t]+failed: did not raise\b"    # pytest.raises evaluated and was not satisfied
     r"|^[ \t]*thread .*panicked at"               # Rust
     r"|✗|✕",
+    re.M,
+)
+# A load failure the runner actually REPORTED, as opposed to a stillborn word merely appearing.
+# Each alternative is anchored to the head of a line (after pytest's `E` prefix or a runner's
+# indent), or is a runner's own suite-level verdict, so an assertion MESSAGE that names
+# `ModuleNotFoundError` ("AssertionError: ModuleNotFoundError not raised") does not match. These
+# refuse the control even beside counted failures and even beside an assertion that DID fail:
+# pytest prints `1 failed` for a SyntaxError raised by an in-test import, Jest prints `Test
+# Suites: 1 failed` and Vitest `Failed Suites 1` for a suite that never loaded, and Jest marks
+# the in-test-require case `✕` (2026-10-23 review, P1-1).
+STILLBORN_SHAPE_RE = re.compile(
+    r"^[ \t]*(?:e[ \t]+)?(?:syntaxerror|indentationerror|taberror|importerror"
+    r"|modulenotfounderror)\b"                    # Python / Node raised it (pytest prefixes E)
+    r"|^[ \t]*(?:e[ \t]+)?attributeerror: module\b"   # the name the oracle reached for is gone
+    r"|^failed \S+ - +(?:file \"|(?:syntaxerror|importerror|modulenotfounderror)\b)"  # pytest -rf
+    r"|^[ \t]*(?:error: )?cannot find module\b"   # Node / Jest resolver
+    r"|●[ \t]*test suite failed to run"           # Jest: the suite never loaded
+    r"|^\W*failed suites \d+"                     # Vitest: the suite never loaded
+    r"|^[ \t]*(?:error: )?failed to (?:load url|resolve import)\b"   # Vite / Vitest resolver
+    r"|^[_= \t]*errors? collecting\b|\berrors? during collection\b"   # pytest collection
+    r"|\[(?:build|setup) failed\]"                # go test: the package never compiled
+    r"|^error: could not compile\b",              # cargo: the crate never compiled
     re.M,
 )
 # unittest and pytest both distinguish an ERROR (an exception escaped) from a FAILURE (an assertion
@@ -61,14 +84,25 @@ def _failure_signature(out, err):
     exits 1 before a single assertion runs, and both look identical to a gate that only reads the
     return code. The RED must LOOK like an oracle failing.
 
-    Three layers, in this order, because two review rounds on #308 showed either one alone is
-    wrong. The RUNNER'S OWN SUMMARY is the best evidence there is: unittest and pytest already
-    separate errors from failures, so `FAILED (errors=1)` is a stillborn mutant no matter what
-    words surround it. Only when no summary exists — a plain script, say — does the substring scan
-    matter, and even then explicit assertion evidence outranks it: a test asserting that a
-    `ModuleNotFoundError` is raised prints that name while its oracle runs perfectly well. That
-    evidence is line-anchored, because a collection traceback QUOTES the source it was reading —
-    an `assert` in echoed source is not an assertion that ran."""
+    Four layers, in this order, because two review rounds on #308 showed either one alone is
+    wrong. The RUNNER'S OWN SUMMARY is the best evidence there is for an ERROR: unittest and
+    pytest separate errors from failures, so `FAILED (errors=1)` is a stillborn mutant no matter
+    what words surround it. A counted FAILURE is weaker evidence than it looks: pytest counts an
+    exception raised inside a test (an in-test `import mod` hitting a SyntaxError) as `1 failed`,
+    and Jest/Vitest count a suite that never loaded as a failed suite. So the stillborn reading
+    runs whatever the summary counted (2026-10-23 review, P1-1). A load failure the runner
+    REPORTED (STILLBORN_SHAPE_RE) refuses outright; a stillborn WORD alone refuses unless explicit
+    assertion evidence outranks it — a test asserting that a `ModuleNotFoundError` is raised
+    prints that name while its oracle runs perfectly well. That evidence is line-anchored, because
+    a collection traceback QUOTES the source it was reading — an `assert` in echoed source is not
+    an assertion that ran.
+
+    A run with a genuine assertion failure in one test AND a reported load failure in another is
+    REFUSED, fail-closed: the verifier cannot tell which failing test is the criterion-bound
+    oracle, a guarded import (`try: import mod` … `assert mod`) turns a stillborn module into an
+    AssertionError, and Jest marks a test whose require blew up `✕` like any other. The control
+    must leave the code loadable; narrow the mutant or the bound command until only an assertion
+    fails."""
     text = f"{out}\n{err}".lower()
     if not text.strip():
         return False, ("the control run produced NO output at all. A silent non-zero exit is not a "
@@ -80,16 +114,24 @@ def _failure_signature(out, err):
         return False, (f"the runner reports {errors} error(s) and no assertion failure — an error is "
                        "an exception escaping, not an oracle evaluating to false, so it does not "
                        "show the criterion-bound assertion ran at all; fail-closed (#280)")
-    if not failures:
-        # No runner summary to trust, so read the text. A stillborn mutant refuses unless the
-        # output carries evidence an assertion was really evaluated.
-        stillborn = [mark for mark in STILLBORN_MARKERS if mark in text]
-        if stillborn and not STRONG_ASSERTION_RE.search(text):
-            return False, (f"the control run did not get as far as an oracle ({stillborn[0]!r} in "
-                           "its output, and nothing showing an assertion was evaluated) — that is "
-                           "a STILLBORN MUTANT, not a kill. The non-zero exit is the module failing "
-                           "to load, which would happen for any command; the control must leave the "
-                           "code runnable and fail an ASSERTION (#280)")
+    shape = STILLBORN_SHAPE_RE.search(text)
+    if shape:
+        counted = f" beside {failures} counted failure(s)" if failures else ""
+        return False, (f"the control run reports a load failure ({shape.group(0).strip()!r}){counted} "
+                       "— that is a STILLBORN MUTANT, not a kill. A module that fails to load, or "
+                       "a suite that never ran, makes every command that touches it exit non-zero; "
+                       "a failed count or an assertion failing elsewhere in the same run does not "
+                       "show the criterion-bound oracle ran. The control must leave the code "
+                       "loadable and fail an ASSERTION (#280; 2026-10-23 review, P1-1)")
+    # Read the text whatever the summary counted. A stillborn word refuses unless the output
+    # carries evidence an assertion was really evaluated.
+    stillborn = [mark for mark in STILLBORN_MARKERS if mark in text]
+    if stillborn and not STRONG_ASSERTION_RE.search(text):
+        return False, (f"the control run did not get as far as an oracle ({stillborn[0]!r} in "
+                       "its output, and nothing showing an assertion was evaluated) — that is "
+                       "a STILLBORN MUTANT, not a kill. The non-zero exit is the module failing "
+                       "to load, which would happen for any command; the control must leave the "
+                       "code runnable and fail an ASSERTION (#280)")
     if not any(mark in text for mark in ASSERTION_MARKERS):
         return False, ("the control run exited non-zero but its output names no assertion failure, "
                        "so nothing shows the criterion-bound oracle actually ran and failed; "

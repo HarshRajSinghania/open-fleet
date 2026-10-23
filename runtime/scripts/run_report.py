@@ -420,6 +420,11 @@ def blob_at(rev, path_text, root):
     return proc.stdout if proc.returncode == 0 else None
 
 
+# git's empty tree, SHA-1 and SHA-256 object formats: always resolvable, never anyone's content.
+EMPTY_TREES = frozenset({"4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                         "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"})
+
+
 def tree_of(rev, root):
     """`rev`'s tree sha, or None."""
     proc = subprocess.run(
@@ -482,9 +487,17 @@ def verifier_ran(manifest_path, rev, root):
         if not (isinstance(wtree, str) and wtree):
             problems.append("it carries no wtree, so it is bound to no content at all")
             continue
-        if tree_of(wtree, root) is None:
+        tree = tree_of(wtree, root)
+        if tree is None:
             problems.append(f"its wtree {wtree[:12]}… does not resolve to a tree object in this "
                             "repository")
+            continue
+        if tree in EMPTY_TREES:
+            # git knows the empty tree in EVERY repository without storing it, so naming it
+            # passed "resolves to a real tree" while binding the record to no content at all
+            # (2026-10-23 review, P3). A verifier run is made on a checkout with files in it.
+            problems.append(f"its wtree {wtree[:12]}… is git's built-in EMPTY tree, which "
+                            "resolves in any repository and binds the record to no content")
             continue
         return []  # one sound record is enough
     return [f"the graded manifest {manifest_path} records a verify.py run that binds to nothing: "

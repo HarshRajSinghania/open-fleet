@@ -118,7 +118,7 @@ jobs:
     # did, cancelled runs included, and the first step fails unless EVERY need succeeded —
     # failure, cancelled and skipped all fail it. vfbench is a need for the same reason: a
     # job no required context depends on is advisory, however it is described.
-    needs: [tests, floor, vfbench]
+    needs: [tests, floor, vfbench, vfbench_replay]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -306,3 +306,45 @@ jobs:
         run: |
           set -euo pipefail
           time python3 bench/vf-bench/gate.py
+  vfbench_replay:
+    # #601: the second environment. bench/vf-bench/replay-reference.json is a replay published from
+    # a developer machine at a pinned revision; this job replays that revision under the same
+    # protocol on the GitHub runner — a fresh export, a built environment — and fails on any
+    # difference outside the host facts, the raw refusal text and wall time. The drill then proves
+    # a deleted or edited corpus case or pinned fixture fails the replay, and the held-out protocol
+    # is checked against the shipped corpus. The report uploads whatever happened, so a mismatch
+    # can be read and compared (`replay.py compare`) against a local run of the same revision.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
+        with:
+          fetch-depth: 0  # the pinned revision, and the real commits its traps pin, are history
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
+        with:
+          python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - name: Reproduce the published VF-Bench replay in this environment
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/vf-bench-replay"
+          python3 bench/vf-bench/replay.py reproduce bench/vf-bench/replay-reference.json \
+            --out "$RUNNER_TEMP/vf-bench-replay/report.json" \
+            --summary "$RUNNER_TEMP/vf-bench-replay/summary.txt"
+      - name: A deleted or edited corpus case or fixture fails the replay
+        run: python3 bench/vf-bench/replay.py drill --rev HEAD
+      - name: The held-out protocol is complete and pinned to the shipped corpus
+        run: python3 bench/vf-bench/heldout.py validate
+      - name: Publish the replay summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/vf-bench-replay/summary.txt" ]; then
+            { echo '```'; cat "$RUNNER_TEMP/vf-bench-replay/summary.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload the replay report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0 (Node 24, #367)
+        with:
+          name: vf-bench-replay
+          path: ${{ runner.temp }}/vf-bench-replay/
+          if-no-files-found: error
+          retention-days: 30

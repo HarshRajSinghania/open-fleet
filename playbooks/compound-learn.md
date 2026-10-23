@@ -34,7 +34,7 @@ budget is finite and a line that steers nothing still costs). A learning in none
 is usually noise.
 
 ## Prompt / playbook tweaks (fleet-side, optional)
-- <one improvement to a TASK preamble — file a backlog item, do not edit orca-fleet from here>
+- <one improvement to a TASK preamble — file a backlog item, do not edit open-fleet from here>
 ```
 
 Rules:

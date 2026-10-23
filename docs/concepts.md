@@ -1,4 +1,4 @@
-# Concepts — the mental model behind orca-fleet
+# Concepts — the mental model behind open-fleet
 
 [Documentation](README.md) · [First run](getting-started.md) · [Mission guides](missions/README.md)
 
@@ -246,7 +246,7 @@ denominator is the most dangerous false "done":
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/negative-control.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/negative-control-light.jpg">
-    <img src="../assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; orca-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="820">
+    <img src="../assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="820">
   </picture>
 </p>
 
@@ -524,7 +524,7 @@ The three tiers, defined once here (other pages link this section):
 | Tier | Means | Does NOT mean |
 |---|---|---|
 | `doctrine-only` | the protocol is written and validated; no run report binds to it | the mission never ran — some ran without retaining artifacts here |
-| `self-run` | a run report binds, and the run's **target** was this catalog (orca-fleet itself) | an outside party ran it |
+| `self-run` | a run report binds, and the run's **target** was this catalog (open-fleet itself) | an outside party ran it |
 | `external-run` | a run report binds, and the run's **target** was a repository other than this catalog | an outside party ran it — the tier names the target, not the runner |
 
 Who ran it is a separate fact, recorded in the report's runner row: both of today's
@@ -544,8 +544,8 @@ re-running the verifier afterwards would not fix that: the authorities that made
 verdict — the coordinator's out-of-band contract, a live GitHub review lookup, the worktree as it
 stood — are gone. Closing this needs a leg the worker cannot type at all: a coordinator-signed
 verifier transcript checked against a committed key
-([#281](https://github.com/ravidsrk/orca-fleet/issues/281)), on top of making the tier cost an
-actual run ([#286](https://github.com/ravidsrk/orca-fleet/issues/286)).
+([#281](https://github.com/ravidsrk/open-fleet/issues/281)), on top of making the tier cost an
+actual run ([#286](https://github.com/ravidsrk/open-fleet/issues/286)).
 
 The live state is the [run archive](runs/): it names each mission's tier as its evidence
 lands and records every run that really happened, saying per run whether and why it binds. Tiers

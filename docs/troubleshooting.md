@@ -2,7 +2,7 @@
 
 [Documentation](README.md) · [Install](install.md) · [Development](development.md)
 
-Start with the symptom below. Run catalog scripts from your **orca-fleet clone**; run project
+Start with the symptom below. Run catalog scripts from your **open-fleet clone**; run project
 tests from the **target repository**. Agent prompts and `/plugin` commands go into the coding
 agent, rather than your shell.
 

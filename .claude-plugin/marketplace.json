@@ -1,5 +1,5 @@
 {
-  "name": "orca-fleet",
+  "name": "open-fleet",
   "owner": {
     "name": "Ravindra Kumar",
     "email": "ravidsrk@gmail.com",
@@ -11,12 +11,12 @@
   },
   "plugins": [
     {
-      "name": "orca-fleet",
+      "name": "open-fleet",
       "description": "Outcome-named autonomous fleets for the Orca runtime: each mission is one outcome with its own state machine and an evidence-backed definition of done. One router per worker. No vendor-named fleets. MIT.",
       "version": "0.7.1",
       "source": {
         "source": "github",
-        "repo": "ravidsrk/orca-fleet",
+        "repo": "ravidsrk/open-fleet",
         "ref": "dist"
       }
     }

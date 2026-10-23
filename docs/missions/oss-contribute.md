@@ -47,7 +47,7 @@ one through the per-issue pipeline, verifies each against authoritative state, a
 re-enumeration finds nothing actionable left un-contributed.
 
 It is `clean-sweep` forked for a repo you do **not** control. The build and review machinery is shared;
-three things differ, and by orca-fleet's own six-part mission test that makes it a distinct mission:
+three things differ, and by open-fleet's own six-part mission test that makes it a distinct mission:
 
 - **Convergence proof.** `clean-sweep` closes each issue with a merged SHA. `oss-contribute` cannot —
   you have READ on the target. The terminal is a PR **open and internally reviewed**; merge is the

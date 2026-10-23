@@ -36,7 +36,7 @@ scores high. v0 result:
 | Gate | false-done | rate |
 |---|---|---|
 | self-scoring (naive) | 25/25 | **100%** |
-| orca-fleet `verify.py` (sound) | 0/25 | **0%** |
+| open-fleet `verify.py` (sound) | 0/25 | **0%** |
 
 All eight valid controls pass both gates — the sound gate is not trivially always-RED. The mutation one
 is the load-bearing half: `mutation-valid-control` builds a **hermetic fixture repo at run time**

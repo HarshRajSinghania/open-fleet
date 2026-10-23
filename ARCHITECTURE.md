@@ -1,4 +1,4 @@
-# orca-fleet architecture
+# open-fleet architecture
 
 A fleet is an **outcome**, not an ingredient. Missions are named for what they achieve
 ("ship it", "close every issue", "find the root cause"), never for the pack whose technique

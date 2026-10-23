@@ -786,8 +786,9 @@ Exits: 0 nothing quarantined is in play · 2 violation · 3 cannot evaluate
 unreadable) — a broken deny-list never reads as an empty one. A root with no
 `runtime/quarantine.json` is not a fleet catalog: exit 0 with "no quarantine in force" on
 stderr. Preflight never reads the list from the
-target repo in cwd — it resolves the fleet catalog ($ORCA_FLEET_ROOT, then
-$CLAUDE_PLUGIN_ROOT, then its own tree), so a target cannot shadow the deny-list.
+target repo in cwd — it resolves the fleet catalog ($OPEN_FLEET_ROOT, else the pre-rename
+$ORCA_FLEET_ROOT — both set to different paths exits 2 — then $CLAUDE_PLUGIN_ROOT, then its own
+tree), so a target cannot shadow the deny-list.
 
 > Why: quarantine is a checked-in file, so it binds checkouts that contain it; it
 > cannot reach a running worker or a stale clone. It is the fast, reversible,

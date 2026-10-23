@@ -13,12 +13,12 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
   version is 1,372 commits behind with no GitHub Releases; five stale hand-typed pin and proof
   sentences; a schema line the 2026-09-28 re-pin missed), eight P1 findings, and a three-tier
   release path (0.7.0 → public beta → 1.0). Its findings are filed as #510–#525 under label
-  [`release-readiness-2026-09-28`](https://github.com/ravidsrk/orca-fleet/issues?q=label%3Arelease-readiness-2026-09-28)
+  [`release-readiness-2026-09-28`](https://github.com/ravidsrk/open-fleet/issues?q=label%3Arelease-readiness-2026-09-28)
   — that query, not this line, is the live open set. At the 2026-09-30 sweep
-  [#511](https://github.com/ravidsrk/orca-fleet/issues/511),
-  [#515](https://github.com/ravidsrk/orca-fleet/issues/515) and
-  [#518](https://github.com/ravidsrk/orca-fleet/issues/518) were still open; the ordered path past
-  the 0.7.0 cut is the road-to-1.0 epic [#526](https://github.com/ravidsrk/orca-fleet/issues/526).
+  [#511](https://github.com/ravidsrk/open-fleet/issues/511),
+  [#515](https://github.com/ravidsrk/open-fleet/issues/515) and
+  [#518](https://github.com/ravidsrk/open-fleet/issues/518) were still open; the ordered path past
+  the 0.7.0 cut is the road-to-1.0 epic [#526](https://github.com/ravidsrk/open-fleet/issues/526).
 - **Standing gaps** — [`docs/completion/GAPS.md`](docs/completion/GAPS.md): every finding
   between HEAD and the completion definition with a FINISH / CUT / DEFER decision (a dated
   snapshot; live proof counts are in the README's generated proof-status sentence). G-09
@@ -38,7 +38,7 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
 - **The 2026-09-11 deep review** —
   [`docs/reviews/2026-09-11-review.md`](docs/reviews/2026-09-11-review.md) (moved from the root
   `REVIEW.md` on 2026-10-14; a stub there points to it) and issues
-  [#279–#307](https://github.com/ravidsrk/orca-fleet/issues?q=label%3Adeep-review-2026-09-11) (plus
+  [#279–#307](https://github.com/ravidsrk/open-fleet/issues?q=label%3Adeep-review-2026-09-11) (plus
   #309–#318 from a second review of the same base). **Closed** — every finding landed in #308; #307
   closed when its release tags were published. Section or attack-id anchors are numbered per review,
   so a citation carrying one must name the dated file it means (#295).
@@ -48,7 +48,7 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
   is under [`docs/reports/release-20260912/`](docs/reports/release-20260912/).
 - **The 2026-09-10 deep review**, its predecessor, archived at
   [`docs/reviews/2026-09-10-review.md`](docs/reviews/2026-09-10-review.md) and issues
-  [#255–#276](https://github.com/ravidsrk/orca-fleet/issues?q=label%3Adeep-review-2026-09-10).
+  [#255–#276](https://github.com/ravidsrk/open-fleet/issues?q=label%3Adeep-review-2026-09-10).
   Older code comments and fixtures citing "REVIEW.md §N" mean THAT document (#295).
 
 Completed items are recorded in [`CHANGELOG.md`](CHANGELOG.md), not here.

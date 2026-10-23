@@ -1,12 +1,12 @@
 # Product roadmap
 
-Updated 2026-10-20. The [research roadmap epic](https://github.com/ravidsrk/orca-fleet/issues/593) and its linked issues are the live backlog; this page explains priority,
+Updated 2026-10-20. The [research roadmap epic](https://github.com/ravidsrk/open-fleet/issues/593) and its linked issues are the live backlog; this page explains priority,
 dependencies and completion criteria. Research-backed recommendations are proposed work,
 not a new release authorization or a frozen implementation specification.
 
 [Research and source checks](research/2026-10-20-product-roadmap-research.md) ·
 [Dependency index](roadmap-backlog.json) ·
-[Existing release epic](https://github.com/ravidsrk/orca-fleet/issues/526)
+[Existing release epic](https://github.com/ravidsrk/open-fleet/issues/526)
 
 ## Direction
 
@@ -16,14 +16,14 @@ mission / playbook / runtime architecture. The next investment is stronger opera
 and experimental evidence for the catalog already shipped.
 
 The recommendation is to prioritize public-beta reliability and adoption. This continues
-the destination in [#526](https://github.com/ravidsrk/orca-fleet/issues/526). Each implementation still freezes its own scope through the
+the destination in [#526](https://github.com/ravidsrk/open-fleet/issues/526). Each implementation still freezes its own scope through the
 existing process; release, credential, spending and policy gates retain their owners.
 
 ## What changed since the previous roadmap
 
-Research began against main `42d28e4c` and [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592)
+Research began against main `42d28e4c` and [PR #592](https://github.com/ravidsrk/open-fleet/pull/592)
 at `d9787142`. That PR has since merged into main as
-[`38aed6a6`](https://github.com/ravidsrk/orca-fleet/commit/38aed6a6ef4a8873ef70504336976fd47dc3de87),
+[`38aed6a6`](https://github.com/ravidsrk/open-fleet/commit/38aed6a6ef4a8873ef70504336976fd47dc3de87),
 satisfying the prerequisite for R03, R04, R05 and R09. The dated source briefs retain
 their original inspection snapshots.
 
@@ -54,20 +54,20 @@ availability may dominate. Run only a small active frontier, not all packages at
 
 Target window: first 1–2 weeks, subject to maintainer availability.
 
-Reuse #528 for the external scheduled monitor; complete [R01 / #594](https://github.com/ravidsrk/orca-fleet/issues/594) and [R02 / #595](https://github.com/ravidsrk/orca-fleet/issues/595). Keep the current
+Reuse #528 for the external scheduled monitor; complete [R01 / #594](https://github.com/ravidsrk/open-fleet/issues/594) and [R02 / #595](https://github.com/ravidsrk/open-fleet/issues/595). Keep the current
 public-beta gate list authoritative: #528 and the day-of-posting proof recheck still
-gate announcement. [R01 / #594](https://github.com/ravidsrk/orca-fleet/issues/594)/[R02 / #595](https://github.com/ravidsrk/orca-fleet/issues/595) are recommended before the 1.0 cut; adding either to the
+gate announcement. [R01 / #594](https://github.com/ravidsrk/open-fleet/issues/594)/[R02 / #595](https://github.com/ravidsrk/open-fleet/issues/595) are recommended before the 1.0 cut; adding either to the
 beta announcement gate needs an explicit maintainer decision.
 
 Exit evidence: a real scheduled monitor heartbeat plus alert drill; settings read-back
 and a negative spoofed-check control; actual independent review tied to a PR head.
-Then follow the existing release checklist at the cut SHA. Do not close [#526](https://github.com/ravidsrk/orca-fleet/issues/526) merely
+Then follow the existing release checklist at the cut SHA. Do not close [#526](https://github.com/ravidsrk/open-fleet/issues/526) merely
 because a roadmap or green CI exists.
 
 ### W1 — prove portable runtime behavior
 
-Target window: following 2–6 weeks. Begin with [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596)'s POSIX/Orca fixture and first-run
-path, [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597)'s launch-recovery seam, and [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598)'s differential shell corpus. [R06 / #599](https://github.com/ravidsrk/orca-fleet/issues/599) follows [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597)
+Target window: following 2–6 weeks. Begin with [R03 / #596](https://github.com/ravidsrk/open-fleet/issues/596)'s POSIX/Orca fixture and first-run
+path, [R04 / #597](https://github.com/ravidsrk/open-fleet/issues/597)'s launch-recovery seam, and [R05 / #598](https://github.com/ravidsrk/open-fleet/issues/598)'s differential shell corpus. [R06 / #599](https://github.com/ravidsrk/open-fleet/issues/599) follows [R04 / #597](https://github.com/ravidsrk/open-fleet/issues/597)
 because both change persistent coordination state.
 
 Exit evidence: supported routes have versioned certification receipts and honest
@@ -79,9 +79,9 @@ the merge queue refuses stale owners and stale reviewed trees.
 
 Target window: overlapping W1 where dependencies allow, roughly weeks 3–8.
 
-[R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) extends existing VF-Bench invariants. [R08 / #601](https://github.com/ravidsrk/orca-fleet/issues/601) makes comparison reproducible with
-held-out custody. [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602) tests adversarial actions over real fixture trajectories. [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603)
-derives metrics from stable observations; [R11 / #604](https://github.com/ravidsrk/orca-fleet/issues/604) runs the already specified WIP experiment.
+[R07 / #600](https://github.com/ravidsrk/open-fleet/issues/600) extends existing VF-Bench invariants. [R08 / #601](https://github.com/ravidsrk/open-fleet/issues/601) makes comparison reproducible with
+held-out custody. [R09 / #602](https://github.com/ravidsrk/open-fleet/issues/602) tests adversarial actions over real fixture trajectories. [R10 / #603](https://github.com/ravidsrk/open-fleet/issues/603)
+derives metrics from stable observations; [R11 / #604](https://github.com/ravidsrk/open-fleet/issues/604) runs the already specified WIP experiment.
 
 Exit evidence: every named invariant has an isolated trap or explicit gap; external
 results distinguish unsupported cases from failures; attacks are scored on observed
@@ -92,10 +92,10 @@ corpus passing is not a universal soundness proof, and absent usage data is not 
 
 Target window: roughly weeks 6–12, depending on W2 results.
 
-[R12 / #605](https://github.com/ravidsrk/orca-fleet/issues/605) makes historical hints revision-aware; its deterministic fixtures can start earlier.
-[R13 / #606](https://github.com/ravidsrk/orca-fleet/issues/606) tests smaller activation loads without
-weakening mandatory gates. [R14 / #607](https://github.com/ravidsrk/orca-fleet/issues/607) corrects and validates the A2A boundary. [R15 / #608](https://github.com/ravidsrk/orca-fleet/issues/608) binds offline
-retention receipts to inventory bytes. [R14 / #607](https://github.com/ravidsrk/orca-fleet/issues/607)'s format/documentation correction can start
+[R12 / #605](https://github.com/ravidsrk/open-fleet/issues/605) makes historical hints revision-aware; its deterministic fixtures can start earlier.
+[R13 / #606](https://github.com/ravidsrk/open-fleet/issues/606) tests smaller activation loads without
+weakening mandatory gates. [R14 / #607](https://github.com/ravidsrk/open-fleet/issues/607) corrects and validates the A2A boundary. [R15 / #608](https://github.com/ravidsrk/open-fleet/issues/608) binds offline
+retention receipts to inventory bytes. [R14 / #607](https://github.com/ravidsrk/open-fleet/issues/607)'s format/documentation correction can start
 earlier; it does not need a live service.
 
 Exit evidence: stale or malicious history cannot become authority; an instruction-load
@@ -107,33 +107,33 @@ live protocol service support and legal conformance are not assumed.
 
 | Issue | Work package | Wave / size | Hard prerequisite | Current entry state |
 |---|---|---|---|---|
-| [R01 / #594](https://github.com/ravidsrk/orca-fleet/issues/594) | Activate the trusted verdict-gate identity in branch protection | W0 / S | — | Needs human |
-| [R02 / #595](https://github.com/ravidsrk/orca-fleet/issues/595) | Complete the independent-maintainer review witness for H-10 | W0 / S | — | Needs human |
-| [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596) | Publish witnessed provider and harness certification with a reproducible first-run path | W1 / L | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
-| [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) | Reconcile POSIX worker launch after crashes at enumerated lifecycle boundaries | W1 / M | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
-| [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598) | Differential-test deny-hook shell parsing against real shell behavior | W1 / M | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
-| [R06 / #599](https://github.com/ravidsrk/orca-fleet/issues/599) | Persist and fence the single-conductor merge queue | W1 / L | [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) | After R04 |
-| [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) | Cover the remaining verifier invariants with isolated VF-Bench traps | W2 / M | — | Ready to scope |
-| [R08 / #601](https://github.com/ravidsrk/orca-fleet/issues/601) | Make VF-Bench independently runnable with held-out and temporal evaluation | W2 / L | [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) | After R07 |
-| [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602) | Evaluate adversarial worker trajectories using observed actions and state | W2 / L | [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592) (merged) | Ready to scope |
-| [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603) | Derive run and wave metrics from an append-only event record | W2 / M | — | Ready to scope |
-| [R11 / #604](https://github.com/ravidsrk/orca-fleet/issues/604) | Measure the WIP throughput curve before changing fleet concurrency defaults | W2 / M | — | Protocol prep ready; authorize live-run budget |
-| [R12 / #605](https://github.com/ravidsrk/orca-fleet/issues/605) | Bind episodic memory hints to source revision and untrusted provenance | W3 / M | — | Ready to scope |
-| [R13 / #606](https://github.com/ravidsrk/orca-fleet/issues/606) | Measure instruction-load reductions with paired mission ablations | W3 / M | [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602), [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603) | After R09, R10 |
-| [R14 / #607](https://github.com/ravidsrk/orca-fleet/issues/607) | Correct and validate A2A export against a pinned official schema | W3 / M | — | Ready to scope |
-| [R15 / #608](https://github.com/ravidsrk/orca-fleet/issues/608) | Verify provenance retention receipts against the signed inventory offline | W3 / M | [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) | After R07 |
+| [R01 / #594](https://github.com/ravidsrk/open-fleet/issues/594) | Activate the trusted verdict-gate identity in branch protection | W0 / S | — | Needs human |
+| [R02 / #595](https://github.com/ravidsrk/open-fleet/issues/595) | Complete the independent-maintainer review witness for H-10 | W0 / S | — | Needs human |
+| [R03 / #596](https://github.com/ravidsrk/open-fleet/issues/596) | Publish witnessed provider and harness certification with a reproducible first-run path | W1 / L | [PR #592](https://github.com/ravidsrk/open-fleet/pull/592) (merged) | Ready to scope |
+| [R04 / #597](https://github.com/ravidsrk/open-fleet/issues/597) | Reconcile POSIX worker launch after crashes at enumerated lifecycle boundaries | W1 / M | [PR #592](https://github.com/ravidsrk/open-fleet/pull/592) (merged) | Ready to scope |
+| [R05 / #598](https://github.com/ravidsrk/open-fleet/issues/598) | Differential-test deny-hook shell parsing against real shell behavior | W1 / M | [PR #592](https://github.com/ravidsrk/open-fleet/pull/592) (merged) | Ready to scope |
+| [R06 / #599](https://github.com/ravidsrk/open-fleet/issues/599) | Persist and fence the single-conductor merge queue | W1 / L | [R04 / #597](https://github.com/ravidsrk/open-fleet/issues/597) | After R04 |
+| [R07 / #600](https://github.com/ravidsrk/open-fleet/issues/600) | Cover the remaining verifier invariants with isolated VF-Bench traps | W2 / M | — | Ready to scope |
+| [R08 / #601](https://github.com/ravidsrk/open-fleet/issues/601) | Make VF-Bench independently runnable with held-out and temporal evaluation | W2 / L | [R07 / #600](https://github.com/ravidsrk/open-fleet/issues/600) | After R07 |
+| [R09 / #602](https://github.com/ravidsrk/open-fleet/issues/602) | Evaluate adversarial worker trajectories using observed actions and state | W2 / L | [PR #592](https://github.com/ravidsrk/open-fleet/pull/592) (merged) | Ready to scope |
+| [R10 / #603](https://github.com/ravidsrk/open-fleet/issues/603) | Derive run and wave metrics from an append-only event record | W2 / M | — | Ready to scope |
+| [R11 / #604](https://github.com/ravidsrk/open-fleet/issues/604) | Measure the WIP throughput curve before changing fleet concurrency defaults | W2 / M | — | Protocol prep ready; authorize live-run budget |
+| [R12 / #605](https://github.com/ravidsrk/open-fleet/issues/605) | Bind episodic memory hints to source revision and untrusted provenance | W3 / M | — | Ready to scope |
+| [R13 / #606](https://github.com/ravidsrk/open-fleet/issues/606) | Measure instruction-load reductions with paired mission ablations | W3 / M | [R09 / #602](https://github.com/ravidsrk/open-fleet/issues/602), [R10 / #603](https://github.com/ravidsrk/open-fleet/issues/603) | After R09, R10 |
+| [R14 / #607](https://github.com/ravidsrk/open-fleet/issues/607) | Correct and validate A2A export against a pinned official schema | W3 / M | — | Ready to scope |
+| [R15 / #608](https://github.com/ravidsrk/open-fleet/issues/608) | Verify provenance retention receipts against the signed inventory offline | W3 / M | [R07 / #600](https://github.com/ravidsrk/open-fleet/issues/600) | After R07 |
 
-Start with [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600)'s invariant fixtures, [R14 / #607](https://github.com/ravidsrk/orca-fleet/issues/607)'s schema/claim correction, and [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596)'s
-bounded first-run path. [R05 / #598](https://github.com/ravidsrk/orca-fleet/issues/598) can now build its differential corpus
-against the merged fixes from [PR #592](https://github.com/ravidsrk/orca-fleet/pull/592).
+Start with [R07 / #600](https://github.com/ravidsrk/open-fleet/issues/600)'s invariant fixtures, [R14 / #607](https://github.com/ravidsrk/open-fleet/issues/607)'s schema/claim correction, and [R03 / #596](https://github.com/ravidsrk/open-fleet/issues/596)'s
+bounded first-run path. [R05 / #598](https://github.com/ravidsrk/open-fleet/issues/598) can now build its differential corpus
+against the merged fixes from [PR #592](https://github.com/ravidsrk/open-fleet/pull/592).
 Human-owned W0 work can proceed alongside these.
 
 Dependencies express delivery order, not permission to change scope. The state-writing
-chain is [R04 / #597](https://github.com/ravidsrk/orca-fleet/issues/597) -> [R06 / #599](https://github.com/ravidsrk/orca-fleet/issues/599); integrate those receipts into [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603) after they land. Keep verifier
-changes [R07 / #600](https://github.com/ravidsrk/orca-fleet/issues/600) -> [R15 / #608](https://github.com/ravidsrk/orca-fleet/issues/608) serialized. [R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603)'s initial metrics, [R11 / #604](https://github.com/ravidsrk/orca-fleet/issues/604)'s manually evidenced baseline,
-[R12 / #605](https://github.com/ravidsrk/orca-fleet/issues/605)'s currentness fixtures, and [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602)'s offline adversarial fixtures can start independently.
-[R10 / #603](https://github.com/ravidsrk/orca-fleet/issues/603) then automates subsequent WIP measurements; [R09 / #602](https://github.com/ravidsrk/orca-fleet/issues/602) supplies later live memory attack
-checks. [R03 / #596](https://github.com/ravidsrk/orca-fleet/issues/596)'s wider live matrix is incremental, not a block on all other work. Policy caps,
+chain is [R04 / #597](https://github.com/ravidsrk/open-fleet/issues/597) -> [R06 / #599](https://github.com/ravidsrk/open-fleet/issues/599); integrate those receipts into [R10 / #603](https://github.com/ravidsrk/open-fleet/issues/603) after they land. Keep verifier
+changes [R07 / #600](https://github.com/ravidsrk/open-fleet/issues/600) -> [R15 / #608](https://github.com/ravidsrk/open-fleet/issues/608) serialized. [R10 / #603](https://github.com/ravidsrk/open-fleet/issues/603)'s initial metrics, [R11 / #604](https://github.com/ravidsrk/open-fleet/issues/604)'s manually evidenced baseline,
+[R12 / #605](https://github.com/ravidsrk/open-fleet/issues/605)'s currentness fixtures, and [R09 / #602](https://github.com/ravidsrk/open-fleet/issues/602)'s offline adversarial fixtures can start independently.
+[R10 / #603](https://github.com/ravidsrk/open-fleet/issues/603) then automates subsequent WIP measurements; [R09 / #602](https://github.com/ravidsrk/open-fleet/issues/602) supplies later live memory attack
+checks. [R03 / #596](https://github.com/ravidsrk/open-fleet/issues/596)'s wider live matrix is incremental, not a block on all other work. Policy caps,
 default-branch promotion and changes to trust roots remain separately gated.
 
 ```mermaid

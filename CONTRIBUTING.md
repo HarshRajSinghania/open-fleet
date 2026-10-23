@@ -1,4 +1,4 @@
-# Contributing to orca-fleet
+# Contributing to open-fleet
 
 Contributions are welcome — and this repo is unusually opinionated about what goes where. Read
 this page before opening a PR; it will save us both a review round.

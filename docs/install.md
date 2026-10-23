@@ -1,4 +1,4 @@
-# Installing orca-fleet
+# Installing open-fleet
 
 [Documentation](README.md) · [First run](getting-started.md) · [Troubleshooting](troubleshooting.md)
 
@@ -22,8 +22,8 @@ snippet is available (prerequisites: `git` + Python ≥ 3.11; the
 [pinned table](distribution.md#prerequisites-pinned) names the run substrate too):
 
 ```bash
-git clone https://github.com/ravidsrk/orca-fleet.git
-cd orca-fleet
+git clone https://github.com/ravidsrk/open-fleet.git
+cd open-fleet
 sh scripts/install.sh
 sh scripts/install.sh --check
 ```
@@ -38,7 +38,7 @@ git fetch --unshallow
 sh scripts/install.sh
 ```
 
-If a mission name is already linked into a *different* orca-fleet clone, the installer refuses
+If a mission name is already linked into a *different* open-fleet clone, the installer refuses
 rather than silently repointing it. Re-run with `--force` to move every mission link to this
 clone, or install into another directory with `--skills-dir=DIR`. A dangling link (its clone was
 deleted) is repointed with a warning.
@@ -86,8 +86,8 @@ The repo ships a plugin manifest at [`.claude-plugin/plugin.json`](../.claude-pl
 Run these inside a Claude Code session:
 
 ```text
-/plugin marketplace add ravidsrk/orca-fleet
-/plugin install orca-fleet@orca-fleet
+/plugin marketplace add ravidsrk/open-fleet
+/plugin install open-fleet@open-fleet
 ```
 
 Since 0.7.1 the marketplace sources the plugin from the generated `dist` tree: the install
@@ -97,7 +97,7 @@ and it is the one path where the completion gate wires itself, because
 `${CLAUDE_PLUGIN_ROOT}` resolves the plugin directory. At v0.7.0 and earlier a plugin
 install copied the whole repo instead. Follow the install UI to choose a scope,
 then check the reported activation status. Type `/` and look for skills such as
-`/orca-fleet:review-it`. See the upstream [plugin installation guide](https://code.claude.com/docs/en/discover-plugins)
+`/open-fleet:review-it`. See the upstream [plugin installation guide](https://code.claude.com/docs/en/discover-plugins)
 for host-specific scope and activation behavior.
 
 The [clean-container transcript](completion/evidence/CF-02b-plugin-install.txt) records Claude
@@ -112,9 +112,9 @@ or an Orca mission run. Installing the plugin does not supply the mission run pr
 From your shell, the equivalent native commands are:
 
 ```bash
-claude plugin marketplace add ravidsrk/orca-fleet
-claude plugin install orca-fleet@orca-fleet
-claude plugin details orca-fleet@orca-fleet
+claude plugin marketplace add ravidsrk/open-fleet
+claude plugin install open-fleet@open-fleet
+claude plugin details open-fleet@open-fleet
 ```
 
 `details` lists the discovered skills and hook events. Follow the
@@ -126,7 +126,7 @@ file copy, so its retained proof reports cannot be re-derived there.
 
 The open [skills CLI](https://github.com/vercel-labs/skills) installs into Claude Code, Cursor,
 Codex, and 70+ other agents — but **not from this repository, today.** `npx skills add
-ravidsrk/orca-fleet` copies `dirname(SKILL.md)` and nothing else, so the `playbooks/` and `runtime/` directories a
+ravidsrk/open-fleet` copies `dirname(SKILL.md)` and nothing else, so the `playbooks/` and `runtime/` directories a
 mission resolves its bare names against are not there after the install. The mission then reads "Composes
 `decide-and-freeze`, `decompose-dag`…" with no file for any of those names, and either invents the
 protocol or stops. The command is not shown here as runnable because running it produces that.
@@ -136,11 +136,11 @@ CLI work is a published `dist/` for it to point at. Since #518 the `publish-dist
 (`.github/workflows/publish-dist.yml`) builds that tree with `scripts/bundle.py` on every `v*` tag
 and force-pushes it to the **`dist` branch** as one orphan commit per tag, with a
 `DIST-PROVENANCE.txt` naming the tag and commit it was built from. The branch was first populated by
-[`v0.7.0`](https://github.com/ravidsrk/orca-fleet/releases/tag/v0.7.0); its
-[publication run](https://github.com/ravidsrk/orca-fleet/actions/runs/36700658706) succeeded. Point a copy installer at the `dist` branch,
+[`v0.7.0`](https://github.com/ravidsrk/open-fleet/releases/tag/v0.7.0); its
+[publication run](https://github.com/ravidsrk/open-fleet/actions/runs/36700658706) succeeded. Point a copy installer at the `dist` branch,
 never at the repo root — and until an install from it has been witnessed and its transcript
 recorded here, the skills CLI stays listed as unsupported
-([#294](https://github.com/ravidsrk/orca-fleet/issues/294)).
+([#294](https://github.com/ravidsrk/open-fleet/issues/294)).
 
 **Copy installers need a bundled tree.** Every mission resolves its playbooks and runtime
 policies two levels above its own directory. An installer that copies skill directories *out* of
@@ -152,7 +152,7 @@ python3 scripts/bundle.py           # writes dist/skills/<name>/ with references
 python3 scripts/bundle.py --check   # verify no reference escapes a mission directory
 ```
 
-A build records every file it writes in `<out>/.orca-fleet-bundle.json` (`dist/` unless `--out`
+A build records every file it writes in `<out>/.open-fleet-bundle.json` (`dist/` unless `--out`
 names another directory), and a rebuild deletes only the files that marker lists — never a
 directory tree. Anything else where the bundle would write (a file the marker does not list, a
 symlink, a symlinked parent) makes it exit 2 having deleted and written nothing, so your own
@@ -173,7 +173,7 @@ The installed layout depends on the packaging:
 - **Source symlink or whole-tree plugin:** the mission resolves `playbooks/` and `runtime/`
   two levels above its real directory.
 - **Bundled copy:** the mission carries `references/README.md`, the composed Markdown files,
-  and its own `runtime/scripts/`. Follow that generated README to set `ORCA_FLEET_ROOT` and
+  and its own `runtime/scripts/`. Follow that generated README to set `OPEN_FLEET_ROOT` and
   invoke the helpers from the target project.
 
 For a source symlink, check the resolved tree from the shell:

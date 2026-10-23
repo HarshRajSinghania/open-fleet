@@ -1,6 +1,6 @@
-# orca-fleet documentation
+# open-fleet documentation
 
-orca-fleet gives coding agents workflows for goals such as shipping a feature, fixing an
+open-fleet gives coding agents workflows for goals such as shipping a feature, fixing an
 audit backlog, or reviewing a PR. Each workflow is a **mission**. You provide the repository,
 the goal and its boundaries; the mission coordinates workers and returns a named outcome with
 evidence or a list of what still needs attention.

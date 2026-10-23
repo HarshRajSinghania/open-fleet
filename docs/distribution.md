@@ -2,7 +2,7 @@
 
 [Documentation](README.md) · [Install](install.md) · [Maintainer ops](ops.md)
 
-*How orca-fleet reaches users, and what its proof records establish.*
+*How open-fleet reaches users, and what its proof records establish.*
 
 For setup commands, updates and removal, use [Install](install.md). This page records
 packaging mechanisms, evidence limits and dated directory checks for maintainers. Each
@@ -39,8 +39,8 @@ these specific guarantees and their limits, alongside the available run evidence
 
 | Path | For | Mechanism |
 |---|---|---|
-| Plugin marketplace | try the whole catalog | `/plugin marketplace add ravidsrk/orca-fleet` → `/plugin install orca-fleet@orca-fleet` (`.claude-plugin/`); see [Install](install.md#claude-code-plugin) for activation and witness status |
-| Symlink the catalog | fork/adapt, or evaluate | `git clone https://github.com/ravidsrk/orca-fleet.git && cd orca-fleet && sh scripts/install.sh` (validates + links every mission; preserves the relative `playbooks/`/`runtime/` refs) |
+| Plugin marketplace | try the whole catalog | `/plugin marketplace add ravidsrk/open-fleet` → `/plugin install open-fleet@open-fleet` (`.claude-plugin/`); see [Install](install.md#claude-code-plugin) for activation and witness status |
+| Symlink the catalog | fork/adapt, or evaluate | `git clone https://github.com/ravidsrk/open-fleet.git && cd open-fleet && sh scripts/install.sh` (validates + links every mission; preserves the relative `playbooks/`/`runtime/` refs) |
 | Skill bundle link | a subset on this or a paired host | open the maintainer's unlisted Skills → Share skills link: inspect the exact version, pick all or a subset of its skills, choose global or workspace scope (this computer, a paired runtime, WSL, an SSH host); update, roll back, or remove via Skills → Manage installs |
 
 ## Self-containment: what a single copied mission loses
@@ -58,7 +58,7 @@ composes or rides, their transitive references, and `ARCHITECTURE.md` when the m
 it), a generated `references/README.md` index that resolves the bare names, `runtime/scripts/`
 plus the runtime JSON (`pins.json`, `one-way-doors.json`, `quarantine.json`, …), and
 `docs/runs/TEMPLATE.md`; outbound links in SKILL.md are rewritten to those copies. Limits that
-remain: the vendored commands expect `ORCA_FLEET_ROOT` exported to the installed mission
+remain: the vendored commands expect `OPEN_FLEET_ROOT` exported to the installed mission
 directory; the completion-gate hooks ship at the bundle root (the plugin), not inside each
 mission; and every mission carries its own copy, so a copied mission does not pick up a later
 doctrine fix until it is re-bundled. A registry listing should point at the `dist` branch, never
@@ -175,7 +175,7 @@ caveat three paragraphs above it (PR #342 review).
 
 | Surface | Listed? | Evidence |
 |---|---|---|
-| Self-hosted marketplace | yes | `/plugin marketplace add ravidsrk/orca-fleet` (already the install path) |
+| Self-hosted marketplace | yes | `/plugin marketplace add ravidsrk/open-fleet` (already the install path) |
 | [buildwithclaude.com](https://buildwithclaude.com/api/search?q=orca-fleet) | yes (auto-index) | two records, both `updatedAt` 2026-09-19: the marketplace hit `@ravidsrk/orca-fleet` still carries the stale "10 outcome-named" blurb, while a `plugin` / `orca-fleet` record (first noted 2026-09-28) carries count-free copy. 0 installs each; the GitHub About is count-free since ≤2026-09-28, so the surviving "10" is their cache — needs a human re-index request |
 | [skills.sh](https://www.skills.sh/ravidsrk/orca-fleet) | **yes (2026-09-23)** | listing live: 21 skills at 21 total installs (was `0 total installs` at registration) — but the catalog is 22 since #505, so the listing lags by `offload-it` (2026-09-28). skills.sh has no submission form; the first `npx skills add ravidsrk/orca-fleet` registers the repo, so the agent slice ran it from a scratch HOME. CAUTION for any re-run: the installer's symlink mode rewires the CWD's skills/ tree into `.agents/` symlinks — run it from a throwaway directory, never from the repo root (the 2026-09-23 registration needed a full `git checkout -- skills/` repair) — and a re-run would fabricate an install event, so do not refresh the listing that way. The predecessor `ravidsrk/autonomous-fleet` listing remains as history |
 | [claudemarketplace.net](https://www.claudemarketplace.net/search?q=orca-fleet) | no | search payload `skills: []`, `mcpServers: []` |
@@ -207,14 +207,14 @@ These still need an account with rights to submit. Do not flip them from a clone
 
 Shared lead for every listing (the `proof:` framing; live index re-checked 2026-10-17):
 
-> Orca-fleet is 22 outcome-named autonomous fleets for the Orca runtime. Each mission is one
+> Open-fleet is 22 outcome-named autonomous fleets for the Orca runtime. Each mission is one
 > outcome with its own state machine and an evidence-backed definition of done: every unit of
 > work closes with a SHA-bound evidence manifest an independent verifier re-derives, never a
 > worker's narration. Its own catalog holds five binding proof reports — two external-run
 > (`ship-it`, `review-it`) and three self-run (`clean-sweep`, `prove-it`, `harden-it`) — the
 > same standard it asks of your repo. One router per worker; MIT.
-> Install: `/plugin marketplace add ravidsrk/orca-fleet`
-> Proof: https://github.com/ravidsrk/orca-fleet/tree/main/docs/runs
+> Install: `/plugin marketplace add ravidsrk/open-fleet`
+> Proof: https://github.com/ravidsrk/open-fleet/tree/main/docs/runs
 
 **anthropics/claude-plugins-official** — the [official submission link](https://clau.de/plugin-directory-submission)
 now redirects to [Publish to the directory](https://claude.com/docs/directory/publish)
@@ -226,23 +226,23 @@ security scan and human review before a listing goes live; submission is not app
 
 ```json
 {
-  "name": "orca-fleet",
+  "name": "open-fleet",
   "description": "Outcome-named autonomous fleets for the Orca runtime — each mission is one outcome with a SHA-bound, independently re-derived definition of done. Five missions carry binding proof reports (two external-run, three self-run).",
   "author": { "name": "Ravindra Kumar", "email": "ravidsrk@gmail.com", "url": "https://github.com/ravidsrk" },
   "category": "development",
-  "source": { "source": "github", "repo": "ravidsrk/orca-fleet" },
-  "homepage": "https://github.com/ravidsrk/orca-fleet"
+  "source": { "source": "github", "repo": "ravidsrk/open-fleet" },
+  "homepage": "https://github.com/ravidsrk/open-fleet"
 }
 ```
 
 **claudemarketplace.net** — email chekkutech@gmail.com (or their message button) with their
 requested fields, filled:
 
-- Name: orca-fleet
+- Name: open-fleet
 - One-line summary: Outcome-named autonomous fleets for Orca — evidence-backed done, never narration.
 - Longer description: the shared lead above + the README link.
-- Install: `/plugin marketplace add ravidsrk/orca-fleet` (Claude Code plugin system).
-- Repository: https://github.com/ravidsrk/orca-fleet · Docs: same, `docs/`.
+- Install: `/plugin marketplace add ravidsrk/open-fleet` (Claude Code plugin system).
+- Repository: https://github.com/ravidsrk/open-fleet · Docs: same, `docs/`.
 - Logo: `assets/social-preview.jpg` (1200px; crop to 128px+ as needed).
 - Suggested category: Developer Tools / Agent Skills.
 

@@ -1,4 +1,4 @@
-# Getting started with orca-fleet
+# Getting started with open-fleet
 
 [Documentation](README.md) · [Install](install.md) · [Prompt recipes](recipes.md)
 
@@ -25,7 +25,7 @@ its local checks, use [Development](development.md).
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/install-stack.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/install-stack-light.jpg">
-    <img src="../assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the orca-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today" width="820">
+    <img src="../assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the open-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today" width="820">
   </picture>
 </p>
 
@@ -89,7 +89,7 @@ repeating it.
 ## Install the catalog
 
 Follow [Install](install.md#choose-an-install-path) for the path comparison and full procedure.
-The minimal selected-mission setup below runs in the **orca-fleet clone**. Keep it available;
+The minimal selected-mission setup below runs in the **open-fleet clone**. Keep it available;
 the links and completion hook resolve files inside it.
 
 **Symlink (recommended while evaluating).** Some missions link `../../ARCHITECTURE.md` relative
@@ -105,8 +105,8 @@ but no hook blocks a turn on a failing manifest. The settings snippet that resol
 is in [docs/verify-gate.md](verify-gate.md); `sh hooks/print-settings-snippet.sh` prints it.
 
 ```bash
-git clone https://github.com/ravidsrk/orca-fleet.git
-cd orca-fleet
+git clone https://github.com/ravidsrk/open-fleet.git
+cd open-fleet
 mkdir -p ~/.claude/skills
 ln -s "$(pwd)/skills/ship-it"   ~/.claude/skills/ship-it
 ln -s "$(pwd)/skills/review-it" ~/.claude/skills/review-it
@@ -116,8 +116,8 @@ ln -s "$(pwd)/skills/review-it" ~/.claude/skills/review-it
 mission catalog at once; the relative references resolve inside the copied plugin directory:
 
 ```
-/plugin marketplace add ravidsrk/orca-fleet
-/plugin install orca-fleet@orca-fleet
+/plugin marketplace add ravidsrk/open-fleet
+/plugin install open-fleet@open-fleet
 ```
 
 Confirm the install by asking your agent "which missions are available?" — the

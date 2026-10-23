@@ -1101,6 +1101,22 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("differs", r.stderr)
 
+    def test_a_pinned_blob_the_clone_cannot_read_is_not_read_as_unpinned(self):
+        # PR #635 review, P1: `cat-file -e` failed alike for an absent pin and an unreadable one,
+        # so a ref whose pin blob is missing here (a partial clone) read as "unpinned"; with the
+        # tree pin deleted too, unsigned one-way grants then passed.
+        blob = self.git("rev-parse", "main:.orca/human-grant-pubkey").stdout.strip()
+        (Path(self.tmp) / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
+        shutil.rmtree(Path(self.tmp) / ".orca")
+        self.seed(["2026-09-01T00:00:00Z · gate-pin · one-way · approved · deploy to production "
+                   "[source=human:lia] · t-1"])
+        r = self.run_dec("--pin-ref", "main", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("blob is unreadable", r.stderr)
+        r = self.run_dec("--pin-ref", "main", "active")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertNotIn("gate-pin", r.stdout)
+
     def test_an_unresolvable_or_option_shaped_ref_is_could_not_run(self):
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
         for ref, why in (("no-such-ref", "does not resolve to a commit"),

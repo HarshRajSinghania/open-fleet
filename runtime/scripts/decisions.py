@@ -334,11 +334,18 @@ def _pin_at_ref(root, ref):
     if git("rev-parse", "--verify", "-q", ref + "^{commit}").returncode != 0:
         raise DecisionsError(f"--pin-ref {ref!r} does not resolve to a commit in {root}")
     rel = GRANT_PUBKEY_REL.as_posix()
-    if git("cat-file", "-e", f"{ref}:{rel}").returncode != 0:
+    # Presence comes from the TREE listing, which never needs the blob: `cat-file -e` fails the
+    # same way for an absent path and for a pinned blob this clone cannot read (a partial clone,
+    # a pruned object), and reading the second as "unpinned" let a tree with its pin deleted pass
+    # unsigned one-way grants (PR #635 review, P1). Listed but unreadable is could-not-run.
+    listing = git("ls-tree", "--name-only", "--full-tree", ref, "--", rel)
+    if listing.returncode != 0:
+        raise DecisionsError(f"cannot list {rel} at {ref}")
+    if rel not in listing.stdout.decode("utf-8", "replace").splitlines():
         return None
     blob = git("cat-file", "blob", f"{ref}:{rel}")
     if blob.returncode != 0:
-        raise DecisionsError(f"{ref}:{rel} is unreadable")
+        raise DecisionsError(f"{ref}:{rel} is pinned but its blob is unreadable here")
     return parse_grant_pubkey(blob.stdout.decode("utf-8", "replace"), f"{ref}:{rel}")
 
 

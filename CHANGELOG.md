@@ -6,6 +6,22 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
+  --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
+  killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier
+  is refused without an explicit finite cap, a per-call reservation (`--per-call-usd`), a per-call
+  limit flag (Claude's `--max-budget-usd`, handed to every call at 0.8 of its reservation) and
+  `--out`. A call starts only if the spend so far plus its reservation fits the cap. Each call's
+  output is saved beside the results and its `total_cost_usd` (json or stream-json) charged. An
+  unmeasured call is charged its full reservation and stops the run, and so does a measured call
+  above its reservation. An fsynced ledger beside `--out` keeps a SIGKILLed call charged on the
+  next invocation without counting anything twice. Each call runs under a watchdog leading its
+  own process group, killed whole on timeout, after the worker exits, on SIGTERM/SIGHUP/Ctrl-C,
+  and when the runner itself is SIGKILLed. The results (`hint-replay-live/v2`) record per-call
+  cost, the cap, total spend, and which calls were measured. `tests/test_hint_replay_spend.py`
+  drives every guard with an inert stand-in that prints Claude JSON. The owner-authorised USD 40
+  command is in docs/runtime-scripts.md. No live result is claimed until a bound run report
+  exists.
 - **The deny-hook reader fails closed where it cannot resolve what runs** (#654, from the PR #648
   review). A file built across `>` and `>>` writes is judged whole when it is run; a name
   reassigned past the reader's cap reads as unresolved, so its use as a command takes the

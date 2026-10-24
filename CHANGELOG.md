@@ -79,8 +79,9 @@ truth is `.claude-plugin/plugin.json`.
       outlives it. The next run reconciles a killed run's calls once and stops its workers.
       Every run's cleanup, and `first_run.py`'s, also ends what a finished worker left running
       in its process group. Every process of a run carries the run's `OF_CALL_ID`, and the
-      cleanup sweeps it with #606's helper, so a descendant that left for a session of its own
-      is ended too. One it cannot vouch for stops the run `orphan-alive`, charges every call its
+      cleanup sweeps it with the shared `runtime/scripts/containment.py` (moved there from #606's
+      runner, which imports it), so a descendant that left for a session of its own is ended
+      too. A standalone first run says GO only on a verified teardown. One it cannot vouch for stops the run `orphan-alive`, charges every call its
       full hold, keeps the sandbox, and blocks the next run. A live run needs that containment,
       and its host check also probes a system binary, so on macOS a live WIP run is refused.
     - Coordinator and merge-queue git goes through `gitexec.py`.

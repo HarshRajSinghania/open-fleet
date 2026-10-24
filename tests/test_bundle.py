@@ -160,6 +160,25 @@ class BundleClosureTests(unittest.TestCase):
             finally:
                 path.write_bytes(saved)
 
+    def test_the_installed_first_run_contains_its_processes_from_the_bundle_alone(self):
+        # first_run.py ships in the bundle and loads its process containment beside itself: the
+        # marker sweep and host probe (runtime/scripts/containment.py) ship with it (PR #668 review).
+        self.assertIn("runtime/scripts/containment.py", bundle.REQUIRED_RUNTIME)
+        with tempfile.TemporaryDirectory() as install_tmp:
+            installed = Path(install_tmp) / "copied mission"
+            with tempfile.TemporaryDirectory() as build_tmp:
+                bundle.build(build_tmp)
+                shutil.copytree(Path(build_tmp) / "skills/clean-sweep", installed)
+            scripts = installed / "runtime/scripts"
+            self.assertTrue((scripts / "containment.py").is_file())
+            probe = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('fr', sys.argv[1]); "
+                     "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                     "print(m.containment.__file__, m.containment.CALL_MARKER)")
+            result = self.run_command(install_tmp, sys.executable, "-I", "-c", probe, str(scripts / "first_run.py"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            loaded, marker = result.stdout.strip().rsplit(" ", 1)
+            self.assertEqual((Path(loaded).resolve(), marker), ((scripts / "containment.py").resolve(), "OF_CALL_ID"))
+
     def test_missing_runtime_helper_data_or_transitive_protocol_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             bundle.build(tmp)

@@ -645,6 +645,55 @@ class TestStopWorkersEndsWhatAFinishedWorkerLeft(unittest.TestCase):
         self.assertTrue(self.alive(leader.pid, wait_s=1.0), "a group whose leader lives may not be ours")
 
 
+class TestAStandaloneFirstRunVouchesForItsTeardown(Tripwired):
+    """Codex review of PR #668 (C-a): a standalone first run stopped only its workers' process
+    groups and ignored what that teardown found, so a detached helper (a new session, its output
+    redirected) survived and the run still said GO. Every process of the run now carries the run's
+    OF_CALL_ID; teardown sweeps it, and GO stands only on a verified teardown. Anything else is
+    NO-GO, step `teardown`, with the sandbox kept."""
+
+    def first_run_in_process(self, wd, execute=None):
+        out = io.StringIO()
+        patches = [mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(out)]
+        if execute:
+            patches.append(mock.patch.object(first_run.FirstRun, "execute", execute))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            rc = first_run.main(["--profile", "ro", "--workdir", str(wd), "--json"])
+        return rc, json.loads((wd / "receipt.json").read_text(encoding="utf-8"))
+
+    def test_a_detached_helper_is_ended_before_go(self):
+        real, helpers = first_run.FirstRun.execute, []
+
+        def execute(run):  # the worker leaves a helper in a session of its own, output redirected
+            receipt = real(run)
+            helpers.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], env=run.sb.env,
+                                            start_new_session=True, stdin=subprocess.DEVNULL,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            return receipt
+        rc, receipt = self.first_run_in_process(self.tmp / "fr", execute)
+        self.addCleanup(helpers[0].kill)
+        try:
+            helpers[0].wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("the detached helper outlived the first run")
+        self.assertEqual((rc, receipt["verdict"]), (0, "GO"), receipt.get("failure"))
+
+    def test_a_teardown_that_found_a_survivor_is_no_go_and_keeps_the_sandbox(self):
+        survivors = {"ended": [], "survivors": [{"pgid": 1, "members": [1]}], "leaders_alive": []}
+        with mock.patch.object(first_run, "reap_groups", return_value=survivors):
+            rc, receipt = self.first_run_in_process(self.tmp / "fr")
+        self.assertEqual((rc, receipt["verdict"], (receipt["failure"] or {}).get("step")), (1, "NO-GO", "teardown"))
+        self.assertFalse(receipt.get("sandbox_pruned"), "a sandbox that may still be in use was pruned")
+        self.assertTrue(any(p.name != "receipt.json" for p in (self.tmp / "fr").iterdir()))
+
+    def test_a_process_table_it_cannot_read_is_no_go(self):
+        with mock.patch.object(first_run.containment, "process_table", side_effect=OSError("no ps")):
+            rc, receipt = self.first_run_in_process(self.tmp / "fr")
+        self.assertEqual((rc, receipt["verdict"], (receipt["failure"] or {}).get("step")), (1, "NO-GO", "teardown"))
+
+
 class TestDocsCarryTheGeneratedMatrix(unittest.TestCase):
     BEGIN = "<!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->"
     END = "<!-- END GENERATED: certification-matrix -->"

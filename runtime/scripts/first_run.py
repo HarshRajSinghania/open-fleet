@@ -56,6 +56,7 @@ Exit: 0 GO · 1 NO-GO (receipt names the step) · 2 usage · 143/129 SIGTERM/SIG
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import importlib.util
 import json
@@ -93,6 +94,11 @@ REPORT_FORMATS = TRANSCRIPT.FINAL_ANSWER_FORMATS
 # These carry every turn's text, not only the last answer: the report starts at its own header.
 ANCHORED_FORMATS = TRANSCRIPT.ALL_TURN_FORMATS
 MONITOR_EVENTS = TRANSCRIPT.MONITOR_EVENTS
+# Process containment (runtime/scripts/containment.py, one helper shared with #606's runner and the
+# WIP-curve runner): the marker every process of a run carries, its sweep, and the host probe.
+_spec = importlib.util.spec_from_file_location("of_first_run_containment", SCRIPTS / "containment.py")
+containment = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(containment)
 
 
 class StepFailed(Exception):
@@ -334,6 +340,14 @@ class Sandbox:
         if worker == "inert":
             # The stand-in needs no credentials; a private HOME keeps every user config out.
             self.env["HOME"] = str(self.home)
+        # Every process of the run carries the run's own OF_CALL_ID, wherever it goes: the provider
+        # passes this environment to each monitor and worker, and a descendant that leaves its
+        # group for a session of its own keeps it, so teardown finds it (PR #668 review). A
+        # dedicated marker, not OPEN_FLEET_DISPATCH_ID: nothing in the fleet rewrites it (a nested
+        # dispatch rewrites the dispatch id), it exists before any launch is registered, and the
+        # containment helper's probe and sweep speak it.
+        self.call_tag = secrets.token_hex(16)
+        self.env[containment.CALL_MARKER] = self.call_tag
 
     def _install_inert(self) -> None:
         self.inert.mkdir(parents=True, exist_ok=True)
@@ -1055,9 +1069,15 @@ def main(argv: list[str] | None = None) -> int:
         for sig in previous:
             signal.signal(sig, signal.SIG_IGN)
         try:
-            stop_workers(sb)
+            teardown = stop_workers(sb, sweep=functools.partial(containment.sweep, tag=sb.call_tag))
         finally:
             restore_signals(previous)
+    receipt["teardown"] = teardown
+    if not teardown_verified(teardown) and receipt["verdict"] == "GO":
+        # GO stands only on a verified teardown (PR #668 review): a process of the run may still be
+        # running and spending, so this run is NO-GO and its sandbox is kept for inspection.
+        receipt["verdict"] = "NO-GO"
+        receipt["failure"] = {"step": "teardown", "error": f"teardown not verified: {teardown}"[:2000]}
     if receipt["verdict"] == "GO" and not args.keep:
         # Everything but the receipt goes: state store, clone, worktrees, verifier checkout.
         for child in workdir.iterdir():
@@ -1127,6 +1147,12 @@ def stop_workers(sb: Sandbox, sweep=None) -> dict:
         except Exception as err:  # a sweep that breaks vouches for nothing
             contained, errors = False, errors + [f"the marker sweep failed: {err}"]
     return {**reaped, "errors": errors, "contained": contained}
+
+
+def teardown_verified(teardown: dict) -> bool:
+    """Nothing of the run is left: the marker sweep vouched, no group member survived SIGKILL, and
+    every teardown call answered."""
+    return teardown.get("contained") is True and not teardown.get("survivors") and not teardown.get("errors")
 
 
 def process_groups() -> dict[int, set[int]]:

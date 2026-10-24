@@ -1040,15 +1040,7 @@ class Sandbox(first_run.Sandbox):
 
     def __init__(self, workdir: Path, worker: str, agent: str, inert_config: dict | None = None):
         self.inert_config = inert_config or {}
-        super().__init__(workdir, worker, agent)
-        # Every process of the run carries the run's OF_CALL_ID (#606's marker), wherever it goes:
-        # the provider passes its environment to each monitor and worker, and a descendant that
-        # leaves its group for a session of its own keeps it, so teardown finds it (Codex, #668).
-        # A dedicated marker, not OPEN_FLEET_DISPATCH_ID: nothing in the fleet rewrites it (a nested
-        # dispatch rewrites the dispatch id), it exists before any launch is registered, and the
-        # helper's host check and sweep speak it.
-        self.call_tag = secrets.token_hex(16)
-        self.env[contain.CALL_MARKER] = self.call_tag
+        super().__init__(workdir, worker, agent)  # it gives the run its OF_CALL_ID (call_tag)
 
     def _install_inert(self) -> None:
         super()._install_inert()
@@ -1926,7 +1918,7 @@ class Run:
         tag = getattr(self.sb, "call_tag", None)
         teardown = first_run.stop_workers(self.sb, sweep=(lambda: contain.sweep(tag=tag)) if tag else None)
         self.record["teardown"] = teardown
-        contained = teardown["contained"] is True and not teardown["survivors"] and not teardown["errors"]
+        contained = first_run.teardown_verified(teardown)
         if not contained:
             self.record.update(status="stopped", stop_reason="orphan-alive",
                                error=f"a process of the run may still be running: {teardown}"[:1000])

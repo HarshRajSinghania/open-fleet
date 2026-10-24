@@ -655,10 +655,14 @@ the run's store left behind, finished workers included: posix marks a dispatch `
 its foreground process exits, without ending a background child it started. A group whose leader
 is gone but whose members remain is such a leftover. A group whose leader still lives is never
 touched, because its number may have been reused. A descendant that called `setsid()` has left
-its group, and only a marker it carries can find it. A caller that tags its workers passes its
-marker sweep as `stop_workers(sb, sweep=...)`, and the answer is the teardown's `contained`; the
-WIP-curve runner passes #606's. Without one, `contained` is `None`: the groups were reaped, and
-nothing more is vouched for.
+its group, and only a marker it carries can find it. So every process of the run carries the run's
+own `OF_CALL_ID`, set in the sandbox environment the provider passes to each worker. After the
+groups are reaped, the cleanup sweeps that marker with [`containment.py`](#containmentpy) until a
+fresh scan finds nothing. The receipt's `teardown` records the result. GO stands only on a
+verified teardown: the sweep vouched, nothing survived SIGKILL, and every teardown call answered.
+Anything else is NO-GO at step `teardown`, and the sandbox is kept. `stop_workers(sb, sweep=...)`
+takes the caller's sweep, which the WIP-curve runner uses too. Without one, `contained` is `None`,
+which never verifies.
 
 The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
 `change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
@@ -691,6 +695,28 @@ Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its
 > Why: the provider matrix was certified by adapter unit tests alone, and no documented path
 > took a fresh clone through dispatch to independently verified evidence (#596). The inert and
 > live modes share one code path, so the live first run is one flag away from the fixture CI runs.
+
+## `containment.py`
+
+The process containment every paid runner shares: [`first_run.py`](#first_runpy), #606's ablation
+runner (`scripts/_ablation_run.py`, whose watchdog and `contained_run` use it) and the WIP-curve
+runner. It ships in the runtime bundle with `first_run.py`.
+
+- **The marker.** Every process of a call carries `OF_CALL_ID=<its tag>` in its environment. A
+  descendant that calls `setsid()` leaves its call's process group, and its process tree once its
+  parent exits, but it keeps the marker.
+- **`sweep(roots, groups, exclude, wait_s, tag, table)`** SIGKILLs everything carrying the tag,
+  every member of `groups` and every descendant of any of them, until a fresh scan finds none
+  (True). It returns False when one survives `wait_s`, or when the process table cannot be read.
+- **`containment_problem(system_binary, table)`** is the host check a paid live run makes before
+  it reserves anything. Probes in sessions of their own, carrying a marker, must show up in the
+  process table by it, or it names why not.
+- **`table`** is the process-table reader (`process_table` by default): a caller or a test injects
+  it as a Python argument. No environment variable or flag skips a check.
+
+Discovery is only as good as the table. Linux reads `/proc/<pid>/environ`, which shows every
+process the user owns. Elsewhere it uses `ps -E`; on macOS that cannot read an Apple system
+binary's environment (`/bin/sh`, `/bin/sleep`), so a detached shell is invisible there.
 
 ## `events.py`
 

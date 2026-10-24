@@ -464,7 +464,7 @@ def _exited(done_fd, timeout):
     return bool(ready)
 
 
-def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=None, stderr_path=None):
+def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=None, stderr_path=None, tag=None):
     """(exit status or None when killed, killed, emptied): one call under the watchdog.
 
     The watchdog leads a new session, so it, `argv` and whatever stays in their group form one
@@ -478,7 +478,7 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
     survived SIGKILL or the process table could not be read: then the call must not be settled,
     and no next call may start.
     """
-    tag = secrets.token_hex(16)
+    tag = tag or secrets.token_hex(16)  # a caller may name it, to record it before the call starts
     done_r, done_w = os.pipe()  # only the watchdog holds done_w: EOF on done_r once it has exited
     try:
         with contextlib.ExitStack() as files:

@@ -694,7 +694,7 @@ ORACLE_TIMEOUT = 300  # seconds for one verification, every step together
 
 
 def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, timeout: float = ORACLE_TIMEOUT,
-               contained: bool = True) -> dict:
+               contained: bool = True, on_tag=None) -> dict:
     """The visible tests plus each task's oracle, at `checkout`, with the oracles OUTSIDE it (a
     worker never receives them). {"exit": 0 pass | 2 fail | 1 could not run, ...}."""
     oracle_dir = workdir / f"oracle-{secrets.token_hex(4)}"
@@ -715,15 +715,21 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
     if tasks:
         commands.append(("oracle", python_argv("-m", "unittest", "discover", "-s", str(oracle_dir),
                                                "-t", str(oracle_dir))))
-    vouched = True
+    vouched, tags = True, []
     for name, argv in commands:
+        if not vouched:  # the first step that could not be contained ends it: nothing more launches
+            break
         if contained:
             # Worker-written code runs here, under #606's watchdog: its streams go to files (nothing it
             # leaves behind can hold a pipe of ours open), and every process it starts, in its group or
             # in a session of its own, carries the call's OF_CALL_ID and is swept (Codex review of #668).
             out_path = oracle_dir / f"{name}.out"
+            tag = secrets.token_hex(16)
+            if on_tag:  # recorded BEFORE the step starts: a later sweep can always find what it left
+                on_tag(tag)
+            tags.append(tag)
             rc, killed, emptied = contain.contained_run(argv, timeout=max(end - time.monotonic(), 0.1),
-                                                        cwd=checkout, env=env, stdout_path=out_path)
+                                                        cwd=checkout, env=env, stdout_path=out_path, tag=tag)
             out = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else ""
             if killed:
                 rc, out = None, f"timed out after {timeout}s"
@@ -740,8 +746,10 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
             exit_code = 1
         elif rc != 0 and exit_code == 0:
             exit_code = 2
-    shutil.rmtree(oracle_dir, ignore_errors=True)
-    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks], "contained": vouched}
+    if vouched:
+        shutil.rmtree(oracle_dir, ignore_errors=True)  # an uncontained one is kept, to investigate
+    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks], "contained": vouched,
+            "call_tags": tags, "kept": None if vouched else str(oracle_dir)}
 
 
 def extract_tree(git_dir: Path, rev: str, dest: Path, env: dict | None = None) -> None:
@@ -1102,6 +1110,7 @@ class Run:
         self.launched_models: dict[str, str | None] = {}
         self.usage_seen: set[str] = set()
         self.dispatch_tags: dict[str, str] = {}  # dispatch -> its own OF_DISPATCH_TAG (C-b)
+        self.oracle_tags: list[str] = []  # every oracle call's OF_CALL_ID (C-d)
         self.full_hold: dict[str, bool] = {}  # calls charged their full hold whatever they report
         stop = prereg["stopping_rule"]
         self.max_attempts = stop["max_attempts_per_task"]
@@ -1566,6 +1575,24 @@ class Run:
         queue.sort(key=lambda tid: (attempts[tid]["done_at"] or "", tid))  # arrival (worker_done) order
         return True
 
+    def record_oracle_tag(self, tag):
+        """An oracle call's marker, in the run and the ledger before the call starts: finish() and
+        the check before the next run sweep it (PR #668 review, C-d)."""
+        self.oracle_tags.append(tag)
+        self.budget.note(f"{self.rid}/run", oracle_tags=list(self.oracle_tags))
+
+    def gate_tags(self):
+        """The merge gate's oracle markers: the gate runs in the merge queue's process and appends
+        each before its call starts."""
+        path = self.sb.dir / "gate-tags.txt"
+        lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+        tags = [ln for ln in lines if ln and not ln.startswith("UNCONTAINED")]
+        if tags:
+            self.budget.note(f"{self.rid}/run", gate_tags=tags)
+        if any(ln.startswith("UNCONTAINED") for ln in lines):  # a gate's oracle could not be contained
+            self.halt = self.halt or "orphan-alive"
+        return tags
+
     def end_dispatch(self, disp, key):
         """End what one dispatch left behind and verify it, by the dispatch's own marker, before its
         call is settled or its result accepted (PR #668 review, C-b). The provider's monitor (the
@@ -1714,11 +1741,11 @@ class Run:
         extract_tree(self.sb.target, a["head"], ck, env=self.sb.env)
         started = now()
         result = run_oracle(ck, [self.tasks[tid]], self.taskset, self.sb.dir,
-                            timeout=min(ORACLE_TIMEOUT, max(self.remaining(), 0.1)))
+                            timeout=min(ORACLE_TIMEOUT, max(self.remaining(), 0.1)), on_tag=self.record_oracle_tag)
         if not result["contained"]:  # a process the worker's code started may still run: nothing more starts
-            shutil.rmtree(ck, ignore_errors=True)
             self.halt = self.halt or "orphan-alive"
             a["outcome"] = "stopped-orphan-alive"
+            a["kept"] = [str(ck), result["kept"]]  # the checkout and the oracle's files, to investigate
             return False
         if result["exit"] != 0 and self.remaining() <= 0:  # the run's deadline cut it: no verdict
             shutil.rmtree(ck, ignore_errors=True)
@@ -1753,7 +1780,8 @@ class Run:
         landing_path = self.sb.dir / "landing.json"
         landing_path.write_text(json.dumps(landing, sort_keys=True), encoding="utf-8")
         gate = shlex.join([sys.executable, "-s", str(Path(__file__).resolve()), "gate", "--taskset",
-                           str(self.taskset_path), "--landing", str(landing_path)])
+                           str(self.taskset_path), "--landing", str(landing_path),
+                           "--tags-file", str(self.sb.dir / "gate-tags.txt")])
         rc, out = self.mq("acquire", "--base", self.integration, "--holder", HOLDER, "--takeover")
         token = out.get("token")
         if rc != 0 or not token:
@@ -1809,6 +1837,7 @@ class Run:
         else:
             raise RunFailed("the merge queue did not drain")
         _, status = self.mq("status", "--base", self.integration)
+        self.gate_tags()  # an uncontained gate oracle halts the run now, not at teardown (C-d)
         landed_head = self.integration_head()
         for entry in status.get("all", []):
             tid = by_unit.get(entry.get("unit"))
@@ -1973,8 +2002,8 @@ class Run:
         # finds none. A survivor, a teardown error, or a table that cannot be read vouches for
         # nothing: the run stops orphan-alive, every call is charged its full hold, and the sandbox
         # is kept.
-        tag = getattr(self.sb, "call_tag", None)
-        teardown = first_run.stop_workers(self.sb, sweep=(lambda: contain.sweep(tag=tag)) if tag else None)
+        tags = [getattr(self.sb, "call_tag", None)] + self.oracle_tags + self.gate_tags()
+        teardown = first_run.stop_workers(self.sb, sweep=(lambda: sweep_tags(tags)) if tags[0] else None)
         self.record["teardown"] = teardown
         contained = first_run.teardown_verified(teardown)
         if not contained:
@@ -1990,6 +2019,7 @@ class Run:
         rec["launched_models"] = self.launched_models
         rec["launches"] = self.launches
         rec["dispatch_tags"] = self.dispatch_tags
+        rec["oracle_tags"], rec["gate_tags"] = self.oracle_tags, self.gate_tags()
         rec["commands"] = self.commands
         mine = Budget.of_run(self.budget.calls(), self.rid)  # this run's calls, bound with its sources
         (self.dir / "calls.json").write_text(json.dumps(mine, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2096,6 +2126,16 @@ def check_order(results: Path, sched: dict, wanted: list) -> None:
         taken.add(p)
 
 
+def run_tags(start: dict) -> list[str]:
+    """Every marker a run's ledger start record names: the run's own, and its oracle and gate calls'."""
+    return [t for t in [start.get("call_tag"), *(start.get("oracle_tags") or []), *(start.get("gate_tags") or [])] if t]
+
+
+def sweep_tags(tags) -> bool:
+    """Sweep every marker (each one, even after one fails): True only when every sweep vouched."""
+    return all([contain.sweep(tag=t) for t in tags])
+
+
 def recover(results: Path, registered=()) -> list[str]:
     """Reconcile every call a LOST run (killed outright: no run.json) left live, under the results
     lock, so the ledger says what was spent instead of holding it forever (PR #653 review). Its
@@ -2119,9 +2159,9 @@ def recover(results: Path, registered=()) -> list[str]:
                 raise Refused(f"the ledger names {sandbox} as lost run {run}'s sandbox, and it is a symbolic "
                               "link: inspect it before any run starts")
             check_writable(sandbox, f"lost run {run}'s sandbox (from the ledger)", registered)
-            tag = (calls.get(f"{run}/run") or {}).get("call_tag")
+            tags = run_tags(calls.get(f"{run}/run") or {})
             first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"),
-                                   sweep=functools.partial(contain.sweep, tag=tag) if tag else None)
+                                   sweep=functools.partial(sweep_tags, tags) if tags else None)
         rows, store_read = {}, False
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -3054,7 +3094,7 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
     # swept again first (Codex review of PR #668, B1; #606's ORPHAN_ALIVE).
     for start in sorted((v for v in Budget(results).calls().values()
                          if v.get("state") == "run" and v.get("call_tag")), key=lambda v: v["run"]):
-        if not contain.sweep(tag=start["call_tag"]):
+        if not sweep_tags(run_tags(start)):
             raise Refused(f"ORPHAN_ALIVE: a process of {start['run']} survives, or the process table cannot be "
                           "read: nothing starts until it is gone (inspect its sandbox and the ledger)")
     if args.workdir:
@@ -3258,8 +3298,16 @@ def cmd_gate(args) -> int:
     cwd = Path.cwd()
     included = [tasks[t] for t, heads in sorted(landing.items()) if t in tasks and any(
         git(cwd, "merge-base", "--is-ancestor", h, "HEAD", check=False).returncode == 0 for h in heads)]
-    with tempfile.TemporaryDirectory(prefix="wip-curve-gate-") as tmp:
-        result = run_oracle(cwd, included, taskset, Path(tmp))
+    def record(tag):  # appended and flushed before the step starts: the runner sweeps it (C-d)
+        if args.tags_file:
+            with open(args.tags_file, "a", encoding="utf-8") as fh:
+                fh.write(tag + "\n")
+    tmp = Path(tempfile.mkdtemp(prefix="wip-curve-gate-"))
+    result = run_oracle(cwd, included, taskset, tmp, on_tag=record)
+    if result["contained"]:
+        shutil.rmtree(tmp, ignore_errors=True)
+    else:  # kept, to investigate; the runner halts the run orphan-alive when it reads this line
+        record(f"UNCONTAINED {tmp}")
     print(f"wip-curve gate: {result['exit']} for {[t['id'] for t in included]}")
     for line in result["tail"]:
         print(line)
@@ -3309,10 +3357,12 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("gate", help="(internal) the merge queue's gate command")
     g.add_argument("--taskset", required=True)
     g.add_argument("--landing", required=True)
+    g.add_argument("--tags-file", default=None, dest="tags_file",
+                   help="(internal) where each oracle call's marker is appended before it starts")
     return p
 
 
-PATH_ARGS = ("prereg", "results", "workdir", "out", "report", "report_md", "taskset", "landing")
+PATH_ARGS = ("prereg", "results", "workdir", "out", "report", "report_md", "taskset", "landing", "tags_file")
 
 
 def main(argv: list[str] | None = None) -> int:

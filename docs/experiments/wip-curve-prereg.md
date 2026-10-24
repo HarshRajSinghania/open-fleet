@@ -147,7 +147,11 @@ environment, where a harness API key lives. Its output goes to files, so nothing
 can hold a pipe of the runner's open. Every process it starts, one that left for a session of its
 own included, carries the call's `OF_CALL_ID` marker and is swept. If one survives, or the
 process table cannot be read, the verification is not vouched for and the run stops
-`orphan-alive`. Every other call the runner makes drains its output for a bounded time only.
+`orphan-alive`. The oracle stops at its first step that cannot be contained and launches nothing
+further. That step's files and the checkout are kept, to investigate. Every oracle call's marker
+is recorded in the run and the ledger before the call starts, and so is every merge-gate oracle's,
+which the gate appends to a file the runner reads. Each is swept again at teardown and before the
+next run. An uncontained gate oracle halts the run as soon as its merge returns. Every other call the runner makes drains its output for a bounded time only.
 
 ## Confounds and how each is separated
 

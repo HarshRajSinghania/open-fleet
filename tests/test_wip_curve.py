@@ -2407,6 +2407,89 @@ class TestNoDrainOutlivesItsBound(Tmp):
         self.assertTrue(ended(int(pid_file.read_text())), "a process the oracle's code detached outlived it")
 
 
+class TestTheOracleStopsAtItsFirstUncontainedStep(Tmp):
+    """PR #668 review (Codex C-d, Greptile PRRT_kwDOTWxN9c6v3pIE): when the visible tests could not be
+    contained, run_oracle still launched the hidden oracle. It stops at the first failed
+    containment, launches nothing further, and keeps what is needed to investigate."""
+
+    def test_nothing_launches_after_a_step_that_could_not_be_contained(self):
+        launched = []
+
+        def contained_run(argv, **kw):
+            launched.append(argv)
+            Path(kw["stdout_path"]).write_text("", encoding="utf-8")
+            return 0, False, False  # a process of the visible tests survived
+        checkout = self.tmp / "checkout"
+        checkout.mkdir()
+        task = {"id": "T9", "oracle": "import unittest\n"}
+        with mock.patch.object(wip.contain, "contained_run", contained_run):
+            result = wip.run_oracle(checkout, [task], {"visible_tests": ["-c", "pass"]}, self.tmp, timeout=20)
+        self.assertEqual(len(launched), 1, "the hidden oracle launched after the visible tests escaped")
+        self.assertEqual((result["exit"], result["contained"]), (1, False))
+        self.assertTrue(result["kept"] and Path(result["kept"]).is_dir(), "the oracle's files were removed")
+
+
+class TestAnUncontainedMergeGateHaltsTheRun(Tmp):
+    """The merge gate runs its oracle in the merge queue's process. Its markers reach the runner
+    through a file, each written before its step starts; an uncontained step is written there too,
+    its files kept, and the runner halts orphan-alive when it reads it (PR #668 review, C-d)."""
+
+    def test_the_gate_reports_it_and_the_runner_halts(self):
+        tags_file, landing = self.tmp / "gate-tags.txt", self.tmp / "landing.json"
+        landing.write_text("{}", encoding="utf-8")
+        (self.tmp / "checkout").mkdir()
+
+        def contained_run(argv, **kw):
+            Path(kw["stdout_path"]).write_text("", encoding="utf-8")
+            return 0, False, False
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.tmp / "checkout")
+            with mock.patch.object(wip.contain, "contained_run", contained_run), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = wip.cmd_gate(argparse.Namespace(taskset=str(TASKSET), landing=str(landing),
+                                                     tags_file=str(tags_file)))
+        finally:
+            os.chdir(cwd)
+        self.assertNotEqual(rc, 0)
+        lines = tags_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertTrue(lines[1].startswith("UNCONTAINED ") and Path(lines[1].split(" ", 1)[1]).is_dir(), lines)
+        run = bare_run(self.tmp)
+        run.sb = argparse.Namespace(dir=self.tmp)
+        self.assertEqual(run.gate_tags(), lines[:1])
+        self.assertEqual(run.halt, "orphan-alive")
+
+
+class TestEveryOracleMarkerIsSwept(Tmp):
+    """PR #668 review (Codex C-d): each oracle call, and each merge-gate oracle the merge queue runs,
+    carries a marker of its own, not the run's. Every one is recorded, in the run and the ledger,
+    and swept by finish() and by the check before the next run."""
+
+    def test_the_run_and_the_next_command_sweep_every_oracle_and_gate_marker(self):
+        env, _trip = tripwired_env(self.tmp)
+        real, swept = wip.contain.sweep, []
+
+        def sweep(*a, **kw):
+            swept.append(kw.get("tag"))
+            return real(*a, **kw)
+        with mock.patch.object(wip.contain, "sweep", sweep):
+            runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=env)
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        oracle, gate = record["oracle_tags"], record["gate_tags"]
+        self.assertTrue(oracle and gate, record.get("oracle_tags"))
+        for tag in oracle + gate:  # once where it ran (the gate's in its own process), once more at teardown
+            self.assertGreaterEqual(swept.count(tag), 1 if tag in gate else 2, tag)
+        start = wip.Budget(self.tmp / "results").calls()["wip1-b1r1-rep1/run"]
+        self.assertEqual((start["oracle_tags"], start["gate_tags"]), (oracle, gate))
+        swept.clear()
+        with mock.patch.object(wip.contain, "sweep", sweep):
+            runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--next", "1",
+                   "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=env)
+        self.assertTrue(set(oracle + gate) <= set(swept), "the check before the next run left an oracle marker")
+
+
 class TestAnUncontainedOracleStopsTheRun(Tmp):
     """Codex review of PR #668 (B2): when a process the oracle's worker-written code started survives,
     or cannot be seen, nothing about that verification is vouched for and no further call starts."""

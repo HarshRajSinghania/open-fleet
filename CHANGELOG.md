@@ -6,6 +6,16 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The trusted merge gate is active, and Codex is the second reviewer** (#594, #595).
+  - **The gate:** `main` now requires `verdict-gate` from the dedicated app `open-fleet-verdict-gate`
+    (app 5451539), whose key lives only in the `main`-limited `verdict-gate` environment, and no
+    longer requires the PR-rewritable `verdict`.
+  - **The witness:** the disposable PR #658 showed that a same-named job and status from
+    `github-actions` cannot satisfy the gate, that a GO at the head can, and that a later push
+    cannot.
+  - **The reviewer:** H-10 is settled by the owner's decision. OpenAI Codex reviews each PR
+    read-only at its head, and no coordinator GO is posted without a Codex GO at the same head.
+    Codex is not a person, so the number of human maintainers is still one.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

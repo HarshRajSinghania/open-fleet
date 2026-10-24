@@ -53,6 +53,15 @@ LEAKY = ("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", "OPEN_FLEET_RUNTIME", "OR
          "OPEN_FLEET_MERGE_QUEUE_DB", "OPEN_FLEET_EVENTS_LOG", "ORCA_EVENTS_LOG")
 
 
+def bare_run(tmp: Path, cap="10", reservation="0.25", rid="wip1-b1r1-rep1"):
+    """A Run with only its spend guard: the shared ledger in `tmp`/results, nothing launched."""
+    run = wip.Run.__new__(wip.Run)
+    run.rid, run.cap, run.reservation = rid, Decimal(cap), Decimal(reservation)
+    run.budget, run.calls, run.held, run.usage_seen, run.units = wip.Budget(tmp / "results"), {}, {}, set(), {}
+    run.halt, run.deadline, run.model_pin, run.launched = None, float("inf"), None, {}
+    return run
+
+
 def tripwired_env(tmp: Path) -> tuple[dict, Path]:
     """SHELL=/bin/sh and a tripwire for every harness name first on PATH (test_certification.py)."""
     trip = tmp / "tripwire"
@@ -981,6 +990,7 @@ class TestTheAssignmentReachesTheLaunch(Tmp):
     def spawned(self, launch):
         run = wip.Run.__new__(wip.Run)
         run.launched, run.launches, run.commands, run.rid = {}, {}, [], "wip1-b1r1-rep1"
+        run.calls = {}  # no hold: these launches are about the assignment, not the spend
         run.args = argparse.Namespace(agent="claude")
         run.guard = lambda _wt: None
         calls = []
@@ -1077,13 +1087,15 @@ class TestCostCapStopsTheExperiment(DryRun):
         self.assertEqual(wip.Run.stream_cost(stream), Decimal("0.5"))
 
     def test_an_unobserved_dispatch_is_charged_the_reservation(self):
-        run = wip.Run.__new__(wip.Run)
-        run.usage_seen, run.observed, run.reserved, run.held = set(), Decimal(0), Decimal(0), {}
-        run.reservation, run.spent_before = Decimal("2.00"), Decimal("1.00")
+        tmp = Path(tempfile.mkdtemp(prefix="wip-curve-ledger-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        run = bare_run(tmp, reservation="2.00")
+        run.budget.charge("earlier/T1/a1/builder", Decimal("1.00"), True, run="earlier")
         run.dispatch_row = lambda _d: {"lane_dir": None}  # no stream retained: nothing observed
         self.assertEqual(run.ingest_usage("disp_x", "task_x"), Decimal("2.00"))
         self.assertEqual(run.ingest_usage("disp_x", "task_x"), Decimal(0), "one dispatch is charged once")
-        self.assertEqual(run.spent(), Decimal("3.00"))
+        self.assertEqual(wip.spent_in(tmp / "results"), Decimal("3.00"))
+        self.assertEqual(run.run_cost()["reserved_unobserved_usd"], "2.00", "its run's cost is its own calls")
 
 
 class TestComplianceNeedsLiveBoundEvidence(unittest.TestCase):
@@ -1148,10 +1160,9 @@ class TestSpendIsReservedBeforeEachDispatch(Tmp):
     a cent over is not."""
 
     def ledger(self, cap, spent_before="0"):
-        run = wip.Run.__new__(wip.Run)
-        run.cap, run.spent_before, run.reservation = Decimal(cap), Decimal(spent_before), Decimal("0.25")
-        run.observed, run.reserved, run.held, run.usage_seen = Decimal(0), Decimal(0), {}, set()
-        run.halt, run.deadline = None, float("inf")
+        run = bare_run(self.tmp / cap, cap=cap)
+        if Decimal(spent_before):
+            run.budget.charge("earlier/T1/a1/builder", Decimal(spent_before), True, run="earlier")
         return run
 
     def test_the_exact_boundary_is_admitted_and_a_cent_over_is_not(self):
@@ -1170,6 +1181,66 @@ class TestSpendIsReservedBeforeEachDispatch(Tmp):
 
     def test_spend_before_this_run_counts(self):
         self.assertFalse(self.ledger("0.50", spent_before="0.01").hold_unit("T1"))
+
+
+class TestOneSharedLedger(Tmp):
+    """PR #653 review (Buw/Buy): one ledger per results directory. A call is charged once by its
+    identity, a unit's holds are taken all or none, and holds taken at the same moment by
+    separate processes never commit past the cap."""
+
+    def test_a_call_is_charged_once_whatever_settles_it_again(self):
+        budget = wip.Budget(self.tmp)
+        self.assertTrue(budget.hold([("r/T1/a1/builder", {"run": "r"})], Decimal("0.25"), Decimal("1")))
+        self.assertTrue(budget.charge("r/T1/a1/builder", Decimal("0.40"), True))
+        self.assertFalse(budget.charge("r/T1/a1/builder", Decimal("0.25"), False), "a second charge was recorded")
+        self.assertFalse(budget.release("r/T1/a1/builder"), "a charged call was released")
+        budget.note("r/T1/a1/builder", state="launched", dispatch="d")  # a late note cannot reopen it
+        self.assertEqual(budget.calls()["r/T1/a1/builder"]["state"], "charged")
+        self.assertEqual(budget.total(), Decimal("0.40"))
+
+    def test_a_unit_is_held_all_or_none(self):
+        budget = wip.Budget(self.tmp)
+        entries = [("r/T1/a1/builder", {"run": "r"}), ("r/T1/a1/reviewer", {"run": "r"})]
+        self.assertFalse(budget.hold(entries, Decimal("0.25"), Decimal("0.49")))
+        self.assertEqual(budget.calls(), {})
+        self.assertTrue(budget.hold(entries, Decimal("0.25"), Decimal("0.50")))
+        with self.assertRaises(wip.RunFailed):  # an identity is never reused, so never charged twice
+            budget.hold(entries[:1], Decimal("0.25"), Decimal("10"))
+
+    def test_a_read_never_creates_the_ledger(self):
+        self.assertEqual((wip.spent_in(self.tmp / "results"), wip.Budget(self.tmp / "results").calls()),
+                         (Decimal(0), {}))
+        self.assertFalse((self.tmp / "results").exists())
+
+    def test_an_unreadable_record_refuses_every_spend(self):
+        budget = wip.Budget(self.tmp)
+        budget.charge("r/T1/a1/builder", Decimal("0.25"), True, run="r")
+        with budget.path.open("a", encoding="utf-8") as fh:
+            fh.write("{torn\n")
+        with self.assertRaises(wip.SourceError):
+            budget.hold([("r/T2/a1/builder", {"run": "r"})], Decimal("0.25"), Decimal("10"))
+
+    def test_concurrent_holds_never_pass_the_cap(self):
+        # eight processes each hold a unit (2 x 0.25) against a 2.00 cap at the same moment:
+        # exactly four fit, whatever the interleaving
+        code = ("import importlib.util, os, sys, time; from decimal import Decimal\n"
+                "s = importlib.util.spec_from_file_location('w', sys.argv[1]); m = importlib.util.module_from_spec(s)\n"
+                "s.loader.exec_module(m); r, go = sys.argv[3], sys.argv[4]\n"
+                "open(go + '.' + r, 'w').close()\n"
+                "while not os.path.exists(go): time.sleep(0.0005)\n"  # every process holds at the same moment
+                "print(m.Budget(sys.argv[2]).hold([(r + '/b', {'run': r}), (r + '/r', {'run': r})], "
+                "Decimal('0.25'), Decimal('2.00')))")
+        go = self.tmp / "go"
+        procs = [subprocess.Popen([sys.executable, "-c", code, str(RUNNER), str(self.tmp / "results"), f"run{i}",
+                                   str(go)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for i in range(8)]
+        deadline = time.monotonic() + 120
+        while len(list(self.tmp.glob("go.run*"))) < 8 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        go.touch()
+        outs = [p.communicate(timeout=120) for p in procs]
+        self.assertEqual(sorted(o.strip() for o, _e in outs), ["False"] * 4 + ["True"] * 4, outs)
+        self.assertEqual(wip.Budget(self.tmp / "results").total(), Decimal("2.00"))
 
 
 class TestExactCapBoundary(DryRun):
@@ -1651,16 +1722,37 @@ class TestACallMidSpawnIsCharged(Tmp):
             ("disp_other_run", "task_c", "another-run", None)])
         conn.commit()
         conn.close()
-        run = wip.Run.__new__(wip.Run)
-        run.rid, run.sb = "wip1-b1r1-rep1", argparse.Namespace(state_db=db)
-        run.usage_seen, run.observed, run.reserved = set(), Decimal(0), Decimal(0)
-        run.reservation, run.spent_before, run.model_pin, run.halt = Decimal("0.25"), Decimal(0), None, None
-        run.launched = {"disp_seen": ("task_a", "T1:builder")}
-        run.held = {"T1:builder": Decimal("0.25"), "T2:builder": Decimal("0.25")}  # T2's spawn was interrupted
+        run = self.two_units(db)
         settled = run.settle_launched()
         self.assertEqual(sorted(settled), ["disp_midspawn", "disp_seen"])
-        self.assertEqual(run.reserved, Decimal("0.50"), "the call mid-spawn was not charged")
-        self.assertEqual(run.held, {})
+        calls = wip.Budget.of_run(run.budget.calls(), run.rid)
+        self.assertEqual({c: (v["state"], v["usd"], v.get("dispatch")) for c, v in calls.items()}, {
+            "wip1-b1r1-rep1/T1/a1/builder": ("charged", "0.25", "disp_seen"),
+            "wip1-b1r1-rep1/T2/a1/builder": ("charged", "0.25", "disp_midspawn"),  # the call mid-spawn
+            "wip1-b1r1-rep1/T1/a1/reviewer": ("released", "0", None),
+            "wip1-b1r1-rep1/T2/a1/reviewer": ("released", "0", None)})
+        self.assertEqual((run.held, wip.spent_in(self.tmp / "results")), ({}, Decimal("0.50")))
+        self.assertEqual(run.settle_launched(), [], "a second settlement charged again")
+        self.assertEqual(wip.spent_in(self.tmp / "results"), Decimal("0.50"))
+
+    def test_an_unreadable_store_charges_a_call_mid_spawn(self):
+        run = self.two_units(self.tmp / "gone.db")  # no store to ask whether it registered the call
+        run.launched = {}
+        run.settle_launched()
+        calls = wip.Budget.of_run(run.budget.calls(), run.rid)
+        self.assertEqual(calls["wip1-b1r1-rep1/T2/a1/builder"]["state"], "charged", "unavailable read as never run")
+
+    def two_units(self, db):
+        """T1's builder launched as disp_seen; T2's spawn was interrupted before DISPATCH= arrived."""
+        run = bare_run(self.tmp)
+        run.sb = argparse.Namespace(state_db=db)
+        self.assertTrue(run.hold_unit("T1") and run.hold_unit("T2"))
+        for tid, store_task in (("T1", "task_a"), ("T2", "task_b")):
+            self.assertTrue(run.admit(f"{tid}:builder"))
+            run.budget.note(run.calls[f"{tid}:builder"], store_task=store_task)
+        run.budget.note(run.calls["T1:builder"], state="launched", dispatch="disp_seen")
+        run.launched = {"disp_seen": ("task_a", "T1:builder")}
+        return run
 
 
 def start_runner(env, *args):
@@ -1721,27 +1813,71 @@ class TestOneRunnerPerResultsDirectory(Tmp):
         self.assertFalse(trip_log.exists())
 
 
+class TestSpendIsCountedOnce(Tmp):
+    """PR #653 review (Buw): every charge is recorded once, keyed by its call, and a recovery
+    reconciles the ledger instead of adding to it. Run 1 spends 0.50 and stops at its cap; run 2 is
+    killed outright (SIGKILL) while its three builders run, so it writes no run.json."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.results, self.wd = self.tmp / "results", self.tmp / "wd"
+        first = runner("run", "--results", self.results, "--workdir", self.wd, "--runs", "wip1-b1r1-rep1",
+                       "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=self.env)
+        self.assertEqual(wip.spent_in(self.results), Decimal("0.50"), first.stdout + first.stderr)
+        proc = start_runner(self.env, "run", "--results", self.results, "--workdir", self.wd, "--runs",
+                            "wip1-b3r1-rep1", "--cost-cap-usd", "10", "--inert-cost-usd", "0.25",
+                            "--inert-script", json.dumps({"_sleep": {"builder": 60}}))
+        self.pids = wait_for_builders(self, self.wd / "wip1-b3r1-rep1" / "inert", 3)
+        self.addCleanup(kill_pids, self.pids)
+        proc.kill()
+        proc.communicate(timeout=60)
+
+    def test_a_killed_run_never_counts_earlier_spend_again(self):
+        # run 1's 0.50, plus run 2's three units held at a builder and a reviewer each (3 x 0.50)
+        self.assertEqual(wip.spent_in(self.results), Decimal("2.00"))
+
+    def test_the_next_command_reconciles_the_killed_run_once(self):
+        for _ in range(2):  # recovery twice: the second finds every call already settled
+            p = runner("run", "--results", self.results, "--workdir", self.wd, "--next", "1",
+                       "--cost-cap-usd", "2.00", "--inert-cost-usd", "0.25", env=self.env)
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("not started", p.stderr)
+            # each launched builder is charged its reservation once (killed mid-call: no reported
+            # cost); the reviewer holds that never launched are released
+            self.assertEqual(wip.spent_in(self.results), Decimal("1.25"))
+        for pid in self.pids:
+            with self.assertRaises(ProcessLookupError, msg=f"the killed run's worker {pid} still runs"):
+                os.kill(pid, 0)
+        self.assertFalse(self.trip_log.exists())
+
+
 class TestAKilledRunStillCounts(Tmp):
     """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
-    writes no run.json. Its spend ledger, kept current while it ran, is still counted against
-    the cap, the run is reported as lost, and only it may be re-run once."""
+    writes no run.json. Its calls in the shared ledger still count against the cap until the next
+    run reconciles them, the run is reported as lost, and only it may be re-run once."""
 
     def setUp(self):
         super().setUp()
         self.env, self.trip_log = tripwired_env(self.tmp)
         self.results = self.tmp / "results"
-        lost = self.results / "runs" / "wip1-b1r1-rep1"
-        lost.mkdir(parents=True)
-        (lost / "spend.json").write_text(json.dumps({"committed_usd": "3.00", "observed_usd": "2.50",
-                                                     "reserved_unobserved_usd": "0.00",
-                                                     "updated_at": "2026-10-24T10:00:00+00:00"}), encoding="utf-8")
+        (self.results / "runs" / "wip1-b1r1-rep1").mkdir(parents=True)
+        budget = wip.Budget(self.results)  # its sandbox is gone: no store to ask, no worker to stop
+        budget.start_run("wip1-b1r1-rep1", self.tmp / "gone")
+        rid = "wip1-b1r1-rep1/T5/a1"
+        budget.hold([(f"{rid}/builder", {"run": "wip1-b1r1-rep1"}), (f"{rid}/reviewer", {"run": "wip1-b1r1-rep1"})],
+                    Decimal("0.50"), Decimal("10"))
+        budget.charge(f"{rid}/builder", Decimal("2.50"), True)
 
-    def test_its_spend_is_counted(self):
-        self.assertEqual(wip.spent_in(self.results), Decimal("3.00"))
-        p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
-                   "wip1-b3r1-rep1", "--cost-cap-usd", "3.40", "--inert-cost-usd", "0.25", env=self.env)
-        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
-        self.assertIn("not started", p.stderr)
+    def test_its_spend_is_counted_and_reconciled_once(self):
+        self.assertEqual(wip.spent_in(self.results), Decimal("3.00"))  # 2.50 charged + the reviewer's hold
+        for _ in range(2):
+            p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                       "wip1-b3r1-rep1", "--cost-cap-usd", "3.40", "--inert-cost-usd", "0.25", env=self.env)
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("not started", p.stderr)
+            # the reviewer never launched: its hold is released; the builder's charge stays, once
+            self.assertEqual(wip.spent_in(self.results), Decimal("2.50"))
 
     def test_it_is_reported_as_lost(self):
         runs = wip.build_report(self.results, basis="all")["runs"]
@@ -1758,9 +1894,13 @@ class TestAKilledRunStillCounts(Tmp):
     def test_a_run_keeps_its_ledger_and_binds_it(self):
         run_dir = Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
         record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-        ledger = json.loads((run_dir / "spend.json").read_text(encoding="utf-8"))
-        self.assertIn("spend.json", record["sources"])
-        self.assertEqual(Decimal(ledger["committed_usd"]), Decimal("0.50"))
+        calls = json.loads((run_dir / "calls.json").read_text(encoding="utf-8"))
+        self.assertIn("calls.json", record["sources"])
+        self.assertTrue(all(v["state"] in ("charged", "released") for v in calls.values()), calls)
+        charged = sum((Decimal(v["usd"]) for v in calls.values() if v["state"] == "charged"), Decimal(0))
+        cost = record["cost"]
+        self.assertEqual(charged, Decimal("0.50"))
+        self.assertEqual(charged, Decimal(cost["observed_usd"]) + Decimal(cost["reserved_unobserved_usd"]))
 
 
 class TestRelativePaths(unittest.TestCase):

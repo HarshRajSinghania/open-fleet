@@ -44,8 +44,11 @@ truth is `.claude-plugin/plugin.json`.
       held to a pin is refused, and a call on another model halts the run.
     - Each launch must carry its assignment.
     - The run deadline is kept inside a wave.
+    - One runner holds a results directory at a time. Its runs share one ledger, in which every
+      paid call is held, then charged once under its own identity. Each hold is checked against
+      the cap under the ledger's lock.
     - An interrupted or killed run is charged for every call it launched, and no child process
-      outlives it.
+      outlives it. The next run reconciles a killed run's calls once and stops its workers.
     - Coordinator and merge-queue git goes through `gitexec.py`.
     - Worker code under the oracle gets a minimal environment.
   - What can be pooled: a run under another machine, harness, model pin, input digest, deadline

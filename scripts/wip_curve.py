@@ -407,6 +407,125 @@ def write_output(path: Path, text: str, registered=()) -> None:
 
 
 LOCK_NAME = ".wip-curve.lock"
+LIVE_CALL = ("held", "launching", "launched")  # a call that may still spend: its hold counts
+
+
+def _committed(calls: dict) -> Decimal:
+    return sum((Decimal(c["usd"]) for c in calls.values() if c.get("state") in LIVE_CALL + ("charged",)),
+               Decimal(0))
+
+
+class Budget:
+    """The experiment's one budget (PR #653 review): every paid call in a results directory, by a
+    stable identity (`<run>/<task>/a<attempt>/<role>`), in ONE append-only ledger, budget.jsonl,
+    read and appended under an exclusive flock. A call's LAST record is its state:
+
+        held -> launching -> launched -> charged      released: a hold that never launched
+
+    so settling a call again, or recovering it after a crash, reconciles it and never adds a
+    second charge. Committed spend is each call's charge, or its hold while it may still spend:
+    every admission, by any run and any concurrent dispatch, is checked against that one total,
+    read and updated atomically. A run's own cost is read back from its calls, never kept apart
+    (a separately kept per-run figure counted earlier runs' spend twice)."""
+
+    NAME = "budget.jsonl"
+
+    def __init__(self, results: Path):
+        self.path = Path(results) / self.NAME
+
+    def _update(self, fn):
+        """fn(calls) -> (records to append, result), all under one exclusive lock."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                fh.seek(0)
+                calls = {}
+                for lineno, line in enumerate(fh.read().splitlines(), 1):
+                    try:
+                        rec = json.loads(line)
+                        calls[rec["call"]] = {**calls.get(rec["call"], {}), **rec}
+                    except (ValueError, KeyError, TypeError) as err:
+                        raise SourceError(f"{self.path}:{lineno} is not a ledger record ({err}): the budget "
+                                          "cannot be read, so nothing may spend against it") from err
+                records, result = fn(calls)
+                for rec in records:
+                    fh.write(json.dumps({**rec, "at": now()}, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+                return result
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    def calls(self) -> dict:
+        """Every call's state; a directory without a ledger has none (and a read never creates one)."""
+        return self._update(lambda calls: ([], calls)) if self.path.is_file() else {}
+
+    def total(self) -> Decimal:
+        return _committed(self.calls())
+
+    def start_run(self, run: str, sandbox: Path) -> None:
+        self._update(lambda calls: ([{"call": f"{run}/run", "run": run, "state": "run", "usd": "0",
+                                      "sandbox": str(sandbox)}], None))
+
+    def hold(self, entries, amount: Decimal, cap: Decimal) -> bool:
+        """Hold `amount` for each (call, fields) at once, or none: False when the cap cannot cover
+        them on top of everything committed."""
+        def fn(calls):
+            reused = [c for c, _f in entries if c in calls]
+            if reused:
+                raise RunFailed(f"call identity reused: {reused}")
+            if _committed(calls) + amount * len(entries) > cap:
+                return [], False
+            return [{"call": c, "state": "held", "usd": str(amount), **f} for c, f in entries], True
+        return self._update(fn)
+
+    def admit(self, call: str, cap: Decimal) -> bool:
+        """A held call may start only while everything committed, its own hold included, is within
+        the cap; otherwise its hold is released unspent."""
+        def fn(calls):
+            c = calls.get(call)
+            if not c or c.get("state") != "held":
+                return [], False
+            if _committed(calls) > cap:
+                return [{"call": call, "state": "released", "usd": "0"}], False
+            return [{"call": call, "state": "launching"}], True
+        return self._update(fn)
+
+    def note(self, call: str, **fields) -> None:
+        """Record a call's progress; a settled call (charged or released) never moves again."""
+        def fn(calls):
+            settled = (calls.get(call) or {}).get("state") in ("charged", "released")
+            return ([] if settled and "state" in fields else [{"call": call, **fields}]), None
+        self._update(fn)
+
+    def charge(self, call: str, usd: Decimal, measured: bool, run: str | None = None) -> bool:
+        """Charge a call once: a call already charged or released is reconciled, not charged again."""
+        def fn(calls):
+            c = calls.get(call)
+            if c and c.get("state") in ("charged", "released"):
+                return [], False
+            rec = {"call": call, "state": "charged", "usd": str(usd), "measured": measured}
+            if not c:
+                rec["run"] = run
+            return [rec], True
+        return self._update(fn)
+
+    def release(self, call: str, launched_too: bool = False) -> bool:
+        """Release a hold that never launched (`launched_too`: a launching call the store never
+        registered, which therefore never ran)."""
+        def fn(calls):
+            c = calls.get(call)
+            states = ("held", "launching") if launched_too else ("held",)
+            if not c or c.get("state") not in states:
+                return [], False
+            return [{"call": call, "state": "released", "usd": "0"}], True
+        return self._update(fn)
+
+    @staticmethod
+    def of_run(calls: dict, run: str) -> dict:
+        return {c: v for c, v in calls.items() if v.get("run") == run and v.get("state") != "run"}
 
 
 @contextlib.contextmanager
@@ -854,7 +973,7 @@ class Run:
     """One scheduled run: a fresh sandbox, waves of `builders` units, reviews by at most
     `reviewers` at a time, the oracle, the merge queue, and an append-only event record."""
 
-    def __init__(self, args, prereg, taskset, paths, entry, results: Path, spent_before: Decimal):
+    def __init__(self, args, prereg, taskset, paths, entry, results: Path):
         self.args, self.prereg, self.taskset, self.entry = args, prereg, taskset, entry
         self.prereg_path, self.prereg_sha, self.taskset_path = paths
         self.tasks = task_by_id(taskset)
@@ -866,7 +985,8 @@ class Run:
         # published record names the machine without carrying its name.
         self.clock = "wip-runner@host-" + sha256_bytes((platform.node() or "host").encode())[:12]
         self.cap = args.cost_cap
-        self.spent_before = spent_before
+        self.budget = Budget(results)  # the experiment's one budget, shared with every other run
+        self.calls: dict[str, str] = {}  # "<task>:<role>" -> the call identity it holds
         # What one dispatch may spend: the reservation the owner authorised (--reservation-usd; for
         # the inert stand-in it defaults to the synthetic cost the stand-in reports).
         self.reservation = args.reservation
@@ -877,8 +997,6 @@ class Run:
         self.halt: str | None = None  # once set (cost-cap, model-mismatch, time-limit), nothing more starts
         self.deadline = float("inf")  # the run's absolute wall-clock deadline (monotonic), set at start
         self.launched_models: dict[str, str | None] = {}
-        self.observed = Decimal(0)
-        self.reserved = Decimal(0)
         self.usage_seen: set[str] = set()
         stop = prereg["stopping_rule"]
         self.max_attempts = stop["max_attempts_per_task"]
@@ -924,7 +1042,7 @@ class Run:
         if proc.returncode not in (0, 1):
             raise RunFailed(f"events.py ingest-state rc={proc.returncode}: {proc.stderr.strip()[:300]}")
 
-    def ingest_usage(self, dispatch, store_task, key=None):
+    def ingest_usage(self, dispatch, store_task, key=None, call=None):
         """Retain the dispatch's stream, record its usage, and settle its hold: the cost charged."""
         if dispatch in self.usage_seen:
             return Decimal(0)
@@ -947,7 +1065,7 @@ class Run:
                                       cwd=str(self.dir))
             if proc.returncode == 0:
                 cost = self.stream_cost(self.dir / rel)
-        self.settle(key, cost)
+        self.settle(key, cost, dispatch=dispatch, call=call)
         return self.reservation if cost is None else cost
 
     @staticmethod
@@ -968,16 +1086,29 @@ class Run:
 
     # --- the spend guard (#604; PR #652's class: spend is reserved BEFORE a dispatch starts) ---
     def committed(self) -> Decimal:
-        """Spent before this run, measured here, charged for unobserved dispatches, and held."""
-        return self.spent_before + self.observed + self.reserved + sum(self.held.values(), Decimal(0))
+        """Everything committed in the results directory: every run's charges and live holds."""
+        return self.budget.total()
 
     def hold_unit(self, tid) -> bool:
         """Before a unit's builder starts, hold the worst case of every call the unit makes: its
-        builder and its reviewer (no grader calls a model). False when the cap cannot cover it."""
-        if self.committed() + self.reservation * 2 > self.cap:
+        builder and its reviewer (no grader calls a model), in the shared ledger, atomically.
+        False when the cap cannot cover it."""
+        n = len(self.units[tid]["attempts"]) + 1 if tid in self.units else 1
+        entries = [(f"{self.rid}/{tid}/a{n}/{role}", {"run": self.rid, "task": tid, "role": role})
+                   for role in ("builder", "reviewer")]
+        if not self.budget.hold(entries, self.reservation, self.cap):
             return False
-        self.held[f"{tid}:builder"] = self.held[f"{tid}:reviewer"] = self.reservation
+        for (call, fields) in entries:
+            key = f"{tid}:{fields['role']}"
+            self.calls[key], self.held[key] = call, self.reservation
         return True
+
+    def release_hold(self, key) -> None:
+        """A held call that will not start: its hold goes back to the budget, unspent."""
+        self.held.pop(key, None)
+        call = self.calls.pop(key, None)
+        if call:
+            self.budget.release(call)
 
     def remaining(self) -> float:
         """Seconds left before the run's deadline; 0 once it passed, which halts the run."""
@@ -991,36 +1122,31 @@ class Run:
         model other than the pin, the deadline), and only while everything committed, its own
         hold included, is within the cap: a dispatch that overspent its hold refuses the next one.
         A refusal sets `halt` and releases the hold unspent."""
-        if self.remaining() > 0 and self.halt is None and key in self.held and self.committed() <= self.cap:
+        if self.remaining() > 0 and self.halt is None and key in self.held \
+                and self.budget.admit(self.calls[key], self.cap):
             return True
         self.halt = self.halt or "cost-cap"
-        self.held.pop(key, None)
+        self.release_hold(key)
         return False
 
-    def settle(self, key, cost) -> None:
-        """Release a dispatch's hold and charge what it spent; unobserved, the reservation."""
+    def settle(self, key, cost, dispatch=None, call=None) -> None:
+        """Charge a call what it spent (unobserved: its reservation, never free), exactly once in the
+        shared ledger. The call is its hold's identity; a dispatch the runner never held a call for
+        is charged under its own identity, `<run>/dispatch/<id>`, so it too is charged once."""
         if key is not None:
             self.held.pop(key, None)
-        if cost is None:  # unobserved: charge the reservation, never assume it was free
-            self.reserved += self.reservation
-        else:
-            self.observed += cost
-        self.note_spend()
+            call = call or self.calls.pop(key, None)
+        call = call or f"{self.rid}/dispatch/{dispatch}"
+        self.budget.charge(call, cost if cost is not None else self.reservation, cost is not None, run=self.rid)
 
-    def note_spend(self) -> None:
-        """The run's spend ledger, rewritten (atomically) at start, at every launch and every
-        settlement: what a killed runner leaves behind for spent_in() and the cooldown."""
-        run_dir = getattr(self, "dir", None)
-        if run_dir is None or not Path(run_dir).is_dir():
-            return
-        ledger = {"committed_usd": str(self.committed()), "observed_usd": str(self.observed),
-                  "reserved_unobserved_usd": str(self.reserved), "updated_at": now()}
-        tmp = Path(run_dir) / ".spend.json.tmp"
-        tmp.write_text(json.dumps(ledger, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(tmp, Path(run_dir) / "spend.json")
-
-    def spent(self) -> Decimal:
-        return self.spent_before + self.observed + self.reserved
+    def run_cost(self) -> dict:
+        """This run's cost, read back from its calls in the shared ledger."""
+        mine = Budget.of_run(self.budget.calls(), self.rid)
+        charged = [v for v in mine.values() if v.get("state") == "charged"]
+        return {"observed_usd": str(sum((Decimal(v["usd"]) for v in charged if v.get("measured")), Decimal(0))),
+                "reserved_unobserved_usd": str(sum((Decimal(v["usd"]) for v in charged if not v.get("measured")),
+                                                   Decimal(0))),
+                "calls": len(mine)}
 
     def dispatch_row(self, dispatch):
         conn = sqlite3.connect(f"file:{self.sb.state_db}?mode=ro", uri=True)
@@ -1057,13 +1183,17 @@ class Run:
         env = {"PROFILE": profile}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
+        call = self.calls.get(key) if key else None
+        if call:  # before the provider can register it: a recovery finds the call by its store task
+            self.budget.note(call, store_task=store_task)
         proc = self.wrapper(["bash", str(SCRIPTS / "spawn_worker.sh"), "--run", self.rid, store_task,
                              f"path:{worktree}", title, self.args.agent], env=env)
         disp = first_run.field(proc.stdout, "DISPATCH")
         if proc.returncode != 0 or not disp:
             raise RunFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}")
         self.launched[disp] = (store_task, key)  # from here on its call is spent until settled
-        self.note_spend()
+        if call:
+            self.budget.note(call, state="launched", dispatch=disp)
         try:
             self.guard(worktree)
             self.launches[disp] = self.delivered(proc.stdout, nonce)
@@ -1190,7 +1320,6 @@ class Run:
         base = self.integration_head()
         if not all(self.hold_unit(tid) for tid in planned):  # over_budget() covered all of them
             raise RunFailed("a planned unit's worst case no longer fits the cap at wave open")
-        self.note_spend()
         store_ids = [self.units[t]["store_task"] for t in planned]
         self.emit("wave.open", source_ref=f"wip_curve.py:wave/{k}",
                   data={"wave": k, "builders": self.cond["builders"], "reviewers": self.cond["reviewers"],
@@ -1240,7 +1369,7 @@ class Run:
                 done.append(tid)
         for tid in planned:
             if tid not in done:
-                self.held.pop(f"{tid}:reviewer", None)  # no review: its hold is released unspent
+                self.release_hold(f"{tid}:reviewer")  # no review: its hold goes back unspent
         # Done units wait for a reviewer, and board the merge queue, in worker_done order.
         done.sort(key=lambda tid: (attempts[tid]["done_at"], tid))
         self.review(done)
@@ -1458,7 +1587,7 @@ class Run:
         self.sb = sb
         self.commands = []
         self.dir.mkdir(parents=True)
-        self.note_spend()
+        self.budget.start_run(self.rid, sb.dir)  # where a recovery finds this run's streams
         self.record.update(started_at=now(), sandbox=str(sb.dir))
         started = time.monotonic()
         self.deadline = started + self.wall_limit
@@ -1522,13 +1651,12 @@ class Run:
             self.park(tid, f"stopped-{reason}", head)
 
     def settle_launched(self) -> list[str]:
-        """Every launched dispatch whose usage was never read is read now, after its worker was
-        stopped; one with no reported cost is charged its full reservation (PR #653 review: an
-        interrupted call is spent). Holds of calls that never launched are released unspent."""
+        """Reconcile every call of this run, after its workers were stopped. A launched call whose
+        usage was never read is read now (no reported cost: its full reservation, PR #653 review).
+        A call the signal interrupted mid-spawn is found in the STORE by its task (#652's class)
+        and charged the same way. A call that never launched is released. Each call is charged
+        exactly once: the ledger reconciles a call already charged."""
         settled = []
-        # Every dispatch the STORE holds for this run, not only the ones whose id the runner read:
-        # a signal can land inside spawn_worker.sh after the provider registered the dispatch and
-        # before DISPATCH= reached the runner (#652's class). Such a call is charged too.
         try:
             conn = sqlite3.connect(f"file:{self.sb.state_db}?mode=ro", uri=True)
             try:
@@ -1536,19 +1664,35 @@ class Run:
                                     (self.rid,)).fetchall()
             finally:
                 conn.close()
+            store_read = True
         except (sqlite3.Error, AttributeError):
-            rows = []
+            rows, store_read = [], False  # unreadable: a call mid-spawn may have run, so it is charged
+        mine = Budget.of_run(self.budget.calls(), self.rid)
+        by_dispatch = {v["dispatch"]: c for c, v in mine.items() if v.get("dispatch")}
+        launching = {v.get("store_task"): c for c, v in mine.items()
+                     if v.get("state") == "launching" and v.get("store_task")}
         for disp, store_task in rows:
+            if disp not in by_dispatch and store_task in launching:
+                call = launching.pop(store_task)
+                self.budget.note(call, state="launched", dispatch=disp)
+                by_dispatch[disp] = call
             self.launched.setdefault(disp, (store_task, None))
         for disp, (store_task, key) in sorted(self.launched.items()):
             if disp not in self.usage_seen:
+                call = by_dispatch.get(disp)
                 try:
-                    self.ingest_usage(disp, store_task, key)
+                    self.ingest_usage(disp, store_task, key, call=call)
                 except (RunFailed, OSError, sqlite3.Error):
                     self.usage_seen.add(disp)
-                    self.settle(key, None)
+                    self.settle(key, None, dispatch=disp, call=call)
                 settled.append(disp)
+        for call, v in Budget.of_run(self.budget.calls(), self.rid).items():
+            if v.get("state") == "held" or (v.get("state") == "launching" and store_read):
+                self.budget.release(call, launched_too=True)  # never launched, or never registered: never ran
+            elif v.get("state") == "launching":
+                self.budget.charge(call, Decimal(v["usd"]), False)
         self.held.clear()
+        self.calls.clear()
         return settled
 
     def finish(self):
@@ -1566,10 +1710,11 @@ class Run:
         rec["launched_models"] = self.launched_models
         rec["launches"] = self.launches
         rec["commands"] = self.commands
-        rec["cost"] = {"cap_usd": str(self.cap), "spent_before_usd": str(self.spent_before),
-                       "observed_usd": str(self.observed), "reserved_unobserved_usd": str(self.reserved),
-                       "reservation_per_dispatch_usd": str(self.reservation),
-                       "per_call_limit": PER_CALL_LIMIT}
+        mine = Budget.of_run(self.budget.calls(), self.rid)  # this run's calls, bound with its sources
+        (self.dir / "calls.json").write_text(json.dumps(mine, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        rec["cost"] = {"cap_usd": str(self.cap), **self.run_cost(), "ledger": Budget.NAME,
+                       "experiment_committed_usd": str(self.budget.total()),
+                       "reservation_per_dispatch_usd": str(self.reservation), "per_call_limit": PER_CALL_LIMIT}
         try:
             if sb.target.is_dir():
                 head = git(sb.target, "rev-parse", f"refs/heads/{self.integration}", env=sb.env, check=False)
@@ -1601,7 +1746,6 @@ class Run:
             (self.dir / "run-report.md").write_text(header + proc.stdout, encoding="utf-8")
             _events, _sha, head = events.read_log(self.log)
             rec["events_head"] = head
-        self.note_spend()
         rec["sources"] = {str(p.relative_to(self.dir)): sha256_file(p) for p in sorted(self.dir.rglob("*"))
                           if p.is_file() and p.name != "run.json"}
         (self.dir / "run.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1616,29 +1760,75 @@ def runs_in(results: Path) -> list[Path]:
 
 def lost_in(results: Path) -> list[Path]:
     """Run directories with no run.json: a runner killed outright (SIGKILL, power loss) before it
-    could settle. Their spend ledger still counts, and they are reported as lost."""
+    could settle. Their calls in the shared ledger still count, and they are reported as lost."""
     root = Path(results) / "runs"
     return sorted(p for p in root.iterdir() if p.is_dir() and not (p / "run.json").is_file()) if root.is_dir() else []
 
 
-def ledger_of(run_dir: Path) -> dict:
-    try:
-        return json.loads((Path(run_dir) / "spend.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
 def spent_in(results: Path) -> Decimal:
-    """Everything spent in a results directory. A settled run counts what its run.json charged; a
-    lost one counts its last ledger's COMMITTED spend (holds included: a call it launched may have
-    spent all of its reservation), never 0 (adversarial pass)."""
-    total = Decimal(0)
-    for d in runs_in(results):
-        cost = json.loads((d / "run.json").read_text(encoding="utf-8")).get("cost") or {}
-        total += money(cost.get("observed_usd", "0")) + money(cost.get("reserved_unobserved_usd", "0"))
-    for d in lost_in(results):
-        total += money(ledger_of(d).get("committed_usd", "0"))
-    return total
+    """Everything committed in a results directory: the shared ledger's total, every call counted
+    once (its charge, or its hold while it may still spend). A lost run's live calls count at
+    their holds until a recovery reconciles them; nothing is counted twice."""
+    if not (Path(results) / Budget.NAME).is_file():
+        return Decimal(0)
+    return Budget(results).total()
+
+
+def last_activity(calls: dict, run: str):
+    """The last time the ledger heard from a run (a lost run's end, for the cooldown)."""
+    times = [v.get("at") for v in calls.values() if v.get("run") == run and v.get("at")]
+    return max(times) if times else None
+
+
+def recover(results: Path) -> list[str]:
+    """Reconcile every call a LOST run (killed outright: no run.json) left live, under the results
+    lock, so the ledger says what was spent instead of holding it forever (PR #653 review). Its
+    workers are stopped first. A launched call is charged what its stream reports, or its full
+    hold; a launching call is charged its hold if its sandbox's store registered it (it may have
+    run) and released if not; a held call is released. Each is reconciled once."""
+    budget = Budget(results)
+    lost = {d.name for d in lost_in(results)}
+    calls = budget.calls()
+    claimed = {v["dispatch"] for v in calls.values() if v.get("dispatch")}  # a dispatch is one call's
+    sandboxes = {v["run"]: Path(v["sandbox"]) for v in calls.values() if v.get("state") == "run" and v.get("sandbox")}
+    settled = []
+    for run in sorted(lost):
+        live = {c: v for c, v in Budget.of_run(calls, run).items() if v.get("state") in LIVE_CALL}
+        if not live:
+            continue
+        sandbox = sandboxes.get(run)
+        db = sandbox / "state" / "runtime.db" if sandbox else None
+        if sandbox and (sandbox / "target").is_dir():  # its own store and scrubbed env, setsid, SHELL=/bin/sh
+            first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"))
+        rows, store_read = {}, False
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                for row in conn.execute("SELECT * FROM dispatches WHERE run_id = ?", (run,)):
+                    rows[row["dispatch_id"]] = row
+            finally:
+                conn.close()
+            store_read = True
+        except (sqlite3.Error, TypeError):
+            pass  # unreadable or gone: a call mid-spawn may have run, so it is charged its hold
+        for call, v in sorted(live.items()):
+            disp = v.get("dispatch")
+            if not disp and v.get("state") == "launching":  # killed mid-spawn: did the store register it?
+                disp = next((d for d, r in rows.items() if r["task_id"] == v.get("store_task") and d not in claimed),
+                            None)
+                if disp:
+                    claimed.add(disp)
+                    budget.note(call, state="launched", dispatch=disp)
+            if v.get("state") == "held" or (v.get("state") == "launching" and not disp and store_read):
+                budget.release(call, launched_too=True)
+                continue
+            row = rows.get(disp)
+            stream = Path(row["lane_dir"]) / "events.jsonl" if row is not None and row["lane_dir"] else None
+            cost = Run.stream_cost(stream) if stream and stream.is_file() else None
+            budget.charge(call, cost if cost is not None else Decimal(v["usd"]), cost is not None)
+            settled.append(call)
+    return settled
 
 
 def describe(values: list[Fraction], places=2) -> dict:
@@ -2158,9 +2348,10 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
                 "builders": entry["condition"]["builders"] if entry else None,
                 "reviewers": entry["condition"]["reviewers"] if entry else None, "tier": None,
                 "status": "lost", "stop_reason": None, "error": None, "metrics": None, "compliant": False,
-                "spend_ledger": ledger_of(d),
-                "noncompliance": ["the runner was killed before it wrote run.json; its last spend ledger "
-                                  "is counted against the cap"]}
+                "spend_committed_usd": str(_committed(Budget.of_run(Budget(results).calls(), d.name)))
+                if (Path(results) / Budget.NAME).is_file() else None,
+                "noncompliance": ["the runner was killed before it wrote run.json; its calls in the shared "
+                                  "ledger count against the cap until a recovery reconciles them"]}
         lost["registered"] = registered_run(lost)
         runs.append(lost)
     order = {e["run_id"]: e["position"] for e in sched}
@@ -2475,6 +2666,9 @@ def cmd_run(args) -> int:
 
 
 def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, registered) -> int:
+    recovered = recover(results)  # the lock is ours: a run directory without run.json is lost
+    if recovered:
+        print(f"wip-curve: reconciled {len(recovered)} call(s) a lost run left live", file=sys.stderr)
     if args.workdir:
         check_writable(args.workdir, "--workdir", registered)
     sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
@@ -2542,8 +2736,9 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
                   f"wave's worst case {worst} exceeds the cap {args.cost_cap}", file=sys.stderr)
             return EXIT_INCOMPLETE
         if args.worker == "live":
+            calls = Budget(results).calls() if (results / Budget.NAME).is_file() else {}
             ends = [json.loads((d / "run.json").read_text(encoding="utf-8")).get("finished_at")
-                    for d in runs_in(results)] + [ledger_of(d).get("updated_at") for d in lost_in(results)]
+                    for d in runs_in(results)] + [last_activity(calls, d.name) for d in lost_in(results)]
             ends = [datetime.fromisoformat(e) for e in ends if e]
             if ends:
                 since = (datetime.now(timezone.utc) - max(ends)).total_seconds()
@@ -2561,7 +2756,7 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
             sb.env.pop(var, None)
         if args.worker == "live":
             sb.env[MODEL_ENV[args.agent]] = args.model
-        run = Run(args, prereg, taskset, (path, prereg_sha, taskset_path), entry, results, spent)
+        run = Run(args, prereg, taskset, (path, prereg_sha, taskset_path), entry, results)
         binary = first_run.HARNESS_BINARIES.get(args.agent, args.agent)
         found = shutil.which(binary, path=sb.env["PATH"])
         if args.worker == "live" and (not found or Path(found).resolve().is_relative_to(workdir.resolve())):
@@ -2594,7 +2789,8 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
             shutil.rmtree(workdir, ignore_errors=True)
         print(f"WIP_RUN={record['run_id']} STATUS={record['status']}"
               + (f" STOP={record['stop_reason']}" if record.get("stop_reason") else "")
-              + f" TIER={record['tier']} SPENT_USD={run.observed + run.reserved}"
+              + f" TIER={record['tier']} SPENT_USD="
+              f"{Decimal(record['cost']['observed_usd']) + Decimal(record['cost']['reserved_unobserved_usd'])}"
               + (f" ERROR={record['error'][:200]}" if record.get("error") else ""))
         if record["status"] == "failed":
             rc = EXIT_INCOMPLETE

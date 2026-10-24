@@ -186,20 +186,28 @@ before retries (a builder and a reviewer per task). The runner never picks the s
   starts, and the unit is parked `stopped-cost-cap`.
 - Spend is read from the harness's own result lines through `events.py ingest-usage`. A dispatch
   whose cost is not observed is charged the full reservation and is never treated as free.
-- The cap covers every run in one results directory. One runner at a time holds the directory's
-  lock, from its first check through its cleanup. A second `run` on the same directory is refused,
-  and so are `report` and `verify`, which never read a run in progress.
+- The cap covers every run in one results directory, through one ledger, `budget.jsonl`. Every
+  paid call is in it under a stable identity (`<run>/<task>/a<attempt>/<role>`), as held,
+  launching, launched, charged or released. Each hold and admission reads and appends it under an
+  exclusive lock, so no two dispatches, from any run or process, spend the same budget. A call is
+  charged once: settling it again, or recovering it after a crash, reconciles it and adds nothing.
+  A run's cost is read back from its own calls, which it binds into its record as `calls.json`.
+- One runner at a time holds the results directory's lock, from its first check through its
+  cleanup. A second `run` on the same directory is refused, and so are `report` and `verify`,
+  which never read a run in progress.
 - An interrupted run (SIGTERM, SIGHUP or Ctrl-C) first kills every child process group it
   started and stops every worker. It then charges every dispatch the store holds for the run whose
   usage was never read, including one whose launch the signal interrupted before the runner saw
   its id. Each is charged what its stream reports, or its full reservation if the stream reports
   no cost. Only then does it exit 128+N, with the run retained as `interrupted`. A later run
   therefore cannot spend that budget again.
-- A runner killed outright (SIGKILL, power loss) writes no `run.json`. While it runs, though, it
-  rewrites a spend ledger, `spend.json`, at its start, at every launch and at every settlement.
-  A run directory without `run.json` is reported as `lost`. Its last ledger's committed spend,
-  holds included, is counted against the cap, and its time is counted for the cooldown. Such a
-  run may be re-run once.
+- A runner killed outright (SIGKILL, power loss) writes no `run.json`. A run directory without
+  it is reported as `lost`, and its calls still count against the cap at their holds. The next
+  `run` reconciles them before anything else, under the lock. It stops the lost run's workers,
+  then charges each launched call what its stream reports, or its full hold. A call killed
+  mid-launch is charged its hold if the store registered it, or if the store cannot be read, and
+  released otherwise. A call that never launched is released. The ledger's last record of the run
+  counts as its end for the cooldown. Such a run may be re-run once.
 
 No per-call limit reaches the harness: the posix launch table
 (`runtime/providers/base.py`) passes no budget flag to any harness. A dispatch that is already

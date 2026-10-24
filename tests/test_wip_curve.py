@@ -723,6 +723,9 @@ _PLANT_MARKER = Path(tempfile.gettempdir()) / f"wip-curve-plant-{os.getpid()}.lo
 B1_GATE = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
     {"T5": {"builder": ["plant"]}, "_plant": str(_PLANT_MARKER), "T3": {"builder": ["regress"]}, "_regress": {"T3": [
         {"file": "stocklib/ledger.py", "replace": "        return list(self._history)", "with": ["        return []"]}]}})))
+# b3r1-rep1's first wave is T5, T2, T6: T6's builder takes 20 s longer, each review 3 s.
+B3_STAGGERED = ("wip1-b3r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
+    {"_sleep_task": {"T6": {"builder": 20}}, "_sleep": {"reviewer": 3}})))
 B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
                                    "--inert-script", json.dumps({"_cost": {"builder": "0.40"}})))
 
@@ -1241,6 +1244,46 @@ class TestOneSharedLedger(Tmp):
         outs = [p.communicate(timeout=120) for p in procs]
         self.assertEqual(sorted(o.strip() for o, _e in outs), ["False"] * 4 + ["True"] * 4, outs)
         self.assertEqual(wip.Budget(self.tmp / "results").total(), Decimal("2.00"))
+
+
+class TestReviewsStartAsBuildersFinish(DryRun):
+    """PR #653 review (Bu0): reviewers=<n> is the number of reviews in flight, and a done unit
+    waits in worker_done order for a free reviewer slot (reviewer_availability), never for the
+    wave's slowest builder. Two quick units also contend for the one reviewer."""
+
+    RUN, ARGS = B3_STAGGERED
+
+    def first_wave(self):
+        events = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+        tid_of = {u["store_task"]: t for t, u in self.record["units"].items()}
+        def at(event):
+            return datetime.fromisoformat(event["observed_at"])
+
+        done, started, verdicts = {}, {}, {}
+        for e in events:
+            tid = tid_of.get(e.get("task"))
+            if e["kind"] == "task.done" and tid:
+                done.setdefault(tid, at(e))
+            elif e["kind"] == "review.started" and tid:
+                started.setdefault(tid, (at(e), e["dispatch"]))
+            elif e["kind"] == "review.verdict":
+                verdicts[e["dispatch"]] = at(e)
+        return done, started, verdicts
+
+    def test_a_done_unit_is_reviewed_while_a_slower_builder_runs(self):
+        done, started, _verdicts = self.first_wave()
+        for tid in ("T5", "T2"):
+            self.assertLess(started[tid][0], done["T6"],
+                            f"{tid}'s review waited for T6's builder although the reviewer was free")
+
+    def test_the_reviewer_cap_holds_and_arrival_order_is_kept(self):
+        done, started, verdicts = self.first_wave()
+        spans = sorted((s, verdicts[d]) for s, d in started.values())
+        for (_s1, end), (s2, _e2) in zip(spans, spans[1:], strict=False):
+            self.assertGreaterEqual(s2, end, "two reviews were in flight with reviewers=1")
+        wave1 = ["T5", "T2", "T6"]
+        self.assertEqual(sorted(wave1, key=lambda t: started[t][0]), sorted(wave1, key=lambda t: done[t]),
+                         "reviews did not start in worker_done order")
 
 
 class TestExactCapBoundary(DryRun):

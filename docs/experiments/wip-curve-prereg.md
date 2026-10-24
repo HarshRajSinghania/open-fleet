@@ -104,7 +104,8 @@ planted `diff.external`, driver, fsmonitor or hook therefore runs only in builde
 
 A wave dispatches at most `builders` units, and carried (bounced) units go first.
 `reviewers=<n>` is the number of build-blind review units in flight at once. A done unit waits
-for a free reviewer in worker_done order. The reviewer rubric is fixed: the reviewer receives the
+for a free reviewer in worker_done order, and only for that. Its review starts as soon as a slot
+is free, while slower builders of its wave are still running. The reviewer rubric is fixed: the reviewer receives the
 task statement and the diff, and answers `approve` or `changes` on one `WIP-REVIEW` line. The exact
 text each builder and reviewer receives is registered in the JSON's `contracts`, not written in
 the runner, so the registration's digest pins it. The line

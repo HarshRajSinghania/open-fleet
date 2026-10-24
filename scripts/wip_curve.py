@@ -845,7 +845,8 @@ if role is None:
 plan = cfg["script"].get(task, {}).get(role, [])
 action = plan[attempt - 1] if attempt <= len(plan) else ("solve" if role == "builder" else "approve")
 (here / f"{dispatch or 'unknown'}.pid").write_text(str(os.getpid()), encoding="utf-8")
-time.sleep(float(cfg["script"].get("_sleep", {}).get(role, 0)))  # a call still running (tests)
+pause = cfg["script"].get("_sleep", {}).get(role, 0)  # a call still running (tests); per task below
+time.sleep(float(cfg["script"].get("_sleep_task", {}).get(task, {}).get(role, pause)))
 cost = cfg["script"].get("_cost", {}).get(role, cfg["cost_usd"])  # a fake harness that reports costs
 
 
@@ -1232,23 +1233,6 @@ class Run:
         out = self.wrapper(first_run.py("worker_ops.py", "show", "--dispatch", dispatch)).stdout
         return first_run.field(out, "STATE")
 
-    def wait(self, dispatches, timeout):
-        """{dispatch: settled state}; one still live at the deadline is stopped (`timeout`)."""
-        deadline = time.monotonic() + timeout
-        pending, states = set(dispatches), {}
-        while pending and time.monotonic() < deadline:
-            for d in sorted(pending):
-                state = self.state_of(d)
-                if state and state not in first_run.LIVE_STATES:
-                    states[d] = state
-                    pending.discard(d)
-            if pending:
-                time.sleep(0.3)
-        for d in sorted(pending):
-            self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", d))
-            states[d] = "timeout"
-        return states
-
     def transcript_answer(self, dispatch):
         proc = self.wrapper(first_run.py("orca_cli.py", "orchestration", "worker-read", "--dispatch", dispatch,
                                          "--limit", "100000", "--json"))
@@ -1316,7 +1300,9 @@ class Run:
 
     # --- one wave ---------------------------------------------------------------------------
     def wave(self, k, planned):
-        """Build, review, verify and merge the planned tasks; returns the tasks to carry."""
+        """Build, review, verify and merge the planned tasks; returns the tasks to carry. Builders
+        and reviewers run together (PR #653 review): a unit joins the review queue as its builder
+        settles, and a free reviewer slot takes the earliest worker_done (reviewer_availability)."""
         base = self.integration_head()
         if not all(self.hold_unit(tid) for tid in planned):  # over_budget() covered all of them
             raise RunFailed("a planned unit's worst case no longer fits the cap at wave open")
@@ -1345,34 +1331,17 @@ class Run:
             unit["attempts"].append(attempt)
             attempts[tid] = attempt
         # A builder is waited for until its own timeout or the run's deadline, whichever is first.
-        states = self.wait([a["dispatch"] for a in attempts.values()], min(self.timeout_builder, self.remaining()))
-        self.remaining()  # a wait cut short by the deadline halts the run
-        for tid, a in attempts.items():  # measured before any reviewer is admitted
-            self.ingest_usage(a["dispatch"], self.units[tid]["store_task"], f"{tid}:builder")
-        self.ingest_state()
-        done = []
-        for tid, a in attempts.items():
-            state = states[a["dispatch"]]
-            head = git_out(self.sb.target, "rev-parse", a["branch"], env=self.sb.env)
-            row = self.dispatch_row(a["dispatch"])
-            outcome, a["done_at"] = self.worker_done(a["dispatch"])
-            a["state"] = state
-            if state == "timeout" and self.halt == "time-limit":
-                a["outcome"] = "stopped-time-limit"  # stopped at the run's deadline, not a builder failure
-            elif state != "completed" or outcome != "succeeded" or head == base:
-                a["outcome"] = "builder-failed" if state != "timeout" else "builder-timeout"
-            elif row is not None and row["head_sha"] and row["head_sha"] != head:
-                a["outcome"] = "builder-claim-mismatch"  # the store's head is not what git holds
-            else:
-                a["head"] = head
-                a["tree"] = git_out(self.sb.target, "rev-parse", f"{head}^{{tree}}", env=self.sb.env)
-                done.append(tid)
-        for tid in planned:
-            if tid not in done:
-                self.release_hold(f"{tid}:reviewer")  # no review: its hold goes back unspent
-        # Done units wait for a reviewer, and board the merge queue, in worker_done order.
-        done.sort(key=lambda tid: (attempts[tid]["done_at"], tid))
-        self.review(done)
+        build_deadline = time.monotonic() + min(self.timeout_builder, self.remaining())
+        building = {a["dispatch"]: tid for tid, a in attempts.items()}
+        queue, live, done = [], {}, []
+        while building or queue or live:
+            moved = self.poll_builders(building, attempts, base, build_deadline, queue, done)
+            if self.review_step(queue, live) or moved:
+                continue
+            time.sleep(0.3)
+        self.remaining()  # a wave cut short by the deadline halts the run
+        # Done units board the merge queue in worker_done order.
+        done.sort(key=lambda tid: (attempts[tid]["done_at"] or "", tid))
         passed = [tid for tid in done if attempts[tid]["outcome"] is None and self.remaining() > 0
                   and self.oracle(tid, attempts[tid])]
         if self.remaining() > 0:
@@ -1398,50 +1367,95 @@ class Run:
                 carry.append(tid)
         return carry
 
-    def review(self, done):
-        """At most `reviewers` review units in flight; done units wait in worker_done order."""
-        queue = list(done)
-        live = {}  # reviewer dispatch -> (task id, nonce, attempt)
-        while queue or live:
-            while queue and len(live) < self.cond["reviewers"]:
-                tid = queue.pop(0)
-                a = self.units[tid]["attempts"][-1]
-                if not self.admit(f"{tid}:reviewer"):
-                    a["outcome"] = f"stopped-{self.halt}"  # refused before it starts, never detected after
-                    continue
-                nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
-                n = len(self.units[tid]["reviews"]) + 1
-                wt = self.sb.dir / "rv" / f"{tid.lower()}-a{a['n']}-r{n}"
-                git(self.sb.target, "worktree", "add", "-q", "--detach", str(wt), a["head"], env=self.sb.env)
-                review_dir = wt / ".wip-review" / tid
-                review_dir.mkdir(parents=True)
-                diff = git(self.sb.target, "diff", a["base"], a["head"], env=self.sb.env).stdout
-                (review_dir / "change.diff").write_bytes(diff)
-                t = self.tasks[tid]
-                (review_dir / "task.md").write_text(f"# {tid}: {t['title']}\n\n{t['statement']}\n", encoding="utf-8")
-                task_rel, diff_rel = f".wip-review/{tid}/task.md", f".wip-review/{tid}/change.diff"
-                spec = self.review_spec(tid, nonce, a["base"], a["head"], task_rel, diff_rel)
-                rtask = self.create_task(spec, f"wip-review-{tid.lower()}-a{a['n']}")
-                disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro", f"{tid}:reviewer", nonce)
-                self.emit("review.started", source_ref=f"wip_curve.py:review/{disp}", task=self.units[tid]["store_task"],
-                          dispatch=disp, data={"head_sha": a["head"]})
-                review = {"dispatch": disp, "store_task": rtask, "nonce": nonce, "head": a["head"],
-                          "attempt": a["n"], "verdict": None}
-                self.units[tid]["reviews"].append(review)
-                live[disp] = (tid, review, time.monotonic())
-            settled = {}
-            for disp, (_tid, _review, since) in sorted(live.items()):
-                state = self.state_of(disp)
-                if state and state not in first_run.LIVE_STATES:
-                    settled[disp] = state
-                elif time.monotonic() - since > self.timeout_reviewer or self.remaining() <= 0:
-                    self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
-                    settled[disp] = "timeout"  # its own timeout, or the run's deadline
-            for disp, state in sorted(settled.items()):
-                tid, review, _since = live.pop(disp)
-                self.finish_review(tid, review, state)
-            if live and not settled:
-                time.sleep(0.3)
+    def poll_builders(self, building, attempts, base, deadline, queue, done) -> bool:
+        """Settle every builder that finished, timed out, or reached the run's deadline: measure it
+        (before any reviewer is admitted against its spend), then queue it for review in
+        worker_done order, or release its reviewer's hold. True when any builder settled."""
+        settled = {}
+        for disp, tid in sorted(building.items()):
+            state = self.state_of(disp)
+            if state and state not in first_run.LIVE_STATES:
+                settled[disp] = state
+            elif self.remaining() <= 0 or time.monotonic() >= deadline:
+                self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
+                settled[disp] = "timeout"  # its own timeout, or the run's deadline
+        if not settled:
+            return False
+        for disp in sorted(settled):
+            tid = building[disp]
+            self.ingest_usage(disp, self.units[tid]["store_task"], f"{tid}:builder")
+        self.ingest_state()
+        for disp, state in sorted(settled.items()):
+            tid = building.pop(disp)
+            if self.classify(tid, attempts[tid], state, base):
+                done.append(tid)
+                queue.append(tid)
+            else:
+                self.release_hold(f"{tid}:reviewer")  # no review: its hold goes back unspent
+        queue.sort(key=lambda tid: (attempts[tid]["done_at"] or "", tid))  # arrival (worker_done) order
+        return True
+
+    def classify(self, tid, a, state, base) -> bool:
+        """A settled builder's outcome; True when its unit is done and goes to review."""
+        head = git_out(self.sb.target, "rev-parse", a["branch"], env=self.sb.env)
+        row = self.dispatch_row(a["dispatch"])
+        outcome, a["done_at"] = self.worker_done(a["dispatch"])
+        a["state"] = state
+        if state == "timeout" and self.halt == "time-limit":
+            a["outcome"] = "stopped-time-limit"  # stopped at the run's deadline, not a builder failure
+        elif state != "completed" or outcome != "succeeded" or head == base:
+            a["outcome"] = "builder-failed" if state != "timeout" else "builder-timeout"
+        elif row is not None and row["head_sha"] and row["head_sha"] != head:
+            a["outcome"] = "builder-claim-mismatch"  # the store's head is not what git holds
+        else:
+            a["head"] = head
+            a["tree"] = git_out(self.sb.target, "rev-parse", f"{head}^{{tree}}", env=self.sb.env)
+            return True
+        return False
+
+    def review_step(self, queue, live) -> bool:
+        """Start reviews while fewer than `reviewers` are in flight, earliest worker_done first,
+        then settle the reviews that finished. True when anything started or settled."""
+        started = False
+        while queue and len(live) < self.cond["reviewers"]:
+            started = True
+            tid = queue.pop(0)
+            a = self.units[tid]["attempts"][-1]
+            if not self.admit(f"{tid}:reviewer"):
+                a["outcome"] = f"stopped-{self.halt}"  # refused before it starts, never detected after
+                continue
+            nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
+            n = len(self.units[tid]["reviews"]) + 1
+            wt = self.sb.dir / "rv" / f"{tid.lower()}-a{a['n']}-r{n}"
+            git(self.sb.target, "worktree", "add", "-q", "--detach", str(wt), a["head"], env=self.sb.env)
+            review_dir = wt / ".wip-review" / tid
+            review_dir.mkdir(parents=True)
+            diff = git(self.sb.target, "diff", a["base"], a["head"], env=self.sb.env).stdout
+            (review_dir / "change.diff").write_bytes(diff)
+            t = self.tasks[tid]
+            (review_dir / "task.md").write_text(f"# {tid}: {t['title']}\n\n{t['statement']}\n", encoding="utf-8")
+            task_rel, diff_rel = f".wip-review/{tid}/task.md", f".wip-review/{tid}/change.diff"
+            spec = self.review_spec(tid, nonce, a["base"], a["head"], task_rel, diff_rel)
+            rtask = self.create_task(spec, f"wip-review-{tid.lower()}-a{a['n']}")
+            disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro", f"{tid}:reviewer", nonce)
+            self.emit("review.started", source_ref=f"wip_curve.py:review/{disp}", task=self.units[tid]["store_task"],
+                      dispatch=disp, data={"head_sha": a["head"]})
+            review = {"dispatch": disp, "store_task": rtask, "nonce": nonce, "head": a["head"],
+                      "attempt": a["n"], "verdict": None}
+            self.units[tid]["reviews"].append(review)
+            live[disp] = (tid, review, time.monotonic())
+        settled = {}
+        for disp, (_tid, _review, since) in sorted(live.items()):
+            state = self.state_of(disp)
+            if state and state not in first_run.LIVE_STATES:
+                settled[disp] = state
+            elif time.monotonic() - since > self.timeout_reviewer or self.remaining() <= 0:
+                self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
+                settled[disp] = "timeout"  # its own timeout, or the run's deadline
+        for disp, state in sorted(settled.items()):
+            tid, review, _since = live.pop(disp)
+            self.finish_review(tid, review, state)
+        return started or bool(settled)
 
     def finish_review(self, tid, review, state):
         a = self.units[tid]["attempts"][-1]

@@ -26,8 +26,8 @@ on it. Its tests are in [`tests/test_wip_curve.py`](../../tests/test_wip_curve.p
 | Reporter: throughput, verification latency, rework, freshness, conflicts, tokens and cost with uncertainty, and every failed, stopped or parked run | **Implemented.** The reporter derives these from each run's [events.py](../runtime-scripts.md#eventspy) record and the merge queue's receipts. |
 | Verification: independent recomputation, git and review authority for every terminal outcome, and detection of an altered metric row | **Implemented** and pinned by tamper tests. |
 | Dry run of the whole pipeline with an inert stand-in | **Implemented.** All 12 scheduled runs complete and verify (fixture tier: no evidence). |
-| Cost cap | **PENDING OWNER AUTHORISATION.** The proposed value is 150.00 USD. The runner refuses to start without an explicit cap. |
-| At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **REMAINING.** Needs model spend that the owner authorises (see [Running it](#running-it)). |
+| Cost cap | **AUTHORISED.** The owner authorised 150.00 USD on 2026-10-24, billed to their Claude subscription. The runner still refuses to start without an explicit cap. |
+| At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **REMAINING.** The owner authorised the spend on 2026-10-24; no live run is retained yet (see [Running it](#running-it)). |
 | A published recommendation to keep or change the caps, with evidence links | **REMAINING.** It follows the live runs. A cap change is a separate human-reviewed policy change. |
 
 Until the live runs are retained, the caps in `attention-budget.md` stay ASSERTED.
@@ -186,13 +186,21 @@ PYTHONPATH), and never with the coordinator's environment, where a harness API k
 
 ## Cost cap
 
-`cost.cap_usd` is **PENDING OWNER AUTHORISATION**. The proposal is 150.00 USD, with a 2.00 USD
-reservation per dispatch, which is also pending. Twelve runs of six tasks need 144 dispatches
-before retries (a builder and a reviewer per task). The runner never picks the spend:
+`cost.cap_usd` is **150.00 USD, authorised** by the owner, Ravindra Kumar (@ravidsrk), on
+2026-10-24, with a 2.00 USD reservation per dispatch (`reservation_status: AUTHORISED`). The
+registration records who authorised it, when, and the instruction itself (`authorised_by`,
+`authorised_on`, `authorised_via`); `check-prereg` refuses an amount without them. Twelve runs of
+six tasks need 144 dispatches before retries (a builder and a reviewer per task).
+
+Billing is the owner's Claude subscription, through `CLAUDE_CODE_OAUTH_TOKEN` (`cost.billing`).
+The USD cap therefore bounds the `total_cost_usd` the harness reports, which is notional on a
+subscription. A rate-limit window may fail a cell; such a run counts as failed or parked, never
+as dropped. The live runs use the owner's isolation wrapper, outside the repository, which passes
+`claude --max-budget-usd 1.60` on each call. The runner never picks the spend:
 
 - `run` refuses to start without `--cost-cap-usd`. A live run also refuses without
-  `--reservation-usd` (the reservation is never taken from the pending registration), refuses a
-  zero cap or reservation, and refuses to run without `--model`.
+  `--reservation-usd` (neither is ever taken from the registration), refuses a zero cap or
+  reservation, and refuses to run without `--model`.
 - Before a unit's builder starts, the runner holds the worst case of every call the unit makes:
   its builder and its reviewer, each at the reservation. No grader calls a model.
 - Each dispatch starts only while measured spend, the charges for unobserved dispatches and every
@@ -338,7 +346,7 @@ changes (T1), so the dry run exercises rework as well as conflicts and closes.
 `--inert-script` and `--inert-cost-usd` change that script and the synthetic cost the stand-in
 reports. The synthetic cost is not a spend. It lets the cost cap be exercised.
 
-**Live run.** This needs the owner's authorisation, because it spends:
+**Live run.** This spends; the owner authorised the cap on 2026-10-24 (see [Cost cap](#cost-cap)):
 
 ```bash
 python3 scripts/wip_curve.py run --results <dir> --worker live --agent claude \

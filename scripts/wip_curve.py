@@ -73,6 +73,8 @@ RUN_SCHEMA = "open-fleet.wip-curve-run/1"
 ORACLE_SCHEMA = "open-fleet.wip-curve-oracle/1"
 REPORT_SCHEMA = "open-fleet.wip-curve-report/1"
 PENDING = "PENDING OWNER AUTHORISATION"
+AUTHORISED = "AUTHORISED"  # cost.reservation_status once the owner's authorisation is recorded
+AUTHORISATION = ("authorised_by", "authorised_on", "authorised_via")
 EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE, EXIT_FAIL_CLOSED = 0, 1, 2, 3
 HOLDER = "wip-runner"
 # A reviewer may dress its verdict line in markdown (`code` or **bold**); nonce and head must match.
@@ -756,6 +758,11 @@ def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=Tru
             money(cost.get("cap_usd"))
         except Refused:
             errors.append(f"cost.cap_usd is {cost.get('cap_usd')!r}: an amount, or {PENDING!r}")
+        missing = [k for k in AUTHORISATION if not cost.get(k)]
+        if missing:  # an amount is the owner's to set, and the record says who set it, when and how
+            errors.append(f"cost.cap_usd is an amount, but the authorisation is not recorded: {missing}")
+    if cost.get("reservation_status") not in (PENDING, AUTHORISED):
+        errors.append(f"cost.reservation_status is {cost.get('reservation_status')!r}: {PENDING!r} or {AUTHORISED!r}")
     for key in ("proposed_cap_usd", "reservation_per_dispatch_usd"):
         try:
             money(cost.get(key))
@@ -2822,8 +2829,9 @@ def cmd_run(args) -> int:
         if not args.model:
             raise Refused("a live run needs --model: the pin every observed model must equal")
         if args.reservation_usd is None:
-            raise Refused("a live run needs --reservation-usd: the per-dispatch reservation is "
-                          f"{prereg['cost']['reservation_status']!r} and the runner never picks it")
+            raise Refused("a live run needs --reservation-usd: the runner never picks the per-dispatch reservation "
+                          f"(registered {prereg['cost']['reservation_per_dispatch_usd']} USD, "
+                          f"{prereg['cost']['reservation_status']})")
         if args.timeout_scale != 1.0:
             raise Refused(f"--timeout-scale {args.timeout_scale}: a live run keeps the registered dispatch "
                           "deadlines (a dry run may shorten them)")

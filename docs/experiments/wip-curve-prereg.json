@@ -4,7 +4,7 @@
   "version": 1,
   "issue": 604,
   "registered": "2026-10-24",
-  "status": "pre-registered; no live run retained; cost cap PENDING OWNER AUTHORISATION",
+  "status": "pre-registered; no live run retained; cost cap authorised (USD 150.00, 2026-10-24)",
   "question": "How does verified-CLOSED throughput, and what it costs in verification latency, rework, review freshness, merge conflicts and model spend, change with the number of concurrent builders when review capacity is held fixed?",
   "protocol": "runtime/attention-budget.md, The WIP-curve protocol: one row per dispatch wave, derived by runtime/scripts/events.py report from the run's append-only event record (#603)",
   "taskset": {
@@ -95,11 +95,15 @@
     "experiment": "run exactly the scheduled runs, then stop; no run is added, dropped or repeated because of its results; a run that fails for an infrastructure reason may be re-run once under a new attempt id and both are reported; a null or negative result completes the experiment"
   },
   "cost": {
-    "cap_usd": "PENDING OWNER AUTHORISATION",
+    "cap_usd": "150.00",
     "proposed_cap_usd": "150.00",
     "reservation_per_dispatch_usd": "2.00",
-    "reservation_status": "PENDING OWNER AUTHORISATION",
-    "enforcement": "the runner refuses to start without an explicit --cost-cap-usd and, for a live run, an explicit --reservation-usd: the reservation is pending too, so it is never taken from this file; a live run also refuses a zero cap. Before a unit's builder starts, the runner holds the worst case of every call that unit makes (its builder and its reviewer, each at the reservation; no grader calls a model). Each dispatch starts only while measured spend, the charges for unobserved dispatches (the full reservation) and every hold, its own included, stay within the cap, so a dispatch that overspent its hold refuses the next one before it starts. Spend is measured from the harness's own result lines (events.py ingest-usage). No per-call limit reaches the harness: the posix launch table passes no budget flag to any harness, so a dispatch already running can overrun its reservation; the dispatch timeouts bound that in time, not in money",
+    "reservation_status": "AUTHORISED",
+    "authorised_by": "Ravindra Kumar (@ravidsrk)",
+    "authorised_on": "2026-10-24",
+    "authorised_via": "the owner's chat instruction in the coordinating session, replying to a list that named \"#604 needs up to $150\": \"Authorising you on everything. Go ahead and complete it.\"",
+    "billing": "the owner's Claude subscription, through CLAUDE_CODE_OAUTH_TOKEN: the USD cap bounds the total_cost_usd the harness reports, which is notional on a subscription; a rate-limit window may fail a cell, and such a run counts as failed or parked, never as dropped",
+    "enforcement": "the runner refuses to start without an explicit --cost-cap-usd and, for a live run, an explicit --reservation-usd: the runner never picks the spend, so neither is taken from this file; a live run also refuses a zero cap. Before a unit's builder starts, the runner holds the worst case of every call that unit makes (its builder and its reviewer, each at the reservation; no grader calls a model). Each dispatch starts only while measured spend, the charges for unobserved dispatches (the full reservation) and every hold, its own included, stay within the cap, so a dispatch that overspent its hold refuses the next one before it starts. Spend is measured from the harness's own result lines (events.py ingest-usage). The runner passes no per-call limit: the posix launch table has no budget flag for any harness, so a dispatch already running can overrun its reservation, and the dispatch timeouts bound that in time, not in money. For the authorised live runs, the owner's isolation wrapper (outside the repository) passes claude --max-budget-usd 1.60 on each call",
     "estimate": "12 runs x 6 tasks x (builder + reviewer) is 144 dispatches before retries"
   },
   "metrics": {

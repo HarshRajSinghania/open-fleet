@@ -14,7 +14,7 @@ truth is `.claude-plugin/plugin.json`.
     at one and at two reviewers), with three repetitions in a Williams Latin-square order. Each
     run's task order is seeded, and per-run isolation starts from a seed commit that any host
     rebuilds. It names the confounds and how each is separated, the stopping rule, the metrics
-    and the decision rule. The cost cap is `PENDING OWNER AUTHORISATION`.
+    and the decision rule. The owner authorised its USD 150 cost cap on 2026-10-24.
   - The fixed task set has six tasks on a synthetic package. Two pairs of tasks edit the same
     region, so wider waves can conflict. `scripts/wip_curve.py check-prereg` shows that every
     oracle fails on the seed and passes on its reference edit.
@@ -62,8 +62,7 @@ truth is `.claude-plugin/plugin.json`.
     allowed, after an infrastructure failure. The recommendation reads compliant runs only.
   - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
     scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
-    live runs and publishing a recommendation remain open. Both need the owner to authorise the
-    spend.
+    live runs and publishing a recommendation remain open; the owner has authorised their spend.
 - **The deny-hook reader fails closed where it cannot resolve what runs** (#654, from the PR #648
   review). A file built across `>` and `>>` writes is judged whole when it is run; a name
   reassigned past the reader's cap reads as unresolved, so its use as a command takes the

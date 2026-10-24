@@ -188,13 +188,21 @@ class TestPreregistration(Tmp):
         p = runner("check-prereg")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("pre-registration OK", p.stdout)
-        self.assertIn(wip.PENDING, p.stdout)
+        self.assertIn("cost cap: 150.00", p.stdout)
 
     def test_the_spend_is_left_to_the_owner(self):
         cost = json.loads(PREREG.read_text(encoding="utf-8"))["cost"]
-        self.assertEqual(cost["cap_usd"], wip.PENDING, "the runner's author must not pick the spend")
-        self.assertEqual(cost["reservation_status"], wip.PENDING)
+        # the owner authorised USD 150 on 2026-10-24; the record says who, when and how
+        self.assertEqual((cost["cap_usd"], cost["reservation_status"]), ("150.00", wip.AUTHORISED))
+        self.assertEqual((cost["authorised_by"], cost["authorised_on"]), ("Ravindra Kumar (@ravidsrk)", "2026-10-24"))
+        self.assertIn("Authorising you on everything. Go ahead and complete it.", cost["authorised_via"])
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", cost["billing"])
         self.assertGreater(wip.money(cost["proposed_cap_usd"]), 0)
+
+    def test_an_amount_without_its_authorisation_does_not_check(self):
+        def unrecorded(prereg):
+            del prereg["cost"]["authorised_via"]
+        self.assertTrue(any("authorisation is not recorded" in e for e in self.mutated(prereg_fn=unrecorded)))
 
     def test_the_design_records_every_registered_field(self):
         prereg = json.loads(PREREG.read_text(encoding="utf-8"))

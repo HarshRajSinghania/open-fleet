@@ -38,6 +38,7 @@ CELLS = ("mission", "target", "ran_as", "binds", "outcome")
 REQUIRED = ("date", "report") + CELLS
 OPTIONAL = ("summary", "order")
 _LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")  # relative Markdown links
+_HTML_LINK_RE = re.compile(r"<[a-z][^>]*\b(?:href|src)\s*=", re.IGNORECASE)  # never checked
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
@@ -100,6 +101,9 @@ def row_errors(name, data, root=ROOT):
             errors.append(f"{where}: {cell} holds a '|' or a newline, which breaks the table")
     for cell in CELLS + ("summary",):  # the README is not re-rendered until the cut (PR #670)
         value = data.get(cell)
+        if isinstance(value, str) and _HTML_LINK_RE.search(value):
+            errors.append(f"{where}: {cell} holds an HTML link; write it as a Markdown link "
+                          "[text](path), which this check resolves")
         for href in _LINK_RE.findall(value) if isinstance(value, str) else ():
             path = href.split("#", 1)[0]
             if path and not (runs_dir(root) / path).exists():

@@ -168,6 +168,20 @@ class HtmlLinksAreRefused(unittest.TestCase):
                 self.assertTrue(any("html.md" in e and "Markdown link" in e for e in errors), errors)
 
 
+class HtmlSplitAcrossLinesIsRefused(unittest.TestCase):
+    """PR #670 review (P2): the HTML check ran per line, so `<a` on one line and its `href=` on
+    the next passed and survived assembly. The whole fragment is checked."""
+
+    def test_a_tag_split_across_lines_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "split.md").write_text('- **Change** <a\n  href="../docs/ops.md">ops</a>.\n',
+                                        encoding="utf-8")
+            errors = cl.check_fragments(d)
+            self.assertTrue(any("split.md" in e and "Markdown link" in e for e in errors), errors)
+
+
 class TheSharedSectionTakesNoNewEntry(unittest.TestCase):
     """`check --base`: the count of [Unreleased] entries may not grow on a pull request."""
 

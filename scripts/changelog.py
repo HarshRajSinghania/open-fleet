@@ -73,6 +73,9 @@ def fragment_errors(path):
         return errors + [f"{where}: empty — a fragment holds the entry text"]
     if not text.endswith("\n"):
         errors.append(f"{where}: does not end with a newline")
+    if HTML_LINK_RE.search(text):  # the whole fragment: a tag may span lines (PR #670 review)
+        errors.append(f"{where}: write each link as a Markdown link ([text](../path)); an HTML "
+                      "href or src is not rewritten for CHANGELOG.md")
     lines = text.rstrip("\n").split("\n")
     if not lines[0].startswith("- "):
         errors.append(f"{where}:1: an entry opens with '- ' at column 0")
@@ -84,9 +87,6 @@ def fragment_errors(path):
         elif not (line.startswith("- ") or line.startswith("  ")):
             errors.append(f"{where}:{n}: start the line with '- ' (a new entry) "
                           "or two spaces (a continuation)")
-        if HTML_LINK_RE.search(line):
-            errors.append(f"{where}:{n}: write the link as a Markdown link ([text](../path)); an "
-                          "HTML href or src is not rewritten for CHANGELOG.md")
         for target in LINK_RE.findall(line):
             if not target.startswith("../") or target.startswith("../../"):
                 errors.append(f"{where}:{n}: link ({target}) must be written from changelog.d/, "

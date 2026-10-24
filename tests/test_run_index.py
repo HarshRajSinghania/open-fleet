@@ -121,6 +121,21 @@ class RowLinksResolve(unittest.TestCase):
             self.assertEqual(ri.check_rows(root), [])
 
 
+class RowCellsHoldMarkdownLinksOnly(unittest.TestCase):
+    """PR #670 review (P2): RowLinksResolve checks Markdown links, so an HTML link in a cell
+    escaped it and broke the README at the cut. A row cell carries Markdown links only."""
+
+    def test_an_html_link_in_a_cell_is_refused(self):
+        report = "2026-01-02-demo-it-self-run.md"
+        for text in ('<a href="missing.md">inventory</a>', "<img src='x.png'>",
+                     '<a\nhref="missing.md">split</a>'):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = make_root(tmp)
+                write_row(root, row(report, outcome=text.replace("\n", " ")))
+                errors = ri.check_rows(root)
+                self.assertTrue(any("Markdown link" in e for e in errors), f"{text}: {errors}")
+
+
 class RowFilesAreHeldToTheTableShape(unittest.TestCase):
     def test_a_clean_fixture_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

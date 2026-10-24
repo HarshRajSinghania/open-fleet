@@ -30,9 +30,9 @@ autonomy the fleet runs.
 Today: an isolated git worktree per unit, spawn profiles (`ro`/`rw`/`danger`) with
 fail-closed env opt-ins, the fail-closed PreToolUse `deny-hook.sh` (it denies its HIGH-tier
 shapes and only ASKS on its own string-matched Never list), and `orca serve` per-terminal OS
-resource ceilings at v1.4.229
+resource ceilings since v1.4.229
 (`ORCA_TERMINAL_PROCESS_CEILING`, `ORCA_TERMINAL_MEMORY_MAX`, `ORCA_TERMINAL_MEMORY_SWAP_MAX` via
-Linux cgroup v2 / Windows Job objects, `terminal-host/containment/`). The `danger` ephemeral-VM lane
+Linux cgroup v2 / Windows Job objects, `daemon/terminal-scopes.ts`, `terminal-memory-limits.ts`). The `danger` ephemeral-VM lane
 exists but is **refused** until a prelaunch placement binding proves the worker lands in the validated sandbox.
 
 Residue: `rw` filesystem containment is a string-matched hook inside the worker's own harness, not

@@ -1,0 +1,299 @@
+# CLI command paths, derived from src/cli/specs at each tag (git grep 'path: [' | sorted, unique)
+# v1.4.229: 281 paths (the installed 1.4.229 binary's agent-context lists 281 commands) · v1.4.238: 287 paths
+
+## added at v1.4.238 (none removed)
+  linear comment delete
+  linear comment edit
+  speech openai-key clear
+  speech openai-key set
+  speech openai-key status
+  terminal set-pane-title
+
+## every path at v1.4.238
+account add
+account list
+account rm
+account select
+agent hooks off
+agent hooks on
+agent hooks prepare-codex
+agent hooks status
+agent launch
+agent-context
+artifacts delete
+artifacts list
+artifacts share
+artifacts unshare
+artifacts update
+automations create
+automations edit
+automations list
+automations remove
+automations run
+automations runs
+automations show
+back
+browser identity get
+browser identity set
+capture start
+capture stop
+check
+claude-teams
+clear
+click
+clipboard read
+clipboard write
+computer capabilities
+computer click
+computer drag
+computer get-app-state
+computer hotkey
+computer list-apps
+computer list-windows
+computer paste-text
+computer perform-secondary-action
+computer permissions
+computer press-key
+computer scroll
+computer set-value
+computer type-text
+console
+cookie delete
+cookie get
+cookie set
+dblclick
+diagnostics memory
+dialog accept
+dialog dismiss
+download
+drag
+emulator attach
+emulator ax
+emulator button
+emulator devices
+emulator exec
+emulator gesture
+emulator install
+emulator kill
+emulator launch
+emulator list
+emulator logcat
+emulator permissions
+emulator rotate
+emulator shutdown
+emulator tap
+emulator type
+environment add
+environment cancel-stop
+environment forget
+environment list
+environment recover
+environment rm
+environment rollback
+environment show
+environment status
+environment stop
+environment update
+eval
+exec
+file diff
+file open
+file open-changed
+fill
+find
+focus
+forward
+full-screenshot
+geolocation
+get
+goto
+highlight
+host list
+host name
+hover
+inserttext
+intercept disable
+intercept enable
+intercept list
+is
+jira assignee clear
+jira assignee list
+jira assignee set
+jira comment add
+jira comment list
+jira connection
+jira create
+jira issue
+jira label set
+jira label verb
+jira list
+jira priority clear
+jira priority list
+jira priority set
+jira project fields
+jira project list
+jira project types
+jira search
+jira status list
+jira status set
+keypress
+linear assignee clear
+linear assignee set
+linear attach
+linear comment add
+linear comment delete
+linear comment edit
+linear create
+linear due-date clear
+linear due-date set
+linear estimate clear
+linear estimate set
+linear issue
+linear label add
+linear label remove
+linear label set
+linear list
+linear list-issues
+linear priority clear
+linear priority set
+linear project list
+linear relation add
+linear relation remove
+linear save-issue
+linear search
+linear status set
+linear team labels
+linear team list
+linear team members
+linear team states
+mouse down
+mouse move
+mouse up
+mouse wheel
+network
+open
+open-url
+orchestration ask
+orchestration check
+orchestration coordinator-start
+orchestration coordinator-stop
+orchestration dispatch
+orchestration dispatch-show
+orchestration gate-create
+orchestration gate-list
+orchestration gate-resolve
+orchestration inbox
+orchestration reply
+orchestration request-show
+orchestration reset
+orchestration run-create
+orchestration run-current
+orchestration run-list
+orchestration run-show
+orchestration run-use
+orchestration send
+orchestration task-create
+orchestration task-list
+orchestration task-update
+orchestration worker-abandon
+orchestration worker-list
+orchestration worker-read
+orchestration worker-release
+orchestration worker-retain
+orchestration worker-show
+orchestration worker-start
+orchestration worker-stop
+pdf
+profile state exports
+profile state rollback
+project list
+project setup-clone
+project setup-create
+project setup-delete
+project setup-existing-folder
+project setup-update
+project setups
+reference add
+reference find
+reference list
+reference remove
+reload
+repo add
+repo list
+repo search-refs
+repo set
+repo set-base-ref
+repo show
+screenshot
+scroll
+scrollintoview
+search
+select
+select-all
+serve
+serve restore resume
+serve service install
+serve service status
+serve service uninstall
+set credentials
+set device
+set headers
+set media
+set offline
+skills get
+skills install
+skills installed
+skills list
+skills share
+skills update
+snapshot
+speech openai-key clear
+speech openai-key set
+speech openai-key status
+status
+storage local clear
+storage local get
+storage local set
+storage session clear
+storage session get
+storage session set
+tab close
+tab create
+tab current
+tab list
+tab profile clone
+tab profile create
+tab profile delete
+tab profile list
+tab profile set
+tab profile show
+tab profile use-default
+tab show
+tab switch
+terminal close
+terminal create
+terminal list
+terminal read
+terminal rename
+terminal send
+terminal set-pane-title
+terminal show
+terminal split
+terminal stop
+terminal switch
+terminal wait
+terminal-daemon restart
+terminal-daemon status
+type
+uncheck
+upload
+viewport
+vm recipe doctor
+wait
+worktree create
+worktree current
+worktree list
+worktree ps
+worktree rm
+worktree set
+worktree show

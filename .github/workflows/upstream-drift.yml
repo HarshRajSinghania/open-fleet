@@ -10,6 +10,14 @@ name: upstream-drift
 # labeled `upstream-drift`, so the signal reaches the maintainer through ordinary
 # issue notifications (the alert-on-failure path, #213); anything but 0 or 3 fails
 # the job, because a probe that could not look must not read as "nothing moved".
+# `upstream_probe.py review-date` is the dated quarterly trigger (#508): it reads
+# `orca.next_review` from runtime/pins.json and exits 3 on or after that date, which
+# files the same issue — so no standing issue per cadence has to carry the date.
+# The two checks are independent, so neither may silence the other (#661 review): the
+# alert steps run under `!cancelled()` — GitHub otherwise adds `success()` to a condition
+# that names no status function, and an earlier failed step skipped a confirmed alert —
+# the issue is built from whichever check answered, and the failure steps come LAST, so
+# a check that could not run still fails the job after every confirmed alert is filed.
 # Uses only the runner's preinstalled `gh` and `jq` — no third-party actions beyond
 # the pinned checkout and setup-python. `workflow_dispatch` runs the same path by
 # hand: on a current pin it writes the one-line summary and files nothing.
@@ -57,39 +65,66 @@ jobs:
             done
           fi
 
-      - name: Fail when the probe could not run
-        if: steps.probe.outputs.code != '0' && steps.probe.outputs.code != '3'
-        env:
-          CODE: ${{ steps.probe.outputs.code }}
+      - name: Check the pin's dated review trigger
+        id: review
+        # No network: compares today's UTC date with orca.next_review (#508).
         run: |
-          echo "::error::upstream_probe.py exited ${CODE} — it could not tell whether upstream moved (see the probe step)"
-          exit 1
+          code=0
+          python3 runtime/scripts/upstream_probe.py review-date --json > "${RUNNER_TEMP}/review.json" || code=$?
+          cat "${RUNNER_TEMP}/review.json"
+          echo "code=${code}" >> "$GITHUB_OUTPUT"
+          if [ "${code}" -eq 0 ] || [ "${code}" -eq 3 ]; then
+            for key in pin next_review days_left; do
+              echo "${key}=$(jq -r ".${key}" "${RUNNER_TEMP}/review.json")" >> "$GITHUB_OUTPUT"
+            done
+          fi
 
       - name: Ensure the upstream-drift label exists
-        if: steps.probe.outputs.code == '3'
+        if: ${{ !cancelled() && (steps.probe.outputs.code == '3' || steps.review.outputs.code == '3') }}
         run: >-
           gh label create upstream-drift --force --color FBCA04
           --description "upstream Orca moved past runtime/pins.json (filed by the upstream-drift workflow)"
 
       - name: Open or update the drift issue
-        if: steps.probe.outputs.code == '3'
+        if: ${{ !cancelled() && (steps.probe.outputs.code == '3' || steps.review.outputs.code == '3') }}
         id: drift
         env:
-          PIN: ${{ steps.probe.outputs.pin }}
+          # Either check names the pin; a date-only alert must not depend on `latest` answering.
+          PIN: ${{ steps.probe.outputs.pin || steps.review.outputs.pin }}
           LATEST: ${{ steps.probe.outputs.latest }}
           DRIFT: ${{ steps.probe.outputs.drift }}
           PATCHES_BEHIND: ${{ steps.probe.outputs.patches_behind }}
+          PROBE_CODE: ${{ steps.probe.outputs.code }}
+          REVIEW_CODE: ${{ steps.review.outputs.code }}
+          NEXT_REVIEW: ${{ steps.review.outputs.next_review }}
         run: |
-          title="Orca moved past the pin: ${LATEST} vs ${PIN}"
+          # A date-only trigger must not claim upstream moved: the title names what fired.
+          if [ "${PROBE_CODE}" = "3" ]; then
+            title="Orca moved past the pin: ${LATEST} vs ${PIN}"
+          else
+            title="Orca pin review date reached: ${NEXT_REVIEW} (pin ${PIN})"
+          fi
+          # Each line states only what its own check answered; a check that could not run says so.
+          upstream="Upstream \`stablyai/orca\` is at **${LATEST}**; \`runtime/pins.json\` pins **${PIN}** — \`${DRIFT}\` drift, ${PATCHES_BEHIND} stable tag(s) newer than the pin."
+          if [ "${PROBE_CODE}" != "0" ] && [ "${PROBE_CODE}" != "3" ]; then
+            upstream="The upstream tag check could not run (exit ${PROBE_CODE}), so this run cannot say whether upstream moved past **${PIN}** — see the probe step."
+          fi
+          dated="The dated review trigger (\`orca.next_review\` ${NEXT_REVIEW}) has not been reached."
+          if [ "${REVIEW_CODE}" = "3" ]; then
+            dated="The dated review trigger \`orca.next_review\` **${NEXT_REVIEW}** has been reached: the quarterly re-pin is due whatever upstream did."
+          elif [ "${REVIEW_CODE}" != "0" ]; then
+            dated="The dated review check could not run (exit ${REVIEW_CODE}): \`orca.next_review\` was not read — see the review step."
+          fi
           pin_record="https://github.com/${GH_REPO}/blob/main/runtime/orca-pin.md"
           body="$(printf '%s\n' \
-            "Upstream \`stablyai/orca\` is at **${LATEST}**; \`runtime/pins.json\` pins **${PIN}** — \`${DRIFT}\` drift, ${PATCHES_BEHIND} stable tag(s) newer than the pin." \
+            "${upstream}" \
+            "${dated}" \
             "" \
             "- Probe run: ${RUN_URL}" \
             "- Re-pin: run the \`pin-it\` mission (cadence and steps: ${pin_record})" \
             "- With a binary at hand: \`runtime/scripts/upstream_probe.py capture --out <dir>\`, then \`diff --baseline <the receipts directory the pin record names> --fresh <dir>\`" \
             "" \
-            "Filed by the \`upstream-drift\` workflow. Close it when the pin advances past ${LATEST}.")"
+            "Filed by the \`upstream-drift\` workflow. Close it when the pin is re-witnessed past every trigger named above.")"
           existing="$(gh issue list --label upstream-drift --state open --json number --jq '.[0].number // empty')"
           if [ -n "${existing}" ]; then
             gh issue edit "${existing}" --title "${title}" > /dev/null
@@ -102,20 +137,46 @@ jobs:
           fi
           echo "number=${number}" >> "$GITHUB_OUTPUT"
           echo "action=${action}" >> "$GITHUB_OUTPUT"
+          checks="latest exit ${PROBE_CODE}"
+          if [ "${PROBE_CODE}" = "0" ] || [ "${PROBE_CODE}" = "3" ]; then
+            checks="${checks} (\`${DRIFT}\` drift, ${PIN} → ${LATEST})"
+          fi
+          checks="${checks}; review-date exit ${REVIEW_CODE}"
+          if [ "${REVIEW_CODE}" = "0" ] || [ "${REVIEW_CODE}" = "3" ]; then
+            checks="${checks} (dated review ${NEXT_REVIEW})"
+          fi
           {
             echo "## upstream-drift"
             echo ""
-            echo "- verdict: re-pin due — \`${DRIFT}\` drift, ${PATCHES_BEHIND} stable tag(s) newer than the pin (${PIN} → ${LATEST})"
+            echo "- verdict: re-pin due — ${checks}"
             echo "- issue: https://github.com/${GH_REPO}/issues/${number} (${action})"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summary
-        if: steps.probe.outputs.code == '0'
+        if: ${{ !cancelled() && steps.probe.outputs.code == '0' && steps.review.outputs.code == '0' }}
         env:
           PIN: ${{ steps.probe.outputs.pin }}
           LATEST: ${{ steps.probe.outputs.latest }}
           DRIFT: ${{ steps.probe.outputs.drift }}
           PATCHES_BEHIND: ${{ steps.probe.outputs.patches_behind }}
+          NEXT_REVIEW: ${{ steps.review.outputs.next_review }}
+          DAYS_LEFT: ${{ steps.review.outputs.days_left }}
         run: >-
-          echo "upstream-drift: pin ${PIN}, upstream ${LATEST}, \`${DRIFT}\` drift, ${PATCHES_BEHIND} stable tag(s) newer than the pin — no re-pin due"
+          echo "upstream-drift: pin ${PIN}, upstream ${LATEST}, \`${DRIFT}\` drift, ${PATCHES_BEHIND} stable tag(s) newer than the pin; dated review ${NEXT_REVIEW} in ${DAYS_LEFT} day(s) — no re-pin due"
           >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail when the probe could not run
+        if: ${{ !cancelled() && steps.probe.outputs.code != '0' && steps.probe.outputs.code != '3' }}
+        env:
+          CODE: ${{ steps.probe.outputs.code }}
+        run: |
+          echo "::error::upstream_probe.py exited ${CODE} — it could not tell whether upstream moved (see the probe step)"
+          exit 1
+
+      - name: Fail when the review-date check could not run
+        if: ${{ !cancelled() && steps.review.outputs.code != '0' && steps.review.outputs.code != '3' }}
+        env:
+          CODE: ${{ steps.review.outputs.code }}
+        run: |
+          echo "::error::upstream_probe.py review-date exited ${CODE} — it could not read orca.next_review from runtime/pins.json (see the review step)"
+          exit 1

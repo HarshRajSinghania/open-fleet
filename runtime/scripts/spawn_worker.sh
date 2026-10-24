@@ -26,7 +26,8 @@
 #   - custom-argv lane = `terminal create` + `dispatch --inject`. The inject ALREADY SUBMITS the
 #     preamble (`dispatch-methods.ts:155-165` calls `sendTerminalAgentPrompt`) and `--json` returns
 #     `result.prompt{requestId, stages}`, stages drawn from `input_accepted | turn_started`
-#     (`src/shared/runtime-terminal-contracts.ts:221-225`). v4's blind re-Enter/heartbeat loop is DELETED:
+#     (`src/shared/runtime-terminal-send-contract.ts:12` at v1.4.229 and v1.4.238 — the old
+#     `runtime-terminal-contracts.ts:221-225` anchor had gone stale). v4's blind re-Enter/heartbeat loop is DELETED:
 #     the guide's rule is "never resend on silence"
 #     (`orchestration/recovery-and-cleanup:92-94`). Without `turn_started`, report UNPROVEN and
 #     retain the injection receipt. Orca 1.4.200 rejects a terminal-send retry of a dispatch
@@ -43,7 +44,11 @@
 #     profile setting, whose migrated default IS the YOLO map (`tui-agent-launch-defaults.ts:10`
 #     re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS`), so a default host would
 #     silently upgrade a read-only reviewer to a bypass one. A host set to manual mode has `''`
-#     instead — the rationale is host-dependent, not universal. `agentDefaultArgs` is
+#     instead, and from v1.4.238 a host on the global Auto switch carries claude
+#     `--permission-mode auto` / codex `--approve-for-me` (`AUTO_TUI_AGENT_ARGS`,
+#     `tui-agent-permissions.ts:6-10`, 8d0501622a #30677) — not a PROFILE flag, so exit 5
+#     refuses an Auto host exactly as it refuses a manual one (re-witness: docs/runs/
+#     2026-10-24-pin-it-238.md). The rationale is host-dependent, not universal. `agentDefaultArgs` is
 #     source-witnessed at v1.4.203 (`tui-agent-launch-defaults.ts:10`); live probe owed — pin-it.
 #   - `launch.effective` from the worker-start receipt is printed when present: never claim a model,
 #     effort, or permission flag from the REQUESTED arguments alone
@@ -101,7 +106,8 @@
 #          receipt carries it.  custom-argv lane: HANDLE=<h> STAGES=<csv>
 #
 # Agent × profile coverage (flags are Orca's own autonomous "yolo" args from
-# `tui-agent-permissions.ts:6-33`, so workers never block on a prompt; anything else fails closed
+# `tui-agent-permissions.ts:12-45` at v1.4.238, 6-39 at the v1.4.229 pin — the map itself is
+# unchanged across that range — so workers never block on a prompt; anything else fails closed
 # and needs WORKER_CMD):
 #   claude/codex/gemini → ro + rw + danger
 #   cursor              → rw + danger (`tui-agent-permissions.ts` maps cursor to `--yolo`;

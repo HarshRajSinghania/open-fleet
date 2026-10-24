@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -1047,6 +1048,506 @@ class TheReferenceDocDescribesTheProbe(unittest.TestCase):
         lines = SCRIPT.read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines[int(m.group(1)) - 1].strip(), '"""',
                          "the anchored range must end where the header docstring closes")
+
+
+# --- review-date: the dated quarterly trigger (#508) -------------------------------------------
+
+def write_review_pins(directory, next_review="2026-12-28", version=PIN):
+    """A pins.json whose orca entry names the dated re-pin trigger (`orca.next_review`)."""
+    entry = {"version": version}
+    if next_review is not None:
+        entry["next_review"] = next_review
+    path = Path(directory) / "pins.json"
+    path.write_text(json.dumps({"orca": entry}), encoding="utf-8")
+    return str(path)
+
+
+class ReviewDateTrigger(unittest.TestCase):
+    """#508: the quarterly date in runtime/orca-pin.md was the one re-pin trigger nothing
+    machine-checked — a standing issue per cadence carried it. `review-date` reads
+    `orca.next_review` from pins.json and exits 3 on or after it, so the weekly workflow files
+    the dated re-pin exactly as it files a minor or a ten-patch drift."""
+
+    def review(self, today, next_review="2026-12-28", *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            return run("review-date", "--pins", write_review_pins(tmp, next_review),
+                       "--today", today, *extra, env=clean_env())
+
+    def test_the_day_before_is_not_due(self):
+        r = self.review("2026-12-27", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["days_left"], 1)
+
+    def test_the_date_itself_fires(self):
+        r = self.review("2026-12-28", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["days_left"], 0)
+
+    def test_a_date_already_past_keeps_firing(self):
+        r = self.review("2027-02-01", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["days_left"], -35)
+
+    def test_json_is_exactly_pin_date_today_and_days_left(self):
+        r = self.review("2026-10-24", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"pin": PIN, "next_review": "2026-12-28",
+                                                "today": "2026-10-24", "days_left": 65})
+        self.assertEqual(r.stdout.count("\n"), 1, "one JSON object, nothing else on stdout")
+
+    def test_the_human_line_names_the_pin_the_date_and_the_verdict(self):
+        r = self.review("2026-12-28")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        for needle in (PIN, "2026-12-28", "RE-PIN DUE"):
+            self.assertIn(needle, r.stdout)
+        r = self.review("2026-10-24")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no re-pin due", r.stdout)
+
+    def test_without_today_the_clock_is_the_current_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            future = run("review-date", "--pins", write_review_pins(tmp, "2999-01-01"), "--json",
+                         env=clean_env())
+            past = run("review-date", "--pins", write_review_pins(tmp, "2000-01-01"), "--json",
+                       env=clean_env())
+        self.assertEqual(future.returncode, 0, future.stderr)
+        self.assertEqual(past.returncode, 3, past.stderr)
+        self.assertRegex(json.loads(past.stdout)["today"], r"^\d{4}-\d{2}-\d{2}$")
+
+
+class ReviewDateFailsClosed(unittest.TestCase):
+    """A date the probe cannot read is exit 2, never 0: a dated trigger that silently stops
+    being evaluated is the standing-issue gap this subcommand closes, wearing a fix."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.addCleanup(self.tmp.cleanup)
+
+    def exit_2(self, *args, mentions=None):
+        r = run("review-date", *args, env=clean_env())
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertEqual(r.stdout, "", "a could-not-run answer prints no verdict")
+        if mentions:
+            self.assertIn(mentions, r.stderr)
+
+    def test_a_pin_without_next_review(self):
+        self.exit_2("--pins", write_review_pins(self.dir, None), "--today", "2026-10-24",
+                    mentions="orca.next_review")
+
+    def test_a_malformed_next_review(self):
+        for bad in ("2026-13-01", "2026-02-30", "soon", "2026-12-28T00:00Z", 20261228, ""):
+            with self.subTest(bad=bad):
+                self.exit_2("--pins", write_review_pins(self.dir, bad), "--today", "2026-10-24",
+                            mentions="orca.next_review")
+
+    def test_a_malformed_today(self):
+        for bad in ("tomorrow", "2026-1-5", "2026-02-30"):
+            with self.subTest(bad=bad):
+                self.exit_2("--pins", write_review_pins(self.dir), "--today", bad,
+                            mentions="--today")
+
+    def test_an_unreadable_pins_file(self):
+        self.exit_2("--pins", str(Path(self.dir) / "absent.json"), "--today", "2026-10-24",
+                    mentions="absent.json")
+
+    def test_a_pin_without_a_stable_version(self):
+        self.exit_2("--pins", write_review_pins(self.dir, version="v1.4.216-rc.1"),
+                    "--today", "2026-10-24", mentions="orca.version")
+
+
+class TheCommittedReviewDate(unittest.TestCase):
+    """The committed pin names its dated trigger once, machine-readably, and the human pin
+    record states the same date (orca-pin.md: "a run updates both or neither")."""
+
+    def setUp(self):
+        self.orca = json.loads((ROOT / "runtime" / "pins.json").read_text(encoding="utf-8"))["orca"]
+
+    def test_pins_json_names_a_review_date_after_the_witness(self):
+        self.assertRegex(self.orca.get("next_review", ""), r"^\d{4}-\d{2}-\d{2}$")
+        self.assertGreater(date.fromisoformat(self.orca["next_review"]),
+                           date.fromisoformat(self.orca["witnessed"]))
+
+    def test_the_pin_record_states_the_same_next_trigger(self):
+        text = (ROOT / "runtime" / "orca-pin.md").read_text(encoding="utf-8")
+        stated = re.findall(r"Next trigger: \*\*(\d{4}-\d{2}-\d{2})\*\*", text)
+        self.assertEqual(stated, [self.orca["next_review"]])
+
+    def test_the_committed_pins_run_through_review_date_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = run("review-date", "--today", self.orca["witnessed"], "--json", env=clean_env(),
+                    cwd=tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["next_review"], self.orca["next_review"])
+
+
+class TheWorkflowFilesTheDatedTrigger(unittest.TestCase):
+    """#508: the weekly workflow is what files the next re-pin, so it must run the date check
+    and file on its exit 3 — and fail the job when it could not tell."""
+
+    def setUp(self):
+        self.text = WORKFLOW.read_text(encoding="utf-8")
+
+    def test_it_runs_review_date_and_files_on_its_exit_three(self):
+        for needle in (
+            "python3 runtime/scripts/upstream_probe.py review-date --json",
+            "steps.review.outputs.code != '0' && steps.review.outputs.code != '3'",
+            "steps.probe.outputs.code == '3' || steps.review.outputs.code == '3'",
+            'title="Orca pin review date reached: ${NEXT_REVIEW} (pin ${PIN})"',
+        ):
+            self.assertIn(needle, self.text)
+
+    def test_a_date_only_issue_does_not_say_upstream_moved(self):
+        # The "moved past the pin" title is chosen only when `latest` itself fired.
+        self.assertRegex(self.text, r'if \[ "\$\{PROBE_CODE\}" = "3" \]; then\n\s+title="Orca moved')
+
+    def test_the_no_re_pin_summary_needs_both_checks_quiet(self):
+        self.assertIn("steps.probe.outputs.code == '0' && steps.review.outputs.code == '0'",
+                      self.text)
+
+
+# --- the workflow, executed (#661 review) ---------------------------------------------------
+#
+# Substring checks above cannot see what GitHub does with a step's `if:` once an earlier step
+# has failed: it adds `success()` to every condition that names no status function, so a probe
+# that errored before the alert steps silently skipped a confirmed alert. The runner below
+# executes upstream-drift.yml's own steps the way Actions does — conditions evaluated, `${{ }}`
+# substituted, each `run:` under `bash -e` — against a scripted probe and a logging `gh`. It
+# reads only the shapes this file uses (block `|`, folded `>-`, one-level maps), not YAML at large.
+
+def workflow_steps(text):
+    """[{name, id, if, uses, env, run}] for the job's steps, in order."""
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == "steps:")
+    chunks, current = [], None
+    for ln in lines[start + 1:]:
+        if ln.startswith("      - "):
+            current = ["        " + ln[8:]]
+            chunks.append(current)
+        elif current is not None:
+            current.append(ln)
+    steps = []
+    for chunk in chunks:
+        step, i = {"env": {}}, 0
+        while i < len(chunk):
+            ln = chunk[i]
+            stripped = ln.strip()
+            if not stripped or stripped.startswith("#") or len(ln) - len(ln.lstrip()) != 8:
+                i += 1
+                continue
+            key, _, value = stripped.partition(":")
+            value = value.strip()
+            body = []
+            i += 1
+            while i < len(chunk) and (not chunk[i].strip() or len(chunk[i]) - len(chunk[i].lstrip()) > 8):
+                body.append(chunk[i])
+                i += 1
+            if value in ("|", ">-"):
+                kept = [b for b in body]
+                while kept and not kept[-1].strip():
+                    kept.pop()
+                indent = min(len(b) - len(b.lstrip()) for b in kept if b.strip())
+                kept = [b[indent:] for b in kept]
+                step[key] = "\n".join(kept) + "\n" if value == "|" else " ".join(kept)
+            elif key in ("env", "with"):
+                for b in body:
+                    k, _, v = b.strip().partition(":")
+                    if k and not k.startswith("#"):
+                        step.setdefault(key, {})[k.strip()] = v.strip()
+            else:
+                step[key] = value
+        steps.append(step)
+    return steps
+
+
+_EXPR_TOKEN = re.compile(r"\s*(?:(\|\||&&|==|!=|!|\(|\)|,)|'((?:[^']|'')*)'|([A-Za-z_][\w.\-]*))")
+
+
+def evaluate(expr, ctx):
+    """An Actions expression over strings: ||, &&, !, ==, !=, (), status functions, format()."""
+    tokens, pos = [], 0
+    expr = expr.strip()
+    while pos < len(expr):
+        m = _EXPR_TOKEN.match(expr, pos)
+        if not m or m.end() == pos:
+            raise ValueError(f"cannot read expression at {expr[pos:]!r}")
+        pos = m.end()
+        if m.group(1):
+            tokens.append(("op", m.group(1)))
+        elif m.group(2) is not None:
+            tokens.append(("str", m.group(2).replace("''", "'")))
+        elif m.group(3):
+            tokens.append(("id", m.group(3)))
+    at = [0]
+
+    def peek():
+        return tokens[at[0]] if at[0] < len(tokens) else (None, None)
+
+    def take(expected=None):
+        tok = peek()
+        if expected and tok != ("op", expected):
+            raise ValueError(f"expected {expected!r} in {expr!r}")
+        at[0] += 1
+        return tok
+
+    def truthy(v):
+        return bool(v) if not isinstance(v, str) else v != ""
+
+    def atom():
+        kind, val = take()
+        if (kind, val) == ("op", "("):
+            out = either()
+            take(")")
+            return out
+        if kind == "str":
+            return val
+        if peek() == ("op", "("):
+            take("(")
+            args = []
+            while peek() != ("op", ")"):
+                args.append(either())
+                if peek() == ("op", ","):
+                    take(",")
+            take(")")
+            if val == "format":
+                return re.sub(r"\{(\d+)\}", lambda g: str(args[1 + int(g.group(1))]), args[0])
+            return {"success": not ctx["failed"], "failure": ctx["failed"], "always": True,
+                    "cancelled": False}[val]
+        parts = val.split(".")
+        if parts[0] == "steps":
+            return ctx["steps"].get(parts[1], {}).get("outputs", {}).get(parts[3], "")
+        return ctx["github"].get(parts[1], "")
+
+    def unary():
+        if peek() == ("op", "!"):
+            take("!")
+            return not truthy(unary())
+        left = atom()
+        if peek() in (("op", "=="), ("op", "!=")):
+            op = take()[1]
+            right = atom()
+            same = str(left).lower() == str(right).lower()
+            return same if op == "==" else not same
+        return left
+
+    def both():
+        left = unary()
+        while peek() == ("op", "&&"):
+            take("&&")
+            right = unary()
+            left = right if truthy(left) else left
+        return left
+
+    def either():
+        left = both()
+        while peek() == ("op", "||"):
+            take("||")
+            right = both()
+            left = left if truthy(left) else right
+        return left
+
+    out = either()
+    if at[0] != len(tokens):
+        raise ValueError(f"trailing tokens in {expr!r}")
+    return truthy(out) if ctx.get("as_bool") else out
+
+
+def interpolate(value, ctx):
+    return re.sub(r"\$\{\{(.*?)\}\}", lambda m: str(evaluate(m.group(1), ctx)), value)
+
+
+FAKE_PROBE = r'''
+import json, os, sys
+which = sys.argv[1]
+code = int(os.environ["SIM_" + ("LATEST" if which == "latest" else "REVIEW") + "_CODE"])
+if code == 2:
+    print("upstream_probe: could not run (scripted)", file=sys.stderr)
+    sys.exit(2)
+if which == "latest":
+    print(json.dumps({"pin": "v1.4.238", "latest": "v1.5.0" if code == 3 else "v1.4.238",
+                      "drift": "minor" if code == 3 else "none", "patches_behind": 1 if code == 3 else 0}))
+else:
+    print(json.dumps({"pin": "v1.4.238", "next_review": "2027-01-24",
+                      "today": "2027-01-24" if code == 3 else "2026-10-24",
+                      "days_left": 0 if code == 3 else 92}))
+sys.exit(code)
+'''
+
+FAKE_JQ = r'''
+import json, sys
+args = [a for a in sys.argv[1:] if a != "-r"]
+value = json.load(open(args[1]))[args[0].lstrip(".")]
+print(value)
+'''
+
+FAKE_GH = r'''
+import json, os, sys
+with open(os.environ["SIM_GH_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+if sys.argv[1:3] == ["issue", "create"]:
+    print("https://github.com/o/r/issues/42")
+'''
+
+
+def run_workflow(text, latest_code, review_code):
+    """Execute the job's steps; {conclusion, gh: [argv], errors: [::error:: lines], summary}."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        repo, stubs, temp = tmp / "repo", tmp / "bin", tmp / "runner-temp"
+        for d in (repo / "runtime" / "scripts", stubs, temp):
+            d.mkdir(parents=True)
+        (repo / "runtime" / "scripts" / "upstream_probe.py").write_text(FAKE_PROBE)
+        for name, src in (("jq", FAKE_JQ), ("gh", FAKE_GH)):
+            (stubs / name).write_text(f"#!{sys.executable}\n{src}")
+            (stubs / name).chmod(0o755)
+        (stubs / "python3").symlink_to(sys.executable)
+        summary, gh_log = tmp / "summary.md", tmp / "gh.log"
+        summary.touch()
+        gh_log.touch()
+        ctx = {"failed": False, "steps": {},
+               "github": {"token": "t0ken", "repository": "o/r", "server_url": "https://github.com",
+                          "run_id": "99"}}
+        job_env = {"GH_TOKEN": "${{ github.token }}", "GH_REPO": "${{ github.repository }}",
+                   "RUN_URL": "${{ format('{0}/{1}/actions/runs/{2}', github.server_url, "
+                              "github.repository, github.run_id) }}"}
+        errors = []
+        for step in workflow_steps(text):
+            if "uses" in step:
+                continue
+            cond = step.get("if", "success()")
+            cond = re.sub(r"^\$\{\{(.*)\}\}$", r"\1", cond.strip())
+            if not re.search(r"\b(success|failure|always|cancelled)\(", cond):
+                cond = f"success() && ({cond})"
+            if not evaluate(cond, dict(ctx, as_bool=True)):
+                continue
+            out_file = tmp / "output"
+            out_file.write_text("")
+            env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(tmp), "RUNNER_TEMP": str(temp),
+                   "GITHUB_OUTPUT": str(out_file), "GITHUB_STEP_SUMMARY": str(summary),
+                   "SIM_LATEST_CODE": str(latest_code), "SIM_REVIEW_CODE": str(review_code),
+                   "SIM_GH_LOG": str(gh_log)}
+            for key, value in {**job_env, **step["env"]}.items():
+                env[key] = interpolate(value, ctx)
+            script = tmp / "step.sh"
+            script.write_text(step["run"])
+            proc = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+                                  cwd=repo, env=env,
+                                  capture_output=True, text=True, timeout=60)
+            errors += [ln for ln in proc.stdout.splitlines() if ln.startswith("::error::")]
+            outputs = dict(ln.split("=", 1) for ln in out_file.read_text().splitlines() if "=" in ln)
+            if "id" in step:
+                ctx["steps"][step["id"]] = {"outputs": outputs}
+            if proc.returncode != 0:
+                ctx["failed"] = True
+        calls = [json.loads(ln) for ln in gh_log.read_text().splitlines()]
+        return {"conclusion": "failure" if ctx["failed"] else "success", "gh": calls,
+                "errors": errors, "summary": summary.read_text()}
+
+
+def flag(argv, name):
+    return argv[argv.index(name) + 1]
+
+
+class TheDriftWorkflowFilesEveryConfirmedTrigger(unittest.TestCase):
+    """#661 review (P1): a check that could not run must not swallow the other check's
+    confirmed alert, and an error must still fail the job — after the alert is filed."""
+
+    def run_combo(self, latest, review):
+        return run_workflow(WORKFLOW.read_text(encoding="utf-8"), latest, review)
+
+    def filed(self, result):
+        creates = [c for c in result["gh"] if c[:2] == ["issue", "create"]]
+        self.assertEqual(len(creates), 1, f"expected one issue filed, gh saw {result['gh']}")
+        return flag(creates[0], "--title"), flag(creates[0], "--body")
+
+    def test_a_reached_date_is_filed_when_the_tag_check_could_not_run(self):
+        result = self.run_combo(2, 3)
+        title, body = self.filed(result)
+        self.assertEqual(title, "Orca pin review date reached: 2027-01-24 (pin v1.4.238)")
+        self.assertIn("2027-01-24", body)
+        self.assertIn("could not run", body)
+        self.assertNotIn("****", body, "a missing upstream answer must not render as blanks")
+        self.assertNotIn("``", result["summary"], "nor in the run summary")
+        self.assertIn("latest exit 2; review-date exit 3 (dated review 2027-01-24)", result["summary"])
+        self.assertEqual(result["conclusion"], "failure", "the tag check's error must fail the job")
+        self.assertTrue(any("upstream_probe.py exited 2" in e for e in result["errors"]))
+
+    def test_upstream_drift_is_filed_when_the_date_check_could_not_run(self):
+        result = self.run_combo(3, 2)
+        title, body = self.filed(result)
+        self.assertEqual(title, "Orca moved past the pin: v1.5.0 vs v1.4.238")
+        self.assertIn("could not run", body)
+        self.assertEqual(result["conclusion"], "failure", "the date check's error must fail the job")
+        self.assertTrue(any("review-date exited 2" in e for e in result["errors"]))
+
+    def test_both_triggers_file_one_issue_naming_both(self):
+        result = self.run_combo(3, 3)
+        title, body = self.filed(result)
+        self.assertEqual(title, "Orca moved past the pin: v1.5.0 vs v1.4.238")
+        self.assertIn("has been reached", body)
+        self.assertEqual(result["conclusion"], "success")
+        self.assertEqual(result["errors"], [])
+
+    def test_nothing_due_files_nothing_and_says_so(self):
+        result = self.run_combo(0, 0)
+        self.assertEqual([c for c in result["gh"] if c[0] == "issue"], [])
+        self.assertIn("no re-pin due", result["summary"])
+        self.assertEqual(result["conclusion"], "success")
+
+    def test_two_failed_checks_file_nothing_and_name_both_errors(self):
+        result = self.run_combo(2, 2)
+        self.assertEqual([c for c in result["gh"] if c[0] == "issue"], [])
+        self.assertEqual(result["conclusion"], "failure")
+        self.assertTrue(any("upstream_probe.py exited 2" in e for e in result["errors"]))
+        self.assertTrue(any("review-date exited 2" in e for e in result["errors"]),
+                        "a second failed check must not be silenced by the first")
+
+
+class TheWorkflowRunnerReadsConditionsAsActionsDoes(unittest.TestCase):
+    """The runner is only evidence if it treats `if:` the way GitHub does."""
+
+    def ctx(self, failed, code):
+        return {"failed": failed, "as_bool": True, "github": {},
+                "steps": {"probe": {"outputs": {"code": code}}}}
+
+    def test_a_condition_without_a_status_function_needs_success(self):
+        # This is the rule that hid the alert: GitHub prefixes success() when none is named.
+        steps = workflow_steps("    steps:\n      - name: x\n        if: steps.probe.outputs.code == '3'\n"
+                               "        run: echo hi\n")
+        self.assertEqual(steps[0]["if"], "steps.probe.outputs.code == '3'")
+        cond = "success() && (steps.probe.outputs.code == '3')"
+        self.assertTrue(evaluate(cond, self.ctx(False, "3")))
+        self.assertFalse(evaluate(cond, self.ctx(True, "3")))
+
+    def test_not_cancelled_runs_after_a_failure(self):
+        cond = "!cancelled() && (steps.probe.outputs.code == '3' || steps.probe.outputs.code == '9')"
+        self.assertTrue(evaluate(cond, self.ctx(True, "3")))
+        self.assertFalse(evaluate(cond, self.ctx(True, "0")))
+
+    def test_or_yields_the_first_non_empty_value(self):
+        ctx = {"failed": False, "github": {},
+               "steps": {"a": {"outputs": {}}, "b": {"outputs": {"pin": "v9"}}}}
+        self.assertEqual(evaluate("steps.a.outputs.pin || steps.b.outputs.pin", ctx), "v9")
+
+    def test_folded_and_literal_blocks_read_as_actions_reads_them(self):
+        text = ("    steps:\n      - name: f\n        run: >-\n          echo a\n          >> b\n"
+                "      - name: l\n        run: |\n          one\n          two\n")
+        steps = workflow_steps(text)
+        self.assertEqual(steps[0]["run"], "echo a >> b")
+        self.assertEqual(steps[1]["run"], "one\ntwo\n")
+
+
+class TheReferenceDocDescribesReviewDate(unittest.TestCase):
+    def test_the_section_names_the_subcommand_and_its_field(self):
+        section = DOC.read_text(encoding="utf-8").split("## `upstream_probe.py`", 1)[1]
+        section = section.split("\n## ", 1)[0]
+        for needle in ("`review-date`", "orca.next_review", "--today"):
+            self.assertIn(needle, section)
+
+    def test_review_date_help_exits_zero(self):
+        r = run("review-date", "--help", env=clean_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--today", r.stdout)
 
 
 class ScriptHygiene(unittest.TestCase):

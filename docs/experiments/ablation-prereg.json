@@ -656,7 +656,7 @@
   },
   "registered_payloads": {
     "ship-it": {
-      "baseline_sha256": "708814b60549c548a09d9807bef9a3514d91180df4214e0faef07c63cde6b72e",
+      "baseline_sha256": "74ebcd2ab6d8aa08c3f585e12abbb0517d653283d2782523889f42c10e7a21c1",
       "reduced_sha256": "1e5bc11488397aaab16825dedc03ecf4e65be5ab9b8f63220fa3168dcd15eaf1",
       "baseline_tokens": 33995,
       "reduced_tokens": 4579,
@@ -665,7 +665,7 @@
       "task_inputs_sha256": "ea245b872d6744332a30c1e64a7e5d3643513b754698e3ffc07dff759adb64a6"
     },
     "clean-sweep": {
-      "baseline_sha256": "ee791af86da6fdf64e8076fef130814ec90a9b44a4c9a8d5478b12f875561585",
+      "baseline_sha256": "58e3814bf73d83ba8a4c4ca00689fea020a2826123924005c56738b37f1d01d6",
       "reduced_sha256": "16cdff0db836de3c6e5b62f8ed47cdf5415b3603b006e70f11c3822170ea2b0d",
       "baseline_tokens": 32649,
       "reduced_tokens": 4546,
@@ -674,7 +674,7 @@
       "task_inputs_sha256": "979147165c398fd91574caa39289d4c3f0046e742e5434e80a23514f6ee7aaeb"
     },
     "review-it": {
-      "baseline_sha256": "84267925c391b2f677cb3375d876df6e738ddfdbc04de4e3400634da46cb9e9b",
+      "baseline_sha256": "7dd9b0bbe51ccd2f6c5b0ee6bb5cec2569a561c9077bb6eb996db5a8d1ba37ff",
       "reduced_sha256": "88f3c67bc071d8fb1e467beb12af9941cadd8e1fa3b8fbf390e1eb961cc2182d",
       "baseline_tokens": 24480,
       "reduced_tokens": 3724,

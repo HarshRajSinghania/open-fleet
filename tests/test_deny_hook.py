@@ -2428,5 +2428,76 @@ class TestThreatModelStatesWhatTheHookDoes(unittest.TestCase):
         self.assertIn("the deny-hook never reads it", text)
 
 
+class TestUnresolvedReadsFailClosed(ReviewHookBase):
+    """#654 (found in the PR #648 review): four forms the payload reader resolved incompletely,
+    so it ALLOWED what it refuses written plainly. Each review example is now refused, and the
+    benign twin of each stays allowed. JSON decision fixtures only; nothing here executes."""
+
+    def test_a_script_assembled_across_writes_is_read_whole(self):
+        self.expect("deny", ['printf %s git > s.sh; printf %s " push --force origin main" >> s.sh; '
+                             'sh s.sh'])
+        self.expect("allow", ['printf %s "ls" > s.sh; printf %s " -la" >> s.sh; sh s.sh',
+                              # > replaces: the refused text is gone before the file is read
+                              'printf %s "git push --force origin main" > s.sh; '
+                              'printf %s "ls" > s.sh; cat s.sh'])
+
+    def test_a_name_past_the_assignment_cap_is_unresolved_not_complete(self):
+        self.expect("deny", ["c=a; c=b; c=c; c=d; c=e; c=f; c=h; c=i; c=git; "
+                             "$c push --force origin main"])
+        self.expect("allow", ["c=a; c=b; c=c; c=d; c=e; c=f; c=h; c=i; c=j; echo $c"])
+
+    def test_printf_conversions_are_modelled_as_printed(self):
+        self.expect("deny", ['printf "%c%c%c push --force origin main" git item tree | sh'])
+        self.expect("allow", ['printf "%c%c status" g x | cat',
+                              'printf "%05d %x %.2s\\n" 42 255 hello'])
+
+    def test_a_literal_tuple_is_an_argv_like_a_list(self):
+        self.expect("deny", ["python3 -c \"import subprocess; "
+                             "subprocess.run(('git', 'push', '--force', 'origin', 'main'))\""])
+        self.expect("allow", ["python3 -c \"import subprocess; subprocess.run(('git', 'status'))\"",
+                              "python3 -c \"print(len(('a', 'b')))\""])
+
+    def test_an_overwrite_that_may_not_run_keeps_what_the_file_held(self):
+        # PR #655 review: false && ... > f never runs, so f still holds the first write.
+        self.expect("deny", ['printf %s "git push --force origin main" > s.sh; '
+                             "false && printf %s ls > s.sh; sh s.sh"])
+
+    def test_a_combined_append_cluster_appends(self):
+        # PR #655 review: tee -ai appends as tee -a does.
+        self.expect("deny", ['printf %s git > s.sh; printf %s " push --force origin main" | '
+                             "tee -ai s.sh; sh s.sh"])
+
+    def test_a_printf_precision_is_decimal(self):
+        # PR #655 review: %.03s cuts at 3, not at an octal reading of 03.
+        self.expect("deny", ['printf "%.03s push --force origin main" git | sh'])
+
+    def test_a_star_precision_is_read_as_a_signed_argument(self):
+        # PR #655 review: %.*s takes +3 as 3; an argument it cannot read for certain is unresolved.
+        self.expect("deny", ['printf "%.*s push --force origin main" +3 git | sh',
+                             'printf "%.*s push --force origin main" 010 git | sh'])
+        self.expect("allow", ['printf "%.*s\\n" 3 hello'])
+
+    def test_an_unread_width_or_precision_keeps_the_whole_argument(self):
+        # PR #655 review: an unreadable * value must not erase the text the argument holds. A
+        # width only pads; an unreadable precision offers the argument whole AND unresolved,
+        # each with the text around it.
+        self.expect("deny", ["printf '%*s' 010 'git push --force origin main' | sh",
+                             "printf '%.*s' 0x3 'git push --force origin main' | sh",
+                             'printf "%.*s --force origin main" 0x9 "git push" | sh'])
+        self.expect("allow", ["printf '%*s' 010 'ls -la' | sh"])
+
+    def test_a_name_past_the_cap_through_read_is_unresolved_too(self):
+        # PR #655 review: read NAME sets values the same way NAME=value does.
+        self.expect("deny", ["read c <<< a; read c <<< b; read c <<< c; read c <<< d; "
+                             "read c <<< e; read c <<< f; read c <<< h; read c <<< i; "
+                             "read c <<< git; $c push --force origin main"])
+
+    def test_the_arguments_of_a_call_are_not_an_argv(self):
+        # PR #655 review: str.format builds text that is only echoed; its arguments are no argv.
+        self.expect("allow", ["python3 -c \"import subprocess; subprocess.run("
+                              "'echo {} {} {} {} {}'.format('git', 'push', '--force', 'origin', "
+                              "'main'), shell=True)\""])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

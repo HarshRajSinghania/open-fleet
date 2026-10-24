@@ -1085,8 +1085,8 @@ arm to retrieve every useful/unknown/benign note with its text, suppress every s
 poisoned one and label every hint as expected — and requires the unchecked arm to leak, so the
 corpus can tell the checks from their absence. Fixture-tier result at this change: checked
 retrieval 1.0, stale suppression 1.0, label accuracy 1.0, 0 poisoned; unchecked leaks 20/20 stale
-and 2/2 poisoned notes. The effect on REPEATED task failures needs a worker and is not measured
-yet: `--live` runs each `live_task` scenario per arm and attempt in a fresh fixture (the packet on
+and 2/2 poisoned notes. The effect on REPEATED task failures needs a worker. It was measured
+once, live, on 2026-10-24 (the bound report is linked at the end of this section): `--live` runs each `live_task` scenario per arm and attempt in a fresh fixture (the packet on
 stdin and at `$HINT_REPLAY_PACKET`), then its oracle, and counts failures matching the recorded
 pitfall. It refuses more runs than `--max-runs`; the report carries the tier the operator
 declared (`stub` for a deterministic stand-in worker, which the tests use to prove the plumbing —
@@ -1152,10 +1152,21 @@ python3 scripts/hint_replay.py --live --tier live --model sonnet \
   --max-runs 18 --attempts 3 --out hint-replay-605-live/results.json
 ```
 
-Re-run into the same `--out` after an interruption: the ledger carries the spend forward. No live
-result is claimed until that results file, its ledger and its call outputs are bound into a run
-report under `docs/runs/` (`runtime/scripts/run_report.py`). The `live` tier is the operator's
-declaration, and the tests drive it with an inert stand-in only (`tests/test_hint_replay_spend.py`).
+Re-run into the same `--out` after an interruption: the ledger carries the spend forward. The
+`live` tier is the operator's declaration, and the tests drive it with an inert stand-in only
+(`tests/test_hint_replay_spend.py`).
+
+The live arm ran once, on 2026-10-24, with `claude-opus-5-5` workers. It is bound in
+[`docs/runs/2026-10-24-hint-replay-605-live.md`](runs/2026-10-24-hint-replay-605-live.md), which
+`run_report.py` binds at `doctrine-only` with its results, ledger and every call's output.
+
+- **The result is a ceiling, null result.** Every arm passed 6 of 6 runs with 0 repeated failures,
+  for USD 1.22 of notional spend. On this corpus, hints neither helped nor hurt, and the
+  comparison has no power to separate the arms.
+- **What it does not show.** Freshness labelling and poisoned-note withholding stay pinned by
+  `--check`, not by that run.
+- **What a stronger test needs.** Scenarios with real repeated failures. No other live result is
+  claimed.
 
 Exits: n/a (library).
 

@@ -17,11 +17,13 @@ test reruns at the exact head and verification against the frozen contract and r
 remain coordinator-owned. **no** means the recorded report does not satisfy these binding checks
 here — history, kept, supporting no proof-tier advance.
 
-Five reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
+Six reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
 prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the binding gate), the
-2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance, and the
+2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance, the
 2026-10-13 review-it Linux witness, filed at `doctrine-only` as #527 substrate evidence and
-re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier. Every other row reads **no**, and that
+re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier, and the
+2026-10-24 #605 live hint-replay run — an experiment, not a mission run, bound at
+`doctrine-only` with its verifier RED recorded. Every other row reads **no**, and that
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;
@@ -54,6 +56,7 @@ git repositories and includes a fully bound positive case alongside a dozen refu
 | 2026-10-13 | [review-it](2026-10-13-review-it-linux.md) | stablyai/orca PR #28206 (external PR), executed on Ubuntu 24.04 via `orca-ide` 1.4.224 — the Linux witness (#527) | external-run | yes — filed at `doctrine-only` as #527 substrate evidence; tier claimed 2026-10-14 (header-only amendment, see the report) | NO-GO (0 Critical, 2 Required: submodule Force Delete toast hides superproject data loss; 4 read-only workers, target untouched, verdict retained not posted) |
 | 2026-10-13 | [ship-it](2026-10-13-ship-it-mdtoc.md) | ravidsrk/mdtoc (new product repo) from a maintainer-frozen spec, on the Linux witness VM (#515) | external-run | yes | BUILT @ `046d1f8d` (6 slices, 110 tests; integrated FAIL → seam-fix slice → re-review PASS; offline local-merge lane, BASE pushed) |
 | 2026-10-17 | [pin-it](2026-10-17-pin-it-229.md) | this catalog's runtime doctrine against Orca v1.4.229 (`a0cd1644`, source-delta re-witness vs v1.4.224 + carried live receipts; [delta inventory](2026-10-17-pin-it-229/delta-inventory-2026-10-17.md)) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (1 stale Jira claim patched; 5 additive surfaces folded in: `orca jira`, `agent launch`, `reference`, `serve` containment, `task_not_startable.failureCount`, `automations runs` paging; parks carried) |
+| 2026-10-24 | [hint-replay](2026-10-24-hint-replay-605-live.md) (experiment, not a mission) | this catalog's episodic hints — #605's live arm: 2 scenarios × 3 arms (off / unchecked / checked) × 3 attempts, `claude-opus-5-5` | self-run | yes — at `doctrine-only`, advancing no tier; verifier RED recorded (unsupervised report-only class: no coordinator-signed dispatch record) | NULL at a ceiling (every arm 6/6, 0 repeated failures; USD 1.22 notional of a USD 40 cap) |
 
 ### Self-test campaign 2026-09-16
 

@@ -237,8 +237,9 @@ A run counts toward the curve only if all of the following hold:
 - It used this registration and this task set.
 - It started at the seed commit.
 - It recorded a model pin and a harness version, and observed only the pinned model.
-- Its model pin, harness version and experiment inputs equal the first live run's, so a change in
-  any of them is never read as an effect of WIP.
+- Its machine (the hashed host, platform and CPU count), harness, harness version, model pin and
+  experiment inputs equal the first live run's, so a change in any of them is never read as an
+  effect of WIP.
 - It is a scheduled run, under its scheduled condition, repetition and task order, and every wave
   its record holds ran that condition's builders and reviewers.
 - `events.py` derives the run's throughput, latency, rework and freshness.

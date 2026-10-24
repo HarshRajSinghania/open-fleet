@@ -115,7 +115,8 @@ def rebind(run_dir: Path) -> None:
 
 
 def synthetic_run(run_id, cond, throughput, *, compliant=True, review_in=100, review_out=20, tier="live-unreviewed",
-                  model="m-1", harness="h-1", inputs="i" * 64, started="2026-10-24T10:00:00+00:00"):
+                  model="m-1", harness="h-1", inputs="i" * 64, started="2026-10-24T10:00:00+00:00",
+                  machine="host-a", agent="claude"):
     """A run summary in summarize_run()'s shape, for report logic that needs no real run."""
     builders, reviewers = {"b1r1": (1, 1), "b3r1": (3, 1), "b6r1": (6, 1), "b6r2": (6, 2)}[cond]
     tp = Fraction(str(throughput))
@@ -134,6 +135,7 @@ def synthetic_run(run_id, cond, throughput, *, compliant=True, review_in=100, re
     run = {"run_id": run_id, "condition": cond, "builders": builders, "reviewers": reviewers, "tier": tier,
            "status": "complete", "started_at": started, "finished_at": finished,
            "inputs_sha256": inputs, "model_pin": model, "harness_version": harness, "attempt": 1,
+           "agent": agent, "machine": {"clock": machine, "platform": "p", "machine": "m", "cpu_count": 8},
            "repetition": int(re.search(r"-rep(\d+)", run_id).group(1)),
            "task_order": wip.task_order(*wip.load_prereg(PREREG)[:2], run_id),
            "timeout_scale": 1.0, "compliant": compliant,
@@ -389,6 +391,16 @@ class TestIncomparableRunsAreNeverPooled(ReportOver):
         self.assertTrue(any("model pin" in w for w in out["wip1-b6r1-rep1"]["noncompliance"]),
                         out["wip1-b6r1-rep1"]["noncompliance"])
         self.assertEqual(self.report(runs)["compliant_runs"], ["wip1-b1r1-rep1"])
+
+    def test_another_machine_or_harness_name_is_excluded(self):
+        runs = [synthetic_run("wip1-b1r1-rep1", "b1r1", "1.0", started="2026-10-24T10:00:00+00:00"),
+                synthetic_run("wip1-b3r1-rep1", "b3r1", "1.0", machine="host-b", started="2026-10-24T12:00:00+00:00"),
+                synthetic_run("wip1-b6r1-rep1", "b6r1", "1.0", agent="codex", started="2026-10-24T14:00:00+00:00")]
+        out = {r["run_id"]: r for r in self.report(runs)["runs"]}
+        self.assertTrue(any("machine" in w for w in out["wip1-b3r1-rep1"]["noncompliance"]),
+                        out["wip1-b3r1-rep1"]["noncompliance"])
+        self.assertTrue(any("harness" in w for w in out["wip1-b6r1-rep1"]["noncompliance"]),
+                        out["wip1-b6r1-rep1"]["noncompliance"])
 
 
 def series(cond, values, start_hour, **kw):

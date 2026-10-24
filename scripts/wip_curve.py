@@ -1731,7 +1731,9 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
            "started_at": rec.get("started_at"), "finished_at": rec.get("finished_at"),
            "inputs_sha256": (rec.get("inputs") or {}).get("sha256"),
            "model_pin": rec.get("model_pin"), "harness_version": (rec.get("harness") or {}).get("version"),
-           "task_order": rec.get("task_order"),
+           "task_order": rec.get("task_order"), "agent": rec.get("agent"),
+           "machine": {"clock": rec.get("clock"), **{k: (rec.get("host") or {}).get(k)
+                                                     for k in ("platform", "machine", "cpu_count")}},
            "attempt": rec.get("attempt", 1), "timeout_scale": rec.get("timeout_scale"),
            "run_json_sha256": sha256_file(run_dir / "run.json")}
     reasons = []
@@ -2060,7 +2062,8 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     first = live[0] if live else {}
     for run in live[1:]:
         for key, what in (("inputs_sha256", "experiment inputs (sha256)"), ("model_pin", "model pin"),
-                          ("harness_version", "harness version")):
+                          ("agent", "harness"), ("harness_version", "harness version"),
+                          ("machine", "machine (host, platform, CPU count)")):
             if run.get(key) != first.get(key):
                 run["compliant"] = False
                 run.setdefault("noncompliance", []).append(

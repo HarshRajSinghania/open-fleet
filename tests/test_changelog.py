@@ -456,6 +456,10 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** see www.e.org/` <a href="../docs/ops.md">ops</a> `\n',
         # raw HTML reaches a browser, which reads attributes loosely (fuzzed against Pandoc, #673)
         '</div>\n<a\n[x][y]"\n#   href="../docs/ops.md">x</a>\n',
+        # GFM splits a table row into cells first: backticks in two cells form no span (Codex at 737bef7213)
+        '- | a | b |\n  | - | - |\n  | ` | <a href="../docs/ops.md">ops</a>` |\n',
+        # Pandoc's GFM math takes a backtick as its delimiter (#673)
+        '- **Change** $`x <a href="../docs/ops.md">ops</a> `\n',
     )
 
     def errors(self, text):

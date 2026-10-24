@@ -2291,6 +2291,34 @@ class TestEveryDeadlineStartsAtItsLaunch(Tmp):
             self.assertTrue(all(t <= 60 for t in timeouts), f"{kind} may outlive a 60 s run: {timeouts}")
 
 
+class TestNoWorkerOutlivesItsRun(Tmp):
+    """Codex review (C3): a builder that leaves a background child in its process group finishes
+    `completed`, and nothing stopped that child. The run's cleanup ends every orphaned worker group
+    before it settles, and records what it ended."""
+
+    def test_a_finished_builders_background_child_is_ended(self):
+        env, trip_log = tripwired_env(self.tmp)
+        pid_file = self.tmp / "orphan.pid"
+        script = {"T5": {"builder": ["orphan"]}, "_orphan_pid": str(pid_file)}
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                   "--inert-script", json.dumps(script), env=env)
+        orphan = int(pid_file.read_text())
+        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(orphan)], capture_output=True))
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            state = subprocess.run(["ps", "-o", "stat=", "-p", str(orphan)], capture_output=True, text=True).stdout
+            if not state.strip() or state.strip().startswith("Z"):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail(f"the builder's background child {orphan} outlived its run: {p.stdout + p.stderr}")
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        self.assertTrue(record["teardown"]["ended"], record.get("teardown"))
+        self.assertEqual(record["teardown"]["survivors"], [])
+        self.assertFalse(trip_log.exists())
+
+
 class TestAKilledRunStillCounts(Tmp):
     """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
     writes no run.json. Its calls in the shared ledger still count against the cap until the next

@@ -18,6 +18,7 @@ a tripwire for each harness name first on PATH, and the tripwire log must stay e
 """
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import contextlib
 import copy
@@ -29,6 +30,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -589,6 +591,57 @@ class TestNegativeProbes(Tripwired):
         self.assertTrue(any("a worker launched" in x for x in control["problems"]), control["problems"])
         self.assertTrue(any("a dispatch was recorded" in x for x in control["problems"]), control["problems"])
         self.assertTrue(all(r["refused"] for r in receipt["probes"] if r["probe"] != "control-no-parent"))
+
+
+class TestStopWorkersEndsWhatAFinishedWorkerLeft(unittest.TestCase):
+    """Codex review of PR #653 (C3): a dispatch is `completed` once its foreground process exits,
+    and the provider never kills a finished dispatch's group (its pid may be reused), so a child
+    the worker left in its process group outlived the cleanup. stop_workers ends every orphaned
+    group of the sandbox's store, finished dispatches included, and never a group with a living
+    leader (a reused number)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="first-run-reap-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def leftover(self):
+        """A group leader that starts a background child and exits: (leader pid, child pid)."""
+        proc = subprocess.Popen(["/bin/sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], stdout=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        child = int(proc.communicate(timeout=30)[0].strip())
+        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(child)], capture_output=True))
+        return proc.pid, child
+
+    def store(self, rows):
+        db = self.tmp / "state" / "runtime.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE dispatches (dispatch_id TEXT, state TEXT, pid INTEGER)")
+        conn.executemany("INSERT INTO dispatches VALUES (?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+        return argparse.Namespace(dir=self.tmp, target=self.tmp / "target", state_db=db,
+                                  env={**os.environ, "SHELL": "/bin/sh"})
+
+    def alive(self, pid, wait_s=5.0):
+        end = time.monotonic() + wait_s
+        while time.monotonic() < end:
+            state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+            if not state or state.startswith("Z"):
+                return False
+            time.sleep(0.1)
+        return True
+
+    def test_a_completed_dispatch_leaves_no_process_behind(self):
+        leader, child = self.leftover()
+        first_run.stop_workers(self.store([("disp_done", "completed", leader)]))
+        self.assertFalse(self.alive(child), "a finished worker's child outlived stop_workers")
+
+    def test_a_group_with_a_living_leader_is_never_touched(self):
+        leader = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        self.addCleanup(leader.kill)
+        first_run.stop_workers(self.store([("disp_reused", "completed", leader.pid)]))
+        self.assertTrue(self.alive(leader.pid, wait_s=1.0), "a group whose leader lives may not be ours")
 
 
 class TestDocsCarryTheGeneratedMatrix(unittest.TestCase):

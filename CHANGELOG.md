@@ -52,6 +52,8 @@ truth is `.claude-plugin/plugin.json`.
       the cap under the ledger's lock.
     - An interrupted or killed run is charged for every call it launched, and no child process
       outlives it. The next run reconciles a killed run's calls once and stops its workers.
+      Every run's cleanup, and `first_run.py`'s, also ends what a finished worker left running
+      in its process group.
     - Coordinator and merge-queue git goes through `gitexec.py`.
     - Worker code under the oracle gets a minimal environment.
   - What can be pooled: a run under another machine, harness, model pin, input digest, deadline

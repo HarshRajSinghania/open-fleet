@@ -911,7 +911,7 @@ if role == "builder":
     if action == "die":
         answer("stand-in scripted to exit without reporting")
         sys.exit(1)
-    if action in ("solve", "miss", "regress", "plant", "link_review"):
+    if action in ("solve", "miss", "regress", "plant", "link_review", "orphan"):
         spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
         runner = importlib.util.module_from_spec(spec_r)
         spec_r.loader.exec_module(runner)
@@ -926,6 +926,10 @@ if role == "builder":
         if action == "regress":  # passes its own oracle, breaks a landed task's: the merge gate fails
             changed += [f for f in runner.apply_edits(Path.cwd(), cfg["script"]["_regress"][task])
                         if f not in changed]
+        if action == "orphan":  # a builder that leaves a background child in its process group
+            child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            Path(cfg["script"]["_orphan_pid"]).write_text(str(child.pid), encoding="utf-8")
         if action == "link_review":  # a hostile builder: the review inputs' directory as a link
             os.symlink(cfg["script"]["_review_link"], ".wip-review")
             changed.append(".wip-review")
@@ -1814,7 +1818,12 @@ class Run:
         """Kill every child group, stop every worker, settle every launched call, retain the
         sources, write the run report and run.json last."""
         stop_all_groups()
-        first_run.stop_workers(self.sb)
+        # Every worker group torn down, finished dispatches included, BEFORE the run settles and
+        # releases anything (Codex review, C3): a child a worker left behind would spend on.
+        teardown = first_run.stop_workers(self.sb)
+        self.record["teardown"] = teardown
+        if teardown["survivors"]:  # a group with a living leader may be a reused number: reported only
+            self.record.update(status="failed", error=f"worker processes outlived the run: {teardown}"[:1000])
         self.record["settled_after_stop"] = self.settle_launched()
         sb = self.sb
         rec = self.record

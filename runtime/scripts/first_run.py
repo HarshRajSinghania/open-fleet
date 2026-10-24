@@ -64,6 +64,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1001,17 +1002,87 @@ def restore_signals(previous: dict) -> None:
         signal.signal(sig, signal.SIG_DFL if handler is None else handler)
 
 
-def stop_workers(sb: Sandbox) -> None:
-    """Fence anything still live in this sandbox's store before its directory goes away."""
+def stop_workers(sb: Sandbox) -> dict:
+    """Fence anything still live in this sandbox's store before its directory goes away, then end
+    whatever any of its workers left behind (reap_groups); the teardown it verified."""
     proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
                     cwd=str(sb.target) if sb.target.is_dir() else str(sb.dir), env=sb.env)
     try:
         workers = json.loads(proc.stdout)["result"]["workers"]
     except (ValueError, KeyError, TypeError):
-        return
+        workers = []
     for w in workers:
         if w.get("state") in LIVE_STATES:
             run_text(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env, cwd=str(sb.dir))
+    return reap_groups(sb)
+
+
+def process_groups() -> dict[int, set[int]]:
+    """{process group id: its living members}, for every process ps lists (macOS and Linux);
+    a zombie is already dead and is not a member."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], capture_output=True, text=True,
+                             timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    groups: dict[int, set[int]] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit() and not parts[2].startswith("Z"):
+            groups.setdefault(int(parts[1]), set()).add(int(parts[0]))
+    return groups
+
+
+def reap_groups(sb: Sandbox, wait_s: float = 5.0, grace_s: float = 3.0) -> dict:
+    """End every process group a worker of this sandbox's store leaves behind, finished dispatches
+    included (Codex review of PR #653: a dispatch is `completed` once its foreground process
+    exits, and the provider never kills a finished dispatch's group because its pid may be reused,
+    so a background child the worker started outlived every cleanup). A group whose leader is gone
+    but whose members remain is a worker's leftover; a reused number always has its own living
+    leader, so a group with a living leader is never touched (it is waited for, then reported).
+    Returns {"ended", "survivors", "leaders_alive"}: survivors are members still alive after
+    SIGKILL, which the caller must not settle as torn down."""
+    try:
+        conn = sqlite3.connect(f"file:{sb.state_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT * FROM dispatches").fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.Error, AttributeError):
+        rows = []
+    pending: dict[int, str] = {}
+    for row in rows:
+        for col in ("pid", "monitor_pid"):
+            if col in row.keys() and row[col] and int(row[col]) > 1:
+                pending[int(row[col])] = row["dispatch_id"]
+    ended: list[dict] = []
+    end = time.monotonic() + wait_s
+    while pending:
+        groups = process_groups()
+        for pgid in sorted(pending):
+            members = groups.get(pgid, set())
+            if not members:
+                pending.pop(pgid)  # nothing of it is left
+            elif pgid not in members:  # leader gone, members left: the worker's leftovers
+                ended.append({"dispatch": pending.pop(pgid), "pgid": pgid, "members": sorted(members)})
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(pgid, sig)
+                    except OSError:
+                        break
+                    stop_by = time.monotonic() + grace_s
+                    while time.monotonic() < stop_by and process_groups().get(pgid):
+                        time.sleep(0.05)
+                    if not process_groups().get(pgid):
+                        break
+        if not pending or time.monotonic() >= end:
+            break
+        time.sleep(0.2)
+    groups = process_groups()
+    return {"ended": ended,
+            "survivors": [{"pgid": e["pgid"], "members": sorted(groups[e["pgid"]])} for e in ended if groups.get(e["pgid"])],
+            "leaders_alive": [{"dispatch": d, "pgid": g} for g, d in sorted(pending.items())]}
 
 
 if __name__ == "__main__":

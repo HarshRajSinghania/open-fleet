@@ -210,8 +210,13 @@ before retries (a builder and a reviewer per task). The runner never picks the s
 - One runner at a time holds the results directory's lock, from its first check through its
   cleanup. A second `run` on the same directory is refused, and so are `report` and `verify`,
   which never read a run in progress.
-- An interrupted run (SIGTERM, SIGHUP or Ctrl-C) first kills every child process group it
-  started and stops every worker. It then charges every dispatch the store holds for the run whose
+- Every run, however it ends, kills every child process group it started and stops every worker
+  before it settles anything. It then ends every process group a worker left behind, finished
+  workers included, because the provider marks a dispatch completed once its foreground process
+  exits. A group whose leader is gone but whose members remain is a worker's leftover. A group
+  with a living leader is never touched, because its number may have been reused. What it ended
+  is recorded as the run's `teardown`, and a member that survives SIGKILL fails the run.
+- An interrupted run (SIGTERM, SIGHUP or Ctrl-C) does the same first. It then charges every dispatch the store holds for the run whose
   usage was never read, including one whose launch the signal interrupted before the runner saw
   its id. Each is charged what its stream reports, or its full reservation if the stream reports
   no cost. It decides what is still unsettled from the ledger, not from what the process

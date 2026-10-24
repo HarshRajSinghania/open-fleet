@@ -302,3 +302,67 @@ class TheCutFoldsTheBookkeeping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
+    """PR #670 review (P2): the README labels the tests badge "at last release", but main kept
+    4714, while v0.8.0 (065824b091) had 3270. Between releases the committed badge must be,
+    byte for byte, the badge at the last release's cut commit; a cut in progress writes its own."""
+
+    def setUp(self):
+        self.gb = load("scripts/gen-badges.py", "_bookkeeping_last_release")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        self.git = lambda *a: subprocess.run(["git", "-C", str(self.root), *a], env=env,
+                                             check=True, capture_output=True, text=True).stdout
+        self.git("init", "-q")
+        self.git("config", "user.email", "t@example.invalid")
+        self.git("config", "user.name", "t")
+        (self.root / "assets" / "badges").mkdir(parents=True)
+        (self.root / "docs").mkdir()
+        self.badge(3270)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the cut")
+        self.cut = self.git("rev-parse", "HEAD").strip()
+        self.releases(preparing=None)
+
+    def badge(self, count):
+        data = {"schemaVersion": 1, "label": "test functions", "message": f"{count} in source",
+                "color": "6e7781"}
+        (self.root / "assets" / "badges" / "tests.json").write_text(json.dumps(data, indent=2) + "\n",
+                                                                    encoding="utf-8")
+
+    def releases(self, preparing, commit=None):
+        data = {"preparing": preparing, "releases": [
+            {"version": "0.8.0", "tag": "v0.8.0", "commit": commit or self.cut}]}
+        (self.root / "docs" / "releases.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def test_the_last_releases_badge_passes(self):
+        self.assertEqual(self.gb.last_release_badge_errors(self.root), [])
+
+    def test_a_count_the_release_never_had_is_refused(self):
+        self.badge(4714)
+        errors = self.gb.last_release_badge_errors(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("'4714 in source'", errors[0])
+        self.assertIn("'3270 in source'", errors[0])
+
+    def test_a_cut_in_progress_writes_its_own(self):
+        self.badge(4714)
+        self.releases(preparing={"version": "0.9.0"})
+        self.assertEqual(self.gb.last_release_badge_errors(self.root), [])
+
+    def test_an_unreadable_release_commit_is_an_error_not_a_pass(self):
+        self.releases(preparing=None, commit="0" * 40)
+        errors = self.gb.last_release_badge_errors(self.root)
+        self.assertTrue(errors and "cannot read" in errors[0], errors)
+
+    def test_the_committed_badge_is_the_last_releases(self):
+        self.assertEqual(self.gb.last_release_badge_errors(ROOT), [])
+
+    def test_ci_runs_it_in_the_checks_job(self):
+        workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        checks = workflow.split("\n  checks:\n", 1)[1].split("\n  gates:\n", 1)[0]
+        self.assertIn("python3 scripts/gen-badges.py --check-last-release", checks)

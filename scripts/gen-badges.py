@@ -34,6 +34,7 @@ import ast
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -359,6 +360,32 @@ def tests_badge_shape(have) -> list[str]:
     return []
 
 
+def last_release_badge_errors(root: Path = ROOT) -> list[str]:
+    """Errors when the committed tests badge is not, byte for byte, the last release's own.
+
+    The README labels it "at last release" (PR #670), so between releases it must equal the badge
+    at the cut commit docs/releases.json names. While a cut is being prepared, the cut writes a
+    new one, so nothing is compared. An unreadable release commit is an error, never a pass.
+    """
+    data = json.loads((root / "docs" / "releases.json").read_text(encoding="utf-8"))
+    if data.get("preparing") or not data.get("releases"):
+        return []
+    last = data["releases"][-1]
+    rel = f"assets/badges/{TESTS_BADGE}"
+    shown = subprocess.run(["git", "-C", str(root), "show", f"{last['commit']}:{rel}"],
+                           capture_output=True, text=True)
+    if shown.returncode:
+        return [f"cannot read {last['tag']}'s {rel} at {last['commit'][:12]} (a shallow clone? "
+                f"fetch the release commit): {shown.stderr.strip()[:200]}"]
+    want = json.loads(shown.stdout)
+    have = json.loads((root / rel).read_text(encoding="utf-8"))
+    if have != want:
+        return [f"{rel} says {have.get('message')!r}, but the README labels it the last release's "
+                f"and {last['tag']} ({last['commit'][:12]}) says {want.get('message')!r} — restore "
+                f"it with: git show {last['commit']}:{rel} > {rel}"]
+    return []
+
+
 def check(include_test_count: bool = True) -> list[str]:
     """Return a list of stale-artifact errors (empty if everything committed is current).
 
@@ -418,7 +445,14 @@ if __name__ == "__main__":
     parser.add_argument("--release", action="store_true",
                         help="the release cut: include the test count (tests.json), which "
                              "pull requests leave at the last release's number")
+    parser.add_argument("--check-last-release", action="store_true",
+                        help="fail unless the committed tests badge is the last release's own")
     args = parser.parse_args()
+    if args.check_last_release:
+        errs = last_release_badge_errors()
+        for e in errs:
+            print(e, file=sys.stderr)
+        sys.exit(1 if errs else 0)
     if args.check:
         errs = check(include_test_count=args.release)
         for e in errs:

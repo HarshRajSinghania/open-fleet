@@ -465,9 +465,9 @@ class Budget:
     def total(self) -> Decimal:
         return _committed(self.calls())
 
-    def start_run(self, run: str, sandbox: Path) -> None:
+    def start_run(self, run: str, sandbox: Path, worker: str) -> None:
         self._update(lambda calls: ([{"call": f"{run}/run", "run": run, "state": "run", "usd": "0",
-                                      "sandbox": str(sandbox)}], None))
+                                      "sandbox": str(sandbox), "worker": worker}], None))
 
     def hold(self, entries, amount: Decimal, cap: Decimal) -> bool:
         """Hold `amount` for each (call, fields) at once, or none: False when the cap cannot cover
@@ -1601,7 +1601,7 @@ class Run:
         self.sb = sb
         self.commands = []
         self.dir.mkdir(parents=True)
-        self.budget.start_run(self.rid, sb.dir)  # where a recovery finds this run's streams
+        self.budget.start_run(self.rid, sb.dir, self.args.worker)  # where a recovery finds its streams
         self.record.update(started_at=now(), sandbox=str(sb.dir))
         started = time.monotonic()
         self.deadline = started + self.wall_limit
@@ -1792,6 +1792,41 @@ def last_activity(calls: dict, run: str):
     """The last time the ledger heard from a run (a lost run's end, for the cooldown)."""
     times = [v.get("at") for v in calls.values() if v.get("run") == run and v.get("at")]
     return max(times) if times else None
+
+
+def base_run(run_id: str) -> str:
+    return re.sub(r"-a\d+$", "", run_id)
+
+
+def live_positions(results: Path, positions: dict) -> set:
+    """The registered positions live runs in `results` already took: each live run.json, and each
+    lost run unless the ledger shows it ran the inert stand-in."""
+    starts = Budget(results).calls()
+    taken = set()
+    for d in runs_in(results):
+        if json.loads((d / "run.json").read_text(encoding="utf-8")).get("worker") == "live":
+            taken.add(positions.get(base_run(d.name)))
+    for d in lost_in(results):
+        if (starts.get(f"{d.name}/run") or {}).get("worker", "live") == "live":
+            taken.add(positions.get(base_run(d.name)))
+    return taken - {None}
+
+
+def check_order(results: Path, sched: dict, wanted: list) -> None:
+    """Live runs take the registered order (order.conditions: repetition r runs the conditions in
+    Latin-square row r; PR #653 review). A run starts only at the next position: every earlier
+    position has run, and no later one. Its one re-run (-a2) comes before the next position."""
+    positions = {rid: e["position"] for rid, e in sched.items()}
+    taken = live_positions(results, positions)
+    for base, attempt in wanted:
+        p = positions[base]
+        later = sorted(q for q in taken if q > p)
+        missing = [q for q in range(1, p) if q not in taken] if attempt == 1 else []
+        if later or missing:
+            raise Refused(f"{base} is at registered position {p}: live runs take the registered order, and "
+                          + (f"position(s) {later} already ran" if later else f"position(s) {missing} must run first")
+                          + " (see `plan`)")
+        taken.add(p)
 
 
 def recover(results: Path) -> list[str]:
@@ -2356,6 +2391,7 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     taskset_sha = sha256_file(taskset_path)
     sched = schedule(prereg, taskset)
     runs = [summarize_run(d, prereg, prereg_sha, taskset, taskset_sha) for d in runs_in(results)]
+    ledger = Budget(results).calls() if (Path(results) / Budget.NAME).is_file() else {}
     for d in lost_in(results):  # reported, never dropped, never pooled
         entry = next((e for e in sched if e["run_id"] == re.sub(r"-a\d+$", "", d.name)), None)
         lost = {"run_id": d.name, "condition": entry["condition"]["id"] if entry else None,
@@ -2365,7 +2401,9 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
                 "spend_committed_usd": str(_committed(Budget.of_run(Budget(results).calls(), d.name)))
                 if (Path(results) / Budget.NAME).is_file() else None,
                 "noncompliance": ["the runner was killed before it wrote run.json; its calls in the shared "
-                                  "ledger count against the cap until a recovery reconciles them"]}
+                                  "ledger count against the cap until a recovery reconciles them"],
+                "lost_start": (ledger.get(f"{d.name}/run") or {}).get("at"),
+                "lost_worker": (ledger.get(f"{d.name}/run") or {}).get("worker")}
         lost["registered"] = registered_run(lost)
         runs.append(lost)
     order = {e["run_id"]: e["position"] for e in sched}
@@ -2387,6 +2425,23 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
                 run.setdefault("noncompliance", []).append(
                     f"ran on another {what} ({str(run.get(key))[:40]}) than the first live run "
                     f"{first.get('run_id')} ({str(first.get(key))[:40]}): re-register before pooling them")
+    # The registered order (order.conditions; PR #653 review): repetition r runs the conditions in
+    # Latin-square row r, the protection against warm-up and time effects. A live run that started
+    # after a later-scheduled run, or before an earlier-scheduled one, is reported, never pooled. A
+    # lost run is placed by the start the ledger recorded, unless the ledger says it was inert.
+    placed = sorted([(r["started_at"], order[base_run(r["run_id"])], r) for r in live
+                     if base_run(r["run_id"]) in order]
+                    + [(r["lost_start"], order[base_run(r["run_id"])], r) for r in runs
+                       if r["status"] == "lost" and r.get("lost_start") and r.get("lost_worker") != "inert"
+                       and base_run(r["run_id"]) in order], key=lambda x: (x[0], x[1]))
+    for i, (_at, pos, run) in enumerate(placed):
+        after = sorted({q for _a, q, _r in placed[:i] if q > pos})
+        before = sorted({q for _a, q, _r in placed[i + 1:] if q < pos})
+        if after or before:
+            run["compliant"] = False
+            run.setdefault("noncompliance", []).append(
+                f"ran out of the registered order: position {pos} started "
+                + (f"after position(s) {after}" if after else f"before position(s) {before}"))
     for before, run in zip(live, live[1:], strict=False):
         gap = (datetime.fromisoformat(run["started_at"]) - datetime.fromisoformat(before["finished_at"])).total_seconds()
         if gap < cooldown:
@@ -2716,6 +2771,8 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
     if not wanted:
         print("wip-curve: every scheduled run is already present", file=sys.stderr)
         return EXIT_OK
+    if args.worker == "live":  # an inert dry run is fixture-tier and never pooled: any order
+        check_order(results, sched, wanted)
     inputs = experiment_inputs((path, taskset_path))
     if args.worker == "live":
         dirty = dirty_inputs()

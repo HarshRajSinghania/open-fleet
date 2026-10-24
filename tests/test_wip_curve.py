@@ -379,11 +379,11 @@ class TestPartialUsage(unittest.TestCase):
 class ReportOver(unittest.TestCase):
     """build_report() over synthetic run summaries: report logic without a real run."""
 
-    def report(self, runs, basis="compliant"):
+    def report(self, runs, basis="compliant", results=Path("/nonexistent")):
         by_name = {r["run_id"]: r for r in runs}
         with mock.patch.object(wip, "runs_in", return_value=[Path(r) for r in by_name]), \
                 mock.patch.object(wip, "summarize_run", side_effect=lambda d, *a: copy.deepcopy(by_name[Path(d).name])):
-            return wip.build_report(Path("/nonexistent"), basis=basis)
+            return wip.build_report(results, basis=basis)
 
 
 class TestIncomparableRunsAreNeverPooled(ReportOver):
@@ -413,11 +413,16 @@ class TestIncomparableRunsAreNeverPooled(ReportOver):
                         out["wip1-b6r1-rep1"]["noncompliance"])
 
 
-def series(cond, values, start_hour, **kw):
-    """Synthetic runs of one condition, two hours apart (the cooldown always kept)."""
-    base = datetime.fromisoformat("2026-10-24T00:00:00+00:00")
-    return [synthetic_run(f"wip1-{cond}-rep{i + 1}", cond, v,
-                          started=(base + timedelta(hours=start_hour + 2 * i)).isoformat(), **kw)
+def at_position(run_id) -> str:
+    """When a run at its registered position starts: two hours a position (the cooldown kept)."""
+    position = next(e["position"] for e in wip.schedule(*wip.load_prereg(PREREG)[:2]) if e["run_id"] == run_id)
+    return (datetime.fromisoformat("2026-10-24T00:00:00+00:00") + timedelta(hours=2 * position)).isoformat()
+
+
+def series(cond, values, **kw):
+    """Synthetic runs of one condition, each started at its registered position (PR #653 review:
+    a fixture never runs the conditions in another order than the schedule's)."""
+    return [synthetic_run(f"wip1-{cond}-rep{i + 1}", cond, v, started=at_position(f"wip1-{cond}-rep{i + 1}"), **kw)
             for i, v in enumerate(values)]
 
 
@@ -426,8 +431,7 @@ class TestOnlyCompliantRunsDecide(ReportOver):
     alone. Six fast b6r1 fixture runs must not turn a 'keep' into a 'raise'."""
 
     def runs(self):
-        compliant = (series("b1r1", ["1.00", "1.02"], 0) + series("b3r1", ["1.00", "1.02"], 4)
-                     + series("b6r1", ["1.00", "1.02"], 8))
+        compliant = series("b1r1", ["1.00", "1.02"]) + series("b3r1", ["1.00", "1.02"]) + series("b6r1", ["1.00", "1.02"])
         excluded = [synthetic_run(f"wip1-b6r1-rep{i}", "b6r1", "3.00", compliant=False, tier="fixture-tested",
                                   started=f"2026-10-25T{10 + i:02d}:00:00+00:00") for i in range(3, 9)]
         return compliant + excluded
@@ -464,6 +468,50 @@ class TestOnlyOneRetryAfterAFailure(ReportOver):
                                                    self.attempt(3, hour=14)])["runs"]}
         self.assertTrue(out["wip1-b1r1-rep1-a2"]["compliant"], out["wip1-b1r1-rep1-a2"]["noncompliance"])
         self.assertFalse(out["wip1-b1r1-rep1-a3"]["compliant"])
+
+
+class TestTheRegisteredOrderIsKept(ReportOver):
+    """PR #653 review (Bu3): repetition r runs the conditions in Latin-square row r (order.conditions),
+    the protection against warm-up and time effects. Live runs that started out of that order are
+    reported, never pooled, whatever each run's own checks say."""
+
+    def test_runs_in_the_registered_order_count(self):
+        runs = [synthetic_run(r, r.split("-")[1], "1.0", started=at_position(r))
+                for r in ("wip1-b1r1-rep1", "wip1-b3r1-rep1", "wip1-b6r2-rep1")]
+        self.assertEqual(self.report(runs)["compliant_runs"], ["wip1-b1r1-rep1", "wip1-b3r1-rep1", "wip1-b6r2-rep1"])
+
+    def test_the_serial_conditions_first_never_count(self):
+        # every b1r1 repetition first, then the wider conditions: each run's own labels are right
+        order = ["wip1-b1r1-rep1", "wip1-b1r1-rep2", "wip1-b1r1-rep3", "wip1-b3r1-rep1", "wip1-b6r1-rep1"]
+        base = datetime.fromisoformat("2026-10-24T00:00:00+00:00")
+        runs = [synthetic_run(r, r.split("-")[1], "1.0", started=(base + timedelta(hours=2 * i)).isoformat())
+                for i, r in enumerate(order)]
+        out = {r["run_id"]: r for r in self.report(runs)["runs"]}
+        self.assertTrue(out["wip1-b1r1-rep1"]["compliant"], out["wip1-b1r1-rep1"]["noncompliance"])
+        for rid in order[1:]:
+            self.assertFalse(out[rid]["compliant"], rid)
+            self.assertTrue(any("registered order" in w for w in out[rid]["noncompliance"]), out[rid]["noncompliance"])
+
+    def test_a_lost_live_run_is_placed_by_the_start_its_ledger_recorded(self):
+        tmp = Path(tempfile.mkdtemp(prefix="wip-curve-order-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "runs" / "wip1-b1r1-rep1").mkdir(parents=True)  # position 1, killed: no run.json
+        wip.Budget(tmp).start_run("wip1-b1r1-rep1", tmp / "gone", "live")  # its start: now
+        early = synthetic_run("wip1-b3r1-rep1", "b3r1", "1.0", started="2026-01-01T00:00:00+00:00")
+        out = {r["run_id"]: r for r in self.report([early], results=tmp)["runs"]}
+        self.assertFalse(out["wip1-b3r1-rep1"]["compliant"])
+        self.assertIn("ran out of the registered order: position 2 started before position(s) [1]",
+                      out["wip1-b3r1-rep1"]["noncompliance"])
+
+    def test_a_re_run_after_a_later_position_never_counts(self):
+        first = synthetic_run("wip1-b1r1-rep1", "b1r1", "1.0", started=at_position("wip1-b1r1-rep1"))
+        first.update(status="failed", compliant=False, noncompliance=["the run ended failed"])
+        later = synthetic_run("wip1-b3r1-rep1", "b3r1", "1.0", started=at_position("wip1-b3r1-rep1"))
+        rerun = synthetic_run("wip1-b1r1-rep1-a2", "b1r1", "1.0", started=at_position("wip1-b6r2-rep1"))
+        rerun["attempt"] = 2
+        out = {r["run_id"]: r for r in self.report([first, later, rerun])["runs"]}
+        self.assertFalse(out["wip1-b1r1-rep1-a2"]["compliant"])
+        self.assertTrue(any("registered order" in w for w in out["wip1-b1r1-rep1-a2"]["noncompliance"]))
 
 
 class TestChangedDeadlinesNeverCount(ReportOver):
@@ -1637,6 +1685,38 @@ class LiveWithAFakeHarness(Tmp):
         return p, self.results / "runs" / run / "run.json"
 
 
+class TestLiveRunsTakeTheRegisteredOrder(LiveWithAFakeHarness):
+    """PR #653 review (Bu3): a live run starts only at the next registered position: every earlier
+    position has run and no later one has. Checked before anything is dispatched."""
+
+    def refused(self, runs, text):
+        p, _run_json = self.live(run=runs)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(text, p.stderr)
+        runs_dir = self.results / "runs"
+        return sorted(d.name for d in runs_dir.iterdir()) if runs_dir.is_dir() else []
+
+    def test_a_later_position_first_is_refused(self):
+        self.assertEqual(self.refused("wip1-b3r1-rep1", "position 2"), [])
+
+    def test_a_list_out_of_order_is_refused_before_its_first_run(self):
+        self.assertEqual(self.refused("wip1-b3r1-rep1,wip1-b1r1-rep1", "position 2"), [])
+
+    def test_a_lost_run_takes_its_position_unless_its_ledger_says_inert(self):
+        positions = {e["run_id"]: e["position"] for e in wip.schedule(*wip.load_prereg(PREREG)[:2])}
+        for rid, worker in (("wip1-b1r1-rep1", "live"), ("wip1-b3r1-rep1", "inert"), ("wip1-b6r2-rep1", None)):
+            (self.tmp / "runs" / rid).mkdir(parents=True)
+            if worker:
+                wip.Budget(self.tmp).start_run(rid, self.tmp / "gone", worker)
+        # no ledger record: unknown, so it counts as a live run that took its position
+        self.assertEqual(wip.live_positions(self.tmp, positions), {1, 3})
+
+    def test_a_skipped_position_is_refused(self):
+        results, _p = documented_live_run()  # position 1 ran live
+        shutil.copytree(results, self.tmp / "results")
+        self.assertEqual(self.refused("wip1-b6r2-rep1", "[2]"), ["wip1-b1r1-rep1"])
+
+
 class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
     """PR #653 review: --model must reach the harness, and the run records the model each call
     truly launched; a harness that ignores the pin is stopped before its next call."""
@@ -1906,7 +1986,7 @@ class TestAKilledRunStillCounts(Tmp):
         self.results = self.tmp / "results"
         (self.results / "runs" / "wip1-b1r1-rep1").mkdir(parents=True)
         budget = wip.Budget(self.results)  # its sandbox is gone: no store to ask, no worker to stop
-        budget.start_run("wip1-b1r1-rep1", self.tmp / "gone")
+        budget.start_run("wip1-b1r1-rep1", self.tmp / "gone", "inert")
         rid = "wip1-b1r1-rep1/T5/a1"
         budget.hold([(f"{rid}/builder", {"run": "wip1-b1r1-rep1"}), (f"{rid}/reviewer", {"run": "wip1-b1r1-rep1"})],
                     Decimal("0.50"), Decimal("10"))

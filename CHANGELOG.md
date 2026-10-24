@@ -52,7 +52,8 @@ truth is `.claude-plugin/plugin.json`.
     - Coordinator and merge-queue git goes through `gitexec.py`.
     - Worker code under the oracle gets a minimal environment.
   - What can be pooled: a run under another machine, harness, model pin, input digest, deadline
-    scale, schedule entry or WIP than its label claims is never pooled. Only one re-run is
+    scale, schedule entry or WIP than its label claims is never pooled. Neither is a live run
+    started out of the registered order, which `run` also refuses before anything is dispatched. Only one re-run is
     allowed, after an infrastructure failure. The recommendation reads compliant runs only.
   - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
     scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three

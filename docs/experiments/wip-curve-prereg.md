@@ -121,6 +121,13 @@ takes three of the four positions. Each run's task order is the task ids sorted 
 `sha256('<seed>:<run id>:<task id>')`. Anyone can recompute it from the JSON, and nobody chose it.
 `wip_curve.py plan` prints the schedule.
 
+Live runs take the schedule's positions in order. Before anything is dispatched, `run` refuses a
+live run unless every earlier position has run live and no later one has. That includes a run
+killed outright, unless the ledger shows it was inert. A re-run (`-a2`) must come before the next
+position. An inert dry run is fixture-tier and never pooled, so it may run in any order. The report
+checks the order independently. A live run that started after a later-scheduled run, or before an
+earlier-scheduled one, is reported as non-compliant and never pooled.
+
 Each run gets a new sandbox containing a fresh local-state store, a fresh merge-queue store, and
 a fresh bare origin and clone. The clone is built from the task set's seed with a fixed author,
 committer and date, so every run starts at the same registered seed commit. The runner and the

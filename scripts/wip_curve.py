@@ -85,6 +85,8 @@ Z95 = Decimal("1.959963984540054")
 # No harness in the posix launch table (runtime/providers/base.py) is given a per-call budget
 # flag, so a running dispatch can overrun its reservation; the guard refuses every NEXT dispatch.
 PER_CALL_LIMIT = "none passed: the posix launch table has no per-call budget flag for any harness"
+# The merge queue's own `failed` receipt reasons (runtime/scripts/merge_queue.py plan()).
+MQ_CONFLICT, MQ_GATE_FAILED = "conflict", "gate_failed"
 AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavailable'"
 
 
@@ -583,18 +585,21 @@ if role == "builder":
     if action == "die":
         answer("stand-in scripted to exit without reporting")
         sys.exit(1)
-    if action in ("solve", "miss"):
+    if action in ("solve", "miss", "regress"):
         spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
         runner = importlib.util.module_from_spec(spec_r)
         spec_r.loader.exec_module(runner)
         tdef = runner.task_by_id(json.loads(Path(cfg["taskset"]).read_text(encoding="utf-8")))[task]
-        if action == "solve":
-            changed = runner.apply_edits(Path.cwd(), tdef["reference"])
-        else:  # a scripted miss: a commit that does not do the task, so the oracle fails it
+        if action == "miss":  # a commit that does not do the task, so the oracle fails it
             target = Path(tdef["files"][0])
             target.write_text(target.read_text(encoding="utf-8") + "# stand-in: scripted miss\n",
                               encoding="utf-8")
             changed = [tdef["files"][0]]
+        else:
+            changed = runner.apply_edits(Path.cwd(), tdef["reference"])
+        if action == "regress":  # passes its own oracle, breaks a landed task's: the merge gate fails
+            changed += [f for f in runner.apply_edits(Path.cwd(), cfg["script"]["_regress"][task])
+                        if f not in changed]
         sh("git", "add", "--", *changed)
         sh("git", "commit", "-q", "-m", f"{task}: {tdef['title']}")
     head = sh("git", "rev-parse", "HEAD")
@@ -1173,7 +1178,7 @@ class Run:
                           data={"head_sha": a["head"], "head_wtree": a["tree"]})
             else:
                 reason = (entry.get("reason") or "").split(" ", 1)[0] or entry["state"]
-                a["outcome"] = {"conflict": "merge-conflict", "gate": "gate-failed"}.get(reason, f"merge-{reason}")
+                a["outcome"] = {MQ_CONFLICT: "merge-conflict", MQ_GATE_FAILED: "gate-failed"}.get(reason, f"merge-{reason}")
 
     def park(self, tid, park_class, head=None):
         unit = self.units[tid]
@@ -1474,10 +1479,18 @@ def merge_counts(bound: Bound) -> dict:
     if not path.is_file():
         return {"conflicts": None, "gate_failures": None, "landed": None}
     receipts = json.loads(path.read_text(encoding="utf-8")).get("receipts") or []
-    failed = [r for r in receipts if r.get("kind") == "failed"]
-    return {"conflicts": sum((r.get("body") or {}).get("reason") == "conflict" for r in failed),
-            "gate_failures": sum((r.get("body") or {}).get("reason") == "gate" for r in failed),
-            "landed": sum(r.get("kind") == "acknowledged" for r in receipts)}
+    reasons = [(r.get("body") or {}).get("reason") for r in receipts if r.get("kind") == "failed"]
+    out = {"conflicts": reasons.count("conflict"),
+           # The queue writes `gate_failed` (a failed gate, or one that timed out: exit 124).
+           "gate_failures": reasons.count(MQ_GATE_FAILED),
+           "gate_timeouts": sum((r.get("body") or {}).get("reason") == MQ_GATE_FAILED
+                                and ((r.get("body") or {}).get("gate") or {}).get("exit") == 124
+                                for r in receipts if r.get("kind") == "failed"),
+           "landed": sum(r.get("kind") == "acknowledged" for r in receipts)}
+    unclassified = sorted({str(r) for r in reasons if r not in (MQ_CONFLICT, MQ_GATE_FAILED)})
+    if unclassified:  # a failure this cannot classify is not "no conflict" and "no failed gate"
+        out.update(conflicts=None, gate_failures=None, gate_timeouts=None, unclassified=unclassified)
+    return out
 
 
 def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, taskset_sha: str) -> dict:

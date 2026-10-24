@@ -183,8 +183,11 @@ and parks; and usage. The experiment report adds the following per run:
 - **Rework:** bounced unit-waves over all unit-waves. **Freshness:** approving reviews voided
   because the unit closed at another head. **Retries.** **Review queue:** median and maximum
   time from a worker_done to a review of that head starting, per review.
-- **Conflicts and gate failures:** the merge queue's `failed` receipts. Each conflict is
-  re-derived from git with `git merge-tree` against the prefix commit that the run pinned.
+- **Conflicts and gate failures:** the merge queue's `failed` receipts, by the reasons it writes
+  (`conflict`, `gate_failed`; a gate that timed out is a `gate_failed` too, also counted as a
+  timeout). Each conflict is re-derived from git with `git merge-tree` against the prefix commit
+  that the run pinned. A failed receipt with any other reason leaves both counts `unavailable`,
+  never 0.
 - **Tokens and cost:** per model and per run. An unobserved field is `unavailable` and never 0.
 
 The JSON's `metrics.report_fields` registers every field the report must emit, per run and per

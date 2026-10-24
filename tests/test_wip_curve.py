@@ -421,6 +421,11 @@ B6_CAPPED = ("wip1-b6r2-rep1", ("--cost-cap-usd", "3.40", "--inert-cost-usd", "0
 # b1r1-rep1 builds T5 first. A cap of exactly one unit's worst case (a builder and a reviewer at
 # 0.25 each); in the second, the fake harness reports 0.40 for the builder, over its reservation.
 B1_BOUNDARY = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25"))
+# T5 lands first; T3's builder then also empties Ledger.history(): its own oracle passes, T5's fails
+# in the merge gate, so the queue writes a real `gate_failed` receipt and T3 is rebuilt.
+B1_GATE = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
+    {"T3": {"builder": ["regress"]}, "_regress": {"T3": [
+        {"file": "stocklib/ledger.py", "replace": "        return list(self._history)", "with": ["        return []"]}]}})))
 B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
                                    "--inert-script", json.dumps({"_cost": {"builder": "0.40"}})))
 
@@ -990,6 +995,75 @@ class TestRegisteredInputsBlockARun(Tmp):
                     "runtime/providers/posix.py"):
             self.assertEqual(files[rel], hashlib.sha256((ROOT / rel).read_bytes()).hexdigest(), rel)
         self.assertEqual(record["inputs"]["sha256"], wip.experiment_inputs()["sha256"])
+
+
+class TestMergeQueueFailuresAreCounted(Tmp):
+    """Conflicts and gate failures come from the merge queue's own receipts, as it writes them:
+    a real failed-gate receipt (reason `gate_failed`) counts once, never as zero."""
+
+    def receipts_with_a_failed_gate(self) -> Path:
+        mq = [sys.executable, str(ROOT / "runtime" / "scripts" / "merge_queue.py"), "--db", str(self.tmp / "mq.db"),
+              "--repo-dir", str(self.tmp / "clone")]
+        env = {**os.environ, "OPEN_FLEET_STATE_DIR": str(self.tmp / "mq-state")}
+        wip.git(self.tmp, "init", "-q", "--bare", str(self.tmp / "origin.git"))
+        seed = self.tmp / "seed"
+        wip.build_seed(json.loads(TASKSET.read_text(encoding="utf-8")), seed)
+        wip.git(seed, "push", "-q", str(self.tmp / "origin.git"), "main:refs/heads/main", "main:refs/heads/wip-integration")
+        wip.git(self.tmp, "clone", "-q", str(self.tmp / "origin.git"), str(self.tmp / "clone"))
+        clone = self.tmp / "clone"
+        wip.configure_repo(clone)
+        wip.git(clone, "checkout", "-q", "-b", "unit", "origin/wip-integration")
+        (clone / "NOTES.md").write_text("a unit\n", encoding="utf-8")
+        wip.git(clone, "add", "NOTES.md")
+        wip.git(clone, "commit", "-qm", "unit")
+        wip.git(clone, "push", "-q", "origin", "unit")
+        head = wip.git_out(clone, "rev-parse", "HEAD")
+
+        def call(*args):
+            out = subprocess.run([*mq, *args], capture_output=True, text=True, env=env)
+            return json.loads(out.stdout)
+        call("init", "--base", "wip-integration", "--default", "main", "--consent", "test", "--mode", "git")
+        token = call("acquire", "--base", "wip-integration", "--holder", "t")["token"]
+        call("enqueue", "--token", token, "--payload", json.dumps(
+            {"unit": "u1", "branch": "unit", "base": "wip-integration", "reviewed_sha": head, "pr": None}))
+        call("release", "--token", token)
+        drained = call("drain", "--base", "wip-integration", "--holder", "t", "--gate-cmd", "exit 1", "--ack")
+        self.assertEqual((drained.get("data") or {}).get("reason"), "gate_failed", drained)
+        run_dir = self.tmp / "run"
+        run_dir.mkdir()
+        (run_dir / "merge-receipts.json").write_text(json.dumps(call("receipts", "--base", "wip-integration")),
+                                                    encoding="utf-8")
+        (run_dir / "run.json").write_text(json.dumps({"run_id": "r", "sources": {
+            "merge-receipts.json": hashlib.sha256((run_dir / "merge-receipts.json").read_bytes()).hexdigest()}}),
+            encoding="utf-8")
+        return run_dir
+
+    def test_a_real_failed_gate_receipt_counts_as_a_gate_failure(self):
+        counts = wip.merge_counts(wip.Bound(self.receipts_with_a_failed_gate()))
+        self.assertEqual((counts["gate_failures"], counts["conflicts"]), (1, 0), counts)
+
+    def test_an_unclassified_failure_leaves_the_counts_unavailable_not_zero(self):
+        run_dir = self.receipts_with_a_failed_gate()
+        doc = json.loads((run_dir / "merge-receipts.json").read_text(encoding="utf-8"))
+        for receipt in doc["receipts"]:
+            if receipt["kind"] == "failed":
+                receipt["body"]["reason"] = "merge_refused"
+        (run_dir / "merge-receipts.json").write_text(json.dumps(doc), encoding="utf-8")
+        rebind(run_dir)
+        counts = wip.merge_counts(wip.Bound(run_dir))
+        self.assertIsNone(counts["gate_failures"], counts)
+
+
+class TestAFailedMergeGateIsReported(DryRun):
+    RUN, ARGS = B1_GATE
+
+    def test_the_failed_gate_bounces_the_unit_and_counts_once(self):
+        self.assertEqual(self.record["status"], "complete", self.proc.stdout + self.proc.stderr)
+        t3 = self.record["units"]["T3"]
+        self.assertEqual([a["outcome"] for a in t3["attempts"]], ["gate-failed", "landed"])
+        report = wip.build_report(self.copy(), basis="all")
+        self.assertEqual(report["runs"][0]["registered"]["gate_failures"], 1)
+        self.assertEqual(report["runs"][0]["binding_problems"], [])
 
 
 class TestRelativePaths(unittest.TestCase):

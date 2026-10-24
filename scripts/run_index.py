@@ -154,9 +154,9 @@ def html_link(text):
             line_end = lines[bisect.bisect_right(starts, i) - 1][1]
             run = len(text[i:line_end]) - len(text[i:line_end].lstrip("`"))
             close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, line_end)
-            if close:
+            if close and "|" not in text[i + run:close.start()]:
                 i = close.end()
-            else:
+            else:  # left open, or holding a "|" that may split it into table cells (Codex at 0527c08900)
                 literal, i = i, i + run
         elif text[i] == "<":
             tag = _tag(text, i)

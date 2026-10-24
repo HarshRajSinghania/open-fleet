@@ -460,6 +460,8 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- | a | b |\n  | - | - |\n  | ` | <a href="../docs/ops.md">ops</a>` |\n',
         # Pandoc's GFM math takes a backtick as its delimiter (#673)
         '- **Change** $`x <a href="../docs/ops.md">ops</a> `\n',
+        # a header row needs no leading pipe: a "|" inside a span may split it into cells (Codex at 0527c08900)
+        '- **Change** `a | <a href="../docs/ops.md">ops</a>`\n  --- | ---\n',
     )
 
     def errors(self, text):

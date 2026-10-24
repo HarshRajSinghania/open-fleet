@@ -381,10 +381,6 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** `x` and `<a href="../docs/ops.md">ops</a>` are both spans.\n',
         '- **Change** <a name="anchor">no link attribute</a>.\n',
         '- **Change** an escaped \\<a href="../docs/ops.md"> is text.\n',
-        '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
-        # a fenced block is literal to its closing fence, list markers inside it too (Greptile at 8585b35789)
-        '- **Change** an example:\n\n  ```html\n  - example\n  <a href="../x.md">x</a>\n  ```\n',
-        '- **Change** an example:\n\n~~~~\n# not a heading\n<img src="../x.png">\n~~~~\n',
         # an inline tag at a line's start opens no HTML block: the code span after it stays code (#673)
         '- **Change** text\n  <span>inline</span> then `<a href="../x.md">example</a>`.\n',
     )
@@ -428,6 +424,16 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** x\u2028~~~\u2028<a href="../docs/ops.md">ops</a>\u2028~~~\n',
         # an empty block quote ends the paragraph too; a lone tag opens a block wherever it stands (Codex at 0b09543855)
         '- **Change** x\n  >\n  <span>\n  `<a href="../docs/ops.md">ops</a>`\n  </span>\n',
+        # raw HTML opened on a list-item or quote line, past its marks (Codex at c5ac0e4c75)
+        '- <div>\n  <span>example</span>\n  `<a href="../docs/ops.md">sample</a>`\n  </div>\n',
+        '> <div>\n> `<a href="../docs/ops.md">ops</a>`\n',
+        # an indented <pre> cannot invert a fence: no fence is honoured (Codex at c5ac0e4c75)
+        '- text\n      <pre>\n  ```\n  </pre>\n  ```\n  <a href="../docs/ops.md">ops</a>\n',
+        # Read as text on purpose (#673): a code span that wraps a line, and a fenced block. A
+        # renderer may show these as code, but fragments allow no blank line and run-index cells no
+        # newline, so neither is needed, and reading them as text can never hide a link.
+        '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
+        '- **Change** an example:\n  ```html\n  <a href="../x.md">x</a>\n  ```\n',
     )
 
     def errors(self, text):

@@ -51,102 +51,45 @@ _TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
 _TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
                           re.IGNORECASE)
 _TAG_END_RE = re.compile(r"\s*/?>")
-# Where a Markdown block may end: a code span never crosses one (CommonMark: inlines are parsed
-# within a block). A blank line, or a line whose first mark, at any indentation (a list item's
-# blocks sit deeper), can open or close a block: a list item, a setext underline or thematic
-# break, a heading, a quote, a table row, an HTML block or a fence. It over-approximates on
-# purpose (Codex at 8585b35789 and 3c01b90b5e): a span cut short can only reveal a tag, never
-# hide one.
-_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n[ \t]*(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
-# Raw HTML blocks (CommonMark 0.31, "HTML blocks"), where tags are real and backticks are text.
-# Types 1-5 open on their own marks and end at their own end mark, past blank lines; types 6 and
-# 7 end at a blank line. Type 7 is any other complete tag alone on its line. CommonMark lets it
-# open a block only where no paragraph runs on; the scanner opens one wherever such a line
-# stands, since tracking where every paragraph ends kept missing a container (Codex at dde9cbedf9
-# and 0b09543855). All are recognised at any indentation, since a list item's blocks sit deeper:
-# missing one could hide a tag, while a spurious one only reveals more.
-_HTML_BLOCK_ENDING = (
-    (re.compile(r"<(?:script|pre|style|textarea)(?:[\s>]|$)", re.IGNORECASE),
-     re.compile(r"</(?:script|pre|style|textarea)>", re.IGNORECASE)),
-    (re.compile(r"<!--"), re.compile(r"-->")),
-    (re.compile(r"<\?"), re.compile(r"\?>")),
-    (re.compile(r"<![a-z]", re.IGNORECASE), re.compile(r">")),
-    (re.compile(r"<!\[CDATA\["), re.compile(r"\]\]>")),
-)
+# Raw HTML blocks (CommonMark 0.31 and GFM, "HTML blocks"): inside one, tags are real, and a
+# backtick or a backslash is text. A line may open one when, past any block-quote or list-item
+# marks, it starts a type 1-5 block (<script, <pre, <style, <textarea, <!--, <?, <!X, <![CDATA[),
+# names a type 6 block tag, or holds one complete tag alone (type 7).
+_HTML_OPENER_RE = re.compile(r"<(?:script|pre|style|textarea)(?:[\s>]|$)|<!--|<\?|<![a-z]|<!\[CDATA\[",
+                             re.IGNORECASE)
 _HTML_BLOCK6_RE = re.compile(
     r"</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|"
     r"div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|"
-    r"link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|"
-    r"th|thead|title|tr|track|ul)(?:[\s/>]|$)", re.IGNORECASE)
+    r"link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|source|summary|table|tbody|td|"
+    r"tfoot|th|thead|title|tr|track|ul)(?:[\s/>]|$)", re.IGNORECASE)
 _HTML_BLOCK7_RE = re.compile(
     r"(?:<[a-z][a-z0-9-]*(?:\s+[a-z_:][a-z0-9_.:-]*(?:\s*=\s*(?:[^\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*\s*/?>"
     r"|</[a-z][a-z0-9-]*\s*>)[ \t]*$", re.IGNORECASE)
-# A fenced code block's opening line (at any indentation): literal to its closing fence, or to
-# where the list item holding it ends (Greptile at 8585b35789).
-_FENCE_RE = re.compile(r"([ \t]*)(`{3,}|~{3,})([^\n]*)")
-# A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also split
-# at U+2028 and friends, inventing lines, and fences, that a renderer never sees (Codex at dde9cbedf9).
+_CONTAINER_RE = re.compile(r"[ \t]*(?:>|[-*+](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$))")
+# A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also
+# split at U+2028 and friends, inventing lines a renderer never sees (Codex at dde9cbedf9).
 _LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
 
 
-def _regions(text):
-    """`text` split into line runs, each ("html" | "fence" | "text", start, end). An HTML block's
-    tags are real and its backticks text; a fenced block is literal; the rest is inline Markdown.
-    A line inside an HTML block opens no fence (Greptile at 1fad2a56e8), so HTML is checked first.
-    A fence ends at its closing fence or at the first later line indented less than it, where the
-    list item holding it ends, so no tag after that item is hidden."""
-    out, state = [], None
-    for match in _LINE_RE.finditer(text):
-        line, start, pos = match.group(), match.start(), match.end()
-        rest = line.lstrip(" \t").rstrip("\r\n")
-        indent = len(line[:len(line) - len(line.lstrip(" \t"))].expandtabs(4))
-        if state and state[0] == "fence":
-            if rest and indent < state[1]:
-                state = None  # the container ended, and the fence with it: read this line afresh
-            else:
-                out.append(("fence", start, pos))
-                state = None if state[2].fullmatch(rest) else state
-                continue
-        if state and state[0] == "html":
-            if state[1] is None and not rest:  # types 6 and 7 end at a blank line
-                state = None
-                out.append(("text", start, pos))
-            else:
-                out.append(("html", start, pos))
-                state = None if state[1] is not None and state[1].search(rest) else state
-            continue
-        opened = next(((m, ends) for opens, ends in _HTML_BLOCK_ENDING if (m := opens.match(rest))), None)
-        if opened or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest):
-            ends = opened[1] if opened else None
-            out.append(("html", start, pos))
-            state = None if ends is not None and ends.search(rest, opened[0].end()) else ("html", ends)
-            continue
-        fence = _FENCE_RE.match(line)
-        if fence and not (fence.group(2)[0] == "`" and "`" in fence.group(3)):
-            mark = fence.group(2)
-            state = ("fence", indent, re.compile(rf"{re.escape(mark[0])}{{{len(mark)},}}[ \t]*"))
-            out.append(("fence", start, pos))
-            continue
-        out.append(("text", start, pos))
-    merged = []
-    for kind, start, end in out:  # adjacent lines of a kind form one run: a span may cross a soft break
-        if merged and merged[-1][0] == kind:
-            merged[-1] = (kind, merged[-1][1], end)
-        else:
-            merged.append((kind, start, end))
-    return merged
+def _opens_html(line):
+    """Whether `line`, past any block-quote and list-item marks, may open a raw HTML block."""
+    rest = line.rstrip("\r\n")
+    while mark := _CONTAINER_RE.match(rest):
+        rest = rest[mark.end():]
+    rest = rest.lstrip(" \t")
+    return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
 
 
 def _scan(text, i, end, inline):
-    """The first link tag starting in text[i:end]. Inline Markdown (`inline`) honours backslash
-    escapes and code spans; raw HTML has neither."""
+    """The first link tag starting in text[i:end], one line. Inline Markdown (`inline`) honours a
+    backslash escape and a code span that closes on the same line; raw HTML honours neither. A
+    tag may run on past the line, as CommonMark allows."""
     while i < end:
         if inline and text[i] == "\\":
             i += 2
         elif inline and text[i] == "`":
-            run = len(text) - i - len(text[i:].lstrip("`"))
-            block = _BLOCK_END_RE.search(text, i + run, end)
-            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, block.start() if block else end)
+            run = len(text[i:end]) - len(text[i:end].lstrip("`"))
+            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, end)
             i = close.end() if close else i + run
         elif text[i] == "<" and (name := _TAG_NAME_RE.match(text, i)):
             pos, link = name.end(), False
@@ -160,6 +103,8 @@ def _scan(text, i, end, inline):
         else:
             i += 1
     return None
+
+
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -167,15 +112,18 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None.
 
-    Read as a renderer reads it: a raw HTML block's tags are real and its backticks text; a fenced
-    code block is literal; elsewhere a backslash escape is text and a code span (a run of N
-    backticks closed by the next run of exactly N in the same block) renders literally, so a tag
-    inside one is no link, and an unclosed run is plain backticks. scripts/run_index.py keeps an
-    identical copy: it is loaded alone, so it cannot import this one (tests/test_changelog.py holds
-    them equal).
+    Read so that nothing a renderer shows as a link is missed (#673). A tag is skipped only inside
+    a backslash escape or a code span that opens and closes on one line, and only before any line
+    that may open a raw HTML block, past list or quote marks; from that line on, backticks are
+    text. A code span that wraps a line, and a fenced block, are read as text: fragments allow no
+    blank line and run-index cells no newline, so reading them so reveals more, never less.
+    scripts/run_index.py keeps an identical copy: it is loaded alone, so it cannot import this
+    one (tests/test_changelog.py holds them equal).
     """
-    for kind, start, end in _regions(text):
-        if kind != "fence" and (found := _scan(text, start, end, inline=kind == "text")):
+    literal = False  # from the first line that may open raw HTML, backticks and escapes are text
+    for line in _LINE_RE.finditer(text):
+        literal = literal or _opens_html(line.group())
+        if found := _scan(text, line.start(), line.end(), inline=not literal):
             return found
     return None
 

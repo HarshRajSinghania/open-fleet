@@ -17,11 +17,13 @@ test reruns at the exact head and verification against the frozen contract and r
 remain coordinator-owned. **no** means the recorded report does not satisfy these binding checks
 here — history, kept, supporting no proof-tier advance.
 
-Five reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
+Six reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
 prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the binding gate), the
-2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance, and the
+2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance, the
 2026-10-13 review-it Linux witness, filed at `doctrine-only` as #527 substrate evidence and
-re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier. Every other row reads **no**, and that
+re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier, and the
+2026-10-24 #605 live hint-replay run — an experiment, not a mission run, bound at
+`doctrine-only`, its verifier GREEN under a coordinator-signed dispatch record. Every other row reads **no**, and that
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;
@@ -56,6 +58,7 @@ git repositories and includes a fully bound positive case alongside a dozen refu
 | 2026-10-17 | [pin-it](2026-10-17-pin-it-229.md) | this catalog's runtime doctrine against Orca v1.4.229 (`a0cd1644`, source-delta re-witness vs v1.4.224 + carried live receipts; [delta inventory](2026-10-17-pin-it-229/delta-inventory-2026-10-17.md)) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | PINNED-WITH-PARKED (1 stale Jira claim patched; 5 additive surfaces folded in: `orca jira`, `agent launch`, `reference`, `serve` containment, `task_not_startable.failureCount`, `automations runs` paging; parks carried) |
 | 2026-10-24 | [pin-it](2026-10-24-pin-it-238.md) | this catalog's runtime doctrine against Orca v1.4.238 (`e6f7fba5`, source-delta re-witness over the 1040-commit tag range vs the v1.4.229 pin; [delta inventory](2026-10-24-pin-it-238/delta-inventory-2026-10-24.md)) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | RE-WITNESSED, PIN HELD at v1.4.229 (policies 10 CURRENT / 2 PATCHED / 4 deferred until #606 runs; scripts 41 CURRENT / 3 PATCHED; Auto host mode and `--host` names drifted in #606-registered docs; dated trigger now filed by the weekly probe) |
 | 2026-10-24 | [pin-it](2026-10-24-pin-it-238-bump.md) | the pin bump the v1.4.238 re-witness deferred: its E1–E8 doctrine edits and B1–B9 bump steps, with #606's registration re-registered as version 2 before any live cell ran | self-run | no — a run note applying a recorded run's deferred edits; it binds nothing | PINNED-WITH-PARKED at v1.4.238 (Auto host mode and `--host` names patched; E3 corrected and one more stale containment path found; no assertion line edited, no budget raised) |
+| 2026-10-24 | [hint-replay](2026-10-24-hint-replay-605-live.md) (experiment, not a mission) | this catalog's episodic hints — #605's live arm: 2 scenarios × 3 arms (off / unchecked / checked) × 3 attempts, `claude-opus-5-5` | self-run | yes — at `doctrine-only`, advancing no tier; verifier GREEN under a coordinator-signed dispatch record (two earlier RED runs recorded) | NULL at a ceiling (every arm 6/6, 0 repeated failures; USD 1.22 notional of a USD 40 cap) |
 
 ### Self-test campaign 2026-09-16
 

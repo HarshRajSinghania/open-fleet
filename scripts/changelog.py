@@ -41,6 +41,9 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,78}\.md$")
 # repository's dead-link test checks it where it sits; the cut drops the leading `../` so the same
 # link resolves from CHANGELOG.md at the root.
 LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")
+# An HTML href/src is not rewritten when the cut moves the entry to the root CHANGELOG.md, so a
+# relative one would break there (PR #670): fragments carry Markdown links only.
+HTML_LINK_RE = re.compile(r"<[a-z][^>]*\b(?:href|src)\s*=", re.IGNORECASE)
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -81,6 +84,9 @@ def fragment_errors(path):
         elif not (line.startswith("- ") or line.startswith("  ")):
             errors.append(f"{where}:{n}: start the line with '- ' (a new entry) "
                           "or two spaces (a continuation)")
+        if HTML_LINK_RE.search(line):
+            errors.append(f"{where}:{n}: write the link as a Markdown link ([text](../path)); an "
+                          "HTML href or src is not rewritten for CHANGELOG.md")
         for target in LINK_RE.findall(line):
             if not target.startswith("../") or target.startswith("../../"):
                 errors.append(f"{where}:{n}: link ({target}) must be written from changelog.d/, "

@@ -151,6 +151,23 @@ class FragmentsAreWellFormed(unittest.TestCase):
         self.assertIn("README.md is missing", errors[0])
 
 
+class HtmlLinksAreRefused(unittest.TestCase):
+    """PR #670 review (P2, PRRT_kwDOTWxN9c6v5pBw): as_released rewrites Markdown links for the
+    root-level CHANGELOG.md but not HTML ones, so a relative <a href> passed in changelog.d/ and broke
+    once assembled. A fragment holds Markdown links only."""
+
+    def test_a_relative_html_link_is_refused(self):
+        for text in ('- **Change** <a href="../docs/ops.md">ops</a>.\n',
+                     "- **Change** <a href='../docs/ops.md'>ops</a>.\n",
+                     '- **Change** <img src="../assets/x.png">.\n'):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                (d / "README.md").write_text("x\n", encoding="utf-8")
+                (d / "html.md").write_text(text, encoding="utf-8")
+                errors = cl.check_fragments(d)
+                self.assertTrue(any("html.md" in e and "Markdown link" in e for e in errors), errors)
+
+
 class TheSharedSectionTakesNoNewEntry(unittest.TestCase):
     """`check --base`: the count of [Unreleased] entries may not grow on a pull request."""
 

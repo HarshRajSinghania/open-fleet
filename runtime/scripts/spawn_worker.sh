@@ -1417,7 +1417,50 @@ PY
   # --inject SUBMITS the preamble; it does not merely paste it. The --json receipt carries
   # result.prompt{requestId, stages}. There is no Enter to send after this.
   dj="$SP/dispatch-$safe_title.json"
-  orca_json "$dj" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
+  # The receipt is the verdict here too: a typed refusal is a policy answer (exit 2, like the
+  # supervised lane) and keeps its code, reason and the runtime's own nextSteps. Orca 1.4.229
+  # refused one with `inject_rejected` / `no_agent_detected`, and this lane said only that the
+  # step failed (#596).
+  dj_rc=0
+  "$ORCA_BIN" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$dj" || dj_rc=$?
+  dj_err=$(python3 -I - "$dj" <<'PY'
+import json, sys
+POLICY_CODES = {"task_not_found", "task_not_startable", "inject_rejected",
+                "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive"}
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+if not isinstance(d, dict):
+    raise SystemExit(0)
+r = d.get("result") if isinstance(d.get("result"), dict) else {}
+err = d.get("error") or r.get("error")
+if not err:
+    raise SystemExit(0)
+if not isinstance(err, dict):
+    err = {"code": str(err)}
+data = err.get("data") if isinstance(err.get("data"), dict) else {}
+for step in data.get("nextSteps") or []:
+    print(f"nextStep: {step}", file=sys.stderr)
+code = str(err.get("code") or "unknown")
+reason = data.get("reason") if isinstance(data.get("reason"), str) else ""
+msg = " ".join(str(err.get("message") or "").split())[:300]
+verdict = "refused" if code in POLICY_CODES else "failed"
+print(f"{verdict} CODE={code}" + (f" reason={reason}" if reason else "") + f" — {msg}")
+PY
+)
+  case "$dj_err" in
+    "refused "*)
+      echo "SPAWN=REFUSED task=${task} dispatch --inject ${dj_err#refused } (policy/usage — nextSteps above; nothing was injected; receipt in $dj; the agent pane ${h} is still open: inspect it, never resend)" >&2
+      exit 2 ;;
+    "failed "*)
+      echo "SPAWN=FAILED task=${task} step=${step} rc=1 — dispatch --inject ${dj_err#failed } (receipt in $dj)" >&2
+      exit 1 ;;
+  esac
+  if [ "$dj_rc" != "0" ]; then
+    echo "SPAWN=FAILED task=${task} step=${step} rc=${dj_rc} — dispatch --inject exited ${dj_rc} with no readable receipt (in $dj)" >&2
+    exit 1
+  fi
 
   step=read-inject-receipt
   read_stages() {

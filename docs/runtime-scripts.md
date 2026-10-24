@@ -1579,7 +1579,9 @@ answer a deny probe, else `SPAWN=REFUSED`; unset, the spawn proceeds with a loud
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,
 such as `agent-trust-workspace`, Claude Code's folder-trust question), the spawn fails naming it
-and injects nothing: a trust prompt is the operator's to answer (#596).
+and injects nothing: a trust prompt is the operator's to answer (#596). A refused `dispatch --inject` keeps its
+receipt's code, reason and `nextSteps`. It exits 2 on a typed policy refusal such as
+`inject_rejected`, as the supervised lane does, and 1 otherwise.
 
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 

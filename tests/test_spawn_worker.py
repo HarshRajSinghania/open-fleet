@@ -1599,6 +1599,49 @@ class TestOrcaRoLanePrerequisites(unittest.TestCase):
             self.assertIn("trust", p.stderr.split("blockedReason=agent-trust-workspace", 1)[1])
             self.assertNotIn("--inject", log.read_text())
 
+    # Orca 1.4.229, 2026-10-24: the CLI answered `dispatch --inject` with exit 1 and this envelope.
+    REJECTED = {"ok": False, "error": {
+        "code": "inject_rejected",
+        "message": "Cannot dispatch --inject to terminal term_shell1: no recognized agent detected.",
+        "data": {"terminal": "term_shell1", "reason": "no_agent_detected",
+                 "nextSteps": ["Start a recognized agent CLI in that terminal and wait for it to finish launching.",
+                               "Alternatively dispatch without --inject and deliver the prompt with orca terminal send."]}}}
+
+    def _inject_fails(self, tmp, payload, rc):
+        log = self._stub(tmp, inject=payload)
+        stub = Path(tmp) / "orca"
+        text = stub.read_text()
+        self.assertIn('cat "{}/inject.json" ;;'.format(tmp), text)
+        stub.write_text(text.replace('cat "{}/inject.json" ;;'.format(tmp),
+                                     'cat "{}/inject.json"; exit {} ;;'.format(tmp, rc)))
+        return log, self._run(tmp, ["task_test", "path:/tmp/wt", "t", "claude"], self.RO)
+
+    def test_a_refused_inject_is_a_policy_exit_with_its_code_and_next_steps(self):
+        # The header promises exit 2 for every typed refusal, inject_rejected included; the ro
+        # lane exited 1 with only `step=dispatch-inject`, dropping the code, reason and recovery.
+        for rc in (1, 0):  # the CLI's own exit, and an exit-0 error envelope
+            with self.subTest(cli_rc=rc), tempfile.TemporaryDirectory() as tmp:
+                log, p = self._inject_fails(tmp, self.REJECTED, rc)
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn("CODE=inject_rejected", p.stderr)
+                self.assertIn("no_agent_detected", p.stderr)
+                for step in self.REJECTED["error"]["data"]["nextSteps"]:
+                    self.assertIn(f"nextStep: {step}", p.stderr)
+                self.assertNotIn("terminal send", log.read_text(), "a refused inject is never resent")
+
+    def test_an_untyped_inject_failure_stays_a_failure_and_keeps_its_code(self):
+        failed = {"ok": False, "error": {"code": "runtime_error", "message": "boom",
+                                         "data": {"nextSteps": ["Do not retry unchanged."]}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            _log, p = self._inject_fails(tmp, failed, 1)
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("CODE=runtime_error", p.stderr)
+            self.assertIn("nextStep: Do not retry unchanged.", p.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            _log, p = self._inject_fails(tmp, "<html>502</html>", 1)
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("step=dispatch-inject", p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

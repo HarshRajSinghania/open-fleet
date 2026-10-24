@@ -171,6 +171,14 @@ partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any o
   upstream versions. The record only points to the lines; the route is read from them. A
   group that copies another route's witness, or cites a run that never names a route, is
   refused;
+- a `live-witnessed` group whose quotes come from a fixture run (`worker=inert` or
+  `tier=fixture-tested` in a first-run `witness` line), or a live harness cell whose quotes name
+  no provider other than `orca` (base.py's table runs off Orca; Orca launches spawn_worker.sh's
+  own rows);
+- the fields copied from a run receipt that disagree with the witness: a live harness cell's
+  `upstream.version` not named in `witnessed.harness_version`, an `in-repo` provider whose
+  `witnessed.upstream_version` is not a commit on HEAD's history (the receipt's
+  `host.catalog_commit`), or a `witnessed.date` that is not `YYYY-MM-DD`;
 - a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
 
 A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
@@ -609,16 +617,21 @@ Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert
 and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
 
 `--worker inert` (the default) puts a stand-in for the harness first on PATH, behind tripwires
-for every other harness name. It calls no model and its receipt reads `fixture-tested`.
+for every other harness name. It calls no model and its receipt reads `fixture-tested`. The
+stand-in is LITERAL: its final answer is the report only when the assignment asks for that, and
+otherwise a one-line summary, as a live worker answered when the rw assignment never asked (#596).
 `--worker live` uses the operator's real harness. That run spends, and its receipt reads
-`live-unreviewed` until a maintainer binds it into `docs/runs/`.
+`live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
+when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
+different file than the operator's own PATH does (`harness_shadow`).
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
 completion line its assignment names as the worker's `worker_done` (#596), which must report
 `succeeded`; any other relayed outcome is NO-GO. Otherwise the worker exits cleanly with no line
-and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report and send `worker_done`;
-the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
+and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report, send `worker_done`,
+then print the same report as its final answer, which `result` reads as it does for `ro`; the
+coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
 profiles the report committed at the evidence head, the file `verify.py` binds, must open with
 the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
 
@@ -654,7 +667,10 @@ its last `FIRST-RUN-REPORT` line. The inert stand-in prints each of these format
 malformed runtime response, and missing capability. Each must refuse before a launch.
 
 Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
-command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
+command's argv and exit, and host facts. It also carries `started_at` (UTC), a one-line `witness`
+(provider/backend, `PROFILE=`, harness and version, worker, tier, catalog commit, verdict) that a
+certification record can quote, and, when the harness reports it (Claude Code's stream-json),
+`facts.harness_usage`: model, turns, duration and cost. After a GO the sandbox is pruned down to the receipt;
 after a NO-GO it is kept whole. However the run ends, it first stops every worker still live in
 its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal closes (SIGHUP).
 A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended

@@ -134,6 +134,59 @@ def harness_report(agent: str, lines: list[str]) -> str:
     return answer
 
 
+def harness_usage(lines: list[str]) -> dict:
+    """What the harness itself reported about its run, where its output carries it (#596): Claude
+    Code's stream-json `init` event names the model, its `result` event the turns, duration and
+    cost. Other output formats report nothing here; nothing is estimated."""
+    usage: dict = {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "system" and event.get("subtype") == "init" and isinstance(event.get("model"), str):
+            usage["model"] = event["model"]
+        if event.get("type") == "result":
+            for key in ("num_turns", "total_cost_usd", "duration_ms"):
+                value = event.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    usage[key] = value
+    return usage
+
+
+def harness_shadow(binary: str, run_path: str, own_path: str) -> str:
+    """'' when the run's PATH resolves `binary` to the file the operator's own PATH names (#596).
+
+    The sandbox puts the interpreter's directory first on PATH, so every wrapper runs this Python.
+    A harness that directory also holds would then run in place of the operator's (an isolation
+    wrapper, a pinned build): a live run refuses that rather than spend on the wrong binary.
+    """
+    run, own = shutil.which(binary, path=run_path), shutil.which(binary, path=own_path)
+    if not own:
+        return f"`{binary}` is not on your PATH; the run would launch {run}"
+    if not run or os.path.realpath(run) != os.path.realpath(own):
+        return f"the run's PATH resolves `{binary}` to {run}, but your PATH resolves it to {own}"
+    return ""
+
+
+def witness_line(receipt: dict) -> str:
+    """The run's route, harness version, catalog commit and verdict on ONE line (#596).
+
+    certification.json certifies a live cell by quoting whole lines of a bound run's artifacts,
+    which together must name the provider, `PROFILE=<p>` beside the harness, the harness version
+    and the upstream version: this line carries all of them, so the receipt itself is quotable.
+    It also says `worker=` and `tier=`, and certification.py refuses a quote of an inert run.
+    """
+    route, host = receipt.get("route") or {}, receipt.get("host") or {}
+    harness = (receipt.get("facts") or {}).get("harness") or {}
+    return (f"{route.get('provider')}/{route.get('backend')} PROFILE={route.get('profile')} "
+            f"harness={route.get('harness')} version={harness.get('version') or 'unknown'} "
+            f"worker={route.get('worker')} tier={receipt.get('tier')} catalog={host.get('catalog_commit')} "
+            f"dirty={host.get('catalog_dirty')} verdict={receipt.get('verdict')}")
+
+
 def all_harness_binaries() -> list[str]:
     """Every harness name and binary base.py knows: each gets a tripwire in inert mode."""
     spec = importlib.util.spec_from_file_location("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
@@ -416,6 +469,7 @@ class FirstRun:
         # Only the change file carries this: quoting it shows the worker read that file (FR-4).
         self.read_receipt = f"{READ_HEAD}{secrets.token_hex(8)}"
         self.facts: dict = {"run_id": self.run_id, "nonce": self.nonce}
+        self.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     # Each method is one step; it returns its detail string or raises StepFailed.
     def prereqs(self) -> str:
@@ -430,6 +484,11 @@ class FirstRun:
             raise StepFailed(f"`{binary}` is not on PATH", f"install {self.args.agent} and sign it in, or use --worker inert")
         if self.args.worker == "live" and Path(found).resolve().is_relative_to(self.sb.dir.resolve()):
             raise StepFailed("live mode resolved the harness inside the sandbox", "remove the stand-in from PATH")
+        shadow = "" if self.args.worker == "inert" else harness_shadow(binary, self.sb.env["PATH"],
+                                                                         os.environ.get("PATH", os.defpath))
+        if shadow:
+            raise StepFailed(shadow, "run first_run.py with an interpreter whose directory holds no harness, "
+                                     "or put the harness you mean first on your own PATH")
         self.facts["harness"] = {
             "name": self.args.agent,
             "path": found,
@@ -679,6 +738,9 @@ class FirstRun:
         except (ValueError, KeyError, TypeError):
             raise StepFailed(f"worker-read unreadable: {proc.stdout[:200]!r}") from None
         lines = [str(block.get("text") or "") for msg in messages for block in (msg.get("blocks") or [])]
+        usage = harness_usage(lines)
+        if usage:  # the spend and the model a live run's record names (#596)
+            self.facts["harness_usage"] = usage
         return harness_report(self.args.agent, lines)
 
     def evidence(self) -> str:
@@ -780,10 +842,12 @@ class FirstRun:
         facts = {k: v for k, v in self.facts.items() if k not in ("report", "contract")}
         if "contract" in self.facts:
             facts["contract"] = {k: self.facts["contract"][k] for k in ("source", "digest", "criterion_ids")}
-        return {
+        out = {
             "schema": SCHEMA,
+            "started_at": self.started_at,
             "verdict": "NO-GO" if failed else "GO",
             "tier": "fixture-tested" if self.sb.worker == "inert" else "live-unreviewed",
+            "witness": "",
             "route": {"provider": "posix", "backend": "setsid", "profile": self.args.profile,
                       "harness": self.args.agent, "worker": self.sb.worker},
             "host": host_facts(),
@@ -794,6 +858,8 @@ class FirstRun:
             "elapsed_s": elapsed,
             "sandbox": str(self.sb.dir),
         }
+        out["witness"] = witness_line(out)
+        return out
 
 
 def write_manifest(path: Path, manifest: dict) -> None:

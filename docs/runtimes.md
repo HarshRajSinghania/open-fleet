@@ -262,3 +262,45 @@ included (#596 review).
 | Cursor / Antigravity / Grok / Droid | `cursor` / `agy` / `grok` / `droid` | Refused on `PROFILE=ro` (`unsupported_profile`: no verified read-only CLI flag) | Refused whenever a task prompt is given (`unsupported_prompt`: no verified headless prompt flag, so the worker would start without its assignment) |
 
 **Guard installation.** `install_worktree_hooks` points every harness config at the canonical `runtime/scripts/deny-hook.sh` (never a copy inside the worktree), git-excludes the generated configs, and prefixes non-Claude hook commands with `ORCA_HOOK_STRICT_EXIT=1` so an `ask` becomes exit 2 on harnesses that fail open on `ask`. Hermes gets a per-dispatch `HERMES_HOME` outside the worktree whose `config.yaml` adds a `fail_closed` `pre_tool_call` hook; the hook refuses edits to its own configs. Workers inherit `OPEN_FLEET_PARENT_PROFILE=<own profile>`, so a child can never exceed its parent.
+
+---
+
+## First run
+
+A reproducible first run drives one review unit through the public wrappers on the `posix`
+route and ends in a SHA-bound `FIRST_RUN=GO` or `FIRST_RUN=NO-GO step=<s>`. The full guide,
+expected output and troubleshooting are in
+[Provider and harness certification](certification.md#first-run-on-a-clean-host); these are the
+commands.
+
+Inert: no agent and no spend. CI runs this route for every posix harness name.
+
+```bash
+python3 runtime/scripts/certification.py check
+python3 runtime/scripts/first_run.py --profile ro
+python3 runtime/scripts/first_run.py --profile rw
+python3 runtime/scripts/first_run.py probes
+```
+
+Live: the real harness reviews the change, so **it spends**. Put the harness you mean first on
+`PATH` (an isolation wrapper, say). The run refuses to start when the interpreter's own
+directory holds another binary of that name (`step=prereqs`), because the sandbox puts that
+directory first. `--keep` keeps the sandbox, whose transcript and verifier manifest the record
+quotes:
+
+```bash
+PATH="<wrapper-dir>:$PATH" OPEN_FLEET_POSIX_BACKEND=setsid \
+  python3 runtime/scripts/first_run.py run --worker live --agent claude --profile ro \
+  --workdir <runs>/596-ro --keep --json > <runs>/596-ro.receipt.json
+PATH="<wrapper-dir>:$PATH" OPEN_FLEET_POSIX_BACKEND=setsid \
+  python3 runtime/scripts/first_run.py run --worker live --agent claude --profile rw \
+  --workdir <runs>/596-rw --keep --json > <runs>/596-rw.receipt.json
+```
+
+`--profile rw` has the worker commit its report, send `worker_done`, and then print the same
+report as its final answer. The run checks both copies. A receipt reads `live-unreviewed` and
+certifies nothing until a maintainer binds it in a `docs/runs/` report and records the cells. The
+receipt carries what the record needs: its `witness` line, `facts.harness.version`,
+`host.catalog_commit`, `host.platform`, `started_at`, and, for Claude Code,
+`facts.harness_usage` (model, turns, cost). See
+[Recording a live first run](certification.md#recording-a-live-first-run).

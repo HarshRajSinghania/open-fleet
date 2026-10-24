@@ -74,7 +74,7 @@ works. They do not show how the upstream build or the harness behaves:
   them.
 
 <!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->
-Record version 3 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
+Record version 4 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
 
 | Provider | Upstream certified against | live-witnessed | fixture-tested | source-only | unsupported | unavailable | stale |
 |---|---|---|---|---|---|---|---|
@@ -138,12 +138,32 @@ not move up: every changed cell is still `source-only` or `fixture-tested`, or i
   answer is read per harness by the same reader as the first-run report, so a marker in
   reasoning, in a tool result or in an echoed prompt does not count. The inert stand-in prints the line in each harness's
   own output shape, so `first_run.py --profile ro` settles `completed`. A worker that does not
-  print it still settles `worker_died (exit=0)`, and the run accepts either. Only the stand-in
-  has printed the line; no real harness has.
+  print it still settles `worker_died (exit=0)`, and the run accepts either. In the unbound
+  2026-10-24 live `ro` run, Claude Code 2.1.304 printed the line too and the unit settled
+  `completed`.
 - **gastown's claude `ro` alias carries `--disallowedTools`.** Every claude `ro` launch row and
   alias carries `Edit,Write,MultiEdit,NotebookEdit`, except Orca's plan-mode row: that is the
   live-witnessed route, whose worker wrote its report after the coordinator approved its plan.
   Changing it needs a new witness.
+
+### What record version 4 changes
+
+Version 4 closes the gaps the first live runs and the last review left. No tier moved up.
+
+- **`openhands` launches through the wrapper.** `capabilities.json` claimed `openhands`/`openhands`
+  while `spawn_worker.sh` refused the agent name. The wrapper now launches the OpenHands SDK
+  agent on `OPEN_FLEET_RUNTIME=openhands` through `worker-start` and requires the profile's
+  toolset token (`tools=…`) on the receipt. It refuses that agent on every other runtime, and
+  every CLI harness name on the openhands runtime, before any upstream call. The
+  launch-agreement test now holds every claimed pair with no exception. The cells stay
+  `fixture-tested`: the end-to-end test runs against a loopback stand-in agent-server.
+- **The rw first run asks for the report as its final answer.** The live `rw` run failed at
+  `result` because its assignment never asked. The inert stand-in is now literal, so the
+  fixture catches that kind of gap.
+- **The record checks what is copied from a receipt.** A first-run receipt carries a quotable
+  `witness` line. `check` refuses quotes of an inert run, refuses a live harness cell that only
+  an Orca run witnessed, and checks a harness cell's version, an in-repo provider's catalog
+  commit and the witness date. See [Recording a live first run](#recording-a-live-first-run).
 
 ## A refreshed pin voids cells
 
@@ -241,17 +261,36 @@ Each probe must refuse before any launch. The stand-in never runs and no dispatc
 
 Expected output: one `PROBE=<name> REFUSED` line per probe, then `PROBES=GO`.
 
-### 3. Live first run (one command; not yet witnessed)
+### 3. Live first run (one command per profile; not yet bound)
 
 ```bash
-python3 runtime/scripts/first_run.py --worker live --agent claude --keep
+PATH="<harness-dir>:$PATH" python3 runtime/scripts/first_run.py --worker live --agent claude \
+  --profile ro --keep --workdir <runs>/ro --json > <runs>/ro.receipt.json
+PATH="<harness-dir>:$PATH" python3 runtime/scripts/first_run.py --worker live --agent claude \
+  --profile rw --keep --workdir <runs>/rw --json > <runs>/rw.receipt.json
 ```
 
-This command runs the same lifecycle with your real `claude`. **It spends**, because a real model
-reviews the change. The receipt is labelled `live-unreviewed`. It becomes certification evidence
-only after a maintainer records the run as a `docs/runs/` report that binds. The record's
-`posix` `ro`/`claude` cell can then move to `live-witnessed`, and the clean-host record below
-gets its numbers. No such run is recorded yet.
+Each command runs the same lifecycle with your real `claude`. **It spends**, because a real model
+reviews the change. `<harness-dir>` is the directory of the `claude` you mean, such as an
+isolation wrapper. The sandbox puts the interpreter's own directory first on `PATH`, so the run
+refuses at `prereqs` if that directory holds a different `claude`. `--keep` keeps the sandbox: its
+transcript and its verifier manifest are evidence the record quotes. The receipt is labelled
+`live-unreviewed`. It becomes certification evidence only after a maintainer binds it in a
+`docs/runs/` report and records the cells, as described in
+[Recording a live first run](#recording-a-live-first-run).
+
+The first live runs were made on 2026-10-24 at `456051e3ec`, with Claude Code 2.1.304
+(`claude-opus-5-5`) behind an isolation wrapper on macOS arm64, `setsid` backend:
+
+- `ro`: **GO**. Plan mode, 3 turns, USD 0.20, 10.8 s end to end. The report named the reviewed
+  head and `verify.py` returned OK.
+- `rw`: **NO-GO** at `result`, 5 turns, USD 0.22. The worker committed the right report and
+  sent `worker_done`, then answered with a one-line summary. The rw assignment never asked for
+  the report as the final answer, but `result` reads it there. The assignment now asks for it,
+  and the inert stand-in is literal, so the fixture fails the way the live run did whenever an
+  assignment omits that ask. The rw run is owed a re-run.
+
+Neither receipt is bound yet, so no `posix` cell is live.
 
 ### The Orca path
 
@@ -274,6 +313,34 @@ installed.
 | `certification.py check` fails with `STALE` | The pin moved after certification | Recheck the provider's cells, then re-record `certified_against` (see above) |
 | `certification.py check` says a live cell has no binding report | A shallow clone | `git fetch --unshallow`, then re-run |
 
+## Recording a live first run
+
+A live receipt becomes evidence in two steps, both a maintainer's.
+
+1. **Bind the run.** Copy the run's artifacts into `docs/runs/<date>-review-it-first-run/`:
+   the receipt, and from the kept sandbox the verifier manifest
+   (`verify/.first-run/<run>/manifest.json`), the report and the contract. Bind them in a
+   `docs/runs/<date>-review-it-first-run.md` report whose `RUN:` header and inventory bind under
+   `run_report.py`, as for any run.
+2. **Record the cells.** In `runtime/providers/certification.json`, move the run's cells out of
+   their fixture group into a `live-witnessed` group of their own, both the provider cell
+   (`posix`, `<profile>`, `claude`) and the harness cell (`claude`, `<profile>`), and fill them
+   from the receipt:
+
+| Record field | From the receipt | `certification.py check` requires |
+|---|---|---|
+| `witnessed.route` | the `witness` line, quoted whole from the bound `receipt.json` | the quotes name the provider and `PROFILE=<p>` beside the harness. A fixture line (`worker=inert`, `tier=fixture-tested`) is refused, and a harness cell needs a provider other than `orca` |
+| `witnessed.harness_version` | `facts.harness.version`, such as `2.1.304 (Claude Code)` | quoted in the bound evidence, and naming the harness |
+| `witnessed.upstream_version` | `host.catalog_commit` | quoted, and for the in-repo `posix` provider a commit on HEAD's history |
+| `harnesses.<h>.upstream.version` | the version number in `facts.harness.version`, such as `2.1.304` | named in `witnessed.harness_version` |
+| `witnessed.host`, `witnessed.date` | `host.platform`, and the date of `started_at` | the date is `YYYY-MM-DD` |
+| `evidence` | the bound `docs/runs/*.md` report | it binds (`verifier=GREEN`, a self-run or external-run tier) |
+
+A receipt written before the `witness` line existed (the 2026-10-24 `ro` run) is quoted from
+three lines instead: the manifest's `claim` line (`… on the posix route (live claude,
+PROFILE=ro)`) and the receipt's `"version"` and `"catalog_commit"` lines. Bump `record_version`,
+regenerate the matrix with `certification.py markdown`, and run `certification.py check`.
+
 ## Recording a clean-host first run
 
 A clean-host record counts only when it comes from a host that has not run open-fleet before.
@@ -290,7 +357,9 @@ Record:
 
 ## Not certified yet
 
-- A live POSIX first run with a real agent (`first_run.py --worker live`) on a fresh clone.
+- A live POSIX first run with a real agent, bound and recorded. Two live runs exist (see
+  [Live first run](#3-live-first-run-one-command-per-profile-not-yet-bound)): `ro` GO and `rw`
+  NO-GO on the assignment defect fixed since, owed a re-run.
 - A clean-host first-run record with measured setup and run times.
 - Live witnesses for every other provider, for Orca on macOS, and for any harness other than
   Claude Code. Their upstream versions stay `unknown` until a run records them.

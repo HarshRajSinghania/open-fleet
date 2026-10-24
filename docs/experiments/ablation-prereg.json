@@ -644,9 +644,10 @@
   },
   "cost_cap": {
     "proposed_usd": 750,
-    "status": "PENDING OWNER AUTHORISATION",
-    "authorised_usd": null,
-    "authorised_by": null,
+    "status": "AUTHORISED",
+    "authorised_usd": 750,
+    "authorised_by": "Ravindra Kumar (@ravidsrk), repository owner, 2026-10-24",
+    "authorisation": "Recorded from the owner's instruction in the coordinating session on 2026-10-24: 'Authorising you on everything. Go ahead and complete it.', given in reply to a list naming this experiment's USD 750 cap. The owner chose billing through their Claude subscription (CLAUDE_CODE_OAUTH_TOKEN) for isolated live agents, so the cap bounds the reported total_cost_usd, which is notional on a subscription; a cell that fails on a rate-limit window is a failed cell, never a dropped one.",
     "derivation": "4 missions x 9 tasks x 2 arms x 5 repeats = 360 agent runs at an assumed ~USD 1.50 mean (cached 20-35k-token activations), plus 160 grader calls at an assumed ~USD 0.75 (a whole stream-json trace to read): about USD 660. The guard reserves a cell's worst case before it starts, so the last cells need a full reservation of headroom; proposed USD 750. Proposed only; nothing may be spent until the owner records an authorised amount here.",
     "max_cost_per_agent_run_usd": 5.0,
     "grader_reserve_usd": 1.0,

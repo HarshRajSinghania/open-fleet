@@ -6,6 +6,12 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
+  2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
+  their instruction, quoted. The registered design and payloads are unchanged; only the md pin
+  moved. Live agents bill through the owner's Claude subscription, so the cap bounds reported
+  `total_cost_usd`. The two tests that relied on the committed file being PENDING now pin their
+  refusals on an explicit PENDING copy. No live run has started.
 - **The deny-hook reader fails closed where it cannot resolve what runs** (#654, from the PR #648
   review). A file built across `>` and `>>` writes is judged whole when it is run; a name
   reassigned past the reader's cap reads as unresolved, so its use as a command takes the

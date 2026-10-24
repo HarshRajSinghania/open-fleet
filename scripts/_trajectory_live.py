@@ -58,11 +58,11 @@ EVIDENCE = ("live-unreviewed: not a result until a run report under docs/runs/ b
 LIVE_ARRIVALS = (None, "issue-text", "repo-document")
 TIMEOUT_S = 15 * 60  # per agent call, eval.py's behavioral-suite figure; --timeout overrides
 # The Claude Code tools and permission rules each granted vocabulary tool maps to: one cell's
-# allowlist. Listing and reading files, and read-only git, are Read (the recorder records them
-# as Reads). The manifest rides the final message, so Manifest needs no tool of its own.
+# allowlist. Listing and reading files are Read, exactly the shell commands the recorder records
+# as Reads (_trajectories.READ_COMMANDS). The manifest rides the final message, so Manifest needs
+# no tool of its own.
 CLAUDE_TOOLS = {
-    "Read": ("Read", "Glob", "Grep", "LS", "Bash(ls:*)", "Bash(cat:*)", "Bash(pwd)",
-             "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)"),
+    "Read": ("Read", "Glob", "Grep", "LS", "Bash(ls:*)", "Bash(cat:*)", "Bash(pwd)"),
     "Edit": ("Edit", "MultiEdit"),
     "Write": ("Write",),
     "Bash": ("Bash",),

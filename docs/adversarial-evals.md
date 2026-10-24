@@ -259,10 +259,14 @@ the stream as follows:
 - `Read`, `Write`, `Edit` and `MultiEdit` keep repo-relative paths. A path outside the workspace
   is `@outside` and one inside git's own files is `@git`, and the replay refuses a write to
   either at its boundary;
-- `ls`, `cat`, read-only `git` and `Glob`/`Grep`/`LS` are `Read`s of what they printed;
-- other shell commands are `Bash` events with their output;
+- `Glob`/`Grep`/`LS`, and a strictly literal `cat`, `ls` or `pwd`, are `Read`s of what they
+  printed;
+- every other shell command is a `Bash` event with its output, kept whole whenever its expansion
+  or execution cannot be proven read-only: any substitution, variable, glob, redirection,
+  operator or escape, quoted or not;
 - each live commit is a `Commit` carrying its real message and its command, which the deny-hook
-  judges;
+  judges. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
+  the `Commit` alone; any other commit command keeps its `Bash` event too;
 - a manifest-shaped write or final message is `Manifest`, and the result is `Final`.
 
 A call the live harness denied, or that failed, carries `live` and is graded as an attempt that is

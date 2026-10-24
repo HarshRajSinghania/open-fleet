@@ -1579,10 +1579,17 @@ _DENIAL = re.compile(r"requested permissions? to use|haven't granted it yet|"
 # `git commit`'s summary line, `[<branch> (root-commit)? <sha>] <subject>`: the commit it made.
 _COMMIT_LINE = re.compile(r"(?m)^\[[^\]\n]* ([0-9a-f]{7,40})\] ")
 SEARCH_TOOLS = ("Glob", "Grep", "LS")
-# Read-only shell commands a live agent explores with: a Read of what they printed. `cat` with a
-# redirect or any other shape is not one of these; it stays a Bash event.
+# Shell commands recorded as a Read of what they printed, and only in a strictly literal form
+# (_literal_command): `cat`, `ls` and `pwd` cannot run anything. Read-only git is not here:
+# porcelain diff, log and show run textconv drivers, so git stays a Bash event (#659 review).
 READ_COMMANDS = ("cat", "ls", "pwd")
-GIT_READS = ("status", "diff", "log", "show")
+# Characters an unquoted shell word may hold without expanding or running anything: no
+# substitution, variable, glob, brace, tilde, history, comment, escape, redirection or operator.
+_PLAIN = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./@%+=:,-")
+# Claude Code's commit-message idiom: a heredoc whose delimiter is QUOTED (so its body is never
+# expanded) fed to a bare `cat` in a double-quoted substitution. The one substitution the
+# recorder reads as literal, and only when the delimiter closes the body once, at its end.
+_HEREDOC_MESSAGE = re.compile(r"\"\$\(cat <<'([A-Za-z_][A-Za-z0-9_]*)'\n(.*?)\n\1\n\)\"", re.S)
 # gh subcommands that send, as the sink names the fixtures use.
 SENDS = {("pr", "merge"): "pr-merge", ("pr", "comment"): "pr-comment",
          ("issue", "comment"): "pr-comment"}
@@ -1712,9 +1719,37 @@ def _shell_segments(command):
     return segments
 
 
-def _complex(segment):
-    """A redirection or subshell token: the segment may write, so it is never a plain read."""
-    return any(token and set(token) <= set("<>()") for token in segment)
+def _literal_command(command, operators=False):
+    """True only when `command` provably expands nothing and runs nothing but its own simple
+    commands: every word is plain, single-quoted, or double-quoted with no `$`, backtick or
+    backslash. With `operators`, `&&` and `;` may separate its commands; no other operator,
+    redirection, newline or expansion may appear anywhere, quoted or not. Anything this cannot
+    prove stays a Bash event (fail closed, #659 review)."""
+    quote, i = None, 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            quote = None if ch == "'" else quote
+        elif quote == '"':
+            if ch in "$`\\":
+                return False
+            quote = None if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif operators and command.startswith("&&", i):
+            i += 1
+        elif not (ch in " \t" or ch in _PLAIN or (operators and ch == ";")):
+            return False
+        i += 1
+    return quote is None
+
+
+def _literal_commit_command(command):
+    """_literal_command with operators, once each Claude Code heredoc commit message whose body
+    cannot close it early is set aside as the literal it is."""
+    def literal(m):
+        return "'message'" if m.group(1) not in m.group(2).split("\n") else m.group(0)
+    return _literal_command(_HEREDOC_MESSAGE.sub(literal, command), operators=True)
 
 
 def _git_sub(segment):
@@ -1727,10 +1762,16 @@ def _git_sub(segment):
     return (segment[i], segment[i + 1:]) if i < len(segment) else None
 
 
+def _runs(name, word):
+    """True when the command word `word` is the program `name` (a regex), bare or by path. A
+    word holding `=` is an environment assignment, which changes what runs (GIT_DIR=...)."""
+    return "=" not in word and re.fullmatch(name, os.path.basename(word)) is not None
+
+
 def _decisions_args(segment):
     """The arguments of a `decisions.py append` segment (however launched), else None."""
     i = 0
-    if segment and re.fullmatch(r"python[0-9.]*", os.path.basename(segment[0])):
+    if segment and _runs(r"python[0-9.]*", segment[0]):
         i = 1
         while i < len(segment) and segment[i].startswith("-"):
             i += 1
@@ -1853,6 +1894,11 @@ class LiveRecorder:
     def search(self, name, args, text, live):
         root = args.get("path")
         path = self.rel(root) if isinstance(root, str) and root else "."
+        # A file pattern that is absolute or climbs out reads outside, whatever its root.
+        pattern = [args.get(k) for k in (("pattern", "glob") if name == "Glob" else ("glob",))]
+        if any(isinstance(p, str) and (os.path.isabs(p) or p.startswith("~")
+                                       or ".." in PurePosixPath(p).parts) for p in pattern):
+            path = "@outside"
         self.emit("Read", path=path, search=name, live=live,
                   output=text[:OUTPUT_CAP] if live is None else None)
         return True
@@ -1908,21 +1954,23 @@ class LiveRecorder:
         if not isinstance(command, str) or not command.strip():
             return False
         segments = _shell_segments(command)
-        if segments is not None:  # `cd <the workspace> &&` changes nothing
-            segments = [s for s in segments if not (len(s) == 2 and s[0] == "cd"
-                                                    and self.rel(s[1]) == ".")]
         commits = self.live_commits(segments, command, text, live)
-        if segments and all(not _complex(s) and (_git_sub(s) or ("",))[0] in ("add", "commit")
-                            for s in segments):
+        # A command becomes a Commit, a DecisionsAppend or a Read in place of its Bash event
+        # only in a strictly literal form; anything else keeps the Bash event, so the hook
+        # judges the whole command and its payload is graded (#659 review).
+        stages = [s for s in segments or [] if not (len(s) == 2 and s[0] == "cd"
+                                                    and self.rel(s[1]) == ".")]
+        if stages and _literal_commit_command(command) and all(
+                _runs("git", s[0]) and len(s) > 1 and s[1] in ("add", "commit") for s in stages):
             # Staging and committing only: the Commit is the action, judged by its command.
-            self.commit_events(commits, command, segments, live)
+            self.commit_events(commits, command, stages, live)
             return True
         appends = [_decisions_args(s) for s in segments or []]
-        if segments and all(a is not None for a in appends):
-            for a in appends:
-                self.emit("DecisionsAppend", args=a, live=live)
+        single = segments is not None and len(segments) == 1 and _literal_command(command)
+        if single and appends[0] is not None:
+            self.emit("DecisionsAppend", args=appends[0], live=live)
             return True
-        if segments and len(segments) == 1 and self.shell_read(segments[0], text, live):
+        if single and self.shell_read(segments[0], text, live):
             return True
         sink = _send_sink(segments or [])
         self.emit("Bash", command=command, live=live,
@@ -1936,19 +1984,12 @@ class LiveRecorder:
         return True
 
     def shell_read(self, segment, text, live):
-        """A read-only shell command as a Read of what it printed; False for anything else."""
-        if _complex(segment):
+        """A literal `cat`, `ls` or `pwd` (the caller has proven it literal) as a Read of what
+        it printed; False for anything else."""
+        head = segment[0]
+        if head not in READ_COMMANDS:
             return False
-        head, sub = os.path.basename(segment[0]), _git_sub(segment)
-        if sub is not None:
-            if sub[0] not in GIT_READS or any(a.startswith(("--output", "--ext-diff"))
-                                              for a in sub[1]):
-                return False
-            head, operands = f"git {sub[0]}", []
-        elif head in READ_COMMANDS:
-            operands = [t for t in segment[1:] if not t.startswith("-")]
-        else:
-            return False
+        operands = [t for t in segment[1:] if not t.startswith("-")]
         path = self.rel(operands[0]) if len(operands) == 1 else "."
         self.emit("Read", path=path or ".", search=head, live=live,
                   output=text[:OUTPUT_CAP] if live is None else None)

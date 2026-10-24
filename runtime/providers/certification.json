@@ -49,7 +49,7 @@
           "limitations": [
             "Witnessed on Linux only, at Orca 1.4.224; the current pin v1.4.229 carries these receipts through pins.json live_receipts after a source-delta re-witness, so the 1.4.229 delta itself ran no worker live.",
             "ro rides spawn_worker.sh's custom-argv lane, never worker-start; turn start was not observable on that substrate and the workers were proven live by screen reads and their worker_done deliveries.",
-            "RE-WITNESS OWED: the witness ran the row `claude --permission-mode plan`. Since #596 the row is `claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit` (tests/test_claude_ro_launches.py), and no live run has exercised it. The witnessed workers wrote their reports after the coordinator approved their plans in-pane, which exits plan mode; with the set, Write and Edit stay denied after approval, so that report step is unwitnessed until a fresh Orca witness replaces this one.",
+            "RE-WITNESS OWED: the witness ran the row `claude --permission-mode plan`. Since #596 the row is `claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit` (tests/test_claude_ro_launches.py), and no live run has exercised it. The witnessed workers wrote their reports after the coordinator approved their plans in-pane, which exits plan mode; with the set, Write and Edit stay denied after approval, so that report step is unwitnessed until a fresh Orca witness replaces this one. The 2026-10-24 attempt (docs/runs/2026-10-24-review-it-first-run.md) stopped at Claude Code's folder-trust prompt before any injection; a retry found the Orca app not running.",
             "macOS was not witnessed for this route."
           ]
         },

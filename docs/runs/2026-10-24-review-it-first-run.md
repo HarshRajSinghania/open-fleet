@@ -111,6 +111,42 @@ terminal had been closed, so Orca fenced the cancel (`consumer_fenced`).
 To re-witness, the operator first trusts the review folder in Claude Code. Then the commands in
 [certification.md](../certification.md#the-orca-path) run unattended to the plan-approval prompt.
 
+## Orca re-witness retry (not run: the Orca app was not running)
+
+A second attempt was authorized for a folder Claude Code **already** trusts, never answering a
+trust prompt. First, how Claude Code 2.1.304 decides trust, read from the binary's own code
+(`strings` near `hasTrustDialogAccepted`):
+
+- A folder is trusted when `projects[<canonical git root>].hasTrustDialogAccepted` is true, or
+  when some directory from the working directory up to its git root is trusted.
+- The canonical root of a linked worktree is its main repository's root. It is resolved through
+  the `.git` file's `gitdir` and `commondir`.
+- Directories above the git root never count. A new repository under a trusted `~/projects`
+  therefore prompts, as the first attempt did.
+
+On this Mac, `~/.claude.json` trusts the open-fleet repository only under its symlinked path
+`/Users/ravindra/projects/orca-fleet`. Its worktrees' `gitdir` names the real path
+`/Users/ravindra/projects/open-fleet`, so a new open-fleet worktree would prompt.
+`/Users/ravindra/projects/oss-contribution-agent` is trusted at its real path, registered in Orca,
+and has no project `.claude/` settings. A new Orca worktree of it (`orca worktree create --repo
+id:635ce96a-… --name of596-ro-witness --no-parent --setup skip`) would inherit trust through its
+canonical root, so the witness could run there with no new grant.
+
+The retry stopped at the first Orca call. `orca status --json` read `app.running: false` and
+`runtime.state: not_running`, and `worktree create` answered `runtime_unavailable`. Nothing was
+created: no worktree, no branch, no terminal, no task. Starting the app was not part of the
+authorization, so the coordinator did not start it.
+
+The fresh witness is still owed. It needs either of two things:
+
+- the Orca app running, with the worker run on a new worktree of a repository trusted at its
+  real path, as above;
+- or the operator trusting open-fleet once at its real path:
+  `cd /Users/ravindra/projects/open-fleet && claude`, accept the dialog, then exit.
+
+The leftover `task_95353ebdda84` could not be retried for cancellation either, since every
+orchestration command needs the running app.
+
 ## Verifier outcome (recorded exactly)
 
 The unit binds the run directory under a frozen contract (`contract.md`, LR-1 to LR-5). Its

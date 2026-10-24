@@ -346,8 +346,12 @@ failed closed before injecting anything. Before re-running, meet these prerequis
 - **An existing Orca worktree.** The ro lane's `terminal create` cannot create one, so pass
   `path:<abs>`, not `new-child`. For a scratch review unit, register its repository with
   `orca repo add --path <dir>`, and remove it afterwards with `orca project setup-delete --setup <id>`.
-- **A folder Claude Code already trusts.** Open `claude` in it once and answer the trust prompt
-  yourself. Trust in a parent folder did not carry over. The wrapper never answers that prompt.
+- **A folder Claude Code already trusts.** Claude Code 2.1.304 trusts a folder when its
+  canonical git root is trusted, or any directory between the folder and that root. For a
+  linked worktree, the canonical root is the main repository. Directories above the git root
+  never count, so a trusted `~/projects` does not cover a new repository under it. Use a
+  worktree of a repository trusted at its real path (not a symlinked one), or open `claude` once
+  in the repository root and answer the prompt yourself. The wrapper never answers it.
 - **A coordinator identity.** Create a coordinator terminal and Run
   (`orca terminal create --worktree path:<dir>`, then `orca orchestration run-create --from
   <handle>`), and pass `--run`/`--from`.

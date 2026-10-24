@@ -59,8 +59,8 @@ def tripwired_env(tmp: Path) -> tuple[dict, Path]:
     return env, log
 
 
-def runner(*args, env=None, timeout=600):
-    return subprocess.run([sys.executable, str(RUNNER), *args], cwd=str(ROOT), env=env,
+def runner(*args, env=None, timeout=600, cwd=ROOT):
+    return subprocess.run([sys.executable, str(RUNNER), *args], cwd=str(cwd), env=env,
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -360,15 +360,20 @@ class TestGate(Tmp):
 _DRY_RUNS: dict = {}
 
 
-def dry_run(run: str, args: tuple):
-    """(tmp, env, tripwire log, process) of one inert run, made once per module."""
-    key = (run, args)
+def dry_run(run: str, args: tuple, relative: bool = False):
+    """(tmp, env, tripwire log, process) of one inert run, made once per module. `relative` runs
+    it from the temp directory with --results, --workdir and --prereg given as relative paths."""
+    key = (run, args, relative)
     if key not in _DRY_RUNS:
         tmp = tempfile.TemporaryDirectory(prefix="wip-curve-dry-")
-        root = Path(tmp.name)
+        root = Path(tmp.name).resolve()  # a relative path walks the real directories (/var -> /private/var)
         env, trip_log = tripwired_env(root)
-        proc = runner("run", "--results", str(root / "results"), "--runs", run, "--workdir",
-                      str(root / "wd"), *args, env=env)
+        if relative:
+            proc = runner("--prereg", os.path.relpath(PREREG, root), "run", "--results", "results", "--runs", run,
+                          "--workdir", "wd", *args, env=env, cwd=root)
+        else:
+            proc = runner("run", "--results", str(root / "results"), "--runs", run, "--workdir",
+                          str(root / "wd"), *args, env=env)
         _DRY_RUNS[key] = (tmp, env, trip_log, proc)
     return _DRY_RUNS[key]
 
@@ -798,6 +803,33 @@ class TestAnOverspentBuilderGetsNoReviewer(DryRun):
         rep = subprocess.run([sys.executable, str(EVENTS), "--log", str(self.run_dir / "events.jsonl"), "report"],
                              capture_output=True, text=True)
         self.assertNotIn("unavailable", rep.stdout.split("Derived by")[0], "the stopped run must stay derivable")
+
+
+class TestRelativePaths(unittest.TestCase):
+    """--results, --workdir and --prereg given relative to another working directory: the run,
+    the report and the verifier resolve them once, before anything changes directory (git reads
+    a bundle from a temporary repository's cwd, events.py runs in the run directory)."""
+
+    @classmethod
+    def setUpClass(cls):
+        tmp, cls.env, cls.trip_log, cls.proc = dry_run(*B1_BOUNDARY, relative=True)
+        cls.root = Path(tmp.name).resolve()
+
+    def test_a_relative_results_dir_runs_reports_and_verifies(self):
+        run_json = self.root / "results" / "runs" / B1_BOUNDARY[0] / "run.json"
+        self.assertTrue(run_json.is_file(), self.proc.stdout + self.proc.stderr)
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertTrue(Path(record["sandbox"]).is_absolute())
+        self.assertEqual(record["status"], "stopped")
+        rel = os.path.relpath(PREREG, self.root)
+        p = runner("--prereg", rel, "report", "--results", "results", "--basis", "all", env=self.env, cwd=self.root)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        report = json.loads((self.root / "results" / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["runs"][0]["binding_problems"], [])
+        v = runner("--prereg", rel, "verify", "--results", "results", "--report", "results/report.json",
+                   "--report-md", "results/report.md", env=self.env, cwd=self.root)
+        self.assertEqual(v.returncode, 0, v.stderr)
+        self.assertFalse(self.trip_log.exists())
 
 
 if __name__ == "__main__":

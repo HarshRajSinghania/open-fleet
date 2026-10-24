@@ -253,7 +253,8 @@ python3 scripts/wip_curve.py run --results <dir> --worker live --agent claude \
   --model <pinned model id> --cost-cap-usd <the authorised cap> --next 1
 ```
 
-Run one scheduled run at a time with `--next 1`, or name runs with `--runs`. Each run takes its
+Path arguments may be relative: the runner resolves every one of them to an absolute path before
+anything runs. Run one scheduled run at a time with `--next 1`, or name runs with `--runs`. Each run takes its
 condition, repetition, position and task order from the schedule. The results directory is
 append-only. A live run's receipt is labelled `live-unreviewed` until a maintainer binds it.
 

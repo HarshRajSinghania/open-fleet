@@ -2004,8 +2004,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+PATH_ARGS = ("prereg", "results", "workdir", "out", "report", "report_md", "taskset", "landing")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Every path argument is absolute before anything runs: the runner, git and events.py later
+    # work from other directories (a temporary repository, the run directory), where a relative
+    # path names something else or nothing (PR #652's class; a relative bundle path did, #604).
+    for name in PATH_ARGS:
+        if getattr(args, name, None):
+            setattr(args, name, str(Path(getattr(args, name)).expanduser().resolve()))
     handlers = {"check-prereg": cmd_check_prereg, "plan": cmd_plan, "run": cmd_run, "report": cmd_report,
                 "verify": cmd_verify, "gate": cmd_gate}
     try:

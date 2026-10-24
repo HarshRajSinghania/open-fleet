@@ -3,13 +3,18 @@
 
 Upstream (stablyai/orca) cuts about a release a day; this catalog re-pins quarterly
 (`runtime/orca-pin.md`). Between re-pins nothing said how far the pin had fallen behind, so
-the first warning was a field sighting. Three subcommands, each independent:
+the first warning was a field sighting. Four subcommands, each independent:
 
   latest    network only, no binary. Lists upstream's tags through the GitHub API, keeps the
             stable `vX.Y.Z` ones (no `-rc`, no `mobile-*`), compares the highest to the pin
             and counts the stable tags strictly newer than it. The weekly workflow
             (.github/workflows/upstream-drift.yml) runs this and files an `upstream-drift`
             issue on exit 3.
+  review-date  no network, no binary. Reads `orca.next_review` (YYYY-MM-DD) from pins.json —
+            the dated quarterly trigger runtime/orca-pin.md states as "Next trigger" — and
+            exits 3 on or after it (UTC date, or --today). The weekly workflow runs it beside
+            `latest` and files the same `upstream-drift` issue on its exit 3, so the dated
+            re-pin needs no standing issue per cadence (#508).
   capture   binary needed. Dumps the surfaces the last re-pin archived as receipts —
             `agent-context --json`, `--help`, `terminal --help`, and the `orchestration` and
             `orca-cli` guides with their bundled references — into DIR, in the shape of
@@ -29,6 +34,7 @@ the first warning was a field sighting. Three subcommands, each independent:
 Usage
   upstream_probe.py latest [--max-patches N] [--pins PATH] [--tags-json PATH]
                            [--tags-url URL] [--timeout SECONDS] [--json]
+  upstream_probe.py review-date [--pins PATH] [--today YYYY-MM-DD] [--json]
   upstream_probe.py capture --out DIR [--timeout SECONDS]
   upstream_probe.py diff --baseline DIR --fresh DIR [--json]
 
@@ -44,15 +50,17 @@ Environment (no secret is ever read from a file)
 
 Exit codes (fail-closed: an error is never exit 0)
   0  latest: no re-pin due (drift `none`, or `patch` with patches_behind below --max-patches)
-     capture: every surface written · diff: identical
-  2  could not run — network or HTTP error, unreadable pins.json, no stable tags, CLI not on
-     PATH, a capture command failed or printed no JSON, missing/incomplete directory, usage
+     review-date: before orca.next_review · capture: every surface written · diff: identical
+  2  could not run — network or HTTP error, unreadable pins.json, no stable tags, a missing
+     or malformed orca.next_review or --today, CLI not on PATH, a capture command failed or
+     printed no JSON, missing/incomplete directory, usage
   3  latest: re-pin due (`minor`/`major` drift, or patches_behind >= --max-patches)
-     diff: drift (a command added/removed/changed, a file changed/added/removed)
+     review-date: on or after orca.next_review · diff: drift (a command added/removed/changed, a file changed/added/removed)
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import difflib
 import http.client
 import json
@@ -80,6 +88,7 @@ MAX_PAGES = 5
 DEFAULT_MAX_PATCHES = 10
 USER_AGENT = "open-fleet-upstream-probe (runtime/scripts/upstream_probe.py)"
 STABLE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # A bundled-reference name as `skills get <topic> --references` lists it.
 REF_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 DIFF_PREVIEW_LINES = 20
@@ -269,6 +278,48 @@ def cmd_latest(args):
         print(f"pin {result['pin']} - upstream {result['latest']} - drift {result['drift']} - "
               f"{result['patches_behind']} stable tag(s) newer than the pin "
               f"(threshold {args.max_patches}) -> {verdict}")
+    return EXIT_DUE if due else EXIT_OK
+
+
+# --- review-date ----------------------------------------------------------------------------
+
+def parse_date(value, what):
+    """A real YYYY-MM-DD date, else a ProbeError naming `what` — never a silent 'not due'."""
+    if not (isinstance(value, str) and ISO_DATE.match(value)):
+        raise ProbeError(f"{what} is not a YYYY-MM-DD date: {value!r}")
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise ProbeError(f"{what} is not a real date: {value!r} ({exc})")
+
+
+def read_next_review(path):
+    """`orca.next_review` from a pins.json: the dated re-pin trigger (#508). Absent is a
+    ProbeError, not 'no date': a trigger that quietly stops being read is the gap it closes."""
+    data = load_json_file(path)
+    orca = data.get("orca") if isinstance(data, dict) else None
+    if not isinstance(orca, dict) or "next_review" not in orca:
+        raise ProbeError(f"{path}: orca.next_review is missing — the dated re-pin trigger "
+                         "runtime/orca-pin.md states as 'Next trigger' (#508)")
+    return parse_date(orca["next_review"], f"{path}: orca.next_review")
+
+
+def cmd_review_date(args):
+    pin_version = read_pin(args.pins)
+    next_review = read_next_review(args.pins)
+    if args.today is None:
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+    else:
+        today = parse_date(args.today, "--today")
+    days_left = (next_review - today).days
+    due = days_left <= 0
+    if args.json:
+        print(json.dumps({"pin": pin_version, "next_review": next_review.isoformat(),
+                          "today": today.isoformat(), "days_left": days_left}))
+    else:
+        verdict = "RE-PIN DUE" if due else "no re-pin due"
+        print(f"pin {pin_version} - next review {next_review.isoformat()} - today "
+              f"{today.isoformat()} ({days_left} day(s) left) -> {verdict}")
     return EXIT_DUE if due else EXIT_OK
 
 
@@ -533,8 +584,9 @@ def cmd_diff(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="upstream_probe.py",
-        description="Drift probe for the Orca pin: latest (network only), capture (binary), "
-                    "diff (capture vs receipts). Exits 0 fine, 2 could-not-run, 3 re-pin due/drift.")
+        description="Drift probe for the Orca pin: latest (network only), review-date (the "
+                    "dated trigger), capture (binary), diff (capture vs receipts). Exits 0 fine, "
+                    "2 could-not-run, 3 re-pin due/drift.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     latest = sub.add_parser("latest", help="compare upstream's highest stable tag to the pin")
     latest.add_argument("--max-patches", type=int, default=DEFAULT_MAX_PATCHES,
@@ -548,6 +600,14 @@ def build_parser():
     latest.add_argument("--timeout", type=float, default=20.0, help="seconds per request")
     latest.add_argument("--json", action="store_true",
                         help='print {"pin","latest","drift","patches_behind"}')
+    review = sub.add_parser("review-date",
+                            help="exit 3 on or after the pin's dated trigger (orca.next_review)")
+    review.add_argument("--pins", default=str(DEFAULT_PINS),
+                        help="pins.json to read orca.next_review from (default runtime/pins.json)")
+    review.add_argument("--today", default=None,
+                        help="YYYY-MM-DD to judge against (default: the current UTC date)")
+    review.add_argument("--json", action="store_true",
+                        help='print {"pin","next_review","today","days_left"}')
     capture = sub.add_parser("capture", help="dump the receipt surfaces of the CLI on PATH")
     capture.add_argument("--out", required=True, help="directory to write into")
     capture.add_argument("--timeout", type=float, default=60.0, help="seconds per command")
@@ -561,7 +621,8 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        return {"latest": cmd_latest, "capture": cmd_capture, "diff": cmd_diff}[args.cmd](args)
+        return {"latest": cmd_latest, "review-date": cmd_review_date, "capture": cmd_capture,
+                "diff": cmd_diff}[args.cmd](args)
     except ProbeError as exc:
         print(f"upstream_probe: {exc}", file=sys.stderr)
         return EXIT_ERROR

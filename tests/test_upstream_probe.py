@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -1047,6 +1048,175 @@ class TheReferenceDocDescribesTheProbe(unittest.TestCase):
         lines = SCRIPT.read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines[int(m.group(1)) - 1].strip(), '"""',
                          "the anchored range must end where the header docstring closes")
+
+
+# --- review-date: the dated quarterly trigger (#508) -------------------------------------------
+
+def write_review_pins(directory, next_review="2026-12-28", version=PIN):
+    """A pins.json whose orca entry names the dated re-pin trigger (`orca.next_review`)."""
+    entry = {"version": version}
+    if next_review is not None:
+        entry["next_review"] = next_review
+    path = Path(directory) / "pins.json"
+    path.write_text(json.dumps({"orca": entry}), encoding="utf-8")
+    return str(path)
+
+
+class ReviewDateTrigger(unittest.TestCase):
+    """#508: the quarterly date in runtime/orca-pin.md was the one re-pin trigger nothing
+    machine-checked — a standing issue per cadence carried it. `review-date` reads
+    `orca.next_review` from pins.json and exits 3 on or after it, so the weekly workflow files
+    the dated re-pin exactly as it files a minor or a ten-patch drift."""
+
+    def review(self, today, next_review="2026-12-28", *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            return run("review-date", "--pins", write_review_pins(tmp, next_review),
+                       "--today", today, *extra, env=clean_env())
+
+    def test_the_day_before_is_not_due(self):
+        r = self.review("2026-12-27", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["days_left"], 1)
+
+    def test_the_date_itself_fires(self):
+        r = self.review("2026-12-28", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["days_left"], 0)
+
+    def test_a_date_already_past_keeps_firing(self):
+        r = self.review("2027-02-01", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["days_left"], -35)
+
+    def test_json_is_exactly_pin_date_today_and_days_left(self):
+        r = self.review("2026-10-24", "2026-12-28", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"pin": PIN, "next_review": "2026-12-28",
+                                                "today": "2026-10-24", "days_left": 65})
+        self.assertEqual(r.stdout.count("\n"), 1, "one JSON object, nothing else on stdout")
+
+    def test_the_human_line_names_the_pin_the_date_and_the_verdict(self):
+        r = self.review("2026-12-28")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        for needle in (PIN, "2026-12-28", "RE-PIN DUE"):
+            self.assertIn(needle, r.stdout)
+        r = self.review("2026-10-24")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no re-pin due", r.stdout)
+
+    def test_without_today_the_clock_is_the_current_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            future = run("review-date", "--pins", write_review_pins(tmp, "2999-01-01"), "--json",
+                         env=clean_env())
+            past = run("review-date", "--pins", write_review_pins(tmp, "2000-01-01"), "--json",
+                       env=clean_env())
+        self.assertEqual(future.returncode, 0, future.stderr)
+        self.assertEqual(past.returncode, 3, past.stderr)
+        self.assertRegex(json.loads(past.stdout)["today"], r"^\d{4}-\d{2}-\d{2}$")
+
+
+class ReviewDateFailsClosed(unittest.TestCase):
+    """A date the probe cannot read is exit 2, never 0: a dated trigger that silently stops
+    being evaluated is the standing-issue gap this subcommand closes, wearing a fix."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.addCleanup(self.tmp.cleanup)
+
+    def exit_2(self, *args, mentions=None):
+        r = run("review-date", *args, env=clean_env())
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertEqual(r.stdout, "", "a could-not-run answer prints no verdict")
+        if mentions:
+            self.assertIn(mentions, r.stderr)
+
+    def test_a_pin_without_next_review(self):
+        self.exit_2("--pins", write_review_pins(self.dir, None), "--today", "2026-10-24",
+                    mentions="orca.next_review")
+
+    def test_a_malformed_next_review(self):
+        for bad in ("2026-13-01", "2026-02-30", "soon", "2026-12-28T00:00Z", 20261228, ""):
+            with self.subTest(bad=bad):
+                self.exit_2("--pins", write_review_pins(self.dir, bad), "--today", "2026-10-24",
+                            mentions="orca.next_review")
+
+    def test_a_malformed_today(self):
+        for bad in ("tomorrow", "2026-1-5", "2026-02-30"):
+            with self.subTest(bad=bad):
+                self.exit_2("--pins", write_review_pins(self.dir), "--today", bad,
+                            mentions="--today")
+
+    def test_an_unreadable_pins_file(self):
+        self.exit_2("--pins", str(Path(self.dir) / "absent.json"), "--today", "2026-10-24",
+                    mentions="absent.json")
+
+    def test_a_pin_without_a_stable_version(self):
+        self.exit_2("--pins", write_review_pins(self.dir, version="v1.4.216-rc.1"),
+                    "--today", "2026-10-24", mentions="orca.version")
+
+
+class TheCommittedReviewDate(unittest.TestCase):
+    """The committed pin names its dated trigger once, machine-readably, and the human pin
+    record states the same date (orca-pin.md: "a run updates both or neither")."""
+
+    def setUp(self):
+        self.orca = json.loads((ROOT / "runtime" / "pins.json").read_text(encoding="utf-8"))["orca"]
+
+    def test_pins_json_names_a_review_date_after_the_witness(self):
+        self.assertRegex(self.orca.get("next_review", ""), r"^\d{4}-\d{2}-\d{2}$")
+        self.assertGreater(date.fromisoformat(self.orca["next_review"]),
+                           date.fromisoformat(self.orca["witnessed"]))
+
+    def test_the_pin_record_states_the_same_next_trigger(self):
+        text = (ROOT / "runtime" / "orca-pin.md").read_text(encoding="utf-8")
+        stated = re.findall(r"Next trigger: \*\*(\d{4}-\d{2}-\d{2})\*\*", text)
+        self.assertEqual(stated, [self.orca["next_review"]])
+
+    def test_the_committed_pins_run_through_review_date_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = run("review-date", "--today", self.orca["witnessed"], "--json", env=clean_env(),
+                    cwd=tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["next_review"], self.orca["next_review"])
+
+
+class TheWorkflowFilesTheDatedTrigger(unittest.TestCase):
+    """#508: the weekly workflow is what files the next re-pin, so it must run the date check
+    and file on its exit 3 — and fail the job when it could not tell."""
+
+    def setUp(self):
+        self.text = WORKFLOW.read_text(encoding="utf-8")
+
+    def test_it_runs_review_date_and_files_on_its_exit_three(self):
+        for needle in (
+            "python3 runtime/scripts/upstream_probe.py review-date --json",
+            "steps.review.outputs.code != '0' && steps.review.outputs.code != '3'",
+            "steps.probe.outputs.code == '3' || steps.review.outputs.code == '3'",
+            'title="Orca pin review date reached: ${NEXT_REVIEW} (pin ${PIN})"',
+        ):
+            self.assertIn(needle, self.text)
+
+    def test_a_date_only_issue_does_not_say_upstream_moved(self):
+        # The "moved past the pin" title is chosen only when `latest` itself fired.
+        self.assertRegex(self.text, r'if \[ "\$\{PROBE_CODE\}" = "3" \]; then\n\s+title="Orca moved')
+
+    def test_the_no_re_pin_summary_needs_both_checks_quiet(self):
+        self.assertIn("steps.probe.outputs.code == '0' && steps.review.outputs.code == '0'",
+                      self.text)
+
+
+class TheReferenceDocDescribesReviewDate(unittest.TestCase):
+    def test_the_section_names_the_subcommand_and_its_field(self):
+        section = DOC.read_text(encoding="utf-8").split("## `upstream_probe.py`", 1)[1]
+        section = section.split("\n## ", 1)[0]
+        for needle in ("`review-date`", "orca.next_review", "--today"):
+            self.assertIn(needle, section)
+
+    def test_review_date_help_exits_zero(self):
+        r = run("review-date", "--help", env=clean_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--today", r.stdout)
 
 
 class ScriptHygiene(unittest.TestCase):

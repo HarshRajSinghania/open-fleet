@@ -1676,22 +1676,31 @@ Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 
 Drift probe against the Orca pin: has upstream moved past `runtime/pins.json`, and —
 when a binary is at hand — how do its surfaces differ from the last re-pin's receipts?
-Source `runtime/scripts/upstream_probe.py:1-52`; behavior pinned by
+Source `runtime/scripts/upstream_probe.py:1-59`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
-(`.github/workflows/upstream-drift.yml`) runs `latest` and opens — or comments on — an
-issue labeled `upstream-drift` when a re-pin is due.
+(`.github/workflows/upstream-drift.yml`) runs `latest` and `review-date` and opens — or
+comments on — an issue labeled `upstream-drift` when either says a re-pin is due.
 
-Usage: `upstream_probe.py {latest,capture,diff} ...`
+Usage: `upstream_probe.py {latest,review-date,capture,diff} ...`
 
 Subcommands: `latest` (network only: list upstream's tags, keep the stable `vX.Y.Z` ones,
-compare the highest to the pin), `capture` (binary needed: dump the receipt surfaces into
-a directory), `diff` (compare a capture against a receipts directory).
+compare the highest to the pin), `review-date` (no network: the pin's dated quarterly
+trigger, `orca.next_review` in `runtime/pins.json`), `capture` (binary needed: dump the
+receipt surfaces into a directory), `diff` (compare a capture against a receipts directory).
 
 Flags: `latest` takes `--max-patches` (re-pin threshold, default 10), `--pins` (default
 `runtime/pins.json`), `--tags-json` (read the tags payload from a file — tests, offline),
 `--tags-url` (default the GitHub tags endpoint for `stablyai/orca`), `--timeout`,
-`--json`; `capture` takes `--out` (required), `--timeout`; `diff` takes `--baseline` and
-`--fresh` (both required), `--json`.
+`--json`; `review-date` takes `--pins`, `--today` (YYYY-MM-DD, default the current UTC
+date), `--json`; `capture` takes `--out` (required), `--timeout`; `diff` takes
+`--baseline` and `--fresh` (both required), `--json`.
+
+`review-date` (#508) reads `orca.next_review` — the date `runtime/orca-pin.md` states as
+"Next trigger", and the two must agree — and exits 3 on or after it, 0 before it. `--json`
+prints exactly `{"pin","next_review","today","days_left"}` (`days_left` is 0 on the date and
+negative past it). A missing or malformed `orca.next_review` or `--today` is exit 2, never
+0: a dated trigger that silently stops being read is the standing-issue gap it replaces
+(`runtime/scripts/upstream_probe.py:read_next_review`).
 
 `latest` follows `Link: rel="next"` for up to five pages — only on the first URL's scheme,
 host and port; a next link elsewhere exits 2 — sends `Authorization: Bearer $GITHUB_TOKEN`
@@ -1719,10 +1728,11 @@ agent-context compares the set of command names (`commands[].command`, else the 
 the guides directory compares file by file. Every added, removed or changed command and
 every changed, added or removed file is named.
 
-Exits: 0 no re-pin due / captured / identical · 2 could-not-run (network or HTTP error,
-unreadable pins, no stable tags, CLI missing or a command failed, missing or incomplete
-directory) · 3 re-pin due (`minor`/`major` drift, or `patches_behind` ≥ `--max-patches`)
-/ drift.
+Exits: 0 no re-pin due / before the review date / captured / identical · 2 could-not-run
+(network or HTTP error, unreadable pins, no stable tags, a missing or malformed
+`orca.next_review` or `--today`, CLI missing or a command failed, missing or incomplete
+directory) · 3 re-pin due (`minor`/`major` drift, or `patches_behind` ≥ `--max-patches`; or
+on/after `orca.next_review`) / drift.
 
 > Why: upstream cuts about a release a day and the pin record re-pins quarterly, so the
 > gap between "the pin is fine" and "the pin is a quarter stale" was invisible until a
@@ -1732,8 +1742,10 @@ directory) · 3 re-pin due (`minor`/`major` drift, or `patches_behind` ≥ `--ma
 > maintainer with a binary gets the diff the re-pin would produce, not a second format.
 > Patch drift rides until the count reaches the threshold
 > (`runtime/scripts/upstream_probe.py:re_pin_due`) because the pin record says patch
-> bumps ride, and a minor is a re-pin trigger by the same rule. Exit 2 is never 0: a
-> probe that could not look must not read as "nothing moved".
+> bumps ride, and a minor is a re-pin trigger by the same rule. The quarterly date is the
+> trigger a quiet upstream never fires, so `review-date` makes it a weekly check instead of a
+> standing issue someone has to remember (#508). Exit 2 is never 0: a probe that could not
+> look must not read as "nothing moved".
 
 ## `watchdog.py`
 

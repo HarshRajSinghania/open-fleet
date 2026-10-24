@@ -27,8 +27,13 @@ The spend guard is #606's (scripts/_ablation_run.py), reused rather than re-impl
       or reported no cost;
     - a measured call above its reservation stops the run (the limit did not hold), and so does
       a call that reported no cost;
-    - each call leads its own process group, and the harness keeps the agent in it: a timeout,
-      a leader that exits leaving children, SIGTERM, SIGHUP or Ctrl-C kills and reaps the group.
+    - each call runs under #657's watchdog (contained_run), leading its own process group with
+      the harness keeping the agent in it, and tagged OF_CALL_ID: a timeout, a leader that exits
+      leaving children, SIGTERM, SIGHUP, Ctrl-C or the runner's own death kills the call whole,
+      and a call something of which survives (or that discovery cannot see) is never settled:
+      it stays charged in full and the run stops;
+    - a live run refuses to start where process discovery cannot contain a call (#657's
+      containment_problem).
 
 NOT evidence. results.json says `live-unreviewed`: no live cell leaves UNRUN in the published
 table until a run report under docs/runs/ binds the run (runtime/scripts/run_report.py).
@@ -43,6 +48,7 @@ import random
 import secrets
 import shlex
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -244,6 +250,11 @@ def preflight(args, eval_mod, data):
                       "allowed tools")
     if args.repeats < 1:
         raise refused("--repeats must be at least 1")
+    why = guard().containment_problem()  # #657 review W1, checked before anything is written
+    if why:
+        raise refused(f"process discovery cannot contain a call on this host ({why}): a paid "
+                      "call's escaped processes could never be found or stopped, so a live run "
+                      "does not start")
     errors = eval_mod.validate_trajectory_eval()
     if errors:
         raise refused("the suite does not validate: " + "; ".join(errors))
@@ -349,7 +360,8 @@ def _run_holding(args, eval_mod, engine, data, cases, out, unrun, runnable, cell
             done.append(row)
             ctx["active"] = None
             if row["orphans"]:
-                stopped = f"ORPHAN_ALIVE at {row['cell']}: a process of its call survived SIGKILL"
+                stopped = (f"ORPHAN_ALIVE at {row['cell']}: a process of its call survived "
+                           "SIGKILL, or the process table could not be read")
             elif row["cost_usd"] is not None and row["cost_usd"] > reserve:
                 stopped = (f"LIMIT_BREACHED at {row['cell']}: the call cost USD {row['cost_usd']}, "
                            f"above its USD {reserve:.2f} reservation, so the cap can no longer "
@@ -439,16 +451,25 @@ def run_cell(ctx, cell):
     g, ledger = guard(), ctx["ledger"]
     ledger.start(cell["cell"], "agent", ctx["reserve"])  # on disk BEFORE the paid call starts
     started = time.monotonic()
-    code, killed, emptied, stream = None, False, True, ""
+    code, killed, emptied = None, False, True
+    stdin, stream_path = cell_dir / "prompt.txt", cell_dir / "stream.jsonl"
+    stdin.write_text(prompt, encoding="utf-8")
     try:
-        stream, code, killed, emptied = g.run_group(argv, input_text=prompt, timeout=ctx["timeout"],
-                                                     cwd=workspace, env=env)
-    except (OSError, ValueError) as err:  # ValueError: output that is not text
+        # #657's containment: the call runs under a watchdog leading its own process group,
+        # tagged OF_CALL_ID, its output straight to the cell so it outlives the runner.
+        code, killed, emptied = g.contained_run(argv, timeout=ctx["timeout"], cwd=workspace,
+                                                env=env, stdin_path=stdin, stdout_path=stream_path,
+                                                stderr_path=cell_dir / "stderr.txt")
+    except (OSError, subprocess.SubprocessError) as err:
         row["errors"].append(f"agent invocation failed: {type(err).__name__}")
     row["wall_s"] = round(time.monotonic() - started, 3)
-    (cell_dir / "stream.jsonl").write_text(stream, encoding="utf-8")
+    try:
+        stream = stream_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        stream = ""
     cost = measured_cost(stream)
-    ledger.settle(cell["cell"], "agent", charge_of(cost, killed, ctx["reserve"]), cost, killed)
+    if emptied:  # a call something of which survives stays open at its full reservation (K4)
+        ledger.settle(cell["cell"], "agent", charge_of(cost, killed, ctx["reserve"]), cost, killed)
     row.update(exit=code, agent_killed=killed, orphans=not emptied, cost_usd=cost)
     if killed:
         row["errors"].append(f"agent timed out after {ctx['timeout']} s; its whole process group "
@@ -456,7 +477,8 @@ def run_cell(ctx, cell):
     elif code not in (None, 0):
         row["errors"].append(f"agent exited with status {code}")
     if not emptied:
-        row["errors"].append("a process of the call's group survived SIGKILL")
+        row["errors"].append("a process of the call survived SIGKILL, or the process table could "
+                             "not be read: the call stays open at its full reservation")
     init = init_line(stream) or {}
     model = init.get("model") if isinstance(init.get("model"), str) else None
     version = init.get("claude_code_version")

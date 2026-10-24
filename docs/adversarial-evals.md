@@ -252,7 +252,10 @@ The spend guard is #606's, reused from [`scripts/_ablation_run.py`](../scripts/_
 - a call is charged its measured `total_cost_usd`, or its whole reservation when it is unmeasured
   or killed;
 - a call that costs more than its reservation stops the run, and so does one that reports no cost;
-- a timeout or an interrupt kills the call's whole process group.
+- each call runs under #657's watchdog, tagged `OF_CALL_ID`: a timeout, an interrupt or the
+  runner's own death kills the whole call, and a call something of which survives is never
+  settled (it stays charged in full and the run stops);
+- a run refuses to start where process discovery cannot contain a call.
 
 #606's paired runner uses the same harness as its agent-command prefix. It writes
 `$ABLATION_OUT/trajectory.jsonl` for each trajectory cell:

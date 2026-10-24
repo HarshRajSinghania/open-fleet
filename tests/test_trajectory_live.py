@@ -24,6 +24,7 @@ test checks the stub's log stayed empty. No live model runs.
 
     python3 -m unittest tests.test_trajectory_live -v
 """
+import argparse
 import contextlib
 import copy
 import hashlib
@@ -42,6 +43,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -1385,6 +1387,10 @@ class LiveRunner(SafetyNet):
         with contextlib.suppress(ProcessLookupError):
             os.killpg(os.getpgid(agent_pid), signal.SIGKILL)  # the orphaned group, by hand
         wait_dead([agent_pid, grandchild])
+        streams = list(out.glob("runs/*/cells/CL-01/r0/stream.jsonl"))
+        self.assertEqual(len(streams), 1, "the call's output goes straight to its cell (#657)")
+        self.assertIn('"subtype": "init"', streams[0].read_text(),
+                      "what the killed call printed outlives the runner")
         records = self.ledger(out)
         self.assertEqual([r["event"] for r in records], ["start"])
         self.assertEqual(live_mod.guard().SpendLedger(out / "spend.jsonl", "later").total(),
@@ -1432,6 +1438,47 @@ class LiveRunner(SafetyNet):
             self.assertTrue((run / "report.md").is_file())
         later = json.loads((second / "results.json").read_text())
         self.assertEqual(later["cost"]["prior_spent_usd"], 0.5, "one ledger counts both runs")
+
+    def namespace(self, out, agent, **over):
+        """The parsed `run --suite trajectories --tier live` arguments, for run_live itself."""
+        args = dict(case="CL-01", all_live=False, trajectory=None, cost_cap_usd=100.0,
+                    reserve_usd=self.RESERVE, limit_fraction=0.8, agent_cmd=shlex.join(agent),
+                    model="inert-stand-in", harness_version="0.0.0-test",
+                    agent_limit_flag="--max-budget-usd", allowlist_flag="--allowedTools",
+                    repeats=1, seed=602, timeout=60, out=str(out), json=False)
+        args.update(over)
+        return argparse.Namespace(**args)
+
+    def test_a_host_where_discovery_cannot_contain_a_call_runs_nothing(self):
+        """#657's live preflight: where a call's escaped processes could never be found, no
+        paid call starts."""
+        out, log = self.tmpdir() / "out", self.tmpdir() / "log"
+        args = self.namespace(out, self.agent("clean", "--log", str(log)))
+        g = live_mod.guard()
+        with mock.patch.object(g, "containment_problem", return_value="the table hides markers"), \
+                self.assertRaisesRegex(g.Refused, "process discovery"):
+            live_mod.run_live(args)
+        self.assertFalse(out.exists(), "a refused run wrote its output directory")
+        self.assertFalse(log.exists(), "a refused run started the agent")
+
+    def test_a_call_something_of_which_survives_stays_open_at_its_reservation(self):
+        """#657 K4: a call is never settled while anything of it may still be spending; it stays
+        charged in full and the run stops."""
+        out = self.tmpdir() / "out"
+        args = self.namespace(out, self.agent("clean", "--cost", "0.25"), repeats=2)
+        g = live_mod.guard()
+        real = g.contained_run
+
+        def survivor(argv, **kwargs):
+            code, killed, _emptied = real(argv, **kwargs)
+            return code, killed, False  # as if a process of the call survived SIGKILL
+
+        with mock.patch.object(g, "contained_run", side_effect=survivor):
+            _run_dir, results = live_mod.run_live(args)
+        self.assertEqual([r["event"] for r in self.ledger(out)], ["start"])
+        self.assertEqual(results["cells"][0]["charged_usd"], self.RESERVE)
+        self.assertEqual(results["cells"][0]["verdict"], "ERROR")
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
 
     def test_an_interrupt_kills_every_group_and_still_writes_the_results(self):
         out = self.tmpdir() / "out"

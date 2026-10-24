@@ -236,7 +236,11 @@ and parks; and usage. The experiment report adds the following per run:
   verified-or-parked. A wave in which no unit did, such as a `builders=1` wave whose only unit
   was bounced, contributes no observation. Its own row prints `unavailable`, and under
   `run_report.py` that row cannot bind.
-- **Rework:** bounced unit-waves over all unit-waves. **Freshness:** approving reviews voided
+- **Rework:** bounced unit-waves over all unit-waves. A unit-wave is bounced when its attempt does
+  not land, the last attempt before a park included, and when it is a re-dispatch. A failing
+  oracle records its own verdict. Every other bounce, whether a review asking for changes or giving
+  no verdict, a builder failure or timeout, a merge conflict or a failed merge gate, is recorded
+  as `unit.suspect` in its own wave, naming its outcome. **Freshness:** approving reviews voided
   because the unit closed at another head. **Retries.** **Review queue:** median and maximum
   time from a worker_done to a review of that head starting, per review.
 - **Conflicts and gate failures:** the merge queue's `failed` receipts, by the reasons it writes

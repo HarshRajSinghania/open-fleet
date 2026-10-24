@@ -795,6 +795,10 @@ B1_GATE = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dump
 # b3r1-rep1's first wave is T5, T2, T6: T6's builder takes 20 s longer, each review 3 s.
 B3_STAGGERED = ("wip1-b3r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
     {"_sleep_task": {"T6": {"builder": 20}}, "_sleep": {"reviewer": 3}})))
+# b1r1-rep1: T5's review asks for changes on all three attempts; T3's builder reports failure, and
+# T4's dies without reporting. None of them has a failing oracle verdict.
+B1_REJECTED = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
+    {"T5": {"reviewer": ["changes", "changes", "changes"]}, "T3": {"builder": ["fail"]}, "T4": {"builder": ["die"]}})))
 B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
                                    "--inert-script", json.dumps({"_cost": {"builder": "0.40"}})))
 
@@ -1353,6 +1357,45 @@ class TestReviewsStartAsBuildersFinish(DryRun):
         wave1 = ["T5", "T2", "T6"]
         self.assertEqual(sorted(wave1, key=lambda t: started[t][0]), sorted(wave1, key=lambda t: done[t]),
                          "reviews did not start in worker_done order")
+
+
+def bounced_unit_waves(record) -> tuple[int, int]:
+    """(bounced, all) unit-waves from the run record: an attempt that ended neither landed nor
+    stopped by a halt is bounced, and so is every re-dispatch (attempt > 1), as events.py counts it."""
+    attempts = [a for u in record["units"].values() for a in u["attempts"]]
+    bounced = [a for a in attempts if (a["outcome"] != "landed" and not (a["outcome"] or "").startswith("stopped-"))
+               or a["n"] > 1]
+    return len(bounced), len(attempts)
+
+
+class TestEveryBouncedAttemptIsRework(DryRun):
+    """PR #653 review (lic): rework is the share of unit-waves bounced, and a bounce is any attempt
+    that does not land: a review that asks for changes or gives no verdict, a builder failure, a
+    merge conflict or a failed merge gate count in their own wave, as a failing oracle does, the
+    last attempt before a park included."""
+
+    RUN, ARGS = B1_REJECTED
+
+    def test_a_task_rejected_on_every_attempt_counts_every_rejection(self):
+        t5 = self.record["units"]["T5"]
+        self.assertEqual(([a["outcome"] for a in t5["attempts"]], t5["park_class"]),
+                         (["changes-requested"] * 3, "attempts-exhausted"))
+        rework = self.report(self.copy())["runs"][0]["metrics"]["rework"]
+        self.assertEqual((rework["bounced"], rework["units"]), bounced_unit_waves(self.record))
+        self.assertEqual(bounced_unit_waves(self.record), (7, 10))  # T5 x3, T3 x2, T4 x2 of 10
+
+    def test_every_dry_run_counts_what_its_record_bounced(self):
+        # a failing oracle (B3), a merge conflict (B3), a failed merge gate (B1_GATE), a cost-cap stop
+        # (B6_CAPPED) and a review queue (B3_STAGGERED)
+        for fixture in (B3, B1_GATE, B6_CAPPED, B3_STAGGERED):
+            with self.subTest(run=fixture[0], args=fixture[1][:2]):
+                tmp = Path(dry_run(*fixture)[0].name)
+                record = json.loads((tmp / "results" / "runs" / fixture[0] / "run.json").read_text(encoding="utf-8"))
+                work = Path(tempfile.mkdtemp(prefix="wip-curve-rework-"))
+                self.addCleanup(shutil.rmtree, work, True)
+                shutil.copytree(tmp / "results", work / "results")
+                rework = self.report(work / "results")["runs"][0]["metrics"]["rework"]
+                self.assertEqual((rework["bounced"], rework["units"]), bounced_unit_waves(record))
 
 
 class TestExactCapBoundary(DryRun):

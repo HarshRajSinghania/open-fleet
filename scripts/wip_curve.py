@@ -1386,6 +1386,12 @@ class Run:
             if self.halt and attempts[tid]["outcome"] in (None, "builder-timeout", "review-failed"):
                 if attempts[tid]["outcome"] is None or self.halt == "time-limit":
                     attempts[tid]["outcome"] = f"stopped-{self.halt}"
+        for tid in planned:  # every bounce counts as rework in its own wave (PR #653 review)
+            a = attempts[tid]
+            bounced = a["outcome"] != "landed" and not (a["outcome"] or "").startswith("stopped-")
+            if bounced and a.get("oracle") != 2:  # a failing oracle verdict is its own record
+                self.emit("unit.suspect", task=self.units[tid]["store_task"],
+                          source_ref=f"wip_curve.py:bounce/{tid}-a{a['n']}/{a['outcome'] or 'unsettled'}")
         self.ingest_state()
         if self.held:
             raise RunFailed(f"holds outlived their wave: {sorted(self.held)}")

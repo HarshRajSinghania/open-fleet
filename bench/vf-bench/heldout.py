@@ -828,6 +828,12 @@ def _vet_rendering(vf, cases, bad):
                 holder = repo.parent / f"holder-{name}"
                 holder.mkdir()
                 cmd, _env = vf.fixture_command(c, facts, repo, holder)
+                # The replay hands this argv to subprocess.run, which raises on a non-string: a
+                # numeric unit_class or lighting must be refused here, not left unscored (PR #669).
+                if not isinstance(cmd, list) or not all(isinstance(a, str) for a in cmd):
+                    bad(name, "a field the fixture command carries is not a string "
+                              "(unit_class, lighting or another argument)")
+                    continue
                 rendered = json.loads((repo / "vf-manifest.json").read_text(encoding="utf-8"))
                 left = (_unrendered(rendered) + _unrendered(cmd)
                         + _unrendered(vf._render(c.get("gh_reviews"), facts)))

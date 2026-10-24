@@ -1362,6 +1362,24 @@ class AWrongTypeIsRefusedNeverRaised(unittest.TestCase):
                 finally:
                     self.files[0].write_bytes(original)
 
+    def test_a_command_argument_of_the_wrong_type_is_refused(self):
+        # PR #669 review (P2, PRRT_kwDOTWxN9c6v3xjJ): a numeric unit_class or lighting passed the
+        # vet, then made the replay's subprocess.run raise TypeError and left the case unscored.
+        self._edit(2, lambda c: c.pop("expect_reason"))  # a second, ordinary defect
+        original = self.files[0].read_bytes()
+        for label, edit in {"unit_class: 7": lambda c: c.update(unit_class=7),
+                            "lighting: 3": lambda c: c.update(lighting=3)}.items():
+            with self.subTest(field=label):
+                try:
+                    self._edit(0, edit)
+                    problems, _ = heldout.vet_cases(self.tmp / "cases", self.pin)
+                    self.assertTrue(any(p.startswith("hv1-001.json:") and "not a string" in p
+                                        for p in problems), problems)
+                    self.assertTrue(any(p.startswith("hv1-003.json:") and "expect_reason" in p
+                                        for p in problems), problems)
+                finally:
+                    self.files[0].write_bytes(original)
+
     def test_the_cli_refuses_and_never_raises(self):
         self._edit(0, lambda c: c.update({"class": [], "authored_at": "2026-02-30T00:00:00Z"}))
         r = _cli("vet", str(self.tmp / "cases"), "--pin", "HEAD")

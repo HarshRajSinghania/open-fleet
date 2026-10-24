@@ -189,6 +189,11 @@ before retries (a builder and a reviewer per task). The runner never picks the s
   read: what the dispatch's stream reports, or its full reservation if the stream reports no
   cost. Only then does it exit 128+N, with the run retained as `interrupted`. A later run
   therefore cannot spend that budget again.
+- A runner killed outright (SIGKILL, power loss) writes no `run.json`. While it runs, though, it
+  rewrites a spend ledger, `spend.json`, at its start, at every launch and at every settlement.
+  A run directory without `run.json` is reported as `lost`. Its last ledger's committed spend,
+  holds included, is counted against the cap, and its time is counted for the cooldown. Such a
+  run may be re-run once.
 
 No per-call limit reaches the harness: the posix launch table
 (`runtime/providers/base.py`) passes no budget flag to any harness. A dispatch that is already

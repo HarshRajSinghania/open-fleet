@@ -1582,6 +1582,48 @@ class TestTheDocumentedLiveCommandRuns(LiveWithAFakeHarness):
         self.assertFalse(trip_log.exists())
 
 
+class TestAKilledRunStillCounts(Tmp):
+    """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
+    writes no run.json. Its spend ledger, kept current while it ran, is still counted against
+    the cap, the run is reported as lost, and only it may be re-run once."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.results = self.tmp / "results"
+        lost = self.results / "runs" / "wip1-b1r1-rep1"
+        lost.mkdir(parents=True)
+        (lost / "spend.json").write_text(json.dumps({"committed_usd": "3.00", "observed_usd": "2.50",
+                                                     "reserved_unobserved_usd": "0.00",
+                                                     "updated_at": "2026-10-24T10:00:00+00:00"}), encoding="utf-8")
+
+    def test_its_spend_is_counted(self):
+        self.assertEqual(wip.spent_in(self.results), Decimal("3.00"))
+        p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b3r1-rep1", "--cost-cap-usd", "3.40", "--inert-cost-usd", "0.25", env=self.env)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("not started", p.stderr)
+
+    def test_it_is_reported_as_lost(self):
+        runs = wip.build_report(self.results, basis="all")["runs"]
+        self.assertEqual([(r["run_id"], r["status"], r["compliant"]) for r in runs],
+                         [("wip1-b1r1-rep1", "lost", False)])
+
+    def test_it_may_be_re_run_once(self):
+        # -a2 passes the retry rule; the bogus second id is the refusal that must be reached
+        p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1-a2,wip1-b9r9-rep1", "--cost-cap-usd", "0", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("not a scheduled run", p.stderr)
+
+    def test_a_run_keeps_its_ledger_and_binds_it(self):
+        run_dir = Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
+        record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        ledger = json.loads((run_dir / "spend.json").read_text(encoding="utf-8"))
+        self.assertIn("spend.json", record["sources"])
+        self.assertEqual(Decimal(ledger["committed_usd"]), Decimal("0.50"))
+
+
 class TestRelativePaths(unittest.TestCase):
     """--results, --workdir and --prereg given relative to another working directory: the run,
     the report and the verifier resolve them once, before anything changes directory (git reads

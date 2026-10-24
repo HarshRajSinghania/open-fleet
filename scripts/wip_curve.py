@@ -92,7 +92,7 @@ PER_CALL_LIMIT = "none passed: the posix launch table has no per-call budget fla
 # The merge queue's own `failed` receipt reasons (runtime/scripts/merge_queue.py plan()).
 MQ_CONFLICT, MQ_GATE_FAILED = "conflict", "gate_failed"
 # A run that ended this way may be re-run once (-a2): an infrastructure failure, not a result.
-RETRYABLE = ("failed", "interrupted")
+RETRYABLE = ("failed", "interrupted", "lost")
 AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavailable'"
 
 
@@ -953,6 +953,19 @@ class Run:
             self.reserved += self.reservation
         else:
             self.observed += cost
+        self.note_spend()
+
+    def note_spend(self) -> None:
+        """The run's spend ledger, rewritten (atomically) at start, at every launch and every
+        settlement: what a killed runner leaves behind for spent_in() and the cooldown."""
+        run_dir = getattr(self, "dir", None)
+        if run_dir is None or not Path(run_dir).is_dir():
+            return
+        ledger = {"committed_usd": str(self.committed()), "observed_usd": str(self.observed),
+                  "reserved_unobserved_usd": str(self.reserved), "updated_at": now()}
+        tmp = Path(run_dir) / ".spend.json.tmp"
+        tmp.write_text(json.dumps(ledger, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, Path(run_dir) / "spend.json")
 
     def spent(self) -> Decimal:
         return self.spent_before + self.observed + self.reserved
@@ -998,6 +1011,7 @@ class Run:
         if proc.returncode != 0 or not disp:
             raise RunFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}")
         self.launched[disp] = (store_task, key)  # from here on its call is spent until settled
+        self.note_spend()
         try:
             self.guard(worktree)
             self.launches[disp] = self.delivered(proc.stdout, nonce)
@@ -1124,6 +1138,7 @@ class Run:
         base = self.integration_head()
         if not all(self.hold_unit(tid) for tid in planned):  # over_budget() covered all of them
             raise RunFailed("a planned unit's worst case no longer fits the cap at wave open")
+        self.note_spend()
         store_ids = [self.units[t]["store_task"] for t in planned]
         self.emit("wave.open", source_ref=f"wip_curve.py:wave/{k}",
                   data={"wave": k, "builders": self.cond["builders"], "reviewers": self.cond["reviewers"],
@@ -1391,6 +1406,7 @@ class Run:
         self.sb = sb
         self.commands = []
         self.dir.mkdir(parents=True)
+        self.note_spend()
         self.record.update(started_at=now(), sandbox=str(sb.dir))
         started = time.monotonic()
         self.deadline = started + self.wall_limit
@@ -1519,6 +1535,7 @@ class Run:
             (self.dir / "run-report.md").write_text(header + proc.stdout, encoding="utf-8")
             _events, _sha, head = events.read_log(self.log)
             rec["events_head"] = head
+        self.note_spend()
         rec["sources"] = {str(p.relative_to(self.dir)): sha256_file(p) for p in sorted(self.dir.rglob("*"))
                           if p.is_file() and p.name != "run.json"}
         (self.dir / "run.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1531,11 +1548,30 @@ def runs_in(results: Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if (p / "run.json").is_file()) if root.is_dir() else []
 
 
+def lost_in(results: Path) -> list[Path]:
+    """Run directories with no run.json: a runner killed outright (SIGKILL, power loss) before it
+    could settle. Their spend ledger still counts, and they are reported as lost."""
+    root = Path(results) / "runs"
+    return sorted(p for p in root.iterdir() if p.is_dir() and not (p / "run.json").is_file()) if root.is_dir() else []
+
+
+def ledger_of(run_dir: Path) -> dict:
+    try:
+        return json.loads((Path(run_dir) / "spend.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def spent_in(results: Path) -> Decimal:
+    """Everything spent in a results directory. A settled run counts what its run.json charged; a
+    lost one counts its last ledger's COMMITTED spend (holds included: a call it launched may have
+    spent all of its reservation), never 0 (adversarial pass)."""
     total = Decimal(0)
     for d in runs_in(results):
         cost = json.loads((d / "run.json").read_text(encoding="utf-8")).get("cost") or {}
         total += money(cost.get("observed_usd", "0")) + money(cost.get("reserved_unobserved_usd", "0"))
+    for d in lost_in(results):
+        total += money(ledger_of(d).get("committed_usd", "0"))
     return total
 
 
@@ -2050,6 +2086,17 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     taskset_sha = sha256_file(taskset_path)
     sched = schedule(prereg, taskset)
     runs = [summarize_run(d, prereg, prereg_sha, taskset, taskset_sha) for d in runs_in(results)]
+    for d in lost_in(results):  # reported, never dropped, never pooled
+        entry = next((e for e in sched if e["run_id"] == re.sub(r"-a\d+$", "", d.name)), None)
+        lost = {"run_id": d.name, "condition": entry["condition"]["id"] if entry else None,
+                "builders": entry["condition"]["builders"] if entry else None,
+                "reviewers": entry["condition"]["reviewers"] if entry else None, "tier": None,
+                "status": "lost", "stop_reason": None, "error": None, "metrics": None, "compliant": False,
+                "spend_ledger": ledger_of(d),
+                "noncompliance": ["the runner was killed before it wrote run.json; its last spend ledger "
+                                  "is counted against the cap"]}
+        lost["registered"] = registered_run(lost)
+        runs.append(lost)
     order = {e["run_id"]: e["position"] for e in sched}
     runs.sort(key=lambda r: (order.get(re.sub(r"-a\d+$", "", r["run_id"]), 10**6), r["run_id"]))
     present = {re.sub(r"-a\d+$", "", r["run_id"]) for r in runs}
@@ -2349,7 +2396,7 @@ def cmd_run(args) -> int:
     if args.workdir:
         check_writable(args.workdir, "--workdir", registered)
     sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
-    done = {d.name for d in runs_in(results)}
+    done = {d.name for d in runs_in(results) + lost_in(results)}
     taskset_sha = sha256_file(taskset_path)
     for d in runs_in(results):  # one experiment, one registration
         rec = json.loads((d / "run.json").read_text(encoding="utf-8"))
@@ -2368,7 +2415,8 @@ def cmd_run(args) -> int:
                 raise Refused(f"{rid}: the registration allows one re-run (-a2) of a scheduled run, never -a{attempt}")
             if attempt == 2:  # only after an infrastructure failure of attempt 1 (PR #653 review)
                 first = results / "runs" / m.group(1) / "run.json"
-                status = json.loads(first.read_text(encoding="utf-8")).get("status") if first.is_file() else None
+                status = (json.loads(first.read_text(encoding="utf-8")).get("status") if first.is_file()
+                          else "lost" if first.parent.is_dir() else None)
                 if status not in RETRYABLE:
                     raise Refused(f"{rid}: a re-run is allowed only after an infrastructure failure of "
                                   f"{m.group(1)}, which {'ended ' + str(status) if status else 'never ran'}")
@@ -2413,7 +2461,7 @@ def cmd_run(args) -> int:
             return EXIT_INCOMPLETE
         if args.worker == "live":
             ends = [json.loads((d / "run.json").read_text(encoding="utf-8")).get("finished_at")
-                    for d in runs_in(results)]
+                    for d in runs_in(results)] + [ledger_of(d).get("updated_at") for d in lost_in(results)]
             ends = [datetime.fromisoformat(e) for e in ends if e]
             if ends:
                 since = (datetime.now(timezone.utc) - max(ends)).total_seconds()

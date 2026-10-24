@@ -241,6 +241,13 @@ every group is empty. SIGTERM, SIGHUP and Ctrl-C kill every live group before th
 as first_run.py does. A killed call is charged its full reservation, and an agent run that never
 completed is not sent to the grader.
 
+**Every paid call is on disk before it starts.** `spend.jsonl` in the results directory is
+append-only, and each line is fsynced before the call goes on. A call is entered at its full
+reservation before it begins and settled at its charge after. A call that is interrupted, killed
+or crashed and never settled stays charged in full. An interrupted run keeps the cell in flight
+in its results and report, charged what the ledger holds. A later run into the same directory
+counts every earlier entry against its own cap. A ledger that cannot be read refuses the run.
+
 ## Run it
 
 ```bash

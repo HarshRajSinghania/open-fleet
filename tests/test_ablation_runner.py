@@ -665,6 +665,96 @@ class NoChildOutlivesItsCall(SafetyNet):
                 self.assertTrue(results["stopped"].startswith("INTERRUPTED"), results["stopped"])
 
 
+class InterruptedSpendIsRecorded(SafetyNet):
+    """#652 review, P2: an interrupt raised inside run_cell skipped the charge, so the cell in
+    flight vanished and an interrupt during the first cell reported USD 0 although a paid call had
+    started. Every paid call is now entered in an append-only, fsynced spend ledger at its full
+    reservation BEFORE it starts and settled after; the interrupted cell is kept, charged what the
+    ledger holds, and a later run into the same directory counts that spend against its cap."""
+
+    AGENT, GRADER = 5.0, 1.0
+
+    def setUp(self):
+        self.prereg = self.tmpdir() / "prereg.json"
+        self.prereg.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        self.out = self.tmpdir() / "out"
+
+    def live(self, cap, *extra, agent="plain", grader="grader-json"):
+        return ["--prereg", str(self.prereg), "run", "--tier", "live", "--cost-cap-usd", str(cap),
+                "--harness-cmd", self.stub_cmd(agent, "--cost", "1.0"),
+                "--grader-cmd", self.stub_cmd(grader, "--cost", "0.25"),
+                "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(self.out), *extra]
+
+    def interrupted(self, argv, code):
+        with self.assertRaises(SystemExit) as stop:
+            run_main(argv)
+        self.assertEqual(stop.exception.code, code)
+        return json.loads((self.out / "results.json").read_text())
+
+    def test_an_interrupt_during_the_agent_keeps_the_cell_at_its_full_reservation(self):
+        with mock.patch.object(runner, "run_group", side_effect=SystemExit(128 + signal.SIGTERM)):
+            results = self.interrupted(self.live(20), 143)
+        self.assertTrue(results["stopped"].startswith("INTERRUPTED"), results["stopped"])
+        self.assertEqual(len(results["cells"]), 1, "the cell in flight is kept")
+        cell = results["cells"][0]
+        self.assertTrue(cell["interrupted"])
+        self.assertEqual(cell["charged_usd"], self.AGENT)
+        self.assertEqual(results["cost"]["spent_usd"], self.AGENT)
+        ledger = [json.loads(ln) for ln in (self.out / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["call"], r["event"]) for r in ledger], [("agent", "start")])
+        self.assertIn("USD 5.0 this run", (self.out / "report.md").read_text())
+
+    def test_an_interrupt_during_the_grader_charges_the_settled_agent_and_the_open_grader(self):
+        with mock.patch.object(runner.eval_mod(), "_grade_trace", side_effect=SystemExit(128 + signal.SIGHUP)):
+            results = self.interrupted(self.live(20), 129)
+        cell = results["cells"][0]
+        self.assertEqual(cell["charged_usd"], 1.0 + self.GRADER, "agent measured, grader at reservation")
+        self.assertEqual(results["cost"]["spent_usd"], 1.0 + self.GRADER)
+
+    def test_a_later_run_into_the_same_directory_counts_the_interrupted_spend(self):
+        with mock.patch.object(runner, "run_group", side_effect=SystemExit(128 + signal.SIGTERM)):
+            self.interrupted(self.live(20), 143)
+        code, _stdout, err = run_main(self.live(7))
+        self.assertEqual(code, 1, err)
+        results = json.loads((self.out / "results.json").read_text())
+        self.assertEqual(results["cells"], [], "USD 5 recorded + a USD 6 cell would pass the USD 7 cap")
+        self.assertTrue(results["stopped"].startswith("CAP_REACHED"), results["stopped"])
+        self.assertEqual((results["cost"]["prior_spent_usd"], results["cost"]["spent_usd"]), (self.AGENT, 0.0))
+
+    def test_settled_calls_are_charged_what_they_cost(self):
+        code, _stdout, err = run_main(self.live(20))
+        self.assertEqual(code, 0, err)
+        results = json.loads((self.out / "results.json").read_text())
+        self.assertEqual(results["cost"]["spent_usd"], 2 * (1.0 + 0.25))
+        ledger = [json.loads(ln) for ln in (self.out / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual(sorted({r["event"] for r in ledger}), ["settle", "start"])
+        self.assertEqual(len(ledger), 8, "two cells x (agent, grader) x (start, settle)")
+
+    def test_an_unreadable_ledger_refuses_the_run(self):
+        self.out.mkdir()
+        (self.out / "spend.jsonl").write_text('{"run": "r", "cell": "c", "call": "agent", "event": "start"\n')
+        code, _stdout, err = run_main(self.live(20))
+        self.assertEqual(code, 2)
+        self.assertIn("spend ledger", err)
+
+    def test_a_real_sigterm_mid_agent_records_the_reservation_durably(self):
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"),
+                                 *self.live(20, "--timeout", "60", agent="hang")],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(self.out) if pid_alive(p)])
+        deadline = time.monotonic() + 30
+        while not list(self.out.rglob("agent.pids")) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(list(self.out.rglob("agent.pids")), "the hanging agent never started")
+        proc.send_signal(signal.SIGTERM)
+        _out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 143, err[-2000:])
+        results = json.loads((self.out / "results.json").read_text())
+        self.assertEqual(results["cells"][0]["charged_usd"], self.AGENT)
+        self.assertEqual(results["cost"]["spent_usd"], self.AGENT)
+
+
 class TheLiveGateEnforcesTheCap(SafetyNet):
     """The live tier's cap logic, driven by a stub under a TEST registration marked AUTHORISED.
     Nothing here is live: no model runs, the directory is discarded, nothing is evidence."""

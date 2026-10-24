@@ -49,6 +49,9 @@ group, and the next cell starts only once it is empty. The grader meter has its 
 shorter than eval.py's, so it stops and reaps its grader before the outer one fires. SIGTERM,
 SIGHUP and Ctrl-C kill every live group before the runner exits 128+N (first_run.py's pattern,
 #640). A killed call is charged its full reservation, and a run that never completed is not graded.
+Every paid call is entered in the run directory's fsynced spend ledger at its full reservation
+before it starts and settled after, so an interrupted cell is kept at what it was charged, and a
+later run into the same directory counts that spend against its cap.
 A harness that calls setsid() itself leaves its group and breaks this contract.
 """
 import contextlib
@@ -59,6 +62,7 @@ import math
 import os
 import random
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -667,6 +671,8 @@ def run_cell(ctx, pair, arm):
     cell = {"cell": cell_id, "mission": mission, "task": task, "repeat": repeat,
             "seed": pair["seed"], "arm": arm, "task_sha256": hashlib.sha256(text.encode()).hexdigest()}
     errors, killed, completed, emptied = [], False, False, True
+    ledger, model, tier = ctx["ledger"], ctx["model"], ctx["tier"]
+    ledger.start(cell_id, "agent", model["agent_reserve_usd"])  # on disk BEFORE the paid call starts
     started = time.monotonic()
     try:
         stream, code, killed, emptied = run_group(ctx["agent_cmd"], input_text=text, cwd=workspace,
@@ -688,14 +694,20 @@ def run_cell(ctx, pair, arm):
     tokens_in, tokens_out, cost, reasons = usage_of(stream_path, cell_id, task)
     cell.update({"input_tokens": tokens_in, "output_tokens": tokens_out, "cost_usd": cost,
                  "usage_unavailable": reasons})
+    ledger.settle(cell_id, "agent", agent_charge(cell, model, tier), cost, killed)
     reads = deferred_reads(stream, ctx["cues"][mission][arm])
     cell["deferred_reads"] = reads
     for status in ("omitted", "late", "early"):
         cell[f"{status}_reads" if status != "omitted" else "read_omissions"] = \
             sum(1 for v in reads.values() if v == status)
     if ev is not None:
+        if completed:
+            ledger.start(cell_id, "grader", model["grader_reserve_usd"])
         graded = grade_behavioral(ev, workspace, originals, stream,
                                   ctx["grader_cmd"] if completed else None, cell_dir / "grader-usage.json")
+        if completed:
+            ledger.settle(cell_id, "grader", grader_charge(graded, model, tier),
+                          graded["grader_cost_usd"], graded["grader_killed"])
     else:
         graded = grade_trajectory(case, cell_dir / "trajectory.jsonl")
     graded["errors"] = errors + graded["errors"]
@@ -738,6 +750,7 @@ def _catalog(dest):
         target = dest / sub
         target.mkdir(parents=True, exist_ok=True)
         for src in sorted((ROOT / sub).glob(pattern)):
+            (target / src.name).unlink(missing_ok=True)  # a re-run's own read-only copy
             shutil.copyfile(src, target / src.name)
             (target / src.name).chmod(0o444)
 
@@ -789,21 +802,125 @@ def reservation(task, model):
     return model["agent_reserve_usd"] + (model["grader_reserve_usd"] if task.startswith("behavioral-") else 0.0)
 
 
-def charge(cell, model, tier):
-    """(USD charged, breached). Measured cost where there is one; an unmeasured live call is charged
-    its whole reservation. A measured call above its reservation means the harness limit did not
-    hold, so the pre-emptive guarantee is void and the run must stop."""
-    agent, grader = cell.get("cost_usd"), cell.get("grader_cost_usd")
+def agent_charge(cell, model, tier):
+    """The agent call's charge: measured where there is a measure; a killed or unmeasured live call
+    is charged its whole reservation (a killed one at least that, whatever it reported)."""
+    agent = cell.get("cost_usd")
     if tier != "live":
-        return (agent or 0.0) + (grader or 0.0), False
-    charged = agent if agent is not None else model["agent_reserve_usd"]
+        return agent or 0.0
     if cell.get("agent_killed"):
-        charged = max(model["agent_reserve_usd"], agent or 0.0)  # killed: its whole reservation
-    breached = agent is not None and agent > model["agent_reserve_usd"]
-    if cell.get("grader_called"):
-        charged += grader if grader is not None else model["grader_reserve_usd"]
-        breached = breached or (grader is not None and grader > model["grader_reserve_usd"])
+        return max(model["agent_reserve_usd"], agent or 0.0)
+    return agent if agent is not None else model["agent_reserve_usd"]
+
+
+def grader_charge(cell, model, tier):
+    """The grader call's charge: measured, or its whole reservation when killed or unmeasured."""
+    grader = cell.get("grader_cost_usd")
+    if tier != "live":
+        return grader or 0.0
+    return grader if grader is not None else model["grader_reserve_usd"]
+
+
+def charge(cell, model, tier):
+    """(USD charged, breached). A measured call above its reservation means the harness limit did
+    not hold, so the pre-emptive guarantee is void and the run must stop."""
+    charged = agent_charge(cell, model, tier) + (grader_charge(cell, model, tier) if cell.get("grader_called") else 0.0)
+    agent, grader = cell.get("cost_usd"), cell.get("grader_cost_usd")
+    breached = tier == "live" and ((agent is not None and agent > model["agent_reserve_usd"])
+                                   or (cell.get("grader_called") and grader is not None
+                                       and grader > model["grader_reserve_usd"]))
     return charged, breached
+
+
+class SpendLedger:
+    """Every paid call, durably, before and after (#652 review: an interrupt inside a cell skipped
+    the charge, so the call in flight vanished from the spend).
+
+    Append-only JSON lines in the run's output directory, each flushed and fsynced before the call
+    it describes goes on: `start` enters a call at its FULL reservation before it begins, `settle`
+    replaces that with its charge once it is over. A call started and never settled (an interrupt,
+    a crash, a kill) stays charged in full. A later run into the same directory reads the earlier
+    entries and counts them against its own cap. An unreadable ledger refuses the run: spend that
+    cannot be counted cannot be capped.
+    """
+
+    def __init__(self, path, run):
+        self.path, self.run = Path(path), run
+        self.records = self._read()
+
+    def _read(self):
+        if not self.path.is_file():
+            return []
+        records = []
+        for lineno, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                rec = None
+            amount = {"start": "reserve_usd", "settle": "charged_usd"}.get((rec or {}).get("event"))
+            if not (isinstance(rec, dict) and amount and all(isinstance(rec.get(k), str) for k in ("run", "cell", "call"))
+                    and isinstance(rec.get(amount), (int, float)) and not isinstance(rec.get(amount), bool)):
+                raise Refused(f"the spend ledger {self.path} is unreadable at line {lineno}: spend "
+                              "already made there cannot be counted, so nothing may start (inspect it)")
+            records.append(rec)
+        return records
+
+    def _append(self, record):
+        record = {"run": self.run, **record}
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        self.records.append(record)
+
+    def start(self, cell, call, reserve_usd):
+        self._append({"cell": cell, "call": call, "event": "start", "reserve_usd": reserve_usd})
+
+    def settle(self, cell, call, charged_usd, measured_usd, killed):
+        self._append({"cell": cell, "call": call, "event": "settle", "charged_usd": round(charged_usd, 6),
+                      "measured_usd": measured_usd, "killed": killed})
+
+    def calls(self, run=None, cell=None):
+        """{(run, cell, call): (charged, settled)}; a call never settled counts at its reservation."""
+        out = {}
+        for rec in self.records:
+            if (run is not None and rec["run"] != run) or (cell is not None and rec["cell"] != cell):
+                continue
+            key = (rec["run"], rec["cell"], rec["call"])
+            if rec["event"] == "start":
+                out.setdefault(key, (float(rec["reserve_usd"]), False))
+            else:
+                out[key] = (float(rec["charged_usd"]), True)
+        return out
+
+    def total(self, run=None, cell=None):
+        return round(sum(charged for charged, _settled in self.calls(run, cell).values()), 6)
+
+
+def interrupted_cell(active, ledger, code):
+    """The cell a signal cut short, kept in the results with what the ledger charged it."""
+    pair, arm, cell_id = active["pair"], active["arm"], active["cell"]
+    calls = {key[2]: value for key, value in ledger.calls(ledger.run, cell_id).items()}
+    return {"cell": cell_id, "mission": pair["mission"], "task": pair["task"], "repeat": pair["repeat"],
+            "seed": pair["seed"], "arm": arm, "interrupted": True, "success": False,
+            "correct_terminal": False, "success_checked": None, "grader_called": "grader" in calls,
+            "open_calls": sorted(call for call, (_c, settled) in calls.items() if not settled),
+            "charged_usd": ledger.total(ledger.run, cell_id),
+            "errors": [f"interrupted (exit {code}) mid-cell: every call it started is charged, an "
+                       "unsettled one at its full reservation"]}
+
+
+def write_durably(path, text):
+    """Replace `path` with `text` atomically and on disk before returning: an interrupted run's
+    results must survive the exit that follows them."""
+    tmp = Path(f"{path}.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def preflight(args, api, prereg):
@@ -877,17 +994,22 @@ def run(args, api):
     # (a symlink planted at any of them resolves into what it points at) (#652 review, P1).
     out = api.safe_output(Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="open-fleet-ablation-run-")),
                           prereg)
-    for sub in ("sandbox", "catalog", "variants", "cells", "results.json", "report.md"):
+    for sub in ("sandbox", "catalog", "variants", "cells", "results.json", "report.md", "spend.jsonl"):
         api.safe_output(out / sub, prereg)
     out.mkdir(parents=True, exist_ok=True)
+    # Unique per invocation (two runs in one second and one process stay apart in the ledger).
+    run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
+    ledger = SpendLedger(out / "spend.jsonl", run_id)  # Refused when unreadable, before anything runs
+    prior = ledger.total()
     sandbox = Sandbox(out / "sandbox", tier)
     catalog = out / "catalog"
     _catalog(catalog)
     ctx = {"out": out, "tier": tier, "prereg": prereg, "sandbox": sandbox, "catalog": catalog,
+           "ledger": ledger, "active": None,
            "guard": lambda path: api.safe_output(path, prereg),
            "timeout": args.timeout or TIMEOUTS[tier], "payloads": {}, "cues": {},
            "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)})}
-    model = spend_model(prereg, tier)
+    model = ctx["model"] = spend_model(prereg, tier)
     agent_flag, grader_flag = limit_flags(args, prereg)
     # Every call carries its own limit, whatever the tier, so both arms and every tier see the same
     # command line; the stand-in and a stub ignore it.
@@ -937,15 +1059,19 @@ def run(args, api):
                 # PRE-EMPTIVE (#652 review, P1): a cell starts only if what remains covers the worst
                 # case of every call it will make. Nothing after the fact is the guard.
                 need = reservation(pair["task"], model)
-                if spent + need > cap:
-                    stopped = (f"CAP_REACHED: USD {cap - spent:.2f} of the USD {cap:.2f} cap remains, "
+                counted = ledger.total()  # this run and every earlier run into this directory
+                if counted + need > cap:
+                    stopped = (f"CAP_REACHED: USD {cap - counted:.2f} of the USD {cap:.2f} cap remains, "
                                f"less than the USD {need:.2f} worst case of "
                                f"{pair['mission']}.{pair['task']}.r{pair['repeat']}.{arm} (agent + grader)")
                     break
+                ctx["active"] = {"pair": pair, "arm": arm, "cell": f"{pair['mission']}.{pair['task']}.r{pair['repeat']}.{arm}"}
                 cell = run_cell(ctx, pair, arm)
-                cell["charged_usd"], breached = charge(cell, model, tier)
+                _charged, breached = charge(cell, model, tier)
+                cell["charged_usd"] = ledger.total(run_id, cell["cell"])  # the durable record is the bill
                 cells.append(cell)
-                spent += cell["charged_usd"]
+                ctx["active"] = None
+                spent = ledger.total(run_id)
                 hits = sandbox.tripwire_hits()
                 if hits:
                     stopped = f"TRIPWIRE: a harness resolved past the stand-in: {hits[:200]!r}"
@@ -967,7 +1093,13 @@ def run(args, api):
             if stopped:
                 break
     except SystemExit as stop:
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)  # nothing may cut the record of what was spent short
         interrupted = stop.code if isinstance(stop.code, int) else 1
+        active = ctx["active"]
+        if active and not any(c["cell"] == active["cell"] for c in cells):
+            cells.append(interrupted_cell(active, ledger, interrupted))  # charged what the ledger holds
+        spent = ledger.total(run_id)
         stopped = (f"INTERRUPTED (exit {interrupted}): every live child process group was killed "
                    "and reaped before the runner exited")
     finally:
@@ -990,7 +1122,8 @@ def run(args, api):
         "harness": ctx["agent_cmd"][0] if tier != "fixture" else "inert stand-in (no model)",
         "harness_version": args.harness_version, "agent_cmd": ctx["agent_cmd"],
         "grader_cmd": ctx["grader_cmd"], "catalog_head": _git_head(),
-        "cost": {"cap_usd": cap, "spent_usd": round(spent, 6), **model,
+        "cost": {"cap_usd": cap, "spent_usd": ledger.total(run_id), "prior_spent_usd": prior,
+                 "counted_against_cap_usd": ledger.total(), "ledger": str(ledger.path), **model,
                  "agent_limit_flag": agent_flag or None, "grader_limit_flag": grader_flag or None},
         "plan": {"missions": missions, "tasks": tasks, "repeats": repeats, "pairs": len(pairs),
                  "cells_planned": 2 * len(pairs)},
@@ -1000,9 +1133,9 @@ def run(args, api):
                    "stand_in_runs": {"agent": sum(r["role"] == "agent" for r in runs),
                                      "grader": sum(r["role"] == "grader" for r in runs)}},
     }
-    (out / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    write_durably(out / "results.json", json.dumps(results, indent=2) + "\n")
     report = summarize(results, prereg)
-    (out / "report.md").write_text(render_markdown(results, report), encoding="utf-8")
+    write_durably(out / "report.md", render_markdown(results, report))
     if interrupted is not None:
         raise SystemExit(interrupted)
     return out, results, report
@@ -1175,7 +1308,9 @@ def render_markdown(results, report):
              + ", ".join(f"{m} {s}" for m, s in (results["prereg"].get("registration") or {}).items())
              + f"). Model: {results['model']}. Harness: "
              f"{results['harness']} {results.get('harness_version') or ''}".rstrip() + ".",
-             f"Cost: cap USD {results['cost']['cap_usd']}, spent USD {results['cost']['spent_usd']}. "
+             f"Cost: cap USD {results['cost']['cap_usd']}, spent USD {results['cost']['spent_usd']} this run"
+             + (f" (plus USD {results['cost']['prior_spent_usd']} recorded earlier in this directory, "
+                "counted against the cap)" if results["cost"].get("prior_spent_usd") else "") + ". "
              f"Cells: {len(results['cells'])} of {results['plan']['cells_planned']} planned"
              + (f". Stopped: {results['stopped']}" if results["stopped"] else "") + ".", ""]
     for mission, row in report.items():

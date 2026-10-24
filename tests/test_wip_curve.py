@@ -1416,6 +1416,43 @@ class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
         self.assertFalse(trip_log.exists())
 
 
+class TestTheRunDeadlineIsKeptInsideAWave(Tmp):
+    """PR #653 review: the run's wall-clock limit is an absolute deadline carried into builder
+    waits, reviewer admission and reviewer waits. A call still running at the deadline is stopped,
+    its unit parked stopped-time-limit, and the run never reads complete. The registration copy
+    here sets the limit to 0.1 minute (6 s); its task set is the registered one."""
+
+    def deadline_run(self, script, minutes=0.1):
+        prereg = json.loads(PREREG.read_text(encoding="utf-8"))
+        prereg["taskset"]["path"] = str(TASKSET)
+        prereg["stopping_rule"]["run_wall_clock_minutes"] = minutes
+        path = self.tmp / "prereg.json"
+        path.write_text(json.dumps(prereg), encoding="utf-8")
+        env, trip_log = tripwired_env(self.tmp)
+        started = time.monotonic()
+        p = run_in_process(["--prereg", str(path), "run", "--results", str(self.tmp / "results"), "--workdir",
+                            str(self.tmp / "wd"), "--runs", "wip1-b1r1-rep1", "--cost-cap-usd", "0",
+                            "--inert-script", json.dumps(script)], env)
+        elapsed = time.monotonic() - started
+        self.assertFalse(trip_log.exists())
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        return p, record, elapsed
+
+    def test_a_builder_running_at_the_deadline_is_stopped_and_its_unit_parked(self):
+        p, record, elapsed = self.deadline_run({"_sleep": {"builder": 40}})
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "time-limit"), p.stdout + p.stderr)
+        t5 = record["units"]["T5"]
+        self.assertEqual((t5["final"], t5["park_class"], t5["reviews"]), ("parked", "stopped-time-limit", []))
+        self.assertLess(elapsed, 35, "the builder was waited for past the run's deadline")
+
+    def test_no_reviewer_starts_or_runs_past_the_deadline(self):
+        p, record, elapsed = self.deadline_run({"_sleep": {"reviewer": 40}}, minutes=0.15)
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "time-limit"), p.stdout + p.stderr)
+        t5 = record["units"]["T5"]
+        self.assertEqual((t5["final"], t5["park_class"]), ("parked", "stopped-time-limit"))
+        self.assertLess(elapsed, 35, "the reviewer was waited for past the run's deadline")
+
+
 class TestRelativePaths(unittest.TestCase):
     """--results, --workdir and --prereg given relative to another working directory: the run,
     the report and the verifier resolve them once, before anything changes directory (git reads

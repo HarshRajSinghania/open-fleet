@@ -822,6 +822,7 @@ class Run:
         self.held: dict[str, Decimal] = {}  # "<task>:<role>" -> the reservation it holds
         self.launched: dict[str, tuple[str, str]] = {}  # dispatch -> (store task, hold key)
         self.halt: str | None = None  # once set (cost-cap, model-mismatch, time-limit), nothing more starts
+        self.deadline = float("inf")  # the run's absolute wall-clock deadline (monotonic), set at start
         self.launched_models: dict[str, str | None] = {}
         self.observed = Decimal(0)
         self.reserved = Decimal(0)
@@ -925,12 +926,19 @@ class Run:
         self.held[f"{tid}:builder"] = self.held[f"{tid}:reviewer"] = self.reservation
         return True
 
+    def remaining(self) -> float:
+        """Seconds left before the run's deadline; 0 once it passed, which halts the run."""
+        left = self.deadline - time.monotonic()
+        if left <= 0 and self.halt is None:
+            self.halt = "time-limit"
+        return max(left, 0.0)
+
     def admit(self, key) -> bool:
         """A dispatch starts only on a hold, only while nothing has halted the run (a launched
         model other than the pin, the deadline), and only while everything committed, its own
         hold included, is within the cap: a dispatch that overspent its hold refuses the next one.
         A refusal sets `halt` and releases the hold unspent."""
-        if self.halt is None and key in self.held and self.committed() <= self.cap:
+        if self.remaining() > 0 and self.halt is None and key in self.held and self.committed() <= self.cap:
             return True
         self.halt = self.halt or "cost-cap"
         self.held.pop(key, None)
@@ -1119,7 +1127,9 @@ class Run:
                        "outcome": None}
             unit["attempts"].append(attempt)
             attempts[tid] = attempt
-        states = self.wait([a["dispatch"] for a in attempts.values()], self.timeout_builder)
+        # A builder is waited for until its own timeout or the run's deadline, whichever is first.
+        states = self.wait([a["dispatch"] for a in attempts.values()], min(self.timeout_builder, self.remaining()))
+        self.remaining()  # a wait cut short by the deadline halts the run
         for tid, a in attempts.items():  # measured before any reviewer is admitted
             self.ingest_usage(a["dispatch"], self.units[tid]["store_task"], f"{tid}:builder")
         self.ingest_state()
@@ -1130,7 +1140,9 @@ class Run:
             row = self.dispatch_row(a["dispatch"])
             outcome, a["done_at"] = self.worker_done(a["dispatch"])
             a["state"] = state
-            if state != "completed" or outcome != "succeeded" or head == base:
+            if state == "timeout" and self.halt == "time-limit":
+                a["outcome"] = "stopped-time-limit"  # stopped at the run's deadline, not a builder failure
+            elif state != "completed" or outcome != "succeeded" or head == base:
                 a["outcome"] = "builder-failed" if state != "timeout" else "builder-timeout"
             elif row is not None and row["head_sha"] and row["head_sha"] != head:
                 a["outcome"] = "builder-claim-mismatch"  # the store's head is not what git holds
@@ -1144,8 +1156,14 @@ class Run:
         # Done units wait for a reviewer, and board the merge queue, in worker_done order.
         done.sort(key=lambda tid: (attempts[tid]["done_at"], tid))
         self.review(done)
-        passed = [tid for tid in done if attempts[tid]["outcome"] is None and self.oracle(tid, attempts[tid])]
-        self.merge(passed, attempts)
+        passed = [tid for tid in done if attempts[tid]["outcome"] is None and self.remaining() > 0
+                  and self.oracle(tid, attempts[tid])]
+        if self.remaining() > 0:
+            self.merge(passed, attempts)
+        for tid in planned:  # a halt leaves what it interrupted parked with its reason, never pending
+            if self.halt and attempts[tid]["outcome"] in (None, "builder-timeout", "review-failed"):
+                if attempts[tid]["outcome"] is None or self.halt == "time-limit":
+                    attempts[tid]["outcome"] = f"stopped-{self.halt}"
         self.ingest_state()
         if self.held:
             raise RunFailed(f"holds outlived their wave: {sorted(self.held)}")
@@ -1199,9 +1217,9 @@ class Run:
                 state = self.state_of(disp)
                 if state and state not in first_run.LIVE_STATES:
                     settled[disp] = state
-                elif time.monotonic() - since > self.timeout_reviewer:
+                elif time.monotonic() - since > self.timeout_reviewer or self.remaining() <= 0:
                     self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
-                    settled[disp] = "timeout"
+                    settled[disp] = "timeout"  # its own timeout, or the run's deadline
             for disp, state in sorted(settled.items()):
                 tid, review, _since = live.pop(disp)
                 self.finish_review(tid, review, state)
@@ -1354,6 +1372,7 @@ class Run:
         self.dir.mkdir(parents=True)
         self.record.update(started_at=now(), sandbox=str(sb.dir))
         started = time.monotonic()
+        self.deadline = started + self.wall_limit
         try:
             self.setup()
             self.emit("run.start", source_ref=f"wip_curve.py:run/{self.rid}", data={"coordinator": HOLDER})
@@ -1378,12 +1397,14 @@ class Run:
                 nxt = (carry + queue)[:builders]  # a wave holds at most `builders`, carried first
                 # The stopping rule is applied BEFORE this wave closes: a unit it parks belongs to
                 # this wave, so the record still derives every cell (#604).
-                reason = (self.halt if self.halt else "cost-cap" if (nxt and self.over_budget(nxt)) else
-                          "time-limit" if nxt and time.monotonic() - started > self.wall_limit else None)
+                self.remaining()
+                reason = self.halt if self.halt else "cost-cap" if (nxt and self.over_budget(nxt)) else None
                 if reason:
                     self.stop(reason, carry)
                     nxt = []
                 self.emit("wave.close", source_ref=f"wip_curve.py:wave/{k}", data={"wave": k})
+            if self.record["stop_reason"] is None and self.remaining() <= 0:
+                self.record.update(status="stopped", stop_reason="time-limit")  # finished past the deadline
             if self.record["stop_reason"] is None:
                 self.record["status"] = "complete"
         except RunFailed as err:

@@ -112,6 +112,10 @@ def _load(name: str, path: Path):
 events = _load("wip_curve_events", SCRIPTS / "events.py")
 gitexec = _load("wip_curve_gitexec", SCRIPTS / "gitexec.py")
 first_run = _load("wip_curve_first_run", SCRIPTS / "first_run.py")
+# #606's call containment (scripts/_ablation_run.py: the watchdog, the OF_CALL_ID marker that follows
+# a process across sessions, and the sweep that kills by it), loaded by path as hint_replay.py does:
+# one helper, shared, never copied (Codex review of PR #668).
+contain = _load("wip_curve_contain", ROOT / "scripts" / "_ablation_run.py")
 
 
 class Refused(Exception):
@@ -193,6 +197,9 @@ def stop_all_groups() -> None:
         kill_group(pgid)
 
 
+DRAIN_S = 2  # seconds a killed call's output is drained for, at most
+
+
 def run_group(argv, *, cwd=None, env=None, timeout: float = 600, data: bytes = b"") -> subprocess.CompletedProcess:
     """argv as the leader of a new session; bytes out. A timeout kills the whole group (rc 124);
     anything the leader leaves behind is killed after it exits; an exception mid-call (an
@@ -207,15 +214,23 @@ def run_group(argv, *, cwd=None, env=None, timeout: float = 600, data: bytes = b
         except subprocess.TimeoutExpired:
             kill_group(proc.pid, wait_s=0)
             try:
-                out, err = proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:  # someone outside the group holds the pipe open
+                out, err = proc.communicate(timeout=DRAIN_S)
+            except subprocess.TimeoutExpired:
+                # A descendant that left the group (a new session) holds the pipes open: draining
+                # them waits for nobody (Codex review of PR #668), and what they held is lost.
                 proc.kill()
-                out, err = proc.communicate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=DRAIN_S)
+                for stream in (proc.stdout, proc.stderr):
+                    with contextlib.suppress(OSError):
+                        stream.close()
+                out, err = b"", b"its output was held open by a process outside its group"
             rc, err = 124, (err or b"") + f"\ntimed out after {timeout}s; its process group was killed".encode()
     finally:
         if proc.poll() is None:
             kill_group(proc.pid, wait_s=0)
-            proc.wait()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=DRAIN_S)
         kill_group(proc.pid)
     return subprocess.CompletedProcess(argv, rc, out or b"", err or b"")
 
@@ -686,13 +701,20 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
     if tasks:
         commands.append(("oracle", python_argv("-m", "unittest", "discover", "-s", str(oracle_dir),
                                                "-t", str(oracle_dir))))
+    contained = True
     for name, argv in commands:
-        # Worker-written code runs here: its own group, killed whole when it is done or late.
-        proc = run_group(argv, cwd=checkout, env=env, timeout=max(end - time.monotonic(), 0.1))
-        rc = None if proc.returncode == 124 and b"its process group was killed" in proc.stderr else proc.returncode
-        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
-        if rc is None:
-            out = f"timed out after {timeout}s"
+        # Worker-written code runs here, under #606's watchdog: its streams go to files (nothing it
+        # leaves behind can hold a pipe of ours open), and every process it starts, in its group or
+        # in a session of its own, carries the call's OF_CALL_ID and is swept (Codex review of #668).
+        out_path = oracle_dir / f"{name}.out"
+        rc, killed, emptied = contain.contained_run(argv, timeout=max(end - time.monotonic(), 0.1), cwd=checkout,
+                                                    env=env, stdout_path=out_path)
+        out = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else ""
+        if killed:
+            rc, out = None, f"timed out after {timeout}s"
+        if not emptied:  # a process of it survived SIGKILL, or none could be seen: nothing is vouched for
+            contained, rc = False, None
+            out += "\na process it started survived, or the process table could not be read"
         steps.append({"name": name, "rc": rc})
         tail += [f"[{name}] {ln}" for ln in out.strip().splitlines()[-8:]]
         if rc is None:
@@ -700,7 +722,7 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
         elif rc != 0 and exit_code == 0:
             exit_code = 2
     shutil.rmtree(oracle_dir, ignore_errors=True)
-    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks]}
+    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks], "contained": contained}
 
 
 def extract_tree(git_dir: Path, rev: str, dest: Path, env: dict | None = None) -> None:
@@ -1586,6 +1608,11 @@ class Run:
         started = now()
         result = run_oracle(ck, [self.tasks[tid]], self.taskset, self.sb.dir,
                             timeout=min(ORACLE_TIMEOUT, max(self.remaining(), 0.1)))
+        if not result["contained"]:  # a process the worker's code started may still run: nothing more starts
+            shutil.rmtree(ck, ignore_errors=True)
+            self.halt = self.halt or "orphan-alive"
+            a["outcome"] = "stopped-orphan-alive"
+            return False
         if result["exit"] != 0 and self.remaining() <= 0:  # the run's deadline cut it: no verdict
             shutil.rmtree(ck, ignore_errors=True)
             a["outcome"] = "stopped-time-limit"

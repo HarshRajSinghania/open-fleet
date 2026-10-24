@@ -444,8 +444,8 @@ def host_facts() -> dict:
         except (OSError, subprocess.SubprocessError, IndexError):
             return None
 
-    catalog = run_text(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
-    dirty = run_text(["git", "-C", str(ROOT), "status", "--porcelain"])
+    catalog = run_text(["git", "-C", str(ROOT), "rev-parse", "HEAD"], timeout=60)
+    dirty = run_text(["git", "-C", str(ROOT), "status", "--porcelain"], timeout=60)
     return {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -926,7 +926,7 @@ def probes(sb: Sandbox) -> dict:
     git(rec, "commit", "-q", "--allow-empty", "-m", "seed", cwd=sb.target)
 
     unarmed = sb.dir / "unarmed-settings.json"
-    block = run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)], check=True).stdout
+    block = run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)], check=True, timeout=60).stdout
     doc = json.loads(block)
     for entry in doc["hooks"]["PreToolUse"]:
         for hook in entry["hooks"]:
@@ -1090,19 +1090,30 @@ def restore_signals(previous: dict) -> None:
         signal.signal(sig, signal.SIG_DFL if handler is None else handler)
 
 
+STOP_TIMEOUT_S = 120  # one worker listing or stop, at most: teardown never waits on a hung call
+
+
 def stop_workers(sb: Sandbox) -> dict:
     """Fence anything still live in this sandbox's store before its directory goes away, then end
-    whatever any of its workers left behind (reap_groups); the teardown it verified."""
-    proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
-                    cwd=str(sb.target) if sb.target.is_dir() else str(sb.dir), env=sb.env)
+    whatever any of its workers left behind (reap_groups); the teardown it verified. Every call is
+    bounded (Codex review of PR #668): one that times out is a teardown error, never a hang."""
+    errors = []
     try:
+        proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
+                        cwd=str(sb.target) if sb.target.is_dir() else str(sb.dir), env=sb.env, timeout=STOP_TIMEOUT_S)
         workers = json.loads(proc.stdout)["result"]["workers"]
+    except subprocess.TimeoutExpired:
+        workers, errors = [], errors + [f"worker-list timed out after {STOP_TIMEOUT_S}s"]
     except (ValueError, KeyError, TypeError):
         workers = []
     for w in workers:
         if w.get("state") in LIVE_STATES:
-            run_text(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env, cwd=str(sb.dir))
-    return reap_groups(sb)
+            try:
+                run_text(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env, cwd=str(sb.dir),
+                         timeout=STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                errors.append(f"worker_ops.py stop {w['dispatchId']} timed out after {STOP_TIMEOUT_S}s")
+    return {**reap_groups(sb), "errors": errors}
 
 
 def process_groups() -> dict[int, set[int]]:

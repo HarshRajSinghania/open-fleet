@@ -2344,6 +2344,82 @@ class TestNoWorkerOutlivesItsRun(Tmp):
         self.assertFalse(trip_log.exists())
 
 
+def ended(pid, wait_s=5.0) -> bool:
+    """The process is gone (or a zombie) within `wait_s`."""
+    end = time.monotonic() + wait_s
+    while time.monotonic() < end:
+        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        if not state or state.startswith("Z"):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+class TestNoDrainOutlivesItsBound(Tmp):
+    """Codex review of PR #668 (B2): a timed-out call's group is killed, but a descendant that left
+    it (a new session) can keep the call's stdout and stderr open. Draining them must stay bounded,
+    and worker-written code the oracle runs must be contained, its escaped processes included."""
+
+    def detached(self, holds_pipes: bool, seconds: int):
+        """Python that starts a new-session child sleeping `seconds`, holding the caller's output open
+        or not, and writes its pid to a file. The child is a Python process: macOS hides an Apple
+        platform binary's environment from `ps -E`, and the host check covers that (B1)."""
+        pid_file = self.tmp / f"child-{holds_pipes}-{seconds}.pid"
+        streams = "" if holds_pipes else ", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
+        code = (f"import subprocess, sys, time\n"
+                f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({seconds})'], "
+                f"start_new_session=True{streams})\n"
+                f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n")
+        self.addCleanup(lambda: pid_file.is_file() and subprocess.run(["kill", "-9", pid_file.read_text()],
+                                                                     capture_output=True))
+        return code, pid_file
+
+    def test_a_timed_out_call_returns_within_its_bound_though_a_detached_child_holds_its_pipes(self):
+        code, _pid = self.detached(holds_pipes=True, seconds=25)
+        started = time.monotonic()
+        proc = wip.run_group([sys.executable, "-c", code + "time.sleep(60)\n"], timeout=0.2)
+        elapsed = time.monotonic() - started
+        self.assertEqual(proc.returncode, 124)
+        self.assertLess(elapsed, 8, f"draining the timed-out call waited {elapsed:.1f} s for a detached child")
+
+    def test_the_oracle_contains_what_worker_code_detaches(self):
+        # the task's oracle starts a new-session child that holds the step's output open, then passes
+        code, pid_file = self.detached(holds_pipes=True, seconds=25)
+        oracle = ("import subprocess, sys, unittest\n\n\nclass T(unittest.TestCase):\n    def test_it(self):\n"
+                  + "".join(f"        {line}\n" for line in code.splitlines() if not line.startswith("import")))
+        task = {"id": "T9", "oracle": oracle}
+        checkout = self.tmp / "checkout"
+        checkout.mkdir()
+        started = time.monotonic()
+        result = wip.run_oracle(checkout, [task], {"visible_tests": ["-c", "pass"]}, self.tmp, timeout=20)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 15, f"the oracle waited {elapsed:.1f} s on a detached child: {result}")
+        self.assertTrue(ended(int(pid_file.read_text())), "a process the oracle's code detached outlived it")
+
+
+class TestAnUncontainedOracleStopsTheRun(Tmp):
+    """Codex review of PR #668 (B2): when a process the oracle's worker-written code started survives,
+    or cannot be seen, nothing about that verification is vouched for and no further call starts."""
+
+    def test_the_run_stops_orphan_alive(self):
+        env, trip_log = tripwired_env(self.tmp)
+        real = wip.contain.contained_run
+
+        def contained_run(argv, **kw):  # the run's own verification (a checkout under ck/) survives
+            if "/ck/" not in str(kw.get("cwd")):
+                return real(argv, **kw)
+            Path(kw["stdout_path"]).write_text("", encoding="utf-8")
+            return 0, False, False
+        with mock.patch.object(wip.contain, "contained_run", contained_run):
+            p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                       "wip1-b1r1-rep1", "--cost-cap-usd", "0", env=env)
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "orphan-alive"), p.stdout + p.stderr)
+        t5 = record["units"]["T5"]
+        self.assertEqual((t5["attempts"][0]["outcome"], t5["final"]), ("stopped-orphan-alive", "parked"))
+        self.assertFalse(trip_log.exists())
+
+
 class TestAKilledRunStillCounts(Tmp):
     """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
     writes no run.json. Its calls in the shared ledger still count against the cap until the next

@@ -80,7 +80,8 @@ truth is `.claude-plugin/plugin.json`.
       Every run's cleanup, and `first_run.py`'s, also ends what a finished worker left running
       in its process group.
     - Coordinator and merge-queue git goes through `gitexec.py`.
-    - Worker code under the oracle gets a minimal environment.
+    - Worker code under the oracle gets a minimal environment, and runs under #606's call
+      watchdog: what it detaches is swept, and no output drain waits on it.
   - What can be pooled: a run under another machine, harness, model pin, input digest, deadline
     scale, schedule entry or WIP than its label claims is never pooled. Neither is a live run
     started out of the registered order, which `run` also refuses before anything is dispatched. Only one re-run is

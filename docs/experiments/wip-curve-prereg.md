@@ -135,9 +135,14 @@ committer and date, so every run starts at the same registered seed commit. The 
 verifier both check this. A task always starts from the integration head at the moment its wave
 opens. A bounced task is rebuilt from scratch from the integration head at that time. No
 worktree, branch, store or transcript is shared between runs. The oracle, and the merge gate
-that reuses it, execute worker-written code on the coordinator. They run it in its own process
-group, under a timeout, with a minimal environment (PATH, a private HOME and TMPDIR, LANG,
-PYTHONPATH), and never with the coordinator's environment, where a harness API key lives.
+that reuses it, execute worker-written code on the coordinator. They run it under #606's call
+watchdog (`scripts/_ablation_run.py`'s `contained_run`), under a timeout, with a minimal
+environment (PATH, a private HOME and TMPDIR, LANG, PYTHONPATH), and never with the coordinator's
+environment, where a harness API key lives. Its output goes to files, so nothing it leaves behind
+can hold a pipe of the runner's open. Every process it starts, one that left for a session of its
+own included, carries the call's `OF_CALL_ID` marker and is swept. If one survives, or the
+process table cannot be read, the verification is not vouched for and the run stops
+`orphan-alive`. Every other call the runner makes drains its output for a bounded time only.
 
 ## Confounds and how each is separated
 

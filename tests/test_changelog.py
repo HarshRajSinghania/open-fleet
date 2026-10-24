@@ -385,6 +385,10 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         # a fenced block is literal to its closing fence, list markers inside it too (Greptile at 8585b35789)
         '- **Change** an example:\n\n  ```html\n  - example\n  <a href="../x.md">x</a>\n  ```\n',
         '- **Change** an example:\n\n~~~~\n# not a heading\n<img src="../x.png">\n~~~~\n',
+        # an inline tag at a line's start opens no HTML block: the code span after it stays code (#673)
+        '- **Change** text\n  <span>inline</span> then `<a href="../x.md">example</a>`.\n',
+        # a lone tag that would interrupt a paragraph cannot: it is inline, and the span is code (#673)
+        '- **Change** text\n<span>\n`<a href="../x.md">example</a>`\n',
     )
     REFUSED = (
         '- **Change** <a\n  title="x"\n  href="../docs/ops.md">ops</a>.\n',
@@ -412,6 +416,13 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** x\n  ```\n- <a href="../docs/ops.md">ops</a>\n',
         # a closing fence shorter than the opening one does not close it, but the item's end does
         '- **Change** x\n  ````\n  ```\n<a href="../docs/ops.md">ops</a>\n',
+        # inside a raw HTML block a fence mark opens nothing: the tag is real (#673)
+        '- **Change** example:\n  <div>\n  ~~~\n  <a href="../docs/ops.md">ops</a>\n  </div>\n',
+        '- **Change** x\n\n<div>\n```\n<a href="../docs/ops.md">ops</a>\n```\n</div>\n',
+        # a lone tag after a blank line opens a type 7 HTML block: its backticks are text (#673)
+        '- **Change** x\n\n<span>\n`<a href="../docs/ops.md">ops</a>`\n',
+        # a <pre> block runs past a blank line to </pre> (#673)
+        '- **Change** x\n\n<pre>\n\n`<a href="../docs/ops.md">ops</a>`\n</pre>\n',
     )
 
     def errors(self, text):

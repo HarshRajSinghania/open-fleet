@@ -570,7 +570,9 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
         raise
     finally:
         if attempted and not receipt["destroyed"]["verified"]:
-            receipt["destroyed"] = destroy(ids, nonce)
+            first, receipt["destroyed"] = receipt["destroyed"], destroy(ids, nonce)
+            for key in ("errors", "nonzero"):  # a retry adds to what the first teardown saw (#673)
+                receipt["destroyed"][key] = first.get(key, []) + receipt["destroyed"][key]
         shutil.rmtree(staging, ignore_errors=True)
         if redactor is not None:
             with contextlib.suppress(OSError, ValueError):

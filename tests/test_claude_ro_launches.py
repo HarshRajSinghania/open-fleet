@@ -7,13 +7,14 @@ short `command` label, `claude --permission-mode plan`, without the
 alias that leaned on plan mode alone. Plan mode is a mode a session can leave; the disallowed set
 is the CLI-level floor. This module enumerates every place the runtime spells a claude ro launch
 (the base.py table in all three renderings, the gastown alias derived from it, emdash's extraArgs,
-multiclaude's settings deny list, and spawn_worker.sh's non-Orca line) and pins each to the set.
-A source scan fails if a claude plan-mode launch appears anywhere it does not enumerate.
+multiclaude's settings deny list, and spawn_worker.sh's non-Orca line and Orca row) and pins each to
+the set. A source scan fails if a claude plan-mode launch appears anywhere it does not enumerate.
 
-One row is EXEMPT and named: spawn_worker.sh's Orca `claude:ro` TUI row. It is the live-witnessed
-Orca route (docs/runs/2026-10-13-review-it-linux.md: the coordinator approves the plan in-pane and
-the worker then writes its report), and tests/test_spawn_worker.py pins it to exactly
-`claude --permission-mode plan`. Adding the set there changes a witnessed workflow and an existing
+spawn_worker.sh's Orca `claude:ro` TUI row was the one exemption until the #596 follow-up. It is the
+live-witnessed Orca route (docs/runs/2026-10-13-review-it-linux.md: the coordinator approves the
+plan in-pane, which exits plan mode, and the worker then writes its report). It carries the set now,
+so that witness predates the row and the route needs a fresh one; and tests/test_spawn_worker.py
+pinned the old row exactly, so moving that pin needs a one-way floor waiver for an existing
 assertion, which is a human decision, not this fix's.
 """
 from __future__ import annotations
@@ -127,6 +128,25 @@ class EveryClaudeRoLaunchCarriesTheSet(unittest.TestCase):
         launch = next((ln[len("LAUNCH="):] for ln in p.stdout.splitlines() if ln.startswith("LAUNCH=")), "")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assert_carries(shlex.split(launch), "spawn_worker.sh posix ro line")
+
+    def test_spawn_worker_on_orca_launches_the_ro_row_with_the_set(self) -> None:
+        # The Orca custom-argv lane runs this row as the worker's TUI: plan mode stays (it is the
+        # witnessed prefix and the reviewer's working mode), and the set is the floor that holds
+        # once the coordinator's in-pane approval exits plan mode (#596 follow-up).
+        for spelled in ("orca", "ORCA"):
+            with self.subTest(runtime=spelled), tempfile.TemporaryDirectory() as tmp:
+                env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", tmp), "SP": tmp, "SHELL": "/bin/sh",
+                       "ORCA_CLI_COMMAND": "orca", "OPEN_FLEET_RUNTIME": spelled, "SW_PRINT_LAUNCH": "1",
+                       "PROFILE": "ro"}
+                p = subprocess.run(["bash", str(SPAWN), "task_x", "current", "t", "claude", "high"],
+                                   env=env, capture_output=True, text=True, timeout=120)
+                launch = next((ln[len("LAUNCH="):] for ln in p.stdout.splitlines() if ln.startswith("LAUNCH=")), "")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                tokens = shlex.split(launch)
+                self.assert_carries(tokens, "spawn_worker.sh Orca ro row")
+                self.assertEqual(tokens[:3], ["claude", "--permission-mode", "plan"], launch)
+                self.assertEqual([t for t in tokens if t.startswith("--disallowedTools")],
+                                 ["--disallowedTools=" + base.CLAUDE_RO_DISALLOWED_TOOLS], "one `=`-joined set")
 
     def test_no_claude_plan_mode_launch_hides_outside_this_module(self) -> None:
         spelled = set()

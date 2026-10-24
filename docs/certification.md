@@ -45,6 +45,10 @@ recorded versions. A group that copies another route's witness is refused (#596 
   run used spawn_worker.sh's custom-argv lane. Turn start could not be observed on that host;
   screen reads and `worker_done` deliveries proved the workers were live. Route: the run
   manifest's `toolchain` line (`orca-ide 1.4.224`, `Claude Code 2.1.296`, `PROFILE=ro`).
+  **Re-witness owed:** the run launched `claude --permission-mode plan`. The row now also
+  carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`, and no live run has exercised
+  it. Its workers wrote their reports after the coordinator approved their plans, and that
+  step now runs with Write and Edit denied.
 - `orca` `rw`/`claude`: same build and harness, in the [ship-it mdtoc run](runs/2026-10-13-ship-it-mdtoc.md).
   Only the `WORKER_CMD` override lane was witnessed. On the witness host, the supervised
   `worker-start` lane reported `LAUNCHED_UNUSABLE`. Route: the run's dispatch script
@@ -142,9 +146,8 @@ not move up: every changed cell is still `source-only` or `fixture-tested`, or i
   2026-10-24 live `ro` run, Claude Code 2.1.304 printed the line too and the unit settled
   `completed`.
 - **gastown's claude `ro` alias carries `--disallowedTools`.** Every claude `ro` launch row and
-  alias carries `Edit,Write,MultiEdit,NotebookEdit`, except Orca's plan-mode row: that is the
-  live-witnessed route, whose worker wrote its report after the coordinator approved its plan.
-  Changing it needs a new witness.
+  alias carries `Edit,Write,MultiEdit,NotebookEdit`. Orca's plan-mode row was the exception
+  until record version 4.
 
 ### What record version 4 changes
 
@@ -160,6 +163,11 @@ Version 4 closes the gaps the first live runs and the last review left. No tier 
 - **The rw first run asks for the report as its final answer.** The live `rw` run failed at
   `result` because its assignment never asked. The inert stand-in is now literal, so the
   fixture catches that kind of gap.
+- **Orca's claude `ro` row carries `--disallowedTools` too.** It is plan mode plus
+  `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`, so the set still holds after the
+  coordinator's in-pane approval exits plan mode. This is the live-witnessed route. Its cell
+  keeps the 2026-10-13 witness with a limitation saying that witness ran the row without the
+  set: a fresh Orca witness is owed.
 - **The record checks what is copied from a receipt.** A first-run receipt carries a quotable
   `witness` line. `check` refuses quotes of an inert run, refuses a live harness cell that only
   an Orca run witnessed, and checks a harness cell's version, an in-repo provider's catalog
@@ -300,6 +308,26 @@ exact `spawn_worker.sh` lane, the `verify.py` invocation and its GREEN outcome. 
 follow [Getting started](getting-started.md#your-first-mission-a-review-it-dry-run) with Orca
 installed.
 
+That witness predates the `--disallowedTools` set on Orca's claude `ro` row, so the route is owed
+a fresh one. Record the exact launch the run exercises before you dispatch, then run the review
+through the same wrapper with `PROFILE=ro` workers:
+
+```bash
+ORCA_CLI_COMMAND=orca SW_PRINT_LAUNCH=1 PROFILE=ro \
+  bash runtime/scripts/spawn_worker.sh task_x current witness claude > <run-dir>/launch.txt
+orca --version > <run-dir>/orca-version.txt; claude --version > <run-dir>/claude-version.txt
+PROFILE=ro SP=<scratch> bash runtime/scripts/spawn_worker.sh --spec "<the review unit>" new-child <title> claude
+```
+
+`launch.txt` must read `LAUNCH=claude --permission-mode plan
+--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`. Bind the run as the 2026-10-13 run was
+bound. Its artifacts need one line naming `Orca` (or `orca-ide`) with its version, Claude Code
+with its version, and `PROFILE=ro`, as that run's `toolchain` line does. Then replace the
+`orca` `ro` group's `witnessed` and `evidence`, and drop its re-witness limitation. A witness on
+an Orca build other than the pinned one also moves `pins.json` `live_receipts`, which voids
+every `orca` cell until `certified_against` is re-recorded (see
+[A refreshed pin voids cells](#a-refreshed-pin-voids-cells)).
+
 ### Troubleshooting
 
 | Symptom | Likely cause | Next step |
@@ -361,5 +389,7 @@ Record:
   [Live first run](#3-live-first-run-one-command-per-profile-not-yet-bound)): `ro` GO and `rw`
   NO-GO on the assignment defect fixed since, owed a re-run.
 - A clean-host first-run record with measured setup and run times.
+- A fresh live witness of Orca `ro`/`claude` on its current row, which carries
+  `--disallowedTools`; the 2026-10-13 witness ran the row without it.
 - Live witnesses for every other provider, for Orca on macOS, and for any harness other than
   Claude Code. Their upstream versions stay `unknown` until a run records them.

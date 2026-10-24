@@ -709,7 +709,10 @@ fi
 cmd_default=""
 _cx_effort="-c model_reasoning_effort=\"$effort\""
 case "$agent:$PROFILE" in
-  claude:ro)                 cmd_default="claude --permission-mode plan" ;;
+  # claude ro is plan mode PLUS base.py's CLI floor, the disallowed set `=`-joined as base.py's label
+  # spells it: the coordinator's in-pane plan approval exits plan mode, and the set still holds
+  # after it (#596). This is the live-witnessed Orca route; the witness ran it without the set.
+  claude:ro)                 cmd_default="claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit" ;;
   claude:rw|claude:danger)   cmd_default="claude --dangerously-skip-permissions" ;;
   codex:ro)                  cmd_default="codex --sandbox read-only $_cx_effort" ;;
   codex:rw|codex:danger)     cmd_default="codex --dangerously-bypass-approvals-and-sandbox $_cx_effort" ;;

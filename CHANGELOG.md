@@ -6,6 +6,19 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Provider certification closes its non-live gaps and takes live first runs** (#596). The first
+  live runs (2026-10-24, Claude Code 2.1.304, `claude-opus-5-5`) went GO on `ro` and NO-GO on `rw`:
+  the rw assignment never asked for the report as the final answer that `result` reads. It asks
+  now, and the inert stand-in is literal, printing its report only when asked, so the fixture
+  fails as the live run did. A live run also refuses a harness that the interpreter's directory
+  shadows on the sandbox PATH. Receipts carry a quotable `witness` line, `started_at` and the
+  harness's own model, turns and cost. `certification.py check` validates the fields a maintainer
+  copies from a receipt (harness version, catalog commit, date), refuses quotes of an inert run,
+  and refuses a live harness cell witnessed only on Orca, which never runs base.py's line.
+  `spawn_worker.sh` launches the `openhands` agent on its runtime and refuses it elsewhere, so
+  every claimed provider/harness pair launches with no exception. Every claude `ro` launch,
+  Orca's row included, carries `--disallowedTools`; that Orca row is the live-witnessed route,
+  so it is owed a fresh witness.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

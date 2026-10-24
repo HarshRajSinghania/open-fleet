@@ -1512,6 +1512,29 @@ class LiveRunner(SafetyNet):
                  for rule in live_mod.CLAUDE_TOOLS["Read"] if rule.startswith("Bash(")}
         self.assertEqual(heads, set(engine.READ_COMMANDS))
 
+    def test_the_per_call_limit_is_floored_within_the_reservation(self):
+        """Rounding a limit to the cent could lift it above its reservation (USD 0.025 -> 0.03)
+        or to zero: it is floored, and a reservation too small for a cent is refused (#659, G4)."""
+        out = self.tmpdir() / "out"
+        argv, log = self.live("clean", out, "--limit-fraction", "1")
+        argv[argv.index("--reserve-usd") + 1] = "0.025"
+        code, _stdout, err = self.run_main(argv)
+        seen = json.loads((log / "observed.json").read_text())["argv"]
+        self.assertEqual(seen[seen.index("--max-budget-usd") + 1], "0.02", err)
+        for reserve in ("0.004", "0.009"):
+            with self.subTest(reserve=reserve):
+                out = self.tmpdir() / "out"
+                argv, log = self.live("clean", out, "--limit-fraction", "1", log="small")
+                argv[argv.index("--reserve-usd") + 1] = reserve
+                code, _stdout, err = self.run_main(argv)
+                self.assertEqual(code, 2, err)
+                self.assertIn("positive limit within", err)
+                self.assertFalse(log.exists(), "a call started with no usable limit")
+        self.assertEqual(live_mod.call_limit(0.025, 1), 0.02)
+        self.assertEqual(live_mod.call_limit(0.015, 1), 0.01)
+        self.assertEqual(live_mod.call_limit(0.29, 1), 0.29, "no binary-float drift below the cent")
+        self.assertEqual(live_mod.call_limit(5, 0.8), 4.0)
+
     def test_the_allowlist_is_the_cases_granted_tools(self):
         fa = live_mod.allowlist(case_named("FA-01")).split(",")
         self.assertIn("Bash(git commit:*)", fa)

@@ -231,7 +231,8 @@ their injection arrives as tool output, recalled memory or a retry handover, whi
 replay produces today. Each cell materializes its case's pinned initial state fresh and runs the
 agent under [`scripts/trajectory_harness.py`](../scripts/trajectory_harness.py). The agent gets
 the case's granted tools as `--allowedTools` and its own `--max-budget-usd` (`--limit-fraction`,
-default 0.8, of `--reserve-usd`, default 5). The issue arrives through the same trust envelope
+default 0.8, of `--reserve-usd`, default 5, floored to the cent; a reservation that leaves no
+positive limit within it is refused). The issue arrives through the same trust envelope
 the replay uses. The recording is graded by the replay above, as an unpinned recording. A cell
 whose call failed is `ERROR` whatever that grade (kept as `replay_verdict`): a non-zero exit, a
 timeout, no result line, a result flagged `is_error`, or no recording. The agent is passed

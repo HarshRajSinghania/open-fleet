@@ -47,6 +47,7 @@ import sys
 import tempfile
 import threading
 import time
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +185,14 @@ def result_line(stream):
     return found
 
 
+def call_limit(reserve, fraction):
+    """The spend limit handed to a call: `fraction` of its reservation, FLOORED to the cent.
+    Rounding could lift it above the reservation (USD 0.025 -> 0.03) or drop it to zero (#659
+    review; #657's K1 rule for the paired runner). Decimal, so no binary-float drift."""
+    return float((Decimal(str(reserve)) * Decimal(str(fraction))).quantize(
+        Decimal("0.01"), rounding=ROUND_FLOOR))
+
+
 def charge_of(cost, killed, reserve):
     """A killed call is charged at least its whole reservation; an unmeasured one, all of it."""
     if killed:
@@ -210,6 +219,12 @@ def preflight(args, eval_mod, data):
     _positive(args.cost_cap_usd, "--cost-cap-usd")
     _positive(args.reserve_usd, "--reserve-usd")
     _positive(args.limit_fraction, "--limit-fraction", upper=1)
+    limit = call_limit(args.reserve_usd, args.limit_fraction)
+    if not 0 < limit <= args.reserve_usd:
+        raise refused(f"--reserve-usd {args.reserve_usd:g} at --limit-fraction "
+                      f"{args.limit_fraction:g} leaves a per-call limit of USD {limit:.2f}: every "
+                      "call needs a positive limit within its reservation, or its worst case is "
+                      "unbounded")
     if not args.agent_cmd:
         raise refused("a live run needs --agent-cmd (the agent command trajectory_harness.py "
                       "runs, printing Claude stream-json)")
@@ -296,7 +311,7 @@ def _run(args, eval_mod, engine, data, cases, out):
     prior = ledger.total()
     contract = eval_mod._trajectory_contract(data).read_bytes()
     reserve = args.reserve_usd
-    limit = round(reserve * args.limit_fraction, 2)
+    limit = call_limit(reserve, args.limit_fraction)
     agent = g.absolute_argv(shlex.split(args.agent_cmd))
     # The agent is told the model the results will name, unless its command already says so.
     model_args = [] if model_flag(agent) else ["--model", args.model]

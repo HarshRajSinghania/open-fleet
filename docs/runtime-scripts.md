@@ -1574,7 +1574,12 @@ behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also c
 deny-hook arming (#562): with `ORCA_DENY_HOOK_SETTINGS` naming the operator-wired
 settings file, the file must register `runtime/scripts/deny-hook.sh` and the hook must
 answer a deny probe, else `SPAWN=REFUSED`; unset, the spawn proceeds with a loud
-`UNVERIFIED` warning — the guard is never claimed unchecked.
+`UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
+`terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
+`new-top-level` there are refused before any task is created, since only `worker-start` creates a
+worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,
+such as `agent-trust-workspace`, Claude Code's folder-trust question), the spawn fails naming it
+and injects nothing: a trust prompt is the operator's to answer (#596).
 
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 

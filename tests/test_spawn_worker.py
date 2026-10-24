@@ -1558,5 +1558,47 @@ class TestOrcaRoRowsCarryBasePyRestrictions(unittest.TestCase):
         self.assertIn("--yolo", launch.split())
 
 
+
+class TestOrcaRoLanePrerequisites(unittest.TestCase):
+    """#596 Orca ro re-witness attempt (Orca 1.4.229, Claude Code 2.1.304): the custom-argv lane's
+    `terminal create` takes an EXISTING worktree, and a fresh folder stops Claude Code at its own
+    trust prompt. The first made `new-child` fail after task-create; the second read as "the TUI
+    never went idle" although Orca named the prompt (`wait.blockedReason`)."""
+
+    _stub = TestSpawnWorkerV5Lanes._stub
+    _run = TestSpawnWorkerV5Lanes._run
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    RO = {"PROFILE": "ro"}
+
+    def test_a_creation_selector_on_the_orca_ro_lane_is_refused_before_any_mutation(self):
+        for selector in ("new-child", "new-top-level"):
+            with self.subTest(selector=selector), tempfile.TemporaryDirectory() as tmp:
+                log = self._stub(tmp)
+                p = self._run(tmp, ["--spec", "review it", selector, "t", "claude"], self.RO)
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn("needs an existing worktree", p.stderr)
+                calls = log.read_text() if log.exists() else ""
+                for verb in ("task-create", "task-list", "terminal create", "--inject"):
+                    self.assertNotIn(verb, calls)
+
+    def test_an_existing_worktree_still_takes_the_ro_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._stub(tmp)
+            p = self._run(tmp, ["task_test", "path:/tmp/wt", "t", "claude"], self.RO)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("terminal create --worktree path:/tmp/wt", log.read_text())
+
+    def test_a_blocked_prompt_is_named_and_nothing_is_injected(self):
+        wait = {"result": {"wait": {"satisfied": False, "status": "running",
+                                    "blockedReason": "agent-trust-workspace"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._stub(tmp, wait=wait)
+            p = self._run(tmp, ["task_test", "path:/tmp/wt", "t", "claude"], self.RO)
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("blockedReason=agent-trust-workspace", p.stderr)
+            self.assertIn("trust", p.stderr.split("blockedReason=agent-trust-workspace", 1)[1])
+            self.assertNotIn("--inject", log.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

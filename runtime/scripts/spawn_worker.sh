@@ -883,6 +883,16 @@ if [ "$custom_lane" = "1" ]; then
     echo "SPAWN=REFUSED task=${tname} --retry-request is a worker-start flag, and this spawn takes the custom-argv lane (override or PROFILE=ro) where no worker-start runs" >&2
     exit 2
   fi
+  # Orca's `terminal create` takes an existing worktree (path:, id:, name:, branch:, current);
+  # new-child/new-top-level create one only through worker-start. Refuse before task-create
+  # rather than fail at terminal create with the task already made (#596 Orca re-witness).
+  if [ "$ACTIVE_RUNTIME" = "orca" ]; then
+    case "$sel" in
+      new-child|new-top-level)
+        echo "SPAWN=REFUSED task=${tname} --worktree '${sel}' creates a worktree only through worker-start, and this spawn takes the custom-argv lane (override or PROFILE=ro), whose terminal create needs an existing worktree — pass path:<abs-path>, id:<repoId>::<path> or current" >&2
+        exit 2 ;;
+    esac
+  fi
 fi
 
 # Deny-hook arming (#562): the rw safety story names the PreToolUse guard, but
@@ -1376,6 +1386,28 @@ print("true" if s is True else "false" if s is False else "absent")
 PY
 )
   if [ "$satisfied" = "false" ] || [ "$wait_rc" != "0" ]; then
+    # Orca names the prompt an agent stopped at (`wait.blockedReason`): say it, and never answer
+    # it for the operator. A trust prompt is a grant only the operator gives (#596).
+    blocked=$(python3 -I - "$tw" <<'PY'
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+r = d.get("result", d) if isinstance(d, dict) else {}
+w = r.get("wait") if isinstance(r, dict) else None
+reason = w.get("blockedReason") if isinstance(w, dict) else None
+print(reason if isinstance(reason, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", reason) else "")
+PY
+)
+    if [ -n "$blocked" ]; then
+      _hint="the agent is waiting on its own prompt, so no preamble was injected"
+      case "$blocked" in
+        agent-trust-workspace) _hint="${_hint}: it asks whether to trust this folder, a grant only you give — answer it in the pane or trust the folder once in a plain terminal, then close this pane and re-run" ;;
+      esac
+      echo "SPAWN=FAILED task=${task} step=${step} rc=1 — terminal wait unsatisfied (wait.satisfied=${satisfied}, cli_rc=${wait_rc}, blockedReason=${blocked}); ${_hint}. Inspect: ${ORCA_BIN} terminal read --terminal ${h} --screen" >&2
+      exit 1
+    fi
     echo "SPAWN=FAILED task=${task} step=${step} rc=1 — terminal wait unsatisfied (wait.satisfied=${satisfied}, cli_rc=${wait_rc}); the TUI never went idle, so an injected preamble would land in a booting pane. Inspect: ${ORCA_BIN} terminal read --terminal ${h} --screen" >&2
     exit 1
   fi

@@ -338,10 +338,16 @@ follow [Getting started](getting-started.md#your-first-mission-a-review-it-dry-r
 installed.
 
 That witness predates the `--disallowedTools` set on Orca's claude `ro` row, so the route is owed
-a fresh one. A 2026-10-24 attempt is recorded in the
-[live first runs](runs/2026-10-24-review-it-first-run.md#orca-roclaude-re-witness-attempt-refused-certifies-nothing).
-The pane started the current row, then stopped at Claude Code's folder-trust prompt, and the spawn
-failed closed before injecting anything. Before re-running, meet these prerequisites:
+a fresh one. Two 2026-10-24 attempts are recorded in the
+[live first runs](runs/2026-10-24-review-it-first-run.md). Both launched the current row and both
+failed closed before any injection:
+
+- the first stopped at Claude Code's folder-trust prompt;
+- the second ran in a worktree that inherits trust. Orca 1.4.229 refused the inject with
+  `no_agent_detected` while the pane showed the claude TUI, and the app then restarted as 1.4.238.
+
+The re-witness belongs with the pin at whatever build is installed. It should also establish why
+the inject was not recognized. Before re-running, meet these prerequisites:
 
 - **An existing Orca worktree.** The ro lane's `terminal create` cannot create one, so pass
   `path:<abs>`, not `new-child`. For a scratch review unit, register its repository with

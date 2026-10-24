@@ -147,6 +147,48 @@ The fresh witness is still owed. It needs either of two things:
 The leftover `task_95353ebdda84` could not be retried for cancellation either, since every
 orchestration command needs the running app.
 
+## Orca re-witness, second attempt (trusted worktree): inject rejected, then Orca restarted as 1.4.238
+
+With the app reopened at 1.4.229, which matched the pin on main, the planned route ran. The
+evidence is in `2026-10-24-review-it-first-run/orca-ro-attempt-2/`; it is listed in no inventory,
+so it is retained but unbound.
+
+- **Setup.** `orca worktree create --repo id:635ce96a-… --name of596-ro-witness --no-parent
+  --setup skip` made a new worktree of the trusted repository. A single scratch commit on its own
+  new branch carried the review unit. A coordinator terminal and Run (`run_9059b9ac42b5`) were
+  created. `launch.txt` again read
+  `LAUNCH=claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit`.
+- **Trust held.** With no trust grant, `terminal wait --for tui-idle` was satisfied. The pane
+  showed Claude Code v2.1.304 idle in plan mode (`worker-screen.txt`). This confirms the rule read
+  from the binary: a linked worktree inherits trust from its main repository's root.
+- **The inject was refused.** Orca 1.4.229 answered `dispatch --inject` with `inject_rejected` /
+  `no_agent_detected` (`dispatch-inject.json`), although the pane ran
+  `claude --permission-mode plan --disallowedTools=…` and showed its TUI.
+  `spawn_worker.sh` failed closed at `dispatch-inject`. No prompt reached the worker, no turn
+  started, and nothing was spent. The cause is not established. The app was replaced moments
+  later, and whether 1.4.229's agent detection reads this launch line is untested.
+- **Orca then restarted as 1.4.238.** Every call of the attempt was served by runtime
+  `e711afeb…` at 1.4.229. Right after the refusal, `orca status` showed a new runtime
+  `489b711a…` at **1.4.238** (`orca-runtime.json`), and the attempt's terminals were orphaned. A
+  witness taken from then on would have been at a build other than the pin on main, so the
+  attempt stopped. No new dispatch was tried, and no prompt was sent by hand.
+- **Cleanup**, all confirmed (`cleanup.json`):
+  - this attempt's task was marked `failed` / cancelled;
+  - the first attempt's leftover `task_95353ebdda84` was cancelled the same way, after
+    `run-use` bound a live terminal to `run_cd72e660a883`;
+  - all three terminals were closed, killing the idle worker;
+  - Orca removed the worktree;
+  - its branch was deleted only if it still held the scratch commit, and Orca's branch config
+    entry for it was removed.
+
+  The trusted repository's HEAD, `git status`, branches, stash and worktree list were compared
+  before and after, and are identical. The two Runs remain: Orca's CLI has no command to delete
+  one. Each holds one cancelled task.
+
+Still owed: a fresh Orca `ro`/`claude` witness on the current row. It can now run only at the
+build installed on this Mac, Orca 1.4.238, so it belongs with the pin move to 1.4.238 and
+should also establish why the inject was not recognized.
+
 ## Verifier outcome (recorded exactly)
 
 The unit binds the run directory under a frozen contract (`contract.md`, LR-1 to LR-5). Its

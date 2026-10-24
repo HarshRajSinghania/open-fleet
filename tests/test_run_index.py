@@ -128,6 +128,7 @@ class RowCellsHoldMarkdownLinksOnly(unittest.TestCase):
     def test_an_html_link_in_a_cell_is_refused(self):
         report = "2026-01-02-demo-it-self-run.md"
         for text in ('<a href="missing.md">inventory</a>', "<img src='x.png'>",
+                     '<a title=">" href="missing.md">notes</a>', "<a title='>' src='x.png'>",
                      '<a\nhref="missing.md">split</a>'):
             with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
                 root = make_root(tmp)

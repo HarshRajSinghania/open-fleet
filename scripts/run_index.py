@@ -38,7 +38,8 @@ CELLS = ("mission", "target", "ran_as", "binds", "outcome")
 REQUIRED = ("date", "report") + CELLS
 OPTIONAL = ("summary", "order")
 _LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")  # relative Markdown links
-_HTML_LINK_RE = re.compile(r"<[a-z][^>]*\b(?:href|src)\s*=", re.IGNORECASE)  # never checked
+_HTML_LINK_RE = re.compile(r"""<[a-z][a-z0-9-]*\b(?:[^>"']|"[^"]*"|'[^']*')*?\b(?:href|src)\s*=""",
+                           re.IGNORECASE)  # quote-aware: a ">" inside a value does not end the tag
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)

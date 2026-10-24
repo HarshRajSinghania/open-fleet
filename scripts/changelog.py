@@ -43,7 +43,8 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,78}\.md$")
 LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")
 # An HTML href/src is not rewritten when the cut moves the entry to the root CHANGELOG.md, so a
 # relative one would break there (PR #670): fragments carry Markdown links only.
-HTML_LINK_RE = re.compile(r"<[a-z][^>]*\b(?:href|src)\s*=", re.IGNORECASE)
+HTML_LINK_RE = re.compile(r"""<[a-z][a-z0-9-]*\b(?:[^>"']|"[^"]*"|'[^']*')*?\b(?:href|src)\s*=""",
+                          re.IGNORECASE)  # quote-aware: a ">" inside a value does not end the tag
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 

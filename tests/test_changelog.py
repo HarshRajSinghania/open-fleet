@@ -181,6 +181,16 @@ class HtmlSplitAcrossLinesIsRefused(unittest.TestCase):
             errors = cl.check_fragments(d)
             self.assertTrue(any("split.md" in e and "Markdown link" in e for e in errors), errors)
 
+    def test_a_quoted_angle_bracket_does_not_hide_the_link(self):
+        # Codex (PR #671): `[^>]*` stopped at a `>` inside a quoted attribute.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "quoted.md").write_text('- **Change** <a title=">"\n  href="../docs/ops.md">ops</a>.\n',
+                                         encoding="utf-8")
+            errors = cl.check_fragments(d)
+            self.assertTrue(any("quoted.md" in e and "Markdown link" in e for e in errors), errors)
+
 
 class TheSharedSectionTakesNoNewEntry(unittest.TestCase):
     """`check --base`: the count of [Unreleased] entries may not grow on a pull request."""

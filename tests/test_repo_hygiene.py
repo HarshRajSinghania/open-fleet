@@ -789,13 +789,15 @@ class CommitTrailersAreRefused(unittest.TestCase):
 
 
 class TheTrailerCheckRunsOnEveryPullRequest(unittest.TestCase):
-    """The check is wired into the required `gates` job, over the PR's own range, after a
-    full-history checkout (a shallow one cannot resolve the base and would exit 2)."""
+    """The check is wired into the `checks` job, which the required `gates` job needs, over the
+    PR's own range, after a full-history checkout (a shallow one cannot resolve the base and would
+    exit 2). It ran inside `gates` until the CI speed change moved every check that reads no
+    shard output into `checks`, which starts beside the shards instead of after them."""
 
     def test_gates_runs_the_check_over_the_pr_range(self):
         text = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
         self.assertRegex(text, r"(?m)^  pull_request:")
-        steps = _steps(_jobs(text)["gates"])
+        steps = _steps(_jobs(text)["checks"])
         names = [_step_name(s) for s in steps]
         idx = [i for i, s in enumerate(steps) if "scripts/check_trailers.py" in _step_script(s)]
         self.assertEqual(len(idx), 1, "gates does not run scripts/check_trailers.py once")
@@ -809,6 +811,20 @@ class TheTrailerCheckRunsOnEveryPullRequest(unittest.TestCase):
         self.assertTrue(checkout and checkout[0] < idx[0],
                         f"the trailer check runs before any checkout: {names}")
         self.assertRegex("\n".join(steps[checkout[0]]), r"fetch-depth:\s*0\b")
+
+    def test_the_job_that_runs_it_blocks_the_merge(self):
+        """`checks` is not itself a required context: it blocks the merge only because the
+        required `gates` job NEEDS it, and gates' first step fails unless every need succeeded
+        (tests/test_shard_tests.py runs that step). Without the need, a red trailer check — and
+        every other check that moved with it — would be advisory."""
+        text = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        jobs = _jobs(text)
+        self.assertIn("checks", jobs, "the checks job is gone from validate.yml")
+        needs = [ln for ln in jobs["gates"] if re.match(r"^    needs:", ln)]
+        self.assertEqual(len(needs), 1, "gates declares no single needs list")
+        listed = [n.strip() for n in needs[0].split("[", 1)[1].split("]", 1)[0].split(",")]
+        self.assertIn("checks", listed, "gates no longer needs checks: its checks are advisory")
+        self.assertIn("    if: always()", jobs["gates"], "a red checks job would skip gates")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-- **CI runs in about half the wall time, and independent PRs no longer conflict on bookkeeping
-  files.** A new `checks` job runs every gate that reads no shard output (trailers, validate,
+- **CI wall time drops from 14.0 to about 10 minutes (9.7 and 10.0 measured on #670's green
+  runs), and independent PRs no longer conflict on bookkeeping files.** A new `checks` job runs every gate that reads no shard output (trailers, validate,
   routing, proof honesty and binding, bundle, skills-ref, the secret scan, ruff) from t=0 beside
   the shards; `gates` stays the one required context, needs `checks`, and keeps only the needs
   verification and the D9 coverage combine. `scripts/shard-tests.py` now splits a module whose

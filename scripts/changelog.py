@@ -43,7 +43,8 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,78}\.md$")
 LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")
 # An HTML href/src is not rewritten when the cut moves the entry to the root CHANGELOG.md, so a
 # relative one would break there (PR #670): fragments carry Markdown links only.
-HTML_LINK_RE = re.compile(r"<[a-z][^>]*\b(?:href|src)\s*=", re.IGNORECASE)
+HTML_LINK_RE = re.compile(r"""<[a-z][a-z0-9-]*\b(?:[^>"']|"[^"]*"|'[^']*')*?\b(?:href|src)\s*=""",
+                          re.IGNORECASE)  # quote-aware: a ">" inside a value does not end the tag
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -73,6 +74,9 @@ def fragment_errors(path):
         return errors + [f"{where}: empty — a fragment holds the entry text"]
     if not text.endswith("\n"):
         errors.append(f"{where}: does not end with a newline")
+    if HTML_LINK_RE.search(text):  # the whole fragment: a tag may span lines (PR #670 review)
+        errors.append(f"{where}: write each link as a Markdown link ([text](../path)); an HTML "
+                      "href or src is not rewritten for CHANGELOG.md")
     lines = text.rstrip("\n").split("\n")
     if not lines[0].startswith("- "):
         errors.append(f"{where}:1: an entry opens with '- ' at column 0")
@@ -84,9 +88,6 @@ def fragment_errors(path):
         elif not (line.startswith("- ") or line.startswith("  ")):
             errors.append(f"{where}:{n}: start the line with '- ' (a new entry) "
                           "or two spaces (a continuation)")
-        if HTML_LINK_RE.search(line):
-            errors.append(f"{where}:{n}: write the link as a Markdown link ([text](../path)); an "
-                          "HTML href or src is not rewritten for CHANGELOG.md")
         for target in LINK_RE.findall(line):
             if not target.startswith("../") or target.startswith("../../"):
                 errors.append(f"{where}:{n}: link ({target}) must be written from changelog.d/, "

@@ -89,8 +89,8 @@ if argv[:1] == ["build"]:
     entry["context"] = sorted(os.listdir(argv[-1]))
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as fh:
     fh.write(json.dumps(entry) + "\n")
-if argv[:1] in (["kill"], ["rm"]) and argv[0] in scenario.get("hang", []):
-    time.sleep(scenario.get("hang_s", 5))
+if argv[:1] in (["kill"], ["rm"], ["create"]) and argv[0] in scenario.get("hang", []):
+    time.sleep(scenario.get("hang_s", 5))  # a create that hangs has already made its container: `orphan`
 if argv[:2] == ["image", "inspect"]:
     if scenario.get("image") is None:
         sys.stderr.write("Error: No such image\n")
@@ -103,7 +103,9 @@ elif argv[:1] == ["ps"]:
     else:  # this launch's own containers, by its nonce: the verification
         if "verify" in scenario.get("hang", []):
             time.sleep(scenario.get("hang_s", 5))
-        print(scenario.get("survivor", ""))
+        orphan = scenario.get("orphan")
+        removed = any(json.loads(line)["argv"] == ["rm", "-f", orphan] for line in open(os.environ["FAKE_DOCKER_LOG"]))
+        print(orphan if orphan and not removed else scenario.get("survivor", ""))
 elif argv[:1] == ["create"]:
     print(scenario["cid"] if role == "arm" else scenario["bid"])
 elif argv[:1] == ["start"] and "--attach" in argv:
@@ -299,7 +301,8 @@ class BothContainersAreHardened(Harness):
                 limits = lc.LIMITS if role == "arm" else lc.BROKER_LIMITS
                 self.assertIn("--rm", argv)
                 self.assertIn("--init", argv)
-                self.assertEqual(pairs["--user"], lc.USER)
+                # the arm as the image's runner; the broker as the operator, so it can read their token on Linux
+                self.assertEqual(pairs["--user"], lc.USER if role == "arm" else f"{os.getuid()}:{os.getgid()}")
                 self.assertFalse(pairs["--user"].split(":")[0] in ("0", "root"))
                 self.assertEqual(pairs["--pids-limit"], str(limits["pids"]))
                 self.assertEqual((pairs["--memory"], pairs["--memory-swap"]), (limits["memory"], limits["memory"]))
@@ -605,6 +608,18 @@ class TeardownNeverLosesTheReceipt(Harness):
         self.assertIs(r["destroyed"]["verified"], False)
         self.assertIn("TimeoutExpired", r["destroyed"]["output"])
 
+    def test_a_create_whose_answer_is_lost_is_found_by_its_nonce_destroyed_and_receipted(self):
+        # Codex at 3c01b90b5e: docker made the broker but the launcher never got its id back
+        self.scenario({"hang": ["create"], "hang_s": 5, "orphan": BID})
+        with mock.patch.object(lc, "CREATE_TIMEOUT_S", 0.5):
+            rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("docker create of the broker timed out", err)
+        r = self.receipt()
+        self.assertIsNone(r["broker"]["id"])
+        self.assertIs(r["destroyed"]["verified"], True)
+        self.assertIn(["rm", "-f", BID], [c["argv"] for c in self.calls(partial=True)])
+
     def test_a_broker_that_does_not_start_is_destroyed_and_the_launch_refused(self):
         self.scenario({"broker_start_exit": 1})
         rc, err = self.launch()
@@ -616,6 +631,15 @@ class TeardownNeverLosesTheReceipt(Harness):
         self.assertNotIn(["start", "--attach"], [c["argv"][:2] for c in self.calls()])
 
 
+class ABrokerNeverRunsAsRoot(Harness):
+    def test_a_root_launcher_is_refused(self):
+        with mock.patch.object(lc.os, "getuid", return_value=0):
+            rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not root", err)
+        self.assertEqual(self.creates(), [])
+
+
 class ABrokerThatNeverAnswersStartsNoArm(Harness):
     def test_it_is_destroyed_and_the_launch_refused(self):
         self.scenario({"broker_ready_exit": 1})
@@ -625,7 +649,7 @@ class ABrokerThatNeverAnswersStartsNoArm(Harness):
         self.assertIn("the broker never answered", err)
         r = self.receipt()
         self.assertIs(r["destroyed"]["verified"], True)
-        self.assertIn("uid 10001 must be able to read the token file", r["refused"])
+        self.assertIn("could not open the token file or its ledger", r["refused"])
         self.assertNotIn(["start", "--attach"], [c["argv"][:2] for c in self.calls()])
 
 
@@ -721,7 +745,8 @@ def usage_events(usage_start, usage_delta, stop=True):
 
 
 USAGE = {"input_tokens": 2, "cache_creation_input_tokens": 6392, "cache_read_input_tokens": 10307, "output_tokens": 1,
-         "cache_creation": {"ephemeral_5m_input_tokens": 6392, "ephemeral_1h_input_tokens": 0}}
+         "cache_creation": {"ephemeral_5m_input_tokens": 6392, "ephemeral_1h_input_tokens": 0},
+         "inference_geo": "global"}  # as the API reported it on the live smoke call
 
 
 class StandInAPI:
@@ -860,7 +885,8 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
 
     def test_a_non_streamed_answer_settles_its_usage(self):
         self.broker()
-        answer = json.dumps({"id": "msg_1", "content": [], "usage": {"input_tokens": 100, "output_tokens": 10}}).encode()
+        answer = json.dumps({"id": "msg_1", "content": [], "usage": {"input_tokens": 100, "output_tokens": 10,
+                                                                      "inference_geo": "global"}}).encode()
         self.api.replies.append((200, "application/json", answer))
         self.post(doc=self.body(stream=False))
         self.assertAlmostEqual(self.events()[-1]["cost_usd"], (100 * 0.10 + 10 * 0.50) / 1e6, 9)
@@ -918,7 +944,7 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
 
     def test_an_inline_image_is_reserved_at_its_worst_case(self):
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
-        why, mult, images = lb.terms(self.body(messages=[{"role": "user", "content": [img, img]}]))
+        why, mult, images = lb.terms(self.body(messages=[{"role": "user", "content": [img, img]}], inference_geo="global"))
         self.assertEqual((why, mult, images), (None, 1.0, 2))
         self.assertAlmostEqual(lb.reservation(100, 10, "claude-opus-5-5", 1.0, 2) - lb.reservation(100, 10, "claude-opus-5-5"),
                                2 * lb.IMAGE_TOKENS * 4.0 * lb.WRITE_1H / 1e6)
@@ -951,12 +977,32 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertEqual(lb.terms(self.body(inference_geo="us"))[1], 1.1)
         self.assertEqual(lb.terms(self.body(inference_geo="us", speed="fast"))[1], 1.1 * lb.FAST)
         self.broker()
+        self.api.replies.append((200, "text/event-stream",
+                                 usage_events({**USAGE, "inference_geo": "us"}, {"output_tokens": 4})))
         self.post(doc=self.body(inference_geo="us"))
         start, settle = self.events()[1:]
         usage = {**USAGE, "output_tokens": 4}
         self.assertAlmostEqual(settle["cost_usd"], lb.priced(usage, "claude-haiku-5-5") * 1.1, 6)
         self.assertAlmostEqual(start["reserved_usd"], lb.reservation(len(json.dumps(self.body(inference_geo="us"))),
                                                                      1000, "claude-haiku-5-5") * 1.1, 4)
+
+    def test_an_omitted_geography_reserves_at_the_us_premium_and_settles_as_reported(self):
+        # Codex at 3c01b90b5e: a request naming no geography runs in the workspace default, maybe US
+        self.assertEqual(lb.terms(self.body())[1], lb.GEO_WORST)
+        self.assertEqual(lb.terms(self.body(inference_geo="global"))[1], 1.0)
+        usage = {**USAGE, "output_tokens": 4}
+        for reported, mult in (("global", 1.0), ("us", 1.1), (None, lb.GEO_WORST), ("mars", lb.GEO_WORST)):
+            with self.subTest(reported=reported):
+                self.assertEqual(lb.settle_mult({**usage, "inference_geo": reported}, False), mult)
+        self.assertEqual(lb.settle_mult({"inference_geo": "global", "speed": "fast"}, False), lb.FAST)
+        self.broker()
+        no_geo = {k: v for k, v in USAGE.items() if k != "inference_geo"}
+        self.api.replies.append((200, "text/event-stream", usage_events(no_geo, {"output_tokens": 4})))
+        self.post()
+        start, settle = self.events()[1:]
+        self.assertAlmostEqual(start["reserved_usd"], lb.reservation(len(json.dumps(self.body())), 1000,
+                                                                     "claude-haiku-5-5") * lb.GEO_WORST, 4)
+        self.assertAlmostEqual(settle["cost_usd"], lb.priced(usage, "claude-haiku-5-5") * lb.GEO_WORST, 6)
 
     def test_iterations_settle_when_they_cost_more(self):
         top = {"input_tokens": 10, "output_tokens": 10}

@@ -23,7 +23,8 @@ with a priced model and a positive max_tokens, every field is one the broker pri
 tool is the client's own, and all content is inline and bounded by its bytes. So an image or
 document by URL or file id, a PDF, an advisor or other server-side tool, an MCP server,
 server-side compaction, a service tier, and an inference geography other than global or US are
-refused: each is billed beyond what the body's bytes bound.
+refused: each is billed beyond what the body's bytes bound. A call that names no geography
+reserves at the US premium, and every call settles at the geography the API reports.
 
 The ledger (--ledger, appended, mode 0600) is one JSON line per event: open, start, settle and
 refuse. It never holds the token, a request or a response. The launcher reads it after both
@@ -58,7 +59,12 @@ PRICES = {
 }
 TIERED = {"claude-haiku-5-5": (100_000, (0.50, 2.50, 0.05))}
 WRITE_5M, WRITE_1H, FAST = 1.25, 2.0, 2.0
-GEO = {None: 1.0, "global": 1.0, "us": 1.1}  # inference_geo "us" is billed at 1.1x every token category
+# inference_geo "us" is billed at 1.1x every token category. A request that names none runs in the
+# workspace's default geography, which may be US, so it reserves at the worst; a call settles at
+# the geography the API reports it ran in (usage.inference_geo), the worst when it reports none
+# (Codex at 3c01b90b5e).
+GEO = {"global": 1.0, "us": 1.1}
+GEO_WORST = max(GEO.values())
 IMAGE_TOKENS = 4800  # above the most one image costs on any current model: 4,784 visual tokens at 2576 px
 COSTLIEST = "claude-fable-5-1"  # what an iteration naming an unpriced model is charged as
 # Every request field the broker can price. Any other is refused, so a pricing modifier the
@@ -174,12 +180,18 @@ def terms(doc):
     if doc.get("speed") not in (None, "standard", "fast"):
         return f"speed {doc['speed']!r} is not priced", 1.0, 0
     geo = doc.get("inference_geo")
-    if geo not in GEO:
+    if geo is not None and geo not in GEO:
         return f"inference geography {geo!r} is not priced", 1.0, 0
     found = {"images": 0}
     if why := content_problem([doc.get("system"), doc.get("messages")], found):
         return why, 1.0, 0
-    return None, GEO[geo] * (FAST if doc.get("speed") == "fast" else 1.0), found["images"]
+    return None, GEO.get(geo, GEO_WORST) * (FAST if doc.get("speed") == "fast" else 1.0), found["images"]
+
+
+def settle_mult(usage, fast):
+    """The price multiplier a finished call is billed at: the geography and speed the API reports
+    it ran at (the worst geography when it reports none), fast when either side says so."""
+    return GEO.get(usage.get("inference_geo"), GEO_WORST) * (FAST if fast or usage.get("speed") == "fast" else 1.0)
 
 
 def merged_usage(seen, usage):
@@ -192,6 +204,8 @@ def merged_usage(seen, usage):
             merged_usage(seen.setdefault(key, {}), value)
         elif key == "iterations" and isinstance(value, list):
             seen[key] = value
+        elif key in ("inference_geo", "speed") and isinstance(value, str):
+            seen[key] = value
     return seen
 
 
@@ -203,7 +217,7 @@ class Ledger:
         self.lock = threading.Lock()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.fh = os.fdopen(fd, "a", encoding="utf-8")
-        self.write({"event": "open", "cap_usd": cap_usd, "prices_usd_per_mtok": PRICES, "tiered": TIERED, "geo": {str(k): v for k, v in GEO.items()},
+        self.write({"event": "open", "cap_usd": cap_usd, "prices_usd_per_mtok": PRICES, "tiered": TIERED, "geo": GEO,
                     "image_tokens": IMAGE_TOKENS,
                     "framing_tokens": FRAMING_TOKENS, "pid": os.getpid()})
 
@@ -284,7 +298,7 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
         body = self.rfile.read(length)
         if path == FREE_PATH:
-            return self.relay(body, None, None, 1.0)
+            return self.relay(body, None, None, False)
         try:
             doc = json.loads(body)
         except ValueError:
@@ -297,9 +311,9 @@ class Broker(BaseHTTPRequestHandler):
         call = self.ledger.reserve(model, reservation(len(body), doc["max_tokens"], model, mult, images))
         if call is None:
             return self.fail(403, "permission_error", f"the spend cap (${self.ledger.cap:g}) would be passed")
-        self.relay(body, call, model, mult)
+        self.relay(body, call, model, doc.get("speed") == "fast")
 
-    def relay(self, body, call, model, mult):
+    def relay(self, body, call, model, fast):
         """Forward to the API and relay the answer as it arrives; settle the call's usage."""
         usage, complete, status, conn = {}, False, None, None
         try:
@@ -365,7 +379,8 @@ class Broker(BaseHTTPRequestHandler):
             if conn is not None:
                 conn.close()
             if call is not None:
-                self.ledger.settle(call, settled(usage, model, mult) if complete else None, status, usage, complete)
+                self.ledger.settle(call, settled(usage, model, settle_mult(usage, fast)) if complete else None, status, usage,
+                                  complete)
 
 
 def read_token(path):

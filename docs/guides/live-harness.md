@@ -47,7 +47,9 @@ beyond what the request's bytes bound.
 flight and the call's own reservation fit under `--cap-usd`. A reservation is the call's worst
 case: every byte of its body as a 1-hour cache-write input token, plus 4,096 tokens of framing and
 4,800 for each inline image, and all of its `max_tokens` as output, at its model's highest list
-price, times 1.1 for US inference and 2 for fast mode. When the call ends, the
+price, times 2 for fast mode and 1.1 for US inference. A request that names no geography runs in
+your workspace's default, which may be US, so it reserves at the 1.1 premium. Each call settles at
+the geography the API reports it ran in, and at the premium when the API reports none. When the call ends, the
 broker settles the usage the API reported, at the price the API bills. A call that ends without a
 complete usage report settles its whole reservation. A refused call reaches the arm as an API
 error (`permission_error`, "the spend cap … would be passed"). Near the cap, reservations stop
@@ -61,9 +63,10 @@ broker settled Haiku 5.5 at $0.000904, and Claude Code reported $0.00090427 for 
 
 The launcher starts both containers with these properties:
 
-- each runs as the image's non-root user (uid 10001), with `--rm`, a pids limit, a memory limit
-  (no swap above it) and a CPU limit. The arm's limits are yours to set; the broker's are fixed
-  (64 pids, 512 MB, one CPU);
+- the arm runs as the image's non-root user (uid 10001), and the broker as you: your own uid and
+  gid, so it can read your 0600 token file and write its ledger on any Docker host. The launcher
+  refuses to run as root. Each has `--rm`, a pids limit, a memory limit (no swap above it) and a
+  CPU limit. The arm's limits are yours to set; the broker's are fixed (64 pids, 512 MB, one CPU);
 - each has no capability (`--cap-drop ALL`), `no-new-privileges`, no `--privileged`, no host
   namespace, no published port, no device and no docker socket;
 - the token reaches only the broker: your token file, which may not sit inside the results or
@@ -110,11 +113,11 @@ through the broker's cap.
 
 ## Before you start
 
-- **OrbStack** on macOS, or Docker Engine on Linux. On OrbStack, a bind mount shows its files as
-  owned by the container's user, so uid 10001 can read your 0600 token file and write the results
-  and ledger directories. On Docker Engine on Linux, uid 10001 must be able to do the same. A
-  0600 file you own is unreadable to it, so the broker exits, and the launcher refuses with `the
-  broker never answered` before the arm starts.
+- **OrbStack** on macOS, or Docker Engine on Linux. The broker runs as you, so it reads your
+  token file and writes its ledger on either. The arm runs as uid 10001 and must be able to write
+  the results directory. On OrbStack a bind mount shows its files as owned by the container's
+  user, so it can. On Docker Engine on Linux, give uid 10001 write access to the results directory
+  (for example `setfacl -m u:10001:rwx <results>`).
 - A **clean checkout** at the commit you mean to run. `git status` must show nothing, untracked
   files included.
 - The arm's **authorised cap**, for `--cap-usd` and for the arm's own cap flags.
@@ -262,7 +265,8 @@ label=org.open-fleet.live-harness`), and 124 when the limit ended the run.
 | `--out … is outside /results` | Write every output under `/results` |
 | `--cap-usd must be a positive number of dollars` | Pass the arm's authorised cap |
 | `--token-file … is inside --results` (or the checkout) | Keep the token file outside both: the arm's container mounts them |
-| `the broker never answered` | The broker could not open the token file or its ledger. On Linux, check that uid 10001 can read and write them (see [Before you start](#before-you-start)) |
+| `the broker never answered` | The broker could not start: it could not open the token file or its ledger, or the image is broken |
+| `run the launcher as yourself, not root` | The broker runs as the launcher's user. Run the launcher as an ordinary user |
 | `claude (open-fleet live harness): no credential broker answers` | `claude` ran in a container this launcher did not start |
 | `open-fleet live broker: …is billed beyond…` (or `…not priced`) | The arm sent content, a tool or a field the broker cannot price. It refuses rather than spend unmetered |
 | `open-fleet live broker: the spend cap ($…) would be passed` | The arm reached `--cap-usd`. The receipt's `broker.spend` shows what it settled |

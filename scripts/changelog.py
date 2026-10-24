@@ -52,11 +52,12 @@ _TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'
                           re.IGNORECASE)
 _TAG_END_RE = re.compile(r"\s*/?>")
 # Where a Markdown block may end: a code span never crosses one (CommonMark: inlines are parsed
-# within a block). A blank line, or a line whose first mark (after up to three spaces) can open or
-# close a block: a list item, a setext underline or thematic break, a heading, a quote, a table
-# row, an HTML block or a fence. It over-approximates on purpose (Codex at 8585b35789): a span
-# cut short can only reveal a tag, never hide one.
-_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n {0,3}(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
+# within a block). A blank line, or a line whose first mark, at any indentation (a list item's
+# blocks sit deeper), can open or close a block: a list item, a setext underline or thematic
+# break, a heading, a quote, a table row, an HTML block or a fence. It over-approximates on
+# purpose (Codex at 8585b35789 and 3c01b90b5e): a span cut short can only reveal a tag, never
+# hide one.
+_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n[ \t]*(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 

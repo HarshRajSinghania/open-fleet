@@ -90,7 +90,7 @@ TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"  # never in any environment the launcher s
 TOKEN_FILE = "~/of-live/oauth-token"
 RECEIPTS = "~/of-live/receipts"
 LOCK = "~/of-live/live-harness.lock"  # held by one launch from its leftover check to its receipt
-USER = "10001:10001"  # the image's `runner`, never root
+USER = "10001:10001"  # the image's `runner`, never root: the arm runs as it (the broker as the operator)
 REPO_IN, RESULTS_IN, LEDGER_IN = "/repo", "/results", "/ledger"
 SECRET = "/run/secrets/claude_token"  # the token: a read-only file mount in the broker's container alone
 BROKER_SCRIPT, BROKER_PORT = "scripts/live_broker.py", 8787
@@ -116,6 +116,7 @@ BACKSTOP_S = 120  # the in-container `timeout`, past the launcher's limit: a dea
 DESTROY_WAIT_S = 30
 BROKER_READY_S = 60  # the arm starts only once the broker answers /health inside its own container
 TEARDOWN_TIMEOUT_S = 60  # each docker call of a teardown
+CREATE_TIMEOUT_S = 120  # each docker create: one that times out may still have made its container
 REDACTED = b"[REDACTED]"
 RECEIPT_SCHEMA = "open-fleet.live-container-receipt/2"
 EXIT_USAGE, EXIT_NOT_DESTROYED, EXIT_TIMED_OUT = 2, 3, 124
@@ -263,10 +264,20 @@ def output_problem(arm, arm_args):
     return None
 
 
-def hardened(nonce, role, limits):
-    """What both containers share: the non-root user, --rm, limits, no capability, no privilege."""
+def broker_user():
+    """The broker runs as the operator's own uid and gid, so it reads their 0600 token file and
+    writes the ledger directory they own on any Docker host, Linux included (Codex at 8585b35789
+    and 3c01b90b5e: as uid 10001 it could not); never as root."""
+    uid, gid = os.getuid(), os.getgid()
+    if uid == 0:
+        raise Refused("run the launcher as yourself, not root: the broker runs as the launcher's own user")
+    return f"{uid}:{gid}"
+
+
+def hardened(nonce, role, limits, user=USER):
+    """What both containers share: a non-root user, --rm, limits, no capability, no privilege."""
     mem = str(limits["memory"])
-    return ["create", "--rm", "--init", "--user", USER, "--label", f"{LABEL}={nonce}", "--label", f"{ROLE_LABEL}={role}",
+    return ["create", "--rm", "--init", "--user", user, "--label", f"{LABEL}={nonce}", "--label", f"{ROLE_LABEL}={role}",
             "--pids-limit", str(limits["pids"]), "--memory", mem, "--memory-swap", mem, "--cpus", str(limits["cpus"]),
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "none"]
 
@@ -274,7 +285,7 @@ def hardened(nonce, role, limits):
 def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeout):
     """`docker create` for the broker: the one container the token is mounted in, read-only. It
     carries the harness hostname, which the arm's container inherits with its network namespace."""
-    return [*hardened(nonce, "broker", BROKER_LIMITS), "--hostname", containment.HARNESS_HOSTNAME + nonce,
+    return [*hardened(nonce, "broker", BROKER_LIMITS, broker_user()), "--hostname", containment.HARNESS_HOSTNAME + nonce,
             "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
             "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
             "--mount", f"type=bind,src={token_file},dst={SECRET},readonly",
@@ -312,8 +323,8 @@ def await_broker(broker_id, ledger_dir):
         except subprocess.TimeoutExpired:
             pass
         if time.monotonic() > deadline:
-            raise Refused(f"the broker never answered within {BROKER_READY_S:g} s. On Docker Engine on Linux, uid "
-                          f"10001 must be able to read the token file and write {ledger_dir}")
+            raise Refused(f"the broker never answered within {BROKER_READY_S:g} s: it could not open the token file "
+                          f"or its ledger in {ledger_dir}, or the image is broken")
         time.sleep(0.5)
 
 
@@ -487,7 +498,7 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
                "container": {"id": None, "user": USER, "limits": limits, "network": "the broker's namespace",
                              "mounts": {REPO_IN: "the export of the commit, read-only", RESULTS_IN: str(results),
                                         containment.ATTESTATION: "the attestation, read-only"}, "path": CONTAINER_PATH},
-               "broker": {"id": None, "user": USER, "limits": BROKER_LIMITS, "port": BROKER_PORT,
+               "broker": {"id": None, "user": broker_user(), "limits": BROKER_LIMITS, "port": BROKER_PORT,
                           "cap_usd": args.cap_usd, "spend": None,
                           "mounts": {REPO_IN: "the export of the commit, read-only", SECRET: "the token file, read-only",
                                      LEDGER_IN: str(ledger_dir)}},
@@ -495,7 +506,7 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
                "timed_out": False, "interrupted": None, "refused": None, "exit_status": None,
                "destroyed": {"verified": False, "check": None, "output": "no container was created", "errors": []},
                "log": str(log_path), "token_redactions": 0}
-    ids, refused, redactor = [], None, None
+    ids, refused, redactor, attempted = [], None, None, False
     try:
         export = staging / "repo"
         export_checkout(repo, commit, export)
@@ -513,7 +524,11 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
             argv = (broker_argv(image["id"], nonce, export, token_file, ledger_dir, args.cap_usd, args.timeout)
                     if role == "broker" else
                     arm_argv(image["id"], nonce, args.arm, ids[0], cmd, export, results, attestation, limits))
-            proc = docker(*argv)
+            attempted = True  # from here a container may exist whose id never comes back (Codex at 3c01b90b5e)
+            try:
+                proc = docker(*argv, timeout=CREATE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                raise Refused(f"docker create of the {role} timed out after {CREATE_TIMEOUT_S:g} s") from None
             if proc.returncode != 0:
                 raise Refused(f"docker create of the {role} failed: {proc.stderr.strip()[:300]}")
             ids.append(proc.stdout.strip().splitlines()[-1])
@@ -542,21 +557,21 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
             pumper.join(timeout=30)
             attach.stdout.close()
     except Refused as err:
-        if not ids:
+        if not attempted:
             raise
         receipt["refused"], refused = str(err), err
     except (KeyboardInterrupt, SystemExit) as err:
         receipt["interrupted"] = getattr(err, "code", None) or 128 + signal.SIGINT
         raise
     finally:
-        if ids and not receipt["destroyed"]["verified"]:
+        if attempted and not receipt["destroyed"]["verified"]:
             receipt["destroyed"] = destroy(ids, nonce)
         shutil.rmtree(staging, ignore_errors=True)
         if redactor is not None:
             with contextlib.suppress(OSError, ValueError):
                 redactor.close()
             receipt["token_redactions"] = redactor.count
-        if ids:
+        if attempted:
             receipt["broker"]["spend"] = spend(ledger_dir / "spend.jsonl")
             text = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
             if token in text:  # never: nothing above holds it

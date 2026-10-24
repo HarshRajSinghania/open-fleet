@@ -10,8 +10,10 @@
   forwards only the Messages API, and refuses any call whose worst case would pass `--cap-usd`.
   It forwards only what it can price: a priced model, the fields it knows, the client's own tools,
   and inline content its bytes bound. It refuses an image or document by URL or file id, a PDF,
-  an advisor or server-side tool, a service tier and an unpriced geography, and it prices US
-  inference at its 1.1x premium. The arm starts only once the broker answers.
+  an advisor or server-side tool, a service tier and an unpriced geography. It reserves US
+  inference, and a request that names no geography, at the 1.1x premium, and settles each call at
+  the geography the API reports. The broker runs as the operator, never root; the arm runs as
+  the image's user, and starts only once the broker answers.
   The broker settles each call as the API bills it and writes its ledger beside the receipt, out
   of the arm's reach. Every output flag of an arm must name a path under `/results`, and an arm
   whose ledger defaults to a temp dir (`first_run`'s workdir included) must name one. A token file

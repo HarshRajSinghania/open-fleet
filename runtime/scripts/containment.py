@@ -32,6 +32,9 @@ from pathlib import Path
 # Every process of a call carries `OF_CALL_ID=<its tag>` in its environment, wherever it goes: a
 # descendant that calls setsid() leaves the call's process group but keeps the marker (K4).
 CALL_MARKER = "OF_CALL_ID"
+# A second marker, alongside the call's: one dispatch of a run carries its own tag, so what that one
+# dispatch left behind can be found and ended before its call is settled (PR #668 review).
+DISPATCH_MARKER = "OF_DISPATCH_TAG"
 
 
 def environ_of(pid):
@@ -84,15 +87,15 @@ def process_table():
     return table
 
 
-def call_processes(table, roots=(), groups=(), exclude=(), tag=None):
+def call_processes(table, roots=(), groups=(), exclude=(), tag=None, marker=CALL_MARKER):
     """A call's live pids in `table`: every process carrying its `tag`, every member of `groups`,
     every one of `roots`, and every descendant of any of them -- minus `exclude` and this process,
     which never sweeps itself."""
-    marker = f"{CALL_MARKER}={tag}" if tag else None
+    token = f"{marker}={tag}" if tag else None
     children = {}
     for pid, (ppid, _pgid, _env) in table.items():
         children.setdefault(ppid, []).append(pid)
-    stack = [pid for pid, (_ppid, pgid, env) in table.items() if pgid in groups or (marker and marker in env)]
+    stack = [pid for pid, (_ppid, pgid, env) in table.items() if pgid in groups or (token and token in env)]
     stack += [pid for pid in roots if pid in table]
     found = set()
     while stack:
@@ -103,7 +106,7 @@ def call_processes(table, roots=(), groups=(), exclude=(), tag=None):
     return found - set(exclude) - {os.getpid()}
 
 
-def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None, table=None):
+def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None, table=None, marker=CALL_MARKER):
     """SIGKILL a call's processes (call_processes) until a fresh scan finds none: True. False when
     one survives `wait_s`, or when the process table cannot be read (fail closed). `table` is the
     process-table reader (process_table when None), injected by a caller or a test."""
@@ -111,7 +114,7 @@ def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None, table=None):
     deadline = time.monotonic() + wait_s
     while True:
         try:
-            left = call_processes(read(), roots, groups, exclude, tag)
+            left = call_processes(read(), roots, groups, exclude, tag, marker)
         except OSError:
             return False
         if not left:

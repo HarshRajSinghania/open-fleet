@@ -379,15 +379,16 @@ def _load_containment():
 
 containment = _load_containment()
 CALL_MARKER = containment.CALL_MARKER
+DISPATCH_MARKER = containment.DISPATCH_MARKER
 _environ_of = containment.environ_of
 process_table = containment.process_table
 call_processes = containment.call_processes
 
 
-def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None):
+def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None, marker=CALL_MARKER):
     """containment.sweep, reading THIS module's process_table at call time: a test, or the blind
     watchdog, replaces it here."""
-    return containment.sweep(roots, groups, exclude, wait_s, tag, table=lambda: process_table())
+    return containment.sweep(roots, groups, exclude, wait_s, tag, table=lambda: process_table(), marker=marker)
 
 
 def watchdog_main(argv):

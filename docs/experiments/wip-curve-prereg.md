@@ -241,6 +241,13 @@ as dropped. The live runs use the owner's isolation wrapper, outside the reposit
   `orphan-alive`, every call is charged its full hold whatever its stream reported, the sandbox is
   kept, and no further run starts. Before any later run starts, every recorded run's marker is
   swept again, and a sweep that cannot vouch refuses it (`ORPHAN_ALIVE`).
+- Each dispatch also carries its own marker, `OF_DISPATCH_TAG`, alongside the run's. When a
+  dispatch ends, the provider's monitor is waited for briefly. Then what the dispatch left is
+  ended and verified by that marker, before its call is settled or its result accepted. A
+  dispatch that left processes behind is not accepted: the builder is `builder-failed`, or the
+  review is `review-failed`. Its call is charged its full hold, because what it left may have spent.
+  A dispatch that cannot be vouched for halts the run `orphan-alive` at once, every running
+  dispatch is stopped, and no further call starts.
 - A live run does not start where process discovery cannot contain a call: the helper's host
   check must find its marker on a Python process and on a system binary. macOS's `ps -E` cannot
   read the environment of an Apple system binary (`/bin/sh`, `/bin/sleep`), so on macOS a live

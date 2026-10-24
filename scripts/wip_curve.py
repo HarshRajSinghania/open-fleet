@@ -1101,6 +1101,8 @@ class Run:
         self.deadline = float("inf")  # the run's absolute wall-clock deadline (monotonic), set at start
         self.launched_models: dict[str, str | None] = {}
         self.usage_seen: set[str] = set()
+        self.dispatch_tags: dict[str, str] = {}  # dispatch -> its own OF_DISPATCH_TAG (C-b)
+        self.full_hold: dict[str, bool] = {}  # calls charged their full hold whatever they report
         stop = prereg["stopping_rule"]
         self.max_attempts = stop["max_attempts_per_task"]
         scale = args.timeout_scale
@@ -1251,6 +1253,9 @@ class Run:
             call = call or self.calls.pop(key, None)
         call = call or f"{self.rid}/dispatch/{dispatch}"
         self.budget.charge(call, cost if cost is not None else self.reservation, cost is not None, run=self.rid)
+        if self.full_hold.get(call):  # what it left may have spent: the full hold, never less (C-b)
+            rec = self.budget.calls().get(call) or {}
+            self.budget.top_up(call, Decimal(rec.get("hold_usd") or self.reservation))
 
     def run_cost(self) -> dict:
         """This run's cost, read back from its calls in the shared ledger."""
@@ -1313,6 +1318,8 @@ class Run:
         env = {"PROFILE": profile}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
+        dtag = secrets.token_hex(16)  # this dispatch's own marker, alongside the run's (C-b)
+        env[contain.DISPATCH_MARKER] = dtag
         if key and (self.remaining() <= 0 or self.halt is not None):
             # Codex review (C2): the deadline, or a halt, reached between admission and here (the
             # review's preparation, the rest of a wave's launches): no call launches after it.
@@ -1328,6 +1335,7 @@ class Run:
         if proc.returncode != 0 or not disp:
             raise RunFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}")
         self.launched[disp] = (store_task, key)  # from here on its call is spent until settled
+        self.dispatch_tags[disp] = dtag
         if call:
             self.budget.note(call, state="launched", dispatch=disp)
         try:
@@ -1525,24 +1533,65 @@ class Run:
             state = self.state_of(disp)
             if state and state not in first_run.LIVE_STATES:
                 settled[disp] = self.on_time(disp, state, attempts[tid]["deadline_at"])
-            elif self.remaining() <= 0 or time.monotonic() >= attempts[tid]["deadline"]:
+            elif self.remaining() <= 0 or time.monotonic() >= attempts[tid]["deadline"] \
+                    or self.halt == "orphan-alive":  # an orphan may be spending: nothing runs on
                 self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
-                settled[disp] = "timeout"  # its own timeout, or the run's deadline
+                settled[disp] = "timeout"  # its own timeout, the run's deadline, or an orphan
         if not settled:
             return False
+        ended = {}
         for disp in sorted(settled):
             tid = building[disp]
+            # Contained first (PR #668 review): what this dispatch left is ended and verified by its
+            # own marker BEFORE its call is settled or its result accepted.
+            ended[disp] = self.end_dispatch(disp, f"{tid}:builder")
             self.ingest_usage(disp, self.units[tid]["store_task"], f"{tid}:builder")
         self.ingest_state()
         for disp, state in sorted(settled.items()):
             tid = building.pop(disp)
-            if self.classify(tid, attempts[tid], state, base):
+            vouched, left = ended[disp]
+            if left:
+                attempts[tid]["left_behind"] = left
+            if not vouched:  # it may still be spending: its result is never accepted, the run stops
+                attempts[tid]["outcome"] = "stopped-orphan-alive"
+                self.release_hold(f"{tid}:reviewer")
+            elif left:  # it left processes behind (ended now): its result is not accepted
+                attempts[tid]["outcome"] = "builder-failed"
+                self.release_hold(f"{tid}:reviewer")
+            elif self.classify(tid, attempts[tid], state, base):
                 done.append(tid)
                 queue.append(tid)
             else:
                 self.release_hold(f"{tid}:reviewer")  # no review: its hold goes back unspent
         queue.sort(key=lambda tid: (attempts[tid]["done_at"] or "", tid))  # arrival (worker_done) order
         return True
+
+    def end_dispatch(self, disp, key):
+        """End what one dispatch left behind and verify it, by the dispatch's own marker, before its
+        call is settled or its result accepted (PR #668 review, C-b). The provider's monitor (the
+        dispatch's group leader) is finishing its own bookkeeping and is waited for, briefly; any
+        other process carrying the marker was left by the worker. (vouched, the pids it left). A
+        dispatch that left something has its call charged its full hold, since what it left may
+        have spent; one that cannot be vouched for halts the run orphan-alive."""
+        tag, call = self.dispatch_tags.get(disp), self.calls.get(key)
+        row = self.dispatch_row(disp)
+        leaders = {int(row[c]) for c in ("pid", "monitor_pid") if row is not None and c in row.keys() and row[c]}
+        marked = functools.partial(contain.call_processes, tag=tag, marker=contain.DISPATCH_MARKER)
+        left, vouched = [], False
+        if tag:
+            try:
+                stop_by = time.monotonic() + 5
+                while (leaders & marked(contain.process_table())) and time.monotonic() < stop_by:
+                    time.sleep(0.05)
+                left = sorted(marked(contain.process_table()) - leaders)
+                vouched = contain.sweep(tag=tag, marker=contain.DISPATCH_MARKER)
+            except OSError:
+                vouched = False  # the process table cannot be read: nothing is vouched for
+        if call and (left or not vouched):
+            self.full_hold[call] = True
+        if not vouched:
+            self.halt = self.halt or "orphan-alive"
+        return vouched, left
 
     def on_time(self, disp, state, deadline_at) -> str:
         """A dispatch that ended after its deadline timed out, whenever the runner looked: its end
@@ -1614,12 +1663,21 @@ class Run:
             state = self.state_of(disp)
             if state and state not in first_run.LIVE_STATES:
                 settled[disp] = self.on_time(disp, state, review["deadline_at"])
-            elif time.monotonic() - since > self.timeout_reviewer or self.remaining() <= 0:
+            elif time.monotonic() - since > self.timeout_reviewer or self.remaining() <= 0 \
+                    or self.halt == "orphan-alive":
                 self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
-                settled[disp] = "timeout"  # its own timeout, or the run's deadline
+                settled[disp] = "timeout"  # its own timeout, the run's deadline, or an orphan
         for disp, state in sorted(settled.items()):
             tid, review, _since = live.pop(disp)
-            self.finish_review(tid, review, state)
+            vouched, left = self.end_dispatch(disp, f"{tid}:reviewer")  # contained before its verdict is read
+            if left:
+                review["left_behind"] = left
+            if vouched and not left:
+                self.finish_review(tid, review, state)
+                continue
+            review["state"], review["verdict"] = state, None
+            self.units[tid]["attempts"][-1]["outcome"] = "review-failed" if vouched else "stopped-orphan-alive"
+            self.ingest_usage(review["dispatch"], review["store_task"], f"{tid}:reviewer")
         return started or bool(settled)
 
     def finish_review(self, tid, review, state):
@@ -1931,6 +1989,7 @@ class Run:
         rec["merges"] = self.merges
         rec["launched_models"] = self.launched_models
         rec["launches"] = self.launches
+        rec["dispatch_tags"] = self.dispatch_tags
         rec["commands"] = self.commands
         mine = Budget.of_run(self.budget.calls(), self.rid)  # this run's calls, bound with its sources
         (self.dir / "calls.json").write_text(json.dumps(mine, indent=2, sort_keys=True) + "\n", encoding="utf-8")

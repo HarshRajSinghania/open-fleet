@@ -59,6 +59,7 @@ def bare_run(tmp: Path, cap="10", reservation="0.25", rid="wip1-b1r1-rep1"):
     run.rid, run.cap, run.reservation = rid, Decimal(cap), Decimal(reservation)
     run.budget, run.calls, run.held, run.usage_seen, run.units = wip.Budget(tmp / "results"), {}, {}, set(), {}
     run.halt, run.deadline, run.model_pin, run.launched = None, float("inf"), None, {}
+    run.dispatch_tags, run.full_hold = {}, {}
     return run
 
 
@@ -1093,6 +1094,7 @@ class TestTheAssignmentReachesTheLaunch(Tmp):
         run.launched, run.launches, run.commands, run.rid = {}, {}, [], "wip1-b1r1-rep1"
         run.calls = {}  # no hold: these launches are about the assignment, not the spend
         run.deadline, run.halt = float("inf"), None
+        run.dispatch_tags, run.full_hold = {}, {}
         run.args = argparse.Namespace(agent="claude")
         run.guard = lambda _wt: None
         calls = []
@@ -2528,6 +2530,53 @@ class TestNothingDetachedOutlivesItsRun(Tmp):
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertIn("ORPHAN_ALIVE", p.stderr)
         self.assertEqual(sorted(d.name for d in (self.tmp / "results" / "runs").iterdir()), ["wip1-b1r1-rep1"])
+
+
+class TestEachDispatchIsContainedBeforeItSettles(Tmp):
+    """Codex review of PR #668 (C-b): a completed builder was settled, at the cost it reported, long
+    before the run's final sweep, so a child it detached could keep spending after its reservation
+    had shrunk. Each dispatch carries its own marker alongside the run's, and its descendants are
+    swept and verified BEFORE its call is settled or its result accepted. One it left behind is
+    ended and its call charged the full hold; one that cannot be vouched for stops the run."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.addCleanup(lambda: self.assertFalse(self.trip_log.exists(), "a harness name was reached"))
+        self.pid_file = self.tmp / "detached.pid"
+        self.addCleanup(lambda: self.pid_file.is_file() and subprocess.run(
+            ["kill", "-9", self.pid_file.read_text()], capture_output=True))
+
+    def run_b1(self):
+        script = {"T5": {"builder": ["detach"]}, "_detached_pid": str(self.pid_file),
+                  "_cost": {"builder": "0.10", "reviewer": "0.10"}}
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                   "--inert-script", json.dumps(script), env=self.env)
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        builder = wip.Budget(self.tmp / "results").calls()["wip1-b1r1-rep1/T5/a1/builder"]
+        return record, builder, p
+
+    def test_a_builder_that_left_a_detached_child_is_charged_its_hold_and_not_accepted(self):
+        record, builder, p = self.run_b1()
+        self.assertTrue(ended(int(self.pid_file.read_text())), "the detached child outlived its dispatch")
+        self.assertEqual((builder["state"], Decimal(builder["usd"])), ("charged", Decimal("0.25")),
+                         f"it was settled at what it reported: {builder}")
+        a = record["units"]["T5"]["attempts"][0]
+        self.assertEqual(a["outcome"], "builder-failed", p.stdout + p.stderr)
+        self.assertTrue(a["left_behind"], a)
+
+    def test_a_dispatch_it_cannot_vouch_for_stops_the_run_at_once(self):
+        real = wip.contain.sweep
+
+        def sweep(*a, **kw):  # the dispatch's own sweep cannot vouch; the run's and the oracle's can
+            return False if kw.get("marker") == wip.contain.DISPATCH_MARKER else real(*a, **kw)
+        with mock.patch.object(wip.contain, "sweep", sweep):
+            record, builder, p = self.run_b1()
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "orphan-alive"), p.stdout + p.stderr)
+        self.assertEqual(record["units"]["T5"]["attempts"][0]["outcome"], "stopped-orphan-alive")
+        self.assertEqual(record["units"]["T5"]["reviews"], [], "a review started after an unvouched dispatch")
+        self.assertEqual(Decimal(builder["usd"]), Decimal("0.25"))
 
 
 class TestALiveRunNeedsContainment(LiveWithAFakeHarness):

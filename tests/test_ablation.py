@@ -154,7 +154,13 @@ class RegistrationErrorsAreCaught(unittest.TestCase):
 
     def test_a_pending_cap_carries_no_authorisation(self):
         self.assertIn("a PENDING cap carries no authorised amount",
-                      self.errors(lambda p: p["cost_cap"].update(authorised_usd=10)))
+                      self.errors(lambda p: p["cost_cap"].update(status=ablation.PENDING, authorised_usd=10,
+                                                                 authorised_by=None)))
+
+    def test_a_pending_cap_names_no_authoriser(self):
+        self.assertIn("a PENDING cap carries no authorised amount or authoriser",
+                      self.errors(lambda p: p["cost_cap"].update(status=ablation.PENDING, authorised_usd=None,
+                                                                 authorised_by="someone")))
 
     def test_an_authorised_cap_names_who_authorised_it(self):
         def mutate(p):

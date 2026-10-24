@@ -1,11 +1,11 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `19c3598b484a35c5a8b5c2ceffa430e397a786a9ab4a2b20adc4e88b8cbf4572`.
+Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `531123da9a144ed64f819138adf5acc89a523def5811bf5ad0effd048d71cbca`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no
-recommendation exists.** Both need the owner's spend authorisation; the cost cap below is a
-proposal marked `PENDING OWNER AUTHORISATION`. Nothing in this experiment changes the
+recommendation exists.** The owner authorised the cost cap below on 2026-10-24 (`AUTHORISED`,
+USD 750); the runs themselves have not started. Nothing in this experiment changes the
 34,000-token activation cap, any mission's budget, any `SKILL.md` or any proof tier, and it sets
 no 5,000-token target (ARCHITECTURE.md explains why that figure is not one).
 
@@ -203,9 +203,14 @@ the binary metrics also get an exact McNemar p. The decision rule is applied in 
 5. **NO_SAVING**: the upper bound for input tokens is not below zero.
 6. **SUCCESSFUL_REDUCTION**: none of the above.
 
-## Cost cap: PENDING OWNER AUTHORISATION
+## Cost cap: AUTHORISED
 
-Proposed: **USD 750**. The estimate is 4 missions × 9 tasks × 2 arms × 5 repeats, which is 360
+Proposed: **USD 750**. Authorised: **USD 750**, by the repository owner, Ravindra Kumar
+(@ravidsrk), on 2026-10-24, recorded in the JSON's `cost_cap` with the instruction quoted. The
+owner chose to bill isolated live agents through their Claude subscription
+(`CLAUDE_CODE_OAUTH_TOKEN`). The cap therefore bounds the reported `total_cost_usd`, which is
+notional on a subscription. A cell that fails on a rate-limit window counts as a failed cell,
+never a dropped one. The estimate is 4 missions × 9 tasks × 2 arms × 5 repeats, which is 360
 agent runs at an assumed mean of about USD 1.50, plus 160 grader calls at about USD 0.75 each
 (the grader reads a whole trace). That totals about USD 660. The guard below reserves a cell's
 worst case before it starts, so the last cells need a full reservation of headroom. Nothing may
@@ -292,8 +297,8 @@ python3 scripts/ablation.py run --tier live --cost-cap-usd <authorised> \
 
 **Remaining (each needs something this repository cannot supply on its own):**
 
-- **The live paired runs.** They need the owner to authorise a spend cap in the JSON, a model,
-  and a disposable harness environment.
+- **The live paired runs.** The spend cap is authorised. They still need a model, a disposable
+  harness environment and the #602 adapter below.
 - **A live arrival for the excluded #602 cases, and a stream-to-#602 adapter.** A live trajectory
   cell needs its harness wrapper to write the #602 event vocabulary. The same adapter is
   outstanding for #602's own live arm.

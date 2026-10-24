@@ -1,0 +1,177 @@
+{
+  "unit": "first-run-596-live-2026-10-24",
+  "claim": "#596 live first runs bound for the certification record: posix ro and rw with Claude Code 2.1.304 (claude-opus-5-5) GO on the dev Mac through an isolation wrapper and in a fresh ubuntu:24.04 container, all at catalog b96d47e335; the Orca ro/claude re-witness attempt refused at Claude Code's folder-trust prompt before any injection.",
+  "base_sha": "6c3a3a4596ea517883cf034a44b38d16b3b54c7a",
+  "head_sha": "68ca18a91c885dbb9f361cf378b8f65a3fe9fda4",
+  "base_branch": "claude/r03-cert-close",
+  "contract": {
+    "source": "docs/runs/2026-10-24-review-it-first-run/contract.md@6c3a3a4596ea517883cf034a44b38d16b3b54c7a",
+    "digest": "sha256:1ec9bc7886a6948a48d102a73e32d6c391c622ad4963aeb12245b13ac5c9420f",
+    "criterion_ids": [
+      "LR-1",
+      "LR-2",
+      "LR-3",
+      "LR-4",
+      "LR-5"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "LR-1",
+      "text": "each cited receipt reads GO, live-unreviewed, worker live, catalog b96d47e335 clean, every step ok, verify OK",
+      "addressed": true
+    },
+    {
+      "id": "LR-2",
+      "text": "the dev-Mac runs ran Claude Code 2.1.304 through the retained isolation wrapper; transcripts name model and cost; each run's own manifest, contract, change and report are retained",
+      "addressed": true
+    },
+    {
+      "id": "LR-3",
+      "text": "the clean-host runs ran in a fresh ubuntu:24.04 container from a fresh clone, through the retained scripts, which pass no credential but CLAUDE_CODE_OAUTH_TOKEN by name",
+      "addressed": true
+    },
+    {
+      "id": "LR-4",
+      "text": "the earlier 456051e3ec runs are retained as the finding: ro GO, rw NO-GO at result on the assignment defect",
+      "addressed": true
+    },
+    {
+      "id": "LR-5",
+      "text": "the Orca ro/claude re-witness attempt is retained as refused before any injection and certifies nothing",
+      "addressed": true
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/clean-host-596.sh",
+      "sha256": "1f5680fbf2d6069505601ee357dd376444a9ea5aaf894c8623e4e33d83baf05b"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/clean-host.log",
+      "sha256": "26226023225b43c181d8ab6e8fbae3daa43272bd2406aeb7fc1418f594aed927"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/inner.sh",
+      "sha256": "094704b1cfa8e07ebbf79094642b12b3b4ccc52072443b87cb1b655d8fcff989"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/receipt-ro.json",
+      "sha256": "0c64b45ec1e63d14e3b8ecfe21576cebf6ff82d38ccbba43ce26f6421cb1e2b9"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/receipt-rw.json",
+      "sha256": "76035b871e51c94bf11aef7c22eebf0657a7dd64c3cd03743b4aa6d00371ee57"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/user.sh",
+      "sha256": "8132951ef468dade0ebba3858ddb8c7e4ff358416d1da805405635bf551f55d7"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/first-attempt/ro.receipt.json",
+      "sha256": "11a56e3f46877087f04da0f071c697a063d2ce0650f96f8f09c5c08c9a87194c"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/first-attempt/rw.receipt.json",
+      "sha256": "3eb6326b48937309c6f0bd10e5ea7edcb0e8ed0eb1fc82db3bc00648d60eaf97"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/isolation/claude-wrapper.py",
+      "sha256": "e2c35ae7b1fef3a58ff3595233c048d6cef65305496ef68de4783a368ea07302"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/isolation/run-596.sh",
+      "sha256": "cbff31691d764e7cc0d834cf470dc678fd98eee38f09422185159d9b7491f9c5"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/change.diff",
+      "sha256": "1f617f34c2177ec834ec610cb9470af9b5a743f016b7c21a064d1fbe627ebb2b"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/contract.md",
+      "sha256": "76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/manifest.json",
+      "sha256": "991067230a15d18ae1afbe267d340ee21b78e60a739dc7bb020b06bb837a7066"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/receipt.json",
+      "sha256": "3090a006ad2f145ac0fc50221fa1f1e9b15b8c9e226f2f7deddda7410b2afbc4"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/report.md",
+      "sha256": "e6f92724f40600adf5d381581d774e118cf151b96577006b3ea4dc8180152bc9"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/transcript.jsonl",
+      "sha256": "c2c4b65ac5ff1257357a4a6d09a32c1247fe1979f21a71a98f97a782bbfac4a9"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/change.diff",
+      "sha256": "09c76bdc599da21720a8705fd739475b5a1bd6adb1b30d2cdaa823999a676741"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/contract.md",
+      "sha256": "7a3622352c3462c37db3a7e208909b7838be91fff58b6f6c50cb8ffa6b870d44"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/manifest.json",
+      "sha256": "fc3fde343aec0ce7c08a82fc218190bbb65bcf25c68934fbf0670fce1fe12ea6"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/receipt.json",
+      "sha256": "e7e5668a1ab1db675034760e7083ec103df645a110d0729cddaf08ed20bdc5d0"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/report.md",
+      "sha256": "caec5de1eb4c7ebdcb4f1c6261441978e7030c467ef9652286662a1312b32be7"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/transcript.jsonl",
+      "sha256": "9f0c641422e1802c95c9c5c19acf30c191c53da6725dc5f36464e8424467e94d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/change.diff",
+      "sha256": "a157c9f3cee406f74b49d6c60ba90a47f1d797e4a3e566107638ce7332b3bd81"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/claude-version.txt",
+      "sha256": "1278d85252c9ac653b7fdf8a15db1504d861e9d6f0300fcfc159ebe4cfb88d0b"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/launch.txt",
+      "sha256": "a53aa0383c7c3f3e301653f125a892e24cdd5581f48560280dda75012f607cf5"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/orca-version.txt",
+      "sha256": "c8de26e6c0e357091ab48151ef8e194eee26cd85054e96ac120445385974a489"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/spawn.stderr",
+      "sha256": "97d20e43dd0f5ffb815d2fa92f27a9f8005dcb7eecbbbf2374138b7392d9157f"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/spawn.stdout",
+      "sha256": "a60ee85f88d26fdbcde656a5ddf038fb51ce63c84457fec76be9d4e4fbd8f43d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/spec.txt",
+      "sha256": "50cb57b0a3202548146d2d911690098c19e0458e452b8312c19d1cad130e948a"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/terminal-wait.json",
+      "sha256": "a7fa39b2e8868006e408b6eb6173131804469c85e626ecdad19886b2f19ed6c6"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/unit-log.txt",
+      "sha256": "016164d63bce44ef0172e3399fb898fe411d9d7edd730c1befb5107144d8cd5d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/worker-screen.txt",
+      "sha256": "8b7b5e88cde956ccd1b0792abc302b69e8bfef69599d9c1c7df12f1a5a40938e"
+    }
+  ],
+  "toolchain": "first_run.py at catalog b96d47e3354564e1593d34182a817ae04e54545d (posix/setsid PROFILE=ro and PROFILE=rw, Claude Code 2.1.304, claude-opus-5-5): macOS 27.0.1 arm64 dev Mac via the isolation wrapper; Ubuntu 24.04.5 aarch64 fresh container (OrbStack, Linux 7.2.12). Orca 1.4.229 (orca CLI) for the refused ro attempt.",
+  "commands": []
+}

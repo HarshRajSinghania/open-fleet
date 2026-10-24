@@ -49,9 +49,9 @@ LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")
 # lines. Only an attribute named exactly href or src, with a value, is a link (Codex at 54fe725bee:
 # `data-href`, and `x<a` with `href=value` lines later and no tag ever closed, were refused).
 _TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
-_TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
-                          re.IGNORECASE)
-_TAG_END_RE = re.compile(r"\s*/?>")
+_TAG_ATTR_RE = re.compile(r"""[ \t\n\x0b\f\r]+([a-z_:][a-z0-9_.:-]*)(?:[ \t\n\x0b\f\r]*=[ \t\n\x0b\f\r]*"""
+                          r"""([^ \t\n\x0b\f\r"'=<>`]+|'[^']*'|"[^"]*"))?""", re.IGNORECASE)
+_TAG_END_RE = re.compile(r"[ \t\n\x0b\f\r]*/?>")
 # Raw HTML blocks (CommonMark 0.31 and GFM, "HTML blocks"): inside one, tags are real, and a
 # backtick or a backslash is text. A line may open one when, past any block-quote or list-item
 # marks, it starts a type 1-5 block (<script, <pre, <style, <textarea, <!--, <?, <!X, <![CDATA[),
@@ -64,13 +64,14 @@ _HTML_BLOCK6_RE = re.compile(
     r"link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|source|summary|table|tbody|td|"
     r"tfoot|th|thead|title|tr|track|ul)(?:[\s/>]|$)", re.IGNORECASE)
 _HTML_BLOCK7_RE = re.compile(
-    r"(?:<[a-z][a-z0-9-]*(?:\s+[a-z_:][a-z0-9_.:-]*(?:\s*=\s*(?:[^\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*\s*/?>"
-    r"|</[a-z][a-z0-9-]*\s*>)[ \t]*$", re.IGNORECASE)
+    r"(?:<[a-z][a-z0-9-]*(?:[ \t\n\x0b\f\r]+[a-z_:][a-z0-9_.:-]*(?:[ \t\n\x0b\f\r]*=[ \t\n\x0b\f\r]*"
+    r"(?:[^ \t\n\x0b\f\r\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*[ \t\n\x0b\f\r]*/?>"
+    r"|</[a-z][a-z0-9-]*[ \t\n\x0b\f\r]*>)[ \t]*$", re.IGNORECASE)
 _CONTAINER_RE = re.compile(r"[ \t]*(?:>|[-*+](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$))")
 # A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also
 # split at U+2028 and friends, inventing lines a renderer never sees (Codex at dde9cbedf9).
 _LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
-_CLOSE_TAG_RE = re.compile(r"</[a-z][a-z0-9-]*\s*>", re.IGNORECASE)
+_CLOSE_TAG_RE = re.compile(r"</[a-z][a-z0-9-]*[ \t\n\x0b\f\r]*>", re.IGNORECASE)
 # A "<" a renderer may read as the start of raw HTML or an autolink: a tag, closing tag, comment,
 # declaration, processing instruction, CDATA, URI or e-mail autolink. Renderers disagree on
 # where each ends (Pandoc renders <!X <a href=...> as a link; CommonMark 0.31 calls it one
@@ -83,9 +84,11 @@ _UNCLEAR_RE = re.compile(r"[`<\r\n]")
 _BARE_URL_RE = re.compile(r"://|www\.", re.IGNORECASE)
 # A tag as an HTML5 tokenizer reads raw HTML, for _loose_link: a name, then attributes whose
 # names are anything but whitespace, "/", ">" and "=" (a quote included), each with an optional
-# value, quoted or not.
-_LOOSE_NAME_RE = re.compile(r"<[a-z][^\s/>]*", re.IGNORECASE)
-_LOOSE_ATTR_RE = re.compile(r"""[\s/]*([^\s/>][^\s/>=]*)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?""")
+# value, quoted or not. Whitespace is HTML's five characters exactly; Python's \s also matches a
+# no-break space, which let a quote swallow the href (Codex at a276405fe8).
+_LOOSE_NAME_RE = re.compile(r"<[a-z][^ \t\n\f\r/>]*", re.IGNORECASE)
+_LOOSE_ATTR_RE = re.compile(r"""[ \t\n\f\r/]*([^ \t\n\f\r/>][^ \t\n\f\r/>=]*)"""
+                            r"""([ \t\n\f\r]*=[ \t\n\f\r]*(?:"[^"]*"|'[^']*'|[^ \t\n\f\r>]*))?""")
 
 
 def _opens_html(line):
@@ -107,7 +110,7 @@ def _loose_link(text, i):
     while attr := _LOOSE_ATTR_RE.match(text, pos):
         link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
         pos = attr.end()
-    end = re.compile(r"[\s/]*>").match(text, pos)
+    end = re.compile(r"[ \t\n\f\r/]*>").match(text, pos)
     return text[i:end.end()] if end and link else None
 
 

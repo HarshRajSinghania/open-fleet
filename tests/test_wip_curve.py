@@ -21,9 +21,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from decimal import Decimal
 from fractions import Fraction
@@ -1165,6 +1167,50 @@ class TestWorkerGitConfigNeverRunsOnTheCoordinator(DryRun):
         self.assertTrue(ran, "the plant never armed: later builders' own git should have run it")
         self.assertEqual(self.record["status"], "complete", self.proc.stdout + self.proc.stderr)
         self.assertEqual(self.record["units"]["T5"]["final"], "closed")
+
+
+class TestAnInterruptedRunSettlesItsSpend(Tmp):
+    """PR #653 review: SIGTERM, SIGHUP or Ctrl-C mid-dispatch. The runner kills every child
+    process group and stops every worker before it exits 128+N, and charges each launched
+    dispatch whose usage was never read its full reservation, so a later run cannot spend it."""
+
+    def interrupt(self, sig):
+        env, trip_log = tripwired_env(self.tmp)
+        wd, results = self.tmp / "wd", self.tmp / "results"
+        script = json.dumps({"_sleep": {"builder": 60}})
+        proc = subprocess.Popen([sys.executable, str(RUNNER), "run", "--results", str(results), "--workdir", str(wd),
+                                 "--runs", "wip1-b1r1-rep1", "--cost-cap-usd", "5", "--inert-cost-usd", "0.25",
+                                 "--inert-script", script], cwd=str(ROOT), env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        runs_log = wd / "wip1-b1r1-rep1" / "inert" / "runs.log"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not (runs_log.is_file() and '"builder"' in runs_log.read_text()):
+            time.sleep(0.2)
+        self.assertTrue(runs_log.is_file(), "the builder never started")
+        time.sleep(1.0)  # the stand-in is now asleep inside its dispatch
+        pids = [int(p.read_text()) for p in (wd / "wip1-b1r1-rep1" / "inert").glob("*.pid")]
+        proc.send_signal(sig)
+        out, err = proc.communicate(timeout=180)
+        self.assertEqual(proc.returncode, 128 + sig, out + err)
+        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        self.assertFalse(trip_log.exists())
+        return record, pids
+
+    def assert_settled(self, record, pids):
+        self.assertEqual(record["status"], "interrupted")
+        self.assertEqual(Decimal(record["cost"]["reserved_unobserved_usd"]), Decimal("0.25"),
+                         "the interrupted builder's call was never charged")
+        self.assertEqual(Decimal(record["cost"]["observed_usd"]), Decimal("0"))
+        self.assertTrue(pids, "the stand-in recorded no pid")
+        for pid in pids:
+            with self.assertRaises(ProcessLookupError, msg=f"pid {pid} outlived the run"):
+                os.kill(pid, 0)
+
+    def test_sigterm_mid_dispatch(self):
+        self.assert_settled(*self.interrupt(signal.SIGTERM))
+
+    def test_ctrl_c_mid_dispatch(self):
+        self.assert_settled(*self.interrupt(signal.SIGINT))
 
 
 class TestRelativePaths(unittest.TestCase):

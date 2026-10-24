@@ -142,6 +142,86 @@ def fmt(frac, places=2) -> str:
     return events._decimal(Fraction(frac), places)
 
 
+# ---------------------------------------------------------------------------- child processes
+# Every child the runner starts leads its own process group, so it and anything it starts die
+# together: on a timeout, after it exits (a straggler it left behind), and when the run is
+# interrupted (#652's fix, mirrored for PR #653's review). Workers live in the posix provider's
+# setsid sessions and are stopped through worker_ops.py, which kills their group.
+LIVE_GROUPS: set[int] = set()
+TRAPPED_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+def group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def kill_group(pgid: int, wait_s: float = 10.0) -> bool:
+    """SIGKILL every process in the group and wait until none is left: True once it is empty."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    deadline = time.monotonic() + wait_s
+    while group_alive(pgid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    LIVE_GROUPS.discard(pgid)
+    return True
+
+
+def stop_all_groups() -> None:
+    for pgid in sorted(LIVE_GROUPS):
+        kill_group(pgid)
+
+
+def run_group(argv, *, cwd=None, env=None, timeout: float = 600, data: bytes = b"") -> subprocess.CompletedProcess:
+    """argv as the leader of a new session; bytes out. A timeout kills the whole group (rc 124);
+    anything the leader leaves behind is killed after it exits; an exception mid-call (an
+    interrupt) kills it on the way out. stdin is `data` (empty by default), never ours."""
+    proc = subprocess.Popen(argv, cwd=None if cwd is None else str(cwd), env=env, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    LIVE_GROUPS.add(proc.pid)
+    try:
+        try:
+            out, err = proc.communicate(data, timeout=timeout)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            kill_group(proc.pid, wait_s=0)
+            try:
+                out, err = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:  # someone outside the group holds the pipe open
+                proc.kill()
+                out, err = proc.communicate()
+            rc, err = 124, (err or b"") + f"\ntimed out after {timeout}s; its process group was killed".encode()
+    finally:
+        if proc.poll() is None:
+            kill_group(proc.pid, wait_s=0)
+            proc.wait()
+        kill_group(proc.pid)
+    return subprocess.CompletedProcess(argv, rc, out or b"", err or b"")
+
+
+def run_text(argv, *, cwd=None, env=None, timeout: float = 600) -> subprocess.CompletedProcess:
+    """run_group with stdout and stderr decoded for display and checks (first_run.text_of)."""
+    proc = run_group(argv, cwd=cwd, env=env, timeout=timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode, first_run.text_of(proc.stdout),
+                                       first_run.text_of(proc.stderr))
+
+
+def _terminated(signum, _frame):
+    """SIGTERM, SIGHUP and Ctrl-C unwind the run like an exception, so its cleanup kills every live
+    group, stops every worker and settles every launched call before exiting 128+N. The first
+    signal wins: the run is ending either way, so no second one may cut that cleanup short."""
+    for sig in TRAPPED_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+
 def git_env(base: dict | None = None, repo: Path | None = None) -> dict:
     """gitexec.py's hardened environment (#629): no system or user config (which would also make
     the seed commit differ between hosts), no prompt, no replace objects, and every repository-
@@ -168,8 +248,8 @@ def git(cwd: Path, *args: str, env: dict | None = None, check=True, data: bytes 
         args = ("diff", "--no-ext-diff", "--no-textconv", *args[1:])
     repo = None if args and args[0] in ("init", "clone") else Path(cwd)
     try:
-        proc = subprocess.run(gitexec.argv("-C", str(cwd), *args), env=git_env(env, repo), capture_output=True,
-                              input=data if data is not None else b"")
+        proc = run_group(gitexec.argv("-C", str(cwd), *args), env=git_env(env, repo),
+                         data=data if data is not None else b"")
     except OSError as err:
         raise RunFailed(f"git {' '.join(args[:2])} could not run in {cwd}: {err}") from err
     if check and proc.returncode != 0:
@@ -403,12 +483,12 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
         commands.append(("oracle", python_argv("-m", "unittest", "discover", "-s", str(oracle_dir),
                                                "-t", str(oracle_dir))))
     for name, argv in commands:
-        try:
-            proc = subprocess.run(argv, cwd=str(checkout), env=env, capture_output=True, timeout=timeout)
-            rc = proc.returncode
-            out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
-        except subprocess.TimeoutExpired:
-            rc, out = None, f"timed out after {timeout}s"
+        # Worker-written code runs here: its own group, killed whole when it is done or late.
+        proc = run_group(argv, cwd=checkout, env=env, timeout=timeout)
+        rc = None if proc.returncode == 124 and b"its process group was killed" in proc.stderr else proc.returncode
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        if rc is None:
+            out = f"timed out after {timeout}s"
         steps.append({"name": name, "rc": rc})
         tail += [f"[{name}] {ln}" for ln in out.strip().splitlines()[-8:]]
         if rc is None:
@@ -577,7 +657,7 @@ INERT_WORKER = r'''
 """Inert stand-in for a coding-agent harness (wip_curve.py, #604; first_run.py's pattern). It
 calls no model and spends nothing: a builder applies its task's reference edit (or a scripted
 miss), a reviewer reads the diff it was given and answers."""
-import importlib.util, json, os, re, subprocess, sys
+import importlib.util, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 harness, argv = sys.argv[1], sys.argv[2:]
@@ -600,6 +680,8 @@ if role is None:
     sys.exit(3)
 plan = cfg["script"].get(task, {}).get(role, [])
 action = plan[attempt - 1] if attempt <= len(plan) else ("solve" if role == "builder" else "approve")
+(here / f"{dispatch or 'unknown'}.pid").write_text(str(os.getpid()), encoding="utf-8")
+time.sleep(float(cfg["script"].get("_sleep", {}).get(role, 0)))  # a call still running (tests)
 cost = cfg["script"].get("_cost", {}).get(role, cfg["cost_usd"])  # a fake harness that reports costs
 
 
@@ -727,6 +809,7 @@ class Run:
         # the inert stand-in it defaults to the synthetic cost the stand-in reports).
         self.reservation = args.reservation
         self.held: dict[str, Decimal] = {}  # "<task>:<role>" -> the reservation it holds
+        self.launched: dict[str, tuple[str, str]] = {}  # dispatch -> (store task, hold key)
         self.cap_hit = False
         self.observed = Decimal(0)
         self.reserved = Decimal(0)
@@ -748,8 +831,7 @@ class Run:
 
     # --- plumbing ---------------------------------------------------------------------------
     def wrapper(self, argv, env=None, cwd=None, timeout=600):
-        proc = first_run.run_text(argv, cwd=str(cwd or self.sb.target), env={**self.sb.env, **(env or {})},
-                                  timeout=timeout)
+        proc = run_text(argv, cwd=cwd or self.sb.target, env={**self.sb.env, **(env or {})}, timeout=timeout)
         self.commands.append({"argv": [str(a)[:120] for a in argv], "rc": proc.returncode})
         return proc
 
@@ -765,12 +847,12 @@ class Run:
                 argv += [flag, value]
         if data is not None:
             argv += ["--data", json.dumps(data, sort_keys=True)]
-        proc = first_run.run_text(argv, cwd=str(self.dir))
+        proc = run_text(argv, cwd=self.dir)
         if proc.returncode != 0:
             raise RunFailed(f"events.py emit {kind}: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
 
     def ingest_state(self):
-        proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
+        proc = run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
                                    "ingest-state", "--db", str(self.sb.state_db), "--run", self.rid,
                                    "--epoch", "1", "--clock", self.clock], cwd=str(self.dir))
         if proc.returncode not in (0, 1):
@@ -789,7 +871,7 @@ class Run:
             rel = f"streams/{dispatch}.jsonl"
             (self.dir / "streams").mkdir(exist_ok=True)
             shutil.copyfile(stream, self.dir / rel)
-            proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
+            proc = run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
                                        "ingest-usage", "--stream", rel, "--run", self.rid, "--epoch", "1",
                                        "--clock", self.clock, "--task", store_task, "--dispatch", dispatch],
                                       cwd=str(self.dir))
@@ -878,7 +960,7 @@ class Run:
             raise RunFailed(f"task_ops.py create: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
         return task
 
-    def spawn(self, store_task, worktree: Path, title, profile):
+    def spawn(self, store_task, worktree: Path, title, profile, key=None):
         env = {"PROFILE": profile}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
@@ -887,6 +969,7 @@ class Run:
         disp = first_run.field(proc.stdout, "DISPATCH")
         if proc.returncode != 0 or not disp:
             raise RunFailed(f"spawn_worker.sh rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-400:]}")
+        self.launched[disp] = (store_task, key)  # from here on its call is spent until settled
         try:
             self.guard(worktree)
         except RunFailed:
@@ -898,7 +981,7 @@ class Run:
         """The deny hook the provider installed in the worker's tree must be armed (first_run.py's
         guard step, #596): a worker whose guard does not deny is stopped and the run fails."""
         settings = Path(worktree) / ".claude" / "settings.local.json"
-        proc = first_run.run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--verify-settings", str(settings)])
+        proc = run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--verify-settings", str(settings)])
         if proc.returncode != 0:
             raise RunFailed(f"the guard installed in {worktree} is not armed: {proc.stderr.strip()[:300]}")
 
@@ -1012,7 +1095,7 @@ class Run:
             git(self.sb.target, "worktree", "add", "-q", "-b", branch, str(wt), base, env=self.sb.env)
             if not self.admit(f"{tid}:builder"):
                 raise RunFailed(f"{tid}: its builder's hold was not admitted")
-            disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw")
+            disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw", f"{tid}:builder")
             attempt = {"wave": k, "n": n, "dispatch": disp, "branch": branch, "base": base, "head": None,
                        "outcome": None}
             unit["attempts"].append(attempt)
@@ -1086,7 +1169,7 @@ class Run:
                 task_rel, diff_rel = f".wip-review/{tid}/task.md", f".wip-review/{tid}/change.diff"
                 spec = self.review_spec(tid, nonce, a["base"], a["head"], task_rel, diff_rel)
                 rtask = self.create_task(spec, f"wip-review-{tid.lower()}-a{a['n']}")
-                disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro")
+                disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro", f"{tid}:reviewer")
                 self.emit("review.started", source_ref=f"wip_curve.py:review/{disp}", task=self.units[tid]["store_task"],
                           dispatch=disp, data={"head_sha": a["head"]})
                 review = {"dispatch": disp, "store_task": rtask, "nonce": nonce, "head": a["head"],
@@ -1287,6 +1370,12 @@ class Run:
                 self.record["status"] = "complete"
         except RunFailed as err:
             self.record.update(status="failed", error=str(err)[:1000])
+        except (KeyboardInterrupt, SystemExit) as err:  # a signal: settle, then exit 128+N
+            code = err.code if isinstance(err, SystemExit) else 128 + signal.SIGINT
+            self.record.update(status="interrupted", stop_reason=f"signal (exit {code})")
+            raise
+        except Exception as err:  # a runner defect still ends in a retained, settled record
+            self.record.update(status="failed", error=f"unexpected {type(err).__name__}: {err}"[:1000])
         finally:
             self.record["finished_at"] = now()
             self.finish()
@@ -1304,9 +1393,28 @@ class Run:
             head = self.units[tid]["attempts"][-1].get("head") if self.units[tid]["attempts"] else None
             self.park(tid, f"stopped-{reason}", head)
 
+    def settle_launched(self) -> list[str]:
+        """Every launched dispatch whose usage was never read is read now, after its worker was
+        stopped; one with no reported cost is charged its full reservation (PR #653 review: an
+        interrupted call is spent). Holds of calls that never launched are released unspent."""
+        settled = []
+        for disp, (store_task, key) in sorted(self.launched.items()):
+            if disp not in self.usage_seen:
+                try:
+                    self.ingest_usage(disp, store_task, key)
+                except (RunFailed, OSError, sqlite3.Error):
+                    self.usage_seen.add(disp)
+                    self.settle(key, None)
+                settled.append(disp)
+        self.held.clear()
+        return settled
+
     def finish(self):
-        """Stop every worker, retain the sources, write the run report and run.json last."""
+        """Kill every child group, stop every worker, settle every launched call, retain the
+        sources, write the run report and run.json last."""
+        stop_all_groups()
         first_run.stop_workers(self.sb)
+        self.record["settled_after_stop"] = self.settle_launched()
         sb = self.sb
         rec = self.record
         rec["units"] = {t: {k: v for k, v in u.items()} for t, u in self.units.items()}
@@ -1341,7 +1449,7 @@ class Run:
             rec.setdefault("error", f"retaining sources: {err}"[:1000])
             rec["status"] = "failed"
         if self.log.is_file():
-            proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
+            proc = run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
                                        "report", "--run", self.rid], cwd=str(self.dir))
             header = (f"# WIP-curve run {self.rid}\n\nRUN: wip-curve run={self.rid} "
                       f"condition={self.cond['id']} tier={rec.get('tier')}\n\n"
@@ -2188,13 +2296,14 @@ def cmd_run(args) -> int:
             prereg={"path": str(path), "sha256": prereg_sha}, inputs=inputs,
             taskset={"path": prereg["taskset"]["path"], "sha256": sha256_file(taskset_path)},
             inert_script=script if args.worker == "inert" else None)
-        previous = first_run.trap_termination()
+        previous = {sig: signal.signal(sig, _terminated) for sig in TRAPPED_SIGNALS}
         try:
             record = run.execute(sb)
         finally:
             for sig in previous:
                 signal.signal(sig, signal.SIG_IGN)
             try:
+                stop_all_groups()
                 first_run.stop_workers(sb)
             finally:
                 first_run.restore_signals(previous)
@@ -2252,7 +2361,7 @@ def cmd_verify(args) -> int:
         if not (d / "run-report.md").is_file() or not r.get("record"):
             continue
         # The head the PUBLISHED report names is the anchor kept off the writer (#312's rule).
-        proc = first_run.run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", str(d / "events.jsonl"),
+        proc = run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", str(d / "events.jsonl"),
                                    "check", "--run-report", str(d / "run-report.md"), "--run", r["run_id"],
                                    "--expect-head", claimed_heads.get(r["run_id"]) or ""])
         # A cell the record cannot derive and the row prints `unavailable` agrees: events.py check

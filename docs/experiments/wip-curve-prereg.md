@@ -166,6 +166,11 @@ before retries (a builder and a reviewer per task). The runner never picks the s
 - Spend is read from the harness's own result lines through `events.py ingest-usage`. A dispatch
   whose cost is not observed is charged the full reservation and is never treated as free.
 - The cap covers every run in one results directory.
+- An interrupted run (SIGTERM, SIGHUP or Ctrl-C) first kills every child process group it
+  started and stops every worker. It then charges each launched dispatch whose usage was never
+  read: what the dispatch's stream reports, or its full reservation if the stream reports no
+  cost. Only then does it exit 128+N, with the run retained as `interrupted`. A later run
+  therefore cannot spend that budget again.
 
 No per-call limit reaches the harness: the posix launch table
 (`runtime/providers/base.py`) passes no budget flag to any harness. A dispatch that is already

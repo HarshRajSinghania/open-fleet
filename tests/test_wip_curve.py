@@ -12,6 +12,7 @@ tripwire for every harness name first on PATH, and the tripwire log must stay em
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import copy
 import hashlib
@@ -879,6 +880,46 @@ class TestGuardIsVerified(Tmp):
         (wt / ".claude" / "settings.local.json").write_text(json.dumps(doc), encoding="utf-8")
         with self.assertRaises(wip.RunFailed):
             run.guard(wt)
+
+
+class TestTheAssignmentReachesTheLaunch(Tmp):
+    """Adversarial pass (inputs that never reach the launch): the unit's assignment, by its nonce,
+    must be in the launch the provider recorded; a launch without it is stopped at once and the
+    run fails. Every dispatch's effective launch (agent, flags, command digest) is recorded."""
+
+    def spawned(self, launch):
+        run = wip.Run.__new__(wip.Run)
+        run.launched, run.launches, run.commands, run.rid = {}, {}, [], "wip1-b1r1-rep1"
+        run.args = argparse.Namespace(agent="claude")
+        run.guard = lambda _wt: None
+        calls = []
+
+        def wrapper(argv, env=None, cwd=None, timeout=600):
+            calls.append([str(a) for a in argv])
+            out = "DISPATCH=disp_0123456789\nHANDLE=term_x\n" + (f"LAUNCH_EFFECTIVE={json.dumps(launch)}\n" if launch else "")
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        run.wrapper = wrapper
+        return run, calls
+
+    def test_a_launch_without_the_assignment_is_stopped(self):
+        run, calls = self.spawned({"agent": "claude", "args": "--dangerously-skip-permissions",
+                                   "command": "claude -p --dangerously-skip-permissions 'another task'"})
+        with self.assertRaises(wip.RunFailed):
+            run.spawn("task_1", self.tmp, "t", "rw", "T1:builder", "WIP-NONCE:" + "a" * 16)
+        self.assertTrue(any("stop" in c for c in calls), "the launched worker was not stopped")
+
+    def test_a_launch_the_provider_did_not_record_is_refused(self):
+        run, _calls = self.spawned(None)
+        with self.assertRaises(wip.RunFailed):
+            run.spawn("task_1", self.tmp, "t", "rw", "T1:builder", "WIP-NONCE:" + "a" * 16)
+
+    def test_the_effective_launch_is_recorded(self):
+        nonce = "WIP-NONCE:" + "a" * 16
+        command = f"claude -p --dangerously-skip-permissions 'WIP-BUILD {nonce} task=T1'"
+        run, _calls = self.spawned({"agent": "claude", "args": "--dangerously-skip-permissions", "command": command})
+        disp = run.spawn("task_1", self.tmp, "t", "rw", "T1:builder", nonce)
+        self.assertEqual(run.launches[disp], {"agent": "claude", "args": "--dangerously-skip-permissions",
+                                              "command_sha256": hashlib.sha256(command.encode()).hexdigest()})
 
 
 class TestCostCapStopsTheExperiment(DryRun):

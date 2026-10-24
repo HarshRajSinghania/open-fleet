@@ -20,7 +20,7 @@
     "machine": "FILL AT RUN TIME: the runner records the host facts (platform, CPU count, Python, git) in every run.json",
     "harness": "FILL AT RUN TIME: --agent; the runner records the harness binary's --version in every run.json",
     "model": "FILL AT RUN TIME: --model is required for a live run; every model the usage record observes must equal it",
-    "harness_effort": "the harness default; recorded, never varied between conditions",
+    "harness_effort": "the harness default: the runner passes no effort flag; every dispatch's effective launch (agent, flags, command digest) is recorded, and a launch that does not carry its assignment fails the run",
     "builder_profile": "rw",
     "reviewer_profile": "ro"
   },

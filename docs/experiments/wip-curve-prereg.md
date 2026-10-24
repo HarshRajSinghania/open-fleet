@@ -81,6 +81,10 @@ These fields are filled at run time and recorded in every run's `run.json`:
   - Every model the usage record observes must equal the pin.
 
 Builders run with `PROFILE=rw`. Reviewers run with `PROFILE=ro` on the same harness and model.
+The runner passes no effort flag, so the harness's default effort applies. Each dispatch's
+effective launch, as the provider recorded it (agent, flags, and a digest of the command), is
+kept in `run.json`. A launch that does not carry its unit's assignment, matched by nonce, stops
+the worker and fails the run.
 After every spawn, the runner checks that the deny hook the provider installed in the worker's
 tree is armed, as `first_run.py` does. If it is not, the runner stops the worker and the run fails.
 A builder can write the git config its worktree shares with the coordinator's clone. So every git

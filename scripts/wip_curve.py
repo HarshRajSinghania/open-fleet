@@ -821,6 +821,7 @@ class Run:
         self.model_pin = args.model if args.worker == "live" else None
         self.held: dict[str, Decimal] = {}  # "<task>:<role>" -> the reservation it holds
         self.launched: dict[str, tuple[str, str]] = {}  # dispatch -> (store task, hold key)
+        self.launches: dict[str, dict] = {}  # dispatch -> its effective launch (agent, flags, digest)
         self.halt: str | None = None  # once set (cost-cap, model-mismatch, time-limit), nothing more starts
         self.deadline = float("inf")  # the run's absolute wall-clock deadline (monotonic), set at start
         self.launched_models: dict[str, str | None] = {}
@@ -987,7 +988,7 @@ class Run:
             raise RunFailed(f"task_ops.py create: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
         return task
 
-    def spawn(self, store_task, worktree: Path, title, profile, key=None):
+    def spawn(self, store_task, worktree: Path, title, profile, key=None, nonce=None):
         env = {"PROFILE": profile}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
@@ -999,10 +1000,29 @@ class Run:
         self.launched[disp] = (store_task, key)  # from here on its call is spent until settled
         try:
             self.guard(worktree)
+            self.launches[disp] = self.delivered(proc.stdout, nonce)
         except RunFailed:
             self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
             raise
         return disp
+
+    @staticmethod
+    def delivered(spawn_out: str, nonce) -> dict:
+        """The launch the provider recorded (LAUNCH_EFFECTIVE) must carry the unit's assignment,
+        by its nonce: an assignment that never reached the harness argv is a run failure, never
+        a silent measurement of something else (first_run.py's delivery step, #596). What is
+        kept is the agent, its flags and the command's digest; the prompt is the contract."""
+        line = next((ln.split("=", 1)[1] for ln in spawn_out.splitlines() if ln.startswith("LAUNCH_EFFECTIVE=")), None)
+        try:
+            launch = json.loads(line) if line else None
+        except ValueError:
+            launch = None
+        if not isinstance(launch, dict) or not isinstance(launch.get("command"), str):
+            raise RunFailed("the provider recorded no readable launch for this dispatch (LAUNCH_EFFECTIVE)")
+        if nonce and nonce not in launch["command"]:
+            raise RunFailed(f"the launch the provider recorded does not carry the assignment ({nonce})")
+        return {"agent": launch.get("agent"), "args": launch.get("args"),
+                "command_sha256": sha256_bytes(launch["command"].encode("utf-8"))}
 
     def guard(self, worktree: Path) -> None:
         """The deny hook the provider installed in the worker's tree must be armed (first_run.py's
@@ -1122,7 +1142,8 @@ class Run:
             git(self.sb.target, "worktree", "add", "-q", "-b", branch, str(wt), base, env=self.sb.env)
             if not self.admit(f"{tid}:builder"):
                 raise RunFailed(f"{tid}: its builder's hold was not admitted")
-            disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw", f"{tid}:builder")
+            disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw", f"{tid}:builder",
+                              unit["nonce"])
             attempt = {"wave": k, "n": n, "dispatch": disp, "branch": branch, "base": base, "head": None,
                        "outcome": None}
             unit["attempts"].append(attempt)
@@ -1205,7 +1226,7 @@ class Run:
                 task_rel, diff_rel = f".wip-review/{tid}/task.md", f".wip-review/{tid}/change.diff"
                 spec = self.review_spec(tid, nonce, a["base"], a["head"], task_rel, diff_rel)
                 rtask = self.create_task(spec, f"wip-review-{tid.lower()}-a{a['n']}")
-                disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro", f"{tid}:reviewer")
+                disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro", f"{tid}:reviewer", nonce)
                 self.emit("review.started", source_ref=f"wip_curve.py:review/{disp}", task=self.units[tid]["store_task"],
                           dispatch=disp, data={"head_sha": a["head"]})
                 review = {"dispatch": disp, "store_task": rtask, "nonce": nonce, "head": a["head"],
@@ -1461,6 +1482,7 @@ class Run:
             [t for t in self.entry["task_order"] if t not in self.units]
         rec["merges"] = self.merges
         rec["launched_models"] = self.launched_models
+        rec["launches"] = self.launches
         rec["commands"] = self.commands
         rec["cost"] = {"cap_usd": str(self.cap), "spent_before_usd": str(self.spent_before),
                        "observed_usd": str(self.observed), "reserved_unobserved_usd": str(self.reserved),

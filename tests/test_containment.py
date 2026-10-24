@@ -109,5 +109,37 @@ class TheProbeAndTheSweepFailClosed(unittest.TestCase):
         self.assertEqual(containment.call_processes(table, tag=tag, marker=containment.DISPATCH_MARKER), {30})
 
 
+class LoadingNeverWritesIntoTheSources(unittest.TestCase):
+    """PR #668 CI (F2): loading containment.py from runtime/scripts wrote its bytecode beside the
+    sources (runtime/scripts/__pycache__), which CI caught because it does not set
+    PYTHONDONTWRITEBYTECODE. Every loader of a runtime module this change owns loads without
+    writing bytecode, whatever the environment says."""
+
+    def copy(self):
+        tmp = Path(__import__("tempfile").mkdtemp(prefix="of-containment-load-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = tmp / "repo"
+        for d in ("runtime", "scripts"):
+            shutil.copytree(ROOT / d, repo / d, ignore=shutil.ignore_patterns("__pycache__"))
+        return repo
+
+    def load(self, repo, rel):
+        # The entry is compiled and run from source (no bytecode of its own); what it loads in turn,
+        # through its own loaders, is what is checked.
+        code = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('m', sys.argv[1]); "
+                "m = importlib.util.module_from_spec(s); src = open(sys.argv[1], encoding='utf-8').read(); "
+                "exec(compile(src, sys.argv[1], 'exec'), m.__dict__)")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}  # as CI runs
+        proc = subprocess.run([sys.executable, "-c", code, str(repo / rel)], env=env, capture_output=True, text=True,
+                              timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return sorted(str(p.relative_to(repo)) for p in (repo / "runtime").rglob("__pycache__/*"))
+
+    def test_each_loader_leaves_no_bytecode_in_the_runtime(self):
+        for rel in ("scripts/_ablation_run.py", "runtime/scripts/first_run.py", "scripts/wip_curve.py"):
+            with self.subTest(loader=rel):
+                self.assertEqual(self.load(self.copy(), rel), [], f"{rel} wrote bytecode into runtime/")
+
+
 if __name__ == "__main__":
     unittest.main()

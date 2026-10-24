@@ -373,7 +373,11 @@ def _load_containment():
     spec = importlib.util.spec_from_file_location("of_ablation_containment",
                                                   ROOT / "runtime" / "scripts" / "containment.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    prior, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # nothing written beside the source
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = prior
     return mod
 
 

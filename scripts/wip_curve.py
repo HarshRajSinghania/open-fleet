@@ -102,9 +102,14 @@ AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavai
 
 
 def _load(name: str, path: Path):
+    """A module loaded by path, never writing bytecode beside it (PR #668 CI: a load wrote into the source tree)."""
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    prior, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = prior
     return mod
 
 

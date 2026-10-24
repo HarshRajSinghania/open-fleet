@@ -85,20 +85,28 @@ HARNESS_BINARIES = {"antigravity": "agy"}
 LIVE_STATES = ("ready", "running", "retained")
 REPORT_HEAD = "FIRST-RUN-REPORT "
 READ_HEAD = "FIRST-RUN-READ "
+def load_module(name: str, path: Path):
+    """A sibling runtime module, loaded by path, never writing bytecode beside it (PR #668 CI: a load wrote into the source tree)."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    prior, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = prior
+    return mod
+
+
 # The per-harness final-answer reader is shared with the posix monitor's ro completion line, so the
 # two never disagree about what a worker answered (runtime/providers/transcript.py, #596 review).
-_spec = importlib.util.spec_from_file_location("of_first_run_transcript", ROOT / "runtime" / "providers" / "transcript.py")
-TRANSCRIPT = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(TRANSCRIPT)
+TRANSCRIPT = load_module("of_first_run_transcript", ROOT / "runtime" / "providers" / "transcript.py")
 REPORT_FORMATS = TRANSCRIPT.FINAL_ANSWER_FORMATS
 # These carry every turn's text, not only the last answer: the report starts at its own header.
 ANCHORED_FORMATS = TRANSCRIPT.ALL_TURN_FORMATS
 MONITOR_EVENTS = TRANSCRIPT.MONITOR_EVENTS
 # Process containment (runtime/scripts/containment.py, one helper shared with #606's runner and the
 # WIP-curve runner): the marker every process of a run carries, its sweep, and the host probe.
-_spec = importlib.util.spec_from_file_location("of_first_run_containment", SCRIPTS / "containment.py")
-containment = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(containment)
+containment = load_module("of_first_run_containment", SCRIPTS / "containment.py")
 
 
 class StepFailed(Exception):
@@ -196,9 +204,7 @@ def witness_line(receipt: dict) -> str:
 
 def all_harness_binaries() -> list[str]:
     """Every harness name and binary base.py knows: each gets a tripwire in inert mode."""
-    spec = importlib.util.spec_from_file_location("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_module("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
     names = {HARNESS_BINARIES.get(h, h) for h in mod.SUPPORTED_HARNESSES}
     return sorted(names | set(mod.SUPPORTED_HARNESSES))
 

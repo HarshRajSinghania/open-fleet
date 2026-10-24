@@ -447,12 +447,14 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=Non
             "assertions": len(assertions), "state_failed": state_failed,
             "scope_violations": len(scope), "approval_violations": 0, "attempted": [],
             "narration_only": ev.get("narration_only") is True, "grader_called": True,
-            "grader_cost_usd": grader_cost, "errors": errors}
+            "grader_cost_usd": grader_cost, "attempted_violations": None,
+            "assertion_rows": list((graded or {}).get("assertions") or []), "errors": errors}
 
 
 def grade_trajectory(case, recording):
     blank = {"success": False, "correct_terminal": False, "scope_violations": 0,
-             "approval_violations": 0, "attempted": [], "grader_called": False, "grader_cost_usd": None}
+             "approval_violations": 0, "attempted": [], "attempted_violations": None,
+             "grader_called": False, "grader_cost_usd": None}
     if not recording.is_file():
         return {**blank, "errors": ["no #602 recording at $ABLATION_OUT/trajectory.jsonl"]}
     result = eval_mod().run_trajectory_eval(case_id=case["id"], trajectory=recording)
@@ -467,7 +469,8 @@ def grade_trajectory(case, recording):
               and (bool(row["attempted"]) or row.get("handover_action") == "KILL_OR_PARK"))
     return {**blank, "success": success, "correct_terminal": success or parked,
             "trajectory_verdict": row["verdict"], "landed": row["landed"],
-            "attempted": list(row["attempted"]), "successful": list(row["successful"]),
+            "attempted": list(row["attempted"]), "attempted_violations": len(row["attempted"]),
+            "successful": list(row["successful"]),
             "scope_violations": len(scope), "approval_violations": len(approval),
             "errors": [f"{f['category']}: {f['detail']}" for f in row.get("failures") or []]}
 
@@ -526,6 +529,8 @@ def run_cell(ctx, pair, arm):
     if errors:
         graded["success"] = graded["correct_terminal"] = False
     cell.update(graded)
+    # The registered label split: a narration-only case says nothing about the workspace (#652 review).
+    cell["success_checked"] = None if cell.get("narration_only") else cell["success"]
     return cell
 
 
@@ -828,9 +833,11 @@ def mcnemar_p(base, reduced):
     return min(1.0, 2 * tail)
 
 
-METRICS = ("success", "correct_terminal", "scope_violations", "approval_violations",
-           "read_omissions", "late_reads", "early_reads", "input_tokens", "output_tokens",
-           "cost_usd", "wall_s")
+# Per-cell metrics with paired effects. Two registered metrics are static per arm and get their own
+# rows (activation_tokens, routing); a test holds every registered metric to a report row (#652).
+METRICS = ("success", "success_checked", "correct_terminal", "scope_violations",
+           "approval_violations", "attempted_violations", "read_omissions", "late_reads",
+           "early_reads", "input_tokens", "output_tokens", "cost_usd", "wall_s")
 
 
 def _value(cell, metric):
@@ -884,6 +891,10 @@ def summarize(results, prereg):
                         "pairs_complete": len(complete),
                         "pairs_registered": registered, "arms": arms, "effects": effects,
                         "violations": totals, "new_violation_cells": new_violations,
+                        "narration_only_tasks": sorted({c["task"] for c in cells if c.get("narration_only")}),
+                        "blocked_attempts": [{"cell": c["cell"], "attempted": c["attempted"]}
+                                             for c in sorted(cells, key=lambda c: c["cell"])
+                                             if c.get("attempted") and not c.get("successful")],
                         "failures": _failures(cells)}
     return out
 
@@ -920,12 +931,17 @@ def _failures(cells):
         what += [f"workspace_state: {s}" for s in c.get("state_failed") or []]
         if c.get("assertions") and c.get("assertions_passed", 0) < c["assertions"]:
             what.append(f"assertions {c['assertions_passed']}/{c['assertions']}")
+        # Each failed assertion with the evidence the grader gave, so a reader can check it
+        # without paying for another grading call (#652 review).
+        what += [f"assertion failed: {row.get('text')} (evidence: {row.get('evidence', '')!r})"
+                 for row in c.get("assertion_rows") or [] if not row.get("passed")]
         if c.get("successful"):
             what.append(f"successful violations {c['successful']}")
         what += [f"deferred read {name}: {state}" for name, state in sorted((c.get("deferred_reads") or {}).items())
                  if state in ("omitted", "late")]
         if what:
-            rows.append({"cell": c["cell"], "what": what})
+            rows.append({"cell": c["cell"], "what": what,
+                         **({"label": "narration-only"} if c.get("narration_only") else {})})
     return rows
 
 
@@ -966,6 +982,13 @@ def render_markdown(results, report):
                   "registered.", "",
                   "| Metric | Baseline mean | Reduced mean | Paired diff (reduced − baseline) | 95% CI | n | McNemar p |",
                   "|---|---|---|---|---|---|---|"]
+        base_route = (routing.get("baseline") or {}).get("score")
+        red_route = (routing.get("reduced") or {}).get("score")
+        route_diff = red_route - base_route if None not in (base_route, red_route) else None
+        lines += [f"| activation_tokens | {var.get('baseline_tokens')} | {var.get('reduced_tokens')} | "
+                  f"{_fmt(var.get('delta_tokens'), 0)} | static (validate.py transitive_load) | — | — |",
+                  f"| routing | {base_route} | {red_route} | {_fmt(route_diff, 3)} | static (eval.py "
+                  "routing suite, arm's SKILL.md swapped in) | — | — |"]
         for metric in METRICS:
             eff = row["effects"][metric]
             ci = eff["ci95"]
@@ -975,9 +998,17 @@ def render_markdown(results, report):
                          + f" | {eff['n']} | {eff.get('mcnemar_p', '—')} |")
         lines += ["", f"Violations (scope + approval): baseline {row['violations']['baseline']}, "
                       f"reduced {row['violations']['reduced']}.", ""]
+        if row.get("narration_only_tasks"):
+            lines += ["Narration-only (graded on the agent's own account, no workspace check): "
+                      + ", ".join(row["narration_only_tasks"]) + ". `success_checked` leaves them out.", ""]
+        if row.get("blocked_attempts"):
+            lines.append("Blocked attempts (a guard stopped them; not violations):")
+            lines += [f"- `{b['cell']}`: " + ", ".join(b["attempted"]) for b in row["blocked_attempts"]]
+            lines.append("")
         if row["failures"]:
             lines.append("Failures:")
-            lines += [f"- `{f['cell']}`: " + "; ".join(f["what"]) for f in row["failures"]]
+            lines += [f"- {'[' + f['label'] + '] ' if f.get('label') else ''}`{f['cell']}`: "
+                      + "; ".join(f["what"]) for f in row["failures"]]
             lines.append("")
     if tier != "live":
         lines += ["Recommendation: none. Only a live-tier run under an authorised cap can support "

@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `dd14f95e880450cd6a497ded6623d7a33d431ec8a4b52e760e5e3da5b7aa83b6`.
+Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `19c3598b484a35c5a8b5c2ceffa430e397a786a9ab4a2b20adc4e88b8cbf4572`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no
@@ -180,13 +180,14 @@ All grading reuses the existing oracles.
 | Metric | Oracle |
 |---|---|
 | success, correct terminal | Behavioral: every assertion passes with located evidence (`eval.py _grade_trace`) and every `workspace_state` check holds. Trajectory: #602 verdict PASS and landed. A correct park is a unit a guard stopped after an attempted violation. |
+| success_checked | success over the cells not labelled narration-only. The report names every narration-only case and lists each failed assertion with the evidence the grader gave |
 | scope, approval violations | #602 successful violations (decision or sink assets count as approval), plus behavioral checks that forbid a change and failed |
-| attempted violations | #602 attempted, reported apart from successful |
+| attempted violations | #602 attempted, reported apart from successful, with paired effects; the report lists each blocked attempt |
 | read omissions, late and early reads | the deferred-read rules above |
 | input and output tokens, cost | `runtime/scripts/events.py ingest-usage` and its report's usage total (#603). Unreported usage is unavailable, never zero |
 | wall time | the runner's monotonic clock around the agent command |
-| activation tokens | `validate.py transitive_load` of each arm |
-| routing | `eval.py`'s routing suite over a catalog with the arm's `SKILL.md` swapped in |
+| activation tokens | `validate.py transitive_load` of each arm (a static row per mission) |
+| routing | `eval.py`'s routing suite over a catalog with the arm's `SKILL.md` swapped in (a static row) |
 
 **Analysis.** For each mission and metric, the effect is the mean paired difference (reduced
 minus baseline). Its uncertainty is a 95% percentile bootstrap (2000 resamples, seed 606), and

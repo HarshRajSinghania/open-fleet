@@ -316,6 +316,18 @@ class TheDryRunExercisesThePipeline(SafetyNet):
         self.assertEqual(variant["routing"]["baseline"]["score"], 1.0)
         self.assertEqual(variant["routing"]["reduced"]["score"], 1.0)
 
+    def test_every_registered_metric_is_a_report_row(self):
+        # #652 review sweep: a metric the registration promises and the report omits is a silent
+        # gap (attempted_violations was one). Every registered metric is a row of every mission table.
+        report = (self.out / "report.md").read_text()
+        for metric in PREREG["metrics"]:
+            self.assertIn(f"| {metric['name']} |", report, metric["name"])
+
+    def test_assertion_rows_travel_with_the_cell(self):
+        for cell in self.cells(task="behavioral-4"):
+            self.assertEqual(len(cell["assertion_rows"]), cell["assertions"])
+            self.assertTrue(all(row["evidence"] for row in cell["assertion_rows"] if row["passed"]))
+
     def test_a_subset_is_never_a_verdict(self):
         report = runner.summarize(self.results, PREREG)
         self.assertEqual(report["review-it"]["verdict"], "INCOMPLETE")
@@ -595,6 +607,79 @@ class TheDecisionRule(unittest.TestCase):
         row = self.verdict(cells)
         self.assertEqual(row["pairs_complete"], 4)
         self.assertEqual(row["failures"], [{"cell": cells[1]["cell"], "what": ["agent exited with status 1"]}])
+
+
+class TheReportCarriesWhatWasGraded(unittest.TestCase):
+    """#652 review, P2: failed assertions, blocked attempts and the narration-only label reached the
+    cell (or the grader) and then vanished from the report."""
+
+    def setUp(self):
+        self.prereg = copy.deepcopy(PREREG)
+        self.prereg["tasks"]["behavioral"]["cases"] = [1]
+        self.prereg["tasks"]["trajectories"]["cases"] = ["HC-01"]
+        self.prereg.update(repeats=1, seeds=[1])
+
+    def test_failed_assertions_are_reported_with_their_evidence(self):
+        rows = {"assertions": [{"text": "Routes to ship-it", "passed": True, "evidence": "routed to ship-it here"},
+                               {"text": "Names BUILT", "passed": False, "evidence": "says RELEASED instead"}]}
+        ev = {"assertions": ["Routes to ship-it", "Names BUILT"], "narration_only": True}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(runner.eval_mod(), "_grade_trace", return_value=rows):
+            graded = runner.grade_behavioral(ev, Path(tmp), {}, "trace", "unused")
+        self.assertEqual(graded["assertion_rows"], rows["assertions"])
+        self.assertIsNone(graded["attempted_violations"], "a behavioral cell observes no attempts")
+        failures = runner._failures([{"cell": "m.behavioral-1.r0.reduced", **graded}])
+        self.assertIn("assertion failed: Names BUILT (evidence: 'says RELEASED instead')", failures[0]["what"])
+        self.assertEqual(failures[0]["label"], "narration-only")
+        self.assertIn("- [narration-only] `m.behavioral-1.r0.reduced`: assertions 1/2; assertion failed: "
+                      "Names BUILT (evidence: 'says RELEASED instead')",
+                      runner.render_markdown(self.results(), {"m": dict(
+                          runner.summarize(self.results(), self.prereg)["m"], failures=failures)}))
+
+    def results(self):
+        cells = []
+        for arm, attempted in (("baseline", ["criteria"]), ("reduced", [])):
+            narr = cell("behavioral-1", 0, arm)
+            narr.update(narration_only=True, success_checked=None, attempted_violations=None)
+            traj = cell("trajectory-HC-01", 0, arm, success=False)
+            traj.update(attempted=attempted, attempted_violations=len(attempted), successful=[],
+                        success_checked=False, narration_only=False)
+            cells += [narr, traj]
+        return {"plan": {"missions": ["m"], "cells_planned": len(cells)}, "cells": cells,
+                "complete": True, "stopped": None, "tier": "stub", "evidence": "x", "model": "stub", "harness": "stub",
+                "prereg": {"version": 1, "sha256": "0" * 64, "registration": {}},
+                "cost": {"cap_usd": 0, "spent_usd": 0}, "variants": {"m": {
+                    "obligation_check": {"passed": True, "failures": [], "results": []},
+                    "baseline_tokens": 100, "reduced_tokens": 40, "delta_tokens": -60,
+                    "routing": {"baseline": {"score": 1.0}, "reduced": {"score": 1.0}}}}}
+
+    def test_attempted_violations_are_a_metric_with_paired_effects(self):
+        results = self.results()
+        report = runner.summarize(results, self.prereg)["m"]
+        self.assertEqual(report["effects"]["attempted_violations"]["n"], 1, "behavioral cells observe none")
+        self.assertEqual(report["effects"]["attempted_violations"]["mean"], -1.0)
+        self.assertEqual(report["blocked_attempts"], [{"cell": "m.trajectory-HC-01.r0.baseline",
+                                                       "attempted": ["criteria"]}])
+        text = runner.render_markdown(results, {"m": report})
+        self.assertIn("| attempted_violations | 1.000 | 0.000 | -1.000 |", text)
+        self.assertIn("Blocked attempts (a guard stopped them; not violations):", text)
+        self.assertIn("`m.trajectory-HC-01.r0.baseline`: criteria", text)
+
+    def test_narration_only_cases_are_labelled_and_split_out(self):
+        results = self.results()
+        report = runner.summarize(results, self.prereg)["m"]
+        self.assertEqual(report["narration_only_tasks"], ["behavioral-1"])
+        self.assertEqual(report["effects"]["success_checked"]["n"], 1, "narration-only pairs are left out")
+        text = runner.render_markdown(results, {"m": report})
+        self.assertIn("Narration-only (graded on the agent's own account, no workspace check): behavioral-1", text)
+        self.assertIn("| success_checked |", text)
+
+    def test_trajectory_attempts_are_counted(self):
+        data = runner.eval_mod().load_json(runner.eval_mod().TRAJECTORY_EVAL)
+        case = next(c for c in data["cases"] if c["id"] == "HC-01")
+        graded = runner.grade_trajectory(case, runner.eval_mod().TRAJECTORY_DIR / "HC-01.drops-criterion.jsonl")
+        self.assertEqual(graded["attempted_violations"], len(graded["attempted"]))
+        self.assertGreater(graded["attempted_violations"], 0)
 
 
 class Statistics(unittest.TestCase):

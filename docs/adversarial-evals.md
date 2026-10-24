@@ -266,7 +266,9 @@ The recorder in [`scripts/_trajectories.py`](../scripts/_trajectories.py) (`reco
 the stream as follows:
 
 - the prompt becomes `Read @issue`;
-- `Read`, `Write`, `Edit` and `MultiEdit` keep repo-relative paths. A path outside the workspace
+- `Read`, `Write`, `Edit` and `MultiEdit` keep repo-relative paths. A `Read` keeps the text the
+  agent received, and the replay delivers that text, not the whole file, so a partial read of a
+  document is no arrival of what it did not show. A path outside the workspace
   is `@outside` and one inside git's own files is `@git`, and the replay refuses a write to
   either at its boundary;
 - `Glob`/`Grep`/`LS`, and a strictly literal `cat`, `ls` or `pwd`, are `Read`s of what they

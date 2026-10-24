@@ -107,8 +107,8 @@ FIELD_TYPES = {"path": str, "content": str, "old": str, "new": str, "command": s
                "name": str, "input": dict, "live": str, "via": str, "search": str}
 # A live recording's own fields (#602 live arm). `live`: the call's live result was a denial or a
 # failure, so it is an attempt, never applied. `via`: the granted tool the event rode (a file a
-# shell command changed is a Write via Bash). `search`: a Read whose `output` is what a listing
-# or search showed. A path the replay cannot reach is one of SENTINELS, refused at its boundary.
+# shell command changed is a Write via Bash). A Read's `output` is the text the agent received,
+# delivered in place of the file; `search` names the listing or search that printed it. A path the replay cannot reach is one of SENTINELS, refused at its boundary.
 LIVE_OUTCOMES = ("denied", "error")
 SENTINELS = {"@outside": "outside-repo", "@git": "git-internals"}
 # What a fixture commits to BEFORE any replay; `pin` is the sha256 over exactly these (+ the shared
@@ -989,8 +989,9 @@ class Run:
         if ev["path"] in SENTINELS:
             rec.update(outcome="noted", detail="outside the replayed repository: nothing delivered")
             return
-        if "search" in ev:
-            # What the listing or search showed the agent, as it showed it.
+        if "search" in ev or "output" in ev:
+            # What the read, listing or search showed the agent, as it showed it: a live read of
+            # one line delivers that line, never the rest of the file (#659 review).
             self.deliver(ev["seq"], "repo-document", ev.get("output", ""))
             return
         try:
@@ -1901,11 +1902,14 @@ class LiveRecorder:
             self.emit("Unmapped", name=str(name), input=args, live=live)
 
     # -- tools ------------------------------------------------------------------
-    def read(self, _name, args, _text, live):
+    def read(self, _name, args, text, live):
         path = self.rel(args.get("file_path"))
         if path is None:
             return False
-        self.emit("Read", path=path, live=live)
+        # The text the agent received (a range, a truncation), which the replay delivers
+        # in place of the whole file.
+        shown = path not in SENTINELS and live is None
+        self.emit("Read", path=path, live=live, output=text[:OUTPUT_CAP] if shown else None)
         return True
 
     def search(self, name, args, text, live):

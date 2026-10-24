@@ -39,6 +39,18 @@ truth is `.claude-plugin/plugin.json`.
     directory holds one registration. A live run refuses uncommitted experiment inputs, and each
     run records their digest. Every path argument is made absolute first, and no results, output
     or sandbox path may resolve into or around the sources or the registered files.
+  - Live-run safety:
+    - The model pin reaches the harness (claude's `ANTHROPIC_MODEL`). A harness that cannot be
+      held to a pin is refused, and a call on another model halts the run.
+    - Each launch must carry its assignment.
+    - The run deadline is kept inside a wave.
+    - An interrupted or killed run is charged for every call it launched, and no child process
+      outlives it.
+    - Coordinator and merge-queue git goes through `gitexec.py`.
+    - Worker code under the oracle gets a minimal environment.
+  - What can be pooled: a run under another machine, harness, model pin, input digest, deadline
+    scale, schedule entry or WIP than its label claims is never pooled. Only one re-run is
+    allowed, after an infrastructure failure. The recommendation reads compliant runs only.
   - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
     scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
     live runs and publishing a recommendation remain open. Both need the owner to authorise the

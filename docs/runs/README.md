@@ -24,6 +24,9 @@ prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the bindi
 re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier, and the
 2026-10-24 #605 live hint-replay run — an experiment, not a mission run, bound at
 `doctrine-only`, its verifier GREEN under a coordinator-signed dispatch record. Every other row reads **no**, and that
+re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier. The sixth, the
+2026-10-24 live first runs, binds the provider-certification evidence (#596); no mission's tier
+cites it. Every other row reads **no**, and that
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;
@@ -60,6 +63,7 @@ git repositories and includes a fully bound positive case alongside a dozen refu
 | 2026-10-24 | [pin-it](2026-10-24-pin-it-238-bump.md) | the pin bump the v1.4.238 re-witness deferred: its E1–E8 doctrine edits and B1–B9 bump steps, with #606's registration re-registered as version 2 before any live cell ran | self-run | no — a run note applying a recorded run's deferred edits; it binds nothing | PINNED-WITH-PARKED at v1.4.238 (Auto host mode and `--host` names patched; E3 corrected and one more stale containment path found; no assertion line edited, no budget raised) |
 | 2026-10-24 | [hint-replay](2026-10-24-hint-replay-605-live.md) (experiment, not a mission) | this catalog's episodic hints — #605's live arm: 2 scenarios × 3 arms (off / unchecked / checked) × 3 attempts, `claude-opus-5-5` | self-run | yes — at `doctrine-only`, advancing no tier; verifier GREEN under a coordinator-signed dispatch record (two earlier RED runs recorded) | NULL at a ceiling (every arm 6/6, 0 repeated failures; USD 1.22 notional of a USD 40 cap) |
 | 2026-10-24 | — ([VF-Bench held-out v1](2026-10-24-vf-bench-heldout-v1/)) | `verify.py` blob `08f568946c1f` against 89 held-out cases authored and held by OpenAI Codex (#601) | benchmark evaluation, not a mission run | no — binds no mission tier; `heldout.py validate` binds the report to its commit, `verify.py` blob and set digest | 0/66 false acceptance, 0/23 false rejection, 4/66 refused for another reason, 66 of 95 inventory rows; stable over 3 runs |
+| 2026-10-24 | [review-it](2026-10-24-review-it-first-run.md) | two-commit repositories the first run synthesizes (posix route, `first_run.py --worker live`, Claude Code 2.1.304) on the dev Mac and a fresh `ubuntu:24.04` container; plus a refused Orca ro re-witness attempt (#596) | external-run | yes — binds the certification record's live posix and claude harness cells; review-it's own tier does not cite it | GO ×4 (posix ro and rw on two hosts); Orca ro attempt refused at Claude Code's folder-trust prompt before any injection |
 
 ### Self-test campaign 2026-09-16
 

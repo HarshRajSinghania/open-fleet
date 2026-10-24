@@ -1,0 +1,35 @@
+{
+  "before_spawn": {
+    "app": {
+      "running": true,
+      "pid": 50786,
+      "desktopWindowStatus": "available"
+    },
+    "runtime": {
+      "state": "ready",
+      "reachable": true,
+      "runtimeId": "e711afeb-e52a-47a2-a5a8-92e0a8a870b0",
+      "appVersion": "1.4.229"
+    }
+  },
+  "after_failure": {
+    "app": {
+      "running": true,
+      "pid": 18306,
+      "desktopWindowStatus": "available"
+    },
+    "runtime": {
+      "state": "ready",
+      "reachable": true,
+      "runtimeId": "489b711a-5830-4f49-84cd-6ad6cfda2857",
+      "appVersion": "1.4.238"
+    }
+  },
+  "calls_served_by_runtime": {
+    "worktree-create.json": "e711afeb-e52a-47a2-a5a8-92e0a8a870b0",
+    "coord-terminal.json": "e711afeb-e52a-47a2-a5a8-92e0a8a870b0",
+    "run-create.json": "e711afeb-e52a-47a2-a5a8-92e0a8a870b0",
+    "tw-of596-ro-witness-387580012.json": "e711afeb-e52a-47a2-a5a8-92e0a8a870b0",
+    "dispatch-of596-ro-witness-387580012.json": "e711afeb-e52a-47a2-a5a8-92e0a8a870b0"
+  }
+}

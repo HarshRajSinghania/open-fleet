@@ -1,0 +1,645 @@
+{
+  "schema": "open-fleet-first-run/v1",
+  "started_at": "2026-10-24T06:23:15Z",
+  "verdict": "GO",
+  "tier": "live-unreviewed",
+  "witness": "posix/setsid PROFILE=ro harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO",
+  "route": {
+    "provider": "posix",
+    "backend": "setsid",
+    "profile": "ro",
+    "harness": "claude",
+    "worker": "live"
+  },
+  "host": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.13.15",
+    "git": "git version 2.54.0 (Apple Git-157)",
+    "bash": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin26)",
+    "catalog_commit": "b96d47e3354564e1593d34182a817ae04e54545d",
+    "catalog_dirty": false
+  },
+  "facts": {
+    "run_id": "fr-2420f5",
+    "nonce": "FR-NONCE:4709eae151992bcc",
+    "harness": {
+      "name": "claude",
+      "path": "/Users/ravindra/of-live/bin/claude",
+      "version": "2.1.304 (Claude Code)"
+    },
+    "reviewed": {
+      "base_sha": "f83ada1d56098ff7875f988efd6fe2cbdc9a5227",
+      "head_sha": "223b6eeef8b1a9343f49e16b1a18de71bc20f42b"
+    },
+    "change": {
+      "input": ".first-run/fr-2420f5/change.diff",
+      "paths": [
+        "app.py"
+      ]
+    },
+    "task": "task_1fd0eb625e",
+    "dispatch": "disp_a0c37bbd16",
+    "handle": "term_cc8d8717",
+    "launch_effective": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command": "claude -p --permission-mode plan --disallowedTools Edit,Write,MultiEdit,NotebookEdit --output-format stream-json --verbose 'open-fleet first-run review unit fr-2420f5 (FR-NONCE:4709eae151992bcc).\nReview the change f83ada1d56098ff7875f988efd6fe2cbdc9a5227..223b6eeef8b1a9343f49e16b1a18de71bc20f42b. Its diff is written to .first-run/fr-2420f5/change.diff in your working tree: read that file to its end. You need no shell for this, and must not change it.\nReport what the change does and any problem you see, one line each, naming every changed path.\nYour report MUST start with this exact line: FIRST-RUN-REPORT FR-NONCE:4709eae151992bcc 223b6eeef8b1a9343f49e16b1a18de71bc20f42b\nThe file'\"'\"'s last line is a read receipt: copy that line, verbatim, into your report.\nModify nothing. Print the report as your final answer.\nFrozen contract: .first-run/fr-2420f5/contract.md@6a9bafccb7302c7f9b49dc562645010f0926f4e9 (sha256:76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184).\n\n---\nopen-fleet: this read-only dispatch has no tool to send mail. When you finish, make the last line of your final answer the marker OPEN_FLEET_WORKER_DONE disp_a0c37bbd16 <outcome>, with <outcome> replaced by succeeded or failed; the runtime relays it to the coordinator as your worker_done.'"
+    },
+    "worktree": "/Users/ravindra/of-live/runs/596-ro2/state/worktrees/fr-2420f5-3241261247",
+    "settled": {
+      "state": "completed",
+      "signal": "worker_done"
+    },
+    "harness_usage": {
+      "model": "claude-opus-5-5",
+      "num_turns": 3,
+      "total_cost_usd": 0.0796144,
+      "duration_ms": 8204
+    },
+    "evidence": {
+      "base_sha": "6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+      "head_sha": "39919c79455e6bc8b994120c277ff53898dea3d5"
+    },
+    "verify": {
+      "argv": [
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/verify.py",
+        "--manifest",
+        ".first-run/fr-2420f5/manifest.json",
+        "--contract-source",
+        ".first-run/fr-2420f5/contract.md@6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+        "--contract-digest",
+        "sha256:76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184",
+        "--unit-class",
+        "report-only"
+      ],
+      "cwd": "/Users/ravindra/of-live/runs/596-ro2/verify",
+      "rc": 0,
+      "out": [
+        "NOTE: --base not given \u2014 ancestry check skipped (pre-merge/offline)",
+        "NOTE: report-only (unsupervised) \u2014 claimed with no signed dispatch record. base_sha..head_sha changes docs/tests only, so the class is consistent with the change, but nothing off-worker authorized it (#310)",
+        "verify: OK \u2014 all required checks passed"
+      ]
+    },
+    "contract": {
+      "source": ".first-run/fr-2420f5/contract.md@6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+      "digest": "sha256:76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184",
+      "criterion_ids": [
+        "FR-1",
+        "FR-2",
+        "FR-3",
+        "FR-4"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step": "prereqs",
+      "ok": true,
+      "detail": "claude -> /Users/ravindra/of-live/bin/claude",
+      "elapsed_s": 0.085
+    },
+    {
+      "step": "target",
+      "ok": true,
+      "detail": "reviewed f83ada1d5609..223b6eeef8b1; contract frozen",
+      "elapsed_s": 0.217
+    },
+    {
+      "step": "preflight",
+      "ok": true,
+      "detail": "preflight: OK \u2014 mode=readonly, runtime=posix (binary + repo checks only; no BASE/PR invariants)",
+      "elapsed_s": 0.085
+    },
+    {
+      "step": "create",
+      "ok": true,
+      "detail": "task_1fd0eb625e",
+      "elapsed_s": 0.05
+    },
+    {
+      "step": "dispatch",
+      "ok": true,
+      "detail": "disp_a0c37bbd16 on term_cc8d8717",
+      "elapsed_s": 0.887
+    },
+    {
+      "step": "guard",
+      "ok": true,
+      "detail": "deny-hook: armed in /Users/ravindra/of-live/runs/596-ro2/state/worktrees/fr-2420f5-3241261247/.claude/settings.local.json for claude (OPEN_FLEET_UNIT_WORKTREE=/Users/ravindra/of-live/runs/596-ro2/state/worktrees/fr-2420f5-3241261247 ORCA_UNIT_WORKTREE=/Users/ravindra/of-live/runs/596-ro2/state/worktrees/fr-2420f5-3241261247 sh /private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/deny-hook.sh)",
+      "elapsed_s": 0.888
+    },
+    {
+      "step": "delivery",
+      "ok": true,
+      "detail": "spec in the recorded launch (the live worker's echo is checked at result)",
+      "elapsed_s": 0.0
+    },
+    {
+      "step": "result",
+      "ok": true,
+      "detail": "settled completed; report names the reviewed head",
+      "elapsed_s": 8.535
+    },
+    {
+      "step": "evidence",
+      "ok": true,
+      "detail": "6a9bafccb730..39919c79455e carries only .first-run/fr-2420f5/report.md",
+      "elapsed_s": 0.067
+    },
+    {
+      "step": "verify",
+      "ok": true,
+      "detail": "verify: OK (report-only, SHA-bound)",
+      "elapsed_s": 0.204
+    },
+    {
+      "step": "release",
+      "ok": true,
+      "detail": "retained, then released; the evidence commit survives",
+      "elapsed_s": 0.238
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "init",
+        "-q",
+        "-b",
+        "main"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.017
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "user.email",
+        "first-run@open-fleet.invalid"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "user.name",
+        "open-fleet first run"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.009
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "commit.gpgsign",
+        "false"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "tag.gpgsign",
+        "false"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "core.hooksPath",
+        "/dev/null"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.009
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        "README.md"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "seed"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.019
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        "app.py"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "add greet()"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.018
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--verify",
+        "HEAD~1^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "checkout",
+        "-q",
+        "-b",
+        "first-run/fr-2420f5",
+        "223b6eeef8b1a9343f49e16b1a18de71bc20f42b"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.012
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "f83ada1d56098ff7875f988efd6fe2cbdc9a5227",
+        "223b6eeef8b1a9343f49e16b1a18de71bc20f42b"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "f83ada1d56098ff7875f988efd6fe2cbdc9a5227",
+        "223b6eeef8b1a9343f49e16b1a18de71bc20f42b"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        ".first-run/fr-2420f5/contract.md",
+        ".first-run/fr-2420f5/change.diff"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "first-run fr-2420f5: freeze contract"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.02
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.009
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/preflight.py",
+        "--mission",
+        "review-it",
+        "--runtime",
+        "posix",
+        "--mode",
+        "readonly"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.085
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet first-run review unit fr-2420f5 (FR-NONCE:4709eae151992bcc).\nReview the change f83ada1d56098ff7875f988efd6fe2cbdc9a5227..223b6eeef8b1a9343f49e16b1a18de71bc20f42b. Its diff is written to .first-run/fr-2420f5/change.diff in your working tree: read that file to its end. You need no shell for this, and must not change it.\nReport what the change does and any problem you see, one line each, naming every changed path.\nYour report MUST start with this exact line: FIRST-RUN-REPORT FR-NONCE:4709eae151992bcc 223b6eeef8b1a9343f49e16b1a18de71bc20f42b\nThe file's last line is a read receipt: copy that line, verbatim, into your report.\nModify nothing. Print the report as your final answer.\nFrozen contract: .first-run/fr-2420f5/contract.md@6a9bafccb7302c7f9b49dc562645010f0926f4e9 (sha256:76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184)."
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.05
+    },
+    {
+      "argv": [
+        "bash",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/spawn_worker.sh",
+        "task_1fd0eb625e",
+        "new-child",
+        "fr-2420f5",
+        "claude"
+      ],
+      "env": [
+        "PROFILE"
+      ],
+      "rc": 0,
+      "elapsed_s": 0.887
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-show",
+        "--dispatch",
+        "disp_a0c37bbd16",
+        "--json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.05
+    },
+    {
+      "argv": [
+        "sh",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/deny-hook.sh",
+        "--verify-settings",
+        "/Users/ravindra/of-live/runs/596-ro2/state/worktrees/fr-2420f5-3241261247/.claude/settings.local.json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.838
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/check_reply.py",
+        "check",
+        "--terminal",
+        "coordinator"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.05
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/worker_ops.py",
+        "read",
+        "--dispatch",
+        "disp_a0c37bbd16",
+        "--source",
+        "transcript"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.053
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_a0c37bbd16",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.049
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        ".first-run/fr-2420f5/report.md"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.013
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "first-run fr-2420f5: report from the worker transcript"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.022
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only",
+        "6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+        "39919c79455e6bc8b994120c277ff53898dea3d5"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "show",
+        "39919c79455e6bc8b994120c277ff53898dea3d5:.first-run/fr-2420f5/report.md"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        "/Users/ravindra/of-live/runs/596-ro2/verify",
+        "39919c79455e6bc8b994120c277ff53898dea3d5"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.02
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/verify.py",
+        "--manifest",
+        ".first-run/fr-2420f5/manifest.json",
+        "--contract-source",
+        ".first-run/fr-2420f5/contract.md@6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+        "--contract-digest",
+        "sha256:76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184",
+        "--unit-class",
+        "report-only"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.183
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/worker_ops.py",
+        "retain",
+        "--dispatch",
+        "disp_a0c37bbd16"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.049
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_a0c37bbd16"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.054
+    },
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-e",
+        "39919c79455e6bc8b994120c277ff53898dea3d5^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.012
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/worker_ops.py",
+        "release",
+        "--dispatch",
+        "disp_a0c37bbd16"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.061
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596b/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_a0c37bbd16"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.051
+    },
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-e",
+        "39919c79455e6bc8b994120c277ff53898dea3d5^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    }
+  ],
+  "failure": null,
+  "elapsed_s": 11.257,
+  "sandbox": "/Users/ravindra/of-live/runs/596-ro2"
+}

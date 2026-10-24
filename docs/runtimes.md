@@ -4,7 +4,7 @@
 
 `open-fleet` decouples mission outcomes, phase playbooks, and verification gates from any single orchestrator binary through the **Runtime Provider Interface (RPI)**. Every general mission runs unchanged across 14 orchestrator providers and dispatches workers across 10+ coding-agent harnesses under uniform least-privilege sandbox profiles (`ro`, `rw`, `danger`).
 
-> **Advertised is not certified.** Every provider, profile and harness listed below has an entry in [Provider and harness certification](certification.md). That page records how far each route is proven: live-witnessed, fixture-tested, source-only, refused, or unknown. It also gives the upstream version each route was checked against, and a first run you can reproduce. Today only Orca with Claude Code is live-witnessed.
+> **Advertised is not certified.** Every provider, profile and harness listed below has an entry in [Provider and harness certification](certification.md). That page records how far each route is proven: live-witnessed, fixture-tested, source-only, refused, or unknown. It also gives the upstream version each route was checked against, and a first run you can reproduce. Live-witnessed today: Claude Code on the Orca route (`ro`, `rw`) and on the posix route (`ro`, `rw`, first runs bound 2026-10-24).
 
 ---
 
@@ -86,7 +86,7 @@ All 14 providers implement [`RuntimeProvider`](../runtime/providers/base.py) and
 
 Every adapter delivers the task spec to the worker (`resolve_task_prompt`), refuses unparseable upstream output instead of inventing ids, treats `worker-retain` as non-destructive, preserves the worker's real HEAD (`refs/open-fleet/preserved/<dispatch>`) before any destructive cleanup, and fails closed (`unsupported_operation` / `unsupported_profile`) where upstream has no verified way to honour a profile. Only `cap:core-orchestration` (plus Beads on `gastown`) is native on the external adapters; everything else is a portable fallback.
 
-A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) names only harnesses its adapter honours (`tests/test_capability_harnesses.py`) AND that `spawn_worker.sh` launches on it for some advertised profile (`tests/test_capability_launch_agreement.py`). Orca can host every harness, but the fleet's wrapper has no Orca row for `opencode`, `omp` or `pi` (Orca strips their launch arguments), so the `orca` entry does not claim them; run them on Orca only through a `WORKER_CMD` override, whose semantics are then the operator's assertion.
+A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) names only harnesses its adapter honours (`tests/test_capability_harnesses.py`) AND that `spawn_worker.sh` launches on it for some advertised profile (`tests/test_capability_launch_agreement.py`). Orca can host every harness, but the fleet's wrapper has no Orca row for `opencode`, `omp` or `pi` (Orca strips their launch arguments), so the `orca` entry does not claim them; run them on Orca only through a `WORKER_CMD` override, whose semantics are then the operator's assertion. The one claim outside the CLI roster, `openhands`/`openhands`, is the OpenHands SDK agent: `spawn_worker.sh <task> <worktree> <title> openhands` launches it on `OPEN_FLEET_RUNTIME=openhands` through `worker-start` and checks the receipt for the profile's toolset (`tools=…`). The wrapper refuses that agent on every other runtime, and every CLI harness name on the openhands runtime, before any upstream call: the provider runs its own agent whatever name it is handed (#596).
 
 ### Tier 1 — Primary providers
 
@@ -110,7 +110,7 @@ A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers
 | `vibe-kanban` | `BloopAI/vibe-kanban` | REST `POST /api/workspaces/start`; `ORCA_RO` executor variant; post-exit auto-commit guard (reject by default) | ro (claude), rw | `cap:core-orchestration` |
 | `paperclip` | `paperclipai/paperclip` | REST control plane (port 3100): `adapterConfig` flags read back, atomic checkout, bwrap for danger (not advertised, no recipe doctor certifies it) | ro (claude), rw | `cap:core-orchestration` |
 | `multiclaude` | `dlorenc/multiclaude` | Daemon socket `spawn_agent` + tmux; hooks via `.multiclaude/hooks.json`; release needs `orchestration worker-verify` | ro, rw (claude only) | `cap:core-orchestration` |
-| `openhands` | `OpenHands/software-agent-sdk` | agent-server REST conversations (port 8000) with request-level deny-hook config; danger only on a docker runtime (not advertised, no recipe doctor certifies it) | ro, rw | `cap:core-orchestration` |
+| `openhands` | `OpenHands/software-agent-sdk` | agent-server REST conversations (port 8000) with request-level deny-hook config; agent `openhands` only (the SDK agent); danger only on a docker runtime (not advertised, no recipe doctor certifies it) | ro, rw | `cap:core-orchestration` |
 
 ### `posix` launch crash recovery (#597)
 
@@ -262,3 +262,46 @@ included (#596 review).
 | Cursor / Antigravity / Grok / Droid | `cursor` / `agy` / `grok` / `droid` | Refused on `PROFILE=ro` (`unsupported_profile`: no verified read-only CLI flag) | Refused whenever a task prompt is given (`unsupported_prompt`: no verified headless prompt flag, so the worker would start without its assignment) |
 
 **Guard installation.** `install_worktree_hooks` points every harness config at the canonical `runtime/scripts/deny-hook.sh` (never a copy inside the worktree), git-excludes the generated configs, and prefixes non-Claude hook commands with `ORCA_HOOK_STRICT_EXIT=1` so an `ask` becomes exit 2 on harnesses that fail open on `ask`. Hermes gets a per-dispatch `HERMES_HOME` outside the worktree whose `config.yaml` adds a `fail_closed` `pre_tool_call` hook; the hook refuses edits to its own configs. Workers inherit `OPEN_FLEET_PARENT_PROFILE=<own profile>`, so a child can never exceed its parent.
+
+---
+
+## First run
+
+A reproducible first run drives one review unit through the public wrappers on the `posix`
+route and ends in a SHA-bound `FIRST_RUN=GO` or `FIRST_RUN=NO-GO step=<s>`. The full guide,
+expected output and troubleshooting are in
+[Provider and harness certification](certification.md#first-run-on-a-clean-host); these are the
+commands.
+
+Inert: no agent and no spend. CI runs this route for every posix harness name.
+
+```bash
+python3 runtime/scripts/certification.py check
+python3 runtime/scripts/first_run.py --profile ro
+python3 runtime/scripts/first_run.py --profile rw
+python3 runtime/scripts/first_run.py probes
+```
+
+Live: the real harness reviews the change, so **it spends**. Put the harness you mean first on
+`PATH` (an isolation wrapper, say). The run refuses to start when the interpreter's own
+directory holds another binary of that name (`step=prereqs`), because the sandbox puts that
+directory first. `--keep` keeps the sandbox, whose transcript and verifier manifest the record
+quotes:
+
+```bash
+PATH="<wrapper-dir>:$PATH" OPEN_FLEET_POSIX_BACKEND=setsid \
+  python3 runtime/scripts/first_run.py run --worker live --agent claude --profile ro \
+  --workdir <runs>/596-ro --keep --json > <runs>/596-ro.receipt.json
+PATH="<wrapper-dir>:$PATH" OPEN_FLEET_POSIX_BACKEND=setsid \
+  python3 runtime/scripts/first_run.py run --worker live --agent claude --profile rw \
+  --workdir <runs>/596-rw --keep --json > <runs>/596-rw.receipt.json
+```
+
+`--profile rw` has the worker commit its report, send `worker_done`, and then print the same
+report as its final answer. The run checks both copies. A receipt reads `live-unreviewed` and
+certifies nothing until a maintainer binds it in a `docs/runs/` report and records the cells, as
+the [2026-10-24 live first runs](runs/2026-10-24-review-it-first-run.md) were. The
+receipt carries what the record needs: its `witness` line, `facts.harness.version`,
+`host.catalog_commit`, `host.platform`, `started_at`, and, for Claude Code,
+`facts.harness_usage` (model, turns, cost). See
+[Recording a live first run](certification.md#recording-a-live-first-run).

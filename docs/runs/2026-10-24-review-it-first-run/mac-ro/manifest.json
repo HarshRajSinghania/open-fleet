@@ -1,0 +1,45 @@
+{
+  "unit": "first-run-fr-2420f5",
+  "claim": "first-run review of 223b6eeef8b1a9343f49e16b1a18de71bc20f42b on the posix route (live claude, PROFILE=ro)",
+  "base_sha": "6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+  "head_sha": "39919c79455e6bc8b994120c277ff53898dea3d5",
+  "base_branch": "first-run/fr-2420f5",
+  "contract": {
+    "source": ".first-run/fr-2420f5/contract.md@6a9bafccb7302c7f9b49dc562645010f0926f4e9",
+    "digest": "sha256:76b611efb20f01b6d3512594c06459a7a3c87b753af1e71d6894517540894184",
+    "criterion_ids": [
+      "FR-1",
+      "FR-2",
+      "FR-3",
+      "FR-4"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "FR-1",
+      "text": "FR-1",
+      "addressed": true
+    },
+    {
+      "id": "FR-2",
+      "text": "FR-2",
+      "addressed": true
+    },
+    {
+      "id": "FR-3",
+      "text": "FR-3",
+      "addressed": true
+    },
+    {
+      "id": "FR-4",
+      "text": "FR-4",
+      "addressed": true
+    }
+  ],
+  "artifacts": [
+    {
+      "path": ".first-run/fr-2420f5/report.md",
+      "sha256": "e6f92724f40600adf5d381581d774e118cf151b96577006b3ea4dc8180152bc9"
+    }
+  ]
+}

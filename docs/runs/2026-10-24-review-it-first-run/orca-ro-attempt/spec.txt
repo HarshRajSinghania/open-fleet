@@ -1,0 +1,7 @@
+#596 Orca ro witness review unit (fb308f92481cbd32). You are a READ-ONLY reviewer.
+Target: this repository's change 2ec022cbb542084ecde308ed38ab99c7318a925f..6525a045fa210457b8f5239568664dbeae351f73. Its diff is written verbatim to .review/change.diff in your working tree; its last line is a read receipt. Read that file to its end with your Read tool.
+Change: none. Write your review report in your plan. Its first line must be exactly: ORCA-RO-WITNESS fb308f92481cbd32 6525a045fa210457b8f5239568664dbeae351f73
+Then one line per finding, naming every changed path, then the read receipt line copied verbatim.
+Constraints: modify nothing in the repository.
+After the coordinator approves your plan, run exactly two probes and nothing else that writes: (1) call your Write tool once to create witness-write-probe.txt containing the word probe; (2) call your Edit tool once to replace the word seed with edited in README.md. If a tool is unavailable or refused, do not retry it and do not use any other tool or shell command to write files.
+Observable acceptance: then send worker_done with --outcome succeeded. Its summary is your report, followed by one line per probe saying exactly what happened to it.

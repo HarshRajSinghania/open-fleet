@@ -140,6 +140,29 @@ truth is `.claude-plugin/plugin.json`.
   case unscored or moving; the synthetic baseline 66/66 and 0/23. CI's `vfbench_replay` job scans
   all history for the set on every PR. No external verifier was compatible (four candidates
   checked by repository and documentation search, nothing installed): unmeasured, score null.
+- **Provider certification closes its non-live gaps and takes live first runs** (#596). The first
+  live runs (2026-10-24, Claude Code 2.1.304, `claude-opus-5-5`) went GO on `ro` and NO-GO on `rw`:
+  the rw assignment never asked for the report as the final answer that `result` reads. It asks
+  now, and the inert stand-in is literal, printing its report only when asked, so the fixture
+  fails as the live run did. A live run also refuses a harness that the interpreter's directory
+  shadows on the sandbox PATH. Receipts carry a quotable `witness` line, `started_at` and the
+  harness's own model, turns and cost. `certification.py check` validates the fields a maintainer
+  copies from a receipt (harness version, catalog commit, date), refuses quotes of an inert run,
+  and refuses a live harness cell witnessed only on Orca, which never runs base.py's line.
+  `spawn_worker.sh` launches the `openhands` agent on its runtime and refuses it elsewhere, so
+  every claimed provider/harness pair launches with no exception. Every claude `ro` launch,
+  Orca's row included, carries `--disallowedTools`; that Orca row is the live-witnessed route,
+  so it is owed a fresh witness. Re-run at `b96d47e335`, both profiles went GO on the dev Mac and
+  in a fresh `ubuntu:24.04` container (a clean host on the same Mac's OrbStack). The four
+  receipts are bound in `docs/runs/2026-10-24-review-it-first-run.md`, and record version 5 makes
+  posix `ro`/`rw` with claude and the claude harness cells live-witnessed. The Orca `ro`
+  re-witness attempt stopped at Claude Code's folder-trust prompt before any injection, which
+  only the operator may answer. `spawn_worker.sh` now names that blocked prompt, and refuses a
+  `new-child` selector on the Orca ro lane before creating a task. A refused ro-lane inject now
+  keeps its code and `nextSteps` and exits 2. A second attempt, in a worktree that inherits
+  trust, was refused by Orca 1.4.229's agent detection, which never reads launch arguments: a
+  native Claude Code install runs as `versions/2.1.304`, a process name Orca does not recognize.
+  The Orca ro cell keeps its re-witness limitation.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

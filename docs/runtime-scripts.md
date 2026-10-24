@@ -171,6 +171,14 @@ partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any o
   upstream versions. The record only points to the lines; the route is read from them. A
   group that copies another route's witness, or cites a run that never names a route, is
   refused;
+- a `live-witnessed` group whose quotes come from a fixture run (`worker=inert` or
+  `tier=fixture-tested` in a first-run `witness` line), or a live harness cell whose quotes name
+  no provider other than `orca` (base.py's table runs off Orca; Orca launches spawn_worker.sh's
+  own rows);
+- the fields copied from a run receipt that disagree with the witness: a live harness cell's
+  `upstream.version` not named in `witnessed.harness_version`, an `in-repo` provider whose
+  `witnessed.upstream_version` is not a commit on HEAD's history (the receipt's
+  `host.catalog_commit`), or a `witnessed.date` that is not `YYYY-MM-DD`;
 - a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
 
 A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
@@ -609,16 +617,21 @@ Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert
 and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
 
 `--worker inert` (the default) puts a stand-in for the harness first on PATH, behind tripwires
-for every other harness name. It calls no model and its receipt reads `fixture-tested`.
+for every other harness name. It calls no model and its receipt reads `fixture-tested`. The
+stand-in is LITERAL: its final answer is the report only when the assignment asks for that, and
+otherwise a one-line summary, as a live worker answered when the rw assignment never asked (#596).
 `--worker live` uses the operator's real harness. That run spends, and its receipt reads
-`live-unreviewed` until a maintainer binds it into `docs/runs/`.
+`live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
+when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
+different file than the operator's own PATH does (`harness_shadow`).
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
 completion line its assignment names as the worker's `worker_done` (#596), which must report
 `succeeded`; any other relayed outcome is NO-GO. Otherwise the worker exits cleanly with no line
-and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report and send `worker_done`;
-the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
+and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report, send `worker_done`,
+then print the same report as its final answer, which `result` reads as it does for `ro`; the
+coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
 profiles the report committed at the evidence head, the file `verify.py` binds, must open with
 the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
 
@@ -660,7 +673,10 @@ its last `FIRST-RUN-REPORT` line. The inert stand-in prints each of these format
 malformed runtime response, and missing capability. Each must refuse before a launch.
 
 Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
-command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
+command's argv and exit, and host facts. It also carries `started_at` (UTC), a one-line `witness`
+(provider/backend, `PROFILE=`, harness and version, worker, tier, catalog commit, verdict) that a
+certification record can quote, and, when the harness reports it (Claude Code's stream-json),
+`facts.harness_usage`: model, turns, duration and cost. After a GO the sandbox is pruned down to the receipt;
 after a NO-GO it is kept whole. However the run ends, it first stops every worker still live in
 its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal closes (SIGHUP).
 A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended
@@ -1638,7 +1654,14 @@ behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also c
 deny-hook arming (#562): with `ORCA_DENY_HOOK_SETTINGS` naming the operator-wired
 settings file, the file must register `runtime/scripts/deny-hook.sh` and the hook must
 answer a deny probe, else `SPAWN=REFUSED`; unset, the spawn proceeds with a loud
-`UNVERIFIED` warning — the guard is never claimed unchecked.
+`UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
+`terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
+`new-top-level` there are refused before any task is created, since only `worker-start` creates a
+worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,
+such as `agent-trust-workspace`, Claude Code's folder-trust question), the spawn fails naming it
+and injects nothing: a trust prompt is the operator's to answer (#596). A refused `dispatch --inject` keeps its
+receipt's code, reason and `nextSteps`. It exits 2 on a typed policy refusal such as
+`inject_rejected`, as the supervised lane does, and 1 otherwise.
 
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 
@@ -1657,7 +1680,9 @@ would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
 
 Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`,
-`jcode`, `goose`, `hermes`, `crush`
+`jcode`, `goose`, `hermes`, `crush`, and `openhands`, the OpenHands SDK agent, which runs on
+`OPEN_FLEET_RUNTIME=openhands` only; that runtime refuses every other agent name before any
+upstream call, since it would start its own agent under it (#596)
 (default `claude`; effort default `xhigh`, keyset `minimal|low|medium|high|xhigh|max|ultra`
 — the codex levels, the only path that interpolates it); unknown agents refuse. Off Orca every
 launch is `runtime/providers/base.py`'s line. On Orca, `ro` runs the script's own row on the
@@ -1665,9 +1690,10 @@ custom-argv lane: the jcode and hermes rows carry base.py's ro restriction (jcod
 allowlist and `--disabled-tools` set; hermes' `HERMES_WRITE_SAFE_ROOT=/dev/null` and
 `--toolsets file,web,session_search`), and crush `ro` refuses there, because its read-only mode
 is a `<data-dir>/crush.json` that only the posix provider installs (#596). The Orca claude `ro` row
-stays the live-witnessed plan-mode TUI line and does not carry base.py's
-`--disallowedTools Edit,Write,MultiEdit,NotebookEdit`; every other claude `ro` launch and alias
-does (`tests/test_claude_ro_launches.py`). `opencode`, `omp` and
+is plan mode plus base.py's `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`, like every
+other claude `ro` launch and alias (`tests/test_claude_ro_launches.py`): the coordinator's in-pane
+plan approval exits plan mode, and the set still holds after it. That row is the live-witnessed
+Orca route, and its witness predates the set, so it is owed a fresh one. `opencode`, `omp` and
 `pi` have no Orca row for any profile, so they refuse on Orca without a `WORKER_CMD`. Profiles: `ro`, `rw`
 (default), `danger` — least privilege; `danger` needs the ephemeral sandbox plus
 `ORCA_SANDBOX_RECIPE`, and the script runs the doctor transcript itself into

@@ -31,7 +31,9 @@ Profiles: `ro` (default; the review-it shape — the worker prints its report an
 send mail. posix relays the completion line its assignment names as its `worker_done` and records a
 clean exit without that line as `worker_died (exit=0)`; either settles the unit, and the
 coordinator commits the report it read from the transcript, #596) and `rw` (the worker commits the
-report itself and sends `worker_done`; its HEAD is re-read from git, never taken from the claim).
+report itself, sends `worker_done`, then prints the same report as its final answer; both copies must
+meet the contract, and its HEAD is re-read from git, never taken from the claim). The inert stand-in
+is LITERAL: it prints its report only when the assignment asks, as a live worker does (#596).
 
 The reviewed target is a two-commit repository the run synthesizes, or `--target <repo>`
 (cloned into the sandbox, never modified) with `--base/--head`. Every artifact lives in one
@@ -133,6 +135,59 @@ def harness_report(agent: str, lines: list[str]) -> str:
     return answer
 
 
+def harness_usage(lines: list[str]) -> dict:
+    """What the harness itself reported about its run, where its output carries it (#596): Claude
+    Code's stream-json `init` event names the model, its `result` event the turns, duration and
+    cost. Other output formats report nothing here; nothing is estimated."""
+    usage: dict = {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "system" and event.get("subtype") == "init" and isinstance(event.get("model"), str):
+            usage["model"] = event["model"]
+        if event.get("type") == "result":
+            for key in ("num_turns", "total_cost_usd", "duration_ms"):
+                value = event.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    usage[key] = value
+    return usage
+
+
+def harness_shadow(binary: str, run_path: str, own_path: str) -> str:
+    """'' when the run's PATH resolves `binary` to the file the operator's own PATH names (#596).
+
+    The sandbox puts the interpreter's directory first on PATH, so every wrapper runs this Python.
+    A harness that directory also holds would then run in place of the operator's (an isolation
+    wrapper, a pinned build): a live run refuses that rather than spend on the wrong binary.
+    """
+    run, own = shutil.which(binary, path=run_path), shutil.which(binary, path=own_path)
+    if not own:
+        return f"`{binary}` is not on your PATH; the run would launch {run}"
+    if not run or os.path.realpath(run) != os.path.realpath(own):
+        return f"the run's PATH resolves `{binary}` to {run}, but your PATH resolves it to {own}"
+    return ""
+
+
+def witness_line(receipt: dict) -> str:
+    """The run's route, harness version, catalog commit and verdict on ONE line (#596).
+
+    certification.json certifies a live cell by quoting whole lines of a bound run's artifacts,
+    which together must name the provider, `PROFILE=<p>` beside the harness, the harness version
+    and the upstream version: this line carries all of them, so the receipt itself is quotable.
+    It also says `worker=` and `tier=`, and certification.py refuses a quote of an inert run.
+    """
+    route, host = receipt.get("route") or {}, receipt.get("host") or {}
+    harness = (receipt.get("facts") or {}).get("harness") or {}
+    return (f"{route.get('provider')}/{route.get('backend')} PROFILE={route.get('profile')} "
+            f"harness={route.get('harness')} version={harness.get('version') or 'unknown'} "
+            f"worker={route.get('worker')} tier={receipt.get('tier')} catalog={host.get('catalog_commit')} "
+            f"dirty={host.get('catalog_dirty')} verdict={receipt.get('verdict')}")
+
+
 def all_harness_binaries() -> list[str]:
     """Every harness name and binary base.py knows: each gets a tripwire in inert mode."""
     spec = importlib.util.spec_from_file_location("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
@@ -218,9 +273,24 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
 done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
 if done:
     report += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
+# Literal mode (#596 live rw run): a real worker does what its assignment says and no more. Its
+# final answer is the report only when the spec asks for exactly that; otherwise it is a one-line
+# summary, as Claude Code's was when the rw assignment never asked. first_run installs the stand-in
+# in this mode (literal_stand_in); a bare stand-in run outside any assignment keeps printing.
+LITERAL = False
+if LITERAL and not re.search(r"(?i)\bprint\b[^\n]*\breport\b[^\n]*\bas your final answer\b", spec):
+    if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
+        report = "I reviewed the change, committed the report, and sent the completion message.\n"
+    else:
+        report = "I reviewed the change.\n"
 answer(report)
 sys.exit(rc)
 '''
+
+
+def literal_stand_in(source: str) -> str:
+    """The stand-in in literal mode: it prints its report only when its assignment asks (#596)."""
+    return source.replace("\nLITERAL = False\n", "\nLITERAL = True\n")
 
 
 class Sandbox:
@@ -268,7 +338,9 @@ class Sandbox:
     def _install_inert(self) -> None:
         self.inert.mkdir(parents=True, exist_ok=True)
         self.tripwire.mkdir(parents=True, exist_ok=True)
-        (self.inert / "worker.py").write_text(INERT_WORKER, encoding="utf-8")
+        # Literal: an assignment that never asks for the report as the final answer must fail
+        # here as it failed live, not pass because the stand-in printed it anyway (#596).
+        (self.inert / "worker.py").write_text(literal_stand_in(INERT_WORKER), encoding="utf-8")
         for name in all_harness_binaries():
             trip = self.tripwire / name
             trip.write_text(f'#!/bin/sh\necho "{name} $*" >> {shlex.quote(str(self.tripwire / "hits.log"))}\nexit 97\n',
@@ -398,6 +470,7 @@ class FirstRun:
         # Only the change file carries this: quoting it shows the worker read that file (FR-4).
         self.read_receipt = f"{READ_HEAD}{secrets.token_hex(8)}"
         self.facts: dict = {"run_id": self.run_id, "nonce": self.nonce}
+        self.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     # Each method is one step; it returns its detail string or raises StepFailed.
     def prereqs(self) -> str:
@@ -412,6 +485,11 @@ class FirstRun:
             raise StepFailed(f"`{binary}` is not on PATH", f"install {self.args.agent} and sign it in, or use --worker inert")
         if self.args.worker == "live" and Path(found).resolve().is_relative_to(self.sb.dir.resolve()):
             raise StepFailed("live mode resolved the harness inside the sandbox", "remove the stand-in from PATH")
+        shadow = "" if self.args.worker == "inert" else harness_shadow(binary, self.sb.env["PATH"],
+                                                                         os.environ.get("PATH", os.defpath))
+        if shadow:
+            raise StepFailed(shadow, "run first_run.py with an interpreter whose directory holds no harness, "
+                                     "or put the harness you mean first on your own PATH")
         self.facts["harness"] = {
             "name": self.args.agent,
             "path": found,
@@ -510,6 +588,9 @@ class FirstRun:
                 "Then report completion with:",
                 '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded'
                 ' --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" --payload \'{"head": "<the report commit sha>"}\'',
+                # The run reads the report from the final answer AND from the commit, and both must
+                # meet the contract; without this line a live worker answered with a summary (#596).
+                "Last, print the same report you committed, exactly as committed, as your final answer.",
             ]
         else:
             lines.append("Modify nothing. Print the report as your final answer.")
@@ -658,6 +739,9 @@ class FirstRun:
         except (ValueError, KeyError, TypeError):
             raise StepFailed(f"worker-read unreadable: {proc.stdout[:200]!r}") from None
         lines = [str(block.get("text") or "") for msg in messages for block in (msg.get("blocks") or [])]
+        usage = harness_usage(lines)
+        if usage:  # the spend and the model a live run's record names (#596)
+            self.facts["harness_usage"] = usage
         return harness_report(self.args.agent, lines)
 
     def evidence(self) -> str:
@@ -759,10 +843,12 @@ class FirstRun:
         facts = {k: v for k, v in self.facts.items() if k not in ("report", "contract")}
         if "contract" in self.facts:
             facts["contract"] = {k: self.facts["contract"][k] for k in ("source", "digest", "criterion_ids")}
-        return {
+        out = {
             "schema": SCHEMA,
+            "started_at": self.started_at,
             "verdict": "NO-GO" if failed else "GO",
             "tier": "fixture-tested" if self.sb.worker == "inert" else "live-unreviewed",
+            "witness": "",
             "route": {"provider": "posix", "backend": "setsid", "profile": self.args.profile,
                       "harness": self.args.agent, "worker": self.sb.worker},
             "host": host_facts(),
@@ -773,6 +859,8 @@ class FirstRun:
             "elapsed_s": elapsed,
             "sandbox": str(self.sb.dir),
         }
+        out["witness"] = witness_line(out)
+        return out
 
 
 def write_manifest(path: Path, manifest: dict) -> None:

@@ -1653,6 +1653,23 @@ class TestRegisteredInputsBlockARun(Tmp):
         (repo / "README.md").write_text("v2\n", encoding="utf-8")  # not an experiment input
         self.assertEqual(wip.dirty_inputs(repo), ["scripts/wip_curve.py"])
 
+    def test_the_shared_call_helper_is_an_experiment_input(self):
+        # PR #668 review (Greptile): every oracle call runs under scripts/_ablation_run.py's watchdog,
+        # timeouts and sweep, so a change there changes how a run is contained and timed. It is
+        # digested with the runner, and a live run refuses while it is uncommitted.
+        repo = self.tmp / "repo"
+        for rel in ("scripts/wip_curve.py", "scripts/_ablation_run.py", "README.md"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("v1\n", encoding="utf-8")
+        wip.git(repo, "init", "-q")
+        wip.git(repo, "add", "-A")
+        wip.git(repo, "-c", "user.email=t@t.invalid", "-c", "user.name=t", "commit", "-qm", "seed")
+        (repo / "scripts" / "_ablation_run.py").write_text("v2\n", encoding="utf-8")
+        self.assertEqual(wip.dirty_inputs(repo), ["scripts/_ablation_run.py"])
+        files = wip.experiment_inputs()["files"]
+        self.assertEqual(files.get("scripts/_ablation_run.py"),
+                         hashlib.sha256((ROOT / "scripts" / "_ablation_run.py").read_bytes()).hexdigest())
+
     def test_a_live_run_refuses_uncommitted_inputs_before_anything_starts(self):
         # In-process with dirty_inputs faked. Were the check gone, the cost pre-check (a cap of 1.00
         # below the first wave's 2.00) would still stop the run before any harness: rc 1, not 2.

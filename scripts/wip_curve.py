@@ -401,10 +401,12 @@ def contract_errors(contracts) -> list[str]:
     return errors
 
 
-# Everything the experiment's measurement depends on: the runner, the registration and task set,
-# and the runtime it drives. A live run refuses while any is uncommitted, and every run records
-# their digest, so runs made on different inputs are never pooled.
-EXPERIMENT_INPUTS = ("scripts/wip_curve.py", "docs/experiments", "runtime")
+# Everything the experiment's measurement depends on: the runner, the shared call helper whose
+# watchdog, timeouts and sweep every oracle call runs under (scripts/_ablation_run.py, PR #668
+# review), the registration and task set, and the runtime it drives. A live run refuses while any
+# is uncommitted, and every run records their digest, so runs made on different inputs are never
+# pooled.
+EXPERIMENT_INPUTS = ("scripts/wip_curve.py", "scripts/_ablation_run.py", "docs/experiments", "runtime")
 
 
 def dirty_inputs(root: Path = ROOT) -> list[str]:

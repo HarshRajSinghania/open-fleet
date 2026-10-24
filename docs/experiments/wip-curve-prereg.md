@@ -472,8 +472,8 @@ Everything the measurement depends on is pinned:
   moved input is refused there, never recorded as a failed run.
 - A results directory holds one registration. A run is refused when the directory already holds
   a run made under another pre-registration or task-set digest.
-- A live run is refused while any experiment input (`scripts/wip_curve.py`, `docs/experiments/`,
-  `runtime/`) has uncommitted changes. Every run records the digest of each input, and a live run
+- A live run is refused while any experiment input (`scripts/wip_curve.py`, the shared call
+  helper `scripts/_ablation_run.py`, `docs/experiments/`, `runtime/`) has uncommitted changes. Every run records the digest of each input, and a live run
   on inputs other than the first live run's is not compliant, so it is never pooled.
 
 After the first live run, any change to the task set, the contracts, the conditions, the order,

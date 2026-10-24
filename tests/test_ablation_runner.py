@@ -92,6 +92,16 @@ STUB = textwrap.dedent(r'''
                                  stderr=subprocess.DEVNULL)
         with open(pids_file, "w", encoding="utf-8") as fh:
             json.dump([os.getpid(), child.pid], fh)
+    def spawn_escaper(pids_file):
+        """A grandchild in a session of its own from birth (setsid) that sleeps: no process group
+        of the call holds it, so only the call's marker can find it (#657 review K4)."""
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        with open(pids_file, "w", encoding="utf-8") as fh:
+            json.dump([child.pid], fh)
+    if mode == "grader-escape":
+        spawn_escaper(os.environ["ABLATION_GRADER_USAGE"] + ".pids")
     if mode == "grader-hang":
         spawn_sleeper(os.environ["ABLATION_GRADER_USAGE"] + ".pids")
         import time
@@ -127,6 +137,8 @@ STUB = textwrap.dedent(r'''
         time.sleep(60)
     if mode == "orphan":
         spawn_sleeper(os.path.join(out, "agent.pids"))
+    if mode == "escape":
+        spawn_escaper(os.path.join(out, "agent.pids"))
     cues = re.findall(r"([A-Za-z0-9-]+)\.md at ([A-Z][A-Z0-9_-]*)", "\n".join(
         p for p in task.split("\n\n") if p.startswith("DEFERRED READS")))
     catalog = os.environ["ABLATION_CATALOG"]
@@ -1052,6 +1064,503 @@ class CellMechanics(unittest.TestCase):
                 mock.patch.object(runner.eval_mod(), "run_trajectory_eval", return_value={"rows": [row]}):
             graded = runner.grade_trajectory(case, Path(fh.name))
         self.assertEqual((graded["approval_violations"], graded["scope_violations"]), (1, 0))
+
+
+class TheRegisteredLimitIsPositiveAndWithinItsReservation(SafetyNet):
+    """#657 review K1, swept into #606's runner: a reservation registered below USD 0.0125 handed its
+    call `--max-budget-usd 0.00`, and one below USD 0.025 could round its limit ABOVE the
+    reservation. A live run refuses both before anything is written or run."""
+
+    def test_a_reservation_too_small_for_a_positive_limit_within_it_is_refused(self):
+        for key, value in (("max_cost_per_agent_run_usd", 0.001), ("grader_reserve_usd", 0.007)):
+            with self.subTest(key=key, value=value):
+                prereg = small_live_prereg()
+                prereg["cost_cap"][key] = value
+                path = self.tmpdir() / "prereg.json"
+                path.write_text(json.dumps(prereg), encoding="utf-8")
+                out = self.tmpdir() / "out"
+                code, _stdout, err = run_main(
+                    ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                     "--harness-cmd", self.stub_cmd("plain"), "--grader-cmd", self.stub_cmd("grader-json"),
+                     "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+                self.assertEqual(code, 2, err)
+                self.assertIn("per-call limit", err)
+                self.assertFalse(out.exists(), "a refused run wrote its results directory")
+
+
+class OneRunHoldsTheSpendLedger(SafetyNet):
+    """#657 review K2: SpendLedger read the disk once, at construction, so two runs sharing a ledger
+    each counted only their own spend and both admitted calls against what was left of one cap. A
+    ledger is now held exclusively from construction until release(): a second run on it is refused
+    before it reserves anything, and a dead run's hold goes with its process."""
+
+    def hold(self, path, run):
+        ledger = runner.SpendLedger(path, run)
+        self.addCleanup(lambda: ledger.release() if hasattr(ledger, "release") else None)
+        return ledger
+
+    def test_a_second_ledger_on_a_held_file_is_refused_until_it_is_released(self):
+        path = self.tmpdir() / "spend.jsonl"
+        first = self.hold(path, "run-a")
+        first.start("cell", "agent", 2.0)
+        with self.assertRaises(runner.Refused) as refused:
+            self.hold(path, "run-b")
+        self.assertIn("held by another run", str(refused.exception))
+        first.release()
+        self.assertEqual(self.hold(path, "run-c").total(), 2.0, "the released ledger is read afresh")
+
+    def test_a_concurrent_run_into_the_same_directory_is_refused(self):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        out.mkdir()
+        self.hold(out / "spend.jsonl", "a-run-already-spending")
+        code, _stdout, err = run_main(
+            ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+             "--harness-cmd", self.stub_cmd("plain", "--cost", "1.0"),
+             "--grader-cmd", self.stub_cmd("grader-json", "--cost", "0.25"),
+             "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+        self.assertEqual(code, 2, err)
+        self.assertIn("held by another run", err)
+        self.assertFalse((out / "cells").exists(), "a second run started a cell against the same cap")
+
+    def test_a_killed_holder_releases_the_ledger(self):
+        path = self.tmpdir() / "spend.jsonl"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", textwrap.dedent(f"""
+                import importlib.util, sys, time
+                spec = importlib.util.spec_from_file_location("held", {str(ROOT / "scripts" / "_ablation_run.py")!r})
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                ledger = mod.SpendLedger({str(path)!r}, "holder")
+                print("held", flush=True)
+                time.sleep(60)
+            """)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        with self.assertRaises(runner.Refused):
+            self.hold(path, "while-held")
+        holder.kill()
+        holder.communicate(timeout=30)
+        self.hold(path, "after-the-holder-died")
+
+
+class TheWatchdogCleansUpBeforeItLetsGo(SafetyNet):
+    """#657 review K3, swept into #606's runner. An agent call had no supervisor: a runner killed
+    by SIGKILL left the agent and everything it started running, and a hung grader's meter kept
+    its grader alive until its own timeout. Every agent and grader call now runs under a watchdog
+    that kills what its worker left behind BEFORE it exits, and sweeps the whole call when its
+    owner dies. The fakes sleep and spawn a sleeping grandchild; nothing calls a model."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 8
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def spawn(self, argv):
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"), *argv],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        return proc
+
+    def wait_for(self, out, pattern):
+        deadline = time.monotonic() + 60
+        while not list(out.rglob(pattern)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(list(out.rglob(pattern)), f"no {pattern} appeared: the call never started")
+        time.sleep(0.2)
+
+    def test_the_watchdog_kills_what_its_worker_left_before_it_exits(self):
+        tree = self.out_dir() / "tree.pids"
+        tree.parent.mkdir(parents=True)
+        worker = ("import json, subprocess, sys\n"
+                  "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+                  "                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                  "json.dump([c.pid], open(sys.argv[1], 'w'))\n")
+        done = subprocess.run([sys.executable, "-I", str(ROOT / "scripts" / "_ablation_run.py"), "--watchdog",
+                               str(os.getpid()), "--", sys.executable, "-c", worker, str(tree)], timeout=60)
+        self.assertTrue(tree.is_file(), "the watchdog never ran its worker")
+        self.assertEqual(done.returncode, 0)
+        # Nobody else swept: what the worker left was killed before the watchdog let go of it.
+        self.assertAllDead(tree.parent, at_least=1)
+
+    def test_with_the_runner_gone_at_once_a_finished_agent_leaves_nothing_behind(self):
+        # The runner's own teardown never runs, as if it were SIGKILLed the instant the call's
+        # leader exited: only the watchdog stands between the orphan and the next cell.
+        out = self.out_dir()
+        with mock.patch.object(runner, "kill_group", return_value=True), \
+                mock.patch.object(runner, "sweep", return_value=True, create=True):
+            code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("orphan"),
+                                           "--cost-cap-usd", "0", "--mission", "review-it", "--task",
+                                           "behavioral-4", "--repeats", "1", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        envs = [json.loads(f.read_text()) for f in sorted(out.rglob("stub-env.json"))]
+        self.assertEqual([e["alive_at_start"] for e in envs], [[], []], "a cell started while an orphan lived")
+        self.assertAllDead(out, at_least=4)
+
+    def test_a_sigkilled_runner_takes_its_agent_with_it(self):
+        out = self.out_dir()
+        proc = self.spawn(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("hang"), "--cost-cap-usd", "0",
+                           "--mission", "review-it", "--task", "behavioral-4", "--repeats", "1",
+                           "--timeout", "60", "--out", str(out)])
+        self.wait_for(out, "agent.pids")
+        proc.send_signal(signal.SIGKILL)
+        proc.communicate(timeout=30)
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_sigkilled_runner_takes_its_grader_with_it(self):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.out_dir()
+        proc = self.spawn(["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                           "--harness-cmd", self.stub_cmd("plain", "--cost", "1.0"),
+                           "--grader-cmd", self.stub_cmd("grader-hang"),
+                           "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+        self.wait_for(out, "grader-usage.json.pids")
+        proc.send_signal(signal.SIGKILL)
+        proc.communicate(timeout=30)
+        self.assertAllDead(out, at_least=2)
+
+
+class ACallIsContainedAcrossSessions(SafetyNet):
+    """#657 review K4, swept into #606's runner: cleanup killed the call's process GROUP, so a
+    harness or grader descendant that called setsid() left it, kept running (and spending), and
+    the call still reported itself empty. Every call now carries a unique OF_CALL_ID marker in its
+    environment; teardown kills every process carrying it and re-scans until none is left, and a
+    call is never settled while anything of it survives or the process table cannot be read."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 8
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def started_clean(self, out):
+        return [json.loads(f.read_text())["alive_at_start"] for f in sorted(out.rglob("stub-env.json"))]
+
+    def live(self, out, agent="plain", grader="grader-json"):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        return ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                "--harness-cmd", self.stub_cmd(agent, "--cost", "1.0"),
+                "--grader-cmd", self.stub_cmd(grader, "--cost", "0.25"),
+                "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)]
+
+    def test_an_agent_grandchild_that_leaves_the_session_is_swept(self):
+        out = self.out_dir()
+        code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("escape"),
+                                       "--cost-cap-usd", "0", "--mission", "review-it", "--task",
+                                       "behavioral-4", "--repeats", "1", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.started_clean(out), [[], []], "a cell started while an escaped grandchild lived")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_grader_grandchild_that_leaves_the_session_is_swept(self):
+        out = self.out_dir()
+        code, _stdout, err = run_main(self.live(out, grader="grader-escape"))
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 2, err)
+        self.assertEqual(self.started_clean(out), [[], []], "a cell started while a grader's escapee lived")
+        self.assertAllDead(out, at_least=2)
+
+    def assertKeptOpen(self, out, code, err):
+        self.assertEqual(code, 1, err)
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 1, "a cell started while a process of the last one lived")
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
+        cell = results["cells"][0]
+        self.assertFalse(cell["grader_called"], "a paid grader started while the agent's process lived")
+        self.assertEqual(cell["charged_usd"], PREREG["cost_cap"]["max_cost_per_agent_run_usd"])
+        ledger = [json.loads(ln) for ln in (out / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["call"], r["event"]) for r in ledger], [("agent", "start")],
+                         "a call was settled while a process of it lived")
+
+    def test_a_survivor_keeps_its_call_open_and_stops_the_run(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "sweep", return_value=False, create=True):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertKeptOpen(out, code, err)
+
+    def test_a_process_table_it_cannot_read_is_a_survivor(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "containment_problem", return_value=None, create=True), \
+                mock.patch.object(runner, "process_table", side_effect=OSError("no ps"), create=True):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertKeptOpen(out, code, err)
+
+    def test_a_call_is_its_marker_its_group_and_everything_below_them(self):
+        # Platform-free: what a sweep kills, given a process table (/proc on Linux, ps -E elsewhere).
+        tag, other = "a" * 32, "b" * 32
+        table = {
+            10: (1, 10, ()),                                    # the watchdog, leading group 10
+            11: (10, 10, ()),                                   # its worker
+            12: (11, 12, ()),                                   # left the group, still below it
+            20: (1, 20, (f"{runner.CALL_MARKER}={tag}",)),      # left the tree and the group, tagged
+            21: (20, 21, ("PATH=/bin",)),                       # below the escapee, marker cleared
+            30: (1, 30, (f"{runner.CALL_MARKER}={other}",)),    # another call's
+            40: (1, 40, ("PATH=/bin",)),                        # a stranger
+        }
+        self.assertEqual(runner.call_processes(table, groups=(10,), tag=tag, exclude=(10,)), {11, 12, 20, 21})
+        self.assertEqual(runner.call_processes(table, roots=(11,)), {11, 12})
+        self.assertEqual(runner.call_processes(table, tag=other), {30})
+
+
+@contextlib.contextmanager
+def without_waitid():
+    """os as macOS ships it before Python 3.13: no waitid (#657 review W2)."""
+    saved = os.__dict__.pop("waitid", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            os.waitid = saved
+
+
+class TheCallLifecycleIsPortable(SafetyNet):
+    """#657 review W2 (Greptile): a call waited for its watchdog with os.waitid(..., WNOWAIT), which
+    macOS lacks before Python 3.13, so the first call on 3.11 or 3.12 raised AttributeError and
+    aborted the run. The wait is portable now, and it still never reaps the watchdog before the
+    sweep: its pid, and its group's id, stay this run's until the call is verified empty."""
+
+    def worker(self, *body):
+        return [sys.executable, "-c", "\n".join(("import sys, time",) + body)]
+
+    def test_a_call_needs_no_waitid_and_keeps_its_leader_until_the_sweep(self):
+        real, held = runner.sweep, []
+
+        def spy(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None):
+            if roots:  # the runner's own sweep of a call: is the watchdog's pid still this run's?
+                try:
+                    os.kill(roots[0], 0)
+                    held.append(True)
+                except ProcessLookupError:
+                    held.append(False)
+            return real(roots, groups, exclude, wait_s, tag)
+        out = self.tmpdir() / "stdout"
+        with without_waitid(), mock.patch.object(runner, "sweep", spy):
+            finished = runner.contained_run(self.worker("print('done')", "sys.exit(3)"), timeout=30,
+                                            stdout_path=out)
+            hung = runner.contained_run(self.worker("time.sleep(60)"), timeout=1, stdout_path=out)
+        self.assertEqual(finished, (3, False, True))
+        self.assertEqual(hung, (None, True, True))
+        self.assertEqual(held, [True, True], "the watchdog was reaped before the sweep that needed its pid")
+
+    def test_a_whole_run_needs_no_waitid(self):
+        out = self.tmpdir() / "out"
+        with without_waitid():
+            code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("plain"),
+                                           "--cost-cap-usd", "0", "--mission", "review-it", "--task",
+                                           "behavioral-4", "--repeats", "1", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads((out / "results.json").read_text())["cells"]), 2)
+
+
+# A watchdog whose process discovery fails, as in a sandbox that denies `ps`: the real watchdog
+# (loaded from _ablation_run.py) with its process_table replaced. Tests put it in place of
+# watchdog_argv() so discovery fails in the watchdog as well as in the runner (#657 review W1).
+BLIND_WATCHDOG = textwrap.dedent("""
+    import importlib.util, sys
+    spec = importlib.util.spec_from_file_location("blind_watchdog", sys.argv[1])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    def unavailable():
+        raise OSError("process discovery denied (test)")
+    mod.process_table = unavailable
+    sys.exit(mod.watchdog_main(sys.argv[3:]))
+""")
+
+
+# The same watchdog with a process table that BREAKS (not merely unavailable): its sweep raises.
+BROKEN_WATCHDOG = BLIND_WATCHDOG.replace('raise OSError("process discovery denied (test)")',
+                                         'raise ValueError("an unparseable process table (test)")')
+
+
+def broken_watchdog_argv(tag):
+    return [sys.executable, "-I", "-c", BROKEN_WATCHDOG, str(runner.WATCHDOG), "--watchdog",
+            str(os.getpid()), tag, "--"]
+
+
+def blind_watchdog_argv(tag, owner=None):
+    return [sys.executable, "-I", "-c", BLIND_WATCHDOG, str(runner.WATCHDOG), "--watchdog",
+            str(owner or os.getpid()), tag, "--"]
+
+
+# A worker leaving a sleeping grandchild in its own process group, recorded with it; `hang` keeps
+# the worker itself alive too.
+TREE_WORKER = textwrap.dedent("""
+    import json, subprocess, sys, time
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(sys.argv[1], "w", encoding="utf-8") as fh:
+        json.dump([__import__("os").getpid(), child.pid], fh)
+    if sys.argv[2] == "hang":
+        time.sleep(60)
+""")
+
+
+class DiscoveryFailureNeverLeavesACallRunning(SafetyNet):
+    """#657 review W1 (Codex): when process discovery failed (a sandbox that denies `ps`), the
+    sweep returned False having killed nothing, the runner then killed the watchdog alone, and
+    the watchdog -- its own sweep failing too -- exited, so a paid worker kept running. The base
+    implementation had killed it. Now the call's known process group is always killed, whatever
+    discovery can see; a watchdog whose sweep fails kills its whole group with itself; a live run
+    refuses to start where discovery cannot contain a call; and a failure mid-run leaves the call
+    open at its reservation and stops the run."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 8
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def blind(self):
+        """Discovery fails in the runner AND in every watchdog it starts."""
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(runner, "process_table", side_effect=OSError("no ps")))
+        stack.enter_context(mock.patch.object(runner, "watchdog_argv", blind_watchdog_argv))
+        return stack
+
+    def tree(self, out, mode):
+        out.mkdir(parents=True, exist_ok=True)
+        return [sys.executable, "-c", TREE_WORKER, str(out / "tree.pids"), mode]
+
+    def test_a_timed_out_call_dies_whole_when_nothing_can_be_discovered(self):
+        out = self.out_dir()
+        with self.blind():
+            result = runner.contained_run(self.tree(out, "hang"), timeout=1, stdout_path=out / "stdout")
+        self.assertEqual(result[1:], (True, False), "killed, and not vouched for")
+        self.assertAllDead(out, at_least=2)
+
+    def test_what_a_finished_worker_left_dies_when_nothing_can_be_discovered(self):
+        out = self.out_dir()
+        with self.blind():
+            result = runner.contained_run(self.tree(out, "exit"), timeout=30, stdout_path=out / "stdout")
+        self.assertEqual(result[1:], (False, False), "finished, and not vouched for")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_blind_watchdog_kills_its_group_before_it_lets_go(self):
+        # The runner's own teardown never runs (as if SIGKILLed the instant the watchdog exited),
+        # and the watchdog cannot discover anything: it must still take its group down with it.
+        out = self.out_dir()
+        with mock.patch.object(runner, "watchdog_argv", blind_watchdog_argv), \
+                mock.patch.object(runner, "kill_group", return_value=True), \
+                mock.patch.object(runner, "sweep", return_value=True):
+            runner.contained_run(self.tree(out, "exit"), timeout=30, stdout_path=out / "stdout")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_sweep_that_breaks_still_kills_the_call(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "sweep", side_effect=ValueError("broken scan")), \
+                self.assertRaises(ValueError):
+            runner.contained_run(self.tree(out, "hang"), timeout=1, stdout_path=out / "stdout")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_watchdog_whose_sweep_breaks_still_kills_its_group(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "watchdog_argv", broken_watchdog_argv), \
+                mock.patch.object(runner, "kill_group", return_value=True), \
+                mock.patch.object(runner, "sweep", return_value=True):
+            runner.contained_run(self.tree(out, "exit"), timeout=30, stdout_path=out / "stdout")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_blind_watchdog_whose_owner_dies_still_kills_its_call(self):
+        out = self.out_dir()
+        out.mkdir(parents=True)
+        owner = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+            import os, subprocess, sys, time
+            argv = {blind_watchdog_argv("t" * 32)!r}
+            argv[argv.index("--watchdog") + 1] = str(os.getpid())
+            subprocess.Popen(argv + {self.tree(out, "hang")!r}, start_new_session=True)
+            time.sleep(60)
+        """)])
+        self.addCleanup(lambda: owner.poll() is None and owner.kill())
+        deadline = time.monotonic() + 30
+        while not (out / "tree.pids").is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.2)
+        self.assertTrue((out / "tree.pids").is_file(), "the call never started")
+        owner.kill()
+        owner.wait()
+        self.assertAllDead(out, at_least=2)
+
+    def live(self, out, agent="plain", *extra):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        return ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                "--harness-cmd", self.stub_cmd(agent, "--cost", "1.0"),
+                "--grader-cmd", self.stub_cmd("grader-json", "--cost", "0.25"),
+                "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out), *extra]
+
+    def test_a_live_run_is_refused_where_discovery_is_unavailable(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "process_table", side_effect=OSError("no ps")):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertEqual(code, 2, err)
+        self.assertIn("process discovery", err)
+        self.assertFalse(out.exists(), "a refused run wrote its results directory")
+
+    def test_a_live_run_is_refused_where_a_call_marker_is_invisible(self):
+        out = self.out_dir()
+        real = runner.process_table
+
+        def no_environments():
+            return {pid: (ppid, pgid, ()) for pid, (ppid, pgid, _env) in real().items()}
+        with mock.patch.object(runner, "process_table", no_environments):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertEqual(code, 2, err)
+        self.assertIn("process discovery", err)
+        self.assertFalse(out.exists(), "a refused run wrote its results directory")
+
+    def test_discovery_failing_mid_run_still_kills_the_call_keeps_it_charged_and_stops(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "containment_problem", return_value=None, create=True), self.blind():
+            code, _stdout, err = run_main(self.live(out, "hang", "--timeout", "2"))
+        self.assertEqual(code, 1, err)
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
+        self.assertEqual(results["cells"][0]["charged_usd"], PREREG["cost_cap"]["max_cost_per_agent_run_usd"])
+        ledger = [json.loads(ln) for ln in (out / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["call"], r["event"]) for r in ledger], [("agent", "start")])
+        self.assertAllDead(out, at_least=2)
 
 
 if __name__ == "__main__":

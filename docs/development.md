@@ -53,6 +53,7 @@ when one does not.
 | `python3 scripts/gen-badges.py --check` | Verify generated counts, activation callouts and proof summary without writing |
 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | Check description-based mission routing |
 | `python3 scripts/eval.py run --suite injection` | Run the deterministic VAL-01 prompt-injection and trust-fence drills ([`evals/injection-drills.json`](../evals/injection-drills.json), #560) |
+| `python3 scripts/deny_hook_corpus.py` | Differential-test the deny-hook's shell parsing against real bash; `--minimize --write` stores new mismatches as fixtures ([`runtime-scripts.md`](runtime-scripts.md#deny-hooksh), #598) |
 | `python3 scripts/eval.py run --suite trajectories` | Replay the adversarial worker trajectories through the real guards and print the [results table](adversarial-evals.md) (#602) |
 | `python3 scripts/hint_replay.py --check` | Replay the fixed episodic-hint corpus ([`tests/fixtures/hint-replay.json`](../tests/fixtures/hint-replay.json), #605) with hints off, unchecked and checked; fails unless provenance checks retrieve every useful note and leak no stale or poisoned one |
 | `python3 scripts/ablation.py prereg` | Check the #606 [ablation pre-registration](experiments/ablation-prereg.md): schema, obligation anchors, the page pinned to the JSON, payloads current. `ablation.py run --dry-run --cost-cap-usd 0 --repeats 1` drives the paired pipeline with an inert stand-in (no model, no spend) |

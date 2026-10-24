@@ -3,7 +3,7 @@
 Ground truth about how Orca's orchestration DAG behaves for fleets that drive it with CLI verbs
 (`run-create` / `task-create` / `worker-start` / `check` / `send`). Sourced from live-DB research
 plus the version-matched guide the binary serves (`orca skills get orchestration`); treat as
-operational contract, not product marketing. Current schema line: v43 at the pin (`db/contract-constants.ts:23` at v1.4.229 / a0cd1644, unchanged since v1.4.224 / 2bb20586; v42 was the v1.4.215 line — orca-session-id columns — and v43 only respells stored `session:<id>` addresses as `orca_session_id:<id>`, `migrate-v43.ts`).
+operational contract, not product marketing. Current schema line: v43 at the pin (`db/contract-constants.ts:23` at v1.4.238 / e6f7fba5, unchanged since v1.4.224 / 2bb20586; v42 was the v1.4.215 line — orca-session-id columns — and v43 only respells stored `session:<id>` addresses as `orca_session_id:<id>`, `migrate-v43.ts`).
 
 ## A Run is the durable scope primitive
 
@@ -23,7 +23,7 @@ not `task-list`'s — `task-list` has no cursor or limit; liveness-resume.md car
 Run — a dispatched worker creating a fresh Run and calling `worker-start` is still a worker, and
 still blocked at the default depth of 1 (dispatch-lifecycle.md). Exception: a self-dispatch
 (creator == assignee, context recorded against the coordinator's own terminal) is not a nesting
-parent and consumes no depth (`dispatch-depth.ts:41-51`).
+parent and consumes no depth (`dispatch-depth.ts:63-73`).
 
 ## DAG edges are `deps`, not `parent_id`
 

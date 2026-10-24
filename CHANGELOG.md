@@ -6,6 +6,15 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The Orca pin moves to v1.4.238, and #606's registration is re-registered as version 2** (#508).
+  The re-witness had held the pin because four docs in the ablation's registered payloads needed
+  edits. The ablation had not run, so this change applies them and re-registers it in one step
+  (`prereg --refresh`; cap, design, prompts and obligations unchanged). `sandbox-policy.md` names
+  the Auto host mode and its exit 5, `mission-scheduling.md` says `--host` takes host names,
+  `dispatch-lifecycle.md` names the new live pin and `--surface`, and eight stale citations are
+  re-anchored. `pins.json`, `orca-pin.md`, the certification record and the README floor move
+  together; the next dated review is 2027-01-24. The drift-note tests now run against a frozen
+  pin record, and four new tests read the committed one, so no later bump has to edit a test.
 - **The drift workflow files every confirmed re-pin trigger, even when the other check errored**
   (#661 review). GitHub adds `success()` to a step condition that names no status function, so a
   `latest` that failed on the network skipped a reached `review-date` alert, and the reverse. The

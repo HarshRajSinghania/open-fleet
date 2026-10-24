@@ -40,7 +40,7 @@
 | Improve this catalog or its docs | [Local development](docs/development.md) — Git and Python; no live Orca session needed |
 | Understand what a result proves | [Read a run result](docs/concepts.md#read-a-run-result) and [proof status](#proof-status) |
 
-**Install — one command** (needs `git` + Python ≥ 3.11; to *run* missions add an [open-fleet RPI runtime](docs/runtimes.md) such as Orca ≥ v1.4.229 or standalone `posix`, `gh`, and a supported coding-agent harness — [pinned list](docs/distribution.md#prerequisites-pinned)):
+**Install — one command** (needs `git` + Python ≥ 3.11; to *run* missions add an [open-fleet RPI runtime](docs/runtimes.md) such as Orca ≥ v1.4.238 or standalone `posix`, `gh`, and a supported coding-agent harness — [pinned list](docs/distribution.md#prerequisites-pinned)):
 
 ```bash
 git clone https://github.com/ravidsrk/open-fleet.git && cd open-fleet && sh scripts/install.sh
@@ -153,10 +153,10 @@ Every mission has a hard dependency on companions not published in this repo
 (the enforced-vs-observed pin table is in [distribution](docs/distribution.md#prerequisites-pinned)):
 
 1. **The Orca app**, running, with the orchestration experimental feature enabled — at or above
-   the catalog pin, currently **v1.4.229** (`runtime/pins.json`; the installer warns below it,
+   the catalog pin, currently **v1.4.238** (`runtime/pins.json`; the installer warns below it,
    and `scripts/validate.py` fails when this number and the pin disagree). Tested against
-   v1.4.209 through v1.4.229; upstream ships almost daily, and a weekly probe files an issue
-   when the catalog falls behind (`runtime/orca-pin.md`).
+   v1.4.209 through v1.4.238; upstream ships almost daily, and a weekly probe files an issue
+   when the catalog falls behind or its quarterly review date arrives (`runtime/orca-pin.md`).
 2. **The `orca` CLI** (`orca-ide` on Linux outside Orca terminals; Linux is exercised by one
    recorded `review-it` run on Ubuntu, [2026-10-13](docs/runs/2026-10-13-review-it-linux.md)).
 3. **Orca's two public skills, `orchestration` and `orca-cli`**, installed for the agent host —

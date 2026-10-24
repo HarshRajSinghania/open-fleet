@@ -1080,10 +1080,13 @@ class Run:
             raise RunFailed(f"events.py ingest-state rc={proc.returncode}: {proc.stderr.strip()[:300]}")
 
     def ingest_usage(self, dispatch, store_task, key=None, call=None):
-        """Retain the dispatch's stream, record its usage, and settle its hold: the cost charged."""
+        """Retain the dispatch's stream, record its usage, and settle its hold: the cost charged.
+        Re-entrant (Codex review, C1): a signal can land anywhere in here, so the dispatch counts as
+        seen only once its charge is in the ledger, and its usage record carries the observation
+        time the ledger kept, so a retry appends the same event, never a second or a conflicting one."""
         if dispatch in self.usage_seen:
             return Decimal(0)
-        self.usage_seen.add(dispatch)
+        call = call or self.calls.get(key) or f"{self.rid}/dispatch/{dispatch}"
         row = self.dispatch_row(dispatch)
         lane = Path(row["lane_dir"]) if row and row["lane_dir"] else None
         stream = lane / "events.jsonl" if lane else None
@@ -1096,13 +1099,19 @@ class Run:
             self.launched_models[dispatch] = model
             if self.model_pin and model != self.model_pin and self.halt is None:
                 self.halt = "model-mismatch"  # the harness did not run the pin: no further call starts
+            at = (self.budget.calls().get(call) or {}).get("usage_at")
+            if at is None:  # kept before the record, so a retry records the same observation
+                at = now()
+                self.budget.note(call, run=self.rid, usage_at=at)
             proc = run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
                                        "ingest-usage", "--stream", rel, "--run", self.rid, "--epoch", "1",
-                                       "--clock", self.clock, "--task", store_task, "--dispatch", dispatch],
+                                       "--clock", self.clock, "--task", store_task, "--dispatch", dispatch,
+                                       "--observed-at", at],
                                       cwd=str(self.dir))
             if proc.returncode == 0:
                 cost = self.stream_cost(self.dir / rel)
         self.settle(key, cost, dispatch=dispatch, call=call)
+        self.usage_seen.add(dispatch)  # only now: the charge is in the ledger
         return self.reservation if cost is None else cost
 
     @staticmethod
@@ -1738,18 +1747,20 @@ class Run:
                 by_dispatch[disp] = call
             self.launched.setdefault(disp, (store_task, None))
         for disp, (store_task, key) in sorted(self.launched.items()):
-            if disp not in self.usage_seen:
-                call = by_dispatch.get(disp)
-                try:
-                    self.ingest_usage(disp, store_task, key, call=call)
-                except (RunFailed, OSError, sqlite3.Error):
-                    self.usage_seen.add(disp)
-                    self.settle(key, None, dispatch=disp, call=call)
-                settled.append(disp)
+            call = by_dispatch.get(disp) or f"{self.rid}/dispatch/{disp}"
+            if (self.budget.calls().get(call) or {}).get("state") in ("charged", "released"):
+                continue  # the ledger says it is settled, whatever this process remembers (Codex, C1)
+            self.usage_seen.discard(disp)
+            try:
+                self.ingest_usage(disp, store_task, key, call=call)
+            except (RunFailed, OSError, sqlite3.Error):
+                self.settle(key, None, dispatch=disp, call=call)
+                self.usage_seen.add(disp)
+            settled.append(disp)
         for call, v in Budget.of_run(self.budget.calls(), self.rid).items():
             if v.get("state") == "held" or (v.get("state") == "launching" and store_read):
                 self.budget.release(call, launched_too=True)  # never launched, or never registered: never ran
-            elif v.get("state") == "launching":
+            elif v.get("state") in ("launching", "launched"):  # a call no dispatch above settled: its hold
                 self.budget.charge(call, Decimal(v["usd"]), False)
         self.held.clear()
         self.calls.clear()

@@ -208,8 +208,11 @@ before retries (a builder and a reviewer per task). The runner never picks the s
   started and stops every worker. It then charges every dispatch the store holds for the run whose
   usage was never read, including one whose launch the signal interrupted before the runner saw
   its id. Each is charged what its stream reports, or its full reservation if the stream reports
-  no cost. Only then does it exit 128+N, with the run retained as `interrupted`. A later run
-  therefore cannot spend that budget again.
+  no cost. It decides what is still unsettled from the ledger, not from what the process
+  remembers, so a call whose usage reading the signal cut short is still charged what it spent.
+  Its usage record keeps the observation time the ledger holds, so the retry is the same event.
+  Only then does it exit 128+N, with the run retained as `interrupted`. A later run therefore
+  cannot spend that budget again.
 - A runner killed outright (SIGKILL, power loss) writes no `run.json`. A run directory without
   it is reported as `lost`, and its calls still count against the cap at their holds. The next
   `run` reconciles them before anything else, under the lock. It stops the lost run's workers,

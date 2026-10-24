@@ -2098,6 +2098,74 @@ class TestSpendIsCountedOnce(Tmp):
         self.assertFalse(self.trip_log.exists())
 
 
+class TestAnInterruptedIngestionIsStillCharged(Tmp):
+    """Codex review (C1): a signal can land inside a dispatch's usage ingestion, after it began and
+    before its charge was recorded. The run's cleanup must settle that call from the ledger, at
+    what its stream reports, exactly once: never skip it as already seen and leave it at its hold."""
+
+    def launched_call(self):
+        lane = self.tmp / "lane"
+        lane.mkdir()
+        (lane / "events.jsonl").write_text(
+            json.dumps({"type": "system", "subtype": "init", "model": "m"}) + "\n"
+            + json.dumps({"type": "result", "result": "done", "total_cost_usd": 2.0,
+                          "usage": {"input_tokens": 1, "output_tokens": 1}}) + "\n", encoding="utf-8")
+        db = self.tmp / "runtime.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE dispatches (dispatch_id TEXT, task_id TEXT, run_id TEXT, lane_dir TEXT)")
+        conn.execute("INSERT INTO dispatches VALUES (?, ?, ?, ?)", ("disp_paid", "task_a", "wip1-b1r1-rep1", str(lane)))
+        conn.commit()
+        conn.close()
+        run = bare_run(self.tmp)
+        run.sb, run.dir, run.clock = argparse.Namespace(state_db=db), self.tmp / "run", "host-clock"
+        run.dir.mkdir()
+        run.launched_models = {}
+        self.assertTrue(run.hold_unit("T1") and run.admit("T1:builder"))
+        run.budget.note(run.calls["T1:builder"], state="launched", dispatch="disp_paid")
+        run.launched = {"disp_paid": ("task_a", "T1:builder")}
+        return run
+
+    def test_a_call_interrupted_mid_ingestion_is_charged_what_it_spent(self):
+        run = self.launched_call()
+        real = wip.run_text
+
+        def interrupted(argv, *a, **kw):
+            if "ingest-usage" in argv:
+                raise SystemExit(143)  # SIGTERM, raised by _terminated inside the ingestion
+            return real(argv, *a, **kw)
+        with mock.patch.object(wip, "run_text", side_effect=interrupted), self.assertRaises(SystemExit):
+            run.ingest_usage("disp_paid", "task_a", "T1:builder")
+        run.settle_launched()
+        calls = wip.Budget.of_run(run.budget.calls(), run.rid)
+        self.assertEqual((calls["wip1-b1r1-rep1/T1/a1/builder"]["state"], calls["wip1-b1r1-rep1/T1/a1/builder"]["usd"]),
+                         ("charged", "2.0"), "the paid call stayed at its 0.25 hold")
+        self.assertEqual(wip.spent_in(self.tmp / "results"), Decimal("2.0"))  # its reviewer hold released
+        run.settle_launched()  # settling again adds nothing
+        self.assertEqual(wip.spent_in(self.tmp / "results"), Decimal("2.0"))
+        usage = [json.loads(line) for line in (run.dir / "events.jsonl").read_text().splitlines()
+                 if json.loads(line)["kind"] == "model.usage"]
+        self.assertEqual(len(usage), 1, "the usage was recorded twice")
+
+    def test_an_interruption_after_the_record_reuses_its_observation(self):
+        # the record landed, the charge did not: the retry is the same event, never a conflict
+        run = self.launched_call()
+        real_settle = wip.Run.settle
+
+        def interrupted(self_, *a, **kw):
+            raise SystemExit(143)
+        with mock.patch.object(wip.Run, "settle", interrupted), self.assertRaises(SystemExit):
+            run.ingest_usage("disp_paid", "task_a", "T1:builder")
+        with mock.patch.object(wip.Run, "settle", real_settle):
+            run.settle_launched()
+        self.assertEqual(wip.spent_in(self.tmp / "results"), Decimal("2.0"))
+        check = subprocess.run([sys.executable, str(EVENTS), "--log", str(run.dir / "events.jsonl"), "report"],
+                               capture_output=True, text=True)
+        self.assertNotIn("contested", check.stdout + check.stderr)
+        usage = [json.loads(line) for line in (run.dir / "events.jsonl").read_text().splitlines()
+                 if json.loads(line)["kind"] == "model.usage"]
+        self.assertEqual(len(usage), 1)
+
+
 class TestAKilledRunStillCounts(Tmp):
     """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
     writes no run.json. Its calls in the shared ledger still count against the cap until the next

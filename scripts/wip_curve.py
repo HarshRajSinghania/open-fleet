@@ -1600,8 +1600,8 @@ class Run:
     def execute(self, sb: Sandbox):
         self.sb = sb
         self.commands = []
+        self.budget.start_run(self.rid, sb.dir, self.args.worker)  # first: every run directory has its start
         self.dir.mkdir(parents=True)
-        self.budget.start_run(self.rid, sb.dir, self.args.worker)  # where a recovery finds its streams
         self.record.update(started_at=now(), sandbox=str(sb.dir))
         started = time.monotonic()
         self.deadline = started + self.wall_limit
@@ -2432,8 +2432,9 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     placed = sorted([(r["started_at"], order[base_run(r["run_id"])], r) for r in live
                      if base_run(r["run_id"]) in order]
                     + [(r["lost_start"], order[base_run(r["run_id"])], r) for r in runs
-                       if r["status"] == "lost" and r.get("lost_start") and r.get("lost_worker") != "inert"
+                       if r["status"] == "lost" and r.get("lost_start") and r.get("lost_worker") == "live"
                        and base_run(r["run_id"]) in order], key=lambda x: (x[0], x[1]))
+    ran = {q for _a, q, _r in placed}  # a position some live run (or a lost live run) took
     for i, (_at, pos, run) in enumerate(placed):
         after = sorted({q for _a, q, _r in placed[:i] if q > pos})
         before = sorted({q for _a, q, _r in placed[i + 1:] if q < pos})
@@ -2442,6 +2443,11 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
             run.setdefault("noncompliance", []).append(
                 f"ran out of the registered order: position {pos} started "
                 + (f"after position(s) {after}" if after else f"before position(s) {before}"))
+        missing = [q for q in range(1, pos) if q not in ran]
+        if missing:  # an inversion needs both runs present; a missing predecessor is no evidence (Codex, C4)
+            run["compliant"] = False
+            run.setdefault("noncompliance", []).append(
+                f"no evidence that position(s) {missing}, registered before it, ran")
     for before, run in zip(live, live[1:], strict=False):
         gap = (datetime.fromisoformat(run["started_at"]) - datetime.fromisoformat(before["finished_at"])).total_seconds()
         if gap < cooldown:

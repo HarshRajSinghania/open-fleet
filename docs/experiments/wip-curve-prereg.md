@@ -126,7 +126,8 @@ live run unless every earlier position has run live and no later one has. That i
 killed outright, unless the ledger shows it was inert. A re-run (`-a2`) must come before the next
 position. An inert dry run is fixture-tier and never pooled, so it may run in any order. The report
 checks the order independently. A live run that started after a later-scheduled run, or before an
-earlier-scheduled one, is reported as non-compliant and never pooled.
+earlier-scheduled one, is reported as non-compliant and never pooled. So is a live run without
+evidence that every earlier position ran: a live run there, or a lost run the ledger shows was live.
 
 Each run gets a new sandbox containing a fresh local-state store, a fresh merge-queue store, and
 a fresh bare origin and clone. The clone is built from the task set's seed with a fixed author,

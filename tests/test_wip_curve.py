@@ -30,7 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -431,7 +431,8 @@ class TestOnlyCompliantRunsDecide(ReportOver):
     alone. Six fast b6r1 fixture runs must not turn a 'keep' into a 'raise'."""
 
     def runs(self):
-        compliant = series("b1r1", ["1.00", "1.02"]) + series("b3r1", ["1.00", "1.02"]) + series("b6r1", ["1.00", "1.02"])
+        compliant = (series("b1r1", ["1.00", "1.02"]) + series("b3r1", ["1.00", "1.02"]) + series("b6r1", ["1.00", "1.02"])
+                     + series("b6r2", ["1.00"]))  # position 3: every compliant run's predecessors ran
         excluded = [synthetic_run(f"wip1-b6r1-rep{i}", "b6r1", "3.00", compliant=False, tier="fixture-tested",
                                   started=f"2026-10-25T{10 + i:02d}:00:00+00:00") for i in range(3, 9)]
         return compliant + excluded
@@ -502,6 +503,26 @@ class TestTheRegisteredOrderIsKept(ReportOver):
         self.assertFalse(out["wip1-b3r1-rep1"]["compliant"])
         self.assertIn("ran out of the registered order: position 2 started before position(s) [1]",
                       out["wip1-b3r1-rep1"]["noncompliance"])
+
+    def test_a_run_whose_predecessors_never_ran_never_counts(self):
+        # Codex review (C4): position 4 alone, no evidence that positions 1-3 ran before it
+        out = self.report([synthetic_run("wip1-b6r1-rep1", "b6r1", "1.0", started=at_position("wip1-b6r1-rep1"))])
+        run = out["runs"][0]
+        self.assertFalse(run["compliant"])
+        self.assertIn("no evidence that position(s) [1, 2, 3], registered before it, ran", run["noncompliance"])
+
+    def test_a_lost_live_predecessor_is_evidence_that_its_position_ran(self):
+        tmp = Path(tempfile.mkdtemp(prefix="wip-curve-order-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "runs" / "wip1-b1r1-rep1").mkdir(parents=True)  # position 1, killed: no run.json
+        wip.Budget(tmp).start_run("wip1-b1r1-rep1", tmp / "gone", "live")  # its start: now
+        later = synthetic_run("wip1-b3r1-rep1", "b3r1", "1.0",
+                              started=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+        out = {r["run_id"]: r for r in self.report([later], results=tmp)["runs"]}
+        self.assertTrue(out["wip1-b3r1-rep1"]["compliant"], out["wip1-b3r1-rep1"]["noncompliance"])
+        wip.Budget(tmp).note("wip1-b1r1-rep1/run", worker="inert")  # an inert lost run is no evidence
+        out = {r["run_id"]: r for r in self.report([later], results=tmp)["runs"]}
+        self.assertFalse(out["wip1-b3r1-rep1"]["compliant"])
 
     def test_a_re_run_after_a_later_position_never_counts(self):
         first = synthetic_run("wip1-b1r1-rep1", "b1r1", "1.0", started=at_position("wip1-b1r1-rep1"))

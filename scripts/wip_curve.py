@@ -986,9 +986,12 @@ if role == "builder":
             child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             Path(cfg["script"]["_detached_pid"]).write_text(str(child.pid), encoding="utf-8")
-        if action == "orphan":  # a builder that leaves a background child in its process group
+        if action == "orphan":  # a builder that leaves a background child in its process group, its
+            # markers cleared: only the group reap (the backstop) can find it. A marked child is the
+            # dispatch sweep's, and on Linux that ends it first (PR #668 CI).
             child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+                                     stderr=subprocess.DEVNULL,
+                                     env={k: v for k, v in os.environ.items() if not k.startswith("OF_")})
             Path(cfg["script"]["_orphan_pid"]).write_text(str(child.pid), encoding="utf-8")
         if action == "link_review":  # a hostile builder: the review inputs' directory as a link
             os.symlink(cfg["script"]["_review_link"], ".wip-review")

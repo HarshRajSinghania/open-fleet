@@ -2339,11 +2339,10 @@ class TestNoWorkerOutlivesItsRun(Tmp):
                    "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
                    "--inert-script", json.dumps(script), env=env)
         orphan = int(pid_file.read_text())
-        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(orphan)], capture_output=True))
+        self.addCleanup(TABLES.kill, orphan)
         end = time.monotonic() + 5
         while time.monotonic() < end:
-            state = subprocess.run(["ps", "-o", "stat=", "-p", str(orphan)], capture_output=True, text=True).stdout
-            if not state.strip() or state.strip().startswith("Z"):
+            if not TABLES.running(orphan):  # /proc where there is one: no procps needed (PR #668 CI)
                 break
             time.sleep(0.1)
         else:
@@ -2355,11 +2354,11 @@ class TestNoWorkerOutlivesItsRun(Tmp):
 
 
 def ended(pid, wait_s=5.0) -> bool:
-    """The process is gone (or a zombie) within `wait_s`."""
+    """The process is gone (or a zombie) within `wait_s`: /proc where there is one, so a Linux image
+    with no procps can run it (PR #668 CI)."""
     end = time.monotonic() + wait_s
     while time.monotonic() < end:
-        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-        if not state or state.startswith("Z"):
+        if not TABLES.running(pid):
             return True
         time.sleep(0.1)
     return False
@@ -2380,8 +2379,7 @@ class TestNoDrainOutlivesItsBound(Tmp):
                 f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({seconds})'], "
                 f"start_new_session=True{streams})\n"
                 f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n")
-        self.addCleanup(lambda: pid_file.is_file() and subprocess.run(["kill", "-9", pid_file.read_text()],
-                                                                     capture_output=True))
+        self.addCleanup(lambda: pid_file.is_file() and TABLES.kill(pid_file.read_text()))
         return code, pid_file
 
     def test_a_timed_out_call_returns_within_its_bound_though_a_detached_child_holds_its_pipes(self):
@@ -2581,7 +2579,7 @@ class TestNothingDetachedOutlivesItsRun(Tmp):
         pid_file = self.tmp / "detached.pid"
         record, p = self.run_b1({"T5": {"builder": ["detach"]}, "_detached_pid": str(pid_file)})
         child = int(pid_file.read_text())
-        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(child)], capture_output=True))
+        self.addCleanup(TABLES.kill, child)
         self.assertTrue(ended(child), f"a detached child outlived its run: {p.stdout + p.stderr}")
         self.assertIs(record["teardown"]["contained"], True, record["teardown"])
 
@@ -2633,8 +2631,7 @@ class TestEachDispatchIsContainedBeforeItSettles(Tmp):
         self.env, self.trip_log = tripwired_env(self.tmp)
         self.addCleanup(lambda: self.assertFalse(self.trip_log.exists(), "a harness name was reached"))
         self.pid_file = self.tmp / "detached.pid"
-        self.addCleanup(lambda: self.pid_file.is_file() and subprocess.run(
-            ["kill", "-9", self.pid_file.read_text()], capture_output=True))
+        self.addCleanup(lambda: self.pid_file.is_file() and TABLES.kill(self.pid_file.read_text()))
 
     def run_b1(self):
         script = {"T5": {"builder": ["detach"]}, "_detached_pid": str(self.pid_file),

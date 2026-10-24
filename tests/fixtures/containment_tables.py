@@ -55,3 +55,25 @@ def proven_host(python, script, inject):
     """argv prefix: `script` run as its own process, its host probe injected as proven by `inject`
     (Python run against the loaded entry module `mod`)."""
     return [python, "-c", BOOT.format(inject=inject), str(script)]
+
+
+def running(pid):
+    """The process lives and is not a zombie: /proc on Linux (no procps needed), `ps` elsewhere."""
+    stat = Path("/proc", str(pid), "stat")
+    if Path("/proc/self").is_dir():
+        try:
+            return stat.read_text(encoding="utf-8").rsplit(")", 1)[-1].split()[0] not in ("Z", "X")
+        except (OSError, IndexError):
+            return False
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def kill(pid):
+    """SIGKILL a pid this test started, if it still runs (os.kill: no `kill` binary needed)."""
+    import os
+    import signal
+    try:
+        os.kill(int(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, ValueError):
+        pass

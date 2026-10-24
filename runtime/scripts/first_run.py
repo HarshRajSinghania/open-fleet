@@ -1155,7 +1155,7 @@ def stop_workers(sb: Sandbox, sweep=None) -> dict:
             contained = bool(sweep())
         except Exception as err:  # a sweep that breaks vouches for nothing
             contained, errors = False, errors + [f"the marker sweep failed: {err}"]
-    return {**reaped, "errors": errors, "contained": contained}
+    return {**reaped, "errors": reaped.get("errors", []) + errors, "contained": contained}
 
 
 def teardown_verified(teardown: dict) -> bool:
@@ -1165,18 +1165,13 @@ def teardown_verified(teardown: dict) -> bool:
 
 
 def process_groups() -> dict[int, set[int]]:
-    """{process group id: its living members}, for every process ps lists (macOS and Linux);
-    a zombie is already dead and is not a member."""
-    try:
-        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], capture_output=True, text=True,
-                             timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return {}
+    """{process group id: its living members}, from the shared process table (containment.py:
+    /proc on Linux, `ps` elsewhere; a zombie is already dead and is not a member). OSError when the
+    table cannot be read: a reap that cannot see vouches for nothing (PR #668 CI: reading `ps`
+    alone, a Linux host without procps saw no groups and reported nothing)."""
     groups: dict[int, set[int]] = {}
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit() and not parts[2].startswith("Z"):
-            groups.setdefault(int(parts[1]), set()).add(int(parts[0]))
+    for pid, (_ppid, pgid, _env) in containment.process_table().items():
+        groups.setdefault(pgid, set()).add(pid)
     return groups
 
 
@@ -1204,6 +1199,14 @@ def reap_groups(sb: Sandbox, wait_s: float = 5.0, grace_s: float = 3.0) -> dict:
             if col in row.keys() and row[col] and int(row[col]) > 1:
                 pending[int(row[col])] = row["dispatch_id"]
     ended: list[dict] = []
+    try:
+        return _reap(pending, ended, wait_s, grace_s)
+    except OSError as err:  # the table could not be read: nothing it has not ended is vouched for
+        return {"ended": ended, "survivors": [], "leaders_alive": [{"dispatch": d, "pgid": g} for g, d in sorted(pending.items())],
+                "errors": [f"the process table cannot be read: {err}"]}
+
+
+def _reap(pending: dict, ended: list, wait_s: float, grace_s: float) -> dict:
     end = time.monotonic() + wait_s
     while pending:
         groups = process_groups()

@@ -614,7 +614,7 @@ class TestStopWorkersEndsWhatAFinishedWorkerLeft(unittest.TestCase):
         proc = subprocess.Popen(["/bin/sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], stdout=subprocess.PIPE, text=True,
                                 start_new_session=True)
         child = int(proc.communicate(timeout=30)[0].strip())
-        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(child)], capture_output=True))
+        self.addCleanup(TABLES.kill, child)
         return proc.pid, child
 
     def store(self, rows):
@@ -631,11 +631,20 @@ class TestStopWorkersEndsWhatAFinishedWorkerLeft(unittest.TestCase):
     def alive(self, pid, wait_s=5.0):
         end = time.monotonic() + wait_s
         while time.monotonic() < end:
-            state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-            if not state or state.startswith("Z"):
+            if not TABLES.running(pid):  # /proc where there is one: no procps needed (PR #668 CI)
                 return False
             time.sleep(0.1)
         return True
+
+    def test_a_process_table_it_cannot_read_is_a_teardown_error(self):
+        # PR #668 CI (F1): the group reap read `ps` and, where it could not run (a Linux image with
+        # no procps), saw no groups at all and reported nothing. It reads the shared process table
+        # (/proc on Linux) now, and one it cannot read is a teardown error, never an empty table.
+        leader, _child = self.leftover()
+        with mock.patch.object(first_run.containment, "process_table", side_effect=OSError("no ps")):
+            teardown = first_run.stop_workers(self.store([("disp_done", "completed", leader)]))
+        self.assertTrue(teardown["errors"], teardown)
+        self.assertFalse(first_run.teardown_verified(teardown))
 
     def test_a_completed_dispatch_leaves_no_process_behind(self):
         leader, child = self.leftover()

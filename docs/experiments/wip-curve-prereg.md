@@ -254,7 +254,10 @@ python3 scripts/wip_curve.py run --results <dir> --worker live --agent claude \
 ```
 
 Path arguments may be relative: the runner resolves every one of them to an absolute path before
-anything runs. Run one scheduled run at a time with `--next 1`, or name runs with `--runs`. Each run takes its
+anything runs. It refuses a results, output or sandbox path that resolves to, inside or around the
+repository's sources (`skills/`, `playbooks/`, `runtime/`, `scripts/`, `docs/`, `tests/` and the
+rest) or the registered pre-registration and task set, with symlinks followed. A sandbox must be a
+new or empty directory, because a complete run deletes it, and it may not overlap the results. Run one scheduled run at a time with `--next 1`, or name runs with `--runs`. Each run takes its
 condition, repetition, position and task order from the schedule. The results directory is
 append-only. A live run's receipt is labelled `live-unreviewed` until a maintainer binds it.
 

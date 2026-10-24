@@ -805,6 +805,62 @@ class TestAnOverspentBuilderGetsNoReviewer(DryRun):
         self.assertNotIn("unavailable", rep.stdout.split("Derived by")[0], "the stopped run must stay derivable")
 
 
+class TestNoWriteTouchesTheRepository(Tmp):
+    """Every path the runner writes to, or later deletes, is refused when it resolves to, inside
+    or around the repository's sources or the registered task set, symlinks followed; and a
+    sandbox is only ever a fresh directory, never one that already holds something."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.addCleanup(lambda: self.assertFalse(self.trip_log.exists(), "a refused run reached a harness"))
+
+    def link(self, name, target):
+        path = self.tmp / name
+        path.symlink_to(target, target_is_directory=Path(target).is_dir())
+        return path
+
+    def test_the_overlap_check_refuses_sources_seed_and_symlinks(self):
+        refused = [ROOT / "docs" / "experiments" / "out", ROOT / "scripts", ROOT, ROOT.parent, TASKSET, PREREG,
+                   ROOT / "skills" / "ship-it", self.link("into-runtime", ROOT / "runtime") / "x",
+                   self.link("into-tests", ROOT / "tests")]
+        for path in refused:
+            with self.subTest(path=str(path)), self.assertRaises(wip.Refused):
+                wip.check_writable(path, "--results")
+        wip.check_writable(self.tmp / "results", "--results")  # an unrelated directory is fine
+
+    def test_a_report_into_a_symlink_to_the_docs_is_refused_and_writes_nothing(self):
+        out = self.link("out", ROOT / "docs" / "experiments")
+        results = Path(dry_run(*B1_BOUNDARY)[0].name) / "results"
+        p = runner("report", "--results", str(results), "--out", str(out), "--basis", "all", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertFalse((ROOT / "docs" / "experiments" / "report.json").exists())
+
+    def test_a_run_into_a_symlink_to_the_docs_is_refused_and_writes_nothing(self):
+        results = self.link("results", ROOT / "docs")
+        p = runner("run", "--results", str(results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertFalse((ROOT / "docs" / "runs" / "wip1-b1r1-rep1").exists())
+
+    def test_a_sandbox_that_already_holds_something_is_refused_and_kept(self):
+        keep = self.tmp / "wd" / "wip1-b6r1-rep1" / "keep.txt"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("not the runner's", encoding="utf-8")
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b6r1-rep1", "--cost-cap-usd", "0", "--inert-script", "{}", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertTrue(keep.is_file(), "a complete run deleted a directory it did not create")
+
+    def test_results_inside_the_sandbox_it_deletes_are_refused(self):
+        wd = self.tmp / "wd"
+        results = wd / "wip1-b6r1-rep1" / "results"
+        p = runner("run", "--results", str(results), "--workdir", str(wd), "--runs", "wip1-b6r1-rep1",
+                   "--cost-cap-usd", "0", "--inert-script", "{}", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertFalse(results.exists())
+
+
 class TestRelativePaths(unittest.TestCase):
     """--results, --workdir and --prereg given relative to another working directory: the run,
     the report and the verifier resolve them once, before anything changes directory (git reads

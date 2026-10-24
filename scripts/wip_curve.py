@@ -180,6 +180,25 @@ def load_prereg(path: Path | None = None):
     return prereg, taskset, path, sha256_file(path), taskset_path
 
 
+# What no runner write (or later delete) may touch: the repository's sources and the registered
+# pre-registration and task set (which holds the seed). PR #652's class, found here too (#604).
+SOURCE_DIRS = ("skills", "playbooks", "runtime", "scripts", "docs", "tests", "bench", "evals", ".git")
+
+
+def check_writable(path, what: str, registered=()) -> Path:
+    """`path` resolved (symlinks followed), or Refused when it is, lies inside or contains a
+    source directory or a registered file: a results, output or sandbox path there would
+    overwrite, or later delete, what the experiment is measured against."""
+    target = Path(path).expanduser().resolve()
+    protected = [(ROOT / d).resolve() for d in SOURCE_DIRS]
+    protected += [Path(r).resolve() for r in (PREREG_DEFAULT, *registered)]
+    for q in protected:
+        if target == q or target.is_relative_to(q) or q.is_relative_to(target):
+            how = "is" if target == q else "lies inside" if target.is_relative_to(q) else "contains"
+            raise Refused(f"{what} {path} resolves to {target}, which {how} {q}: the runner never writes there")
+    return target
+
+
 def task_by_id(taskset: dict) -> dict:
     return {t["id"]: t for t in taskset["tasks"]}
 
@@ -1799,7 +1818,10 @@ def cmd_run(args) -> int:
         raise Refused(f"the inert stand-in answers as {INERT_AGENTS}; --agent {args.agent} needs --worker live")
     if args.agent not in first_run.posix_harnesses():
         raise Refused(f"--agent {args.agent!r} is not a posix harness")
-    results = Path(args.results).resolve()
+    registered = (path, taskset_path)
+    results = check_writable(args.results, "--results", registered)
+    if args.workdir:
+        check_writable(args.workdir, "--workdir", registered)
     sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
     done = {d.name for d in runs_in(results)}
     if args.runs:
@@ -1814,6 +1836,16 @@ def cmd_run(args) -> int:
     if not wanted:
         print("wip-curve: every scheduled run is already present", file=sys.stderr)
         return EXIT_OK
+    for base, attempt in wanted:  # every sandbox is checked before the first run starts
+        if not args.workdir:
+            continue
+        sandbox = Path(args.workdir) / run_id_for(prereg, sched[base]["condition"]["id"], sched[base]["repetition"],
+                                                  attempt)
+        if sandbox.exists() and (not sandbox.is_dir() or any(sandbox.iterdir())):
+            raise Refused(f"the sandbox {sandbox} already holds something: a complete run deletes its sandbox, "
+                          "so it must be a directory the runner creates")
+        if results.is_relative_to(sandbox.resolve()) or sandbox.resolve().is_relative_to(results):
+            raise Refused(f"--results {results} and the sandbox {sandbox} overlap: deleting one would delete the other")
     script = json.loads(args.inert_script) if args.inert_script else DRY_RUN_SCRIPT
     rc = EXIT_OK
     for base, attempt in wanted:
@@ -1890,8 +1922,9 @@ def cmd_run(args) -> int:
 
 def cmd_report(args) -> int:
     results = Path(args.results)
+    _prereg, _taskset, path, _sha, taskset_path = load_prereg(args.prereg)
+    out = check_writable(args.out or args.results, "--out" if args.out else "--results", (path, taskset_path))
     report = build_report(results, args.prereg, args.basis)
-    out = Path(args.out) if args.out else results
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (out / "report.md").write_text(render_markdown(report), encoding="utf-8")

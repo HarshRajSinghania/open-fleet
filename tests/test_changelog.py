@@ -423,6 +423,11 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** x\n\n<span>\n`<a href="../docs/ops.md">ops</a>`\n',
         # a <pre> block runs past a blank line to </pre> (#673)
         '- **Change** x\n\n<pre>\n\n`<a href="../docs/ops.md">ops</a>`\n</pre>\n',
+        # a setext underline ends the paragraph, so the lone tag after it opens an HTML block (Codex at dde9cbedf9)
+        '- **Change**\n  ---\n  <span>\n  `<a href="../docs/ops.md">ops</a>`\n',
+        '- **Change** x\n## heading\n<span>\n`<a href="../docs/ops.md">ops</a>`\n',
+        # U+2028 is no line ending: no fence opens on it (Codex at dde9cbedf9)
+        '- **Change** x\u2028~~~\u2028<a href="../docs/ops.md">ops</a>\u2028~~~\n',
     )
 
     def errors(self, text):

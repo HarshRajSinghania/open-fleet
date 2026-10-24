@@ -82,6 +82,13 @@ _HTML_BLOCK7_RE = re.compile(
 # A fenced code block's opening line (at any indentation): literal to its closing fence, or to
 # where the list item holding it ends (Greptile at 8585b35789).
 _FENCE_RE = re.compile(r"([ \t]*)(`{3,}|~{3,})([^\n]*)")
+# A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also split
+# at U+2028 and friends, inventing lines, and fences, that a renderer never sees (Codex at dde9cbedf9).
+_LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+# A line that ends a paragraph rather than continuing it: a setext underline, a thematic break, an
+# ATX heading or a table row. After one, a lone tag opens a type 7 HTML block (Codex at
+# dde9cbedf9). Counting a line here when CommonMark would not only reveals more.
+_PARA_BREAK_RE = re.compile(r"(?:=+|-+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|#{1,6}(?:[ \t].*)?|\|.*)[ \t]*")
 
 
 def _regions(text):
@@ -90,9 +97,9 @@ def _regions(text):
     A line inside an HTML block opens no fence (Greptile at 1fad2a56e8), so HTML is checked first.
     A fence ends at its closing fence or at the first later line indented less than it, where the
     list item holding it ends, so no tag after that item is hidden."""
-    out, pos, state, para = [], 0, None, False
-    for line in text.splitlines(keepends=True):
-        start, pos = pos, pos + len(line)
+    out, state, para = [], None, False
+    for match in _LINE_RE.finditer(text):
+        line, start, pos = match.group(), match.start(), match.end()
         rest = line.lstrip(" \t").rstrip("\r\n")
         indent = len(line[:len(line) - len(line.lstrip(" \t"))].expandtabs(4))
         if state and state[0] == "fence":
@@ -124,7 +131,7 @@ def _regions(text):
             para = False
             continue
         out.append(("text", start, pos))
-        para = bool(rest)
+        para = bool(rest) and not _PARA_BREAK_RE.fullmatch(rest)
     merged = []
     for kind, start, end in out:  # adjacent lines of a kind form one run: a span may cross a soft break
         if merged and merged[-1][0] == kind:

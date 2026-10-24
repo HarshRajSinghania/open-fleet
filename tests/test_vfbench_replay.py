@@ -1370,5 +1370,237 @@ class AReplayFromAPartialCloneNeverFetches(_FakeBench):
         self.assertIn("?", listing)
 
 
+# ---------------------------------------------------------------------------------------------
+# Held-out evaluation (#601): a set kept OUTSIDE the repository, scored without its content
+# ---------------------------------------------------------------------------------------------
+
+# Text that exists only inside the synthetic held-out cases: none of it may reach a report.
+MARK = "hv-content-0b1d"
+HELDOUT_README = FAKE_README.replace(
+    "| `check_b` | refuses b | deferred |",
+    "| `check_b` | refuses b. Sites: `b refused`. | deferred |")
+
+
+def _heldout_case(n, expected, site=None, **extra):
+    case = {"id": f"hv1-{n:03d}", "class": "check_a" if site != "b refused" else "check_b",
+            "sound_expected": expected, "note": f"{MARK} note {n}",
+            "canary": "6f1b2a0e-1d8c-4e5f-9a0b-c2d3e4f50601",
+            "manifest": {"criteria": [{"id": "AC-1", "addressed": True}], "unit": f"{MARK}-{n}"}}
+    if expected == "RED":
+        case.update(expect_reason=f"{MARK} refusal {n}", inventory_site=site or "planted")
+    case.update(extra)
+    return case
+
+
+class _HeldOutBench(_FakeBench):
+    """A fake bench whose revision publishes the digests of HELD, a set kept beside it."""
+
+    HELD = []
+
+    def setUp(self):
+        super().setUp()
+        self.held = self.tmp / "holder" / "cases"  # outside the repository
+        self.held.mkdir(parents=True)
+        for case in self.HELD:
+            (self.held / f"{case['id']}.json").write_text(json.dumps(case, indent=2),
+                                                          encoding="utf-8")
+        self.publish()
+
+    def publish(self, protocol_edit=None):
+        """Commit the held-out protocol and digests file into the fake bench, as the holder's
+        digests are published on the development side (no content crosses)."""
+        bench = self.repo / "bench" / "vf-bench"
+        raw = sorted(__import__("hashlib").sha256(f.read_bytes()).hexdigest() for f in self.held.glob("*.json"))
+        digests = {"kind": "vf-bench-heldout-digests", "protocol": "vf-bench-heldout@1",
+                   "canary_sha256": "0" * 64,
+                   "cases": [{"raw_sha256": h, "canonical_sha256": h} for h in raw]}
+        (bench / "heldout-v1-digests.json").write_text(json.dumps(digests), encoding="utf-8")
+        protocol = {"protocol": "vf-bench-heldout@1", "status": "held-out v1 published",
+                    "holder": {"state": "assigned"},
+                    "splits": {"heldout": {
+                        "version": "vf-bench-heldout@1",
+                        "published_digests": "bench/vf-bench/heldout-v1-digests.json",
+                        "set_sha256": __import__("hashlib").sha256("".join(f"{h}\n" for h in raw).encode()).hexdigest()}}}
+        if protocol_edit:
+            protocol_edit(protocol)
+        (bench / "heldout-protocol.json").write_text(json.dumps(protocol), encoding="utf-8")
+        (bench / "README.md").write_text(HELDOUT_README, encoding="utf-8")
+        self.commit = _commit_all(self.repo, "publish held-out digests")
+
+
+class AHeldOutSetIsEvaluatedWithoutItsContent(_HeldOutBench):
+    """The replay scores a held-out set through the pinned bench and writes metrics, ids and
+    verdict classes only; the set must be the one the pinned revision publishes digests for."""
+
+    HELD = [_heldout_case(1, "RED"), _heldout_case(2, "RED", site="b refused"),
+            _heldout_case(3, "GREEN"), _heldout_case(4, "RED", site="no such stem"),
+            _heldout_case(5, "RED", behaviour="raise")]
+
+    def test_the_report_names_ids_verdicts_and_metrics_and_no_content(self):
+        r = self.replay(runs=1, heldout=self.held)
+        text = json.dumps(r) + replay.render_summary(r)
+        self.assertNotIn(MARK, text)
+        self.assertNotIn("check_a", text)
+        self.assertNotIn("6f1b2a0e", text)
+        self.assertEqual(r["protocol"]["split"], "heldout")
+        self.assertEqual(r["corpus"]["cases"], [{"id": c["id"]} for c in self.HELD])
+        self.assertEqual(r["diagnostics"], {})
+        self.assertTrue(r["heldout"]["matches_published"])
+        self.assertIn("HELD-OUT set, content withheld", replay.render_summary(r))
+
+    def test_each_case_carries_its_verdict_class_per_configuration(self):
+        r = self.replay(runs=1, heldout=self.held)
+        sound = {i: v["verdict_classes"] for i, v in r["configurations"][SOUND]["cases"].items()}
+        naive = {i: v["verdict_classes"] for i, v in r["configurations"][NAIVE]["cases"].items()}
+        self.assertEqual(sound, {"hv1-001": ["refused"], "hv1-002": ["refused"],
+                                 "hv1-003": ["accepted"], "hv1-004": ["refused"],
+                                 "hv1-005": ["unscored:error"]})
+        self.assertEqual(naive["hv1-001"], ["false-acceptance"])
+        self.assertEqual(naive["hv1-003"], ["accepted"])
+        # The case the runner could not score is reported by id, never dropped.
+        self.assertIn({"configuration": SOUND, "id": "hv1-005", "status": "error", "runs": [1]},
+                      r["unscored"])
+        self.assertFalse(r["verdict"]["ok"])
+        self.assertNotIn("RuntimeError", json.dumps(r))
+
+    def test_coverage_counts_the_inventory_rows_the_traps_name(self):
+        r = self.replay(runs=1, heldout=self.held)
+        cov = r["configurations"][SOUND]["runs"][0]["coverage"]
+        self.assertEqual((cov["sampled_rows"], cov["inventory_rows"]), (2, 2))
+        self.assertEqual(cov["sampled_by_status"], {"trap": 1, "deferred": 1})
+        self.assertEqual(cov["unmapped_traps"], 1)  # hv1-004 names no row
+
+    def test_a_set_edited_after_publication_is_never_scored(self):
+        case = self.held / "hv1-003.json"
+        case.write_text(case.read_text(encoding="utf-8").replace('"GREEN"', '"RED"'),
+                        encoding="utf-8")
+        r = self.replay(runs=1, heldout=self.held)
+        self.assertEqual({f["kind"] for f in r["preflight"]["failures"]}, {"heldout-drift"})
+        self.assertEqual(r["configurations"], {})
+        self.assertFalse(r["heldout"]["matches_published"])
+        self.assertFalse(r["verdict"]["ok"])
+
+    def test_a_set_whose_digests_were_never_published_is_never_scored(self):
+        self.publish(lambda p: p["splits"]["heldout"].update(published_digests=None))
+        r = self.replay(runs=1, heldout=self.held)
+        self.assertEqual([f["kind"] for f in r["preflight"]["failures"]], ["heldout-unpublished"])
+        self.assertEqual(r["configurations"], {})
+
+    def test_a_development_replay_carries_no_held_out_field(self):
+        # The published reference must keep reproducing: a development report is unchanged.
+        r = self.replay(runs=1)
+        self.assertNotIn("split", r["protocol"])
+        self.assertNotIn("redaction", r)
+        self.assertNotIn("verdict_classes", r["configurations"][SOUND]["cases"]["static-1"])
+        self.assertEqual(set(r["heldout"]), {"protocol", "status", "holder"})
+
+
+class AHeldOutReportWithholdsEveryDetail(_HeldOutBench):
+    """Skip reasons, fixture-preflight details and adapter reasons all describe a case: each is
+    reduced to a kind before the report is written (#601)."""
+
+    HELD = [_heldout_case(1, "RED", skip_because=f"shallow clone: {MARK}"),
+            _heldout_case(2, "GREEN")]
+
+    def test_a_skip_reason_is_reduced_to_its_kind(self):
+        r = self.replay(runs=1, heldout=self.held)
+        self.assertEqual(r["skipped"], [{"id": "hv1-001",
+                                         "reason": "a commit the case pins is not in the export"}])
+        self.assertNotIn(MARK, json.dumps(r))
+
+    def test_a_fixture_preflight_detail_is_withheld(self):
+        case = json.loads((self.held / "hv1-002.json").read_text(encoding="utf-8"))
+        case["contract_source"] = f"bench/vf-bench/fixtures/{MARK}.md"
+        (self.held / "hv1-002.json").write_text(json.dumps(case), encoding="utf-8")
+        self.publish()
+        r = self.replay(runs=1, heldout=self.held)
+        self.assertEqual([f["kind"] for f in r["preflight"]["failures"]], ["fixture-missing"])
+        self.assertNotIn(MARK, json.dumps(r) + replay.render_summary(r))
+
+    def test_an_adapters_reasons_are_withheld(self):
+        script = self.tmp / "red.py"
+        script.write_text(textwrap.dedent(ADAPTERS["always-red"]).replace("refuse all", MARK),
+                          encoding="utf-8")
+        r = self.replay(runs=1, heldout=self.held, adapters=[
+            replay.parse_adapter_spec(f"red={sys.executable} {script}", "fixture-adapter")])
+        self.assertEqual(r["configurations"]["red"]["cases"]["hv1-002"]["verdict_classes"],
+                         ["false-rejection"])
+        self.assertNotIn(MARK, json.dumps(r))
+
+
+class NoCaseShapeCrashesTheRunner(unittest.TestCase):
+    """#601: the first held-out v1 evaluation died in the fixture preflight, on a case whose
+    manifest lists a non-object in artifacts[]. Judging that shape is verify.py's job; the runner
+    must pin what it can read, skip what pins nothing, and score the case."""
+
+    def test_odd_artifact_and_contract_shapes_pin_nothing_and_raise_nothing(self):
+        with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:
+            cases = [{"id": "t-1", "manifest": {"artifacts": ["docs/x.txt", 3, None,
+                                                              {"path": 7, "sha256": "ab"},
+                                                              {"path": "docs/y.txt"}]}},
+                     {"id": "t-2", "manifest": {"artifacts": {"path": "docs/x.txt"}}},
+                     {"id": "t-3", "manifest": ["not", "an", "object"]},
+                     {"id": "t-4", "contract_source": ["a", "list"], "contract_digest": 5,
+                      "manifest": {}}]
+            self.assertEqual(replay.fixture_failures(Path(tmp), cases, set()), [])
+            odd = replay.fixture_failures(Path(tmp), [{"id": "t-5", "fixture": ["x"]}], set())
+            self.assertEqual([f["kind"] for f in odd], ["fixture-builder-missing"])
+
+    def test_a_declared_reason_that_is_not_text_is_never_matched(self):
+        self.assertIs(replay.reason_matches(["a refusal"], {"expect_reason": 3}), None)
+        self.assertIs(replay.reason_matches(["FAIL: a refusal"], {"expect_reason": "a refusal"}), True)
+        self.assertIs(replay.reason_matches(["FAIL: other"], {"expect_reason": "a refusal"}), False)
+
+
+class AWrongTypedHeldOutProtocolIsNamedNeverRaised(_FakeBench):
+    """PR #665 review sweep: a held-out protocol whose sections have the wrong type raised
+    AttributeError out of the replay, in the held-out preflight and in the protocol read every
+    replay does. Each is now the named preflight failure `heldout-protocol-unreadable` (#601)."""
+
+    def _commit_protocol(self, text):
+        (self.repo / "bench" / "vf-bench" / "heldout-protocol.json").write_text(text, encoding="utf-8")
+        self.commit = _commit_all(self.repo, "a protocol of the wrong shape")
+
+    def test_every_replay_names_it(self):
+        for text in ("[1]", '{"holder": [1]}', '{"status": "x", "holder": "x"}'):
+            with self.subTest(protocol=text):
+                self._commit_protocol(text)
+                r = self.replay(runs=1)
+                self.assertEqual([f["kind"] for f in r["preflight"]["failures"]],
+                                 ["heldout-protocol-unreadable"])
+
+    def test_the_held_out_preflight_names_it(self):
+        held = self.tmp / "held"
+        held.mkdir()
+        (held / "hv1-001.json").write_text("{}", encoding="utf-8")
+        for text in ('{"splits": {"heldout": [1]}}', '{"splits": [1]}'):
+            with self.subTest(protocol=text):
+                (self.repo / "bench" / "vf-bench" / "heldout-protocol.json").write_text(
+                    text, encoding="utf-8")
+                _, failures = replay.heldout_preflight(self.repo, held)
+                self.assertEqual([f["kind"] for f in failures], ["heldout-protocol-unreadable"])
+
+
+class TheHeldOutCliRefusesAMismatchedReference(unittest.TestCase):
+    def test_reproduce_needs_heldout_exactly_when_the_reference_is_held_out(self):
+        with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:
+            ref = json.loads(REFERENCE.read_text(encoding="utf-8"))
+            ref["protocol"]["split"] = "heldout"
+            path = Path(tmp) / "ref.json"
+            path.write_text(json.dumps(ref), encoding="utf-8")
+            r = _cli("reproduce", str(path))
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("pass --heldout DIR", r.stderr)
+            r = _cli("reproduce", str(REFERENCE), "--heldout", tmp)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("--heldout does not apply", r.stderr)
+
+    def test_a_heldout_directory_without_cases_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:
+            r = _cli("run", "--rev", "HEAD", "--heldout", tmp)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("is not a directory of *.json cases", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

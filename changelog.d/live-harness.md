@@ -37,5 +37,7 @@
 - **The changelog and run-index HTML-link check reads complete tags only** (Codex at
   `54fe725bee`). An unclosed `x<a` with `href=value` lines later, `data-href`, and a tag inside a
   code span are no longer refused. A complete tag with an `href` or `src` attribute still is, and
-  a code span no longer hides one across a block, such as the next list item (Codex at
-  `47e0616eac`).
+  a code span no longer hides one across a block, such as the next list item, or inside a raw
+  HTML block (Codex at `47e0616eac` and later). A fenced code block is literal to its closing
+  fence or the end of the list item holding it, so an HTML example there is no longer refused
+  (Greptile at `8585b35789`).

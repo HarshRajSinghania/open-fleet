@@ -382,6 +382,9 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** <a name="anchor">no link attribute</a>.\n',
         '- **Change** an escaped \\<a href="../docs/ops.md"> is text.\n',
         '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
+        # a fenced block is literal to its closing fence, list markers inside it too (Greptile at 8585b35789)
+        '- **Change** an example:\n\n  ```html\n  - example\n  <a href="../x.md">x</a>\n  ```\n',
+        '- **Change** an example:\n\n~~~~\n# not a heading\n<img src="../x.png">\n~~~~\n',
     )
     REFUSED = (
         '- **Change** <a\n  title="x"\n  href="../docs/ops.md">ops</a>.\n',
@@ -405,6 +408,10 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         # inside a raw HTML block backticks are text, so no code span hides a tag (Codex at 0116e8ae34)
         '- **Change** see below.\n<div>\n`<a href="../docs/ops.md">ops</a>`\n</div>\n',
         '- **Change** see below.\n\n<div>`<img src="../x.png">`</div>\n',
+        # a fence the list item leaves unclosed ends with the item: no tag after it is hidden
+        '- **Change** x\n  ```\n- <a href="../docs/ops.md">ops</a>\n',
+        # a closing fence shorter than the opening one does not close it, but the item's end does
+        '- **Change** x\n  ````\n  ```\n<a href="../docs/ops.md">ops</a>\n',
     )
 
     def errors(self, text):

@@ -120,9 +120,9 @@ def _quote_views(text):
     return ["".join(strip(line, k) for line in lines) for k in range(1, max(map(depth, lines), default=0) + 1)]
 
 
-def _loose_link(text, i):
+def _loose_link(text, i, open_ok):
     """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
-    with a value in it, closed or not, else None. Past a point where renderers may disagree, text may reach the
+    with a value in it, else None; with `open_ok` (inside a raw HTML block) closed or not. Past a point where renderers may disagree, text may reach the
     page as raw HTML, so link tags there are read this loosely."""
     if not (name := _LOOSE_NAME_RE.match(text, i)):
         return None
@@ -131,9 +131,9 @@ def _loose_link(text, i):
         link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
         pos = attr.end()
     end = re.compile(r"[ \t\n\f\r/]*>").match(text, pos)
-    # An unterminated tag counts too: whatever the renderer writes next (a </li>) can close it
-    # (Codex at 075baf07c5).
-    return text[i:end.end() if end else pos] if link else None
+    # In a raw HTML block an unterminated tag counts too: whatever the renderer writes next (a
+    # </li>) can close it (Codex at 075baf07c5). In a paragraph it is text a renderer escapes.
+    return text[i:end.end() if end else pos] if link and (end or open_ok) else None
 
 
 def _tag(text, i):
@@ -177,7 +177,7 @@ def _first_link(text):
     # left open on its line: past any of
     # these, where a span or construct ends depends on the renderer, and a link tag is read as a
     # browser reads raw HTML (_loose_link).
-    literal = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
+    literal = html = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
     i = 0
     while i < len(text):
         inline = i < literal
@@ -199,13 +199,13 @@ def _first_link(text):
             tag = _tag(text, i)
             if tag and tag[1]:
                 return text[i:tag[0]]
-            if not inline and (loose := _loose_link(text, i)):
+            if not inline and (loose := _loose_link(text, i, open_ok=i >= html)):
                 return loose
             if inline and tag and not _UNCLEAR_RE.search(text, i + 1, tag[0]):
                 i = tag[0]  # a whole one-line tag holding no backtick and no "<": skipping it hides nothing
+            elif inline and _MAY_OPEN_RE.match(text, i):
+                literal = i  # read this same "<" again as raw HTML (Codex at 5f1eb56a73), then on
             else:
-                if inline and _MAY_OPEN_RE.match(text, i):
-                    literal = i
                 i += 1
         else:
             i += 1

@@ -477,6 +477,8 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         # Pandoc's GFM math takes "$x$" too, backticks and all (Codex at b897354b7b)
         '- **Change** $x`y$ <a href="../docs/ops.md">ops</a> `\n',
         '- **Change** $x`y$ <img src="../x.png"> `\n',
+        # the "<" that turns reading to raw HTML is itself read as raw HTML (Codex at 5f1eb56a73)
+        '- > <a\n  > href="../docs/ops.md"\n      >x</a>\n',
     )
 
     def errors(self, text):

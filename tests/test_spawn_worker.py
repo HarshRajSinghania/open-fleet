@@ -917,6 +917,23 @@ esac
                     self.assertIn("HANDLE=", p.stdout,
                                   "the handle is how the live worker gets stopped")
 
+    def test_an_auto_mode_host_is_refused_like_a_manual_one(self):
+        """pin-it re-witness at v1.4.238 (#508): upstream added a global Auto permission switch
+        (`AUTO_TUI_AGENT_ARGS`, 8d0501622a #30677). A host on it launches claude with
+        `--permission-mode auto` and codex with `--approve-for-me`. Neither is the rw PROFILE's
+        flag, so the start must come back LAUNCHED_UNUSABLE — never READY — on such a host."""
+        for agent, auto in (("claude", "--permission-mode auto"),
+                            ("codex", "--approve-for-me")):
+            with self.subTest(agent=agent):
+                receipt = copy.deepcopy(self.READY_RECEIPT)
+                receipt["result"]["launch"]["effective"] = {"agent": agent, "args": auto}
+                with tempfile.TemporaryDirectory() as tmp:
+                    self._stub(tmp, receipt=receipt)
+                    p = self._run(tmp, self.ARGS + [agent], self.RW)
+                    self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
+                    self.assertIn("LAUNCHED_UNUSABLE", p.stderr)
+                    self.assertIn("does not carry", p.stderr)
+
     def test_a_multiword_flag_must_appear_contiguously(self):
         # grok's flag is `--permission-mode bypassPermissions`. Finding its two words far apart,
         # beside `--permission-mode plan`, is not finding the flag.

@@ -208,7 +208,7 @@ STAND_IN = textwrap.dedent(r'''
         ledger = opt("--ledger")
         keys = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
                 "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GNUPGHOME", "ABLATION_OUT", "SHELL",
-                "TRAJECTORY_CASE", "TRAJECTORY_SEED")
+                "TRAJECTORY_CASE", "TRAJECTORY_SEED", "PYTHONDONTWRITEBYTECODE")
         with open(os.path.join(log, "observed.json"), "w", encoding="utf-8") as fh:
             json.dump({"argv": sys.argv, "pid": os.getpid(), "pgid": os.getpgid(0), "cwd": ws,
                        "task": task, "env": {k: os.environ.get(k) for k in keys},
@@ -648,6 +648,15 @@ class RecorderMapsTheStream(SafetyNet):
                 self.assertIsInstance(got, engine.RecordingRefused, got)
                 self.assertIn(needle, str(got))
 
+    def test_a_committed_file_that_is_not_text_refuses_the_recording(self):
+        """The replay writes text: a binary blob was decoded with replacement characters and
+        replayed as a different file (#668 review, R1 sweep)."""
+        ws = Workspace(self, "CL-01")
+        got = self._committed(ws, "binary", lambda: (ws.dir / "logo.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\xff\xfe") and None)
+        self.assertIsInstance(got, engine.RecordingRefused, got)
+        self.assertIn("not UTF-8 text", str(got))
+
     def test_a_committed_deletion_or_rename_refuses_the_recording(self):
         """The replay has no delete: a deleted file would stay in its tree, so a deleted
         CONTRACT.json or test would be graded as held. A rename is a deletion and an addition
@@ -1053,11 +1062,15 @@ class HarnessContract(SafetyNet):
                 out = ws.parent / "out"
                 out.mkdir()
                 code, _stdout, err = self.harness(self.agent(mode, "--log", str(out)), ws,
-                                                  env={**env, "ABLATION_OUT": str(out)})
+                                                  env={**env, "ABLATION_OUT": str(out),
+                                                       "PYTHONDONTWRITEBYTECODE": ""})
                 self.assertEqual(code, 0, err)
                 self.assertFalse(marker.exists(), "the operator's key was asked to sign")
                 self.assertNotIn("gpgsig", self.head_commit(ws))
                 seen = json.loads((out / "observed.json").read_text())["env"]
+                self.assertEqual(seen["PYTHONDONTWRITEBYTECODE"], "1",
+                                 "an agent's test run must not leave bytecode for git add -A to "
+                                 "commit: a binary blob refuses the recording")
                 self.assertEqual(seen["GIT_CONFIG_GLOBAL"], os.devnull)
                 self.assertIsNone(seen["GIT_CONFIG_PARAMETERS"])
                 self.assertIsNone(seen["GIT_CONFIG_COUNT"])

@@ -1835,7 +1835,13 @@ class LiveRecorder:
         self.chain = self.live_history()
 
     def blob(self, sha, path):
-        return self.git("cat-file", "blob", f"{sha}:{path}").decode("utf-8", "replace")
+        """A committed file's text. The replay writes text, so a file that is not UTF-8 would
+        be replayed as a different file: RecordingRefused (#668 review)."""
+        try:
+            return self.git("cat-file", "blob", f"{sha}:{path}").decode("utf-8")
+        except UnicodeDecodeError:
+            raise RecordingRefused(f"{path} at {sha[:12]} is not UTF-8 text: the replay writes "
+                                   "text, so it would grade a different file") from None
 
     def emit(self, tool, **fields):
         event = {"seq": len(self.events) + 1, "tool": tool}

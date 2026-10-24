@@ -1171,18 +1171,18 @@ def run_trajectory_live(args: argparse.Namespace) -> int:
     planned cell ran and graded PASS, 1 otherwise. Never evidence (see _trajectory_live.py)."""
     live = _trajectory_live()
     try:
-        out, results = live.run_live(args)
+        run_dir, results = live.run_live(args)
     except live.guard().Refused as err:
         print(f"Trajectory live run refused: {err}", file=sys.stderr)
         return 2
     if getattr(args, "json", False):
-        print(json.dumps({"out": str(out), "evidence": results["evidence"],
+        print(json.dumps({"run_dir": str(run_dir), "evidence": results["evidence"],
                           "complete": results["complete"], "stopped": results["stopped"],
                           "verdicts": {r["cell"]: r["verdict"] for r in results["cells"]},
                           "unrun": [u["case"] for u in results["unrun"]]}, indent=2))
     else:
         print(live.render(results), end="")
-        print(f"results: {out / 'results.json'}")
+        print(f"results: {run_dir / 'results.json'}")
     # A run where nothing ran (every selected case UNRUN) has nothing that passed.
     passed = bool(results["cells"]) and all(r["verdict"] == "PASS" for r in results["cells"])
     return 0 if results["complete"] and passed else 1

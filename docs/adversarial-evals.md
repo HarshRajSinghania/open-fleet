@@ -236,8 +236,10 @@ The spend guard is #606's, reused from [`scripts/_ablation_run.py`](../scripts/_
 
 - no explicit cap, no run;
 - a call starts only when the spend so far plus its full reservation fits within the cap;
-- `spend.jsonl` holds each call's reservation on disk before the call starts, so a killed or
-  interrupted run stays charged and a later run into the same `--out` counts it;
+- `spend.jsonl` in `--out` holds each call's reservation on disk before the call starts, so a
+  killed or interrupted run stays charged and a later run into the same `--out` counts it. One
+  run at a time holds `--out` (a second is refused), and each run writes its cells, results and
+  report under its own `runs/<run id>/`;
 - a call is charged its measured `total_cost_usd`, or its whole reservation when it is unmeasured
   or killed;
 - a call that costs more than its reservation stops the run, and so does one that reports no cost;

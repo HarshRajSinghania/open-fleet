@@ -997,8 +997,15 @@ class LiveRunner(SafetyNet):
             code = eval_mod.main(argv)
         return code, out.getvalue(), err.getvalue()
 
+    def run_dirs(self, out):
+        """Each run's own directory under --out, oldest first (#659 review, T3)."""
+        return sorted((p.parent for p in out.glob("runs/*/results.json")),
+                      key=lambda d: d.stat().st_mtime)
+
     def results(self, out):
-        return json.loads((out / "results.json").read_text(encoding="utf-8"))
+        dirs = self.run_dirs(out)
+        self.assertTrue(dirs, f"no run under {out} wrote its results")
+        return json.loads((dirs[-1] / "results.json").read_text(encoding="utf-8"))
 
     def ledger(self, out):
         return [json.loads(ln) for ln in (out / "spend.jsonl").read_text().splitlines() if ln]
@@ -1138,6 +1145,42 @@ class LiveRunner(SafetyNet):
         self.assertTrue(result["stopped"].startswith("CAP_REACHED"), result["stopped"])
         self.assertEqual(self.runs(log2), [], "the earlier call's spend counts against this cap")
 
+    def test_a_second_run_into_the_same_out_is_refused_while_the_first_runs(self):
+        """Two runs sharing --out could both see the cap unspent and delete each other's
+        workspaces: the second is refused while the first holds the directory (#659, T3)."""
+        out = self.tmpdir() / "out"
+        argv, log = self.live("hang", out)
+        first = self._runner(argv)
+        try:
+            self._wait_for(log / "pids.json", first)
+            workspaces = list(out.glob("**/workspace"))
+            self.assertEqual(len(workspaces), 1)
+            argv2, log2 = self.live("clean", out, log="agent-log-second")
+            code, _stdout, err = self.run_main(argv2)
+            self.assertEqual(code, 2, err)
+            self.assertIn("another live run holds", err)
+            self.assertFalse(log2.exists(), "the second run started an agent")
+            self.assertTrue((workspaces[0] / "calc.py").is_file(),
+                            "the second run deleted the first run's active workspace")
+        finally:
+            first.send_signal(signal.SIGTERM)
+            first.communicate(timeout=60)
+            wait_dead(json.loads((log / "pids.json").read_text()))
+
+    def test_each_run_keeps_its_own_cells_and_results(self):
+        out = self.tmpdir() / "out"
+        for name in ("agent-log", "agent-log-2"):
+            argv, _log = self.live("clean", out, agent_extra=("--cost", "0.5"), log=name)
+            code, _stdout, err = self.run_main(argv)
+            self.assertEqual(code, 0, err)
+        first, second = self.run_dirs(out)
+        self.assertNotEqual(first, second)
+        for run in (first, second):
+            self.assertTrue((run / "cells" / "CL-01" / "r0" / "trajectory.jsonl").is_file())
+            self.assertTrue((run / "report.md").is_file())
+        later = json.loads((second / "results.json").read_text())
+        self.assertEqual(later["cost"]["prior_spent_usd"], 0.5, "one ledger counts both runs")
+
     def test_an_interrupt_kills_every_group_and_still_writes_the_results(self):
         out = self.tmpdir() / "out"
         argv, log = self.live("hang", out)
@@ -1169,7 +1212,7 @@ class LiveRunner(SafetyNet):
         self.assertEqual({r["case"]: r["verdict"] for r in result["cells"]},
                          dict.fromkeys(result["plan"]["runnable"], "PASS"))
         self.assertIn("live-unreviewed", result["evidence"])
-        report = (out / "report.md").read_text()
+        report = (self.run_dirs(out)[-1] / "report.md").read_text()
         self.assertIn("| TT-01 |", report)
         self.assertIn("UNRUN", report)
 

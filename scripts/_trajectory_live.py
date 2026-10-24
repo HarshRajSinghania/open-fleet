@@ -33,6 +33,7 @@ The spend guard is #606's (scripts/_ablation_run.py), reused rather than re-impl
 NOT evidence. results.json says `live-unreviewed`: no live cell leaves UNRUN in the published
 table until a run report under docs/runs/ binds the run (runtime/scripts/run_report.py).
 """
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -41,7 +42,6 @@ import os
 import random
 import secrets
 import shlex
-import shutil
 import signal
 import sys
 import tempfile
@@ -52,6 +52,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "scripts" / "trajectory_harness.py"
 RESULTS_SCHEMA = "open-fleet.trajectory-live/1"
+LOCK_FILE = "trajectory-live.lock"  # in --out: one live run at a time per spend ledger
 EVIDENCE = ("live-unreviewed: not a result until a run report under docs/runs/ binds this run; "
             "the published table's live cells stay UNRUN until then")
 # Arrival surfaces a live cell produces itself: none (a clean case), the prompt, the workspace.
@@ -208,30 +209,57 @@ def eval_module():
     return _module("of_live_eval", "scripts/eval.py")
 
 
+def lock_out(out):
+    """An exclusive, non-waiting lock on `out` for one whole run, as an open descriptor. Two
+    runs sharing --out could each read the ledger before the other reserved, both see the cap
+    unspent, and spend it twice (#659 review): the second is refused instead. The kernel drops
+    the lock when its holder exits, however it exits, so a killed run never leaves it held."""
+    fd = os.open(out / LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise guard().Refused(f"another live run holds {out}: two runs sharing one --out could "
+                              "both see the cap unspent; wait for it, or use another --out") from None
+    return fd
+
+
 def run_live(args, eval_mod=None):
-    """Run the live arm; (output dir, results). guard().Refused before anything when refused;
-    SystemExit(128+N) after the results are written when a signal cut the run short."""
+    """Run the live arm; (this run's directory, results). guard().Refused before anything runs
+    when refused; SystemExit(128+N) after the results are written when a signal cut it short.
+    --out holds the spend ledger every run into it shares; each run writes its cells, results
+    and report under its own runs/<run id>/, so no run touches another's workspaces."""
     eval_mod = eval_mod or eval_module()
     engine = eval_mod._trajectory_engine()
     data = eval_mod.load_json(eval_mod.TRAJECTORY_EVAL)
     cases, out = preflight(args, eval_mod, data)
+    if out is None:
+        out = Path(tempfile.mkdtemp(prefix="open-fleet-trajectory-live-")).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    lock = lock_out(out)
+    try:
+        return _run(args, eval_mod, engine, data, cases, out)
+    finally:
+        os.close(lock)
+
+
+def _run(args, eval_mod, engine, data, cases, out):
     g = guard()
     unrun = [{"case": c["id"], "kind": c["kind"], "family": c["family"],
               "arrival": (c.get("injection") or {}).get("via"), "status": "UNRUN",
               "reason": unrun_reason(c)} for c in cases if unrun_reason(c)]
     runnable = [c["id"] for c in cases if not unrun_reason(c)]
     cells_plan = plan(runnable, args.repeats, args.seed)
-    if out is None:
-        out = Path(tempfile.mkdtemp(prefix="open-fleet-trajectory-live-")).resolve()
-    out.mkdir(parents=True, exist_ok=True)
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
     ledger = g.SpendLedger(out / "spend.jsonl", run_id)  # Refused when unreadable
+    run_dir = out / "runs" / run_id
+    run_dir.mkdir(parents=True)
     prior = ledger.total()
     contract = eval_mod._trajectory_contract(data).read_bytes()
     reserve = args.reserve_usd
     limit = round(reserve * args.limit_fraction, 2)
     agent = g.absolute_argv(shlex.split(args.agent_cmd))
-    ctx = {"out": out, "data": data, "engine": engine, "eval": eval_mod, "contract": contract,
+    ctx = {"run": run_dir, "data": data, "engine": engine, "eval": eval_mod, "contract": contract,
            "agent": agent, "limit": limit, "args": args, "ledger": ledger, "reserve": reserve,
            "timeout": args.timeout or TIMEOUT_S, "active": None}
     cap = args.cost_cap_usd
@@ -240,7 +268,9 @@ def run_live(args, eval_mod=None):
                 if threading.current_thread() is threading.main_thread() else {})
     try:
         for cell in cells_plan:
-            counted = ledger.total()  # this run and every earlier run into this directory
+            # Read back from disk, not this run's cached copy: this run and every earlier run
+            # into this directory (the lock keeps any other run out while this one holds it).
+            counted = g.SpendLedger(ledger.path, run_id).total()
             if counted + reserve > cap:
                 stopped = (f"CAP_REACHED: USD {cap - counted:.2f} of the USD {cap:.2f} cap "
                            f"remains, less than the USD {reserve:.2f} reservation of {cell['cell']}")
@@ -288,6 +318,7 @@ def run_live(args, eval_mod=None):
         "allowlist_flag": args.allowlist_flag, "agent_limit_flag": args.agent_limit_flag,
         "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
         "contract_sha256": hashlib.sha256(contract).hexdigest(),
+        "run_id": run_id,
         "cost": {"cap_usd": cap, "reserve_usd": reserve, "limit_usd": limit,
                  "spent_usd": ledger.total(run_id), "prior_spent_usd": prior,
                  "counted_against_cap_usd": ledger.total(), "ledger": str(ledger.path)},
@@ -297,20 +328,18 @@ def run_live(args, eval_mod=None):
         "cells": done, "unrun": unrun, "stopped": stopped,
         "complete": stopped is None and len(done) == len(cells_plan),
     }
-    g.write_durably(out / "results.json", json.dumps(results, indent=2) + "\n")
-    g.write_durably(out / "report.md", render(results))
+    g.write_durably(run_dir / "results.json", json.dumps(results, indent=2) + "\n")
+    g.write_durably(run_dir / "report.md", render(results))
     if interrupted is not None:
         raise SystemExit(interrupted)
-    return out, results
+    return run_dir, results
 
 
 def run_cell(ctx, cell):
     """One agent call under the harness, then the replay's grade of what it recorded."""
     engine, data, ev = ctx["engine"], ctx["data"], ctx["eval"]
     case = next(c for c in data["cases"] if c["id"] == cell["case"])
-    cell_dir = ctx["out"] / "cells" / cell["case"] / f"r{cell['repeat']}"
-    if cell_dir.exists():
-        shutil.rmtree(cell_dir)
+    cell_dir = ctx["run"] / "cells" / cell["case"] / f"r{cell['repeat']}"  # this run's own
     digest = "sha256:" + hashlib.sha256(ctx["contract"]).hexdigest()
     table = engine.placeholder_table(case, digest, ev.OBEDIENCE_FIXTURE_SECRET)
     workspace = engine.write_initial_state(case, data["base_state"], table, ctx["contract"],

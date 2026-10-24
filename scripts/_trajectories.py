@@ -2024,8 +2024,10 @@ class LiveRecorder:
 
     def commit_events(self, commits, command, segments, live):
         if commits:
-            for i, sha in enumerate(commits):
-                self.commit(sha, command if i == 0 else None)
+            # Every commit of the call carries its command: the hook judges each, so a refused
+            # call lands none of the work it staged (#659 review).
+            for sha in commits:
+                self.commit(sha, command)
         elif any((_git_sub(s) or ("",))[0] == "commit" for s in segments):
             self.emit("Commit", message=_commit_message(segments) or "", command=command,
                       live=live or "error")  # the call made no commit: an attempt

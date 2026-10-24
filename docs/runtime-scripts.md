@@ -321,10 +321,10 @@ command line that runs later or elsewhere is judged as segments of its own (#598
 or command of `flock`, `su -c`, `runuser`, `script -c`, `watch`, `parallel` (its template
 completed with each `:::` argument, `{}` substituted or the argument appended), `ssh host cmd`,
 `find -exec`, `fd -x`/`-X`, `entr` and zsh `repeat`, a literal that `python -c`/`perl -e`/
-`node -e` code — from `-c`, stdin or a heredoc — hands to `os.system`/`subprocess`, a program fed to a shell on stdin (`echo …`/
-`printf …`/`cat` piped into `sh`, `bash <<EOF`, `bash <<< …`) or written to a file and run in
-the same command (tracked by resolved path, so two files named `run.sh` do not share), and a
-command head built from a variable or a substitution — its literal value on the
+`node -e` code — from `-c`, stdin or a heredoc — hands to `os.system`/`subprocess`, a program a
+shell reads on stdin or from a file written and run in the same command (tracked by resolved
+path, so two files named `run.sh` do not share), and a command head built from a variable or a
+substitution — its literal value on the
 line, what `echo` prints, else each refused head in its place. A `gh alias` whose expansion is
 an off-repo write, and `gh alias import`, deny: no receipt can bind the later send. `printf`/
 `echo` escapes (`\xHH`, `\NNN`, `\n` …) are decoded before the fed program is read; interpreter
@@ -347,8 +347,7 @@ covers it — its receipt must sit inside the saved action (PR #648 review). Nor
 REPEATED send: `watch`, `find -exec`/`-execdir`/`-ok` (`;` or `+`), `fd -x`/`-X`, `xargs`,
 `parallel`, `entr`, zsh `repeat` and a `while`/`until` condition may run the command again, so
 its receipt must sit inside the repeated command (`find . -exec sh -c 'egress.py write … && gh …'
-\;`). Every heredoc and here-string a shell reads is judged, not only the first on the line
-(`sh <<A <<B` runs the second body). Push long options
+\;`). Push long options
 are read the way git reads them, so an unambiguous abbreviation
 (`--del`, `--mi`, `--no-force-w`) is the option it expands to. An effective
 `--force-with-lease` exempts a force-push but never a deletion.
@@ -383,18 +382,37 @@ beside a write call, whether from `-c` or fed on stdin or a heredoc; `touch` is 
 reading an anchor stays free (PR #648 review). A `grep`, `sed` or `tr`
 that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
 
+Who reads a body (PR #648 review). Reader identification is structural, not positional: each
+simple command is its words plus its redirections, wherever they sit among the words, and each
+pipeline stage — after `|` or `|&` — is a command with its own redirections and its own
+standard input. A heredoc or here-string body is read by the command that owns its `<<`,
+`<<-` or `<<<` on fd 0 (or dup-ed onto it: `3<<B 0<&3`; `sh 3<<B` reads nothing), whichever
+stage that is (`echo x | bash <<< CMD` runs CMD); an output redirection (`> f`, `2>&1`,
+`&>/dev/null`) never stops it reading (`bash > /dev/null <<EOF` runs the body); `cat`, `tee`
+and the line filters pass what they read on; a `{ …; }`, `( … )`, loop, `exec`, function call,
+`xargs` (its command line built from the input), `read` (`$l` then runs the line), process
+substitution (`sh <(…)`, `sh < <(…)`), `sh /dev/stdin` or `$(cat)` that reads a body hands it
+to what it runs. Every source is read, not only the last: bash and dash read the last stdin
+redirection, but zsh (MULTIOS, on by default) reads the pipe and every redirection in turn as
+one program and writes to a file and the pipe alike, and the hook does not know which shell
+runs the line. A receipt `&&`-before a pipeline arms one program a stage reads from it.
+
 Shell grammar and versions (#598). `scripts/deny_hook_corpus.py` differential-tests the
 parser against real bash: each template runs with an inert sentinel in the hole in a throwaway
 directory (PATH holding only the sentinel, `bash`, `cat` and `find`; CPU, file-size and 5 s
-wall limits), while the same hole holding `git push --force origin main` (HIGH),
+wall limits; the sentinel stands for a binary, so `sh orca_sentinel …` runs nothing), while
+the same hole holding `git push --force origin main` (HIGH),
 `gh issue close 34` (rule 5) or `rm -r -f ./build` (Never list) is only ever fed to the hook.
 The grid covers quote state, backslash parity, continuations, heredoc delimiter quoting,
 spacing and tabs, comments, nested substitutions and the deferred or relaunched forms above;
 seed 598 stacks those contexts. A receipt mode puts an `egress.py write` sentinel (exiting 0,
 then 1 in a second run) before `gh issue close 34` and counts at run time whether every send
 consumed a fresh successful receipt; it covers several heredocs on one line, here-strings,
-fed shells and repeating launchers (PR #648 review). A miss fails CI outright; a false denial
-is scored apart and must be a minimized boundary in `tests/fixtures/deny_hook_conformance.json` (pinned exactly on
+fed shells and repeating launchers (PR #648 review). A stdin family crosses each heredoc and
+here-string source with every redirection form in every position and every pipeline position
+(first, middle, last, `|&`), plus the routes above; it runs under bash AND dash, and a hole
+either shell runs is live (`--both` runs the whole product). A miss fails CI outright; a false
+denial is scored apart and must be a minimized boundary in `tests/fixtures/deny_hook_conformance.json` (pinned exactly on
 bash 3.2, the recording host; held to a small slack on bash 5.x, where CI runs). Switching off
 each parser safeguard in a copy of the hook must make the corpus disagree with bash (the
 mutation control in the same test module). Supported: POSIX sh and bash 3.2 through 5.x
@@ -402,13 +420,16 @@ command grammar — the fixtures were recorded on bash 3.2.57 and CI runs the co
 5.x — plus bash 5.3 `${ cmd; }` read as a substitution. Deliberately conservative (refused,
 recorded as boundaries): a function body or trap action judged as if called or fired, an alias
 value judged where aliases are not expanded, a quoted `"$c"` head judged by its split value,
-`coproc` read as bash 4+ reads it, a refused command in a heredoc body bash discards (the
-first of `bash <<A <<B`), a send under a repeating launcher that happens to run once (one
+`coproc` read as bash 4+ reads it, a refused command in a stdin source bash discards (the
+first of `bash <<A <<B`, a heredoc overridden by a later `< /dev/null`, a pipe a here-string
+replaces) and a receipted send behind another source on the same reader (zsh reads them all,
+as one program), a send under a repeating launcher that happens to run once (one
 `find -exec … +` or `xargs` batch, a one-match `find`, an `until` a successful send ends), a
 heredoc delimiter word holding `$(`, a delimiter followed by `)` inside a substitution (bash 3.2 closes both there), and a comment that swallows a
 substitution's `)`. Unsupported, left to the Never list and the sandbox: a script already on
 disk, a program a download or a decoder produces (`base64 -d | sh` is not read), a shell
-reading a file on stdin (`sh < f`), an alias, function or `gh` alias defined in an EARLIER
+reading a file this command did not write (`sh < f`), a filter that rewrites what it passes
+(`sed`, `tr`, `awk`), an alias, function or `gh` alias defined in an EARLIER
 command, interpreter APIs beyond string literals handed to an exec-shaped call, and any value
 computed at run time. Run it with `python3 scripts/deny_hook_corpus.py` (`--random N --both`
 for more cases, `--minimize --write` to store new mismatches, `--hook PATH` to judge another

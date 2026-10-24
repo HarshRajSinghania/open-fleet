@@ -6,6 +6,18 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The deny-hook reads who reads a body structurally** (#598, PR #648 review). Each simple
+  command is its words plus its redirections wherever they sit, and each pipeline stage (after
+  `|` or `|&`) a command with its own standard input: a heredoc or here-string is read by the
+  command owning its `<<`/`<<<` on fd 0, never by its place in the line. `echo safe | bash <<<
+  'gh issue close 34'` and `bash > /dev/null <<EOF … EOF` were allowed with no receipt, and the
+  sweep found more readers the hook missed for every rule: `|&` pipes, `cat`/`tee` stages,
+  `sh 0<<EOF`, `3<<B 0<&3`, groups, loops, `exec`, function calls (and a glued `f(){ …;}`
+  head), `xargs`, `read` then `$l`, `sh <(…)`, `sh < <(…)`, `sh /dev/stdin`, `$(cat)` reading
+  the pipe and `eval "$(cat <<< …)"`. Sources are unioned (zsh reads them all). The corpus
+  gains a stdin family (every source × redirection form and position × pipeline position, run
+  under bash and dash; 0 misses, 234 at `231a823379`), its sentinel now stands for a binary,
+  and each part of the reader has a mutation control.
 - **The deny-hook closes two more PR #648 review findings** (#598). Every heredoc and
   here-string a shell reads is judged for its receipt, not only the first on the line:
   `sh <<A <<B` runs the second body, and `cat <<< … | sh` and a heredoc inside `$(…)` are fed

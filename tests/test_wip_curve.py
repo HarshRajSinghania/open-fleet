@@ -703,10 +703,15 @@ B6_CAPPED = ("wip1-b6r2-rep1", ("--cost-cap-usd", "3.40", "--inert-cost-usd", "0
 # b1r1-rep1 builds T5 first. A cap of exactly one unit's worst case (a builder and a reviewer at
 # 0.25 each); in the second, the fake harness reports 0.40 for the builder, over its reservation.
 B1_BOUNDARY = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25"))
-# T5 lands first; T3's builder then also empties Ledger.history(): its own oracle passes, T5's fails
-# in the merge gate, so the queue writes a real `gate_failed` receipt and T3 is rebuilt.
+_PLANT_MARKER = Path(tempfile.gettempdir()) / f"wip-curve-plant-{os.getpid()}.log"
+# One run serves two findings. T5 lands first, after its builder planted diff.external, a textconv
+# and a smudge driver selected by a committed .gitattributes, core.fsmonitor and a hooks directory
+# in the SHARED repository config: commands only someone else's git would run, while the
+# coordinator diffs, checks out, pushes and merges next to them. T3's builder then also empties
+# Ledger.history(): its own oracle passes, T5's fails in the merge gate, so the queue writes a
+# real `gate_failed` receipt and T3 is rebuilt.
 B1_GATE = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
-    {"T3": {"builder": ["regress"]}, "_regress": {"T3": [
+    {"T5": {"builder": ["plant"]}, "_plant": str(_PLANT_MARKER), "T3": {"builder": ["regress"]}, "_regress": {"T3": [
         {"file": "stocklib/ledger.py", "replace": "        return list(self._history)", "with": ["        return []"]}]}})))
 B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
                                    "--inert-script", json.dumps({"_cost": {"builder": "0.40"}})))
@@ -715,6 +720,8 @@ B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd",
 def tearDownModule():
     for tmp, *_rest in _DRY_RUNS.values():
         tmp.cleanup()
+    if "tmp" in _DOCUMENTED:
+        _DOCUMENTED["tmp"].cleanup()
 
 
 class DryRun(unittest.TestCase):
@@ -1419,20 +1426,11 @@ class TestAFailedMergeGateIsReported(DryRun):
         self.assertEqual(report["runs"][0]["binding_problems"], [])
 
 
-_PLANT_MARKER = Path(tempfile.gettempdir()) / f"wip-curve-plant-{os.getpid()}.log"
-# T5's builder solves its task, then plants diff.external, a textconv and a smudge driver selected
-# by a committed .gitattributes, core.fsmonitor and a hooks directory in the SHARED repository
-# config: commands only someone else's git would run. The coordinator diffs it, checks it out for
-# review, pushes it, merges it through the queue and keeps building next to it.
-B1_PLANT = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
-    {"T5": {"builder": ["plant"]}, "_plant": str(_PLANT_MARKER)})))
-
-
 class TestWorkerGitConfigNeverRunsOnTheCoordinator(DryRun):
     """PR #653 review: every coordinator git call over the target repository goes through
     gitexec's hardened environment with the repository's declared drivers blanked."""
 
-    RUN, ARGS = B1_PLANT
+    RUN, ARGS = B1_GATE
 
     def test_no_planted_command_ran_on_the_coordinator(self):
         for path in (_PLANT_MARKER, Path(f"{_PLANT_MARKER}.sh"), Path(f"{_PLANT_MARKER}.hooks")):
@@ -1529,14 +1527,14 @@ class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
     truly launched; a harness that ignores the pin is stopped before its next call."""
 
     def test_the_pinned_model_is_the_model_every_call_launched(self):
-        p, run_json = self.live()
-        self.assertTrue(run_json.is_file(), p.stdout + p.stderr)
-        record = json.loads(run_json.read_text(encoding="utf-8"))
+        results, p = documented_live_run()  # the page's own live command, against a fake claude
+        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["status"], "complete", p.stdout + p.stderr)
         self.assertTrue(record["launched_models"])
         self.assertEqual(set(record["launched_models"].values()), {"wip-fake-model"})
-        report = wip.build_report(self.results, basis="all")
+        report = wip.build_report(results, basis="all")
         self.assertEqual(report["runs"][0]["metrics"]["models"], ["wip-fake-model"])
+        self.assertTrue(report["runs"][0]["compliant"], report["runs"][0]["noncompliance"])
 
     def test_a_harness_that_ignores_the_pin_gets_no_second_call(self):
         p, run_json = self.live(script={"_ignore_model_env": True})
@@ -1594,33 +1592,47 @@ class TestTheRunDeadlineIsKeptInsideAWave(Tmp):
         self.assertLess(elapsed, 35, "the reviewer was waited for past the run's deadline")
 
 
-class TestTheDocumentedLiveCommandRuns(LiveWithAFakeHarness):
-    """PR #653 review (P2): the live command the protocol page prints must parse and start a run.
-    It is read from the page, its placeholders filled, and run against a fake harness."""
+_DOCUMENTED: dict = {}
 
-    FILL = {"dir": None, "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
 
-    def test_the_documented_live_command_starts_a_run(self):
+def documented_live_run():
+    """(results, process) of the protocol page's live command, placeholders filled, run once per
+    module against a fake claude: a live-tier run that every check in this module can read."""
+    if "run" not in _DOCUMENTED:
+        tmp = tempfile.TemporaryDirectory(prefix="wip-curve-documented-")
+        root = Path(tmp.name).resolve()
         page = (ROOT / "docs" / "experiments" / "wip-curve-prereg.md").read_text(encoding="utf-8")
         block = next(b for b in re.findall(r"```bash\n(.*?)```", page, re.S) if "--worker live" in b)
         command = block.replace("\\\n", " ")
+        fill = {"dir": str(root / "results"), "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
         for placeholder in re.findall(r"<[^>]+>", command):
-            key = next((k for k in self.FILL if k in placeholder), None)
-            self.assertIsNotNone(key, f"an unknown placeholder {placeholder}")
-            command = command.replace(placeholder, str(self.tmp / "results") if key == "dir" else self.FILL[key])
+            key = next((k for k in fill if k in placeholder), None)
+            if key is None:
+                raise AssertionError(f"an unknown placeholder {placeholder} in the documented live command")
+            command = command.replace(placeholder, fill[key])
         argv = shlex.split(command)
-        self.assertEqual(argv[:2], ["python3", "scripts/wip_curve.py"])
-        env, trip_log = tripwired_env(self.tmp)
-        fake = self.tmp / "fake-bin"
-        install_fake_harness(fake)
-        env.update(PATH=os.pathsep.join([str(fake), env["PATH"]]), HOME=str(self.tmp / "home"))
-        (self.tmp / "home").mkdir(exist_ok=True)
+        if argv[:2] != ["python3", "scripts/wip_curve.py"]:
+            raise AssertionError(f"the documented live command is not the runner: {argv[:2]}")
+        env, trip_log = tripwired_env(root)
+        install_fake_harness(root / "fake-bin")
+        env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
+        (root / "home").mkdir()
         with mock.patch.object(wip, "dirty_inputs", return_value=[]):
-            p = run_in_process(argv[2:], env)
+            proc = run_in_process(argv[2:], env)
+        _DOCUMENTED.update(run=(root / "results", proc), tmp=tmp, trip_log=trip_log)
+    return _DOCUMENTED["run"]
+
+
+class TestTheDocumentedLiveCommandRuns(unittest.TestCase):
+    """PR #653 review (P2): the live command the protocol page prints must parse and start a run.
+    It is read from the page, its placeholders filled, and run against a fake harness."""
+
+    def test_the_documented_live_command_starts_a_run(self):
+        results, p = documented_live_run()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((record["tier"], record["status"]), ("live-unreviewed", "complete"))
-        self.assertFalse(trip_log.exists())
+        self.assertFalse(_DOCUMENTED["trip_log"].exists())
 
 
 class TestAKilledRunStillCounts(Tmp):

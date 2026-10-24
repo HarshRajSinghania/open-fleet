@@ -702,6 +702,8 @@ def heldout_preflight(export, cases_dir):
     try:
         protocol = json.loads((export / BENCH / "heldout-protocol.json").read_text(encoding="utf-8"))
         split = protocol["splits"]["heldout"]
+        if not isinstance(split, dict):  # PR #665 review sweep: a list here raised AttributeError
+            raise TypeError("splits.heldout is not a JSON object")
     except (OSError, ValueError, RecursionError, KeyError, TypeError):
         return facts, [{"kind": "heldout-protocol-unreadable", "case": None,
                         "detail": "the pinned revision's held-out protocol cannot be read"}]
@@ -1028,6 +1030,10 @@ def _measure_run(export, env, gitbin, python, commit, tree, rev, runs, case_time
     if protocol_file.is_file():
         try:
             held = json.loads(protocol_file.read_text(encoding="utf-8"))
+            # A protocol, or its holder, that is not a JSON object raised AttributeError out of
+            # every replay (PR #665 review sweep): it is the same named failure as unreadable JSON.
+            if not (isinstance(held, dict) and isinstance(held.get("holder") or {}, dict)):
+                raise ValueError("not a JSON object with an object holder")
             report["heldout"] = {"protocol": held.get("protocol"), "status": held.get("status"),
                                  "holder": (held.get("holder") or {}).get("state")}
         except (OSError, ValueError, RecursionError) as exc:

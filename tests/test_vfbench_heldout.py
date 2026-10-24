@@ -1305,5 +1305,135 @@ class TheVetJudgesAgainstThePinnedRevision(unittest.TestCase):
         self.assertTrue(any("contract_source is not a file" in p for p in self._problems()))
 
 
+class AWrongTypeIsRefusedNeverRaised(unittest.TestCase):
+    """PR #665 review (P2, PRRT_kwDOTWxN9c6v2ZCm) and its sweep: `class: []` or `fixture: []`
+    raised TypeError in a membership test, an impossible date such as 2026-02-30 raised ValueError,
+    and the CLI catches only usage errors, so one malformed case stopped the vet before the rest
+    were checked. The same class reached validate and the evaluation it binds. Each is now a
+    named refusal, and every other case is still checked (#601)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pin = heldout.resolve_pin(ROOT, "HEAD")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.files = _vet_set(self.tmp / "cases", self.pin)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _edit(self, n, edit):
+        case = json.loads(self.files[n].read_text(encoding="utf-8"))
+        edit(case)
+        self.files[n].write_text(json.dumps(case), encoding="utf-8")
+
+    def test_each_malformed_field_is_refused_and_the_other_cases_still_checked(self):
+        def static(**fields):
+            return lambda c: (c.pop("fixture"), c.update(fields))
+        malformed = {
+            "class: []": (lambda c: c.update({"class": []}), "class must be a check"),
+            "class: {}": (lambda c: c.update({"class": {"a": 1}}), "class must be a check"),
+            "fixture: []": (lambda c: c.update(fixture=[]), "no run-time builder"),
+            "fixture: {}": (lambda c: c.update(fixture={"a": 1}), "no run-time builder"),
+            "authored_at on 2026-02-30": (lambda c: c.update(authored_at="2026-02-30T00:00:00Z"),
+                                          "authored_at must be"),
+            "authored_at in month 13": (lambda c: c.update(authored_at="2026-13-01T00:00:00Z"),
+                                        "authored_at must be"),
+            "contract_source: []": (static(contract_source=[]), "contract_source is not a file"),
+            "contract_source with a NUL": (static(contract_source="a\x00b"),
+                                           "contract_source is not a file"),
+            "coordinator_contract: [x]": (lambda c: c.update(coordinator_contract=["x"]),
+                                          "could not be built or rendered"),
+            "neighbour: {}": (lambda c: c.update(neighbour={"a": 1}), "neighbour must be"),
+        }
+        self._edit(2, lambda c: c.pop("expect_reason"))  # a second, ordinary defect
+        original = self.files[0].read_bytes()
+        for label, (edit, needle) in malformed.items():
+            with self.subTest(field=label):
+                try:
+                    self._edit(0, edit)
+                    problems, _ = heldout.vet_cases(self.tmp / "cases", self.pin)
+                    self.assertTrue(any(p.startswith("hv1-001.json:") and needle in p
+                                        for p in problems), problems)
+                    self.assertTrue(any(p.startswith("hv1-003.json:") and "expect_reason" in p
+                                        for p in problems), problems)
+                finally:
+                    self.files[0].write_bytes(original)
+
+    def test_the_cli_refuses_and_never_raises(self):
+        self._edit(0, lambda c: c.update({"class": [], "authored_at": "2026-02-30T00:00:00Z"}))
+        r = _cli("vet", str(self.tmp / "cases"), "--pin", "HEAD")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("REFUSED: hv1-001.json", r.stdout)
+
+    def test_validate_names_every_wrong_type_and_never_raises(self):
+        def at(*path, value):
+            def mutate(d):
+                node = d
+                for key in path[:-1]:
+                    node = node[key]
+                node[path[-1]] = value
+            return mutate
+
+        def milestone(mid, **fields):
+            return lambda d: next(m for m in d["release_dates"]["milestones"]
+                                  if m["id"] == mid).update(fields)
+        wrong = {
+            "splits: [1]": at("splits", value=[1]),
+            "splits.development: text": at("splits", "development", value="x"),
+            "splits.heldout: [1]": at("splits", "heldout", value=[1]),
+            "temporal: [1]": at("temporal", value=[1]),
+            "temporal.pinned_verifier: [1]": at("temporal", "pinned_verifier", value=[1]),
+            "release_dates: [1]": at("release_dates", value=[1]),
+            "milestones: [text]": at("release_dates", "milestones", value=["x"]),
+            "milestones: {}": at("release_dates", "milestones", value={"a": 1}),
+            "a milestone id: [1]": milestone("revealed", id=[1]),
+            "the evaluated date: [1]": milestone("evaluated", date=[1]),
+            "leakage_checks: [text]": at("leakage_checks", value=["x"]),
+            "leakage_checks: {}": at("leakage_checks", value={"a": 1}),
+            "a leakage check id: [1]": lambda d: d["leakage_checks"][0].update(id=[1]),
+            "holder: [1]": at("holder", value=[1]),
+            "authored_from on 2026-02-30": at("splits", "heldout", "authored_from",
+                                              value="2026-02-30T00:00:00Z"),
+            "committed_at on 2026-02-30": at("temporal", "pinned_verifier", "committed_at",
+                                             value="2026-02-30T00:00:00+05:30"),
+            "a report path with a NUL": lambda d: d["evaluations"][0].update(report="a\x00b"),
+        }
+        for label, mutate in wrong.items():
+            with self.subTest(field=label):
+                doc = _protocol()
+                mutate(doc)
+                self.assertTrue(heldout.validate(doc), label)
+        for doc in ([1], "text", None):
+            with self.subTest(protocol=doc):
+                self.assertTrue(any("JSON object" in e for e in heldout.validate(doc)))
+        bad = self.tmp / "protocol.json"
+        bad.write_text("[1]", encoding="utf-8")
+        r = _cli("validate", "--protocol", str(bad))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("INVALID", r.stdout)
+
+
+class AReportOfTheWrongShapeIsRefused(unittest.TestCase):
+    """The sweep, on the report an evaluation binds: a section of the wrong type is a refusal."""
+
+    setUpClass = PublishedFiguresAndEvaluationsBind.__dict__["setUpClass"]
+    tearDownClass = PublishedFiguresAndEvaluationsBind.__dict__["tearDownClass"]
+    _errors = PublishedFiguresAndEvaluationsBind._errors
+    _errors_with_report = APartialRunIsNeverACompleteEvaluation._errors_with_report
+
+    def test_each_wrong_typed_section_is_named(self):
+        for key, value in (("protocol", [1]), ("revision", [1]), ("versions", [1]),
+                           ("versions", {"blobs": [1]}), ("heldout", [1]), ("verdict", [1]),
+                           ("corpus", [1]), ("configurations", [1])):
+            with self.subTest(section=key, value=value):
+                errors = self._errors_with_report(lambda r, k=key, v=value: r.update({k: v}))
+                self.assertTrue(errors)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

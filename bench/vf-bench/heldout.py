@@ -38,6 +38,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -109,14 +110,17 @@ def _gate():
 
 
 def validate(protocol, gate=None, traps_dir=None):
-    """Every problem with a protocol document, as strings (empty = valid)."""
+    """Every problem with a protocol document, as strings (empty = valid). A section of the wrong
+    JSON type is named and read as empty, never raised (PR #665 review sweep)."""
+    if not isinstance(protocol, dict):
+        return ["the protocol must be a JSON object"]
     gate = gate or _gate()
     traps_dir = Path(traps_dir) if traps_dir else HERE / "traps"
-    errors = []
+    errors = _type_errors(protocol)
     if protocol.get("protocol") != PROTOCOL_ID:
         errors.append(f"protocol is {protocol.get('protocol')!r}, not {PROTOCOL_ID!r}")
-    splits = protocol.get("splits") or {}
-    dev, held = splits.get("development") or {}, splits.get("heldout") or {}
+    splits = _obj(protocol.get("splits"))
+    dev, held = _obj(splits.get("development")), _obj(splits.get("heldout"))
     if not dev or not held:
         errors.append("the protocol must declare both a development and a heldout split")
     traps = []
@@ -160,13 +164,13 @@ def validate(protocol, gate=None, traps_dir=None):
                     load_digests(path)
                 except UsageError as exc:
                     errors.append(f"heldout published_digests: {exc}")
-    temporal = protocol.get("temporal") or {}
+    temporal = _obj(protocol.get("temporal"))
     if not str(temporal.get("rule") or "").strip():
         errors.append("the protocol must state its temporal rule")
-    dates = protocol.get("release_dates") or {}
+    dates = _obj(protocol.get("release_dates"))
     if "planned" not in str(dates.get("label") or "").lower():
         errors.append("release_dates must be labelled as planned")
-    milestones = dates.get("milestones") or []
+    milestones = _object_list(dates.get("milestones"))
     if not milestones:
         errors.append("release_dates must name at least one milestone")
     for m in milestones:
@@ -177,8 +181,8 @@ def validate(protocol, gate=None, traps_dir=None):
             errors.append(f"milestone {name!r} status is {m.get('status')!r}, not planned or done")
         if m.get("status") == "done" and not str(m.get("evidence") or "").strip():
             errors.append(f"milestone {name!r} is marked done without evidence")
-    checks = protocol.get("leakage_checks") or []
-    ids = {c.get("id") for c in checks}
+    checks = _object_list(protocol.get("leakage_checks"))
+    ids = {c.get("id") for c in checks if isinstance(c.get("id"), str)}
     for need in ("digest-scan", "canary-scan", "history-scan", "temporal"):
         if need not in ids:
             errors.append(f"leakage check {need!r} is not declared")
@@ -191,7 +195,7 @@ def validate(protocol, gate=None, traps_dir=None):
                           "check may promise only what it catches (PR #645 review)")
         if "heldout.py" in command and not (HERE / "heldout.py").is_file():
             errors.append(f"leakage check {c.get('id')!r} names a command that does not exist")
-    holder = protocol.get("holder") or {}
+    holder = _obj(protocol.get("holder"))
     assigned, state = holder.get("assigned"), holder.get("state")
     if not str(holder.get("role") or "").strip():
         errors.append("the holder role is not described")
@@ -208,6 +212,45 @@ def validate(protocol, gate=None, traps_dir=None):
     errors += _published_errors(protocol)
     errors += _evaluation_errors(protocol)
     errors += _milestone_state_errors(protocol)
+    return errors
+
+
+def _obj(value):
+    """A JSON object as a dict; anything else reads as an empty one (its type is named by
+    _type_errors)."""
+    return value if isinstance(value, dict) else {}
+
+
+def _object_list(value):
+    """The objects in a JSON list; anything else reads as no objects."""
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def _type_errors(protocol):
+    """Every protocol section whose JSON type is not the one the protocol declares (PR #665
+    review sweep): each was a crash before, out of a membership test or an attribute read."""
+    errors = []
+    for key in ("splits", "temporal", "release_dates", "holder"):
+        if key in protocol and not isinstance(protocol[key], dict):
+            errors.append(f"{key} must be a JSON object")
+    for key in ("development", "heldout"):
+        if key in _obj(protocol.get("splits")) and not isinstance(protocol["splits"][key], dict):
+            errors.append(f"splits.{key} must be a JSON object")
+    if "pinned_verifier" in _obj(protocol.get("temporal")) and not isinstance(
+            protocol["temporal"]["pinned_verifier"], dict):
+        errors.append("temporal.pinned_verifier must be a JSON object")
+    for where, value in (("release_dates.milestones", _obj(protocol.get("release_dates")).get("milestones")),
+                         ("leakage_checks", protocol.get("leakage_checks"))):
+        if value is not None and not (isinstance(value, list)
+                                      and all(isinstance(v, dict) for v in value)):
+            errors.append(f"{where} must be a list of JSON objects")
+    for m in _object_list(_obj(protocol.get("release_dates")).get("milestones")):
+        for key in ("id", "milestone", "date", "status"):
+            if key in m and not isinstance(m[key], str):
+                errors.append(f"a milestone's {key} must be a string")
+    for c in _object_list(protocol.get("leakage_checks")):
+        if not isinstance(c.get("id"), str):
+            errors.append("every leakage check needs a string id")
     return errors
 
 
@@ -248,10 +291,14 @@ def set_digest(digests):
 
 
 def _when(stamp):
-    """An ISO-8601 timestamp with its offset as an aware datetime, or None."""
+    """An ISO-8601 timestamp with its offset as an aware datetime, or None — also for one shaped
+    right that names no instant, such as 2026-02-30 (PR #665 review)."""
     if not isinstance(stamp, str) or not TIMESTAMP_RE.match(stamp):
         return None
-    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def resolve_pin(repo, commit):
@@ -270,12 +317,12 @@ def _published_errors(protocol):
     """Published digests bind the split's figures: the set digest, the case and category counts
     and the authoring window are the digests file's and the holder's summary, and they fall after
     the pinned verifier revision (the temporal rule)."""
-    held = (protocol.get("splits") or {}).get("heldout") or {}
+    held = _obj(_obj(protocol.get("splits")).get("heldout"))
     published = held.get("published_digests")
     if published is None:
         return []
     errors = []
-    if (protocol.get("holder") or {}).get("state") != "assigned":
+    if _obj(protocol.get("holder")).get("state") != "assigned":
         errors.append("held-out digests are published but no holder is assigned: unseen cases "
                       "need someone who holds them")
     try:
@@ -301,7 +348,7 @@ def _published_errors(protocol):
     elif (sum(v["traps"] for v in cats.values()), sum(v["valid_controls"] for v in cats.values())) \
             != (traps, controls):
         errors.append("heldout by_category does not sum to the split's traps and valid_controls")
-    pin = (protocol.get("temporal") or {}).get("pinned_verifier") or {}
+    pin = _obj(_obj(protocol.get("temporal")).get("pinned_verifier"))
     start, end = _when(held.get("authored_from")), _when(held.get("authored_to"))
     if start is None or end is None or start > end:
         errors.append("heldout authored_from / authored_to must be ISO-8601 timestamps in order")
@@ -335,8 +382,8 @@ def _evaluation_errors(protocol):
         return []
     if not isinstance(evaluations, list):
         return ["evaluations must be a list"]
-    held = (protocol.get("splits") or {}).get("heldout") or {}
-    pin = (protocol.get("temporal") or {}).get("pinned_verifier") or {}
+    held = _obj(_obj(protocol.get("splits")).get("heldout"))
+    pin = _obj(_obj(protocol.get("temporal")).get("pinned_verifier"))
     errors = []
     for i, ev in enumerate(evaluations):
         where = f"evaluation {i + 1}"
@@ -366,10 +413,10 @@ def _evaluation_errors(protocol):
         if blob != ev["verify_blob"]:
             errors.append(f"{where}: git does not hold verify.py blob {ev['verify_blob'][:12]} at "
                           f"{ev['revision'][:12]}")
-        path = ROOT / str(ev.get("report") or "")
+        report_path = ev.get("report")
         try:
-            raw = path.read_bytes() if ev.get("report") else None
-        except OSError:
+            raw = (ROOT / report_path).read_bytes() if isinstance(report_path, str) and report_path else None
+        except (OSError, ValueError):  # unreadable, a directory, or a NUL in the path
             raw = None
         if raw is None:
             errors.append(f"{where}: report {ev.get('report')!r} cannot be read")
@@ -384,13 +431,13 @@ def _evaluation_errors(protocol):
             errors.append(f"{where}: report {ev['report']} is not a {REPLAY_SCHEMA} report")
             continue
         facts = {
-            "a held-out replay": (report.get("protocol") or {}).get("split") == "heldout",
-            "of the recorded revision": (report.get("revision") or {}).get("commit") == ev["revision"],
-            "of the pinned verify.py blob": ((report.get("versions") or {}).get("blobs") or {}).get(
+            "a held-out replay": _obj(report.get("protocol")).get("split") == "heldout",
+            "of the recorded revision": _obj(report.get("revision")).get("commit") == ev["revision"],
+            "of the pinned verify.py blob": _obj(_obj(report.get("versions")).get("blobs")).get(
                 VERIFY_PATH) == ev["verify_blob"],
-            "of the published set": (report.get("heldout") or {}).get("set_sha256")
+            "of the published set": _obj(report.get("heldout")).get("set_sha256")
             == held.get("set_sha256"),
-            "whose completeness is recorded": (report.get("verdict") or {}).get("ok") is ev["complete"],
+            "whose completeness is recorded": _obj(report.get("verdict")).get("ok") is ev["complete"],
         }
         for fact, holds in facts.items():
             if not holds:
@@ -450,12 +497,12 @@ def _milestone_state_errors(protocol):
     """A milestone with an id says whether it happened, and the protocol's own state must agree:
     a done milestone the protocol does not show, or a planned one it already shows, is a date
     that lies (#601)."""
-    milestones = [m for m in ((protocol.get("release_dates") or {}).get("milestones") or [])
-                  if isinstance(m, dict) and m.get("id")]
-    held = (protocol.get("splits") or {}).get("heldout") or {}
+    milestones = [m for m in _object_list(_obj(protocol.get("release_dates")).get("milestones"))
+                  if isinstance(m.get("id"), str) and m["id"]]
+    held = _obj(_obj(protocol.get("splits")).get("heldout"))
     evaluations = protocol.get("evaluations") if isinstance(protocol.get("evaluations"), list) else []
     happened = {
-        "holder-assigned": (protocol.get("holder") or {}).get("state") == "assigned",
+        "holder-assigned": _obj(protocol.get("holder")).get("state") == "assigned",
         "digests-published": held.get("published_digests") is not None,
         "evaluated": bool(evaluations),
     }
@@ -470,7 +517,7 @@ def _milestone_state_errors(protocol):
         if not did and m.get("status") == "done":
             errors.append(f"milestone {m['id']!r} is marked done, but the protocol does not show it")
         if (m["id"] == "evaluated" and m.get("status") == "done"
-                and m.get("date") not in {e.get("date") for e in evaluations if isinstance(e, dict)}):
+                and m.get("date") not in [e.get("date") for e in evaluations if isinstance(e, dict)]):
             errors.append("milestone 'evaluated' is dated unlike every recorded evaluation")
     return errors
 
@@ -699,57 +746,68 @@ def _vet_against(case_dir, pin, repo, bench):
 
     ids = [c.get("id") for c in cases.values()]
     public = {json.dumps(m, sort_keys=True) for m in development_moves(bench / "traps")}
+    ctx = SimpleNamespace(cases=cases, ids=ids, public=public, checks=checks, rows=rows,
+                          replay=replay, vf=vf, pin=pin, pinned_at=pinned_at, now=now, repo=repo)
     for name, c in cases.items():
-        if json.dumps(_move(c), sort_keys=True) in public:
-            bad(name, "a copy of a development case once the held-out fields are dropped: it "
-                      "measures nothing the public corpus does not")
-        extra = sorted(set(c) - CASE_FIELDS)
-        if extra:
-            bad(name, f"{len(extra)} field(s) the replay does not read")
-        if not (isinstance(c.get("id"), str) and CASE_ID_RE.match(c["id"]) and name == c["id"] + ".json"):
-            bad(name, "id must be opaque (hv<version>-<3 digits>) and the file named <id>.json")
-        elif ids.count(c["id"]) > 1:
-            bad(name, "its id is not unique in the set")
-        if c.get("class") not in checks:
-            bad(name, "class must be a check named in the pinned verifier-check inventory")
-        if c.get("sound_expected") not in ("RED", "GREEN"):
-            bad(name, "sound_expected must be RED or GREEN")
-        if not isinstance(c.get("manifest"), dict):
-            bad(name, "manifest must be an object")
-        if not (isinstance(c.get("canary"), str) and GUID_TEXT_RE.fullmatch(c["canary"])):
-            bad(name, "canary must be the split's canary GUID")
-        if c.get("sound_expected") == "RED" or "inventory_site" in c:
-            if replay.inventory_row_for(rows, c.get("class"), c.get("inventory_site")) is None:
-                bad(name, "inventory_site does not name exactly one inventory row of its class")
-        if c.get("sound_expected") == "RED" and not (
-                isinstance(c.get("expect_reason"), str) and c["expect_reason"].strip()):
-            bad(name, "a trap must declare the refusal it earns (expect_reason)")
-        authored = _when(c.get("authored_at"))
-        if authored is None:
-            bad(name, "authored_at must be an ISO-8601 timestamp with its offset")
-        elif not pinned_at < authored <= now:
-            bad(name, "authored_at is not after the pinned verifier revision and before now")
-        if c.get("verifier_pin") != {"commit": pin["commit"], "verify_blob": pin["verify_blob"]}:
-            bad(name, "verifier_pin must be {commit, verify_blob} of the pinned revision")
-        if "neighbour" in c and not any(
-                o.get("id") == c["neighbour"] and o.get("sound_expected") == "GREEN"
-                for o in cases.values()):
-            bad(name, "neighbour must be the id of a valid control in this set")
-        if c.get("fixture") is None:
-            carried = sorted(set(c) & FIXTURE_ONLY_FIELDS)
-            if carried:
-                bad(name, f"a static case carries {len(carried)} field(s) only a run-time fixture reads")
-            src = c.get("contract_source")
-            if src is not None:
-                data = _pinned_file(repo, pin["commit"], src)
-                if data is None:
-                    bad(name, "contract_source is not a file in the repository at the pin")
-                elif c.get("contract_digest") and c["contract_digest"] != "sha256:" + sha256(data):
-                    bad(name, "contract_digest does not hash its contract_source")
-        elif c["fixture"] not in vf.FIXTURES:
-            bad(name, "fixture names no run-time builder of the pinned bench")
+        try:
+            _vet_one(name, c, ctx, bad)
+        except Exception as exc:  # one case never stops the vet; its reason names no content
+            bad(name, f"the vet could not check it ({type(exc).__name__})")
     _vet_rendering(vf, cases, bad)
     return problems, cases
+
+
+def _vet_one(name, c, ctx, bad):
+    """Every check on ONE case. A field of the wrong JSON type is refused by name before any
+    membership test that would raise on it (PR #665 review)."""
+    if json.dumps(_move(c), sort_keys=True) in ctx.public:
+        bad(name, "a copy of a development case once the held-out fields are dropped: it "
+                  "measures nothing the public corpus does not")
+    extra = sorted(set(c) - CASE_FIELDS)
+    if extra:
+        bad(name, f"{len(extra)} field(s) the replay does not read")
+    if not (isinstance(c.get("id"), str) and CASE_ID_RE.match(c["id"]) and name == c["id"] + ".json"):
+        bad(name, "id must be opaque (hv<version>-<3 digits>) and the file named <id>.json")
+    elif ctx.ids.count(c["id"]) > 1:
+        bad(name, "its id is not unique in the set")
+    if not isinstance(c.get("class"), str) or c["class"] not in ctx.checks:
+        bad(name, "class must be a check named in the pinned verifier-check inventory")
+    if c.get("sound_expected") not in ("RED", "GREEN"):
+        bad(name, "sound_expected must be RED or GREEN")
+    if not isinstance(c.get("manifest"), dict):
+        bad(name, "manifest must be an object")
+    if not (isinstance(c.get("canary"), str) and GUID_TEXT_RE.fullmatch(c["canary"])):
+        bad(name, "canary must be the split's canary GUID")
+    if c.get("sound_expected") == "RED" or "inventory_site" in c:
+        if ctx.replay.inventory_row_for(ctx.rows, c.get("class"), c.get("inventory_site")) is None:
+            bad(name, "inventory_site does not name exactly one inventory row of its class")
+    if c.get("sound_expected") == "RED" and not (
+            isinstance(c.get("expect_reason"), str) and c["expect_reason"].strip()):
+        bad(name, "a trap must declare the refusal it earns (expect_reason)")
+    authored = _when(c.get("authored_at"))
+    if authored is None:
+        bad(name, "authored_at must be an ISO-8601 timestamp with its offset")
+    elif not ctx.pinned_at < authored <= ctx.now:
+        bad(name, "authored_at is not after the pinned verifier revision and before now")
+    if c.get("verifier_pin") != {"commit": ctx.pin["commit"], "verify_blob": ctx.pin["verify_blob"]}:
+        bad(name, "verifier_pin must be {commit, verify_blob} of the pinned revision")
+    if "neighbour" in c and not any(
+            o.get("id") == c["neighbour"] and o.get("sound_expected") == "GREEN"
+            for o in ctx.cases.values()):
+        bad(name, "neighbour must be the id of a valid control in this set")
+    if c.get("fixture") is None:
+        carried = sorted(set(c) & FIXTURE_ONLY_FIELDS)
+        if carried:
+            bad(name, f"a static case carries {len(carried)} field(s) only a run-time fixture reads")
+        src = c.get("contract_source")
+        if src is not None:
+            data = _pinned_file(ctx.repo, ctx.pin["commit"], src)
+            if data is None:
+                bad(name, "contract_source is not a file in the repository at the pin")
+            elif c.get("contract_digest") and c["contract_digest"] != "sha256:" + sha256(data):
+                bad(name, "contract_digest does not hash its contract_source")
+    elif not isinstance(c["fixture"], str) or c["fixture"] not in ctx.vf.FIXTURES:
+        bad(name, "fixture names no run-time builder of the pinned bench")
 
 
 def _vet_rendering(vf, cases, bad):
@@ -759,7 +817,8 @@ def _vet_rendering(vf, cases, bad):
         built = {}
         for name, c in cases.items():
             fixture = c.get("fixture")
-            if fixture not in vf.FIXTURES or not isinstance(c.get("manifest"), dict):
+            if (not isinstance(fixture, str) or fixture not in vf.FIXTURES
+                    or not isinstance(c.get("manifest"), dict)):
                 continue
             try:
                 if fixture not in built:

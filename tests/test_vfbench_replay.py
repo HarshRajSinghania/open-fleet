@@ -1552,6 +1552,35 @@ class NoCaseShapeCrashesTheRunner(unittest.TestCase):
         self.assertIs(replay.reason_matches(["FAIL: other"], {"expect_reason": "a refusal"}), False)
 
 
+class AWrongTypedHeldOutProtocolIsNamedNeverRaised(_FakeBench):
+    """PR #665 review sweep: a held-out protocol whose sections have the wrong type raised
+    AttributeError out of the replay, in the held-out preflight and in the protocol read every
+    replay does. Each is now the named preflight failure `heldout-protocol-unreadable` (#601)."""
+
+    def _commit_protocol(self, text):
+        (self.repo / "bench" / "vf-bench" / "heldout-protocol.json").write_text(text, encoding="utf-8")
+        self.commit = _commit_all(self.repo, "a protocol of the wrong shape")
+
+    def test_every_replay_names_it(self):
+        for text in ("[1]", '{"holder": [1]}', '{"status": "x", "holder": "x"}'):
+            with self.subTest(protocol=text):
+                self._commit_protocol(text)
+                r = self.replay(runs=1)
+                self.assertEqual([f["kind"] for f in r["preflight"]["failures"]],
+                                 ["heldout-protocol-unreadable"])
+
+    def test_the_held_out_preflight_names_it(self):
+        held = self.tmp / "held"
+        held.mkdir()
+        (held / "hv1-001.json").write_text("{}", encoding="utf-8")
+        for text in ('{"splits": {"heldout": [1]}}', '{"splits": [1]}'):
+            with self.subTest(protocol=text):
+                (self.repo / "bench" / "vf-bench" / "heldout-protocol.json").write_text(
+                    text, encoding="utf-8")
+                _, failures = replay.heldout_preflight(self.repo, held)
+                self.assertEqual([f["kind"] for f in failures], ["heldout-protocol-unreadable"])
+
+
 class TheHeldOutCliRefusesAMismatchedReference(unittest.TestCase):
     def test_reproduce_needs_heldout_exactly_when_the_reference_is_held_out(self):
         with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:

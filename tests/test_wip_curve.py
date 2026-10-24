@@ -68,12 +68,12 @@ _tables_spec = importlib.util.spec_from_file_location("fixture_containment_table
 TABLES = importlib.util.module_from_spec(_tables_spec)  # a process table blind to system binaries (PR #668)
 _tables_spec.loader.exec_module(TABLES)
 
-# The live tier's refusal (PR #668: disabled until the container-based live harness lands). These
+# The live tier's refusal (PR #668: disabled outside the container-based live harness). These
 # tests drive the live machinery, so setUpModule lifts it in this process, the Python-level seam the
 # host probe uses; TestTheLiveTierIsDisabled puts the real one back, and runs the CLI as its own
 # process too.
 REAL_LIVE_GATE = wip.contain.live_disabled
-DISABLED = "live runs are disabled until the container-based live harness lands"
+DISABLED = "live runs are disabled outside the container-based live harness"
 SEAMS: dict = {}
 
 
@@ -672,9 +672,9 @@ class TestDecisionRule(unittest.TestCase):
 # ---------------------------------------------------------------------------- refusals + gate
 
 class TestTheLiveTierIsDisabled(Tmp):
-    """PR #668, the owner's decision: `wip_curve.py run --worker live` is refused on every host, exit
-    2, before the pre-registration is read or anything reserved, until the container-based live
-    harness lands. The owner's authorised cap and reservation change nothing."""
+    """PR #668, the owner's decision: `wip_curve.py run --worker live` is refused on every host but
+    the live harness's container (scripts/live_container.py), exit 2, before the pre-registration is
+    read or anything reserved. The owner's authorised cap and reservation change nothing."""
 
     def argv(self):
         return ["run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"),

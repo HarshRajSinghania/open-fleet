@@ -31,9 +31,9 @@ Two kinds of worker, ONE code path (first_run.py's pattern, #596):
       PATH, behind tripwires for every other harness name, with a private HOME. It applies each
       task's reference edit (or a scripted miss) and answers reviews; it calls no model and spends
       nothing. Its runs are labelled fixture-tested and are never protocol-compliant.
-  --worker live    DISABLED (PR #668): refused, before anything is read or reserved, until the
-      container-based live harness lands (runtime/scripts/containment.py). The machinery stays:
-      the operator's real harness, refused without an explicit --cost-cap-usd above zero and a
+  --worker live    only inside the container-based live harness (PR #668; scripts/live_container.py):
+      anywhere else refused, before anything is read or reserved (runtime/scripts/containment.py).
+      The operator's real harness, refused without an explicit --cost-cap-usd above zero and a
       --model pin, its runs labelled live-unreviewed until a maintainer binds them.
 
 Exit: 0 ok · 1 incomplete, mismatch or refused check · 2 usage or refused start · 3 fail-closed (a
@@ -3465,7 +3465,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cost-cap-usd", default=None, dest="cost_cap_usd",
                    help="REQUIRED: the spend cap the owner authorised, across every run in --results")
     r.add_argument("--worker", choices=("inert", "live"), default="inert",
-                   help="live is disabled until the container-based live harness lands (PR #668)")
+                   help="live runs only inside the container-based live harness (PR #668)")
     r.add_argument("--agent", default="claude")
     r.add_argument("--model", default=None, help="the model pin (required for --worker live)")
     pick = r.add_mutually_exclusive_group()

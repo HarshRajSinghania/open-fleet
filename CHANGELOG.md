@@ -6,6 +6,20 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The adversarial trajectory suite's live arm can run** (#602). Nothing has run it yet, and no
+  live result is claimed until a run report binds one. `_trajectories.record_stream` turns a live
+  agent's Claude stream-json into the #602 events. A denied or failed call is an attempt, never
+  applied. An unknown tool is an `Unmapped` event the replay refuses and grades as an attempt. A
+  path outside the workspace or inside `.git` is refused at the replay's boundary. A shell
+  command's file changes reach the replay through each commit the agent made.
+  `scripts/trajectory_harness.py` is the agent-command prefix for #602 and #606. It runs the
+  agent with no global or system git config and no way to sign, in the caller's process group,
+  passes stdout through unchanged, writes `trajectory.jsonl` and exits with the agent's code.
+  `eval.py run --suite trajectories --tier live` runs FA-01, HC-01 and CN-01 with the BN-01 and
+  CL-01 controls, 5 repeats by default, under #606's spend guard. It reports TT-01, MP-01 and
+  HO-01 as UNRUN. #606's trajectory cells now get their repository-document injection.
+  `tests/test_trajectory_live.py` pins each guard with an inert stand-in agent.
+
 - **The deny-hook reader fails closed where it cannot resolve what runs** (#654, from the PR #648
   review). A file built across `>` and `>>` writes is judged whole when it is run; a name
   reassigned past the reader's cap reads as unresolved, so its use as a command takes the

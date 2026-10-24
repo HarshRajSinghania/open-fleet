@@ -6,6 +6,14 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The deny-hook starts on Linux again** (#598, PR #648 review). Its ~135 KB payload reader
+  was passed as one `python3 -c` argument, past Linux's 128 KiB cap on a single argv string
+  (MAX_ARG_STRLEN), so python3 never started and every hooked tool call was refused as an
+  unreadable payload; macOS caps only the total and passed. The reader now reaches python3 on
+  a pipe (`python3 -`, payload on fd 3; no temp file), and `push_policy` reads the command on
+  stdin, so a git push padded past the cap cannot empty it. A test intercepts every child the
+  hook starts, refuses any string over 131,072 bytes as Linux does, and holds each argv and
+  environment string under 100,000 bytes on any host; hook latency is unchanged.
 - **The deny-hook reads who reads a body structurally** (#598, PR #648 review). Each simple
   command is its words plus its redirections wherever they sit, and each pipeline stage (after
   `|` or `|&`) a command with its own standard input: a heredoc or here-string is read by the

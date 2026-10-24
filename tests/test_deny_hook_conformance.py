@@ -459,8 +459,8 @@ def _assert_well_formed(case, source, mutant):
     """A mutant must still be a working hook, or a flip proves nothing: its embedded reader may
     hold no apostrophe (it would close the single-quoted sh string), and a benign command must
     come back allowed with exit 0 under this host's sh (dash on Linux, bash 3.2 on macOS)."""
-    start = source.index("FIELDS=$(printf")
-    reader = source[start:source.index("\n' 2>/dev/null) || {", start)].split("python3 -I -c '", 1)[1]
+    start = source.index("_READER='") + len("_READER='")   # fed to python3 on a pipe (PR #648)
+    reader = source[start:source.index("'\nFIELDS=$(", start)]
     case.assertNotIn("'", reader, "the mutant embeds an apostrophe in the payload reader")
     environ = {k: v for k, v in os.environ.items() if k not in corpus._SCRUB}
     payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",

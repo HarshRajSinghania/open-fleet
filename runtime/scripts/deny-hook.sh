@@ -693,8 +693,15 @@ PAYLOAD=$(cat 2>/dev/null || true)
 
 # Extract tool_name, tool_input.command and tool_input.file_path as three lines.
 # A parse failure (or no python3) exits non-zero here and DENIES below.
-FIELDS=$(printf '%s' "$PAYLOAD" | python3 -I -c 'import fnmatch,json,os,re,shlex,sys
-d = json.loads(sys.stdin.read())
+# The reader is larger than ONE argv or environment string may be on Linux
+# (MAX_ARG_STRLEN, 128 KiB): handed over with python3 -c it could not start, so
+# every request there was refused (PR #648 review PRRT_kwDOTWxN9c6v0TC6). It lives
+# in this shell variable (never exported, so in no child environment) and reaches
+# python3 on a pipe as its program (python3 -), with the payload on fd 3. No argv
+# or env string carries either, and nothing is written to disk: a heredoc this
+# size is a temp file under bash, which a read-only sandbox would refuse.
+_READER='import fnmatch,json,os,re,shlex,sys
+d = json.loads(open(3, encoding=sys.stdin.encoding, errors=sys.stdin.errors, closefd=False).read())
 if not isinstance(d, dict):
     raise SystemExit(1)
 raw_tool = d.get("tool_name") or d.get("tool") or os.environ.get("JCODE_HOOK_TOOL_NAME") or ""
@@ -3632,7 +3639,8 @@ def _rline(text, depth=0):
 
 
 record("R", "=" + _rline(_judged))
-' 2>/dev/null) || {
+'
+FIELDS=$(printf '%s' "$PAYLOAD" | { printf '%s' "$_READER" | python3 -I - 3<&4 4<&- 2>/dev/null; } 4<&0) || {
   # Exit 2 UNCONDITIONALLY: OpenHands and jcode fail OPEN on exit 1 and on an
   # exit-0 reply they cannot attribute, and Claude Code reads exit 2 as block.
   HOOK_STRICT=1
@@ -4307,7 +4315,10 @@ git_redirected() {
 # git itself rejects) keeps every destructive meaning it could carry but never
 # grants a lease — a newer git that adds an option can only make it ambiguous.
 push_policy() {
-  python3 -I -c 'import sys
+  # The command arrives on stdin, not as an argument: a git push padded past the
+  # 128 KiB argv-string limit made python3 fail to start on Linux, CMD came back
+  # empty, and no push rule below could match it (PR #648 review sweep).
+  printf '%s' "$1" | python3 -I -c 'import sys
 LONG = {"verbose": 0, "quiet": 0, "repo": 1, "all": 0, "branches": 0,
         "mirror": 0, "delete": 0, "tags": 0, "dry-run": 0, "porcelain": 0,
         "force": 0, "force-with-lease": 0, "force-if-includes": 0,
@@ -4327,7 +4338,7 @@ def canon(word):
     if len(hits) == 1:
         return ["--" + hits[0] + eq + value]
     return [word] + ["--" + n for n in DANGER if n in hits]
-words = sys.argv[1].split()
+words = sys.stdin.read().split()
 out, skip, options = [], False, True
 lease, force = False, False
 for raw in words:
@@ -4386,7 +4397,7 @@ if force:
     out.append("--force")
 elif lease:
     out.append("--force-with-lease")
-print(" ".join(out))' "$1"
+print(" ".join(out))'
 }
 
 # The C records carry PRE-SPLIT, word-normalized commands from the payload reader above. They
@@ -4440,7 +4451,11 @@ for _SEG in "$@"; do
   # `git push origin :main`, `-d` and `--delete` carry no force flag at all and
   # sailed under both force rules (#297).
   if has '^[[:space:]]*(sudo[[:space:]]+)?git[[:space:]]+push([[:space:]]|$)'; then
-    CMD=$(push_policy "$CMD")
+    CMD=$(push_policy "$CMD") || {
+      HOOK_STRICT=1
+      decide deny "deny-hook: the git push options could not be read. Fail-closed."
+      exit 2
+    }
     # --mirror force-updates AND deletes every remote ref the local repo lacks;
     # --prune deletes every remote ref its refspecs no longer map — either can
     # remove the default branch without naming it, so no text here can show

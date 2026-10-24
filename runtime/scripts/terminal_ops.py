@@ -18,8 +18,9 @@ Upstream argv (pinned specs/core.ts, handlers/terminal.ts):
 * ``list [--worktree …] [--limit n] [--include-visual-layouts]`` and
   ``show [--terminal …]`` — read-only inventory: ROWS/HANDLE lines.
 
-Mutating verbs (close/rename/split/switch/stop/send/wait) are PARKED
-(lifecycle-risk: this tool takes no process or PTY action) and stay out.
+Mutating verbs (close/rename/set-pane-title/split/switch/stop/send/wait) are
+PARKED (lifecycle-risk: this tool takes no process or PTY action) and stay out;
+`set-pane-title` joined them at v1.4.238 (terminal-set-pane-title.ts).
 
 Exit: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 """

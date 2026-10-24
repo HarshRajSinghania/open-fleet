@@ -1643,7 +1643,7 @@ Exits: 0 transitioned/created · 1 runtime/refusal/receipt failure · 2 usage.
 ## `terminal_ops.py`
 
 `terminal create`/`read` plus read-only `list`/`show` — creation and observation,
-never process or PTY action. Source `runtime/scripts/terminal_ops.py:1-25`;
+never process or PTY action. Source `runtime/scripts/terminal_ops.py:1-26`;
 behavior pinned by `tests/test_terminal_ops.py`.
 
 Usage: `terminal_ops.py {create,read,list,show} ...`
@@ -1663,7 +1663,7 @@ degraded output, likewise never certified. Successful reads print the `tail` lin
 under `--- tail` (a receipt without `tail` fails closed — the payload is the point
 of the read); tail lines and titles render through pm.py's `_visible`, inertly.
 Mutating verbs
-(close/rename/split/switch/stop/send/wait) stay out (lifecycle-risk).
+(close/rename/set-pane-title/split/switch/stop/send/wait) stay out (lifecycle-risk).
 
 Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 

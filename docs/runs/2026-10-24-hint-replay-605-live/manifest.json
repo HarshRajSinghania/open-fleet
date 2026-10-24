@@ -388,6 +388,17 @@
       "commit": "9b814e7eee035fffcac0b969c7eb08012847722e",
       "wtree": "b57f03eb12cee1c8e1bae295a51f1b1059525e7c",
       "artifact": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-24T07:21:59Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --contract-source docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e --contract-digest sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb --unit-class report-only",
+      "cmd_sha256": "7860f7c0516b70cc68e241ba5d6faa3fb079805b0f5b9919d235a3efd126d750",
+      "exit": 2,
+      "duration_s": 4.316,
+      "commit": "6240133480ad11ada924700e6e2565fc2fa56541",
+      "wtree": "ef145e282079489528ff9ceb7cf1518f16fdf218",
+      "artifact": "docs/runs/2026-10-24-hint-replay-605-live/verifier.txt"
     }
   ]
 }

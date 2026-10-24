@@ -186,7 +186,9 @@ before retries (a builder and a reviewer per task). The runner never picks the s
   starts, and the unit is parked `stopped-cost-cap`.
 - Spend is read from the harness's own result lines through `events.py ingest-usage`. A dispatch
   whose cost is not observed is charged the full reservation and is never treated as free.
-- The cap covers every run in one results directory.
+- The cap covers every run in one results directory. One runner at a time holds the directory's
+  lock, from its first check through its cleanup. A second `run` on the same directory is refused,
+  and so are `report` and `verify`, which never read a run in progress.
 - An interrupted run (SIGTERM, SIGHUP or Ctrl-C) first kills every child process group it
   started and stops every worker. It then charges every dispatch the store holds for the run whose
   usage was never read, including one whose launch the signal interrupted before the runner saw

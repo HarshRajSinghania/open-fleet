@@ -1663,6 +1663,64 @@ class TestACallMidSpawnIsCharged(Tmp):
         self.assertEqual(run.held, {})
 
 
+def start_runner(env, *args):
+    """The runner as a real process (signals are the point here); stdout and stderr captured."""
+    return subprocess.Popen([sys.executable, str(RUNNER), *map(str, args)], cwd=str(ROOT), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def wait_for_builders(test, inert_dir: Path, count: int, timeout=180):
+    """Block until `count` builders of the stand-in in `inert_dir` have started; their pids."""
+    runs_log = inert_dir / "runs.log"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        started = runs_log.read_text().count('"builder"') if runs_log.is_file() else 0
+        if started >= count:
+            time.sleep(1.0)  # each is now asleep inside its dispatch
+            return [int(p.read_text()) for p in inert_dir.glob("*.pid")]
+        time.sleep(0.2)
+    test.fail(f"{count} builder(s) never started")
+
+
+def kill_pids(pids):
+    """Kill each stand-in's whole process group (the posix monitor is its session leader), so no
+    monitor of a killed run outlives the test and writes into a directory being removed."""
+    for pid in pids:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    time.sleep(0.5)
+
+
+class TestOneRunnerPerResultsDirectory(Tmp):
+    """PR #653 review (Buy): two commands on one results directory could both spend against the
+    same remaining budget. A runner holds the directory's lock from its first check through its
+    cleanup; a second run, or a report that would read a run in progress, is refused."""
+
+    def test_a_second_command_is_refused_while_a_runner_is_active(self):
+        env, trip_log = tripwired_env(self.tmp)
+        results, wd = self.tmp / "results", self.tmp / "wd"
+        proc = start_runner(env, "run", "--results", results, "--workdir", wd, "--runs", "wip1-b1r1-rep1",
+                            "--cost-cap-usd", "5", "--inert-cost-usd", "0.25",
+                            "--inert-script", json.dumps({"_sleep": {"builder": 60}}))
+        pids = wait_for_builders(self, wd / "wip1-b1r1-rep1" / "inert", 1)
+        self.addCleanup(kill_pids, pids)
+        try:
+            second = runner("run", "--results", results, "--workdir", wd, "--next", "1", "--cost-cap-usd", "5",
+                            "--inert-cost-usd", "0.25", env=env)
+            self.assertEqual(second.returncode, 2, second.stdout + second.stderr)
+            self.assertIn("another runner", second.stderr)
+            self.assertEqual(sorted(d.name for d in (results / "runs").iterdir()), ["wip1-b1r1-rep1"])
+            report = runner("report", "--results", results, "--basis", "all", env=env)
+            self.assertEqual(report.returncode, 2, report.stdout + report.stderr)
+            self.assertIn("another runner", report.stderr)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.communicate(timeout=180)
+        self.assertFalse(trip_log.exists())
+
+
 class TestAKilledRunStillCounts(Tmp):
     """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
     writes no run.json. Its spend ledger, kept current while it ran, is still counted against

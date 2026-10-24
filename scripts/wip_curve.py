@@ -40,6 +40,8 @@ bound source is missing, altered or unreadable).
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -402,6 +404,34 @@ def write_output(path: Path, text: str, registered=()) -> None:
         raise Refused(f"{path} cannot be written without following a link: {err}") from err
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+
+LOCK_NAME = ".wip-curve.lock"
+
+
+@contextlib.contextmanager
+def results_lock(results: Path, shared: bool = False):
+    """The results directory's lock: exclusive for a runner, held from its first check through its
+    cleanup; shared for a report or a verification, which never read a run in progress. Never
+    waited for: a held lock is refused, so two commands cannot both spend one budget."""
+    results = Path(results)
+    if shared and not results.is_dir():
+        yield
+        return
+    results.mkdir(parents=True, exist_ok=True)
+    fd = os.open(results / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused(f"another runner holds {results} (its lock {LOCK_NAME}); one runner per results "
+                          "directory, and a report waits until it ends") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def task_by_id(taskset: dict) -> dict:
@@ -2429,6 +2459,22 @@ def cmd_run(args) -> int:
         raise Refused(f"--agent {args.agent!r} is not a posix harness")
     registered = (path, taskset_path)
     results = check_writable(args.results, "--results", registered)
+    # One runner per results directory, from its first check through its cleanup: two commands
+    # would otherwise both spend against the remaining budget, and each would read the other's
+    # run in progress as lost (PR #653 review).
+    if args.workdir:  # checked before the lock, which creates the directory: a refusal writes nothing
+        for entry in schedule(prereg, taskset):
+            for attempt in (1, 2):
+                sandbox = (Path(args.workdir) / run_id_for(prereg, entry["condition"]["id"], entry["repetition"],
+                                                           attempt)).resolve()
+                if results.is_relative_to(sandbox) or sandbox.is_relative_to(results):
+                    raise Refused(f"--results {results} and the sandbox {sandbox} overlap: deleting one would "
+                                  "delete the other")
+    with results_lock(results):
+        return _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, registered)
+
+
+def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, registered) -> int:
     if args.workdir:
         check_writable(args.workdir, "--workdir", registered)
     sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
@@ -2562,7 +2608,8 @@ def cmd_report(args) -> int:
     results = Path(args.results)
     _prereg, _taskset, path, _sha, taskset_path = load_prereg(args.prereg)
     out = check_writable(args.out or args.results, "--out" if args.out else "--results", (path, taskset_path))
-    report = build_report(results, args.prereg, args.basis)
+    with results_lock(results, shared=True):  # never a run in progress, read half-written
+        report = build_report(results, args.prereg, args.basis)
     out.mkdir(parents=True, exist_ok=True)
     registered = (path, taskset_path)
     write_output(out / "report.json", json.dumps(report, indent=2, sort_keys=True) + "\n", registered)
@@ -2578,7 +2625,8 @@ def cmd_verify(args) -> int:
         claimed = json.loads(Path(args.report).read_text(encoding="utf-8"))
     except (OSError, ValueError) as err:
         raise Refused(f"--report {args.report} is not readable JSON: {err}") from err
-    report = build_report(results, args.prereg, claimed.get("basis", "compliant"))
+    with results_lock(results, shared=True):
+        report = build_report(results, args.prereg, claimed.get("basis", "compliant"))
     mismatches = diff_json(report, claimed)
     if args.report_md:
         want = render_markdown(report).splitlines()

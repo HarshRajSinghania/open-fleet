@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `a819a7ba33b9bd6ea026df78e38550fda4170e5b659e0ab7ae9f62d6dde48240`.
+Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `9050682917bc8c95b6eb2e187a1ea2eb550a7cc0c9f066d265b9203775338bec`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no
@@ -27,6 +27,10 @@ page and the JSON differ, the JSON is authoritative. The line above pins its exa
   table below. `prereg --refresh` re-pinned them. The cost cap (`AUTHORISED`, USD 750), the design, arms, tasks, prompts,
   obligations, metrics and analysis are unchanged. No cell had run, so no data predates the
   change, and no other version will be compared with it.
+  The same day, still before any cell ran, review of #663 corrected one more stale line in
+  `dispatch-lifecycle.md` (the agent-launch line still named v1.4.229), which moved the
+  ship-it, clean-sweep and review-it baselines again; `prereg --refresh` re-pinned them within
+  version 2. Nothing else in the registration changed.
 
 ## Question and hypothesis
 

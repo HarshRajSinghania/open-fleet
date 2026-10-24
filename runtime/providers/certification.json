@@ -559,10 +559,12 @@
           "tier": "fixture-tested",
           "evidence": [
             "tests/test_openhands_provider.py::TestOpenHandsProvider",
-            "tests/test_certification.py::TestAdapterRefusalsMatchTheRecord"
+            "tests/test_certification.py::TestAdapterRefusalsMatchTheRecord",
+            "tests/test_capability_launch_agreement.py::OpenHandsLaunchesThroughTheWrapper"
           ],
           "limitations": [
             "Scripted HttpScript transport and a separately executed hook: no released agent-server was shown to consume the hook config and block (only exit 2 blocks in its executor).",
+            "spawn_worker.sh launches the agent `openhands` on this runtime only, through worker-start, and refuses every CLI harness name here before any upstream call; the end-to-end test drives it against a loopback stand-in agent-server, never a real one.",
             "Upstream version unknown; the danger (docker runtime) path is not advertised."
           ]
         }

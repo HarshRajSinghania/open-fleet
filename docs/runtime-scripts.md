@@ -1577,7 +1577,9 @@ would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
 
 Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`,
-`jcode`, `goose`, `hermes`, `crush`
+`jcode`, `goose`, `hermes`, `crush`, and `openhands`, the OpenHands SDK agent, which runs on
+`OPEN_FLEET_RUNTIME=openhands` only; that runtime refuses every other agent name before any
+upstream call, since it would start its own agent under it (#596)
 (default `claude`; effort default `xhigh`, keyset `minimal|low|medium|high|xhigh|max|ultra`
 — the codex levels, the only path that interpolates it); unknown agents refuse. Off Orca every
 launch is `runtime/providers/base.py`'s line. On Orca, `ro` runs the script's own row on the

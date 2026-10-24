@@ -71,7 +71,8 @@
 #
 # Usage:
 #   SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec <text> <worktree_selector>) <title> [agent] [effort]
-#   agent ∈ claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush (default claude)
+#   agent ∈ claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush (default claude),
+#           or openhands, the OpenHands SDK agent, on OPEN_FLEET_RUNTIME=openhands only (#596)
 # Options:
 #   --mark-ready               opt-in: mark a pending task ready when deps are complete
 #   --timeout-ms <n>           worker-start timeout, positive int (supervised lane only)
@@ -382,10 +383,12 @@ esac
 # WORKER_CMD (below).
 # `kilo` is deliberately ABSENT for the same reason opencode fails closed: Orca STRIPS
 # `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:5-8` at v1.4.203).
+# `openhands` is no CLI harness: it is the OpenHands SDK agent, which only the openhands runtime
+# runs (checked once the runtime is resolved, below).
 case "$agent" in
-  claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush) : ;;
+  claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush|openhands) : ;;
   *)
-    echo "SPAWN=REFUSED task=${task} unknown agent '${agent}' (want claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush)" >&2
+    echo "SPAWN=REFUSED task=${task} unknown agent '${agent}' (want claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush, or openhands on the openhands runtime)" >&2
     exit 2
     ;;
 esac
@@ -428,6 +431,17 @@ except ProviderError as err:
 PY
 ); then
   echo "SPAWN=REFUSED task=${tname} unknown runtime OPEN_FLEET_RUNTIME/ORCA_FLEET_RUNTIME — see runtime/providers/__init__.py" >&2
+  exit 2
+fi
+# The openhands runtime runs its own SDK agent whatever name it is handed: `claude` there printed a
+# claude launch, started an OpenHands conversation, then read LAUNCHED_UNUSABLE off the receipt.
+# capabilities.json claims exactly that pairing, so the wrapper launches exactly that one (#596).
+if [ "$agent" = "openhands" ] && [ "$ACTIVE_RUNTIME" != "openhands" ]; then
+  echo "SPAWN=REFUSED task=${tname} agent 'openhands' is the OpenHands SDK agent, which only the openhands runtime runs (OPEN_FLEET_RUNTIME=openhands); the active runtime is '${ACTIVE_RUNTIME}'" >&2
+  exit 2
+fi
+if [ "$ACTIVE_RUNTIME" = "openhands" ] && [ "$agent" != "openhands" ]; then
+  echo "SPAWN=REFUSED task=${tname} the openhands runtime runs only its own OpenHands SDK agent: agent '${agent}' would start an OpenHands conversation, not ${agent} — pass the agent openhands" >&2
   exit 2
 fi
 # The parent profile a child must not exceed is the MOST restrictive of every source that
@@ -752,13 +766,18 @@ fi
 # profile keeps bash/edit), so ro here must be base.py's `shell` line verbatim (#580). An
 # (agent, profile) base.py refuses leaves cmd_default empty and fails closed to WORKER_CMD.
 # base_launch <worktree>: line 1 the `shell` launch, line 2 its profile_flag; empty on refusal.
+# openhands has no argv: its line names the agent-server conversation the provider starts (#596).
 base_launch() {
   python3 -I - "$HERE/.." "$agent" "$PROFILE" "$1" "$effort" <<'PY' || true
 import sys
 sys.path.insert(0, sys.argv[1])
 from providers.base import ProviderError, build_harness_command
 try:
-    launch = build_harness_command(sys.argv[2], sys.argv[3], sys.argv[4], None, effort=sys.argv[5])
+    if sys.argv[2] == "openhands":
+        from providers.openhands import launch_line
+        launch = launch_line(sys.argv[3])
+    else:
+        launch = build_harness_command(sys.argv[2], sys.argv[3], sys.argv[4], None, effort=sys.argv[5])
     print(launch["shell"])
     print(launch["profile_flag"])
 except ProviderError as err:
@@ -1050,8 +1069,9 @@ if [ "$custom_lane" = "0" ]; then
     opencode) profile_flag="--auto --standalone" ;;
     pi)     profile_flag="--tools read,bash,edit,write,grep,find,ls" ;;
   esac
-  # ro off Orca: the provider launched base.py's ro line, so ITS flag is the one to find.
-  if [ "$PROFILE" = "ro" ]; then profile_flag="$base_profile_flag"; fi
+  # ro off Orca: the provider launched base.py's ro line, so ITS flag is the one to find. The
+  # openhands agent's toolset token comes from its provider for every profile (#596).
+  if [ "$PROFILE" = "ro" ] || [ "$agent" = "openhands" ]; then profile_flag="$base_profile_flag"; fi
 
   step=read-start-receipt
   # Line 1 is the machine verdict; the remaining stdout lines are the caller-facing receipt

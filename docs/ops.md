@@ -41,13 +41,16 @@ review, recorded in HUMAN_ACTIONS.
 
 ## Merge gate
 
-Required contexts on `main` (API read-back, 2026-10-23): `gates`, `verdict`, `guard` and
-`pinned-demo` from GitHub Actions (app 15368), and `Greptile Review`; strict; admins enforced.
-`pinned-demo` became required that day so the demo gate the table above names actually blocks.
+Required contexts on `main` (API read-back, 2026-10-24): `gates`, `guard` and `pinned-demo` from
+GitHub Actions (app 15368), `Greptile Review` (app 867647), and `verdict-gate` from the dedicated
+app `open-fleet-verdict-gate` (app 5451539). Branches must be up to date (strict), admins are
+enforced, and every conversation must be resolved. `pinned-demo` became required on 2026-10-23 so
+the demo gate the table above names actually blocks. `verdict` is no longer required (#594); it
+still runs as fast feedback.
 No approving review is required: the owner is the only collaborator, and GitHub does not let an
 author approve their own PR, so requiring one would block every merge.
 
-The intended trusted check for a GO verdict is the `verdict-gate` commit status, posted by
+The trusted check for a GO verdict is the `verdict-gate` commit status, posted by
 [`verdict-gate.yml`](../.github/workflows/verdict-gate.yml). GitHub loads that workflow from
 `main` on `workflow_run`, after every review that
 [`verdict-check.yml`](../.github/workflows/verdict-check.yml) sees, and it runs `main`'s
@@ -55,18 +58,29 @@ The intended trusted check for a GO verdict is the `verdict-gate` commit status,
 `verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR,
 where the PR can rewrite it.
 
-Activation remains pending in [#594](https://github.com/ravidsrk/open-fleet/issues/594).
-The 2026-10-20 API read-back found `main` still requiring `verdict` from GitHub Actions
-(app 15368), rather than `verdict-gate` from a dedicated app. Until step 3 lands, `verdict` is
-satisfied without a GO: GitHub counts a skipped job as a passing required check, and the
-`verdict` job is skipped for every review without a trusted GO marker (PR #611 merged on five
-skipped `verdict` runs; 2026-10-23 review, P1-5). The `verdict-gate` environment
-exists, with no deployment branch restriction, variables, or secrets. An administrator must
-provide the dedicated app credential and complete the setup below before this trusted status
-enforces merge protection.
+Activated on 2026-10-24 (#594):
+- **The app:** `open-fleet-verdict-gate` (app 5451539) was created from a manifest with Commit
+  statuses (write) and Pull requests (read), no webhook, and installed on this repository only.
+- **The `verdict-gate` environment:** deployment is limited to the `main` branch. It holds the
+  variable `VERDICT_GATE_CLIENT_ID` and the secret `VERDICT_GATE_PRIVATE_KEY`. The key went
+  straight from GitHub's manifest conversion into the secret and was never printed or stored
+  elsewhere.
+- **Branch protection:** `main` requires `verdict-gate` with the app as its expected source and no
+  longer requires `verdict`.
+
+The disposable PR [#658](https://github.com/ravidsrk/open-fleet/pull/658) witnessed the switch;
+it was never merged. The read-backs are in
+[`594-verdict-gate-activation.txt`](completion/evidence/594-verdict-gate-activation.txt):
+1. Its own job named `verdict-gate` and a `verdict-gate` status posted with `GITHUB_TOKEN`
+   (both from app 15368) left it BLOCKED, with every other required check green and no open thread.
+2. A GO review at its head made the app post `verdict-gate` success, and the PR turned CLEAN.
+3. After a content-changing push, the app posted `verdict-gate` failure because no GO bound the
+   new head ("GO verdicts exist but none binds the current head"), and the PR was BLOCKED again
+   until a fresh review.
 
 Branch protection matches a required check by name, and a fork PR can add a workflow job named
-`verdict-gate`. The status must therefore come from an identity only `main`'s gate can use:
+`verdict-gate`. The status must therefore come from an identity only `main`'s gate can use. To set
+it up again, for example after rotating the key:
 
 1. Create a GitHub App (Settings → Developer settings → GitHub Apps) with no webhook and two
    repository permissions: Commit statuses (read and write) and Pull requests (read-only).
@@ -82,6 +96,16 @@ Branch protection matches a required check by name, and a fork PR can add a work
 Until step 2, the gate posts as `github-actions` and its run log carries a warning saying so. To
 re-evaluate a PR, post a review on it or re-run its latest `verdict-gate` run. The gate has no
 manual-dispatch trigger, because a dispatch loads the workflow from whichever branch is picked.
+
+**Second reviewer (#595).** On 2026-10-24 the owner designated OpenAI Codex as the independent
+second reviewer (H-10 in [HUMAN_ACTIONS](completion/HUMAN_ACTIONS.md)).
+- **How it runs:** Codex runs `codex exec -s read-only` in a clean detached checkout of the PR's
+  head, with the repository's rules as its standard.
+- **Where it posts:** its verdict is posted verbatim as a COMMENT review that ends with `VERDICT:`
+  and the full `reviewed_sha`.
+- **The rule:** the coordinator posts no GO of its own without a Codex GO at the same head, and a
+  new head needs a new Codex review.
+- **Its limit:** Codex is not a person, so the number of human maintainers is still one.
 
 ## Release cut
 

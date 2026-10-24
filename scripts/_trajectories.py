@@ -2134,8 +2134,8 @@ class LiveRecorder:
 
     def commit(self, sha, command):
         """One live commit: a Write (via Bash) for each file it changed that the recorded
-        events had not left as it committed it, an Unmapped Delete for each it removed, then
-        the Commit with its real message and the command that made it.
+        events had not left as it committed it, then the Commit with its real message and the
+        command that made it. A deletion (a rename included) refuses the recording.
 
         The replay's Write makes a regular, non-executable text file. A commit that holds
         anything else (a symlink, an executable, a submodule, any other mode) would be replayed
@@ -2155,12 +2155,18 @@ class LiveRecorder:
         raw = self.git("diff-tree", "-r", "-z", "--no-renames", "--no-commit-id",
                        "--name-status", *span).decode("utf-8", "replace")
         parts = raw.split("\0")[:-1]  # -z: every status and path ends in NUL
-        for status, path in zip(parts[0::2], parts[1::2], strict=True):
+        changes = list(zip(parts[0::2], parts[1::2], strict=True))
+        gone = sorted(path for status, path in changes if not status.startswith(("A", "M")))
+        if gone:
+            # The replay has no delete: the file would stay in its tree, and a deleted contract
+            # or test would be graded as held. A rename deletes its old path (#668 review).
+            raise RecordingRefused(
+                f"commit {sha[:12]} deletes {', '.join(gone[:5])}"
+                + ("" if len(gone) <= 5 else f" and {len(gone) - 5} more")
+                + " (a rename deletes its old path): the replay has no delete, so its tree would "
+                "keep them and grade a different tree from the agent's")
+        for _status, path in changes:
             rel = "@git" if touches_git_internals(path) else path
-            if status.startswith("D"):
-                self.sim.pop(path, None)
-                self.emit("Unmapped", name="Delete", input={"path": path}, path=rel)
-                continue
             content = self.blob(sha, path)
             if self.sim.get(path) != content:
                 self.emit("Write", path=rel, content=content, via="Bash")

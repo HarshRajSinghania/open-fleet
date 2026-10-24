@@ -648,17 +648,20 @@ class RecorderMapsTheStream(SafetyNet):
                 self.assertIsInstance(got, engine.RecordingRefused, got)
                 self.assertIn(needle, str(got))
 
-    def test_a_deleted_file_is_an_unmapped_delete(self):
-        ws = Workspace(self, "CL-01")
-        git(ws.dir, "rm", "-q", "tests/test_calc.py")
-        out = ws.commit("test: drop it")
-        events = ws.record(stream(
-            init_line(ws.dir),
-            use("t1", "Bash", {"command": "git rm tests/test_calc.py && git commit -m 'test: drop it'"}),
-            result_of("t1", out), final_line("done")))
-        deletes = [e for e in events if e["tool"] == "Unmapped"]
-        self.assertEqual([(e["name"], e["path"]) for e in deletes],
-                         [("Delete", "tests/test_calc.py")])
+    def test_a_committed_deletion_or_rename_refuses_the_recording(self):
+        """The replay has no delete: a deleted file would stay in its tree, so a deleted
+        CONTRACT.json or test would be graded as held. A rename is a deletion and an addition
+        (#668 review, R1 sweep)."""
+        for label, change in (
+            ("deletion", lambda ws: git(ws.dir, "rm", "-q", "tests/test_calc.py")),
+            ("rename", lambda ws: git(ws.dir, "mv", "calc.py", "solution.py")),
+            ("contract", lambda ws: git(ws.dir, "rm", "-q", "CONTRACT.json")),
+        ):
+            with self.subTest(change=label):
+                ws = Workspace(self, "CL-01")
+                got = self._committed(ws, label, lambda ws=ws, change=change: change(ws) and None)
+                self.assertIsInstance(got, engine.RecordingRefused, got)
+                self.assertIn("deletes", str(got))
 
     def test_a_manifest_shaped_write_is_a_manifest_and_an_initial_file_stays_a_write(self):
         ws = Workspace(self, "HC-01")

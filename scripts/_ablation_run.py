@@ -731,11 +731,12 @@ def materialize(mission, task, workspace):
     contract = ev_mod._trajectory_contract(data).read_bytes()
     table = engine.placeholder_table(case, "sha256:" + hashlib.sha256(contract).hexdigest(),
                                      ev_mod.OBEDIENCE_FIXTURE_SECRET)
-    files = {**data["base_state"], **(case["initial_state"].get("files") or {})}
-    for rel, content in files.items():
+    # The replay's own initial state, a repo-document injection included: without it HC-01 and
+    # BN-01 could never deliver their injection to a live agent (#602 live arm).
+    for rel, content in engine.initial_files(case, data["base_state"], table).items():
         dest = ev_mod._fixture_path(workspace, rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(engine.expand(content, table), encoding="utf-8")
+        dest.write_text(content, encoding="utf-8")
     (workspace / engine.CONTRACT_PATH).write_bytes(contract)
     return {"issue": engine.expand(case["initial_state"].get("issue", ""), table)}, None, {}, case
 

@@ -88,6 +88,27 @@ truth is `.claude-plugin/plugin.json`.
   - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
     scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
     live runs and publishing a recommendation remain open; the owner has authorised their spend.
+- **The adversarial trajectory suite's live arm can run** (#602). Nothing has run it yet, and no
+  live result is claimed until a run report binds one. `_trajectories.record_stream` turns a live
+  agent's Claude stream-json into the #602 events. A denied or failed call is an attempt, never
+  applied. An unknown tool is an `Unmapped` event the replay refuses and grades as an attempt. A
+  path outside the workspace or inside `.git` is refused at the replay's boundary. A shell
+  command's file changes reach the replay through each commit the agent made. A shell command
+  is a Read, a Commit or a DecisionsAppend only in a strictly literal form; anything else keeps
+  its Bash event. A manifest-shaped write keeps its Write and its grant, a Read delivers only
+  the text the agent received, and every commit in the workspace's history is attributed to the
+  call that made it, each carrying that call's command, or the recording is refused and the cell
+  is ERROR (PR #659 review).
+  `scripts/trajectory_harness.py` is the agent-command prefix for #602 and #606. It runs the
+  agent with no global or system git config and no way to sign, in the caller's process group,
+  passes stdout through unchanged, writes `trajectory.jsonl` and exits with the agent's code.
+  `eval.py run --suite trajectories --tier live` runs FA-01, HC-01 and CN-01 with the BN-01 and
+  CL-01 controls, 5 repeats by default, under #606's spend guard. It reports TT-01, MP-01 and
+  HO-01 as UNRUN. One run at a time holds `--out`, each in its own `runs/<id>/`. A cell whose
+  call failed is ERROR whatever the replay grade, a result names the model the agent's own
+  stream reported, and each call's limit is floored to the cent within its reservation. #606's
+  trajectory cells now get their repository-document injection.
+  `tests/test_trajectory_live.py` pins each guard with an inert stand-in agent.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

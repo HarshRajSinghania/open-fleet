@@ -150,6 +150,7 @@ WEIGHTS = {
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,
     "test_trajectory_evals": 70.0,  # #602/#644, measured 2026-10-23, macOS host at load average ~21
+    "test_trajectory_live": 82.3,  # #602 live arm + PR #659 review, measured 2026-10-24 (macOS arm64, load ~8-10): 82.25
     "test_upstream_probe": 4.1,
     "test_validate": 9.6,
     "test_validate_catalog_grammar": 0.3,

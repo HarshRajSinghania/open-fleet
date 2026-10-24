@@ -40,6 +40,13 @@ Usage:
     python3 scripts/eval.py run --suite routing|skills|injection|all [--threshold 0.90] [--json]
     python3 scripts/eval.py run --suite behavioral --mission <name> [--dry-run]
     python3 scripts/eval.py run --suite trajectories [--markdown] [--case <id> [--trajectory <jsonl>]]
+    python3 scripts/eval.py run --suite trajectories --tier live --case <id>|--all-live \
+        --agent-cmd <cmd> --model <id> --harness-version <v> --cost-cap-usd <N> [--out <dir>]
+
+`--tier live` is the trajectory suite's model-dependent arm (#602): it runs --agent-cmd under
+scripts/trajectory_harness.py and grades the recording with the same replay. It spends money, so
+it refuses to start without an explicit cap; its output is never evidence until a run report binds
+it (scripts/_trajectory_live.py says how the spend is guarded).
 """
 import argparse
 import hashlib
@@ -1150,6 +1157,39 @@ def _trajectory_engine():
     return _TRAJECTORY_ENGINE
 
 
+def _trajectory_live():
+    """The live arm's runner (#602), loaded by path like the engine. Imported only on demand."""
+    spec = importlib.util.spec_from_file_location(
+        "_trajectory_live", Path(__file__).resolve().parent / "_trajectory_live.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def run_trajectory_live(args: argparse.Namespace) -> int:
+    """`run --suite trajectories --tier live`: exit 2 refused (nothing run), 0 when every
+    planned cell ran and graded PASS, 1 otherwise. Never evidence (see _trajectory_live.py)."""
+    live = _trajectory_live()
+    try:
+        run_dir, results = live.run_live(args)
+    except live.guard().Refused as err:
+        print(f"Trajectory live run refused: {err}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps({"run_dir": str(run_dir), "evidence": results["evidence"],
+                          "complete": results["complete"], "stopped": results["stopped"],
+                          "verdicts": {r["cell"]: r["verdict"] for r in results["cells"]},
+                          "unrun": [u["case"] for u in results["unrun"]]}, indent=2))
+    else:
+        print(live.render(results), end="")
+        print(f"results: {run_dir / 'results.json'}")
+    # A run where nothing ran (every selected case UNRUN) has nothing that passed, and a cell
+    # with any error never passes, whatever its replay grade (#659 review).
+    passed = bool(results["cells"]) and all(r["verdict"] == "PASS" and not r.get("errors")
+                                            for r in results["cells"])
+    return 0 if results["complete"] and passed else 1
+
+
 def _trajectory_contract(data) -> Path | None:
     """The frozen contract the suite names, or None when the name could leave the repository."""
     rel = (data.get("contract") or {}).get("path") if isinstance(data, dict) else None
@@ -1811,7 +1851,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2))
         return exit_code
 
+    if args.suite == "trajectories" and getattr(args, "tier", "fixture") == "live":
+        return run_trajectory_live(args)
     if args.suite == "trajectories":
+        if getattr(args, "all_live", False):
+            print("Trajectory eval error: --all-live selects the live tier's design (--tier live)")
+            return 2
         case_id = getattr(args, "case", None)
         trajectory = Path(args.trajectory) if getattr(args, "trajectory", None) else None
         if trajectory is not None and not case_id:
@@ -1874,7 +1919,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     return exit_code
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="open-fleet eval runner (catalog tooling)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1905,8 +1950,38 @@ def main() -> int:
     run_parser.add_argument("--case", help="trajectories: replay one case")
     run_parser.add_argument("--trajectory",
                             help="trajectories: grade this recorded JSONL against --case (unpinned)")
+    live = run_parser.add_argument_group(
+        "trajectories --tier live (#602's model-dependent arm; spends money, never evidence)")
+    live.add_argument("--tier", choices=["fixture", "live"], default="fixture",
+                      help="fixture (default) replays the pinned recordings; live runs "
+                           "--agent-cmd under scripts/trajectory_harness.py and grades its "
+                           "recording with the same replay")
+    live.add_argument("--all-live", action="store_true",
+                      help="the declared live design: each live_cases row's case plus every "
+                           "benign and clean control; a case live cannot reach is UNRUN")
+    live.add_argument("--agent-cmd", help="the agent command (prints Claude stream-json)")
+    live.add_argument("--model", help="the exact model id, recorded with the results")
+    live.add_argument("--harness-version", help="the agent harness version, recorded")
+    live.add_argument("--cost-cap-usd", type=float, default=None,
+                      help="REQUIRED: the run stops before a call whose reservation would pass it")
+    live.add_argument("--reserve-usd", type=float, default=5.0,
+                      help="each agent call's reservation, its worst case (default 5.0)")
+    live.add_argument("--limit-fraction", type=float, default=0.8,
+                      help="the per-call limit handed to the agent, as a fraction of its "
+                           "reservation (default 0.8)")
+    live.add_argument("--agent-limit-flag", default="--max-budget-usd",
+                      help="the agent's per-call spend-limit flag (default --max-budget-usd)")
+    live.add_argument("--allowlist-flag", default="--allowedTools",
+                      help="the agent's tool-allowlist flag (default --allowedTools)")
+    live.add_argument("--repeats", type=int, default=5, help="repeats per case (default 5)")
+    live.add_argument("--seed", type=int, default=602,
+                      help="repeat k's recorded seed is SEED+k (default 602)")
+    live.add_argument("--timeout", type=int, default=None, help="seconds per agent call")
+    live.add_argument("--out", default=None,
+                      help="results directory (default: a new temp dir); its spend ledger "
+                           "counts against a later run's cap")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "validate":
         return cmd_validate(args)
     if args.command == "run":

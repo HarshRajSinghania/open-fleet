@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-24",
+  "report": "2026-10-24-pin-it-238.md",
+  "order": 1,
+  "mission": "[pin-it](2026-10-24-pin-it-238.md)",
+  "target": "this catalog's runtime doctrine against Orca v1.4.238 (`e6f7fba5`, source-delta re-witness over the 1040-commit tag range vs the v1.4.229 pin; [delta inventory](2026-10-24-pin-it-238/delta-inventory-2026-10-24.md))",
+  "ran_as": "self-run",
+  "binds": "no — the living ledger, not a binding report; binds, or does not, if a later promotion files one",
+  "outcome": "RE-WITNESSED, PIN HELD at v1.4.229 (policies 10 CURRENT / 2 PATCHED / 4 deferred until #606 runs; scripts 41 CURRENT / 3 PATCHED; Auto host mode and `--host` names drifted in #606-registered docs; dated trigger now filed by the weekly probe)"
+}

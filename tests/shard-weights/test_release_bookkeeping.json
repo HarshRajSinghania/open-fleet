@@ -1,0 +1,4 @@
+{
+  "seconds": 18.8,
+  "measured": "2026-10-24: one local run of tests.test_release_bookkeeping (macOS arm64, Python 3.13.15, no coverage) via shard-tests.py --measure, 13 tests in 18.8 s, x1 to the CI lane (gen-badges' computation and the release rehearsal dominate, not the tracer)"
+}

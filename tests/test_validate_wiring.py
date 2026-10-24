@@ -153,5 +153,21 @@ class ValidatePyRunsEveryGate(unittest.TestCase):
         self.assert_reported(run, "FAIL hidden missions", "skills/_draft/SKILL.md")
 
 
+    def test_main_runs_the_changelog_fragment_gate(self):
+        # CI speed and bookkeeping change: entries are changelog.d/ fragments the release cut
+        # folds; main() must report one the cut could not fold, whatever else the copy lacks.
+        with self.edited("changelog.d/zz-probe.md", lambda _: "### Added\n"):
+            run = self._validate()
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assert_reported(run, "changelog.d/zz-probe.md:1: a heading would split the release section")
+
+    def test_main_runs_the_run_index_gate(self):
+        # A run report filed without its docs/runs/index/<run>.json row is an unindexed run.
+        with self.edited("docs/runs/2026-12-30-probe-it-self-run.md", lambda _: "# probe\n"):
+            run = self._validate()
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assert_reported(run, "docs/runs/2026-12-30-probe-it-self-run.md has no row")
+
+
 if __name__ == "__main__":
     unittest.main()

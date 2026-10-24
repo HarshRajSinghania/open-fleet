@@ -10,12 +10,15 @@ permissions:
 
 jobs:
   tests:
-    # The contract suite, sharded across four parallel jobs (speed-it J1
+    # The contract suite, sharded across six parallel jobs (speed-it J1
     # sharding: the ~670 s sequential suite (2026-10-14) is diffuse fan-out no
     # hotspot fix removes, so CI fans out instead). scripts/shard-tests.py owns
-    # the partition — file-level LPT, unittest stays the runner, stdlib only —
+    # the partition — LPT over modules, with the few modules whose weight file
+    # records class weights split one unit per TestCase class (test_wip_curve
+    # alone was a 640-745 s shard), unittest stays the runner, stdlib only —
     # and tests/test_shard_tests.py proves the union of the shards equals live
-    # discovery. fail-fast false: a red shard must not hide the other three.
+    # discovery, test ID by test ID. fail-fast false: a red shard must not hide
+    # the other five.
     # `gates` below NEEDS this job and runs `if: always()`, and its first step
     # fails unless every need succeeded: branch protection requires the `gates`
     # context, and a need that fails SKIPS a plain dependent, which GitHub counts
@@ -25,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
@@ -61,10 +64,10 @@ jobs:
             echo "::error::the scanner-absent test environment unexpectedly contains Gitleaks"
             exit 1
           fi
-          python3 scripts/shard-tests.py --shard "$SHARD" --of 4 --with-coverage
+          python3 scripts/shard-tests.py --shard "$SHARD" --of 6 --with-coverage
       - name: Upload the shard coverage data
         # One .coverage.<host>.<pid>.<random> per shard (--parallel-mode);
-        # gates downloads all four and combines before the D9 report. No
+        # gates downloads all six and combines before the D9 report. No
         # if:always: a red shard uploads nothing; gates still runs and its
         # first step fails on the red need, so the combine never runs short.
         # include-hidden-files: dotfiles are EXCLUDED by default, and every
@@ -80,15 +83,15 @@ jobs:
   floor:
     # #514: the Python floor is a measured claim, not an installer setting. The sharded `tests`
     # job above proves 3.13 (the CI pin, and the job that carries the D9 coverage data); this
-    # matrix proves the floor and the minor between it and the pin, without coverage. Same
-    # shards, same runner, no artifacts; `gates` needs it so a red floor blocks the merge.
+    # matrix proves the floor and the minor between it and the pin. Same shards, same runner, no
+    # artifacts; `gates` needs it so a red floor blocks the merge.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12"]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as the tests job)
         with:
@@ -103,45 +106,26 @@ jobs:
             -r .github/ci-tools.lock
           coverage --version
       - name: Run suite shard on the floor interpreter
-        # Same invocation as the 3.13 matrix, coverage included, so the sharder's contract
-        # (tests/test_shard_tests.py) holds for every lane; the data files are not uploaded —
-        # the D9 gate reads the 3.13 matrix, this lane proves the floor.
+        # Same invocation as the 3.13 matrix, coverage included: tests/test_shard_tests.py's
+        # test_ci_shard_invocation_collects_coverage requires --with-coverage on EVERY shard
+        # invocation in this file, so dropping it here waits on a recorded waiver for that
+        # assertion. The data files are not uploaded — the D9 gate reads the 3.13 matrix, this
+        # lane proves the floor.
         env:
           SHARD: ${{ matrix.shard }}
         run: |
           python3 --version
-          python3 scripts/shard-tests.py --shard "$SHARD" --of 4 --with-coverage
-  gates:
-    # The required context. A need that fails SKIPS a plain dependent, and GitHub counts a
-    # skipped required check as success, so `needs:` alone let a red shard merge (2026-10-23
-    # review, P1-5: runs 39386063357 and 38533245355). always() runs gates whatever its needs
-    # did, cancelled runs included, and the first step fails unless EVERY need succeeded —
-    # failure, cancelled and skipped all fail it. vfbench is a need for the same reason: a
-    # job no required context depends on is advisory, however it is described.
-    needs: [tests, floor, vfbench, vfbench_replay]
-    if: always()
+          python3 scripts/shard-tests.py --shard "$SHARD" --of 6 --with-coverage
+  checks:
+    # Every repository gate that needs nothing the shards produce, started at t=0 beside them
+    # (CI speed and bookkeeping change). Until then `gates` waited for the slowest shard (11.4 min
+    # on run 40097725520, test_wip_curve's) and only then ran these one after another for 2.6-3.6
+    # min, most of it the secret scan's test_verify re-run. Nothing here reads a shard artifact,
+    # so nothing here waits. A job no required context depends on is advisory, so `gates` NEEDS this one and its
+    # first step fails unless it succeeded: every check below still blocks the merge.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Every needed job succeeded (a failed, cancelled or skipped need fails gates)
-        # toJSON(needs) carries every job in `needs:`, so a need added later is covered without
-        # editing this step; an empty map fails too, rather than passing vacantly.
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os, sys
-          needs = json.loads(os.environ["NEEDS_JSON"])
-          bad = {job: (v or {}).get("result") for job, v in needs.items()
-                 if (v or {}).get("result") != "success"}
-          for job, result in sorted(bad.items()):
-              print(f"::error::needed job '{job}' ended '{result}'; gates fails so the merge stays blocked")
-          if not needs:
-              print("::error::gates sees no needed jobs; refusing to pass vacantly")
-          if bad or not needs:
-              sys.exit(1)
-          print("every needed job succeeded: " + ", ".join(sorted(needs)))
-          PY
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
@@ -160,6 +144,16 @@ jobs:
         run: python3 scripts/check_trailers.py --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA"
       - name: Validate missions, playbooks, and evals
         run: python3 scripts/validate.py
+      - name: CHANGELOG entries arrive as fragments, not as edits to the shared file
+        # Every PR used to add its entry at the top of CHANGELOG.md's [Unreleased], so every merge
+        # put every open PR into conflict (CI speed and bookkeeping change). An entry is now one
+        # changelog.d/<slug>.md per change, which the release cut folds in. This fails a PR that
+        # adds a top-level [Unreleased] entry to the shared file; the fragments' own shape is
+        # checked by validate.py above, on every event.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/changelog.py check --base "$PR_BASE_SHA"
       - name: Routing eval gate (description-based router)
         # #260: this is the gate, not the summary step below. It scores every
         # prompt in evals/routing.json against the REAL frontmatter descriptions
@@ -251,33 +245,12 @@ jobs:
       - name: Ruff (syntax / undefined names)
         # Installed from the hashed lock above (#301), not re-resolved here.
         run: ruff check scripts runtime/scripts tests bench demo
-      - name: Download the shard coverage data
-        # merge-multiple: all four coverage-shard-* artifacts land in the
-        # checkout root, where `coverage combine` below expects them.
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0 (Node 24, #367; v4-v6 are Node 20, gone from runners 2026-09-23)
-        with:
-          pattern: coverage-shard-*
-          merge-multiple: true
-      - name: "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)"
-        # CONSTRAINTS.md D9, wired by the floor-it WIRE phase: the four matrix
-        # jobs each traced their own shard (one parallel-mode data file per
-        # shard, uploaded beside the job), and this step downloads all four,
-        # combines, and reports on the committed .coveragerc (fail_under = 80,
-        # ratchet-only). The gate is the same number over the same tests —
-        # collection fanned out, the bar did not move. Installed from the
-        # hashed lock above (#301), not re-resolved here. gates NEEDS the
-        # matrix and its first step fails on a red shard, so this step never
-        # runs on partial data: the failed need — not a missing data file —
-        # is what fails gates and blocks the merge.
-        run: |
-          set -euo pipefail
-          coverage combine
-          coverage report
       - name: Publish the gate summary (proof rollup + routing score)
         # Observability only (#213): the numbers land in the run summary even
         # when a gate is red. The routing GATE is the step above; this one
-        # swallows its exit code on purpose and can never fail the build. Not before a checkout:
-        # a red need stops gates at its first step, and a summary of no tree reads as a failure.
+        # swallows its exit code on purpose and can never fail the build. always(), so a red
+        # check above still publishes; not before a checkout, since a summary of no tree reads
+        # as a failure. It moved here from gates with the checks it summarizes.
         if: always() && steps.checkout.outcome == 'success'
         run: |
           {
@@ -287,6 +260,74 @@ jobs:
             python3 scripts/eval.py run --suite routing || echo "routing eval: FAILED"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+  gates:
+    # The required context. A need that fails SKIPS a plain dependent, and GitHub counts a
+    # skipped required check as success, so `needs:` alone let a red shard merge (2026-10-23
+    # review, P1-5: runs 39386063357 and 38533245355). always() runs gates whatever its needs
+    # did, cancelled runs included, and the first step fails unless EVERY need succeeded —
+    # failure, cancelled and skipped all fail it. vfbench and checks are needs for the same
+    # reason: a job no required context depends on is advisory, however it is described. What
+    # is left here is what needs the shards' own output: the D9 coverage combine.
+    needs: [tests, floor, checks, vfbench, vfbench_replay]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every needed job succeeded (a failed, cancelled or skipped need fails gates)
+        # toJSON(needs) carries every job in `needs:`, so a need added later is covered without
+        # editing this step; an empty map fails too, rather than passing vacantly.
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = {job: (v or {}).get("result") for job, v in needs.items()
+                 if (v or {}).get("result") != "success"}
+          for job, result in sorted(bad.items()):
+              print(f"::error::needed job '{job}' ended '{result}'; gates fails so the merge stays blocked")
+          if not needs:
+              print("::error::gates sees no needed jobs; refusing to pass vacantly")
+          if bad or not needs:
+              sys.exit(1)
+          print("every needed job succeeded: " + ", ".join(sorted(needs)))
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
+        # Default depth: `coverage report` reads the sources at this commit, and no step left in
+        # gates reads history (the trailer range and the review-leg pins moved to checks).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
+        with:
+          python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - name: Install coverage from the hashed lock
+        # Same lock + --require-hashes shape as every other job (#301): the combine below runs
+        # the pinned tracer's own reader, never a re-resolved one.
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+            -r .github/ci-tools.lock
+          coverage --version
+      - name: Download the shard coverage data
+        # merge-multiple: all six coverage-shard-* artifacts land in the
+        # checkout root, where `coverage combine` below expects them.
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0 (Node 24, #367; v4-v6 are Node 20, gone from runners 2026-09-23)
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+      - name: "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)"
+        # CONSTRAINTS.md D9, wired by the floor-it WIRE phase: the six matrix
+        # jobs each traced their own shard (one parallel-mode data file per
+        # shard, uploaded beside the job), and this step downloads all six,
+        # combines, and reports on the committed .coveragerc (fail_under = 80,
+        # ratchet-only). The gate is the same number over the same tests —
+        # collection fanned out, the bar did not move. Installed from the
+        # hashed lock (#301), not re-resolved here. gates NEEDS the
+        # matrix and its first step fails on a red shard, so this step never
+        # runs on partial data: the failed need — not a missing data file —
+        # is what fails gates and blocks the merge.
+        run: |
+          set -euo pipefail
+          coverage combine
+          coverage report
   vfbench:
     runs-on: ubuntu-latest
     timeout-minutes: 15

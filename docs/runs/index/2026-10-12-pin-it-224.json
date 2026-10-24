@@ -1,0 +1,9 @@
+{
+  "date": "2026-10-13",
+  "report": "2026-10-12-pin-it-224.md",
+  "mission": "[pin-it](2026-10-12-pin-it-224.md)",
+  "target": "this catalog's runtime doctrine against Orca v1.4.224 (installed mac binary + Linux `orca-ide serve` substrate; delta vs the frozen 1.4.215 inventory + live replay)",
+  "ran_as": "self-run",
+  "binds": "no — the living ledger, not a binding report; binds, or does not, if a later promotion files one",
+  "outcome": "PINNED-WITH-PARKED (2 drifts patched; fencing / abandon retention / `terminal stop` / doctor-shape parks retired live; legacy replay + `caller.orcaSessionId` parked; successor 2026-12-28)"
+}

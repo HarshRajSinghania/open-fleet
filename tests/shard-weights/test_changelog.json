@@ -1,0 +1,4 @@
+{
+  "seconds": 0.9,
+  "measured": "2026-10-24: one local run of tests.test_changelog (macOS arm64, Python 3.13.15, no coverage) via shard-tests.py --measure, x1 to the CI lane"
+}

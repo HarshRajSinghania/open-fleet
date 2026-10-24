@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-24",
+  "report": "2026-10-24-pin-it-238-bump.md",
+  "order": 2,
+  "mission": "[pin-it](2026-10-24-pin-it-238-bump.md)",
+  "target": "the pin bump the v1.4.238 re-witness deferred: its E1–E8 doctrine edits and B1–B9 bump steps, with #606's registration re-registered as version 2 before any live cell ran",
+  "ran_as": "self-run",
+  "binds": "no — a run note applying a recorded run's deferred edits; it binds nothing",
+  "outcome": "PINNED-WITH-PARKED at v1.4.238 (Auto host mode and `--host` names patched; E3 corrected and one more stale containment path found; no assertion line edited, no budget raised)"
+}

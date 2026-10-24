@@ -33,6 +33,22 @@ RUNTIME = ROOT / "runtime"
 INDEX_LINK = re.compile(r"\[[^\]]+\]\(\s*<?([^)>#\s]+\.md)(?:#[^)>\s]*)?>?(?:\s+\"[^\"]*\")?\s*\)")
 
 
+def run_archive_index():
+    """docs/runs/README.md plus the live rendering of the run-index row files.
+
+    The README's table is a snapshot the release cut renders from docs/runs/index/<run>.json, one
+    row file per run, so PRs filing runs never edit one shared line (CI speed and bookkeeping
+    change). Between cuts a run filed since is indexed by its row file alone; this is the index a
+    reader can render at any commit (`python3 scripts/run_index.py print`). A row file that does
+    not load renders no row, so its report reads as unlinked.
+    """
+    spec = importlib.util.spec_from_file_location("_run_index_nav", ROOT / "scripts" / "run_index.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    rows, _ = mod.load_rows(ROOT)
+    return (DOCS / "runs" / "README.md").read_text(encoding="utf-8") + "\n" + mod.render(rows, "live")
+
+
 def index_targets(index_path):
     """Real files an index links to, each resolved against the index's own directory."""
     links = INDEX_LINK.findall(index_path.read_text(encoding="utf-8"))
@@ -554,7 +570,7 @@ class TestDocsNavigation(unittest.TestCase):
         # The glob was `2*.md`, i.e. flat files only. The newest run is a DIRECTORY
         # (2026-09-12-runtime-repin/README.md), so the guard silently stopped covering the newest
         # shape while still passing -- the same defect #35 filed, one directory level down.
-        index = (DOCS / "runs" / "README.md").read_text(encoding="utf-8")
+        index = run_archive_index()
         reports = sorted((DOCS / "runs").glob("2*.md"))
         reports += sorted(d / "README.md" for d in (DOCS / "runs").glob("2*")
                           if d.is_dir() and (d / "README.md").is_file())

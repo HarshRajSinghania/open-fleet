@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-28",
+  "report": "2026-09-28-pin-it-500.md",
+  "mission": "[pin-it](2026-09-28-pin-it-500.md)",
+  "target": "this catalog's runtime doctrine against the Orca v1.4.215 release binary (#500, early re-pin)",
+  "ran_as": "self-run",
+  "binds": "no — the living ledger, not a binding report; binds, or does not, if a later promotion files one",
+  "outcome": "PINNED-WITH-PARKED (zero drift; additive surfaces noted; terminal-stop hedge confirmed; parks carried; successor 2026-12-28)"
+}

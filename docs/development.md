@@ -50,7 +50,9 @@ when one does not.
 | Command | Purpose |
 |---|---|
 | `python3 scripts/validate.py` | Catalog structure, composition references, budgets, proof declarations and generated freshness (backed by [`scripts/_countlint.py`](../scripts/_countlint.py) and [`scripts/_identity.py`](../scripts/_identity.py)) |
-| `python3 scripts/gen-badges.py --check` | Verify generated counts, activation callouts and proof summary without writing |
+| `python3 scripts/gen-badges.py --check` | Verify generated counts, activation callouts and proof summary without writing. The test count is the last release's: only `--release` (the cut) rewrites it, and `--check --release` checks it |
+| `python3 scripts/changelog.py check` | Check the `changelog.d/` fragments the next release cut folds into `CHANGELOG.md` ([format](../changelog.d/README.md)); `preview` prints the next release section |
+| `python3 scripts/run_index.py check` | Check one well-formed `docs/runs/index/<run>.json` row per run report; `print` renders today's index; the README holds the rendering from the last cut |
 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | Check description-based mission routing |
 | `python3 scripts/eval.py run --suite injection` | Run the deterministic VAL-01 prompt-injection and trust-fence drills ([`evals/injection-drills.json`](../evals/injection-drills.json), #560) |
 | `python3 scripts/deny_hook_corpus.py` | Differential-test the deny-hook's shell parsing against real bash; `--minimize --write` stores new mismatches as fixtures ([`runtime-scripts.md`](runtime-scripts.md#deny-hooksh), #598) |
@@ -77,8 +79,9 @@ installed) launch a fake agent from a temporary `bin` and put a tripwire ahead o
 harness on `PATH`, so a test never starts your installed `claude` or other agent CLI.
 
 The full suite creates temporary Git repositories and can take several minutes. To run one
-CI-sized partition locally, use `python3 scripts/shard-tests.py --shard 1 --of 4`; run all four
-partitions for full coverage. `python3 scripts/shard-tests.py --check` verifies the partition.
+CI-sized partition locally, use `python3 scripts/shard-tests.py --shard 1 --of 6`; run all six
+partitions for full coverage. `python3 scripts/shard-tests.py --check` verifies the partition,
+and `--list` prints it: a few heavy modules run as one unit per TestCase class.
 
 If running tests from an agent terminal that exports `ORCA_TERMINAL_HANDLE`, omit that identity
 for the test process so fixture senders can use their own handles:
@@ -110,15 +113,24 @@ check guide parity. Verify section anchors and command examples as well.
 [`scripts/gen-badges.py`](../scripts/gen-badges.py) writes the badge JSON, mission-guide
 activation-load callouts, the architecture load table and the README proof summary. If their
 source changes, run `python3 scripts/gen-badges.py` and inspect the resulting diff. Keep the
-`BEGIN GENERATED` / `END GENERATED` markers.
+`BEGIN GENERATED` / `END GENERATED` markers. It leaves `assets/badges/tests.json` alone: that
+count belongs to the release cut (`--release`), so a PR adding tests never edits it.
+
+Beside the tests badge, two more generated surfaces are written only by the release cut, from
+files each PR adds on its own: `CHANGELOG.md`'s dated section from `changelog.d/` fragments
+([`scripts/changelog.py`](../scripts/changelog.py)), and the run index in
+[`docs/runs/README.md`](runs/README.md) from `docs/runs/index/` rows
+([`scripts/run_index.py`](../scripts/run_index.py)). See
+[Contributing](../CONTRIBUTING.md#bookkeeping-files-add-yours-never-edit-a-shared-one).
 
 [`scripts/bundle.py`](../scripts/bundle.py) writes `dist/`, which is ignored by Git. Use its
 `--check` mode for validation. Diagram assets have a separate
 [generator guide](../assets/diagrams/generator/README.md); a prose correction does not require
 regenerating every image.
 
-If you add a test module, add its measured weight to
-[`scripts/shard-tests.py`](../scripts/shard-tests.py), following the procedure in its header.
+If you add a test module, add its measured weight as its own file,
+`tests/shard-weights/test_<name>.json`, following the procedure in
+[`scripts/shard-tests.py`](../scripts/shard-tests.py)'s header.
 
 ## Local checks and CI
 

@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-13",
+  "report": "2026-10-13-ship-it-mdtoc.md",
+  "mission": "[ship-it](2026-10-13-ship-it-mdtoc.md)",
+  "target": "ravidsrk/mdtoc (new product repo) from a maintainer-frozen spec, on the Linux witness VM (#515)",
+  "ran_as": "external-run",
+  "binds": "yes",
+  "outcome": "BUILT @ `046d1f8d` (6 slices, 110 tests; integrated FAIL → seam-fix slice → re-review PASS; offline local-merge lane, BASE pushed)",
+  "summary": "the 2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance"
+}

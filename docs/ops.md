@@ -123,7 +123,13 @@ without depending on error-handling options in your interactive shell.
 ### Prepare
 
 The following changes the three version surfaces together and marks only the
-newest heading as preparing. Regenerate badges if catalog content changed.
+newest heading as preparing. It also folds in the bookkeeping that pull requests
+file one file per change, so that no two PRs edit a shared line: the
+`changelog.d/` fragments become the dated `CHANGELOG.md` section and are deleted
+([`changelog.d/README.md`](../changelog.d/README.md)), the tests badge takes
+today's count (`gen-badges.py --release`; between releases it shows the last
+release's count and the README badge says so), and the run index in
+[`docs/runs/README.md`](runs/README.md) is re-rendered from `docs/runs/index/`.
 
 <!-- release:prepare -->
 ```bash
@@ -132,7 +138,7 @@ set -eu
 status=$(git status --porcelain)
 test -z "$status"
 python3 - <<'PY_RELEASE'
-import json, os, re
+import json, os, re, subprocess, sys
 from datetime import date
 from pathlib import Path
 version, day = os.environ["RELEASE_VERSION"], os.environ["RELEASE_DATE"]
@@ -143,10 +149,10 @@ data = json.loads(path.read_text())
 assert data.get("preparing") is None, "finish the current preparation first"
 assert all(tuple(map(int, version.split("."))) > tuple(map(int, r["version"].split(".")))
            for r in data["releases"]), "choose a new version"
-changelog = Path("CHANGELOG.md")
-text = changelog.read_text()
-assert text.count("## [Unreleased]") == 1
-changelog.write_text(text.replace("## [Unreleased]", f"## [Unreleased]\n\n## [{version}] - {day}", 1))
+for tool in (["scripts/changelog.py", "assemble", version, day],
+             ["scripts/gen-badges.py", "--release"],
+             ["scripts/run_index.py", "write", "--as-of", day]):
+    subprocess.run([sys.executable, *tool], check=True)
 for name in ("plugin", "marketplace"):
     manifest = Path(f".claude-plugin/{name}.json")
     value = json.loads(manifest.read_text())
@@ -162,8 +168,13 @@ python3 -m unittest tests.test_docs_navigation.TestDocsNavigation tests.test_doc
 )
 ```
 
-Run the repository gates, including `python3 scripts/validate.py` and
-`python3 -m unittest discover -s tests`, and review the diff before the cut.
+Run the repository gates, including `python3 scripts/validate.py`,
+`python3 -m unittest discover -s tests` and the cut's bookkeeping checks
+(`python3 scripts/changelog.py check --released`,
+`python3 scripts/run_index.py check --current` and
+`python3 scripts/gen-badges.py --check --release`, which `release_check.py`'s
+`gate0/release-bookkeeping` runs once `preparing` is set), and review the diff
+before the cut.
 Every published heading still needs its commit and annotated tag; only the sole
 newest preparing heading has no cut SHA. Green checks do not authorize publication.
 
@@ -172,7 +183,8 @@ newest preparing heading has no cut SHA. Green checks do not authorize publicati
 (
 set -eu
 python3 -c 'import json, os; assert json.load(open("docs/releases.json"))["preparing"]["version"] == os.environ["RELEASE_VERSION"]'
-git add CHANGELOG.md .claude-plugin/plugin.json .claude-plugin/marketplace.json docs/releases.json
+git add CHANGELOG.md changelog.d .claude-plugin/plugin.json .claude-plugin/marketplace.json \
+    docs/releases.json assets/badges/tests.json docs/runs/README.md
 git commit -m "Prepare release $RELEASE_VERSION"
 )
 ```

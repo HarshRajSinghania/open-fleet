@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-24",
+  "report": "2026-10-24-vf-bench-heldout-v1/",
+  "order": 4,
+  "mission": "— ([VF-Bench held-out v1](2026-10-24-vf-bench-heldout-v1/))",
+  "target": "`verify.py` blob `08f568946c1f` against 89 held-out cases authored and held by OpenAI Codex (#601)",
+  "ran_as": "benchmark evaluation, not a mission run",
+  "binds": "no — binds no mission tier; `heldout.py validate` binds the report to its commit, `verify.py` blob and set digest",
+  "outcome": "0/66 false acceptance, 0/23 false rejection, 4/66 refused for another reason, 66 of 95 inventory rows; stable over 3 runs"
+}

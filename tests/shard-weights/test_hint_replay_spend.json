@@ -1,0 +1,4 @@
+{
+  "seconds": 27.6,
+  "measured": "2026-10-24: one coverage run of tests.test_hint_replay_spend at 69411e1bdc (macOS arm64, Python 3.13.15, coverage 7.16.1) took 37.7 s; x0.731, the factor that sums its old shard (2/4) to that shard's 3.13 time in CI run 40097725520"
+}

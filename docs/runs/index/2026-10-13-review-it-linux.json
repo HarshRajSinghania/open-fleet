@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-13",
+  "report": "2026-10-13-review-it-linux.md",
+  "mission": "[review-it](2026-10-13-review-it-linux.md)",
+  "target": "stablyai/orca PR #28206 (external PR), executed on Ubuntu 24.04 via `orca-ide` 1.4.224 — the Linux witness (#527)",
+  "ran_as": "external-run",
+  "binds": "yes — filed at `doctrine-only` as #527 substrate evidence; tier claimed 2026-10-14 (header-only amendment, see the report)",
+  "outcome": "NO-GO (0 Critical, 2 Required: submodule Force Delete toast hides superproject data loss; 4 read-only workers, target untouched, verdict retained not posted)",
+  "summary": "the 2026-10-13 review-it Linux witness, filed at `doctrine-only` as #527 substrate evidence and re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier"
+}

@@ -339,6 +339,47 @@ def check_suite(ctx):
     return (name, FAIL, f"{label}: exit {r.returncode}: {tail(r.stderr, 3)}")
 
 
+# The bookkeeping PRs file as one file per change and the cut folds in (CI speed and bookkeeping
+# change): changelog.d/ fragments, the tests badge's count, docs/runs/index/ rows. Between releases
+# PRs only add files, so the check is their shape; on a cut every one must be folded and current.
+BOOKKEEPING_BETWEEN = (("scripts/changelog.py", "check"),
+                       ("scripts/run_index.py", "check"))
+BOOKKEEPING_AT_CUT = (("scripts/changelog.py", "check", "--released"),
+                      ("scripts/run_index.py", "check", "--current"),
+                      ("scripts/gen-badges.py", "--check", "--release"))
+
+
+def check_release_bookkeeping(ctx):
+    """PASS when the tree's bookkeeping matches its release state.
+
+    docs/releases.json's `preparing` says which state that is: null between releases (fragments
+    and run rows well formed, still waiting for a cut), a version on a cut (every fragment folded
+    into the dated section, the tests badge at today's count, the run index re-rendered)."""
+    name = "gate0/release-bookkeeping"
+    raw = ctx.read("docs/releases.json")
+    try:
+        preparing = json.loads(raw).get("preparing") if raw is not None else None
+    except (json.JSONDecodeError, AttributeError):
+        return (name, FAIL, "docs/releases.json is not a JSON object")
+    if raw is None:
+        return (name, FAIL, "docs/releases.json: not in this checkout")
+    commands = BOOKKEEPING_AT_CUT if preparing else BOOKKEEPING_BETWEEN
+    done = []
+    for tool, *args in commands:
+        label = " ".join((tool, *args))
+        r = ctx.py(tool, *args)
+        if r.missing:
+            return (name, FAIL, r.stderr)
+        if r.timeout:
+            return (name, FAIL, f"{label}: {r.stderr}")
+        if not r.ok:
+            return (name, FAIL, f"{label}: exit {r.returncode}: {tail(r.stdout or r.stderr)}")
+        done.append(tail(r.stdout or r.stderr, 1))
+    state = (f"cut of {preparing.get('version')}" if isinstance(preparing, dict)
+             else "between releases")
+    return (name, PASS, f"{state}: " + "; ".join(done))
+
+
 def gate0(ctx):
     """Gate 0 — tree and catalog gates green."""
     checks = []
@@ -348,6 +389,7 @@ def gate0(ctx):
 
     add(check_tree_clean(ctx))
     add(check_tool_exit0(ctx, "gate0/validate", "scripts/validate.py"))
+    add(check_release_bookkeeping(ctx))
     if ctx.fast:
         add(("gate0/unittest", SKIP, "--fast"))
     else:

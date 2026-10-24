@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-14",
+  "report": "2026-09-14-clean-sweep-self-run.md",
+  "order": 2,
+  "mission": "[clean-sweep](2026-09-14-clean-sweep-self-run.md)",
+  "target": "this repo (tracker close; 10 units, 2 waves)",
+  "ran_as": "self-run",
+  "binds": "yes",
+  "outcome": "DRY-WITH-PARKED (10 units merged, parks disclosed)",
+  "summary": "the 2026-09-14 clean-sweep close, a tier earned under the binding gate"
+}

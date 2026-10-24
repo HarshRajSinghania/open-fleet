@@ -20,7 +20,9 @@ runtime/scripts/quarantine_check.py; the +1 is the gate function, not the
 engine leaking back). 69 since the identity-gate hardening moved the similarity engine
 (stopwords, concept table, negation polarity, containment) into scripts/_identity.py behind
 three re-exports; validate.py keeps the gate policy (IDENTITY_POINT_MAX_TOKENS/_SAME/_NEAR,
-identity_point_length_errors, identity_collisions).
+identity_point_length_errors, identity_collisions). 72 since #670 added the changelog-fragment
+and run-index gates (check_changelog_fragments, check_run_index); their engines live in
+scripts/changelog.py and scripts/run_index.py, loaded by path.
 """
 import importlib.util
 import re
@@ -30,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WIDTH_RE = re.compile(r"(?:def |class |async def |[A-Z_]+ =)")
 BASELINE_WIDTH = 73
-PINNED_WIDTH = 70  # 64 after RV-D1, +4 #512, +3 full-review, +1 #558, -3 identity engine to _identity.py, +1 #622 load budgets
+PINNED_WIDTH = 72  # 64 after RV-D1, +4 #512, +3 full-review, +1 #558, -3 identity engine to _identity.py, +1 #622 load budgets, +2 #670 changelog-fragment and run-index gates
 
 
 def interface_width(path):

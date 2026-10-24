@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-13",
+  "report": "2026-09-13-pin-it-266/",
+  "mission": "[pin-it](2026-09-13-pin-it-266/)",
+  "target": "this catalog's runtime doctrine against the installed Orca 1.4.200 binary (#266)",
+  "ran_as": "self-run",
+  "binds": "no — see `proof_status --check`; the catalog claimed no tier above `doctrine-only` at the time",
+  "outcome": "PINNED-WITH-PARKED (families needing a second datadir, an isolated v1.4.199 binary, a Windows/Linux host, a paid provider or owner-approved trust are parked with that precondition)"
+}

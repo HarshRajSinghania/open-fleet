@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-16",
+  "report": "2026-09-16-pin-it-416/",
+  "mission": "[pin-it](2026-09-16-pin-it-416/)",
+  "target": "this catalog's runtime doctrine against the installed Orca 1.4.203 binary (#416)",
+  "ran_as": "self-run",
+  "binds": "no — see `proof_status --check`; pin-it itself stays `doctrine-only`",
+  "outcome": "PINNED-WITH-PARKED (sender-bound behavior replays need a live Orca terminal; OS/remote/paid-trust parks carry over; next re-pin #427)"
+}

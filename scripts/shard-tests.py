@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split the unittest suite into N file-level shards for CI matrix fan-out.
+"""Split the unittest suite into N shards for CI matrix fan-out.
 
 The catalog-gates journey (validate + full suite + proof_status) ran ~260 s
 sequentially when this was written and ~670 s by the 2026-10-14 re-measure, ~9x over its 30 s budget, and the cost is diffuse per-test
@@ -9,178 +9,117 @@ reversible half of that run's parked infra gate: it partitions tests/test_*.py
 into N shards so CI runs them in parallel jobs while unittest stays the runner
 and no test dependency is added (the suite is stdlib-only by design).
 
-Shards are FILE-level on purpose: splitting a module across processes would
-re-run setUpClass fixtures per shard (test_deny_hook shares read-only repos
-that way) for no balance gain — LPT over files already lands within ~2% of
-the mean at N=4. Weights below are single-pass wall seconds re-measured on
-2026-10-14 (Linux container, python 3.13.16, 878e2245 plus the review-fix
-branch; one `python3 -m unittest tests.<mod>` per module, sequential, 0.1 s
-floor). The first table (2026-09-17) summed ~260 s and had drifted to ~3x
-that with hot spots moved (test_deny_hook, test_run_report, test_bundle,
-test_architecture), leaving the shards imbalanced. The container was shared
-with other jobs, so absolute values are inflated; only the ratios steer the
-partition. They steer balance only, never correctness — the partition always
-covers every discovered module exactly once, which tests/test_shard_tests.py
-proves against live discovery.
+Shards are FILE-level by default: splitting a module across processes re-runs
+its setUpModule/setUpClass fixtures in every shard that holds a piece of it, so
+a module stays whole unless its weight file records CLASS weights. Those few
+modules (test_wip_curve alone is a third of the CI wall) are split into one
+unit per live TestCase class, `test_wip_curve.TestGate`, and the shard runs
+`python -m unittest tests.test_wip_curve.TestGate` — the same loader, the same
+test IDs. The class list is read from the imported module at partition time,
+the way unittest's own loader reads it, so a class added later lands in a
+shard without anyone recording it (it takes the module's median class weight).
+
+Weights live one JSON file per module in tests/shard-weights/ (CI speed and
+bookkeeping change): adding a test module adds its own file and never edits a
+line another change edits. They steer balance only, never correctness — the
+partition always covers every discovered module (and every live class of a
+split one) exactly once, which tests/test_shard_tests.py proves against live
+discovery, ID by ID. A module with no weight file still runs: it takes the
+median module weight, and the freshness test asks for the file.
+
+Weight file, tests/shard-weights/test_<name>.json:
+  {"seconds": 12.3, "measured": "<when, where, how>"}
+  optional "classes": {"<TestCaseClass>": seconds, ...} splits the module by
+  class; optional "fixture_seconds": module-level setup every shard holding a
+  piece of a split module pays again. Seconds are wall seconds on CI's 3.13
+  coverage lane, or a local measurement scaled to it; ratios are what steer.
 
 Usage:
   python3 scripts/shard-tests.py --list [--of N]      print the partition
   python3 scripts/shard-tests.py --shard I --of N     run shard I (1-based)
   python3 scripts/shard-tests.py --check [--of N]     assert full coverage
+  python3 scripts/shard-tests.py --measure test_<name> [--scale F]
+                                                      time one module, per class;
+                                                      prints a weight file
 
   --shard takes --with-coverage: the shard's unittest runs wrapped in
   `coverage run --parallel-mode`, one data file per shard for CI to combine.
   Tracing cannot cross into run_shard's unittest subprocess any other way —
   `coverage run` around THIS script would measure the sharder, not the suite.
 
-Adding tests/test_<name>.py: add its measured weight here (one run of
-`python3 -m unittest tests.test_<name>` from the repo root, wall seconds).
-The weights-freshness test fails until you do, so a new file can neither
-silently join the wrong shard nor silently run nowhere.
+Adding tests/test_<name>.py: add tests/shard-weights/test_<name>.json. The
+quickest honest number is `python3 scripts/shard-tests.py --measure
+test_<name> --scale 2` (one local run; 2 is roughly the CI-lane factor of a
+fast laptop) redirected into that file. The weights-freshness test fails until
+you do, so a new file can neither silently join the wrong shard nor silently
+run nowhere. Re-measuring an EXISTING module is a rebalance PR's job, not a
+feature PR's, so two feature PRs never edit the same weight file.
 """
 import argparse
+import functools
+import importlib
+import json
+import statistics
 import subprocess
 import sys
+import time
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = ROOT / "tests"
-DEFAULT_SHARDS = 4
+WEIGHTS_DIR = TESTS_DIR / "shard-weights"
+DEFAULT_SHARDS = 6
+WEIGHT_KEYS = {"seconds", "measured", "classes", "fixture_seconds"}
 
-# Module -> seconds. Single-pass `python3 -m unittest tests.<mod>` walls,
-# repo root cwd, 2026-10-14. Balance-only: correctness never reads this.
-WEIGHTS = {
-    "test_a2a_export": 0.9,
-    "test_a2a_schema": 0.4,
-    "test_ablation": 2.9,  # #606/#652, re-measured 2026-10-24 (macOS arm64, load ~5-8): 2.37, 3.37
-    "test_ablation_runner": 55.8,  # #606/#652/#657, re-measured 2026-10-24 (macOS arm64, load ~8): 55.78
-    "test_architecture": 37.5,
-    "test_bind_check": 5.7,
-    "test_bundle": 61.8,
-    "test_bundle_out": 12.0,
-    "test_call_for_runs": 0.1,
-    "test_capabilities_preflight": 0.6,
-    "test_certification": 117.7,  # #596, re-measured 2026-10-24 (macOS arm64, load ~6): 117.7 s with the
-    # rw-final-answer, receipt-witness, live-record and bound-first-run classes; earlier 112.4 s, and
-    # before those classes a mean of 109.6 and 100.2:
-    # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
-    # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
-    "test_containment": 6.7,  # PR #668 review: the shared process-containment helper
-    "test_capability_harnesses": 0.5,
-    "test_capability_launch_agreement": 14.3,  # #596, re-measured 2026-10-24 (macOS arm64): the openhands
-    # end-to-end runs against a loopback agent-server, and the no-exception claim test
-    "test_capability_matrix": 0.1,
-    "test_chain_check": 0.2,
-    "test_check_reply": 0.7,
-    "test_claude_ro_launches": 1.3,  # #596, re-measured 2026-10-24: the Orca ro row probe
-    "test_cross_runtime_upgrades": 2.4,
-    "test_decisions": 11.9,
-    "test_deny_hook": 134.4,
-    "test_deny_hook_conformance": 195.0,   # #598/#648: measured 2026-10-24 (186-205 s, macOS, shared host)
-    "test_deny_hook_multi_harness": 25.1,
-    "test_diff_scope": 10.3,
-    "test_dispatch_sign": 8.1,
-    "test_docs_navigation": 27.5,
-    "test_doctrine_consistency": 0.2,
-    "test_ed25519": 2.5,
-    "test_egress": 6.0,
-    "test_escape_probe": 0.6,
-    "test_eval_coverage": 0.1,
-    "test_evals": 12.9,
-    "test_events": 5.0,
-    "test_evidence_run": 7.9,
-    "test_external_ci_monitor": 0.1,
-    "test_floor_guard": 9.7,
-    "test_gastown_worktrunk_providers": 1.6,
-    "test_gate_batch": 0.5,
-    "test_gitexec_config_commands": 15.4,
-    "test_gen_badges_isolation": 3.8,
-    "test_governance_commands": 1.6,
-    "test_guard_text": 3.7,
-    "test_hint_provenance": 20.6,
-    "test_hint_replay_spend": 39.8,  # #605/#657, re-measured 2026-10-24 (macOS arm64, load ~8): 39.77
-    "test_hitl_ask": 0.5,
-    "test_hitl_loop": 1.0,
-    "test_injection_corpus": 0.4,
-    "test_injection_drills": 0.2,
-    "test_install_status": 32.2,
-    "test_install_workflow_triggers": 0.1,
-    "test_inventory": 27.5,
-    "test_local_state": 1.6,
-    "test_merge_queue": 124.0,
-    "test_merge_queue_drills": 61.0,
-    "test_local_state_open_race": 0.9,  # measured 2026-10-24 (macOS arm64): 0.90, 0.93, 0.79
-    "test_migration_walkthrough": 0.1,
-    "test_multi_harness_hooks_and_search": 3.2,
-    "test_negative_control": 0.9,
-    "test_one_way_doors": 9.5,
-    "test_openhands_provider": 0.7,
-    "test_orca_cli": 0.3,
-    "test_orchestrator_providers": 0.5,
-    "test_orchestrator_providers_tier1": 0.9,
-    "test_orchestrator_providers_tier2": 3.7,
-    "test_orphan_wiring": 0.3,
-    "test_pin_review": 1.0,
-    "test_pins": 0.1,
-    "test_pm": 0.1,
-    "test_posix_crash_recovery": 47.3,  # +1.3 s: #596 review's recorded ro-relay window (5 tests)
-    "test_posix_docker_crash": 0.3,
-    "test_posix_provider": 10.7,
-    "test_preflight": 5.4,
-    "test_proof_status": 0.4,
-    "test_quarantine": 1.6,
-    "test_quarantine_closure": 0.7,
-    "test_release_check": 11.7,
-    "test_release_status_docs": 0.3,
-    "test_repo_hygiene": 1.8,
-    "test_reshape_net_validate": 0.3,
-    "test_reshape_net_verify": 0.3,
-    "test_reshape_width_validate": 0.2,
-    "test_reshape_width_verify": 0.3,
-    # #608: 34.5 s locally, scaled by test_dispatch_sign and test_ed25519 (the other
-    # pure-Python Ed25519 modules: 8.1 / 4.3 s and 2.5 / 1.3 s, ~1.9x) to this table's clock.
-    "test_retention_receipt": 65.6,
-    "test_run_report": 70.1,
-    "test_runtime_providers": 1.3,
-    "test_runtime_providers_core": 0.8,
-    "test_sandbox_doctor": 0.1,
-    "test_search_sessions": 1.0,
-    "test_search_sessions_multi_harness": 1.7,
-    "test_send_msg": 0.5,
-    "test_shard_tests": 1.4,
-    "test_spawn_upstream": 15.2,
-    "test_spawn_worker": 45.9,  # #596: +3.7 s for TestOrcaRoLanePrerequisites (measured 2026-10-24)
-    "test_superset_provider": 0.8,
-    "test_task_ops": 0.8,
-    "test_terminal_ops": 0.8,
-    "test_trajectory_evals": 70.0,  # #602/#644, measured 2026-10-23, macOS host at load average ~21
-    "test_trajectory_live": 94.3,  # #602 live arm + PR #659/#668 reviews, measured 2026-10-24 (macOS arm64, load ~9-11): 94.31
-    "test_upstream_probe": 4.1,
-    "test_validate": 9.6,
-    "test_validate_catalog_grammar": 0.3,
-    "test_validate_wiring": 7.6,
-    "test_verdict_check": 0.1,
-    "test_verify": 64.4,
-    "test_verify_gate": 7.6,
-    # #600: the corpus grew 33 -> 72 cases. Both re-timed locally and scaled by the ratio of
-    # test_vfbench's old weight to its old local time (11.8 / 45.8 s), so the ratios still steer.
-    "test_vfbench": 20.1,
-    "test_vfbench_gate": 0.1,
-    "test_vfbench_guards": 11.6,
-    # #601: timed locally (6.9 s and 86.4 s, after the second round of PR #645 review tests) and
-    # scaled by the same 11.8 / 45.8 ratio as above.
-    "test_vfbench_heldout": 1.8,
-    "test_vfbench_replay": 22.3,
-    "test_watchdog": 1.1,
-    # #604, measured 2026-10-24 (macOS arm64, load average ~4-5; 227.0 and 243.4 s): about a dozen
-    # whole runs through the posix provider and the merge queue, inert and against a fake claude
-    # (the cap, the gate, planted git config, the model pin, deadlines, interrupts, relative paths),
-    # driven in-process so coverage traces them, then the tamper, binding and refusal checks.
-    "test_wip_curve": 640.5,
-    "test_wire_docs": 0.6,
-    "test_worker_ops": 0.9,
-    "test_worktree_ops": 0.5,
-}
+
+def _positive(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def load_weights(directory=WEIGHTS_DIR):
+    """({module: seconds}, {module: {class: seconds}}, {module: fixture seconds}).
+
+    One file per module, so the table has no shared line. A malformed file raises
+    ValueError naming it: a weight the sharder cannot read is a broken checkout, and
+    every shard failing loudly beats one shard quietly running the wrong set.
+    """
+    weights, classes, fixtures = {}, {}, {}
+    for path in sorted(Path(directory).glob("*.json")):
+        name = path.stem
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+            raise ValueError(f"{path}: unreadable weight file ({err})") from None
+        if not isinstance(data, dict):
+            raise ValueError(f"{path}: a weight file is one JSON object")
+        unknown = sorted(set(data) - WEIGHT_KEYS)
+        if unknown:
+            raise ValueError(f"{path}: unknown keys {unknown} (allowed: {sorted(WEIGHT_KEYS)})")
+        if not name.startswith("test_"):
+            raise ValueError(f"{path}: weight files are named after a test module, test_<name>.json")
+        if not _positive(data.get("seconds")):
+            raise ValueError(f"{path}: \"seconds\" must be a positive number")
+        if not isinstance(data.get("measured"), str) or not data["measured"].strip():
+            raise ValueError(f"{path}: \"measured\" must say when and how the seconds were taken")
+        weights[name] = float(data["seconds"])
+        if "classes" in data:
+            split = data["classes"]
+            if (not isinstance(split, dict) or not split
+                    or not all(isinstance(k, str) and k.isidentifier() and _positive(v)
+                               for k, v in split.items())):
+                raise ValueError(f"{path}: \"classes\" maps TestCase class names to positive seconds")
+            classes[name] = {k: float(v) for k, v in split.items()}
+        if "fixture_seconds" in data:
+            fixture = data["fixture_seconds"]
+            if "classes" not in data or not (fixture == 0 or _positive(fixture)):
+                raise ValueError(f"{path}: \"fixture_seconds\" is a non-negative number, "
+                                 "and only a module split by class has one")
+            fixtures[name] = float(fixture)
+    return weights, classes, fixtures
+
+
+WEIGHTS, CLASS_WEIGHTS, FIXTURE_SECONDS = load_weights()
 
 
 def discover_modules():
@@ -188,60 +127,163 @@ def discover_modules():
     return sorted(p.stem for p in TESTS_DIR.glob("test_*.py"))
 
 
-def partition(modules, n, weights=None):
-    """LPT assignment of modules to n shards; deterministic, total coverage.
+@functools.lru_cache(maxsize=None)
+def live_classes(module):
+    """The TestCase classes unittest would load from tests/<module>.py, by attribute name.
 
-    Greedy longest-processing-time: heaviest module first onto the currently
-    lightest shard, ties broken by shard index then module name, so the same
-    inputs always produce the same shards. Unknown modules take the median
-    known weight — balance degrades gracefully, coverage never does.
+    The same walk as TestLoader.loadTestsFromModule: every module attribute that is a TestCase
+    subclass with at least one test (an empty base class collects nothing anywhere). None means
+    the module cannot be split — it fails to import, or it defines load_tests, whose protocol may
+    collect what no class attribute names — so it runs whole and unittest reports why.
+    """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        mod = importlib.import_module(f"tests.{module}")
+    except Exception:  # an import error is the shard's to report, whole and unsplit
+        return None
+    if hasattr(mod, "load_tests"):
+        return None
+    loader = unittest.TestLoader()
+    found = []
+    for name in dir(mod):
+        obj = getattr(mod, name)
+        if (isinstance(obj, type) and issubclass(obj, unittest.TestCase)
+                and obj not in (unittest.TestCase, unittest.FunctionTestCase)
+                and loader.getTestCaseNames(obj)):
+            found.append(name)
+    return tuple(sorted(found))
+
+
+def _fallback(weights):
+    ordered = sorted(weights.values())
+    return ordered[len(ordered) // 2] if ordered else 1.0
+
+
+def units(modules, weights=None, classes=None):
+    """[(unit, module, seconds)]: a module whole, or one `module.Class` per live class of a
+    module whose weights record classes. Unknown modules take the median module weight; a
+    class the record has not seen takes its module's median class weight."""
+    weights = WEIGHTS if weights is None else weights
+    classes = {} if classes is None else classes
+    fallback = _fallback(weights)
+    out = []
+    for mod in modules:
+        live = live_classes(mod) if mod in classes else None
+        if live:
+            recorded = classes[mod]
+            default = statistics.median(recorded.values())
+            out += [(f"{mod}.{cls}", mod, recorded.get(cls, default)) for cls in live]
+        else:
+            out.append((mod, mod, weights.get(mod, fallback)))
+    return out
+
+
+def partition(modules, n, weights=None, classes=None, fixtures=None):
+    """LPT assignment of units to n shards; deterministic, total coverage.
+
+    Greedy longest-processing-time: heaviest unit first onto the currently
+    lightest shard, ties broken by shard index then unit name, so the same
+    inputs always produce the same shards; each shard comes back sorted, its
+    run order. With no weights given, the recorded
+    weights and class splits apply (what CI runs); explicit weights alone split
+    nothing. A piece of a split module charges its shard the module's fixture
+    once. Unknown weights degrade balance gracefully; coverage never degrades.
     """
     if n < 1:
         raise ValueError(f"shard count must be >= 1, got {n}")
-    weights = WEIGHTS if weights is None else weights
-    ordered = sorted(weights.values())
-    fallback = ordered[len(ordered) // 2]
+    if weights is None:
+        weights = WEIGHTS
+        classes = CLASS_WEIGHTS if classes is None else classes
+        fixtures = FIXTURE_SECONDS if fixtures is None else fixtures
+    fixtures = {} if fixtures is None else fixtures
     loads = [0.0] * n
     shards = [[] for _ in range(n)]
-    for mod in sorted(modules, key=lambda m: (-weights.get(m, fallback), m)):
+    present = [set() for _ in range(n)]
+    for unit, mod, seconds in sorted(units(modules, weights, classes),
+                                     key=lambda u: (-u[2], u[0])):
         i = min(range(n), key=lambda j: (loads[j], j))
-        shards[i].append(mod)
-        loads[i] += weights.get(mod, fallback)
-    return shards
+        shards[i].append(unit)
+        loads[i] += seconds
+        if unit != mod and mod not in present[i]:
+            loads[i] += fixtures.get(mod, 0.0)
+        present[i].add(mod)
+    # Run order, not assignment order: a split module's classes sit together, so unittest
+    # runs its setUpModule/tearDownModule once per shard instead of once per interleaving.
+    return [sorted(shard) for shard in shards]
 
 
-def predicted_wall(shard, weights=None):
-    weights = WEIGHTS if weights is None else weights
-    ordered = sorted(weights.values())
-    fallback = ordered[len(ordered) // 2]
-    return round(sum(weights.get(m, fallback) for m in shard), 1)
+def predicted_wall(shard, weights=None, classes=None, fixtures=None):
+    """Predicted seconds for one shard: its units, plus each split module's fixture once."""
+    if weights is None:
+        weights = WEIGHTS
+        classes = CLASS_WEIGHTS if classes is None else classes
+        fixtures = FIXTURE_SECONDS if fixtures is None else fixtures
+    classes = {} if classes is None else classes
+    fixtures = {} if fixtures is None else fixtures
+    fallback = _fallback(weights)
+    total, split_seen = 0.0, set()
+    for unit in shard:
+        mod, _, cls = unit.partition(".")
+        if cls:
+            recorded = classes.get(mod) or {}
+            default = statistics.median(recorded.values()) if recorded else fallback
+            total += recorded.get(cls, default)
+            if mod not in split_seen:
+                total += fixtures.get(mod, 0.0)
+                split_seen.add(mod)
+        else:
+            total += weights.get(mod, fallback)
+    return round(total, 1)
 
 
 def check(shards, modules):
-    """Coverage errors: anything missing, doubled, or an empty shard."""
+    """Coverage errors: anything missing, doubled, or an empty shard.
+
+    A module is covered once whole, or once per live class when it is split — never both,
+    or its classes would run twice.
+    """
     errors = []
     seen = {}
     for i, shard in enumerate(shards, start=1):
         if not shard:
             errors.append(f"shard {i} is empty — a CI job that runs zero tests and passes")
-        for mod in shard:
-            if mod in seen:
-                errors.append(f"{mod} is in shards {seen[mod]} and {i}")
-            seen[mod] = i
-    for mod in sorted(set(modules) - set(seen)):
+        for unit in shard:
+            if unit in seen:
+                errors.append(f"{unit} is in shards {seen[unit]} and {i}")
+            seen[unit] = i
+    whole = {u for u in seen if "." not in u}
+    split = {}
+    for unit in seen:
+        mod, _, cls = unit.partition(".")
+        if cls:
+            split.setdefault(mod, set()).add(cls)
+    for mod in sorted(whole & set(split)):
+        errors.append(f"{mod} runs whole and split by class — its classes would run twice")
+    for mod in sorted(set(modules) - whole - set(split)):
         errors.append(f"{mod} is in no shard — it would silently stop running")
-    for mod in sorted(set(seen) - set(modules)):
+    for mod in sorted((whole | set(split)) - set(modules)):
         errors.append(f"{mod} is sharded but no longer exists under tests/")
+    for mod in sorted(set(split) & set(modules)):
+        live = live_classes(mod)
+        if live is None:
+            errors.append(f"{mod} is split by class but does not load as one — run it whole")
+            continue
+        for cls in sorted(set(live) - split[mod]):
+            errors.append(f"{mod}.{cls} is in no shard — it would silently stop running")
+        for cls in sorted(split[mod] - set(live)):
+            errors.append(f"{mod}.{cls} is sharded but {mod} has no such test class")
     return errors
 
 
 def shard_command(shard, with_coverage=False):
-    """The argv run_shard executes: unittest over the shard's modules, optionally
+    """The argv run_shard executes: unittest over the shard's units, optionally
     wrapped in `coverage run --parallel-mode` (one data file per shard; CI
     combines them before the report). A pure function so the contract test can
     pin the wrap shape without coverage installed — the suite is stdlib-only."""
     # Repo-root cwd with tests.-prefixed ids: tests assume root cwd (running
     # from tests/ reds test_inventory), and this matches the suite contract.
+    # A class unit is the dotted name unittest's loader takes as it is.
     cmd = [sys.executable, "-m", "unittest"] + [f"tests.{m}" for m in shard]
     if with_coverage:
         cmd = ([sys.executable, "-m", "coverage", "run", "--parallel-mode"]
@@ -259,10 +301,53 @@ def run_shard(index, n, with_coverage=False):
         return 1
     shard = shards[index - 1]
     wall = predicted_wall(shard)
-    print(f"shard {index}/{n}: {len(shard)} modules, predicted ~{wall}s: "
+    print(f"shard {index}/{n}: {len(shard)} units, predicted ~{wall}s: "
           + " ".join(shard), flush=True)
     r = subprocess.run(shard_command(shard, with_coverage), cwd=ROOT)
     return r.returncode
+
+
+class _Timed(unittest.TextTestResult):
+    """Wall seconds per test, gaps included, so setUpClass lands on its class's first test."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last = time.perf_counter()
+        self.spent = []
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        now = time.perf_counter()
+        self.spent.append((type(test).__name__, now - self.last))
+        self.last = now
+
+
+def measure(module, scale=1.0, stream=None):
+    """Run one module in this process and return its weight record, per class.
+
+    `fixture_seconds` is the time before its first test ran (setUpModule and the first
+    class's setUpClass): an upper bound on what a split shard pays again.
+    """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    start = time.perf_counter()
+    suite = unittest.defaultTestLoader.loadTestsFromName(f"tests.{module}")
+    runner = unittest.TextTestRunner(stream=stream or sys.stderr, resultclass=_Timed,
+                                     verbosity=0)
+    result = runner.run(suite)
+    wall = time.perf_counter() - start
+    per_class = {}
+    for name, seconds in result.spent:
+        per_class[name] = per_class.get(name, 0.0) + seconds
+    record = {"seconds": round(max(wall * scale, 0.1), 1),
+              "measured": f"{time.strftime('%Y-%m-%d')}: one local run of tests.{module} "
+                          f"({result.testsRun} tests, Python {sys.version.split()[0]}), "
+                          f"x{scale:g} to the CI lane"}
+    if per_class:
+        record["classes"] = {k: round(max(v * scale, 0.1), 1) for k, v in sorted(per_class.items())}
+        first = result.spent[0][1] if result.spent else 0.0
+        record["fixture_seconds"] = round(first * scale, 1)
+    return record, result.wasSuccessful()
 
 
 def main(argv=None):
@@ -274,10 +359,25 @@ def main(argv=None):
     parser.add_argument("--shard", type=int, help="1-based shard to run")
     parser.add_argument("--with-coverage", action="store_true",
                         help="wrap the shard run in `coverage run --parallel-mode`")
+    parser.add_argument("--measure", metavar="MODULE",
+                        help="time one test module per class and print its weight file")
+    parser.add_argument("--scale", type=float, default=1.0,
+                        help="--measure: multiply local seconds by this CI-lane factor")
     args = parser.parse_args(argv)
     if args.of < 1:
         print(f"shard-tests: --of must be >= 1, got {args.of}", file=sys.stderr)
         return 2
+    if args.measure:
+        if args.measure not in discover_modules() or args.scale <= 0:
+            print(f"shard-tests: --measure takes a tests/test_*.py module stem and a positive "
+                  f"--scale, got {args.measure!r} x{args.scale:g}", file=sys.stderr)
+            return 2
+        record, ok = measure(args.measure, args.scale)
+        print(json.dumps(record, indent=2))
+        if not ok:
+            print(f"shard-tests: tests.{args.measure} failed; a red run's time is not a weight",
+                  file=sys.stderr)
+        return 0 if ok else 1
     modules = discover_modules()
     if args.list or args.check:
         shards = partition(modules, args.of)

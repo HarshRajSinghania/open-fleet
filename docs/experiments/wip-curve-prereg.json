@@ -125,7 +125,7 @@
     "the model pin and harness version recorded, both equal to the first live run's; every observed model equals the pin",
     "events.py derives every WIP-curve cell (report complete)",
     "every terminal outcome binds: each CLOSED head is on the integration branch in the retained bundle, carries an approving review by another dispatch and a passing oracle transcript, and re-passes the oracle",
-    "the run finished complete, not stopped or failed",
+    "the run finished complete, not stopped or failed, under the registered dispatch deadlines (no --timeout-scale), as attempt 1 or as the one re-run allowed after an infrastructure failure",
     "the cooldown before it was kept"
   ],
   "analysis": {

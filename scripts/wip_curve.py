@@ -2030,6 +2030,11 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     for run in runs:
         m = re.fullmatch(r"(.+?)(?:-a(\d+))?", run["run_id"])
         attempts.setdefault(m.group(1), {})[int(m.group(2) or 1)] = run
+    for run in runs:  # the registered dispatch deadlines, or the run is not this experiment's
+        if run.get("timeout_scale") != 1.0:
+            run["compliant"] = False
+            run.setdefault("noncompliance", []).append(
+                f"dispatch deadlines scaled by {run.get('timeout_scale')} from the registered ones")
     for _base, by_n in attempts.items():
         for n, run in by_n.items():
             why = None
@@ -2262,6 +2267,9 @@ def cmd_run(args) -> int:
         if args.reservation_usd is None:
             raise Refused("a live run needs --reservation-usd: the per-dispatch reservation is "
                           f"{prereg['cost']['reservation_status']!r} and the runner never picks it")
+        if args.timeout_scale != 1.0:
+            raise Refused(f"--timeout-scale {args.timeout_scale}: a live run keeps the registered dispatch "
+                          "deadlines (a dry run may shorten them)")
         if args.agent not in MODEL_ENV:
             raise Refused(f"cannot enforce the model pin on {args.agent}: the posix launch table passes no model "
                           f"and only {sorted(MODEL_ENV)} read one from their environment")
@@ -2366,7 +2374,7 @@ def cmd_run(args) -> int:
             raise Refused(f"live mode needs the real `{binary}` on PATH")
         run.record.update(
             tier="fixture-tested" if args.worker == "inert" else "live-unreviewed", worker=args.worker,
-            agent=args.agent, model_pin=args.model,
+            agent=args.agent, model_pin=args.model, timeout_scale=args.timeout_scale,
             harness={"path": found, "version": "inert stand-in (no model)" if args.worker == "inert"
                      else first_run.harness_version(found, sb.env)},
             host=host_facts(), clock=run.clock, epoch=1, attempt=attempt,

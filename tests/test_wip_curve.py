@@ -406,6 +406,23 @@ class TestOnlyOneRetryAfterAFailure(ReportOver):
         self.assertFalse(out["wip1-b1r1-rep1-a3"]["compliant"])
 
 
+class TestChangedDeadlinesNeverCount(ReportOver):
+    """PR #653 review: a run whose dispatch deadlines were scaled away from the registered 30 and
+    15 minutes is reported, never pooled; and every run records the scale it ran under."""
+
+    def test_a_scaled_run_is_excluded(self):
+        scaled = synthetic_run("wip1-b1r1-rep1", "b1r1", "1.0")
+        scaled["timeout_scale"] = 0.5
+        run = self.report([scaled])["runs"][0]
+        self.assertFalse(run["compliant"])
+        self.assertTrue(any("deadlines" in w for w in run["noncompliance"]), run["noncompliance"])
+
+    def test_every_run_records_its_timeout_scale(self):
+        record = json.loads((Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
+                             / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["timeout_scale"], 1.0)
+
+
 class TestDecisionRule(unittest.TestCase):
     def setUp(self):
         self.prereg = json.loads(PREREG.read_text(encoding="utf-8"))
@@ -476,6 +493,10 @@ class TestRunRefusals(Tmp):
         # applies to it, that no model pin can reach it (PR #653 review).
         self.refused("--worker", "live", "--agent", "codex", "--cost-cap-usd", "5", "--model", "m",
                      "--reservation-usd", "1", "--runs", "wip1-b9r9-rep1", text="cannot enforce the model pin")
+
+    def test_a_live_run_refuses_changed_dispatch_deadlines(self):
+        self.refused("--worker", "live", "--model", "m", "--cost-cap-usd", "5", "--reservation-usd", "1",
+                     "--timeout-scale", "0.5", text="--timeout-scale")
 
     def test_a_retry_with_no_failed_first_attempt_is_refused(self):
         self.refused("--cost-cap-usd", "0", "--runs", "wip1-b1r1-rep1-a2", text="infrastructure failure")

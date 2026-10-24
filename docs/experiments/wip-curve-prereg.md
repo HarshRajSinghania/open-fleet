@@ -144,7 +144,9 @@ worktree, branch, store or transcript is shared between runs.
 - A task is bounced when the oracle fails, the review asks for changes or gives no verdict, the
   merge conflicts, the merge gate fails, or the builder fails. A task bounced three times is parked
   `attempts-exhausted`.
-- Dispatch timeouts are 30 minutes for a builder and 15 minutes for a reviewer. A run's
+- Dispatch timeouts are 30 minutes for a builder and 15 minutes for a reviewer. A live run refuses
+  `--timeout-scale`, which only a dry run may use to shorten them. Every run records its scale,
+  and a run with any other scale is not compliant. A run's
   wall-clock limit is 180 minutes.
 - **Cost:** before each wave, the observed spend plus that wave's worst case must stay within the
   cap. The worst case is two dispatches per unit at the reservation. If the next wave does not

@@ -93,6 +93,17 @@ def _opens_html(line):
     return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
 
 
+# A block quote's marks at a line's start: a renderer strips them before reading what the quote
+# holds, so a tag split across quoted lines is whole once they go (Codex at b12df9e457).
+_QUOTE_MARKS_RE = re.compile(r"(?:[ \t]*>[ \t]?)+")
+
+
+def _without_quote_marks(text):
+    """`text` with each line's leading block-quote marks removed."""
+    return "".join(_QUOTE_MARKS_RE.sub("", m.group(), count=1) if _QUOTE_MARKS_RE.match(m.group()) else m.group()
+                   for m in _LINE_RE.finditer(text))
+
+
 def _loose_link(text, i):
     """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
     with a value in it, else None. Past a point where renderers may disagree, text may reach the
@@ -130,9 +141,14 @@ HEADER = ("| Date       | Mission     | Target                        | Ran as  
 
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None: read
-    in one pass, skipping a tag only inside an escape or a one-line code span before any raw HTML
+    in one pass (and again with block-quote marks removed), skipping a tag only inside an escape or a one-line code span before any raw HTML
     line, unclear "<", "[", bare URL, "|", "$`" or open backtick run, and loosely after one. An identical copy of scripts/changelog.py's html_link
     (this script is loaded alone; tests/test_changelog.py holds the two equal)."""
+    return _first_link(text) or _first_link(_without_quote_marks(text))
+
+
+def _first_link(text):
+    """html_link's one pass over one view of `text`."""
     lines = [m.span() for m in _LINE_RE.finditer(text)]
     starts = [start for start, _end in lines]
     # Backticks and escapes are text from the first line that may open raw HTML, from the first

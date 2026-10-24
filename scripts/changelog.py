@@ -100,6 +100,17 @@ def _opens_html(line):
     return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
 
 
+# A block quote's marks at a line's start: a renderer strips them before reading what the quote
+# holds, so a tag split across quoted lines is whole once they go (Codex at b12df9e457).
+_QUOTE_MARKS_RE = re.compile(r"(?:[ \t]*>[ \t]?)+")
+
+
+def _without_quote_marks(text):
+    """`text` with each line's leading block-quote marks removed."""
+    return "".join(_QUOTE_MARKS_RE.sub("", m.group(), count=1) if _QUOTE_MARKS_RE.match(m.group()) else m.group()
+                   for m in _LINE_RE.finditer(text))
+
+
 def _loose_link(text, i):
     """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
     with a value in it, else None. Past a point where renderers may disagree, text may reach the
@@ -136,7 +147,8 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None.
 
-    Read so that nothing a renderer shows as a link is missed (#673), in one pass. A tag is
+    Read so that nothing a renderer shows as a link is missed (#673), in one pass over the text
+    and one over it with each line's block-quote marks removed, as a renderer reads a quote. A tag is
     skipped only inside a backslash escape or a code span that closes on the line it opens, and
     only before any point where renderers may disagree about what follows: a line that may open
     raw HTML (past list or quote marks), a "<" that may begin raw HTML or an autolink and is not
@@ -147,6 +159,11 @@ def html_link(text):
     an identical copy: it is loaded alone, so it cannot import this one (tests/test_changelog.py
     holds them equal).
     """
+    return _first_link(text) or _first_link(_without_quote_marks(text))
+
+
+def _first_link(text):
+    """html_link's one pass over one view of `text`."""
     lines = [m.span() for m in _LINE_RE.finditer(text)]
     starts = [start for start, _end in lines]
     # Backticks and escapes are text from the first line that may open raw HTML, from the first

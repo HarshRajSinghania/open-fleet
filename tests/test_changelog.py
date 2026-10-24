@@ -464,6 +464,9 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** `a | <a href="../docs/ops.md">ops</a>`\n  --- | ---\n',
         # a no-break space is no HTML whitespace: it stays in the value, and href stands apart (Codex at a276405fe8)
         '- **Change**\n  <div>\n  <a junk=\u00a0"x href=../docs/ops.md y">ops</a>\n  </div>\n',
+        # a renderer strips a block quote's marks before it reads the tag they split (Codex at b12df9e457)
+        '- **Change**\n  > <a\n  > href="../docs/ops.md">ops</a>\n',
+        '> > <img\n> > src="../x.png">\n',
     )
 
     def errors(self, text):

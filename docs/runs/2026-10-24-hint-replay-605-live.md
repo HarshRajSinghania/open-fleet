@@ -1,12 +1,12 @@
 # Run report — #605 live hint replay (hints off / unchecked / checked), 2026-10-24
 
-RUN: mission=hint-replay tier=doctrine-only inventory_at=0faf0e5cfd2c588c9a0c1ca4f4f128cd0776d8f5 manifest=docs/runs/2026-10-24-hint-replay-605-live/manifest.json verifier=RED
+RUN: mission=hint-replay tier=doctrine-only inventory_at=a7c51ff6ea3ffdf06b77cd72947b065df50be775 manifest=docs/runs/2026-10-24-hint-replay-605-live/manifest.json verifier=GREEN
 
 This is an experiment run, not a catalog mission run. `mission=hint-replay` names the runner
 (`scripts/hint_replay.py`), and `tier=doctrine-only` because the run advances no mission's proof
 tier. The header exists so that `runtime/scripts/run_report.py` binds the evidence below to a
-commit. The verifier outcome is recorded as it came out: RED, for the reason given under
-[Evidence binding](#evidence-binding).
+commit. The verifier is GREEN under a dispatch record the coordinator signed for this unit. The
+two RED runs before it are recorded too; see [Evidence binding](#evidence-binding).
 
 | Field | Value |
 |---|---|
@@ -128,37 +128,90 @@ Commits on `claude/r12-live-605-report`, forked from origin/main `85daf6d0cf`:
 |---|---|
 | `9b814e7eee` | The retained evidence (77 files), `contract.json`, `rederive.py`, and `manifest.json` pinning 79 files by sha256. This is the unit's `head_sha`. |
 | `6240133480` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`. |
-| `0faf0e5cfd` | The verifier record and `verifier.txt`. This is `inventory_at`. |
+| `0faf0e5cfd` | The first, unsigned verifier record and `verifier.txt` (RED). |
+| `5a9c57a7d7` | The first version of this report, with `verifier=RED`, and the index, docs and CHANGELOG. |
+| `72e702c20c` | The coordinator-signed dispatch record and its public key. |
+| `ee0635aa7d` | The first signed attempt's record and `verifier-signed.txt` (RED), plus sha256 pins for both earlier verifier outputs. |
+| `a7c51ff6ea` | The GREEN record and `verifier-signed-2.txt`. This is `inventory_at`. |
 
 Re-derivation, recorded through `evidence-run.py` on `9b814e7eee`'s tree (`b57f03eb12ce…`), exit 0:
 
 `python3 runtime/scripts/evidence-run.py --label rederive --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --artifact docs/runs/2026-10-24-hint-replay-605-live/rederive.txt -- python3 docs/runs/2026-10-24-hint-replay-605-live/rederive.py`
 
-Verifier, recorded through `evidence-run.py` on `6240133480`'s tree (`ef145e282079…`), exit 2
-(RED), output in [`verifier.txt`](2026-10-24-hint-replay-605-live/verifier.txt):
+### Signing: who signed, and with what
 
-`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --artifact docs/runs/2026-10-24-hint-replay-605-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --contract-source docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e --contract-digest sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb --unit-class report-only`
+- **Signer.** The coordinator, through this agent session acting as its signing hand for this
+  one unit, on the coordinator's explicit instruction of 2026-10-24. The session that signed is
+  the session that wrote this report.
+- **Key.** The coordinator's local dispatch key, generated 2026-10-24 with `dispatch-sign.py
+  gen-key --out ~/.open-fleet/coordinator-dispatch.seed` under `umask 077`. Its public half is
+  committed beside the record as
+  [`dispatch-pubkey.hex`](2026-10-24-hint-replay-605-live/dispatch-pubkey.hex) (32 bytes, hex).
+- **Custody.** The private seed is `~/.open-fleet/coordinator-dispatch.seed`: mode 0600, in a
+  0700 directory, outside every repository (the home directory is not in any git work tree). At
+  signing, `dispatch-sign.py` re-asserted `mode 0600, outside any unignored work tree`. The seed
+  was never printed, copied or committed, and its contents appear nowhere in the run directory.
+- **What was signed.** [`dispatch-record.json`](2026-10-24-hint-replay-605-live/dispatch-record.json),
+  `dispatch-sign.py sign`'s envelope over `manifest_id=hint-replay-605-live`,
+  `contract_digest=sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb`
+  (`contract.json` at `9b814e7eee`) and `unit_class=report-only`. No lighting, lane or
+  negative-control fields were signed, because the run uses none.
+- **Not the repo-wide pin.** The key is not `.orca/dispatch-pubkey`, which is the repository's
+  enforcement switch (gate G1). That switch stays the maintainer's, with a seed generated outside
+  any agent session. The key is not the human's grant key either.
+- **What it is worth.** `verify.py` itself says a verified signature is "a soundness boundary
+  only if that key is trusted (off-worker)". This key was generated and used in the same agent
+  session that produced the report. So the signature records the coordinator's authorisation of
+  the report-only class. It is not an off-worker trust anchor, though an auditor who trusts the
+  coordinator's key can re-verify the record anywhere.
 
-Exactly one invariant failed: `report-only unit changed code [...] and carries no signed dispatch
-record`. A report-only unit is unsupervised unless a coordinator signs its class. This range adds
-non-prose files: the JSON evidence, the wrapper, the run script and the re-derivation script. With
-no signed dispatch record, the verifier will not accept the downgrade from `mutation`. Every other
-leg passed:
+### Verifier runs, in order
+
+All are recorded in the manifest's `commands[]`, and each output is retained and pinned by sha256.
+
+| Label | Tree | Exit | Outcome |
+|---|---|---|---|
+| `verifier` (unsigned) | `6240133480` | 2 | RED: an unsupervised report-only class whose range adds non-prose files (JSON evidence, the wrapper and scripts), with no signed record. Every other leg passed. [`verifier.txt`](2026-10-24-hint-replay-605-live/verifier.txt) |
+| `verifier-signed` | `72e702c20c` | 2 | RED: the signature verified, but on a lane claiming soundness the git used (`/opt/homebrew/bin/git`) is writable by this user, and the manifest named `verifier.txt` without pinning it. [`verifier-signed.txt`](2026-10-24-hint-replay-605-live/verifier-signed.txt) |
+| `verifier-signed-2` | `ee0635aa7d` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier-signed-2.txt`](2026-10-24-hint-replay-605-live/verifier-signed-2.txt) |
+
+What changed between the second and third runs:
+
+- **The unpinned output.** `verifier.txt`, a real gap (an evidence path the manifest named but
+  had not pinned), is now pinned by sha256.
+- **The git custody.** The verifier ran with `/usr/bin` ahead of `/opt/homebrew/bin` on PATH, so
+  git resolved to the root-owned system `/usr/bin/git`, which `verify.py` classifies as `system`
+  custody. Gitleaks, in `/opt/homebrew/bin`, was still consulted.
+
+The GREEN invocation ran with `PATH=<stub claude dir>:<mise python 3.13 bin>:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`
+and `SHELL=/bin/sh`:
+
+`python3 runtime/scripts/evidence-run.py --label verifier-signed-2 --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --artifact docs/runs/2026-10-24-hint-replay-605-live/verifier-signed-2.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --contract-source docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e --contract-digest sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb --unit-class report-only --dispatch-record docs/runs/2026-10-24-hint-replay-605-live/dispatch-record.json@72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af --dispatch-pubkey docs/runs/2026-10-24-hint-replay-605-live/dispatch-pubkey.hex@72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af`
+
+Its output, verbatim:
+
+```
+NOTE: redaction: gitleaks at /opt/homebrew/bin/gitleaks is worker-writable — it can only add hits above the built-in floor, so it is consulted and recorded (h409 R2)
+NOTE: --base not given — ancestry check skipped (pre-merge/offline)
+NOTE: dispatch record signature verified against the supplied key (#135) — a soundness boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)
+verify: OK — all required checks passed
+```
+
+It confirms, under the signed report-only class:
 
 - the contract's criteria (LV-1 to LV-6) are complete;
 - the content-bound command ledger holds the exit-0 re-derivation on `head_sha`'s tree;
 - every artifact matches its sha256 pin;
 - the source-binding negative control holds;
-- the credential scan found nothing.
+- the credential scan (built-in patterns plus gitleaks) found nothing;
+- the dispatch record names this unit and signs the contract digest and class the run used.
 
-A GREEN needs the coordinator to sign a dispatch record for this unit (`unit_class=report-only`)
-and `verify.py` to be re-run with `--dispatch-record`/`--dispatch-pubkey`. That was not done here.
-`run_report.py` binds a recorded RED, and the RED stays as recorded. `--base` was not given, so
-the ancestry leg was skipped before merge, as its note says.
+`--base` was not given, so the ancestry leg was skipped before merge, as its note says.
 
 Re-check:
 
 - `python3 docs/runs/2026-10-24-hint-replay-605-live/rederive.py` re-derives every figure (0 failures).
+- `python3 runtime/scripts/dispatch-sign.py verify --record docs/runs/2026-10-24-hint-replay-605-live/dispatch-record.json --pubkey docs/runs/2026-10-24-hint-replay-605-live/dispatch-pubkey.hex` checks the signature (exit 0).
 - `python3 runtime/scripts/run_report.py docs/runs/2026-10-24-hint-replay-605-live.md --mission hint-replay --tier doctrine-only` binds the report.
 - `python3 runtime/scripts/inventory.py check docs/runs/2026-10-24-hint-replay-605-live.md` re-hashes the inventory below.
 
@@ -175,7 +228,9 @@ are recorded in the landing PR.
 e2c35ae7b1fef3a58ff3595233c048d6cef65305496ef68de4783a368ea07302  docs/runs/2026-10-24-hint-replay-605-live/bin/claude
 8e59ecac088918b37ffb682e57ccc48a3d270ee018606f17e9600e795589c146  docs/runs/2026-10-24-hint-replay-605-live/bin/run-605.sh
 18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb  docs/runs/2026-10-24-hint-replay-605-live/contract.json
-222aa2c3aa2c8912ec1624c153b8a978704a5b958178e0323dc5378fb204d85d  docs/runs/2026-10-24-hint-replay-605-live/manifest.json
+1f4d5db594495b1c4b0a15ec8ccc7008b6be1079b498ad2109da1530b70cdcaa  docs/runs/2026-10-24-hint-replay-605-live/dispatch-pubkey.hex
+4377969ffe93b243f99ace06a47a6d015f1e7496593eaf76d2d5d0c820d11340  docs/runs/2026-10-24-hint-replay-605-live/dispatch-record.json
+90b3c2afc07d24e7b82769c5f0be726bc22049d8274d08ea4e0b81a7d1fd3808  docs/runs/2026-10-24-hint-replay-605-live/manifest.json
 845c01a4c21e4d2c7c9ac399c471f652ed2fcf0a4acd1c9a544bf4b2c586a98f  docs/runs/2026-10-24-hint-replay-605-live/rederive.py
 7b243f682b962d262157975df0ad5036f2a3808de29c50bbc343b89e316c55ef  docs/runs/2026-10-24-hint-replay-605-live/rederive.txt
 de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d  docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a1/agent.stderr
@@ -253,5 +308,7 @@ c250e1f86a8f277d56c2cccd1154aff3b3614e49ec79ac5a98f01d41c0800df8  docs/runs/2026
 8681cc2a98e7ed7b74396fefb388ad21df4becc466bae9fa9df49b7d72efe834  docs/runs/2026-10-24-hint-replay-605-live/results.json
 796f4b06723a0a04acdd61fff7037f04869fb3063032edeac568a834ce081ce1  docs/runs/2026-10-24-hint-replay-605-live/results.spend.jsonl
 449d390f02a7743f8c9a6012567bc73f0af023f7e053c8ca5f039cf1a17fdbab  docs/runs/2026-10-24-hint-replay-605-live/run.log
+152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c  docs/runs/2026-10-24-hint-replay-605-live/verifier-signed-2.txt
+962fcea0a3a3fa7ae8c0842383cdd87d97640836426fe6f193b654cef49c74c6  docs/runs/2026-10-24-hint-replay-605-live/verifier-signed.txt
 ef2d781c74b73def57183f216e0082d4e8990974a052f4b8b315f302bf986a94  docs/runs/2026-10-24-hint-replay-605-live/verifier.txt
 ```

@@ -244,10 +244,14 @@ STAND_IN = textwrap.dedent(r'''
                                 + b"\xff\xfe not utf-8\r\n" + b"no trailing newline")
         sys.stdout.flush()
         sys.exit(int(opt("--exit", "0")))
-    emit({"type": "system", "subtype": "init", "cwd": ws, "session_id": SESSION,
-          "tools": ["Bash", "Edit", "Read", "Write"], "mcp_servers": [], "model": "inert-stand-in",
-          "permissionMode": "default", "apiKeySource": "none",
-          "claude_code_version": "0.0.0-stand-in"})
+    # The model the stand-in reports is the one it was asked for, as Claude Code's init does;
+    # --report-model makes it report another, --no-init none at all.
+    model = opt("--report-model", opt("--model", "inert-stand-in"))
+    if "--no-init" not in args:
+        emit({"type": "system", "subtype": "init", "cwd": ws, "session_id": SESSION,
+              "tools": ["Bash", "Edit", "Read", "Write"], "mcp_servers": [], "model": model,
+              "permissionMode": "default", "apiKeySource": "none",
+              "claude_code_version": "0.0.0-stand-in"})
     if mode == "kill-parent":
         os.kill(os.getppid(), signal.SIGKILL)
         sys.exit(0)
@@ -1103,6 +1107,50 @@ class LiveRunner(SafetyNet):
                 self.assertEqual(cell["replay_verdict"], "PASS", "the diagnostic grade is kept")
                 self.assertTrue(cell["errors"])
                 self.assertEqual(code, 1, err)
+
+    def test_the_requested_model_is_passed_and_the_observed_one_recorded(self):
+        out = self.tmpdir() / "out"
+        argv, log = self.live("clean", out)
+        code, _stdout, err = self.run_main(argv)
+        self.assertEqual(code, 0, err)
+        seen = json.loads((log / "observed.json").read_text())["argv"]
+        self.assertEqual(seen[seen.index("--model") + 1], "inert-stand-in",
+                         "the agent was never told which model to run (#659 review, T5)")
+        result = self.results(out)
+        self.assertEqual(result["cells"][0]["model"], "inert-stand-in")
+        self.assertEqual((result["model"], result["model_requested"]),
+                         ("inert-stand-in", "inert-stand-in"))
+        self.assertEqual(result["cells"][0]["harness_version_observed"], "0.0.0-stand-in")
+
+    def test_a_model_the_agent_did_not_report_or_did_not_run_is_an_error(self):
+        for label, extra, needle in ((("other model", ("--report-model", "other-model"),
+                                       "'other-model', not the requested")),
+                                     ("no init", ("--no-init",), "reported no model")):
+            with self.subTest(case=label):
+                out = self.tmpdir() / "out"
+                argv, _log = self.live("clean", out, agent_extra=extra)
+                code, _stdout, err = self.run_main(argv)
+                result = self.results(out)
+                cell = result["cells"][0]
+                self.assertEqual(cell["verdict"], "ERROR", cell)
+                self.assertIn(needle, " ".join(cell["errors"]))
+                self.assertEqual(code, 1, err)
+                self.assertNotEqual(result["model"], "inert-stand-in",
+                                    "the results named a model nobody observed")
+
+    def test_an_agent_command_carrying_its_own_model(self):
+        out = self.tmpdir() / "out"
+        argv, log = self.live("clean", out, agent_extra=("--model", "inert-stand-in"))
+        code, _stdout, err = self.run_main(argv)
+        self.assertEqual(code, 0, err)
+        seen = json.loads((log / "observed.json").read_text())["argv"]
+        self.assertEqual(seen.count("--model"), 1, "a second --model would override the first")
+        out2 = self.tmpdir() / "out"
+        argv, log2 = self.live("clean", out2, agent_extra=("--model=other-model",), log="l2")
+        code, _stdout, err = self.run_main(argv)
+        self.assertEqual(code, 2, err)
+        self.assertIn("disagrees", err)
+        self.assertFalse(log2.exists())
 
     def test_a_call_above_its_reservation_stops_the_run(self):
         out = self.tmpdir() / "out"

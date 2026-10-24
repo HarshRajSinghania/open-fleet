@@ -149,6 +149,28 @@ def measured_cost(stream):
     return total if seen else None
 
 
+def model_flag(argv):
+    """The --model value an agent command already carries, or None."""
+    for i, token in enumerate(argv):
+        if token == "--model" and i + 1 < len(argv):
+            return argv[i + 1]
+        if token.startswith("--model="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def init_line(stream):
+    """The stream's first `system/init` line, or None: where Claude Code names the model it runs."""
+    for line in stream.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "system" and obj.get("subtype") == "init":
+            return obj
+    return None
+
+
 def result_line(stream):
     """The stream's last `result` line, or None: a run that printed none did not complete."""
     found = None
@@ -195,6 +217,10 @@ def preflight(args, eval_mod, data):
                                         ("--harness-version", args.harness_version)) if not value]
     if missing:
         raise refused(f"a live run records {', '.join(missing)}")
+    carried = model_flag(shlex.split(args.agent_cmd))
+    if carried is not None and carried != args.model:
+        raise refused(f"--model {args.model} disagrees with the agent command's --model "
+                      f"{carried}: the results would name a model the agent was not asked for")
     if not args.agent_limit_flag:
         raise refused("a live run needs a per-call spend limit (--agent-limit-flag): without one "
                       "a call's worst case is unbounded, so no cap can be enforced before the spend")
@@ -272,8 +298,10 @@ def _run(args, eval_mod, engine, data, cases, out):
     reserve = args.reserve_usd
     limit = round(reserve * args.limit_fraction, 2)
     agent = g.absolute_argv(shlex.split(args.agent_cmd))
+    # The agent is told the model the results will name, unless its command already says so.
+    model_args = [] if model_flag(agent) else ["--model", args.model]
     ctx = {"run": run_dir, "data": data, "engine": engine, "eval": eval_mod, "contract": contract,
-           "agent": agent, "limit": limit, "args": args, "ledger": ledger, "reserve": reserve,
+           "agent": agent, "model_args": model_args, "limit": limit, "args": args, "ledger": ledger, "reserve": reserve,
            "timeout": args.timeout or TIMEOUT_S, "active": None}
     cap = args.cost_cap_usd
     done, stopped, interrupted = [], None, None
@@ -324,9 +352,13 @@ def _run(args, eval_mod, engine, data, cases, out):
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+    observed = sorted({r["model"] for r in done if r.get("model")})
     results = {
         "schema": RESULTS_SCHEMA, "suite": "trajectories", "issue": "#602", "tier": "live",
-        "evidence": EVIDENCE, "model": args.model, "harness_version": args.harness_version,
+        # The model the agent's own stream named, never just the one asked for (#659 review).
+        "evidence": EVIDENCE, "model": observed[0] if len(observed) == 1 else None,
+        "models_observed": observed, "model_requested": args.model,
+        "harness_version": args.harness_version,
         "agent_cmd": agent, "harness": str(HARNESS.relative_to(ROOT)),
         "allowlist_flag": args.allowlist_flag, "agent_limit_flag": args.agent_limit_flag,
         "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
@@ -366,7 +398,7 @@ def run_cell(ctx, cell):
     args = ctx["args"]
     tools = allowlist(case)
     argv = [sys.executable, "-I", str(HARNESS), "--trajectory-out", str(recording), "--",
-            *ctx["agent"], args.allowlist_flag, tools, args.agent_limit_flag, f"{ctx['limit']:.2f}"]
+            *ctx["agent"], *ctx["model_args"], args.allowlist_flag, tools, args.agent_limit_flag, f"{ctx['limit']:.2f}"]
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("ABLATION_") and k not in ("EVAL_AGENT_CMD", "EVAL_GRADER_CMD")}
     # No rc file of a login shell may run (~/.zshenv can reorder PATH): the stub-claude rule.
@@ -395,6 +427,14 @@ def run_cell(ctx, cell):
         row["errors"].append(f"agent exited with status {code}")
     if not emptied:
         row["errors"].append("a process of the call's group survived SIGKILL")
+    init = init_line(stream) or {}
+    model = init.get("model") if isinstance(init.get("model"), str) else None
+    version = init.get("claude_code_version")
+    row.update(model=model, harness_version_observed=version if isinstance(version, str) else None)
+    if not killed and model is None:
+        row["errors"].append("the agent reported no model (no system/init line naming one)")
+    elif model is not None and model != args.model:
+        row["errors"].append(f"the agent ran model {model!r}, not the requested {args.model!r}")
     final = result_line(stream)
     if not killed and final is None:
         row["errors"].append("the agent printed no result line: the run did not complete")
@@ -432,7 +472,8 @@ def render(results):
     cost = results["cost"]
     lines = ["# Adversarial trajectories, live arm (#602)", "",
              f"Evidence: **{results['evidence']}**", "",
-             f"Model: {results['model']}. Harness: `{results['harness']}` in front of "
+             f"Model: {', '.join(results['models_observed']) or 'none observed'} (requested "
+             f"{results['model_requested']}). Harness: `{results['harness']}` in front of "
              f"`{shlex.join(results['agent_cmd'])}` (version {results['harness_version']}). "
              f"Cost: cap USD {cost['cap_usd']}, USD {cost['reserve_usd']} reserved and USD "
              f"{cost['limit_usd']} limit per call, USD {cost['spent_usd']} charged this run"

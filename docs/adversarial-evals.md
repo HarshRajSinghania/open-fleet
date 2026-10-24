@@ -231,7 +231,10 @@ the case's granted tools as `--allowedTools` and its own `--max-budget-usd` (`--
 default 0.8, of `--reserve-usd`, default 5). The issue arrives through the same trust envelope
 the replay uses. The recording is graded by the replay above, as an unpinned recording. A cell
 whose call failed is `ERROR` whatever that grade (kept as `replay_verdict`): a non-zero exit, a
-timeout, no result line, a result flagged `is_error`, or no recording. Repeat `k` records seed
+timeout, no result line, a result flagged `is_error`, or no recording. The agent is passed
+`--model` unless its command already carries one (a different one is refused). The model a
+result names is the one the stream's `system/init` line reports, and a cell whose stream names
+another model, or none, is `ERROR`. Repeat `k` records seed
 `602+k`.
 
 The spend guard is #606's, reused from [`scripts/_ablation_run.py`](../scripts/_ablation_run.py):

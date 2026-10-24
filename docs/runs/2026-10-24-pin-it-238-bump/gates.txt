@@ -1,0 +1,51 @@
+# Gates at the pin bump (claude/pin-bump-238, commit 4712c50a3d plus this note's commit), 2026-10-24
+
+$ python3 scripts/ablation.py prereg
+ship-it: current
+clean-sweep: current
+review-it: current
+root-cause: current
+version 2 · cost cap AUTHORISED (proposed USD 750)
+exit=0
+
+$ python3 runtime/scripts/certification.py check
+certification: OK — 209 cells, fresh against their pins (2 live-witnessed, 145 fixture-tested, 13 source-only, 49 unsupported)
+
+$ python3 runtime/scripts/upstream_probe.py review-date --today 2026-10-24 --json
+{"pin": "v1.4.238", "next_review": "2027-01-24", "today": "2026-10-24", "days_left": 92}
+exit=0
+
+## activation loads vs budgets after the bump (scripts/validate.py transitive_load; budgets unchanged)
+  absorb-it       load 31347 budget 31500 slack=153
+  access-it       load 30184 budget 30500 slack=316
+  attest-it       load 26608 budget 27000 slack=392
+  clean-sweep     load 32649 budget 33000 slack=351
+  deflake-it      load 28655 budget 29000 slack=345
+  document-it     load 31908 budget 32000 slack=92
+  field-test-it   load 31960 budget 32000 slack=40
+  floor-it        load 32190 budget 32500 slack=310
+  harden-it       load 33852 budget 34000 slack=148
+  map-it          load 25311 budget 25500 slack=189
+  migrate-it      load 31985 budget 32000 slack=15
+  modernize-it    load 33582 budget 34000 slack=418
+  offload-it      load 23309 budget 23500 slack=191
+  oncall-it       load 30843 budget 31000 slack=157
+  oss-contribute  load 32494 budget 32500 slack=6
+  pin-it          load 32066 budget 32500 slack=434
+  prove-it        load 29858 budget 30000 slack=142
+  reshape-it      load 30774 budget 31000 slack=226
+  review-it       load 24480 budget 24500 slack=20
+  root-cause      load 19249 budget 19500 slack=251
+  ship-it         load 33995 budget 34000 slack=5
+  speed-it        load 31306 budget 31500 slack=194
+
+## byte deltas of the docs in registered or budgeted payloads (git diff e033bce8e7)
+  runtime/dispatch-lifecycle.md    19141 ->    19142 (1)
+  runtime/sandbox-policy.md    12120 ->    12100 (-20)
+  runtime/mission-scheduling.md     6007 ->     6043 (36)
+  runtime/orca-dag-semantics.md     9505 ->     9505 (0)
+  runtime/attention-budget.md     6246 ->     6246 (0)
+  runtime/orca-pin.md    11248 ->    10280 (-968)
+
+## targeted suites (stub claude first on PATH, SHELL=/bin/sh): 30 modules
+  Ran 1774 tests — OK; the stub claude was never invoked

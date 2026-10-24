@@ -6,6 +6,15 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The Orca pin moves to v1.4.238, and #606's registration is re-registered as version 2** (#508).
+  The re-witness had held the pin because four docs in the ablation's registered payloads needed
+  edits. The ablation had not run, so this change applies them and re-registers it in one step
+  (`prereg --refresh`; cap, design, prompts and obligations unchanged). `sandbox-policy.md` names
+  the Auto host mode and its exit 5, `mission-scheduling.md` says `--host` takes host names,
+  `dispatch-lifecycle.md` names the new live pin and `--surface`, and eight stale citations are
+  re-anchored. `pins.json`, `orca-pin.md`, the certification record and the README floor move
+  together; the next dated review is 2027-01-24. The drift-note tests now run against a frozen
+  pin record, and four new tests read the committed one, so no later bump has to edit a test.
 - **Orca v1.4.238 re-witnessed; the pin holds at v1.4.229 until #606 runs** (#508). The
   1040-commit tag range was diffed and every runtime policy (16) and script (44) given a verdict
   (`docs/runs/2026-10-24-pin-it-238.md`). Two claims drifted in docs the #606 ablation

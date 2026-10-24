@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -457,11 +458,12 @@ class TestEverySegmentIsJudged(HookBase):
 
         Both of these used to be denied by the HIGH tier, and both were wrong.
         `rm -rf "/;x"` deletes a file literally named `/;x` — not the root — so
-        it is an ordinary recursive delete and the Never list asks. `git commit`
-        is not a refused shape at all; the Never list still asks on it, because
-        that list scans the whole line by design and `rm -r` is in this one.
+        it is an ordinary recursive delete and the Never list asks. `git commit
+        -m "oops; rm -rf /"` is not a refused shape at all, and since #598 (the
+        #602 follow-up) the Never list no longer asks on a commit message either:
+        TestQuotedDataIsNotAsked pins that case now.
         """
-        for command in ('rm -rf "/;x"', 'git commit -m "oops; rm -rf /"'):
+        for command in ('rm -rf "/;x"',):
             with self.subTest(command=command):
                 block = self.decision(self.fire(event("Bash", command=command)))
                 self.assertIsNotNone(block)
@@ -1358,9 +1360,9 @@ class TestThePayloadReaderStaysRunnable(HookBase):
 
     def test_the_embedded_program_carries_no_apostrophe(self):
         text = HOOK.read_text(encoding="utf-8")
-        start = text.index("python3 -I -c '", text.index("FIELDS="))
-        body = text[start + len("python3 -I -c '"):]
-        body = body[:body.index("' 2>/dev/null)")]
+        start = text.index("_READER='")   # held in a variable, fed to python3 on a pipe (PR #648)
+        body = text[start + len("_READER='"):]
+        body = body[:body.index("'\nFIELDS=$(")]
         offenders = [f"{i}: {ln}" for i, ln in enumerate(body.splitlines(), 1) if "'" in ln]
         self.assertEqual(offenders, [], "an apostrophe ends the sh string the reader lives in")
 
@@ -1379,6 +1381,76 @@ class TestThePayloadReaderStaysRunnable(HookBase):
         block = self.decision(self.fire(event("Bash", command="cd /tmp && rm -rf /")))
         self.assertIsNotNone(block, "no segments reached the tier")
         self.assertEqual(block["permissionDecision"], "deny")
+
+
+# Linux caps ONE argv or environment string at MAX_ARG_STRLEN (32 pages: 131,072 bytes); macOS caps
+# only their total, so a hook that hands a child a larger string runs here and, there, fails to
+# start the child and refuses EVERY request. The ~135 KB payload reader passed as python3 -c did
+# exactly that (PR #648 review PRRT_kwDOTWxN9c6v0TC6). Both checks run on any host.
+_STRING_BUDGET = 100_000
+_LINUX_MAX_ARG_STRLEN = 131_072
+_EXEC_SHIM = """#!{python} -I
+import json, os, sys
+args = [os.fsencode(a) for a in sys.argv[1:]]
+env = [k + b"=" + v for k, v in os.environb.items()]
+with open(os.environ["DH_EXEC_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps({{"cmd": {name!r}, "arg": max(map(len, args), default=0),
+                          "env": max(map(len, env), default=0)}}) + chr(10))
+if max(map(len, args + env), default=0) > {cap}:
+    sys.stderr.write({name!r} + ": Argument list too long" + chr(10))
+    sys.exit(126)   # what a shell reports when execve fails with E2BIG
+os.execv({real!r}, [{real!r}] + sys.argv[1:])
+"""
+_SHIMMED = ("sh", "bash", "dash", "python3", "python", "grep", "sed", "tr", "cat", "awk", "git",
+            "basename", "dirname", "readlink", "realpath", "head", "tail", "wc", "cut", "sort",
+            "uniq", "mktemp", "rm", "mkdir", "env", "date", "id", "uname", "stat", "ls", "find")
+
+
+class TestNoChildStringNearTheKernelLimit(HookBase):
+    """Every string the hook passes a child process (each argv element, each NAME=value of its
+    environment) stays under 100,000 bytes. Dynamic: each command the hook can run is a shim on
+    PATH that logs its longest argv and env string and, as Linux does, refuses one longer than
+    MAX_ARG_STRLEN. Static: every program the hook writes inline for an interpreter flag."""
+
+    def _shims(self):
+        shim_dir = Path(tempfile.mkdtemp(prefix="dh-exec-"))
+        self.addCleanup(shutil.rmtree, shim_dir, True)
+        for name in _SHIMMED:
+            real = shutil.which(name)
+            if real:
+                (shim_dir / name).write_text(_EXEC_SHIM.format(
+                    python=os.path.realpath(sys.executable), name=name, real=real,
+                    cap=_LINUX_MAX_ARG_STRLEN), encoding="utf-8")
+                (shim_dir / name).chmod(0o755)
+        return shim_dir, shim_dir / "exec.log"
+
+    def test_every_child_string_stays_under_the_budget_and_the_linux_cap(self):
+        shim_dir, log = self._shims()
+        env = {"PATH": str(shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+               "DH_EXEC_LOG": str(log)}
+        allowed = self.fire(event("Bash", command="ls -la"), env)
+        self.assertEqual((allowed.returncode, allowed.stdout.strip()), (0, ""),
+                         f"ls -la must be allowed under a Linux argv cap: {allowed.stderr[-300:]}")
+        for command in ("git push --force origin main", "cat <<EOF | sh\ngh issue close 34\nEOF",
+                        "git push --force origin main HEAD:refs/heads/" + "x" * 4000):
+            block = self.decision(self.fire(event("Bash", command=command), env))
+            self.assertEqual(block["permissionDecision"], "deny", command)
+            self.assertNotIn("could not be parsed", block["permissionDecisionReason"], command)
+        edit = self.fire(event("Edit", file_path=str(self.repo / "f.txt"), old_string="x",
+                               new_string="y"), dict(env, ORCA_UNIT_WORKTREE=str(self.repo)))
+        self.assertEqual((edit.returncode, edit.stdout.strip()), (0, ""), edit.stderr[-300:])
+        runs = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertIn("python3", {r["cmd"] for r in runs}, "the shims must sit in the exec path")
+        over = [r for r in runs if max(r["arg"], r["env"]) >= _STRING_BUDGET]
+        self.assertEqual(over, [], "a child got an argv or env string near the Linux limit")
+
+    def test_no_inline_interpreter_program_nears_the_limit(self):
+        text = HOOK.read_text(encoding="utf-8")
+        sizes = [(m.start(), len(text[m.end():text.index(chr(39), m.end())].encode()))
+                 for m in re.finditer(r"\s-[A-Za-z]*[ce] " + chr(39), text)]
+        self.assertTrue(sizes, "the scan must find the inline programs")
+        self.assertEqual([s for s in sizes if s[1] >= _STRING_BUDGET], [],
+                         "an inline -c/-e program must be passed on a pipe or fd, not as argv")
 
 
 class TestShellCommentsAreNotShellCode(HookBase):

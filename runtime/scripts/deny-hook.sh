@@ -25,13 +25,36 @@
 # HIGH tier (deny, never ask) for Bash. Every segment of a compound command is
 # judged on its own, after ONE peeler in the payload reader (_command_words)
 # strips what launches it: VAR=, env, sudo, doas, nohup, nice, time, timeout,
-# exec, setsid, stdbuf, ionice, chrt, taskset, xargs, command, builtin, ( { !,
-# if/then/do/while and case patterns. A `sh -c`/`eval` body is judged as
-# segments of its own, and words are quote-removed as the shell does it, ANSI-C
-# $'...' decoded. So a refused shape is refused wherever it sits (#297; 2026-10-23
-# review, P1-3, P2-10). Still string matching: a target from a variable, a
-# launcher outside that list, or a script file is beyond it (#598), and the
-# Never list is the net for those. The refused shapes:
+# exec, setsid, stdbuf, ionice, chrt, taskset, xargs, chroot, unshare, nsenter,
+# strace, command, builtin, ( { !, if/then/do/while and case patterns. A command
+# line run later or elsewhere is judged as segments of its own (#598): a `sh -c`
+# or `eval` body, a trap action, an alias value, a gh shell alias, the string or
+# command of flock, su, runuser, script, watch, parallel (its template completed
+# with each ::: argument), ssh, find -exec, fd -x/-X, entr and zsh repeat,
+# interpreter code handing a literal to os.system/subprocess (from -c, stdin or a
+# heredoc), a program a shell reads on stdin or from a file written in the same
+# command, and a head built from a variable or a substitution (its literal value
+# on the line, what echo prints, else each refused head). Who reads a body is
+# structural (PR #648 review): each simple command is its words plus its
+# redirections wherever they sit, each pipeline stage (| or |&) a command with its
+# own stdin; a heredoc or here-string is read by the command owning its << or <<<
+# on fd 0 (or 3<<B 0<&3), an output redirection never stops it reading, cat/tee
+# pass it on, and a group, loop, exec, function, xargs, read, <(...) or $(cat)
+# hands it to what it runs. Sources are unioned, as zsh (MULTIOS) reads them all.
+# printf/echo escapes (\xHH, \NNN, \n …) are decoded before the fed program is
+# read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
+# refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10;
+# PR #648 review). An egress receipt &&-before a command arms the send it runs now
+# — including one fed to a shell by a pipe or heredoc, where every heredoc and
+# here-string on the line is judged — but never a DEFERRED send (a trap, alias or
+# gh alias set runs later) or a REPEATED one (watch, find -exec, fd -x, xargs,
+# parallel, entr, zsh repeat and a while/until condition may run it again, and
+# one receipt covers one send): those need the receipt inside the command.
+# The parser is differential-tested against real bash (scripts/deny_hook_corpus.py,
+# tests/test_deny_hook_conformance.py). Still string matching: a script already on
+# disk, a program a download or decoder produces, an alias or function defined in
+# an EARLIER command, and a value computed at run time stay beyond it, and the
+# Never list and the sandbox are the net for those. The refused shapes:
 #   1. recursive delete whose every target is /, ~, $HOME or /*, or any
 #      recursive delete carrying --no-preserve-root
 #   2. force-push to the default branch, including the +main refspec form that
@@ -80,7 +103,10 @@
 # is reset --hard, checkout/restore of the whole tree, checkout/switch -f, a
 # whole-tree clean -f, branch -D/-M/-C/-f (the default branch too: origin still
 # holds it), update-ref -d, reflog expire|delete, stash drop|clear,
-# filter-repo|filter-branch, worktree remove -f.
+# filter-repo|filter-branch, worktree remove -f. The as-written pass reads the
+# segments with their real operators but drops what only carries text -- echo and
+# printf arguments, a git -m / gh --body message, comments, heredoc data -- so a
+# shape quoted as an example is not asked about (#598, from #602).
 #
 # Worktree boundary: when ORCA_UNIT_WORKTREE is set, a write outside it is DENIED.
 # It covers the Edit/Write/MultiEdit file_path and NotebookEdit's notebook_path
@@ -120,7 +146,8 @@
 # (bar an additive chmod mode) target naming a hook config
 # (.claude/settings*.json, .codex/hooks.json, .openhands/hooks.json,
 # .agents/plugins/orca-deny-hook/, .opencode/plugin/orca-deny-hook.ts,
-# .open-fleet/, .crush/crush.json, .crush-orca-ro/, .hermes-open-fleet/) or this
+# .open-fleet/, .crush/crush.json, .crush-orca-ro/, .hermes-open-fleet/), a pinned
+# trust anchor (.orca/human-grant-pubkey, .orca/dispatch-pubkey) or this
 # file is DENIED — relative or absolute, since the pattern needs no cwd, and for
 # this file regardless of the worktree. A delete, mode or contents change of a
 # directory above this file counts too. Inline interpreter code (python -c,
@@ -666,8 +693,15 @@ PAYLOAD=$(cat 2>/dev/null || true)
 
 # Extract tool_name, tool_input.command and tool_input.file_path as three lines.
 # A parse failure (or no python3) exits non-zero here and DENIES below.
-FIELDS=$(printf '%s' "$PAYLOAD" | python3 -I -c 'import fnmatch,json,os,re,shlex,sys
-d = json.loads(sys.stdin.read())
+# The reader is larger than ONE argv or environment string may be on Linux
+# (MAX_ARG_STRLEN, 128 KiB): handed over with python3 -c it could not start, so
+# every request there was refused (PR #648 review PRRT_kwDOTWxN9c6v0TC6). It lives
+# in this shell variable (never exported, so in no child environment) and reaches
+# python3 on a pipe as its program (python3 -), with the payload on fd 3. No argv
+# or env string carries either, and nothing is written to disk: a heredoc this
+# size is a temp file under bash, which a read-only sandbox would refuse.
+_READER='import fnmatch,json,os,re,shlex,sys
+d = json.loads(open(3, encoding=sys.stdin.encoding, errors=sys.stdin.errors, closefd=False).read())
 if not isinstance(d, dict):
     raise SystemExit(1)
 raw_tool = d.get("tool_name") or d.get("tool") or os.environ.get("JCODE_HOOK_TOOL_NAME") or ""
@@ -713,6 +747,20 @@ DQ = chr(34)
 # whitespace, a shell does not, and a word boundary the shell never saw is one this
 # parser must not invent either (PR #325 review, P1).
 BLANKS = chr(32) + chr(9)
+# A newline INSIDE a quoted word rides through the one-line records as this private-use
+# character, never as a space: a `bash -c` or `trap` body with a newline in it is two
+# commands, and flattening it to a space glued them into one that matched nothing (#598
+# corpus). Records render it as a space (paths) or as \012 (comparison words).
+_QNL = chr(0xE000)
+# Marks where a command substitution sat in the surface text (substitution_bodies), numbered
+# into _SUB_TEXTS so a head that IS a substitution can be read as what it prints (#598).
+_SUB_MARK = "__orca_substitution__"
+_SUB_TEXTS = []
+
+
+def _sub_mark(body):
+    _SUB_TEXTS.append(body)
+    return _SUB_MARK + str(len(_SUB_TEXTS) - 1) + "_"
 
 
 def _norm_join(sep_chars):
@@ -720,9 +768,14 @@ def _norm_join(sep_chars):
     # needs: "&&" runs the next command only if the previous one succeeded;
     # every other separator run (||, ;, |, &, newline, mixes) runs it
     # regardless, so a receipt joined that way proves nothing about the send.
+    # A lone pipe is told apart (#598): the command after it reads the one before
+    # it on stdin, which is how echo CMD | sh runs CMD. |& is a pipe too (2>&1 |),
+    # so echo CMD |& sh runs CMD as well (PR #648 review). Rule 5 reads it as "seq".
     core = sep_chars.replace(chr(10), "")
     if not core:
         return "start"
+    if core in ("|", "|&"):
+        return "|"
     return "&&" if core == "&&" else "seq"
 
 
@@ -777,11 +830,11 @@ def _split(cmd):
             continue
         if quote:
             # A literal newline inside a quoted word is data, not a boundary. It cannot travel on
-            # the one-line record protocol below, so it rides as a space: a value, still one word.
+            # the one-line record protocol below, so it rides as _QNL: a value, still one word.
             sep_run = ""
-            cur.append(" " if ch == "\n" else ch)
+            cur.append(_QNL if ch == "\n" else ch)
             if ch == "\\" and (quote == DQ or ansi) and i + 1 < n:
-                cur.append(" " if cmd[i + 1] == "\n" else cmd[i + 1])
+                cur.append(_QNL if cmd[i + 1] == "\n" else cmd[i + 1])
                 i += 2
                 continue
             if ch == quote:
@@ -852,14 +905,17 @@ def policy_word(word):
     # This is an internal comparison word, NEVER shell code. Encode whitespace,
     # quotes and escapes so shell word splitting cannot turn one operand into
     # flags/refspecs. Literal command/option words lose their shell quoting.
+    word = word.replace(_QNL, chr(10))
     return "".join("\\%03o" % ord(ch) if ch.isspace() or ch in (SQ, DQ, "\\")
                    else ch for ch in word) or "\\000"
 
 
-def shell_tokens(seg):
+def shell_tokens(seg, with_fd=False):
     # Keep operator identity BEFORE quote removal: quoted/escaped > is data.
     # A descriptor is optional and may have several digits. After an operator,
     # however, the next word is its target: in 10>&1>file, 1 is not another fd.
+    # with_fd: every token carries a third item, the descriptor a redirection opens
+    # (0 for <-forms, 1 for >-forms, "&" for &> and &>>; None for a word).
     ops = r"(?:&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)"
     i, target = 0, False
     while i < len(seg):
@@ -868,7 +924,13 @@ def shell_tokens(seg):
             continue
         op = re.match(ops if target else r"[0-9]*" + ops, seg[i:])
         if op:
-            yield "redirect", op[0].lstrip("0123456789")
+            name = op[0].lstrip("0123456789")
+            if with_fd:
+                num = op[0][:len(op[0]) - len(name)]
+                fd = int(num) if num else ("&" if name[0] == "&" else int(name[0] == ">"))
+                yield "redirect", name, fd
+            else:
+                yield "redirect", name
             i += len(op[0])
             target = True
             continue
@@ -890,13 +952,13 @@ def shell_tokens(seg):
             i += 1
         if i == start:
             raise ValueError("unexpected operator")
-        yield "word", _unquote(seg[start:i])
+        yield ("word", _unquote(seg[start:i])) + ((None,) if with_fd else ())
         target = False
 
 
-# Escapes the shell decodes inside $<SQ>...<SQ>. A decoded newline or CR rides as a space: a
-# record is one line, and a word is still one word (the same rule _split applies).
-_ANSI_C = {"a": chr(7), "b": chr(8), "e": chr(27), "E": chr(27), "f": chr(12), "n": " ",
+# Escapes the shell decodes inside $<SQ>...<SQ>. A decoded newline rides as _QNL and a CR as a
+# space: a record is one line, and a word is still one word (the same rule _split applies).
+_ANSI_C = {"a": chr(7), "b": chr(8), "e": chr(27), "E": chr(27), "f": chr(12), "n": _QNL,
            "r": " ", "t": chr(9), "v": chr(11), "\\": "\\", SQ: SQ, DQ: DQ, "?": "?"}
 
 
@@ -933,7 +995,7 @@ def _ansi_c(text, j):
         if val == chr(0):
             cut = True
         if not cut:
-            out.append(val.replace(chr(10), " ").replace(chr(13), " "))
+            out.append(val.replace(chr(10), _QNL).replace(chr(13), " "))
         j += step
     raise ValueError("unclosed ANSI-C quote")
 
@@ -977,7 +1039,7 @@ def record(kind, value):
     # means that reasoning is wrong somewhere, and dying is the fail-closed answer.
     if "\n" in value or "\r" in value:
         raise ValueError("a record value cannot contain a newline")
-    print(kind + " " + value)
+    print(kind + " " + value.replace(_QNL, " "))
 
 
 SHELL_TOOLS = ("Bash", "bash", "shell", "terminal", "exec_command", "execute_bash",
@@ -1239,6 +1301,18 @@ _LAUNCHERS = {
     "exec": ("a", (), 0),
     "xargs": ("adEILnPsJRS", ("--arg-file", "--delimiter", "--max-args", "--max-procs",
                               "--max-chars", "--process-slot-var"), 0),
+    # #598: launchers that run their operands as a command vector. chroot takes NEWROOT
+    # first; the util-linux and strace option operands are their separate-word forms.
+    "chroot": ("", ("--userspec", "--groups"), 1),
+    "unshare": ("SGRw", ("--setuid", "--setgid", "--root", "--wd", "--propagation",
+                         "--setgroups", "--map-user", "--map-group", "--map-users",
+                         "--map-groups"), 0),
+    "nsenter": ("tSG", ("--target", "--setuid", "--setgid"), 0),
+    "strace": ("eopsuEabIOPSXU", ("--output", "--attach", "--string-limit", "--user", "--env",
+                                   "--columns", "--trace-path", "--summary-sort-by", "--signal",
+                                   "--status", "--trace", "--abbrev", "--verbose", "--raw",
+                                   "--read", "--write", "--inject", "--fault", "--quiet",
+                                   "--decode-fds"), 0),
 }
 # A receipt must report the writer exit status to &&: setsid may fork and return at once,
 # xargs may run nothing at all, and exec never returns, so none of them can arm a send.
@@ -1325,6 +1399,8 @@ def _plain_words(args, peel_bang=True, extended=False, assigns=None):
             ws = ws[2:]
         elif extended and ws[1:2] == ["()"]:
             ws = ws[2:]  # NAME () { …: the body is judged as if called
+        elif extended and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]*\(\)\{", ws[0]):
+            ws = ws[1:]  # NAME(){ glued to its brace opens the same body (PR #648 review sweep)
         elif extended and len(ws[0]) > 1 and ws[0].endswith(")") \
                 and (ws[0].endswith("()") or "(" not in ws[0]):
             ws = ws[1:]  # a case-arm pattern word or a NAME() head names no command
@@ -1459,6 +1535,13 @@ def _join_continuations(text):
     return "".join(out)
 
 
+def _backtick_body(raw, in_dq=False):
+    # Inside `...` a backslash keeps its literal meaning EXCEPT before $, a backtick or a
+    # backslash (and, within double quotes, a double quote), where the shell removes it before
+    # the body runs. Keeping it hid the nested command in echo `echo \`cmd\`` (#598 corpus).
+    return re.sub(r"\\([$`\\" + (DQ if in_dq else "") + r"])", r"\1", raw)
+
+
 def _heredoc_body_subs(body):
     # An UNQUOTED heredoc body expands $(...) and `...` with quotes LITERAL: a single-quoted
     # "$(cmd)" there still runs cmd. Process substitution <(...) is plain text in a body.
@@ -1473,7 +1556,7 @@ def _heredoc_body_subs(body):
             j = i + 1
             while j < n and body[j] != chr(96):
                 j += 2 if body[j] == chr(92) else 1
-            out.append(body[i + 1:j])
+            out.append(_backtick_body(body[i + 1:j]))
             i = j + 1
             continue
         if ch == "$" and body[i + 1:i + 2] == "(" and body[i + 2:i + 3] != "(":
@@ -1580,7 +1663,28 @@ def _bracket_expression(prefix, text, i):
     return ""
 
 
-def substitution_bodies(text, depth=0, _stop_paren=False):
+def _brace_end(text, j):
+    # Index just past the } that closes a ${ cmd; } body starting at j (len(text) if none):
+    # quotes and escapes hide braces, nested { } balance.
+    depth, quote = 1, ""
+    while j < len(text):
+        ch = text[j]
+        if ch == chr(92) and quote != SQ:
+            j += 2
+            continue
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in (SQ, DQ):
+            quote = ch
+        elif ch in "{}":
+            depth += 1 if ch == "{" else -1
+            if not depth:
+                return j + 1
+        j += 1
+    return len(text)
+
+
+def substitution_bodies(text, depth=0, _stop_paren=False, flat=True):
     # Command substitution runs its body as a command BEFORE the outer word is used:
     # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
     # unquoted heredoc all execute, yet no segment of the outer line names them (#592
@@ -1588,7 +1692,10 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
     # Text that never runs is NOT scanned: single-quoted words, `# comments`, contexts
     # $((...)), and the body of a heredoc whose delimiter is quoted (<<"EOF", <<\EOF) --
     # so documentation and fixtures that QUOTE a shell example stay writable. Return
-    # the command surface without heredoc bodies, plus patch bodies for target checks.
+    # the command surface without heredoc bodies, plus patch bodies for target checks,
+    # plus each heredoc with the opener text around it. flat=False returns each body RAW and
+    # only the heredocs of this text, in the order their << appear (_flow reads each body
+    # with its own heredocs, PR #648 review).
     out, i, n, in_sq, in_dq = [], 0, len(text), False, False
     ansi = False   # inside $<SQ>...<SQ>, where a backslash escapes the quote (P2-10)
     source_length, paren_level = n, 1
@@ -1597,7 +1704,9 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
     positions = list(range(n)) if _stop_paren else None
     line_start = surface_start = 0
     surface, patches, pending, contexts = [], [], [], []
+    docs = []   # (opener text before <<, opener text after its word, body): see _fed_code
     brackets, bracket_kind = 0, ""
+    case_depth = 0   # open case statements while looking for the end of a substitution
     while i < n:
         ch = text[i]
         if not in_sq and ch in "$(<>":
@@ -1626,8 +1735,9 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
             if pending:
                 surface.append(text[surface_start:i + 1])
             is_patch = re.search(r"(^|[^A-Za-z0-9_./-])(apply_patch|applypatch)([^A-Za-z0-9_-]|$)", opener)
+            line_end = i
             i += 1
-            for delim, quoted, dash in pending:
+            for (delim, quoted, dash), op_start, op_end in pending:
                 body_start = i
                 while i <= n:
                     nl = text.find(chr(10), i)
@@ -1641,10 +1751,17 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                             end = n if nl < 0 else nl
                             line = text[i:end]
                         line = _join_continuations(line)
-                    if (line.lstrip(chr(9)) if dash else line) == delim:
+                    bare = line.lstrip(chr(9)) if dash else line
+                    if bare == delim:
                         body = text[body_start:i]
                         i = end + 1
                         break
+                    if (_stop_paren or depth) and delim and ")" not in delim and bare.startswith(delim) \
+                            and bare[len(delim):].strip(BLANKS)[:1] == ")":
+                        # Inside a substitution bash 3.2 ends the body at DELIM) and the paren
+                        # closes the substitution too, so text after it runs (#598 corpus); a
+                        # reading that kept the body open let that text through. Refuse it.
+                        raise ValueError("a heredoc delimiter that also closes its substitution")
                     if nl < 0:
                         body, i = text[body_start:], n
                         break
@@ -1655,6 +1772,9 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                     patches.append(body)
                 if not quoted and not _stop_paren:
                     out += _heredoc_body_subs(body)
+                if not _stop_paren:
+                    docs.append((text[line_start:op_start], text[op_end:line_end],
+                                 body if quoted else _join_continuations(body)))
             if pending:
                 surface_start = i
             pending = []
@@ -1696,6 +1816,15 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                     param["mode"] = "default" if ch in "-+=?" or (ch == ":" and text[end:end + 1] in "-+=?" and end < n) else "pattern"
                 param["name"] = True
         param_quoted = bool(param and param["quoted"] and param["mode"] == "default")
+        if _stop_paren and ch in "ce" and not (in_sq or in_dq or contexts):
+            # A case pattern closes with a bare ")" that does NOT end the substitution:
+            # $(case x in x) cmd;; esac) runs cmd in bash 4 and later (#598 corpus; bash 3.2
+            # calls it a syntax error). Only a case or esac in command position counts.
+            word = re.match(r"(case|esac)(?=[ \t\n;&|)]|$)", text[i:])
+            before = text[:i].rstrip(BLANKS)
+            if word and (not before or before[-1] in ";&|({" + chr(10) or re.search(
+                    r"(^|[^A-Za-z0-9_])(then|do|else|elif|if|while|until|!)$", before)):
+                case_depth = case_depth + 1 if word[1] == "case" else max(0, case_depth - 1)
         if ch == "$" and text[i + 1:i + 2] == SQ and not (in_sq or in_dq or param_quoted):
             in_sq = ansi = True
             i += 2
@@ -1707,6 +1836,15 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
         elif not (in_sq or in_dq or contexts) and ch == "#" and (i == 0 or text[i - 1] in " " + chr(9) + chr(10) + ";|&("):
             nl = text.find(chr(10), i)
             i = n if nl < 0 else nl
+            continue
+        elif not in_sq and text[i:i + 2] == "${" and text[i + 2:i + 3] in (" ", chr(9), chr(10), "|"):
+            # ${ cmd; } and ${| cmd; } run cmd in the current shell (bash 5.3, ksh93): a command
+            # substitution by another spelling, judged as one (#598). Older bash calls it a bad
+            # substitution, so judging it refuses no command that works there.
+            j = _brace_end(text, i + 2)
+            out.append(text[i + 3 if text[i + 2] == "|" else i + 2:j - 1])
+            surface.append(text[surface_start:i] + _sub_mark(out[-1]))
+            surface_start = i = j
             continue
         elif not in_sq and text[i:i + 2] in ("${", "$["):
             opening = text[i + 1]
@@ -1731,7 +1869,8 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                 contexts[-1][2] += 1 if ch == contexts[-1][0] else -1
             if contexts[-1][2] == 0:
                 _open, _close, _level, in_sq, in_dq, _meta = contexts.pop()
-        elif _stop_paren and not (in_sq or in_dq or contexts) and ch in "()":
+        elif _stop_paren and not (in_sq or in_dq or contexts) and ch in "()" \
+                and not (ch == ")" and case_depth and paren_level == 1):
             paren_level += 1 if ch == "(" else -1
             if paren_level == 0:
                 return positions[i] + 1, True
@@ -1755,8 +1894,8 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
             j = i + 1
             while j < n and text[j] != chr(96):
                 j += 2 if text[j] == chr(92) else 1
-            out.append(text[i + 1:j])
-            surface.append(text[surface_start:i] + "__orca_substitution__")
+            out.append(_backtick_body(text[i + 1:j], in_dq))
+            surface.append(text[surface_start:i] + _sub_mark(out[-1]))
             surface_start = j + 1
             i = j
         elif not (in_sq or in_dq or contexts) and text.startswith("<<", i):
@@ -1765,10 +1904,11 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
             if text.startswith("<<<", i):
                 i += 3  # a here-string expands as an ordinary shell word
             else:
+                op_start = i
                 delim, i = _heredoc_delim(text, i)
                 if _stop_paren and not delim[0]:
                     raise ValueError("unsupported empty nested heredoc delimiter")
-                pending.append(delim)
+                pending.append((delim, op_start, i))
             continue
         elif not in_sq and ch in "$<>" and text[i + 1:i + 2] == "(":
             if ch != "$" and (in_dq or param_quoted):
@@ -1776,7 +1916,7 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
                 continue  # <(...) inside double quotes is literal text
             j, closed = _balanced_paren_end(text, i + 2)
             out.append(text[i + 2:j - 1] if closed else text[i + 2:])
-            surface.append(text[surface_start:i] + "__orca_substitution__")
+            surface.append(text[surface_start:i] + _sub_mark(out[-1]))
             surface_start = j
             i = j - 1
         i += 1
@@ -1784,14 +1924,15 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
         raise ValueError("unclosed shell expansion context")
     if _stop_paren:
         return source_length, False
-    if depth < 4:
+    if depth < 4 and flat:
         analyzed = []
         for body in out:
-            nested, inner_surface, nested_patches = substitution_bodies(body, depth + 1)
+            nested, inner_surface, nested_patches, nested_docs = substitution_bodies(body, depth + 1)
             analyzed += [inner_surface] + nested
             patches += nested_patches
+            docs += nested_docs
         out = analyzed
-    return [b for b in out if b.strip()], "".join(surface) + text[surface_start:], patches
+    return [b for b in out if b.strip()], "".join(surface) + text[surface_start:], patches, docs
 
 
 def _tokenize(seg):
@@ -1809,53 +1950,813 @@ def _tokenize(seg):
 
 
 _SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh")
+# Interpreters that run code straight from argv, and the option letters that carry it.
+_INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs": "ep",
+                 "bun": "e", "php": "r"}
+_CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
+_CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
+                          r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
+                          r"|rmSync|>|open[^)]*[\x22\x27][rbt]*[wax+]")
+# Heads a command built from an expansion is judged as when its value cannot be read (#598).
+_REFUSED_HEADS = ("gh", "git", "rm", "orca")
+_ASSIGNED = {}   # NAME -> the literal values this command line assigns it, anywhere (#598)
+_SIMPLE_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_DECLARERS = ("export", "declare", "typeset", "local", "readonly")
+_FED_SUB = []    # set when a substitution feeds a shell on stdin: echo "$(curl ...)" | sh
+_FED_INTERP = []  # interpreter programs fed on stdin (python3 <<EOF ...): judged for guard writes
+# Launchers outside the peel table: each runs a -c string, a vector after operands of its own,
+# or a string it hands to a shell (_launcher_bodies, #598).
+_BODY_LAUNCHERS = ("su", "runuser", "flock", "script", "watch", "parallel", "ssh", "find", "fd",
+                   "fdfind", "entr", "repeat")
+_PARALLEL_LONG = ("--jobs", "--max-procs", "--sshlogin", "--sshloginfile", "--slf", "--arg-file",
+                  "--delimiter", "--eof", "--max-args", "--max-lines", "--max-chars", "--colsep",
+                  "--tmpdir", "--joblog", "--results", "--res", "--workdir", "--wd", "--timeout",
+                  "--delay", "--retries", "--env", "--halt", "--memfree", "--load", "--nice",
+                  "--tagstring", "--basefile", "--bf", "--return", "--transferfile", "--tf",
+                  "--sshdelay", "--termseq", "--limit", "--rpl", "--header", "--block",
+                  "--recstart", "--recend", "--compress-program", "--decompress-program",
+                  "--semaphorename", "--id")
+_PARALLEL_SEPS = (":::", "::::", ":::+", "::::+")
+
+
+def _inline_code(head, rest):
+    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, ..."""
+    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    letters = _INLINE_FLAGS.get(key)
+    codes, i = [], 0
+    while letters and i < len(rest):
+        w = rest[i]
+        m = re.fullmatch(r"-([A-Za-z]*?)([%s])(.*)" % letters, w, re.DOTALL)
+        if w in ("--eval", "--print") and i + 1 < len(rest):
+            codes.append(rest[i + 1])
+            i += 1
+        elif m and not w.startswith("--"):
+            if m[3]:
+                codes.append(m[3])
+            elif i + 1 < len(rest):
+                codes.append(rest[i + 1])
+                i += 1
+            if key == "python":
+                break  # -c ends the python option list
+        elif key == "python" and not w.startswith("-"):
+            break  # a script path: what follows are its own arguments
+        i += 1
+    return codes
+
+
+_EXEC_CALL = re.compile(r"(?<![A-Za-z0-9_])(system|popen|spawn[A-Za-z]*|exec[A-Za-z]*|run|call"
+                        r"|check_output|check_call|Popen)[ \t]*\(")
+
+
+def _call_args(code, open_paren):
+    # The text inside the balanced (...) that starts at index open_paren, quotes respected.
+    depth, i, quote, n = 0, open_paren, "", len(code)
+    while i < n:
+        ch = code[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in (SQ, DQ):
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return code[open_paren + 1:i]
+        i += 1
+    return code[open_paren + 1:]
+
+
+def _code_commands(code):
+    """Command lines interpreter code hands to the system (PR #648 review PRRT_kwDOTWxN9c6vu_Rm):
+    the string literals and the bracketed argv lists passed TO an exec-shaped call (system, popen,
+    spawn, exec, run, call, Popen, a backtick), not every literal in the program -- a literal that
+    is only printed, or built for another API, is data."""
+    out = []
+    for m in _EXEC_CALL.finditer(code):
+        argtext = _call_args(code, m.end() - 1)
+        for lm in re.finditer(r"\[([^\[\]]*)\]", argtext):
+            items = [a or b for a, b in _CODE_LITERAL.findall(lm[1])]
+            if len(items) > 1:
+                out.append(shlex.join(items))
+        out += [lm[1] if lm[1] is not None else lm[2] for lm in _CODE_LITERAL.finditer(argtext)]
+    out += re.findall(r"\x60([^\x60]*)\x60", code)
+    return [line for line in out if line.strip()]
+
+
+def _note_assigns(assigns, ws):
+    # The literal values a NAME takes on this line, so a variable used as a command is judged
+    # as what it holds: c=git; $c push --force runs that push (#598). Order is not tracked --
+    # every value the name is given anywhere in the command is tried, which only adds views.
+    words = list(assigns)
+    if ws and ws[0] in _DECLARERS:
+        words += [w for w in ws[1:] if not w.startswith("-")]
+    if len(ws) > 3 and ws[0] == "printf" and ws[1] == "-v":   # printf -v NAME FORMAT ARGS
+        words.append(ws[2] + "=" + _printf_text(ws[3], ws[4:]).replace(chr(10), " "))
+    for w in words:
+        m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", w, re.DOTALL)
+        if m and len(_ASSIGNED.get(m[1], ())) < 8:
+            _ASSIGNED.setdefault(m[1], set()).add(m[2].replace(_QNL, " "))
+
+
+def _head_bodies(ws):
+    """Command lines a head built from an expansion may run (#598): each literal value the line
+    gives it, and -- when it cannot be read -- each refused head in its place. `$X push --force
+    origin main` is a refused push for whatever X makes it one, and nothing else is judgeable."""
+    head = ws[0]
+    if "$" not in head and _SUB_MARK not in head and chr(96) not in head:
+        return []
+    heads = [head]
+    for _round in range(4):
+        nxt, changed = [], False
+        for h in heads:
+            sub = re.search(_SUB_MARK + r"([0-9]+)_", h)
+            known = sub and int(sub[1]) < len(_SUB_TEXTS)
+            printed = _printed(_SUB_TEXTS[int(sub[1])]) if known else None
+            if printed is not None:
+                # `echo CMD` as the head: the substitution prints the command that runs.
+                changed = True
+                nxt.append(h[:sub.start()] + printed + h[sub.end():])
+                continue
+            m = _SIMPLE_VAR.search(h)
+            name = m and (m[1] or m[2])
+            if not name or name not in _ASSIGNED:
+                nxt.append(h)
+                continue
+            changed = True
+            nxt += [h[:m.start()] + v + h[m.end():] for v in sorted(_ASSIGNED[name])]
+        heads = nxt[:16]
+        if not changed:
+            break
+    rest = (" " + shlex.join(ws[1:])) if len(ws) > 1 else ""
+    lines = [h + rest for h in heads if not ("$" in h or _SUB_MARK in h or chr(96) in h)]
+    if len(lines) < len(heads):
+        lines += [cand + rest for cand in _REFUSED_HEADS]
+    return lines
+
+
+def _opt_end(rest, takes, longs=()):
+    """Index just past an option run: short letters in takes and long names in longs take a
+    separate operand, and -- ends the run."""
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "--":
+            return i + 1
+        if w.startswith("--"):
+            i += 2 if "=" not in w and w in longs else 1
+        elif w.startswith("-") and len(w) > 1:
+            k = next((k for k, f in enumerate(w[1:]) if f in takes), None)
+            i += 2 if k is not None and k == len(w) - 2 else 1
+        else:
+            return i
+    return i
+
+
+def _dash_c(rest, names):
+    """The operand of the first -c (a short cluster ending in c too) or --command[=] in rest."""
+    for i, w in enumerate(rest):
+        if (w in names or re.fullmatch(r"-[A-Za-z]*c", w)) and i + 1 < len(rest):
+            return rest[i + 1]
+        for name in names:
+            if name.startswith("--") and w.startswith(name + "="):
+                return w.split("=", 1)[1]
+    return None
+
+
+def _fd_exec(w):
+    return w in ("--exec", "--exec-batch") or bool(re.fullmatch(r"-[HIusigFalLp0q]*[xX]", w))
+
+
+def _launcher_bodies(head, rest):
+    """Command lines a launcher outside the peel table runs (#598)."""
+    if head in ("su", "runuser"):
+        body = _dash_c(rest, ("-c", "--command", "--session-command"))
+        if body is not None:
+            return [body]
+        # runuser -u USER [--] COMMAND...: the command vector after the option run.
+        i = _opt_end(rest, "ugGsw", ("--user", "--group", "--supp-group", "--shell",
+                                     "--whitelist-environment"))
+        named = any(w in ("-u", "--user") or w.startswith("--user=") for w in rest[:i])
+        return [shlex.join(rest[i:])] if head == "runuser" and named and rest[i:] else []
+    if head == "flock":
+        body = _dash_c(rest, ("-c", "--command"))
+        if body is not None:
+            return [body]
+        i = _opt_end(rest, "wE", ("--wait", "--timeout", "--conflict-exit-code")) + 1
+        return [shlex.join(rest[i:])] if rest[i:] else []   # past the lock FILE or FD
+    if head == "script":
+        body = _dash_c(rest, ("-c", "--command"))
+        if body is not None:
+            return [body]
+        ops = rest[_opt_end(rest, "tTIOBEm", ("--log-timing", "--log-in", "--log-out",
+                                                "--log-io", "--echo", "--output-limit",
+                                                "--logging-format")):]
+        return [shlex.join(ops[1:])] if len(ops) > 1 else []   # BSD: script FILE COMMAND...
+    if head == "watch":
+        i = _opt_end(rest, "nq", ("--interval", "--equexit"))
+        vector = any(w == "--exec" or re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*", w) for w in rest[:i])
+        return [shlex.join(rest[i:]) if vector else " ".join(rest[i:])] if rest[i:] else []
+    if head == "parallel":
+        tpl, args = rest[_opt_end(rest, "jPSadEInNLlsC", _PARALLEL_LONG):], []
+        for k, w in enumerate(tpl):
+            if w in _PARALLEL_SEPS:
+                tpl, args = tpl[:k], [a for a in tpl[k + 1:] if a not in _PARALLEL_SEPS]
+                break
+        if not tpl:
+            return args   # parallel ::: CMD... runs each argument as a command
+        # parallel runs the template once per argument, replacing {} (and {1}, {.}, {/} …) with
+        # the argument, or APPENDING it when the template has no placeholder (PR #648 review
+        # PRRT_kwDOTWxN9c6vvZVr): `parallel git push {} origin main ::: --force` is a force push.
+        has_ph = any(re.search(r"\{[0-9./#%]*\}", w) for w in tpl)
+        out = []
+        for a in args or [""]:
+            filled = [re.sub(r"\{[0-9./#%]*\}", a, w) for w in tpl]
+            if not has_ph and a:
+                filled = filled + [a]
+            out.append(" ".join(filled))
+        return out
+    if head == "ssh":
+        takes = "BbcDEeFIiJLlmOoPpQRSWw"
+        i = _opt_end(rest, takes)
+        if i >= len(rest):
+            return []
+        j = i + 1 + _opt_end(rest[i + 1:], takes)   # past the destination
+        return [" ".join(rest[j:])] if rest[j:] else []   # the remote shell parses the join
+    if head in ("fd", "fdfind"):
+        # fd -x/--exec runs CMD per result, -X/--exec-batch once per batch; each vector runs
+        # to a ; or the end (a short-flag cluster may end in x or X: -Hx) (PR #648 review
+        # PRRT_kwDOTWxN9c6vxmAh sweep).
+        out, i = [], 0
+        while i < len(rest):
+            w = rest[i]
+            if w.startswith(("--exec=", "--exec-batch=")) or _fd_exec(w):
+                j = i + 1
+                while j < len(rest) and rest[j] != ";":
+                    j += 1
+                vec = ([w.split("=", 1)[1]] if "=" in w else []) + rest[i + 1:j]
+                if vec:
+                    out.append(shlex.join(vec))
+                i = j
+            i += 1
+        return out
+    if head == "entr":
+        # entr [-acdnprsz] UTILITY [ARG...] runs the vector on every change; -s hands its one
+        # operand to a shell instead.
+        i = 0
+        while i < len(rest) and re.fullmatch(r"-[acdnprsz]+", rest[i]):
+            i += 1
+        i += rest[i:i + 1] == ["--"]
+        shell = any("s" in w for w in rest[:i] if w != "--")
+        return ([rest[i]] if shell else [shlex.join(rest[i:])]) if rest[i:] else []
+    if head == "repeat":
+        return [shlex.join(rest[1:])] if rest[1:] else []   # zsh: repeat N COMMAND...
+    if head == "find":
+        out, i = [], 0
+        while i < len(rest):
+            if rest[i] in ("-exec", "-execdir", "-ok", "-okdir"):
+                j = i + 1
+                while j < len(rest) and rest[j] not in (";", "+"):
+                    j += 1
+                if j > i + 1:
+                    out.append(shlex.join(rest[i + 1:j]))
+                i = j
+            i += 1
+        return out
+    return []
+
+
+def _gh_alias(ws):
+    """(verb, name, expansion, runs-in-a-shell) for `gh alias ...`, else None."""
+    rest, i = ws[1:], 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in _GH_OPERAND_FLAGS else 1
+    if rest[i:i + 1] != ["alias"]:
+        return None
+    tail = rest[i + 1:]
+    ops = [w for w in tail if not w.startswith("-")]
+    if not ops:
+        return None
+    if ops[0] == "set" and len(ops) >= 3:
+        shell = any(w in ("-s", "--shell") for w in tail) or ops[2].startswith("!")
+        return "set", ops[1], ops[2].lstrip("!"), shell
+    return ops[0], None, None, False
 
 
 def _inner_body(ws):
-    """The command text `sh -c BODY` runs, or the words `eval` joins, or None.
+    """The command text ws runs as a command line of its own, or None.
 
     A shell handed a string runs it as a command line of its own, so its body is judged as
     segments of its own: `bash -c "git push --force origin main"` is that push, and
-    `bash -c "gh pr merge 12"` is that send (2026-10-23 review, P1-3, P2-13).
+    `bash -c "gh pr merge 12"` is that send (2026-10-23 review, P1-3, P2-13). #598 widened it
+    to every place a command line is deferred or relaunched: a trap action, an alias value, a
+    gh shell alias, the -c string or command vector of flock, su, runuser, script, watch,
+    parallel, ssh, find -exec, fd -x/-X, entr and zsh repeat, interpreter code handing a literal
+    to the system, and a head built from a variable (_head_bodies). Several bodies come back one
+    per line.
     """
     if not ws:
         return None
     head = ws[0].rsplit("/", 1)[-1]
+    bodies = []
     if head == "eval":
         rest = ws[2:] if ws[1:2] == ["--"] else ws[1:]
-        return " ".join(rest)
-    if head not in _SHELLS:
+        bodies.append(" ".join(rest))
+    elif head in _SHELLS:
+        has_c, i = False, 1
+        while i < len(ws):
+            word = ws[i]
+            if word == "--":
+                i += 1
+                break
+            if word in ("-o", "+o", "-O", "+O"):
+                i += 2
+            elif re.fullmatch(r"[-+][A-Za-z]+", word):
+                has_c = has_c or (word[0] == "-" and "c" in word)
+                i += 1
+            elif word.startswith("--"):
+                i += 1
+            else:
+                break
+        if has_c and i < len(ws):
+            bodies.append(ws[i])
+    elif head == "trap":
+        rest = ws[2:] if ws[1:2] == ["--"] else ws[1:]
+        if rest and rest[0] not in ("-", "-l", "-p", "-P"):
+            bodies.append(rest[0])   # the action runs when the condition fires
+    elif head == "alias":
+        bodies += [w.split("=", 1)[1] for w in ws[1:] if "=" in w and not w.startswith("-")]
+    elif head in _BODY_LAUNCHERS:
+        bodies += _launcher_bodies(head, ws[1:])
+    elif head == "gh":
+        alias = _gh_alias(ws)
+        if alias and alias[0] == "set" and alias[3]:
+            bodies.append(alias[2])
+    else:
+        for code in _inline_code(head, ws[1:]):
+            bodies += _code_commands(code)
+    bodies += _head_bodies(ws)
+    if not bodies:
         return None
-    has_c, i = False, 1
-    while i < len(ws):
-        word = ws[i]
-        if word == "--":
+    return chr(10).join(b.replace(_QNL, chr(10)) for b in bodies)
+
+
+def _stdin_kind(ws):
+    """"shell" or "interp" when ws runs the program it reads on standard input, else None."""
+    if not ws:
+        return None
+    head = ws[0].rsplit("/", 1)[-1]
+    if head in _SHELLS:
+        i, from_stdin = 1, False
+        while i < len(ws):
+            word = ws[i]
+            if word in ("--", "-"):
+                from_stdin = from_stdin or word == "-"
+                i += 1
+                break
+            if word in ("-o", "+o", "-O", "+O"):
+                i += 2
+            elif re.fullmatch(r"[-+][A-Za-z]+", word):
+                if word[0] == "-" and "c" in word:
+                    return None
+                from_stdin = from_stdin or (word[0] == "-" and "s" in word)
+                i += 1
+            elif word.startswith("--"):
+                i += 1
+            else:
+                break
+        return "shell" if from_stdin or i >= len(ws) else None
+    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    if key in _INLINE_FLAGS and not _inline_code(head, ws[1:]):
+        ops = [w for w in ws[1:] if not w.startswith("-") or w == "-"]
+        flags = [w for w in ws[1:] if w.startswith("-") and w != "-"]
+        if not ops or ops[0] == "-":
+            return None if (key == "python" and "-m" in flags) else "interp"
+    return None
+
+
+def _script_operand(ws):
+    """The script file ws runs: sh FILE, source FILE, . FILE, or ./FILE itself."""
+    if not ws:
+        return None
+    head = ws[0].rsplit("/", 1)[-1]
+    if head in ("source", ".") and len(ws) > 1:
+        return ws[1]
+    if head in _SHELLS and _stdin_kind(ws) is None and _inner_body(ws) is None:
+        ops = [w for w in ws[1:] if not w.startswith(("-", "+"))]
+        return ops[0] if ops else None
+    return ws[0] if "/" in ws[0] else None
+
+
+_ECHO_ESCAPES = {"a": chr(7), "b": chr(8), "e": chr(27), "E": chr(27), "f": chr(12),
+                 "n": chr(10), "r": chr(13), "t": chr(9), "v": chr(11), "\\": "\\", DQ: DQ,
+                 SQ: SQ, "?": "?"}
+
+
+def _decode_escapes(text, percent_b=False):
+    # The backslash escapes printf decodes in its FORMAT, in a %b argument and in echo -e (and
+    # in every echo under zsh, dash and POSIX sh): \n \t \\ ..., \NNN and \0NNN octal, \xHH.
+    # printf "\x67it push --force origin main" | sh runs that push; the escapes were read as
+    # text and it was allowed (PR #648 review). \u/\U are NOT decoded: no shell printf or echo
+    # builtin decodes them. A %b \c ends the output.
+    out, i, n = [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
             i += 1
-            break
-        if word in ("-o", "+o", "-O", "+O"):
+            continue
+        nxt = text[i + 1]
+        m = None
+        if nxt in _ECHO_ESCAPES:
+            out.append(_ECHO_ESCAPES[nxt])
             i += 2
-        elif re.fullmatch(r"[-+][A-Za-z]+", word):
-            has_c = has_c or (word[0] == "-" and "c" in word)
-            i += 1
-        elif word.startswith("--"):
-            i += 1
-        else:
+        elif nxt in "01234567":
+            m = re.match(r"0[0-7]{0,3}" if (percent_b and nxt == "0") else r"[0-7]{1,3}", text[i + 1:])
+            digits = m[0][1:] if (percent_b and nxt == "0") else m[0]
+            out.append(chr(int(digits or "0", 8) & 255))
+            i += 1 + len(m[0])
+        elif nxt == "x":
+            m = re.match(r"[0-9A-Fa-f]{1,2}", text[i + 2:])
+            if m:
+                out.append(chr(int(m[0], 16)))
+                i += 2 + len(m[0])
+            else:
+                out.append(ch + nxt)
+                i += 2
+        elif nxt == "c" and percent_b:
             break
-    return ws[i] if has_c and i < len(ws) else None
+        else:
+            out.append(ch + nxt)
+            i += 2
+    return "".join(out)
+
+
+def _printf_text(fmt, args):
+    # What printf FORMAT ARGS writes, conversions filled in order and the format reused while
+    # arguments remain: printf "%s%s" gh " issue close 34" prints one command (#598 corpus).
+    # The format escapes are decoded, and so is a %b argument (PR #648 review).
+    out, state = [], {"next": 0, "used": 0}
+
+    def fill(m):
+        if m[0] == "%%":
+            return "%"
+        state["used"] += 1
+        state["next"] += 1
+        arg = args[state["next"] - 1] if state["next"] <= len(args) else ""
+        return _decode_escapes(arg, percent_b=True) if m[0].endswith("b") else arg
+    while True:
+        state["used"] = 0
+        out.append(re.sub(r"%(%|[-+ #0]*[0-9*]*(\.[0-9*]*)?[A-Za-z])", fill, _decode_escapes(fmt)))
+        if not state["used"] or state["next"] >= len(args):
+            return "".join(out)
+
+
+def _echo_data(ws):
+    """The text echo or printf writes, or None for any other command. Echo text comes back as
+    written and, when it holds escapes, decoded too: bash decodes them only under -e, but zsh,
+    dash and POSIX sh decode them always, and the host shell is not known here."""
+    head = ws[0].rsplit("/", 1)[-1] if ws else ""
+    rest = ws[1:]
+    if head == "echo":
+        while rest and re.fullmatch(r"-[neE]+", rest[0]):
+            rest = rest[1:]
+        raw = " ".join(rest)
+        decoded = _decode_escapes(raw)
+        text = decoded if decoded == raw else decoded + chr(10) + raw
+    elif head == "printf":
+        rest = rest[1:] if rest[:1] == ["--"] else rest
+        rest = rest[2:] if rest[:1] == ["-v"] else rest
+        text = _printf_text(rest[0], rest[1:]) if rest else ""
+    else:
+        return None
+    return text.replace(_QNL, chr(10))
+
+
+def _printed(body):
+    """What a substitution body prints, newlines read as spaces: echo/printf commands, or any
+    body whose output the reader can follow (cat <<< CMD, cat <<EOF, a pipe; _flow_output),
+    else None."""
+    try:
+        chunks = [_echo_data(_command_words(_tokenize(seg)[0])) for _j, seg in _split(body)]
+    except ValueError:
+        chunks = None
+    if chunks and all(chunk is not None for chunk in chunks):
+        return " ".join(chunks).replace(chr(10), " ").strip()
+    out = _flow_output(body)
+    return None if out is None else out.replace(chr(10), " ").strip()
+
+
+# --- Who reads which body (PR #648 review PRRT_kwDOTWxN9c6vzGqz, PRRT_kwDOTWxN9c6vzGq3) -----
+# A simple command is its words plus its redirections, wherever they sit among the words, and
+# each pipeline stage is a command of its own, with its own redirections and its own standard
+# input. A heredoc or here-string body is read by the command that owns its << or <<< on fd 0
+# (or dup-ed onto it, 3<<B 0<&3), never by its place on the line, and an output redirection
+# (> f, 2>&1, &>/dev/null) never stops a command reading its input. A piped stage reads what
+# the stage before it writes, through | and |& alike, and cat, tee and the line filters pass
+# what they read on. Sources are UNIONED, never last-wins: bash and dash read only the last
+# stdin redirection, but zsh (MULTIOS, on by default) reads the pipe and every redirection in
+# turn and writes to a file AND the pipe; the hook does not know which shell runs the line.
+# A group, loop, exec or function call reading a body hands it to the commands inside it.
+_PASS_THROUGH = ("cat", "tee", "head", "tail", "tac", "sort", "uniq")
+_STDIN_FILES = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+_GROUP_CLOSERS = ("}", "done", "fi", "esac")
+_GROUP_OPENERS = ("{", "while", "until", "if", "for", "select", "case")
+_GH_WORD = re.compile(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)")
+_FLOW_OUT = {}
+
+
+def _redirs(seg):
+    """(words, [(fd, op, target)]) of ONE simple command: every redirection is an attribute of
+    the command wherever it sits among the words. fd is the descriptor it opens: 3<<B opens 3,
+    not standard input, and &> or &>> opens "&" (1 and 2)."""
+    words, redirs, pending = [], [], None
+    for kind, value, fd in shell_tokens(seg, with_fd=True):
+        if kind == "redirect":
+            pending = (fd, value)
+        elif pending:
+            redirs.append(pending + (value,))
+            pending = None
+        else:
+            words.append(value)
+    return words, redirs
+
+
+def _file_texts(word, written):
+    """[(text, armable)] a file operand holds when the line shows it: a process substitution
+    <(...) holds what its body prints (read while it runs, like a pipe); a file this line wrote
+    holds what was written there (a separate command, so a receipt never arms it)."""
+    m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)
+    if m:
+        out = _flow_output(_SUB_TEXTS[int(m[1])]) if int(m[1]) < len(_SUB_TEXTS) else None
+        return [(out, True)] if out else []
+    return [(t, False) for t in written.get(os.path.normpath(word), [])]
+
+
+def _reader_kind(ws):
+    """shell or interp when ws runs the program on its standard input: sh, bash -s, sh -,
+    python3, or a script operand naming standard input (sh /dev/stdin, source /dev/fd/0)."""
+    kind = _stdin_kind(ws)
+    if kind or not ws:
+        return kind
+    head = ws[0].rsplit("/", 1)[-1]
+    ops = [w for w in ws[1:] if not w.startswith(("-", "+"))]
+    if not ops or ops[0] not in _STDIN_FILES:
+        return None
+    if head in _SHELLS or head in ("source", "."):
+        return "shell"
+    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    return "interp" if key in _INLINE_FLAGS else None
+
+
+def _xargs_lines(args, ws, stdin):
+    """The command lines xargs builds from what it reads: its command with each input line in
+    place of the -I/-J/-i string, else with the input words appended. xargs splits its input
+    into ARGUMENTS (quotes honoured) and runs no shell, so a ; in the input is data."""
+    pre = args[:len(args) - len(ws)]
+    at = [i for i, w in enumerate(pre) if w.rsplit("/", 1)[-1] == "xargs"]
+    if not at or not ws or not stdin or _echo_data(ws) is not None:
+        return []   # xargs echo prints its input: data, as echo is
+    opts, repl = pre[at[-1] + 1:], None
+    for i, w in enumerate(opts):
+        if w in ("-I", "-J") and i + 1 < len(opts):
+            repl = opts[i + 1]
+        elif w in ("-i", "--replace"):
+            repl = "{}"
+        elif w.startswith("--replace="):
+            repl = w[len("--replace="):]
+        elif re.fullmatch(r"-[IJi].+", w, re.DOTALL):
+            repl = w[2:]
+    out = []
+    for text, _arm in stdin:
+        if repl:
+            out += [shlex.join([w.replace(repl, line) for w in ws])
+                    for line in text.split(chr(10)) if line.strip()]
+            continue
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()
+        out.append(shlex.join(ws + words))
+    return out[:16]
+
+
+def _note_read(ws, stdin):
+    """read NAME... takes its value from standard input: each line it may read becomes a value
+    of NAME, so $NAME used as a command is judged as that line, as NAME=value is (#598)."""
+    names, i = [], 1
+    while i < len(ws):
+        w = ws[i]
+        if w == "--":
+            names += ws[i + 1:]
+            break
+        if w.startswith("-") and len(w) > 1:
+            i += 2 if w[-1] in "adinNptu" else 1
+            continue
+        names.append(w)
+        i += 1
+    for text, _arm in stdin:
+        values = {text.split(chr(10))[0], text.replace(chr(10), " ").strip()}
+        for name in names or ["REPLY"]:
+            for value in values:
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and len(_ASSIGNED.get(name, ())) < 8:
+                    _ASSIGNED.setdefault(name, set()).add(value)
+
+
+def _flow(surface, docs, inherit=(), written=None):
+    """The pipelines of one surface, [(join, [stage])]; docs are its own heredocs in the order
+    their << appear. A stage is a dict: seg, args (words as typed), ws (peeled), stdin (every
+    (text, armable) that may reach its fd 0), out (what it writes to stdout, when readable),
+    reads (it runs the program on its stdin), feeds ((kind, program, armable) it runs from
+    what it reads) and prev (the stage piped into it). armable: the text reaches the reader
+    inside the same pipeline, so a receipt &&-before that pipeline may arm what it runs."""
+    written = {} if written is None else written
+    parsed = []
+    for join, seg in _split(surface):
+        words, redirs = _redirs(seg)
+        parsed.append((join, seg, words, redirs))
+    opened = sum(op in ("<<", "<<-") for p in parsed for _fd, op, _t in p[3])
+    # A count that disagrees with the heredocs the scanner found would misplace bodies: each is
+    # then given to every command on the line instead, never dropped.
+    stray = [] if opened == len(docs) else [(body, False) for _b, _a, body in docs]
+    funcs = set()
+    for _j, _s, words, _r in parsed:
+        named = re.match(r"([A-Za-z_][A-Za-z0-9_.:-]*)(\(\))?\{?$", words[1] if words[:1] == ["function"]
+                         and len(words) > 1 else (words[0] if words else ""))
+        if named and (words[:1] == ["function"] or named[2] or words[1:2] == ["()"]):
+            funcs.add(named[1])
+    extra, pipes, local = {}, [], dict(written)
+    for _round in range(4):
+        pipes, k_doc, later, given = [], 0, list(stray), {}
+        local = {key: list(v) for key, v in written.items()}
+        for idx, (join, seg, args, redirs) in enumerate(parsed):
+            ws = _command_words(args)
+            prev = pipes[-1][1][-1] if join == "|" and pipes else None
+            if prev is None:
+                pipes.append((join, []))
+            fds, writes = {}, []
+            for fd, op, target in redirs:
+                if op in ("<<", "<<-"):
+                    src = [(docs[k_doc][2], True)] if not stray and k_doc < len(docs) else []
+                    k_doc += 1
+                elif op == "<<<":
+                    src = [(target.replace(_QNL, chr(10)) + chr(10), True)]
+                elif op in ("<", "<>"):
+                    src = _file_texts(target, local)
+                elif op in ("<&", ">&") and target.isdigit():
+                    src = list(fds.get(int(target), []))
+                else:
+                    if fd in (1, "&") and target != "-" and not target.isdigit():
+                        writes.append(target)
+                    continue
+                fds.setdefault(fd, []).extend(src)
+            own = (prev["out"] if prev else []) + fds.get(0, [])   # zsh order: the pipe first
+            stdin = own + list(inherit) + later + extra.get(idx, [])
+            head = ws[0].rsplit("/", 1)[-1] if ws else ""
+            data = _echo_data(ws)
+            if data is not None:
+                flags = []
+                for a in ws[1:]:
+                    if not re.fullmatch(r"-[neE]+", a):
+                        break
+                    flags.append(a)
+                newline = head == "echo" and not any("n" in f for f in flags)
+                out = [(data + (chr(10) if newline else ""), True)]
+            elif head in _PASS_THROUGH:
+                ops = [a for a in ws[1:] if not a.startswith("-")]
+                out = list(stdin)
+                for f in ops:
+                    if head == "tee":
+                        local.setdefault(os.path.normpath(f), []).extend(t for t, _a in stdin)
+                    else:
+                        out += _file_texts(f, local)
+            else:
+                out = []
+            for f in writes:
+                local.setdefault(os.path.normpath(f), []).extend(t for t, _a in out)
+            kind, feeds = _reader_kind(ws), []
+            if kind:
+                feeds += [(kind, t, a) for t, a in stdin]
+                if len(stdin) > 1:   # zsh reads them all, as one program, in this order
+                    feeds.append((kind, "".join(t for t, _a in stdin), all(a for _t, a in stdin)))
+            script = _script_operand(ws)
+            if script and script not in _STDIN_FILES:
+                feeds += [("shell", t, a) for t, a in _file_texts(script, local)]
+            feeds += [("shell", line, False) for line in _xargs_lines(args, ws, stdin)]
+            if head == "read":
+                _note_read(ws, stdin)
+            if stdin and _SUB_MARK in seg:
+                # $(cat) reads the standard input of the command it sits in: echo CMD | eval
+                # "$(cat)" runs CMD. The output is one word where it stands (an argument stays
+                # data); as the head it is split into the command it names.
+                for i, word in enumerate(ws):
+                    for m in re.finditer(_SUB_MARK + r"([0-9]+)_", word):
+                        k = int(m[1])
+                        fed = _flow_output(_SUB_TEXTS[k], stdin) if k < len(_SUB_TEXTS) else None
+                        if not fed or fed == _flow_output(_SUB_TEXTS[k]):
+                            continue
+                        new = word.replace(m[0], fed.strip(chr(10)))
+                        line = (new + " " + shlex.join(ws[1:])) if i == 0 \
+                            else shlex.join(ws[:i] + [new] + ws[i + 1:])
+                        feeds.append(("shell", line.strip(), all(a for _t, a in stdin)))
+            st = {"seg": seg, "args": args, "ws": ws, "stdin": stdin, "out": out,
+                  "reads": bool(kind), "feeds": feeds, "prev": prev}
+            pipes[-1][1].append(st)
+            quiet = [(t, False) for t, _a in own]
+            first = args[0] if args else ""
+            if quiet and first == "exec" and not ws:   # exec <<EOF: every later command reads it
+                later += quiet
+            if prev is not None and (first in _GROUP_OPENERS or first.startswith("(")):
+                later += quiet   # echo CMD | { ...; sh; }: the whole group reads the pipe
+            closer = first in _GROUP_CLOSERS or (bool(args) and args[-1].endswith(")")
+                                                 and not first.startswith("("))
+            if quiet and (closer or head in funcs):
+                for j in range(len(parsed)):   # { ...; sh; } <<EOF, f <<EOF: the body is read inside
+                    if j != idx:
+                        given.setdefault(j, [])
+                        given[j] += [q for q in quiet if q not in given[j]]
+        if given == extra:
+            break
+        extra = given
+    written.update(local)
+    return pipes
+
+
+def _flow_output(body, inherit=()):
+    """What a substitution body writes to standard output when every pipeline in it ends in a
+    command whose output is readable (echo, printf, cat or tee of a heredoc, here-string, pipe
+    or of what the body inherits on standard input), else None."""
+    key = (body, tuple(inherit))
+    if key not in _FLOW_OUT:
+        _FLOW_OUT[key] = None   # a body met again while it is read reads as unknown
+        try:
+            _raws, surface, _p, docs = substitution_bodies(body, 1, flat=False)
+            outs = [stages[-1]["out"] for _j, stages in _flow(surface, docs, inherit)]
+        except ValueError:
+            outs = []
+        if outs and all(outs):
+            _FLOW_OUT[key] = "".join(t for o in outs for t, _a in o)
+    return _FLOW_OUT[key]
+
+
+def _fed_code(surface, docs, written=None):
+    """[(kind, program)] the commands of ONE surface run from what they read (#598, PR #648
+    review): a shell or interpreter reading a heredoc, here-string, pipe, process substitution
+    or a file this line wrote, a command line xargs builds, a $(cat) reading the pipe (_flow).
+    A command the program could come from but whose text this hook cannot see (a download, a
+    file already on disk) stays beyond it."""
+    out = []
+    for _join, stages in _flow(surface, docs, written=written):
+        for st in stages:
+            out += [("interp" if kind == "interp" else "shell", prog) for kind, prog, _a in st["feeds"]]
+            if st["reads"] and st["prev"] is not None and _SUB_MARK in st["prev"]["seg"]:
+                _FED_SUB.append(st["prev"]["seg"])
+    out = list(dict.fromkeys(out))
+    _FED_INTERP.extend(prog for kind, prog in out if kind == "interp")
+    return out
+
+
+def _expand(text, depth=0, nest=0, written=None):
+    """(command texts this line runs, patch bodies): the surface, every substitution body (each
+    read with its own heredocs), and every program a command reads (_fed_code) -- each judged
+    as command lines of their own."""
+    written = {} if written is None else written
+    raws, surface, patches, docs = substitution_bodies(text, 1 if nest else 0, flat=False)
+    parts = [surface]
+    for raw in raws:
+        if nest < 4:
+            more, more_patches = _expand(raw, depth, nest + 1, written)
+            parts += more
+            patches = patches + more_patches
+        else:
+            parts.append(raw)
+    if depth < 3:
+        for kind, code in _fed_code(surface, docs, written):
+            if kind == "shell":
+                more, more_patches = _expand(code, depth + 1, 0, written)
+                parts += more
+                patches = patches + more_patches
+            else:
+                parts += _code_commands(code)
+    return parts, patches
 
 
 def _body_pairs(body):
-    """(join, args) per segment of a shell body, its substitutions judged as commands too."""
-    subs, surface, _patches = substitution_bodies(body)
-    for sub in subs:
-        surface += chr(10) + sub
-    return [(join, _tokenize(seg)[0]) for join, seg in _split(surface)]
+    """(join, args) per segment of a shell body: its substitutions and the programs it feeds a
+    shell are judged as commands too."""
+    parts, _patches = _expand(body)
+    return [(join, _tokenize(seg)[0]) for join, seg in _split(chr(10).join(parts))]
 
 
 def _views(args, depth=0):
     """[(assignments, words)]: the command a segment runs, then each command its body runs."""
     assigns = []
     ws = _command_words(args, assigns)
+    _note_assigns(assigns, ws)
     out = [(assigns, ws)]
     body = _inner_body(ws) if depth < 3 else None
     if body is not None:
@@ -1869,21 +2770,22 @@ def _views(args, depth=0):
     return out
 
 
-_subs, _judged, heredoc_patches = substitution_bodies(raw_command)
-for _sub in _subs:
-    _judged += chr(10) + _sub
+_parts, heredoc_patches = _expand(raw_command)
+_judged, _subs = chr(10).join(_parts), _parts[1:]
 heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
 print(s(norm_tool))
 print(c(_judged))
 print(s(target_paths[0] if target_paths else ""))
 for _extra_p in target_paths[1:]:
     record("F", s(_extra_p))
-_seg_args = []
+# Pass 1 learns every literal NAME=value on the line before any head is resolved (#598): an
+# assignment in a later segment, or inside a body, still names what `$c` may run.
+for _join, seg in _split(_judged):
+    _views(_tokenize(seg)[0])
 _guard_segs = []
 _all_views = []   # (words, writes, segment text) of every command in order, bodies included
 for _join, seg in _split(_judged):
     args, writes = _tokenize(seg)
-    _seg_args.append((_join, args))
     _guard_segs.append((args, writes))
     # C carries the peeled command, not the words as typed: the HIGH tier and the never list
     # anchor at its head (2026-10-23 review, P1-3). Assignments ride in front for git_redirected.
@@ -1899,50 +2801,144 @@ for _join, seg in _split(_judged):
                    for _k, (_va, _vw) in enumerate(_seg_views)]
 
 
-def _unreceipted(pairs, armed=False, depth=0):
-    """True when an off-repo write in pairs has no receipt immediately &&-before it."""
-    for join, args in pairs:
-        if _is_receipt(args):
-            armed = True
-            continue
-        body = _inner_body(_command_words(args)) if depth < 3 else None
-        if body is not None:
-            # The body runs as one command of this line: an outer receipt &&-joined to the
-            # shell arms the first send inside it, and nothing else (P2-13).
-            lead = armed and join == "&&"
-            try:
-                inner = _body_pairs(body)
-            except ValueError:
-                inner = None
-            if inner is None:
-                gh_word = re.search(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)", body)
-                if gh_word and not lead:
-                    return True
-            elif inner:
-                inner[0] = ("&&" if lead else "start", inner[0][1])
-                if _unreceipted(inner, lead, depth + 1):
-                    return True
-            armed = False
-            continue
-        if _is_send(args):
-            if not (armed and join == "&&"):
-                return True
-            armed = False  # one receipt covers exactly one send
-            continue
-        armed = False  # any other segment consumes the arming
+def _is_deferred_def(ws):
+    # A command that DEFINES an action to run later (maybe many times), not one that runs it
+    # now: a trap, an alias, a gh alias set. A receipt on the defining line is consumed now and
+    # cannot cover a send that fires later, so a send inside one of these needs a receipt INSIDE
+    # it (PR #648 review PRRT_kwDOTWxN9c6vu_Ri).
+    if not ws:
+        return False
+    head = ws[0].rsplit("/", 1)[-1]
+    if head in ("trap", "alias"):
+        return True
+    if head == "gh":
+        alias = _gh_alias(ws)
+        return bool(alias and alias[0] == "set")
     return False
 
 
-if _unreceipted(_seg_args):
+def _repeats(args, ws):
+    # A launcher that can run its command MORE THAN ONCE: watch, find -exec/-execdir/-ok/-okdir
+    # (per match, or per batch with +), fd -x/-X, entr (per change), zsh repeat, parallel (per
+    # argument), xargs (per input batch), and a while/until condition (per iteration). One
+    # receipt covers exactly one send, so an outer receipt cannot arm what such a launcher runs;
+    # the receipt must sit inside it (PR #648 review PRRT_kwDOTWxN9c6vxmAh). A for/select or
+    # while body is already its own unarmed segment; xargs and the loop keywords are peeled off
+    # ws, so they are read from args.
+    head = ws[0].rsplit("/", 1)[-1] if ws else ""
+    if head in ("watch", "parallel", "entr", "repeat"):
+        return True
+    if head == "find" and any(w in ("-exec", "-execdir", "-ok", "-okdir") for w in ws[1:]):
+        return True
+    if head in ("fd", "fdfind") and any(_fd_exec(w) or w.startswith(("--exec=", "--exec-batch="))
+                                        for w in ws[1:]):
+        return True
+    return any(w.rsplit("/", 1)[-1] in ("xargs", "while", "until")
+               for w in args[:max(0, len(args) - len(ws))])
+
+
+def _unreceipted_flow(pipes, armed=False, depth=0):
+    """True when an off-repo write in these pipelines (_flow) has no receipt immediately
+    &&-before it. A receipt arms the ONE pipeline &&-joined after it (or the first pipeline of a
+    scope entered armed): its first stage (a send, sh -c SEND, a launcher), and a program any of
+    its stages reads from a heredoc, here-string, pipe or process substitution. One receipt
+    covers exactly one send, so the first stage or program that runs one takes it. A stage
+    after a pipe is not itself &&-joined, so its own send or -c body is never armed; a DEFERRED
+    or REPEATED body never is either (PR #648 review)."""
+    for n, (join, stages) in enumerate(pipes):
+        token = armed and (join == "&&" or n == 0)
+        if len(stages) == 1 and _is_receipt(stages[0]["args"]):
+            armed = True
+            continue
+        armed = False
+        for k, st in enumerate(stages):
+            args, ws = st["args"], st["ws"]
+            repeat = _repeats(args, ws)
+            mine = token and k == 0 and not repeat
+            body = _inner_body(ws) if depth < 3 else None
+            runs = [(body, mine and not _is_deferred_def(ws))] if body is not None else []
+            if depth < 3:
+                for kind, prog, arm in st["feeds"]:
+                    if kind == "interp":
+                        runs += [(code, False) for code in _code_commands(prog)]
+                    else:
+                        runs.append((prog, token and arm and not repeat))
+            for text, lead in runs:
+                try:
+                    if _unreceipted_scope(text, lead, depth + 1):
+                        return True
+                except ValueError:
+                    if _GH_WORD.search(text) and not lead:
+                        return True
+            if runs:
+                token = False   # what this stage runs took the receipt
+                continue
+            if _is_send(args):
+                if not mine:
+                    return True   # not &&-joined to a receipt, or a launcher may repeat it
+                token = False   # one receipt covers exactly one send
+    return False
+
+
+def _unreceipted_scope(text, armed=False, depth=0, nest=0):
+    """One receipt scope: the pipelines of text (the first armed by an incoming &&-receipt),
+    then each command substitution body as its OWN unarmed scope -- a send inside $(...) runs
+    during word expansion, so an outer receipt never arms it. Each body is read raw, with its
+    own heredocs (substitution_bodies flat=False), so a heredoc inside $(...) is placed by the
+    same reader as one on the surface (PR #648 review)."""
+    if depth > 4:
+        return False
+    raws, surface, _patch, docs = substitution_bodies(text, 1 if nest else 0, flat=False)
+    if _unreceipted_flow(_flow(surface, docs), armed, depth):
+        return True
+    if nest >= 4:   # past the depth substitutions are read to: a gh word there refuses
+        return any(_GH_WORD.search(raw) for raw in raws)
+    return any(_unreceipted_scope(raw, False, depth, nest + 1) for raw in raws)
+
+
+if _unreceipted_scope(raw_command):
     record("E", "unreceipted")
+
+
+def _alias_refusal(ws):
+    # D: a refusal with a reason of its own (#598). A gh alias whose expansion is an off-repo
+    # write runs that write later, from a command naming no gh verb, with no receipt to bind it
+    # to; an imported alias file holds expansions this hook never sees.
+    if not ws or ws[0].rsplit("/", 1)[-1] != "gh":
+        return None
+    alias = _gh_alias(ws)
+    if not alias:
+        return None
+    if alias[0] == "import":
+        return ("gh alias import loads alias expansions this hook cannot read; define each "
+                "alias with gh alias set so its expansion is judged.")
+    if alias[0] == "set":
+        # A shell alias (! or --shell) expands to a command line; a plain alias to gh ARGS.
+        body = alias[2] if alias[3] else "gh " + alias[2]
+        try:
+            unreceipted = _unreceipted_scope(body)
+        except ValueError:
+            unreceipted = _is_send(body.split())
+        # The saved action is deferred, so an outer receipt cannot arm it: a send inside with
+        # no receipt INSIDE the expansion is refused outright (PR #648 review).
+        if unreceipted:
+            return ("a gh alias whose expansion is an off-repo write runs it later; an outer "
+                    "egress receipt cannot cover a deferred send (rule 5). Put the receipt "
+                    "inside the alias, or run the write itself, receipted.")
+    return None
 
 
 # --- self-guard (#577): a worker must not be able to disarm its own hook --------------
 # Hook configs inside the unit worktree, and this file wherever it is. Matched on the
 # path as written AND as resolved, so a relative target needs no cwd to be judged.
+# The pinned trust anchors are guarded the same way (#598, from #602): decisions.py and
+# floor_guard.py verify one-way grants against .orca/human-grant-pubkey, and verify-gate.sh and
+# run_report.py verify dispatch records against .orca/dispatch-pubkey. A worker that rewrites
+# either key signs its own grants. Reading them stays free; the rest of .orca/ is not guarded.
 _GUARD_FILES = (r"\.claude/settings[^/]*\.json|\.codex/hooks\.json|\.openhands/hooks\.json"
                 r"|\.agents/plugins/orca-deny-hook(/.*)?|\.opencode/plugins?/orca-deny-hook\.ts"
-                r"|\.crush/crush\.json|\.crush-orca-ro(/.*)?|\.hermes-open-fleet(/.*)?")
+                r"|\.crush/crush\.json|\.crush-orca-ro(/.*)?|\.hermes-open-fleet(/.*)?"
+                r"|\.orca/human-grant-pubkey|\.orca/dispatch-pubkey")
 _GUARD_DIRS = r"\.claude|\.codex|\.openhands|\.agents|\.agents/plugins|\.opencode|\.opencode/plugins?|\.crush"
 # Inside the worktree all of .open-fleet/ is the guard; OUTSIDE it only its hooks and
 # bridges are, because the fleet state dir (~/.open-fleet/state/...) holds the worktrees.
@@ -1954,7 +2950,8 @@ GUARD_SAMPLES = (".claude/settings.json", ".claude/settings.local.json", ".codex
                  ".openhands/hooks.json", ".agents/plugins/orca-deny-hook/hooks/hooks.json",
                  ".opencode/plugin/orca-deny-hook.ts", ".open-fleet/hooks/deny-hook.sh",
                  ".open-fleet/bridges/omp_pi_deny_bridge.ts", ".crush/crush.json",
-                 ".crush-orca-ro/crush.json", ".hermes-open-fleet/config.yaml")
+                 ".crush-orca-ro/crush.json", ".hermes-open-fleet/config.yaml",
+                 ".orca/human-grant-pubkey", ".orca/dispatch-pubkey")
 _GW = os.environ.get("OPEN_FLEET_UNIT_WORKTREE") or os.environ.get("ORCA_UNIT_WORKTREE") or ""
 _GROOT = os.path.realpath(_GW) if _GW else os.path.realpath(os.getcwd())
 _GSELF = {os.path.realpath(_p) for _p in (os.environ.get("DH_SELF"),
@@ -2012,8 +3009,8 @@ def _guarded_exact(p, deleting, base=None):
             if deleting or any(ch in rel for ch in "*?["):
                 if any(_glob_segments(segs, g.split("/"), deleting) for g in GUARD_SAMPLES):
                     return True
-        elif GUARD_ANY.search(cand):
-            return True
+        elif GUARD_ANY.search(cand) or (deleting and re.search(r"(^|/)\.orca/?$", cand)):
+            return True   # outside the unit too: deleting an .orca dir deletes its anchors
     if not norm.startswith("/") and GUARD_REL.search(norm):
         return True
     for me in _GSELF:
@@ -2154,13 +3151,6 @@ _RSYNC_ARG = ("-e", "--rsh", "-f", "--filter", "--exclude", "--include", "--excl
               "--rsync-path", "--address", "-@", "--modify-window", "--info", "--debug")
 # curl/wget short options that take an operand (the rest of the cluster, else the next word).
 _FETCH_ARG = {"curl": "oKdHuXAebcFTwxrmyYzCEPQtUD", "wget": "OoaiPtTwQUeBlARDXI"}
-# Interpreters that run code straight from argv, and the option letters that carry it.
-_INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs": "ep",
-                 "bun": "e", "php": "r"}
-_CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
-_CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
-                          r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
-                          r"|rmSync|>|open[^)]*[\x22\x27][rbt]*[wax+]")
 
 
 def _attr_targets(head, rest):
@@ -2257,29 +3247,53 @@ def _fetch_outputs(head, rest):
     return [o for o in outs if o and o != "-"]
 
 
-def _inline_code(head, rest):
-    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, ..."""
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
-    letters = _INLINE_FLAGS.get(key)
-    codes, i = [], 0
-    while letters and i < len(rest):
-        w = rest[i]
-        m = re.fullmatch(r"-([A-Za-z]*?)([%s])(.*)" % letters, w, re.DOTALL)
-        if w in ("--eval", "--print") and i + 1 < len(rest):
-            codes.append(rest[i + 1])
-            i += 1
-        elif m and not w.startswith("--"):
-            if m[3]:
-                codes.append(m[3])
-            elif i + 1 < len(rest):
-                codes.append(rest[i + 1])
-                i += 1
-            if key == "python":
-                break  # -c ends the python option list
-        elif key == "python" and not w.startswith("-"):
-            break  # a script path: what follows are its own arguments
+_FIND_NAME_TESTS = ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename")
+# Tokens after which a chain of tests can no longer be read as a plain conjunction.
+_FIND_UNPROVABLE = ("!", "-not", "-o", "-or", ",", "(", ")", "-regex", "-iregex")
+
+
+def _find_split(rest):
+    """(starting points, expression) of a find command, past -H/-L/-P/-D/-O options."""
+    i = 0
+    while i < len(rest) and rest[i] in ("-H", "-L", "-P") or (i < len(rest) and rest[i][:2] in ("-D", "-O")):
+        i += 2 if rest[i] == "-D" else 1
+    roots = []
+    while i < len(rest) and not rest[i].startswith(("-", "(", "!", ")", ",")):
+        roots.append(rest[i])
         i += 1
-    return codes
+    return roots, rest[i:]
+
+
+def _find_spots(root):
+    """(path as find prints it, basename) of every known guard file under one starting point."""
+    rabs = os.path.normpath(os.path.join(os.getcwd(), os.path.expanduser(root)))
+    out = []
+    for g in tuple(GUARD_SAMPLES) + tuple(_GSELF):
+        gabs = os.path.normpath(os.path.join(_GROOT, g))
+        if gabs == rabs or gabs.startswith(rabs.rstrip("/") + "/"):
+            rel = os.path.relpath(gabs, rabs)
+            shown = root if rel == "." else (root.rstrip("/") or "") + "/" + rel
+            out.append((shown, os.path.basename(gabs)))
+    return out
+
+
+def _find_may_match(tests, shown, name):
+    """False only when one test of a plain AND-chain cannot match this path."""
+    if any(t in _FIND_UNPROVABLE for t in tests):
+        return True
+    i = 0
+    while i < len(tests):
+        t = tests[i]
+        if t in _FIND_NAME_TESTS and i + 1 < len(tests):
+            subject, pat = (name if t in ("-name", "-iname") else shown), tests[i + 1]
+            if t[1] == "i":
+                subject, pat = subject.lower(), pat.lower()
+            if not fnmatch.fnmatchcase(subject, pat):
+                return False
+            i += 2
+            continue
+        i += 1
+    return True
 
 
 def guard_targets(words, depth=0):
@@ -2292,6 +3306,28 @@ def guard_targets(words, depth=0):
     if not ws:
         return []
     head, rest, out = ws[0].rsplit("/", 1)[-1], ws[1:], []
+    if head == "find":
+        # find ROOT... -delete, or -exec CMD {} (#598, PR #648 review): each guard file under a
+        # starting point is deleted unless the AND-chain of tests before the action PROVES it
+        # unmatched. A negation, -o, a group or -regex proves nothing; -iname/-ipath compare
+        # case-insensitively; -path is matched against the path as find prints it, absolute
+        # roots included. A -exec command is judged once per guard file it may receive as {}.
+        roots, expr = _find_split(rest)
+        for k, word in enumerate(expr):
+            if word not in ("-delete", "-exec", "-execdir", "-ok", "-okdir"):
+                continue
+            for root in roots or ["."]:
+                spots = _find_spots(root)
+                hits = [shown for shown, name in spots if _find_may_match(expr[:k], shown, name)]
+                if not spots and guarded(root, True):
+                    hits = [root]   # a guard this hook cannot enumerate: judge the root itself
+                if word == "-delete":
+                    out += [(shown, True) for shown in hits]
+                    continue
+                end = next((j for j in range(k + 1, len(expr)) if expr[j] in (";", "+")), len(expr))
+                for shown in hits:
+                    cmd = [w.replace("{}", shown) for w in expr[k + 1:end]]
+                    out += guard_targets(cmd, depth + 1) if depth < 3 else []
     if head == "git":
         sub = _git_sub(rest)
         if sub and sub[0] in ("rm", "mv"):
@@ -2374,21 +3410,27 @@ def guard_targets(words, depth=0):
                     out += guard_targets(a2, depth + 1)
             except ValueError:
                 pass  # an inner string the tokenizer cannot read is judged as written
-    # Interpreter code from argv that names a guard path beside a write-shaped call --
-    # open(..., "w"), os.chmod, unlink, a shell-out -- is judged a write to that path (P1-4).
-    # A script file, stdin, or a path the code assembles at run time stays beyond the text.
+    # Interpreter code that names a guard path beside a write-shaped call -- open with a write
+    # mode, os.chmod, unlink, a shell-out -- is judged a write to that path (P1-4), whether it
+    # comes from argv (python -c) or is fed on stdin or a heredoc (PR #648 review ...ZVy).
     for code in _inline_code(head, rest):
-        if not _CODE_WRITES.search(code):
-            continue
-        for m in _CODE_LITERAL.finditer(code):
-            lit = m[1] if m[1] is not None else m[2]
-            out.append((lit, False))
-            if depth < 3 and " " in lit.strip():
-                try:
-                    for _j, seg2 in _split(lit):
-                        out += guard_targets(_tokenize(seg2)[0], depth + 1)
-                except ValueError:
-                    out += [(w, False) for w in lit.split()]
+        out += _code_guard_targets(code, depth)
+    return out
+
+
+def _code_guard_targets(code, depth=0):
+    out = []
+    if not _CODE_WRITES.search(code):
+        return out
+    for m in _CODE_LITERAL.finditer(code):
+        lit = m[1] if m[1] is not None else m[2]
+        out.append((lit, False))
+        if depth < 3 and " " in lit.strip():
+            try:
+                for _j, seg2 in _split(lit):
+                    out += guard_targets(_tokenize(seg2)[0], depth + 1)
+            except ValueError:
+                out += [(w, False) for w in lit.split()]
     return out
 
 
@@ -2396,6 +3438,9 @@ _guard_hits = []
 if norm_tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     _guard_hits += [p for p in target_paths if guarded(p, False)]
 _guard_hits += [p for p in heredoc_targets if guarded(p, False)]
+# An interpreter fed a guard-path write on stdin or a heredoc, not only via -c (review ...ZVy).
+for _code in dict.fromkeys(_FED_INTERP):
+    _guard_hits += [p for p, deleting in _code_guard_targets(_code) if guarded(p, deleting)]
 # A `cd` earlier in the line moves every later relative target: `cd .claude && rm
 # settings.local.json` deletes the guard although neither word names it (#592). A cd the
 # text cannot resolve ($VAR, -, a glob) leaves only the basename to judge by.
@@ -2477,7 +3522,6 @@ def _never_git(ws):
 _RUNNERS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh", "fish", "csh",
             "tcsh", "source", ".", "eval", "perl", "ruby", "node", "nodejs", "deno", "bun", "php",
             "pwsh")
-_SUB_MARK = "__orca_substitution__"
 
 
 def _code_words(ws):
@@ -2506,6 +3550,9 @@ def _fetch_runs():
         except ValueError:
             heads = [[w] for w in sub.split()[:1]]
         fetch_sub = fetch_sub or any(h and h[0].rsplit("/", 1)[-1] in _FETCH_ARG for h in heads)
+    # echo "$(curl …)" | sh: a substitution piped into a shell that runs its stdin (#598).
+    if fetch_sub and _FED_SUB:
+        return True
     fetched = set()
     for ws, writes, seg in _all_views:
         if not ws:
@@ -2531,7 +3578,69 @@ if _fetch_runs():
     _never.append("Running a script fetched from the network in the same command.")
 if _never:
     record("N", _never[0])
-' 2>/dev/null) || {
+_hard = [why for why in (_alias_refusal(_vw) for _vw, _w, _sg in _all_views) if why]
+if _hard:
+    record("D", _hard[0])
+
+
+# R: the line the as-written never-list pass reads (#598, from #602). That pass ran over the raw
+# text so curl … | sh still read as a pipe, and so it ASKED about a never-list shape that was
+# only quoted as data: git commit -m "explain why rm -rf / is refused", echo "rm -rf /". R keeps
+# every segment and its real operator, but drops what only carries text -- echo and printf
+# arguments, a git -m or gh --body/--title operand -- and reads a body (sh -c, eval, trap, a
+# fed program …) the same way. Anything that runs is judged by the C records regardless.
+_DATA_HEADS = ("echo", "printf", ":", "true", "false")
+_MESSAGE_OPTS = {"git": ("m", ("--message",)), "gh": ("bt", ("--body", "--title"))}
+
+
+def _data_dropped(ws):
+    head = ws[0].rsplit("/", 1)[-1] if ws else ""
+    if head in _DATA_HEADS:
+        return ws[:1]
+    letters, longs = _MESSAGE_OPTS.get(head, ("", ()))
+    if not letters:
+        return ws
+    out, skip = [], False
+    for w in ws:
+        if skip:
+            skip = False
+        elif w.startswith("--") and w.split("=", 1)[0] in longs:
+            out.append(w.split("=", 1)[0])
+            skip = "=" not in w
+        elif re.fullmatch(r"-[A-Za-z]*[%s]" % letters, w):
+            out.append(w)
+            skip = True
+        elif len(w) > 2 and not w.startswith("--") and w[:2] in ["-" + x for x in letters]:
+            out.append(w[:2])   # the text glued to its option
+        else:
+            out.append(w)
+    return out
+
+
+def _rline(text, depth=0):
+    out = []
+    for join, seg in _split(text):
+        try:
+            words = _command_words(_tokenize(seg)[0])
+        except ValueError:
+            words = seg.split()
+        body = _inner_body(words) if depth < 3 and words else None
+        if body is not None:
+            try:
+                lines = chr(10).join(_expand(body)[0])   # heredoc data out, live text in
+            except ValueError:
+                lines = body   # a body this reader cannot split is read as written
+            words = words[:1] + [_rline(lines, depth + 1)]
+        else:
+            words = _data_dropped(words)
+        sep = {"|": " | ", "&&": " && "}.get(join, " ; ") if out else ""
+        out.append(sep + " ".join(words))
+    return "".join(out).replace(_QNL, " ").replace(chr(10), " ").replace(chr(13), " ")
+
+
+record("R", "=" + _rline(_judged))
+'
+FIELDS=$(printf '%s' "$PAYLOAD" | { printf '%s' "$_READER" | python3 -I - 3<&4 4<&- 2>/dev/null; } 4<&0) || {
   # Exit 2 UNCONDITIONALLY: OpenHands and jcode fail OPEN on exit 1 and on an
   # exit-0 reply they cannot attribute, and Claude Code reads exit 2 as block.
   HOOK_STRICT=1
@@ -2562,13 +3671,21 @@ if printf '%s\n' "$FIELDS" | sed -n '4,$p' | grep -q '^S '; then HOOK_STRICT=1; 
 guard_check() {
   _GUARD_HIT=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^G //p' | sed -n '1p')
   if [ -n "$_GUARD_HIT" ]; then
-    decide deny "deny-hook[HIGH]: '$_GUARD_HIT' is part of this worker's own guard (a hook config or deny-hook.sh itself). A worker never edits, overwrites or removes the hook that bounds it; ask the coordinator to change the wiring."
+    decide deny "deny-hook[HIGH]: '$_GUARD_HIT' is part of this worker's own guard (a hook config, a pinned trust anchor under .orca/, or deny-hook.sh itself). A worker never edits, overwrites or removes the hook that bounds it; ask the coordinator to change the wiring."
     exit 0
   fi
 }
 
 if printf '%s\n' "$FIELDS" | grep -q '^E '; then
   decide deny "deny-hook[HIGH]: off-repo write without its egress receipt. Precede the send in the same command — egress.py write … && <this gh command> — so what left the machine is on the hash-chained record (merge-serialization.md, #368). The receipt comes first: the send may be the last thing this process does. One receipt covers exactly one send, and only on the success path (&&)."
+  exit 0
+fi
+
+# D: a refusal the payload reader judged with a reason of its own (#598): a gh alias that hides
+# an off-repo write, or an alias file whose expansions are unreadable.
+_HARD=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^D //p' | sed -n '1p')
+if [ -n "$_HARD" ]; then
+  decide deny "deny-hook[HIGH]: $_HARD"
   exit 0
 fi
 
@@ -3198,7 +4315,10 @@ git_redirected() {
 # git itself rejects) keeps every destructive meaning it could carry but never
 # grants a lease — a newer git that adds an option can only make it ambiguous.
 push_policy() {
-  python3 -I -c 'import sys
+  # The command arrives on stdin, not as an argument: a git push padded past the
+  # 128 KiB argv-string limit made python3 fail to start on Linux, CMD came back
+  # empty, and no push rule below could match it (PR #648 review sweep).
+  printf '%s' "$1" | python3 -I -c 'import sys
 LONG = {"verbose": 0, "quiet": 0, "repo": 1, "all": 0, "branches": 0,
         "mirror": 0, "delete": 0, "tags": 0, "dry-run": 0, "porcelain": 0,
         "force": 0, "force-with-lease": 0, "force-if-includes": 0,
@@ -3218,7 +4338,7 @@ def canon(word):
     if len(hits) == 1:
         return ["--" + hits[0] + eq + value]
     return [word] + ["--" + n for n in DANGER if n in hits]
-words = sys.argv[1].split()
+words = sys.stdin.read().split()
 out, skip, options = [], False, True
 lease, force = False, False
 for raw in words:
@@ -3277,7 +4397,7 @@ if force:
     out.append("--force")
 elif lease:
     out.append("--force-with-lease")
-print(" ".join(out))' "$1"
+print(" ".join(out))'
 }
 
 # The C records carry PRE-SPLIT, word-normalized commands from the payload reader above. They
@@ -3331,7 +4451,11 @@ for _SEG in "$@"; do
   # `git push origin :main`, `-d` and `--delete` carry no force flag at all and
   # sailed under both force rules (#297).
   if has '^[[:space:]]*(sudo[[:space:]]+)?git[[:space:]]+push([[:space:]]|$)'; then
-    CMD=$(push_policy "$CMD")
+    CMD=$(push_policy "$CMD") || {
+      HOOK_STRICT=1
+      decide deny "deny-hook: the git push options could not be read. Fail-closed."
+      exit 2
+    }
     # --mirror force-updates AND deletes every remote ref the local repo lacks;
     # --prune deletes every remote ref its refspecs no longer map — either can
     # remove the default branch without naming it, so no text here can show
@@ -3537,7 +4661,11 @@ never_list() {
 # downloaded file (2026-10-23 review, P2-12, section 5).
 _NEVER=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^N //p' | sed -n '1p')
 [ -z "$_NEVER" ] || ask "$_NEVER"
-CMD=$FULL_CMD
+# R: the segments with their real operators and with quoted DATA dropped (echo/printf text, a
+# commit or PR message), so an example is not asked about (#598). FULL_CMD only if R is absent.
+_R=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^R //p' | sed -n '1p')
+CMD=${_R#=}
+[ -n "$_R" ] || CMD=$FULL_CMD
 never_list
 CMD=
 for _SEG in "$@"; do

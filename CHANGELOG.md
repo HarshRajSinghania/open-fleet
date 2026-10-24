@@ -55,6 +55,91 @@ truth is `.claude-plugin/plugin.json`.
     scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
     live runs and publishing a recommendation remain open. Both need the owner to authorise the
     spend.
+- **The deny-hook starts on Linux again** (#598, PR #648 review). Its ~135 KB payload reader
+  was passed as one `python3 -c` argument, past Linux's 128 KiB cap on a single argv string
+  (MAX_ARG_STRLEN), so python3 never started and every hooked tool call was refused as an
+  unreadable payload; macOS caps only the total and passed. The reader now reaches python3 on
+  a pipe (`python3 -`, payload on fd 3; no temp file), and `push_policy` reads the command on
+  stdin, so a git push padded past the cap cannot empty it. A test intercepts every child the
+  hook starts, refuses any string over 131,072 bytes as Linux does, and holds each argv and
+  environment string under 100,000 bytes on any host; hook latency is unchanged.
+- **The deny-hook reads who reads a body structurally** (#598, PR #648 review). Each simple
+  command is its words plus its redirections wherever they sit, and each pipeline stage (after
+  `|` or `|&`) a command with its own standard input: a heredoc or here-string is read by the
+  command owning its `<<`/`<<<` on fd 0, never by its place in the line. `echo safe | bash <<<
+  'gh issue close 34'` and `bash > /dev/null <<EOF … EOF` were allowed with no receipt, and the
+  sweep found more readers the hook missed for every rule: `|&` pipes, `cat`/`tee` stages,
+  `sh 0<<EOF`, `3<<B 0<&3`, groups, loops, `exec`, function calls (and a glued `f(){ …;}`
+  head), `xargs`, `read` then `$l`, `sh <(…)`, `sh < <(…)`, `sh /dev/stdin`, `$(cat)` reading
+  the pipe and `eval "$(cat <<< …)"`. Sources are unioned (zsh reads them all). The corpus
+  gains a stdin family (every source × redirection form and position × pipeline position, run
+  under bash and dash; 0 misses, 234 at `231a823379`), its sentinel now stands for a binary,
+  and each part of the reader has a mutation control.
+- **The deny-hook closes two more PR #648 review findings** (#598). Every heredoc and
+  here-string a shell reads is judged for its receipt, not only the first on the line:
+  `sh <<A <<B` runs the second body, and `cat <<< … | sh` and a heredoc inside `$(…)` are fed
+  programs too. A launcher that may run its command more than once (`watch`, `find -exec`/
+  `-execdir`/`-ok` with `;` or `+`, `fd -x`/`-X`, `xargs`, `parallel`, `entr`, zsh `repeat`, a
+  `while`/`until` condition) is never armed by an outer receipt: one receipt covers one send,
+  so the receipt must sit inside the repeated command. The sweep also found `fd -x`/`-X`, `entr`
+  and zsh `repeat` were not read as launchers at all, so any refused command behind them was
+  allowed. The corpus gains a receipt mode (a receipt sentinel counted per send at run time), a
+  multiple-heredoc family and a repeat family; each finding is a fixture RED at `78fa56bc1e`,
+  with mutation controls for the new safeguards.
+- **The deny-hook closes eight PR #648 review findings** (#598). A filtered `find … -delete` or
+  `find … -exec` reaching a pinned key now denies unless the whole predicate chain proves the key
+  unmatched (case-folding `-iname`/`-ipath`, matching `-path` as `find` prints it); `printf`/`echo`
+  escapes (`\xHH`, `\NNN`) are decoded before a fed program is read; a `trap`, `alias` or
+  `gh alias set` send is denied regardless of an outer receipt (the receipt must sit inside the
+  saved action); `parallel` completes its template with each `:::` argument before judging;
+  interpreter input fed on stdin or a heredoc reaches the guarded-key check, not only `python -c`;
+  a receipt `&&`-before a shell fed by a pipe or heredoc now arms the send it runs; interpreter
+  code is judged only for the literals it hands to an exec call, not every string it prints; and a
+  written-then-run script is tracked by resolved path, so two files named `run.sh` no longer share.
+  The corpus gains a guard-path mode (find predicates over every guarded path), an escaped-command
+  family and a parallel family; each finding is a fixture RED at `c8b984e180`, with mutation
+  controls for the new safeguards.
+- **The deny-hook is differential-tested against real bash** (#598). `scripts/deny_hook_corpus.py`
+  runs each generated template with an inert sentinel in a throwaway bash and feeds the same
+  template holding a refused command only to the hook; quote state, backslash parity,
+  continuations, heredoc delimiters, comments, nested substitutions and deferred forms are
+  covered, misses fail CI, false denials are scored apart, every mismatch is a minimized fixture
+  with its bash version and seed, and switching off each parser safeguard is caught. The 43
+  misses it found are closed: trap actions, alias values, gh shell aliases, `flock`/`su`/
+  `runuser`/`script`/`watch`/`parallel`/`ssh`/`find -exec` commands, programs fed to a shell
+  on stdin or written and run in the same command, variable or substitution command heads,
+  interpreter code handing a literal to `os.system`/`subprocess`, nested backticks, newlines in
+  a `-c` body, case patterns in `$( )` and `${ cmd; }` are judged; `chroot`, `unshare`,
+  `nsenter` and `strace` are peeled; a `gh alias` hiding an off-repo write is refused. From
+  #602: a never-list shape only quoted as data (`git commit -m`, `echo`, comments) is no longer
+  asked about, and `.orca/human-grant-pubkey` / `.orca/dispatch-pubkey` are guarded like the
+  hook's own config. Supported shell versions and what stays beyond the text are documented in
+  `docs/runtime-scripts.md`.
+- **Instruction-load reductions can now be tested without spending, and without dropping a safety
+  obligation** (#606). The paired ablation is pre-registered, and everything short of the live runs
+  is built, so a run is one command away once the owner authorises a spend cap. The live runs and
+  the recommendation have not happened yet.
+  - [`docs/experiments/ablation-prereg.md`](docs/experiments/ablation-prereg.md) and its
+    [JSON](docs/experiments/ablation-prereg.json) register the experiment: the mission and task mix, the exact prompts, the model and harness
+    fields to fill at run time, the seeds and repeats, the deferred-read rules, the safety
+    obligations and the metrics. The page pins the JSON's bytes.
+  - The registration proposes a cost cap of USD 750, marked `PENDING OWNER AUTHORISATION`. The
+    live spend guard is pre-emptive: a cell starts only if the cap still covers the worst case of
+    its agent and grader calls, and each call carries its own `--max-budget-usd` limit.
+  - `scripts/ablation.py generate` writes a mission's reduced variant mechanically: registered
+    documents move behind `<name>.md at <PHASE>` cues, and their obligation lines are copied
+    verbatim into a minimal contract. The variant goes to an output directory, never over
+    `skills/`. Its token delta is `validate.py`'s own `transitive_load`.
+  - A static check fails any variant that drops an obligation or defers it past its phase.
+    Applicability is read off the baseline, so unloading a document cannot shrink the set of
+    obligations checked.
+  - `ablation.py run` pairs both arms through the routing, behavioral, #602 trajectory and #603
+    usage oracles, and reports per-mission effects with bootstrap intervals and McNemar p. A
+    cheaper prompt that misses an obligation is reported `REJECTED_OBLIGATION`.
+  - `--dry-run` drives the whole pipeline with an inert stand-in behind first_run.py's tripwires,
+    and is labelled not evidence. Every tier refuses to start without `--cost-cap-usd`. A live run
+    is also refused until the registration records an authorised cap.
+  - No mission, budget, cap or proof tier changes, and no 5,000-token target is set.
 
 - **Coordinator git reads neutralise repository-config command execution** (#629). Global and
   system config were already off, but a worker that can write its worktree's `.git/config` (and

@@ -1,0 +1,58 @@
+#!/usr/local/bin/python3 -I
+"""`claude` inside the open-fleet live harness's arm container (scripts/live_container.py).
+
+The arm's container holds no credential. The subscription token is in the broker's container
+(scripts/live_broker.py), which shares only its network namespace with this one. This wrapper is
+first on the container's PATH: it waits for the broker to answer, then execs the pinned Claude
+Code with ANTHROPIC_BASE_URL set to the broker and a placeholder credential, which the broker
+replaces with the token. Every model call is priced against the broker's cap, whichever process
+of the arm makes it. A version query needs no broker. A broker that never answers refuses, exit 2.
+"""
+import os
+import sys
+import time
+import urllib.request
+
+BROKER = "http://127.0.0.1:8787"  # scripts/live_broker.py's PORT, in the shared network namespace
+PLACEHOLDER = "open-fleet-live-broker"  # never a credential: the broker puts the token in its place
+REAL = "/home/runner/.local/share/claude/versions/2.1.304"  # pinned: never the auto-updated symlink
+WAIT_S = 60
+# Credentials or endpoints an arm's environment might carry: claude gets the broker's alone.
+DROP = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+        "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+def refuse(why):
+    sys.stderr.write(f"claude (open-fleet live harness): {why}\n")
+    return 2
+
+
+def broker_ready(wait_s=WAIT_S):
+    """True once the broker answers /health, polling until `wait_s` has passed."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            with opener.open(BROKER + "/health", timeout=5) as resp:
+                if resp.status == 200:
+                    return True
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.5)
+
+
+def main(argv):
+    env = {k: v for k, v in os.environ.items() if k not in DROP}
+    if argv[:1] in (["--version"], ["-v"]):
+        os.execve(REAL, [REAL, *argv], env)
+    if not broker_ready():
+        return refuse(f"no credential broker answers at {BROKER} after {WAIT_S} s: run this arm through "
+                      "scripts/live_container.py, which starts it")
+    env.update({"ANTHROPIC_BASE_URL": BROKER, "ANTHROPIC_AUTH_TOKEN": PLACEHOLDER})
+    os.execve(REAL, [REAL, *argv], env)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

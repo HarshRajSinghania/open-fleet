@@ -1,0 +1,276 @@
+# Run a paid live arm in the container harness
+
+Every paid live experiment arm runs one way: inside a fresh, disposable Linux container that
+[`scripts/live_container.py`](../../scripts/live_container.py) starts, watches and destroys,
+beside a credential broker in a container of its own. On a plain host every paid live path
+refuses, exit 2, before it reads or reserves anything
+([`containment.py`](../runtime-scripts.md#containmentpy)). This page is for the operator who runs
+one. It covers building the image, supplying the token, the command for each arm, and what the
+receipt proves.
+
+The arms are `wip_curve` (#604), `ablation` (#606), `hint_replay` (#605), `trajectories` (#602) and
+`first_run` (#596). Each spends money. Run one only under the spend its owner authorised: that
+cap goes to the broker as `--cap-usd`, and to the arm's own cap flags.
+
+## Why a container
+
+A paid call's processes are found by the `OF_CALL_ID` marker in their environment, so a sweep can
+end every one of them, a detached descendant included. On macOS that cannot be proven: `ps -E`
+does not show an Apple system binary's environment (`/bin/sh`, `/bin/sleep`), so a shell a worker
+detached is invisible. Inside a Linux container `/proc/<pid>/environ` shows every process, so the
+strong containment probe passes. Destroying the container is the final backstop. It also ends a
+process that escaped in-process containment, including one that cleared its own environment.
+
+## Why a broker
+
+The arm's container runs the agents as uid 10001, and every test those agents write runs as the
+same user. A token mounted there would be readable by any of them, copied, or used for calls no
+ledger records. So the token never enters the arm's container. It is mounted into the broker's
+container, which runs [`scripts/live_broker.py`](../../scripts/live_broker.py) and nothing else.
+The arm's container shares the broker's network namespace and nothing more: no file, process or
+environment of it.
+
+Inside the arm's container, `claude` on `PATH` is
+[`scripts/live_container_bin/claude`](../../scripts/live_container_bin/claude). It waits for the
+broker, then execs the pinned Claude Code with `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` and a
+placeholder credential, dropping any credential, endpoint or proxy the arm's environment carries.
+The broker forwards `POST /v1/messages` and `/v1/messages/count_tokens` to the API with the token
+in place of the placeholder. It refuses every other request. It also refuses any call it cannot
+price. A call passes only when its model is on the broker's price list, it carries a positive
+`max_tokens`, every field is one the broker prices, and every tool is the client's own, wherever
+it is defined: in `tools`, or inside a message. Its content must also be inline and bounded by its
+bytes. So the broker refuses an image or document
+by URL or file id, a PDF, an advisor or other server-side tool, an MCP server, server-side
+compaction, a service tier, and an inference geography other than global or US. Each is billed
+beyond what the request's bytes bound.
+
+**The cap.** A call starts only when the broker's settled spend, the reservations of the calls in
+flight and the call's own reservation fit under `--cap-usd`. A reservation is the call's worst
+case: every byte of its body as a 1-hour cache-write input token, plus 4,096 tokens of framing and
+4,800 for each inline image, and all of its `max_tokens` as output, at its model's highest list
+price, times 2 for fast mode and 1.1 for US inference. A request that names no geography runs in
+your workspace's default, which may be US, so it reserves at the 1.1 premium. Each call settles at
+the geography the API reports it ran in, and at the premium when the API reports none. When the call ends, the
+broker settles the usage the API reported, at the price the API bills. A call that ends without a
+complete usage report settles its whole reservation. A refused call reaches the arm as an API
+error (`permission_error`, "the spend cap … would be passed"). Near the cap, reservations stop
+calls before the settled spend reaches it. Set each arm's own cap flag at or below `--cap-usd`,
+so the arm stops itself first.
+
+The broker prices at the Claude API's list prices of 2026-10-06. On the live smoke call, the
+broker settled Haiku 5.5 at $0.000904, and Claude Code reported $0.00090427 for the same call.
+
+## What the harness guarantees, and what it does not
+
+The launcher starts both containers with these properties:
+
+- the arm runs as the image's non-root user (uid 10001), and the broker as you: your own uid and
+  gid, so it can read your 0600 token file and write its ledger on any Docker host. The launcher
+  refuses to run as root. Each has `--rm`, a pids limit, a memory limit (no swap above it) and a
+  CPU limit. The arm's limits are yours to set; the broker's are fixed (64 pids, 512 MB, one CPU);
+- each has no capability (`--cap-drop ALL`), `no-new-privileges`, no `--privileged`, no host
+  namespace, no published port, no device and no docker socket;
+- the token reaches only the broker: your token file, which may not sit inside the results or
+  the checkout, since the arm's container mounts both, mounted read-only at
+  `/run/secrets/claude_token`. It is never in either container's environment, so `docker inspect`
+  does not show it. It is never on a command line, in the receipt or in the saved output either.
+  The output passes a redactor before it reaches the disk, so any occurrence is replaced with
+  `[REDACTED]` and counted. The log is created mode 0600;
+- both see `/repo`, a read-only, self-contained export of your checkout's `HEAD`. The launcher
+  refuses a dirty tree, so the containers run a commit. Nothing they write reaches your checkout,
+  its `.git` or its ignored files, such as a `.env`;
+- the arm sees `/results`, its one read-write directory, which is also its working directory. Its
+  own ledger and evidence outlive the container there. **Every output flag must name a path under
+  `/results`**: `--results` and `--out` for `wip_curve`, `--out` for `ablation`, `hint_replay` and
+  `trajectories`, and `--workdir` for `first_run`. The launcher refuses any other path, and an
+  abbreviation of one of those flags. `ablation`, `hint_replay` and `trajectories` must also
+  name an `--out`, and `first_run` a `--workdir`, because each one's default is a temp dir that
+  dies with the container;
+- the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line for each
+  call it opens, starts, settles or refuses. It never holds the token, a request or a response;
+- the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
+  commit, the arm and the image. The broker's container is named `of-live-<nonce>`, and the arm's
+  container inherits that hostname with the network namespace. The receipt records the same nonce;
+- one launch runs at a time. A launch holds `~/of-live/live-harness.lock` from its check for
+  leftover containers until its receipt is written;
+- it runs under a wall-clock limit. At the limit the launcher kills and removes both containers,
+  then checks with `docker ps -a --filter label=org.open-fleet.live-harness=<nonce>` that neither
+  exists. A docker call that fails or times out during the teardown is recorded in the receipt,
+  and the remaining steps still run, so the receipt is always written. An in-container `timeout`
+  120 s past the limit is the backstop if the launcher itself dies.
+
+Inside the arm's container a paid entry point lifts its refusal only when three facts hold
+(`containment.harness_problem`): a container marker (`/.dockerenv` or `/run/.containerenv`), an
+attestation whose nonce matches the container's own hostname, and a passing strong probe. No
+environment variable or flag lifts it. On any host without those facts every live path refuses
+as before.
+
+**The limit.** This guards against accidents on the host. It does not guard against an operator
+who deliberately fakes a container. With root, anyone can write a `/.dockerenv`, an attestation
+and a matching hostname on a Linux host. The attestation ties a container to its launch and
+receipt; it is not proof against an adversary. Network egress is not restricted: the arm's tools
+can reach the internet, but no process of the arm holds a credential, and every model call goes
+through the broker's cap.
+
+## Before you start
+
+- **OrbStack** on macOS, or Docker Engine on Linux. The broker runs as you, so it reads your
+  token file and writes its ledger on either. The arm runs as uid 10001 and must be able to write
+  the results directory. On OrbStack a bind mount shows its files as owned by the container's
+  user, so it can. On Docker Engine on Linux, give uid 10001 write access to the results directory
+  (for example `setfacl -m u:10001:rwx <results>`).
+- A **clean checkout** at the commit you mean to run. `git status` must show nothing, untracked
+  files included.
+- The arm's **authorised cap**, for `--cap-usd` and for the arm's own cap flags.
+
+## 1. Build the image
+
+```bash
+python3 scripts/live_container.py build
+```
+
+This builds `open-fleet-live:claude-2.1.304` from
+[`scripts/live_container.Dockerfile`](../../scripts/live_container.Dockerfile). The base,
+`python:3.13.15-slim`, is pinned by digest. The image adds git, and installs Claude Code 2.1.304
+with its official installer as the non-root user. The build fails on any other version. This is
+the only step that downloads anything. The image carries the Dockerfile's sha256 as a label. A
+receipt records whether its image was built from the Dockerfile at that commit. Both containers
+run this image.
+
+## 2. Store the token
+
+```bash
+mkdir -p ~/of-live && claude setup-token    # copy the token it prints
+install -m 600 /dev/null ~/of-live/oauth-token && $EDITOR ~/of-live/oauth-token
+```
+
+The file holds the token alone, on one line. The launcher refuses a missing file, a file others can
+read, a symbolic link, and an empty file, and it never prints the file's contents. Use
+`--token-file` for another path. The launcher mounts this file, read-only, into each broker
+container it starts; nothing copies it anywhere else.
+
+## 3. Run one arm
+
+Each command has the same shape:
+
+```bash
+python3 scripts/live_container.py run --arm <arm> --results <host dir> --timeout <seconds> --cap-usd <authorised USD> -- <the arm's own arguments>
+```
+
+Inside the container the repository is `/repo` and `<host dir>` is `/results`, the working
+directory. Anything written outside `/results` is destroyed with the container. A command that
+names a script runs it as `/repo/scripts/...`. Pass `--harness-version "2.1.304 (Claude Code)"`
+where an arm asks for one: that is the container's harness, not your host's. Name models by an id
+the broker prices (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, or an alias Claude
+Code resolves to one).
+
+**wip_curve** (#604, [pre-registration](../experiments/wip-curve-prereg.md)). Run one scheduled run
+per launch, then report inside the harness as well. The report re-runs worker-written oracles:
+
+```bash
+python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-curve --timeout 14400 --cap-usd <authorised> -- \
+  run --results /results/experiment --workdir /results/sandboxes --worker live --agent claude \
+  --model <pinned model id> --cost-cap-usd <the authorised cap> \
+  --reservation-usd <the authorised reservation> --next 1
+python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-curve --timeout 3600 --cap-usd <authorised> -- \
+  report --results /results/experiment
+```
+
+**ablation** (#606, [pre-registration](../experiments/ablation-prereg.md)):
+
+```bash
+python3 scripts/live_container.py run --arm ablation --results ~/of-live/ablation --timeout 43200 --cap-usd <authorised> -- \
+  run --tier live --cost-cap-usd <authorised> --model <model id> --harness-version "2.1.304 (Claude Code)" \
+  --harness-cmd 'claude -p --output-format stream-json --permission-mode acceptEdits' --out /results/out
+```
+
+For #602's trajectory cells, use
+`--harness-cmd 'python3 /repo/scripts/trajectory_harness.py claude -p --verbose --output-format stream-json --permission-mode acceptEdits'`.
+
+**hint_replay** (#605, [`hint_provenance.py`](../runtime-scripts.md#hint_provenancepy)):
+
+```bash
+python3 scripts/live_container.py run --arm hint_replay --results ~/of-live/hint-replay --timeout 7200 --cap-usd 40 -- \
+  --live --tier live --model sonnet \
+  --agent-cmd 'claude -p --model sonnet --output-format json --permission-mode acceptEdits' \
+  --budget-usd 40 --per-call-usd 2 --agent-limit-flag=--max-budget-usd \
+  --max-runs 18 --attempts 3 --out /results/results.json
+```
+
+**trajectories** (#602, [adversarial evals](../adversarial-evals.md#running-the-live-arm)). The
+launcher supplies `run --suite trajectories`:
+
+```bash
+python3 scripts/live_container.py run --arm trajectories --results ~/of-live/trajectories --timeout 14400 --cap-usd <authorised> -- \
+  --tier live --all-live \
+  --agent-cmd 'claude -p --verbose --output-format stream-json --disallowedTools TodoWrite,Task,WebFetch,WebSearch,NotebookEdit' \
+  --model <exact model id> --harness-version "2.1.304 (Claude Code)" \
+  --cost-cap-usd <authorised USD> --repeats 5 --out /results/out
+```
+
+**first_run** (#596, [certification](../certification.md)). It has no spend guard of its own, so
+the broker's `--cap-usd` is its cap. Its `--json` receipt goes to the launcher's saved output, and
+its `receipt.json` goes to the `--workdir`:
+
+```bash
+python3 scripts/live_container.py run --arm first_run --results ~/of-live/first-run --timeout 3600 --cap-usd <authorised> -- \
+  run --worker live --agent claude --profile ro --keep --workdir /results/ro --json
+```
+
+To check the setup without spending, run an inert or fixture tier the same way, for example
+`--arm first_run --cap-usd 1 -- run --worker inert --workdir /results/inert`.
+
+`--pids-limit` (default 4096), `--memory` (8g) and `--cpus` (4) set the arm's limits. `--receipts`
+(default `~/of-live/receipts`) sets where receipts and broker ledgers go. It may not overlap the
+results or the checkout: the arm's container can write to the results, and the receipt and the
+broker's ledger must stay out of its reach.
+
+## 4. Read the receipt
+
+Each launch writes `<receipts>/<UTC stamp>-<arm>-<nonce prefix>.json`. Beside it are the arm's
+output as `.log` and the broker's ledger in `.broker/spend.jsonl`. The receipt holds:
+
+| Field | What it records |
+|---|---|
+| `arm`, `arm_args`, `argv` | The arm, your arguments, and the exact command the container ran |
+| `commit` | The checkout's `HEAD`, which `/repo` held |
+| `image` | The image's id and digests, its labels, and `from_committed_dockerfile` |
+| `nonce`, `hostname` | The attestation's nonce, and the hostname derived from it |
+| `container` | The arm's container: its id, user, limits and mounts |
+| `broker` | The broker's container, its cap, and `spend`: calls started, refused and settled, the settled USD, and any call still open when it was destroyed with its reservation |
+| `started_at`, `ended_at`, `elapsed_s`, `wall_clock_limit_s` | When it ran, against the limit |
+| `timed_out`, `interrupted`, `refused`, `exit_status` | How it ended: the limit, a signal, a refused start after a container was created, or the arm's own exit |
+| `destroyed` | `verified: true` only when `docker ps -a --filter label=…=<nonce>` lists nothing; `errors` lists every teardown step that failed to run or timed out, and `nonzero` every one that exited nonzero (a container `--rm` already removed answers that way too) |
+| `token`, `token_redactions` | The token file's path and where the broker mounted it (never its value), and how many times the output carried it |
+
+The receipt proves that one arm ran at that commit, in that image, in containers that no longer
+exist, and what the broker let it spend. It does not prove the arm's result. That is the arm's
+own evidence under `/results`, a `live-unreviewed` tier until a maintainer binds it in a run report
+under [`docs/runs/`](../runs/README.md).
+
+The launcher's exit is the arm's exit status once both containers are verified destroyed. It
+exits 2 for a refused start, after destroying whatever it created. It exits 3 when a container
+could not be verified destroyed (fail closed: run `docker ps -a --filter
+label=org.open-fleet.live-harness`), and 124 when the limit ended the run.
+
+## When it refuses
+
+| Message | Fix |
+|---|---|
+| `the checkout … is dirty` | Commit or remove the listed paths |
+| `no image …: build it first` | Run step 1 |
+| `another launch holds …live-harness.lock` | One arm runs at a time. Wait for the other launch to end |
+| `a harness container already exists` | A launch left one behind. Inspect the leftover, then `docker rm -f` it |
+| `the token file … is readable by others` | `chmod 600` the file |
+| `the <arm> arm needs --out under /results` | Name an `--out` under `/results` |
+| `--out … is outside /results` | Write every output under `/results` |
+| `--cap-usd must be a positive number of dollars` | Pass the arm's authorised cap |
+| `--token-file … is inside --results` (or the checkout) | Keep the token file outside both: the arm's container mounts them |
+| `the broker never answered` | The broker could not start: it could not open the token file or its ledger, or the image is broken |
+| `run the launcher as yourself, not root` | The broker runs as the launcher's user. Run the launcher as an ordinary user |
+| `claude (open-fleet live harness): no credential broker answers` | `claude` ran in a container this launcher did not start |
+| `open-fleet live broker: …is billed beyond…` (or `…not priced`) | The arm sent content, a tool or a field the broker cannot price. It refuses rather than spend unmetered |
+| `open-fleet live broker: the spend cap ($…) would be passed` | The arm reached `--cap-usd`. The receipt's `broker.spend` shows what it settled |
+| `open-fleet live broker: no price for model …` | Name a model the broker prices |
+| `--receipts … overlaps --results` | Put the receipts outside the results |
+| `live runs are disabled outside the container-based live harness` | You ran an arm directly on the host. Run it through this launcher |

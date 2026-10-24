@@ -38,14 +38,95 @@ CELLS = ("mission", "target", "ran_as", "binds", "outcome")
 REQUIRED = ("date", "report") + CELLS
 OPTIONAL = ("summary", "order")
 _LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")  # relative Markdown links
-_HTML_LINK_RE = re.compile(r"""<[a-z][a-z0-9-]*\b(?:[^>"']|"[^"]*"|'[^']*')*?\b(?:href|src)\s*=""",
-                           re.IGNORECASE)  # quote-aware: a ">" inside a value does not end the tag
+# Raw HTML read as CommonMark reads it: a COMPLETE open tag, quote-aware, carrying an attribute
+# named exactly href or src (Codex at 54fe725bee: `data-href` and an unclosed `x<a` were refused).
+_TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
+_TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
+                          re.IGNORECASE)
+_TAG_END_RE = re.compile(r"\s*/?>")
+# Where a Markdown block may end: a code span never crosses one (CommonMark: inlines are parsed
+# within a block). A blank line, or a line whose first mark, at any indentation (a list item's
+# blocks sit deeper), can open or close a block: a list item, a setext underline or thematic
+# break, a heading, a quote, a table row, an HTML block or a fence. It over-approximates on
+# purpose (Codex at 8585b35789 and 3c01b90b5e): a span cut short can only reveal a tag, never
+# hide one.
+# A line that may open a raw HTML block, where backticks are literal: its first mark is `<`.
+_HTML_LINE_RE = re.compile(r"(?m)^[ \t]*<")
+
+# A fenced code block's opening line (at any indentation): literal to its closing fence (Greptile
+# at 8585b35789: a list marker inside the fence ended the span check early and flagged an example).
+_FENCE_RE = re.compile(r"([ \t]*)(`{3,}|~{3,})([^\n]*)")
+
+
+def _fence_end(text, fence):
+    """Where scanning resumes after the fenced block `fence` opens: after its closing fence, or at
+    the first later line indented less than the fence, where the container holding it (a list
+    item) ends and the fence with it, so no tag after that is hidden; else the text's end."""
+    indent, mark = len(fence.group(1).expandtabs(4)), fence.group(2)
+    closing = re.compile(rf"{re.escape(mark[0])}{{{len(mark)},}}[ \t]*")
+    pos = text.find("\n", fence.end())
+    while pos != -1:
+        start, end = pos + 1, text.find("\n", pos + 1)
+        line = text[start:end if end != -1 else len(text)]
+        body = line.lstrip(" \t")
+        if body and len(line[:len(line) - len(body)].expandtabs(4)) < indent:
+            return start
+        if closing.fullmatch(body):
+            return end if end != -1 else len(text)
+        pos = end
+    return len(text)
+
+
+def _block_start(text, i):
+    """Where the block holding position `i` may start: just after the last blank line before it."""
+    end = text.rfind("\n", 0, i)  # the newline that ends the line above i's
+    while end >= 0:
+        above = text.rfind("\n", 0, end)
+        if not text[above + 1:end].strip():
+            return end + 1
+        end = above
+    return 0
+
+
+_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n[ \t]*(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
 STAMP_RE = re.compile(r"as of (\d{4}-\d{2}-\d{2})\b")
 HEADER = ("| Date       | Mission     | Target                        | Ran as       | Binds? | Outcome |\n"
           "|------------|-------------|-------------------------------|--------------|--------|---------|")
+
+
+def html_link(text):
+    """The first HTML tag in Markdown `text` that carries an href or src attribute, or None:
+    outside a code span and a backslash escape. An identical copy of scripts/changelog.py's
+    html_link (this script is loaded alone; tests/test_changelog.py holds the two equal)."""
+    i = 0
+    while i < len(text):
+        fence = _FENCE_RE.match(text, i) if i == 0 or text[i - 1] == "\n" else None
+        if fence and not (fence.group(2)[0] == "`" and "`" in fence.group(3)):
+            i = _fence_end(text, fence)
+        elif text[i] == "\\":
+            i += 2
+        elif text[i] == "`" and _HTML_LINE_RE.search(text, _block_start(text, i), i):
+            i += 1  # inside a raw HTML block a backtick is text (Codex at 0116e8ae34): no code span hides a tag
+        elif text[i] == "`":
+            run = len(text) - i - len(text[i:].lstrip("`"))
+            block = _BLOCK_END_RE.search(text, i + run)
+            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, block.start() if block else len(text))
+            i = close.end() if close else i + run
+        elif text[i] == "<" and (name := _TAG_NAME_RE.match(text, i)):
+            pos, link = name.end(), False
+            while attr := _TAG_ATTR_RE.match(text, pos):
+                link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
+                pos = attr.end()
+            end = _TAG_END_RE.match(text, pos)
+            if end and link:
+                return text[i:end.end()]
+            i = end.end() if end else i + 1
+        else:
+            i += 1
+    return None
 
 
 def runs_dir(root=ROOT):
@@ -102,7 +183,7 @@ def row_errors(name, data, root=ROOT):
             errors.append(f"{where}: {cell} holds a '|' or a newline, which breaks the table")
     for cell in CELLS + ("summary",):  # the README is not re-rendered until the cut (PR #670)
         value = data.get(cell)
-        if isinstance(value, str) and _HTML_LINK_RE.search(value):
+        if isinstance(value, str) and html_link(value):
             errors.append(f"{where}: {cell} holds an HTML link; write it as a Markdown link "
                           "[text](path), which this check resolves")
         for href in _LINK_RE.findall(value) if isinstance(value, str) else ():

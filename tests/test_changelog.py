@@ -367,5 +367,80 @@ class ValidateRunsTheShapeCheck(unittest.TestCase):
                               validate.check_changelog_fragments()[0])
 
 
+class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
+    """Codex at 54fe725bee: the HTML check over-blocked. `x<a` on one line and the words
+    `href=value` on a later one, with no tag ever closed, were refused, and so was
+    `<span data-href=...>`, which has no link attribute. The check now reads raw HTML as CommonMark
+    does: a COMPLETE open tag carrying an attribute named exactly href or src, outside a code span."""
+
+    ACCEPTED = (
+        "- **Change** x<a\n  and later the words href=value appear in prose.\n",
+        '- **Change** <span data-href="identifier">plain</span>.\n',
+        '- **Change** the check now names `<a href="../docs/ops.md">` as code, not a link.\n',
+        '- **Change** a double span ``<img src="../x.png">`` is code too.\n',
+        '- **Change** `x` and `<a href="../docs/ops.md">ops</a>` are both spans.\n',
+        '- **Change** <a name="anchor">no link attribute</a>.\n',
+        '- **Change** an escaped \\<a href="../docs/ops.md"> is text.\n',
+        '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
+        # a fenced block is literal to its closing fence, list markers inside it too (Greptile at 8585b35789)
+        '- **Change** an example:\n\n  ```html\n  - example\n  <a href="../x.md">x</a>\n  ```\n',
+        '- **Change** an example:\n\n~~~~\n# not a heading\n<img src="../x.png">\n~~~~\n',
+    )
+    REFUSED = (
+        '- **Change** <a\n  title="x"\n  href="../docs/ops.md">ops</a>.\n',
+        '- **Change** <A HREF=../docs/ops.md>ops</A>.\n',
+        '- **Change** <img src="../assets/x.png"/>.\n',
+        '- **Change** an unclosed `span, then <a href="../docs/ops.md">ops</a>.\n',
+        '- **Change** `code` then <a href="../docs/ops.md">ops</a>.\n',
+        # a code span never crosses a block (Codex at 47e0616eac): a list item, a blank line, a heading
+        '- **Change** an open `span\n- <a href="../docs/ops.md">ops</a> and a closing `.\n',
+        '- **Change** an open `span\n\n<a href="../docs/ops.md">ops</a> then `.\n',
+        '- **Change** an open `span\n## <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** an open `span\n1. <a href="../docs/ops.md">ops</a> `\n',
+        # a setext underline, a thematic break, an HTML block or a table row ends it too (Codex at 8585b35789)
+        '- **Change** open `span\n  ---\n  <a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n  ===\n  <a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n***\n<a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n<div>\n<a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n| a | b |\n<a href="../docs/ops.md">ops</a> closing `.\n',
+        # at any indentation: a list item's own blocks sit deeper (Codex at 3c01b90b5e)
+        '- **Change** open `span\n    ---\n    <a href="../docs/ops.md">ops</a> closing `.\n',
+        # inside a raw HTML block backticks are text, so no code span hides a tag (Codex at 0116e8ae34)
+        '- **Change** see below.\n<div>\n`<a href="../docs/ops.md">ops</a>`\n</div>\n',
+        '- **Change** see below.\n\n<div>`<img src="../x.png">`</div>\n',
+        # a fence the list item leaves unclosed ends with the item: no tag after it is hidden
+        '- **Change** x\n  ```\n- <a href="../docs/ops.md">ops</a>\n',
+        # a closing fence shorter than the opening one does not close it, but the item's end does
+        '- **Change** x\n  ````\n  ```\n<a href="../docs/ops.md">ops</a>\n',
+    )
+
+    def errors(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            return [e for e in cl.check_fragments(d) if "Markdown link" in e]
+
+    def test_what_renders_as_no_link_is_accepted(self):
+        for text in self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+    def test_a_complete_link_tag_outside_code_is_refused(self):
+        for text in self.REFUSED:
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_the_run_index_check_reads_html_the_same_way(self):
+        # scripts/run_index.py carries its own copy (it runs alone: tests copy it into a bare root).
+        spec = importlib.util.spec_from_file_location("_run_index_for_changelog",
+                                                      ROOT / "scripts" / "run_index.py")
+        ri = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ri)
+        for text in self.ACCEPTED + self.REFUSED:
+            with self.subTest(text=text):
+                self.assertEqual(ri.html_link(text), cl.html_link(text))
+
+
 if __name__ == "__main__":
     unittest.main()

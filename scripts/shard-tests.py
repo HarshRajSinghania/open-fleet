@@ -132,6 +132,7 @@ WEIGHTS = {
     "test_quarantine_closure": 0.7,
     "test_release_check": 11.7,
     "test_release_status_docs": 0.3,
+    "test_release_bookkeeping": 11.0,  # measured 2026-10-24 (macOS arm64): 13.2 s
     "test_repo_hygiene": 1.8,
     "test_reshape_net_validate": 0.3,
     "test_reshape_net_verify": 0.3,

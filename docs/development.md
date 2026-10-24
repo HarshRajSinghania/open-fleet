@@ -50,7 +50,7 @@ when one does not.
 | Command | Purpose |
 |---|---|
 | `python3 scripts/validate.py` | Catalog structure, composition references, budgets, proof declarations and generated freshness (backed by [`scripts/_countlint.py`](../scripts/_countlint.py) and [`scripts/_identity.py`](../scripts/_identity.py)) |
-| `python3 scripts/gen-badges.py --check` | Verify generated counts, activation callouts and proof summary without writing |
+| `python3 scripts/gen-badges.py --check` | Verify generated counts, activation callouts and proof summary without writing. The test count is the last release's: only `--release` (the cut) rewrites it, and `--check --release` checks it |
 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | Check description-based mission routing |
 | `python3 scripts/eval.py run --suite injection` | Run the deterministic VAL-01 prompt-injection and trust-fence drills ([`evals/injection-drills.json`](../evals/injection-drills.json), #560) |
 | `python3 scripts/deny_hook_corpus.py` | Differential-test the deny-hook's shell parsing against real bash; `--minimize --write` stores new mismatches as fixtures ([`runtime-scripts.md`](runtime-scripts.md#deny-hooksh), #598) |
@@ -110,7 +110,8 @@ check guide parity. Verify section anchors and command examples as well.
 [`scripts/gen-badges.py`](../scripts/gen-badges.py) writes the badge JSON, mission-guide
 activation-load callouts, the architecture load table and the README proof summary. If their
 source changes, run `python3 scripts/gen-badges.py` and inspect the resulting diff. Keep the
-`BEGIN GENERATED` / `END GENERATED` markers.
+`BEGIN GENERATED` / `END GENERATED` markers. It leaves `assets/badges/tests.json` alone: that
+count belongs to the release cut (`--release`), so a PR adding tests never edits it.
 
 [`scripts/bundle.py`](../scripts/bundle.py) writes `dist/`, which is ignored by Git. Use its
 `--check` mode for validation. Diagram assets have a separate

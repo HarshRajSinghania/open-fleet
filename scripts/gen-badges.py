@@ -15,11 +15,20 @@ The README references these via a shields ENDPOINT badge
 version badge reads .claude-plugin/plugin.json directly via a shields DYNAMIC
 badge — so no count lives in hand-written prose or in the badge markup.
 
-`scripts/validate.py` calls `compute()` and fails CI if the committed JSON is
-stale (someone added a mission without regenerating). Run this to refresh:
+`scripts/validate.py` calls `check()` and fails CI if a committed file is stale
+(someone added a mission without regenerating). Run this to refresh:
 
-    python3 scripts/gen-badges.py           # write the files
-    python3 scripts/gen-badges.py --check    # exit 1 if any file is stale
+    python3 scripts/gen-badges.py                    # write every surface a PR keeps current
+    python3 scripts/gen-badges.py --check            # exit 1 if any of those is stale
+    python3 scripts/gen-badges.py --release          # the release cut: also the test count
+    python3 scripts/gen-badges.py --check --release  # the cut's check: the test count too
+
+The test count is the one exception (CI speed and bookkeeping change). Every PR changed it, so
+every PR rewrote assets/badges/tests.json and conflicted with every other open PR. It is now the
+inventory AT THE LAST RELEASE: only `--release` writes it, the release cut runs that, and the
+README badge is labelled "at last release", so between releases it shows an older number under a
+label that says so, never a stale one presented as current. Between releases CI holds it to its
+shape (an "N in source" inventory, never a pass/fail claim) and nothing more.
 """
 import ast
 import argparse
@@ -325,8 +334,37 @@ def write_readme() -> None:
         print(f"wrote {README.name}: proof-status sentence")
 
 
-def check() -> list[str]:
-    """Return a list of stale-artifact errors (empty if everything committed is current)."""
+# Between releases the test badge must still read as an inventory, never a verdict.
+TESTS_BADGE = "tests.json"
+TESTS_MESSAGE_RE = re.compile(r"^[0-9]+ in source$")
+
+
+def tests_badge_shape(have) -> list[str]:
+    """Errors when the committed tests badge is not an "N in source" inventory badge.
+
+    The between-releases check: the number may be the last release's, but the label, colour
+    and wording are the generator's, so a hand edit to "2 passing" or a green colour fails.
+    """
+    want = badge("test functions", "0 in source", "6e7781")
+    if not isinstance(have, dict):
+        return [f"assets/badges/{TESTS_BADGE} is not a badge object"]
+    wrong = sorted(k for k in want if k != "message" and have.get(k) != want[k])
+    wrong += sorted(set(have) - set(want))
+    if not TESTS_MESSAGE_RE.match(str(have.get("message", ""))):
+        wrong.append("message")
+    if wrong:
+        return [f"assets/badges/{TESTS_BADGE} is malformed ({', '.join(wrong)}: have "
+                f"{have.get('message')!r}) — the release cut regenerates it: "
+                "python3 scripts/gen-badges.py --release"]
+    return []
+
+
+def check(include_test_count: bool = True) -> list[str]:
+    """Return a list of stale-artifact errors (empty if everything committed is current).
+
+    include_test_count=False is the between-releases check validate.py runs: tests.json is held
+    to its shape, not to today's count, which only the release cut writes.
+    """
     errors = []
     try:
         wanted = compute()
@@ -342,17 +380,25 @@ def check() -> list[str]:
         except json.JSONDecodeError as err:
             errors.append(f"assets/badges/{name}: invalid JSON ({err})")
             continue
-        if have != want:
+        if name == TESTS_BADGE and not include_test_count:
+            errors += tests_badge_shape(have)
+        elif have != want:
+            fix = " --release" if name == TESTS_BADGE else ""
             errors.append(
                 f"assets/badges/{name} is stale (have {have.get('message')!r}, "
-                f"want {want.get('message')!r}) — run scripts/gen-badges.py"
+                f"want {want.get('message')!r}) — run scripts/gen-badges.py{fix}"
             )
     return errors + check_guides() + check_architecture() + check_readme()
 
 
-def write() -> None:
+def write(include_tests: bool = True) -> None:
+    """Refresh every generated surface; include_tests=False leaves the release's test count."""
     BADGES_DIR.mkdir(parents=True, exist_ok=True)
     for name, data in compute().items():
+        if name == TESTS_BADGE and not include_tests:
+            print(f"kept assets/badges/{name}: the count at the last release "
+                  "(the release cut rewrites it with --release)")
+            continue
         (BADGES_DIR / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         print(f"wrote assets/badges/{name}: {data['message']}")
     write_guides()
@@ -369,10 +415,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--check", action="store_true",
                         help="fail if the committed badges differ from a fresh computation")
+    parser.add_argument("--release", action="store_true",
+                        help="the release cut: include the test count (tests.json), which "
+                             "pull requests leave at the last release's number")
     args = parser.parse_args()
     if args.check:
-        errs = check()
+        errs = check(include_test_count=args.release)
         for e in errs:
             print(e, file=sys.stderr)
         sys.exit(1 if errs else 0)
-    write()
+    write(include_tests=args.release)

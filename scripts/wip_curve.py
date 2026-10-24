@@ -91,6 +91,8 @@ MODEL_ENV = {"claude": "ANTHROPIC_MODEL"}
 PER_CALL_LIMIT = "none passed: the posix launch table has no per-call budget flag for any harness"
 # The merge queue's own `failed` receipt reasons (runtime/scripts/merge_queue.py plan()).
 MQ_CONFLICT, MQ_GATE_FAILED = "conflict", "gate_failed"
+# A run that ended this way may be re-run once (-a2): an infrastructure failure, not a result.
+RETRYABLE = ("failed", "interrupted")
 AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavailable'"
 
 
@@ -2022,6 +2024,23 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
             run["compliant"] = False
             run.setdefault("noncompliance", []).append(
                 f"started {int(gap)}s after {before['run_id']} ended; the cooldown is {cooldown}s")
+    # One re-run, and only of a run that failed for an infrastructure reason (the registration's
+    # stopping rule): any other attempt is reported, never pooled (PR #653 review).
+    attempts = {}
+    for run in runs:
+        m = re.fullmatch(r"(.+?)(?:-a(\d+))?", run["run_id"])
+        attempts.setdefault(m.group(1), {})[int(m.group(2) or 1)] = run
+    for _base, by_n in attempts.items():
+        for n, run in by_n.items():
+            why = None
+            if n > 2:
+                why = f"attempt {n}: the registration allows one re-run (-a2), no more"
+            elif n == 2 and (by_n.get(1) or {}).get("status") not in RETRYABLE:
+                why = (f"attempt 2 re-runs a run that did not fail for an infrastructure reason (attempt 1 "
+                       f"{'ended ' + str(by_n[1].get('status')) if 1 in by_n else 'is absent'})")
+            if why:
+                run["compliant"] = False
+                run.setdefault("noncompliance", []).append(why)
     compliant = [r for r in runs if r["compliant"]]
     pool = compliant if basis == "compliant" else [r for r in runs if r.get("metrics")]
     blocks = {c["id"]: condition_block(c, [r for r in pool if r["condition"] == c["id"]])
@@ -2269,10 +2288,19 @@ def cmd_run(args) -> int:
     if args.runs:
         wanted = []
         for rid in args.runs.split(","):
-            m = re.fullmatch(r"(.+?)(?:-a([2-9]|\d\d+))?", rid.strip())
+            m = re.fullmatch(r"(.+?)(?:-a(\d+))?", rid.strip())
             if not m or m.group(1) not in sched:
                 raise Refused(f"{rid} is not a scheduled run (see `plan`)")
-            wanted.append((m.group(1), int(m.group(2) or 1)))
+            attempt = int(m.group(2) or 1)
+            if attempt > 2 or attempt < 1:
+                raise Refused(f"{rid}: the registration allows one re-run (-a2) of a scheduled run, never -a{attempt}")
+            if attempt == 2:  # only after an infrastructure failure of attempt 1 (PR #653 review)
+                first = results / "runs" / m.group(1) / "run.json"
+                status = json.loads(first.read_text(encoding="utf-8")).get("status") if first.is_file() else None
+                if status not in RETRYABLE:
+                    raise Refused(f"{rid}: a re-run is allowed only after an infrastructure failure of "
+                                  f"{m.group(1)}, which {'ended ' + str(status) if status else 'never ran'}")
+            wanted.append((m.group(1), attempt))
     else:
         wanted = [(rid, 1) for rid in sched if rid not in done][: (len(sched) if args.all else args.next)]
     if not wanted:

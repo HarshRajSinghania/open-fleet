@@ -152,7 +152,9 @@ worktree, branch, store or transcript is shared between runs.
   derives every metric, and no further run starts.
 - **Experiment:** run exactly the scheduled runs, then stop. No run is added, dropped or repeated
   because of its results. A run that fails for an infrastructure reason may be re-run once under
-  a new attempt id (`<run>-a2`), and both runs are reported. A null or negative result completes
+  a new attempt id (`<run>-a2`), and both runs are reported. `run` refuses `-a2` unless attempt 1
+  ended `failed` or `interrupted`, and refuses `-a3` and later. The report holds every other
+  attempt non-compliant. A null or negative result completes
   the experiment.
 
 ## Cost cap

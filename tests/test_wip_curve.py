@@ -382,6 +382,30 @@ class TestOnlyCompliantRunsDecide(ReportOver):
         self.assertEqual(b6["throughput_per_h"]["n"], 8, "--basis all still shows every run's row")
 
 
+class TestOnlyOneRetryAfterAFailure(ReportOver):
+    """PR #653 review: the registration allows one re-run, and only of a run that failed for an
+    infrastructure reason. A repeat of a run that did not fail, or a third attempt, never counts."""
+
+    def attempt(self, n, status="complete", hour=10, **kw):
+        run = synthetic_run("wip1-b1r1-rep1" + (f"-a{n}" if n > 1 else ""), "b1r1", "1.0",
+                            started=f"2026-10-24T{hour:02d}:00:00+00:00", **kw)
+        run.update(attempt=n, status=status)
+        if status != "complete":
+            run.update(compliant=False, noncompliance=[f"the run ended {status}"])
+        return run
+
+    def test_a_repeat_of_a_run_that_did_not_fail_is_excluded(self):
+        out = {r["run_id"]: r for r in self.report([self.attempt(1), self.attempt(2, hour=12)])["runs"]}
+        self.assertFalse(out["wip1-b1r1-rep1-a2"]["compliant"])
+        self.assertTrue(any("attempt 2" in w for w in out["wip1-b1r1-rep1-a2"]["noncompliance"]))
+
+    def test_one_retry_after_a_failure_counts_and_a_third_attempt_never_does(self):
+        out = {r["run_id"]: r for r in self.report([self.attempt(1, status="failed"), self.attempt(2, hour=12),
+                                                   self.attempt(3, hour=14)])["runs"]}
+        self.assertTrue(out["wip1-b1r1-rep1-a2"]["compliant"], out["wip1-b1r1-rep1-a2"]["noncompliance"])
+        self.assertFalse(out["wip1-b1r1-rep1-a3"]["compliant"])
+
+
 class TestDecisionRule(unittest.TestCase):
     def setUp(self):
         self.prereg = json.loads(PREREG.read_text(encoding="utf-8"))
@@ -448,9 +472,25 @@ class TestRunRefusals(Tmp):
         self.refused("--worker", "live", "--cost-cap-usd", "5", text="--model")
 
     def test_a_live_run_on_another_harness_is_not_refused_as_the_stand_in(self):
-        # Only the inert stand-in is claude-only; a bogus run id is the refusal that must be reached.
+        # The stand-in's claude-only rule is not a live run's: codex is refused for the reason that
+        # applies to it, that no model pin can reach it (PR #653 review).
         self.refused("--worker", "live", "--agent", "codex", "--cost-cap-usd", "5", "--model", "m",
-                     "--reservation-usd", "1", "--runs", "wip1-b9r9-rep1", text="not a scheduled run")
+                     "--reservation-usd", "1", "--runs", "wip1-b9r9-rep1", text="cannot enforce the model pin")
+
+    def test_a_retry_with_no_failed_first_attempt_is_refused(self):
+        self.refused("--cost-cap-usd", "0", "--runs", "wip1-b1r1-rep1-a2", text="infrastructure failure")
+
+    def test_a_third_attempt_is_refused(self):
+        self.refused("--cost-cap-usd", "0", "--runs", "wip1-b1r1-rep1-a3", text="one re-run")
+
+    def test_a_retry_of_a_run_that_did_not_fail_is_refused(self):
+        src = Path(dry_run(*B3)[0].name) / "results" / "runs" / B3[0]
+        shutil.copytree(src, self.results / "runs" / src.name)
+        p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   f"{B3[0]}-a2", "--cost-cap-usd", "0", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("infrastructure failure", p.stderr)
+        self.assertEqual([d.name for d in (self.results / "runs").iterdir()], [B3[0]])
 
     def test_a_live_run_refuses_without_an_authorised_reservation(self):
         # The per-dispatch reservation is PENDING OWNER AUTHORISATION too: never taken as given.

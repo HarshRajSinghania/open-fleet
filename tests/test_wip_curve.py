@@ -134,6 +134,8 @@ def synthetic_run(run_id, cond, throughput, *, compliant=True, review_in=100, re
     run = {"run_id": run_id, "condition": cond, "builders": builders, "reviewers": reviewers, "tier": tier,
            "status": "complete", "started_at": started, "finished_at": finished,
            "inputs_sha256": inputs, "model_pin": model, "harness_version": harness, "attempt": 1,
+           "repetition": int(re.search(r"-rep(\d+)", run_id).group(1)),
+           "task_order": wip.task_order(*wip.load_prereg(PREREG)[:2], run_id),
            "timeout_scale": 1.0, "compliant": compliant,
            "noncompliance": [] if compliant else ["excluded by the protocol"], "binding_problems": [],
            "metrics": metrics}
@@ -457,6 +459,34 @@ class TestChangedDeadlinesNeverCount(ReportOver):
         record = json.loads((Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
                              / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["timeout_scale"], 1.0)
+
+
+class TestOnlyTheScheduledRunCounts(ReportOver):
+    """Adversarial pass (pooling incomparable runs; extra runs swaying the curve): a run must be a
+    scheduled run, under its scheduled condition, repetition and task order."""
+
+    def test_an_unscheduled_run_is_excluded(self):
+        run = self.report([synthetic_run("wip1-b6r1-rep4", "b6r1", "9.0")])["runs"][0]
+        self.assertFalse(run["compliant"])
+        self.assertTrue(any("not a scheduled run" in w for w in run["noncompliance"]), run["noncompliance"])
+
+    def test_a_run_under_another_condition_than_scheduled_is_excluded(self):
+        mislabelled = synthetic_run("wip1-b3r1-rep1", "b6r1", "9.0")
+        run = self.report([mislabelled])["runs"][0]
+        self.assertFalse(run["compliant"])
+        self.assertTrue(any("scheduled" in w and "b3r1" in w for w in run["noncompliance"]), run["noncompliance"])
+
+    def test_a_run_whose_waves_ran_another_wip_is_excluded(self):
+        src = Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
+        results = Path(tempfile.mkdtemp(prefix="wip-curve-wip-"))
+        self.addCleanup(shutil.rmtree, results, True)
+        shutil.copytree(src, results / "runs" / src.name)
+        rec_path = results / "runs" / src.name / "run.json"
+        rec = json.loads(rec_path.read_text(encoding="utf-8"))
+        rec["condition"] = {**rec["condition"], "builders": 3}  # the label says 3; the record ran 1
+        rec_path.write_text(json.dumps(rec), encoding="utf-8")
+        run = wip.build_report(results, basis="all")["runs"][0]
+        self.assertTrue(any("builders=1" in w for w in run["noncompliance"]), run["noncompliance"])
 
 
 class TestDecisionRule(unittest.TestCase):

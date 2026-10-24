@@ -1731,6 +1731,7 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
            "started_at": rec.get("started_at"), "finished_at": rec.get("finished_at"),
            "inputs_sha256": (rec.get("inputs") or {}).get("sha256"),
            "model_pin": rec.get("model_pin"), "harness_version": (rec.get("harness") or {}).get("version"),
+           "task_order": rec.get("task_order"),
            "attempt": rec.get("attempt", 1), "timeout_scale": rec.get("timeout_scale"),
            "run_json_sha256": sha256_file(run_dir / "run.json")}
     reasons = []
@@ -1853,6 +1854,10 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
         reasons.append("the model pin or harness version was not recorded")
     elif metrics["models"] != [rec["model_pin"]]:
         reasons.append(f"observed model(s) {metrics['models']} are not the pin {rec['model_pin']!r}")
+    for w in derived["waves"]:  # the WIP the record shows each wave ran, not the label
+        if (w["builders"], w["reviewers"]) != (rec["condition"]["builders"], rec["condition"]["reviewers"]):
+            reasons.append(f"wave {w['wave']} ran builders={w['builders']} reviewers={w['reviewers']}, not the "
+                           f"condition's builders={rec['condition']['builders']} reviewers={rec['condition']['reviewers']}")
     if not metrics["derivable"]:
         reasons.append("events.py cannot derive the throughput, latency, rework and freshness the experiment uses")
     if out["binding_problems"]:
@@ -2073,6 +2078,19 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     for run in runs:
         m = re.fullmatch(r"(.+?)(?:-a(\d+))?", run["run_id"])
         attempts.setdefault(m.group(1), {})[int(m.group(2) or 1)] = run
+    scheduled = {e["run_id"]: e for e in sched}
+    for run in runs:  # a scheduled run, under its scheduled condition, repetition and task order
+        entry = scheduled.get(re.sub(r"-a\d+$", "", run["run_id"]))
+        if entry is None:
+            why = "not a scheduled run of this registration"
+        elif (run.get("condition"), run.get("repetition"), run.get("task_order")) != (
+                entry["condition"]["id"], entry["repetition"], entry["task_order"]):
+            why = (f"not the scheduled run: {entry['run_id']} is scheduled as {entry['condition']['id']} repetition "
+                   f"{entry['repetition']} with its own task order")
+        else:
+            continue
+        run["compliant"] = False
+        run.setdefault("noncompliance", []).append(why)
     for run in runs:  # the registered dispatch deadlines, or the run is not this experiment's
         if run.get("timeout_scale") != 1.0:
             run["compliant"] = False

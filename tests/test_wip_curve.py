@@ -631,6 +631,25 @@ class TestWorkerCodeRunsWithoutTheCoordinatorsEnvironment(Tmp):
         self.assertEqual(result["exit"], 0, result["tail"])
 
 
+class TestHostFactsUseTheHardenedGit(Tmp):
+    """Adversarial pass (every git call): the host facts every run records read the catalog clone
+    through gitexec too, so a command planted in its config never runs."""
+
+    def test_a_planted_fsmonitor_in_the_catalog_never_runs(self):
+        repo = self.tmp / "catalog"
+        wip.build_seed(json.loads(TASKSET.read_text(encoding="utf-8")), repo)
+        marker = self.tmp / "ran.log"
+        hook = self.tmp / "hook.sh"
+        hook.write_text(f"#!/bin/sh\necho ran >> {marker}\n", encoding="utf-8")
+        hook.chmod(0o755)
+        subprocess.run(["git", "-C", str(repo), "config", "core.fsmonitor", str(hook)], check=True)
+        with mock.patch.object(wip, "ROOT", repo), mock.patch.object(wip.first_run, "ROOT", repo):
+            facts = wip.host_facts()
+        self.assertFalse(marker.exists(), "a command planted in the catalog's git config ran")
+        self.assertEqual(facts["catalog_commit"], wip.git_out(repo, "rev-parse", "HEAD"))
+        self.assertIs(facts["catalog_dirty"], False)
+
+
 class TestGate(Tmp):
     """The merge gate runs the oracle of every task the prefix commit contains, so a later unit
     that breaks a landed one fails the gate even when its own oracle passes."""

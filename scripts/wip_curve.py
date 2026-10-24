@@ -798,10 +798,26 @@ class Sandbox(first_run.Sandbox):
 
 # ---------------------------------------------------------------------------- one run
 
+def first_line(argv, env=None) -> str | None:
+    """The first output line of a short probe (a --version), in its own process group."""
+    try:
+        proc = run_text(argv, env=env, timeout=30)
+    except OSError as err:
+        return f"unreadable: {err}"
+    text = (proc.stdout or proc.stderr).strip()
+    return text.splitlines()[0][:200] if text else None
+
+
 def host_facts() -> dict:
-    facts = first_run.host_facts()
-    facts.update(machine=platform.machine(), cpu_count=os.cpu_count())
-    return facts
+    """The machine a run ran on. The catalog clone is read through the hardened git like every
+    other repository (adversarial pass: a command planted in its config never runs)."""
+    head = git(ROOT, "rev-parse", "HEAD", check=False)
+    dirty = git(ROOT, "status", "--porcelain", "--untracked-files=no", check=False)
+    return {"platform": platform.platform(), "python": platform.python_version(),
+            "git": first_line(gitexec.argv("--version"), env=git_env()),
+            "bash": first_line(["bash", "--version"]), "machine": platform.machine(), "cpu_count": os.cpu_count(),
+            "catalog_commit": head.stdout.decode().strip() if head.returncode == 0 else None,
+            "catalog_dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None}
 
 
 class Run:
@@ -2494,7 +2510,7 @@ def cmd_run(args) -> int:
             tier="fixture-tested" if args.worker == "inert" else "live-unreviewed", worker=args.worker,
             agent=args.agent, model_pin=args.model, timeout_scale=args.timeout_scale,
             harness={"path": found, "version": "inert stand-in (no model)" if args.worker == "inert"
-                     else first_run.harness_version(found, sb.env)},
+                     else first_line([found, "--version"], env=sb.env)},
             host=host_facts(), clock=run.clock, epoch=1, attempt=attempt,
             prereg={"path": str(path), "sha256": prereg_sha}, inputs=inputs,
             taskset={"path": prereg["taskset"]["path"], "sha256": sha256_file(taskset_path)},

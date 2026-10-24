@@ -72,6 +72,7 @@ import os
 import random
 import re
 import secrets
+import select
 import shlex
 import shutil
 import signal
@@ -498,14 +499,13 @@ def watchdog_argv(tag):
     return [sys.executable, "-I", str(WATCHDOG), "--watchdog", str(os.getpid()), tag, "--"]
 
 
-def _exited(pid, timeout):
-    """Wait up to `timeout` s for child `pid` to exit WITHOUT reaping it: True once it has."""
-    deadline = time.monotonic() + timeout
-    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
-        if time.monotonic() > deadline:
-            return False
-        time.sleep(0.05)
-    return True
+def _exited(done_fd, timeout):
+    """True once the watchdog holding the write end of `done_fd` has exited (the pipe reads EOF),
+    within `timeout` s. Nothing is reaped, so its pid and its group's id stay this run's until the
+    sweep is done. Portable: os.waitid, which can wait without reaping, is missing on macOS before
+    Python 3.13 (#657 review W2)."""
+    ready, _writable, _failed = select.select([done_fd], [], [], timeout)
+    return bool(ready)
 
 
 def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=None, stderr_path=None):
@@ -523,18 +523,26 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
     and no next call may start.
     """
     tag = secrets.token_hex(16)
-    with contextlib.ExitStack() as files:
-        fin = files.enter_context(open(stdin_path, "rb")) if stdin_path else subprocess.DEVNULL
-        fout = files.enter_context(open(stdout_path, "wb"))
-        ferr = files.enter_context(open(stderr_path, "wb")) if stderr_path else subprocess.STDOUT
-        proc = subprocess.Popen([*watchdog_argv(tag), *argv], stdin=fin, stdout=fout, stderr=ferr,
-                                cwd=cwd, env=env, start_new_session=True)
+    done_r, done_w = os.pipe()  # only the watchdog holds done_w: EOF on done_r once it has exited
+    try:
+        with contextlib.ExitStack() as files:
+            fin = files.enter_context(open(stdin_path, "rb")) if stdin_path else subprocess.DEVNULL
+            fout = files.enter_context(open(stdout_path, "wb"))
+            ferr = files.enter_context(open(stderr_path, "wb")) if stderr_path else subprocess.STDOUT
+            proc = subprocess.Popen([*watchdog_argv(tag), *argv], stdin=fin, stdout=fout, stderr=ferr,
+                                    cwd=cwd, env=env, start_new_session=True, pass_fds=(done_w,))
+    except BaseException:
+        os.close(done_r)
+        raise
+    finally:
+        os.close(done_w)
     LIVE_GROUPS.add(proc.pid)
     LIVE_TAGS.add(tag)
     killed = False
     try:
-        killed = not _exited(proc.pid, timeout)
+        killed = not _exited(done_r, timeout)
     finally:
+        os.close(done_r)
         emptied = sweep(roots=(proc.pid,), groups=(proc.pid,), tag=tag)
         proc.kill()  # a no-op once it has exited (Popen polls first)
         proc.wait()

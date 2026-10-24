@@ -590,5 +590,21 @@ class ArtifactsStayBesideTheResults(StandInRun):
         self.assertNothingWritten()
 
 
+class TheCallLifecycleIsPortable(StandInRun):
+    """#657 review W2 (Greptile): os.waitid is missing on macOS before Python 3.13, and every live
+    call waited with it, so hint replay aborted on its first call there."""
+
+    def test_a_run_needs_no_waitid(self):
+        saved = os.__dict__.pop("waitid", None)
+        try:
+            code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
+        finally:
+            if saved is not None:
+                os.waitid = saved
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.calls()), 3)
+        self.assertEqual(self.results()["cost"]["spent_usd"], 0.75)
+
+
 if __name__ == "__main__":
     unittest.main()

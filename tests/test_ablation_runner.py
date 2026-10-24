@@ -1330,5 +1330,55 @@ class ACallIsContainedAcrossSessions(SafetyNet):
         self.assertEqual(runner.call_processes(table, tag=other), {30})
 
 
+@contextlib.contextmanager
+def without_waitid():
+    """os as macOS ships it before Python 3.13: no waitid (#657 review W2)."""
+    saved = os.__dict__.pop("waitid", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            os.waitid = saved
+
+
+class TheCallLifecycleIsPortable(SafetyNet):
+    """#657 review W2 (Greptile): a call waited for its watchdog with os.waitid(..., WNOWAIT), which
+    macOS lacks before Python 3.13, so the first call on 3.11 or 3.12 raised AttributeError and
+    aborted the run. The wait is portable now, and it still never reaps the watchdog before the
+    sweep: its pid, and its group's id, stay this run's until the call is verified empty."""
+
+    def worker(self, *body):
+        return [sys.executable, "-c", "\n".join(("import sys, time",) + body)]
+
+    def test_a_call_needs_no_waitid_and_keeps_its_leader_until_the_sweep(self):
+        real, held = runner.sweep, []
+
+        def spy(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None):
+            if roots:  # the runner's own sweep of a call: is the watchdog's pid still this run's?
+                try:
+                    os.kill(roots[0], 0)
+                    held.append(True)
+                except ProcessLookupError:
+                    held.append(False)
+            return real(roots, groups, exclude, wait_s, tag)
+        out = self.tmpdir() / "stdout"
+        with without_waitid(), mock.patch.object(runner, "sweep", spy):
+            finished = runner.contained_run(self.worker("print('done')", "sys.exit(3)"), timeout=30,
+                                            stdout_path=out)
+            hung = runner.contained_run(self.worker("time.sleep(60)"), timeout=1, stdout_path=out)
+        self.assertEqual(finished, (3, False, True))
+        self.assertEqual(hung, (None, True, True))
+        self.assertEqual(held, [True, True], "the watchdog was reaped before the sweep that needed its pid")
+
+    def test_a_whole_run_needs_no_waitid(self):
+        out = self.tmpdir() / "out"
+        with without_waitid():
+            code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("plain"),
+                                           "--cost-cap-usd", "0", "--mission", "review-it", "--task",
+                                           "behavioral-4", "--repeats", "1", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads((out / "results.json").read_text())["cells"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

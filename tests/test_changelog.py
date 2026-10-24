@@ -434,6 +434,19 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         # newline, so neither is needed, and reading them as text can never hide a link.
         '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
         '- **Change** an example:\n  ```html\n  <a href="../x.md">x</a>\n  ```\n',
+        # one pass, as CommonMark reads inlines (Codex at e6a546abf2): a span left open on its line
+        # closes on the next, and a tag's quoted value can carry a backtick across a line
+        '- **Change** `start\n  end` <a href="../docs/ops.md">link</a> `unclosed\n',
+        '- **Change** <span title="\n  `">text</span> <a href="../docs/ops.md">link</a> `\n',
+        # a comment or autolink outranks a code span: the backtick inside it opens none (#673)
+        '- **Change** <!-- `x --> <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** <https://x.example/`> <a href="../docs/ops.md">ops</a> `\n',
+        # a tag torn by an HTML block is no tag: what it seemed to quote is read (#673)
+        "- **Change** <span title=\"\n<div>\n<a href='../docs/ops.md'>ops</a>\n\">\n",
+        # renderers disagree where a declaration ends: past one, backticks are text (fuzzed against Pandoc, #673)
+        '# <!X <a href="../docs/ops.md">ops</a>``<!--</span>\n',
+        # a comment or autolink holding a backtick is not skipped whole: what follows it is read as text (#673)
+        '- **Change** <!-- a `tick --> and `<a href="../x.md">` as code.\n',
     )
 
     def errors(self, text):

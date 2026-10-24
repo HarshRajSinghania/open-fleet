@@ -26,6 +26,7 @@ then the [Unreleased] entries written before fragments existed, which are older 
 Exit: 0 every check holds, 1 a check failed, 2 the input could not be read.
 """
 import argparse
+import bisect
 import re
 import subprocess
 import sys
@@ -69,6 +70,14 @@ _CONTAINER_RE = re.compile(r"[ \t]*(?:>|[-*+](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$))
 # A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also
 # split at U+2028 and friends, inventing lines a renderer never sees (Codex at dde9cbedf9).
 _LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+_CLOSE_TAG_RE = re.compile(r"</[a-z][a-z0-9-]*\s*>", re.IGNORECASE)
+# A "<" a renderer may read as the start of raw HTML or an autolink: a tag, closing tag, comment,
+# declaration, processing instruction, CDATA, URI or e-mail autolink. Renderers disagree on
+# where each ends (Pandoc renders <!X <a href=...> as a link; CommonMark 0.31 calls it one
+# declaration), so the scanner never guesses: past such a "<", backticks and escapes are text.
+_MAY_OPEN_RE = re.compile(r"<[a-z0-9.!#$%&'*+/=?^_`{|}~-]", re.IGNORECASE)
+# What makes a complete tag unsafe to skip whole: a backtick or a "<" inside it, or a line end.
+_UNCLEAR_RE = re.compile(r"[`<\r\n]")
 
 
 def _opens_html(line):
@@ -80,29 +89,19 @@ def _opens_html(line):
     return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
 
 
-def _scan(text, i, end, inline):
-    """The first link tag starting in text[i:end], one line. Inline Markdown (`inline`) honours a
-    backslash escape and a code span that closes on the same line; raw HTML honours neither. A
-    tag may run on past the line, as CommonMark allows."""
-    while i < end:
-        if inline and text[i] == "\\":
-            i += 2
-        elif inline and text[i] == "`":
-            run = len(text[i:end]) - len(text[i:end].lstrip("`"))
-            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, end)
-            i = close.end() if close else i + run
-        elif text[i] == "<" and (name := _TAG_NAME_RE.match(text, i)):
-            pos, link = name.end(), False
-            while attr := _TAG_ATTR_RE.match(text, pos):
-                link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
-                pos = attr.end()
-            tag_end = _TAG_END_RE.match(text, pos)
-            if tag_end and link:
-                return text[i:tag_end.end()]
-            i = tag_end.end() if tag_end else i + 1
-        else:
-            i += 1
-    return None
+def _tag(text, i):
+    """(end, links) for a complete open or closing tag at text[i], read quote-aware and across
+    lines; None when there is none."""
+    if close := _CLOSE_TAG_RE.match(text, i):
+        return close.end(), False
+    if not (name := _TAG_NAME_RE.match(text, i)):
+        return None
+    pos, link = name.end(), False
+    while attr := _TAG_ATTR_RE.match(text, pos):
+        link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
+        pos = attr.end()
+    end = _TAG_END_RE.match(text, pos)
+    return (end.end(), link) if end else None
 
 
 UNRELEASED = "## [Unreleased]"
@@ -112,19 +111,48 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None.
 
-    Read so that nothing a renderer shows as a link is missed (#673). A tag is skipped only inside
-    a backslash escape or a code span that opens and closes on one line, and only before any line
-    that may open a raw HTML block, past list or quote marks; from that line on, backticks are
-    text. A code span that wraps a line, and a fenced block, are read as text: fragments allow no
-    blank line and run-index cells no newline, so reading them so reveals more, never less.
-    scripts/run_index.py keeps an identical copy: it is loaded alone, so it cannot import this
-    one (tests/test_changelog.py holds them equal).
+    Read so that nothing a renderer shows as a link is missed (#673), in one pass. A tag is
+    skipped only inside a backslash escape or a code span that closes on the line it opens, and
+    only before any point where renderers may disagree about what follows: a line that may open
+    raw HTML (past list or quote marks), a "<" that may begin raw HTML or an autolink and is not
+    a plain one-line tag, or a backtick run left open on its line. From there on, backticks and
+    escapes are text. Fragments allow no blank line and run-index cells no newline, so what this
+    reads as text more strictly than a renderer would is never needed. scripts/run_index.py keeps
+    an identical copy: it is loaded alone, so it cannot import this one (tests/test_changelog.py
+    holds them equal).
     """
-    literal = False  # from the first line that may open raw HTML, backticks and escapes are text
-    for line in _LINE_RE.finditer(text):
-        literal = literal or _opens_html(line.group())
-        if found := _scan(text, line.start(), line.end(), inline=not literal):
-            return found
+    lines = [m.span() for m in _LINE_RE.finditer(text)]
+    starts = [start for start, _end in lines]
+    # Backticks and escapes are text from the first line that may open raw HTML, from the first
+    # "<" that may begin raw HTML or an autolink and is not a plain one-line tag, and from the
+    # first backtick run left open on its line: past any of these, where a span or construct ends
+    # depends on the renderer.
+    literal = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
+    i = 0
+    while i < len(text):
+        inline = i < literal
+        if inline and text[i] == "\\":
+            i += 2
+        elif inline and text[i] == "`":
+            line_end = lines[bisect.bisect_right(starts, i) - 1][1]
+            run = len(text[i:line_end]) - len(text[i:line_end].lstrip("`"))
+            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, line_end)
+            if close:
+                i = close.end()
+            else:
+                literal, i = i, i + run
+        elif text[i] == "<":
+            tag = _tag(text, i)
+            if tag and tag[1]:
+                return text[i:tag[0]]
+            if inline and tag and not _UNCLEAR_RE.search(text, i + 1, tag[0]):
+                i = tag[0]  # a whole one-line tag holding no backtick and no "<": skipping it hides nothing
+            else:
+                if inline and _MAY_OPEN_RE.match(text, i):
+                    literal = i
+                i += 1
+        else:
+            i += 1
     return None
 
 

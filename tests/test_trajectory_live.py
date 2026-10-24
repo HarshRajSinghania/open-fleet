@@ -1063,8 +1063,7 @@ class LiveRunner(SafetyNet):
         start = json.loads(seen["ledger_at_start"].splitlines()[-1])
         self.assertEqual((start["event"], start["reserve_usd"]), ("start", self.RESERVE),
                          "the full reservation was on disk before the paid call began")
-        self.assertEqual(seen["argv"][-4:], ["--allowedTools", live_mod.allowlist(case_named("CL-01")),
-                                             "--max-budget-usd", "4.00"])
+        self.assertEqual(seen["argv"][-4:-2], ["--max-budget-usd", "4.00"])
         result = self.results(out)
         self.assertEqual(len(result["cells"]), 1)
         self.assertTrue(result["stopped"].startswith("CAP_REACHED"), result["stopped"])
@@ -1137,6 +1136,21 @@ class LiveRunner(SafetyNet):
                 self.assertEqual(code, 1, err)
                 self.assertNotEqual(result["model"], "inert-stand-in",
                                     "the results named a model nobody observed")
+
+    def test_the_task_rides_stdin_and_the_variadic_allowlist_comes_last(self):
+        """Claude Code's --allowedTools is variadic: a positional after it is swallowed as a
+        tool name. The task goes on stdin and the allowlist is the agent's last argument, so
+        nothing can follow it; every other added argument is a flag and its value."""
+        out = self.tmpdir() / "out"
+        argv, log = self.live("clean", out, case="FA-01")
+        self.run_main(argv)
+        seen = json.loads((log / "observed.json").read_text())
+        agent = shlex.split(argv[argv.index("--agent-cmd") + 1])
+        added = seen["argv"][len(agent) - 1:]  # sys.argv omits the interpreter
+        self.assertEqual(added[-2:], ["--allowedTools", live_mod.allowlist(case_named("FA-01"))])
+        self.assertEqual(added[:-2], ["--model", "inert-stand-in", "--max-budget-usd", "4.00"])
+        self.assertTrue(seen["task"].startswith("TASK:"), "the task did not arrive on stdin")
+        self.assertFalse(any("TASK:" in a for a in seen["argv"]), "the task rode the argv")
 
     def test_an_agent_command_carrying_its_own_model(self):
         out = self.tmpdir() / "out"

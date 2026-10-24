@@ -397,8 +397,11 @@ def run_cell(ctx, cell):
     recording = cell_dir / "trajectory.jsonl"
     args = ctx["args"]
     tools = allowlist(case)
+    # The task rides stdin, never the argv, and Claude Code's variadic --allowedTools is the
+    # last argument: a positional after it would be swallowed as a tool name (#659 review).
     argv = [sys.executable, "-I", str(HARNESS), "--trajectory-out", str(recording), "--",
-            *ctx["agent"], *ctx["model_args"], args.allowlist_flag, tools, args.agent_limit_flag, f"{ctx['limit']:.2f}"]
+            *ctx["agent"], *ctx["model_args"], args.agent_limit_flag, f"{ctx['limit']:.2f}",
+            args.allowlist_flag, tools]
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("ABLATION_") and k not in ("EVAL_AGENT_CMD", "EVAL_GRADER_CMD")}
     # No rc file of a login shell may run (~/.zshenv can reorder PATH): the stub-claude rule.

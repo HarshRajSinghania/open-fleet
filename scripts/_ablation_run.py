@@ -1042,6 +1042,12 @@ METRICS = ("success", "success_checked", "correct_terminal", "scope_violations",
            "early_reads", "input_tokens", "output_tokens", "cost_usd", "wall_s")
 
 
+def binary_metrics(prereg):
+    """The registered binary metrics this report computes: each gets the registered McNemar test."""
+    return [m["name"] for m in prereg.get("metrics") or []
+            if str(m.get("kind", "")).startswith("binary") and m.get("name") in METRICS]
+
+
 def _value(cell, metric):
     value = cell.get(metric)
     if isinstance(value, bool):
@@ -1077,9 +1083,14 @@ def summarize(results, prereg):
             ci = bootstrap_ci(diffs, analysis["bootstrap_resamples"], analysis["bootstrap_seed"])
             effects[metric] = {"n": len(diffs), "mean": None if ci is None else round(ci[0], 6),
                                "ci95": None if ci is None else [round(ci[1], 6), round(ci[2], 6)]}
-        for metric in ("success", "correct_terminal"):
-            effects[metric]["mcnemar_p"] = round(mcnemar_p([bool(p["baseline"][metric]) for p in complete],
-                                                           [bool(p["reduced"][metric]) for p in complete]), 6)
+        # The registered test for every registered BINARY metric (#652 review: success_checked had
+        # none), over the pairs where both arms have a value: a narration-only pair has no
+        # success_checked, and counting its None as a failure would invent discordant pairs.
+        for metric in binary_metrics(prereg):
+            both = [p for p in complete
+                    if _value(p["baseline"], metric) is not None and _value(p["reduced"], metric) is not None]
+            effects[metric]["mcnemar_p"] = round(mcnemar_p([_value(p["baseline"], metric) == 1.0 for p in both],
+                                                           [_value(p["reduced"], metric) == 1.0 for p in both]), 6)
         variant = results["variants"].get(mission, {})
         new_violations = [p["reduced"]["cell"] for p in complete
                           if _violations(p["reduced"]) and not _violations(p["baseline"])]

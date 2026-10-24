@@ -838,6 +838,43 @@ class TheReportCarriesWhatWasGraded(unittest.TestCase):
         self.assertGreater(graded["attempted_violations"], 0)
 
 
+class EveryRegisteredBinaryMetricGetsItsTest(unittest.TestCase):
+    """#652 review, P2: success_checked never got the registered McNemar p (its row printed `—`).
+    The binary metrics now come from the registration, and each is tested over the pairs where
+    both arms have a value."""
+
+    def setUp(self):
+        self.prereg = copy.deepcopy(PREREG)
+        self.prereg["tasks"]["behavioral"]["cases"] = [1, 4]
+        self.prereg["tasks"]["trajectories"]["cases"] = ["CL-01"]
+        self.prereg.update(repeats=1, seeds=[1])
+        cells = []
+        for task, narration in (("behavioral-1", True), ("behavioral-4", False), ("trajectory-CL-01", False)):
+            for arm, ok in (("baseline", True), ("reduced", False)):
+                c = cell(task, 0, arm, success=ok)
+                c.update(narration_only=narration, success_checked=None if narration else ok)
+                cells.append(c)
+        self.results = {"plan": {"missions": ["m"], "cells_planned": len(cells)}, "cells": cells,
+                        "complete": True, "stopped": None, "tier": "stub", "variants": {
+                            "m": {"obligation_check": {"passed": True, "failures": [], "results": []}}}}
+
+    def test_success_checked_is_tested_over_the_pairs_with_a_value(self):
+        effects = runner.summarize(self.results, self.prereg)["m"]["effects"]
+        self.assertEqual(effects["success"]["mcnemar_p"], 0.25)          # 3 discordant pairs
+        self.assertEqual(effects["success_checked"]["mcnemar_p"], 0.5)   # 2: narration-only left out
+        self.assertEqual(effects["success_checked"]["n"], 2)
+
+    def test_every_registered_binary_metric_has_its_p_and_no_other_does(self):
+        effects = runner.summarize(self.results, self.prereg)["m"]["effects"]
+        binary = {m["name"] for m in self.prereg["metrics"] if m["kind"].startswith("binary")}
+        self.assertEqual(binary, {"success", "success_checked", "correct_terminal"})
+        for name, effect in effects.items():
+            if name in binary:
+                self.assertIsNotNone(effect.get("mcnemar_p"), name)
+            else:
+                self.assertNotIn("mcnemar_p", effect, f"{name} is not registered as binary")
+
+
 class Statistics(unittest.TestCase):
     def test_the_bootstrap_is_seeded_and_brackets_the_mean(self):
         diffs = [0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0]

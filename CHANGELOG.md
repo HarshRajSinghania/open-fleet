@@ -15,6 +15,12 @@ truth is `.claude-plugin/plugin.json`.
   re-anchored. `pins.json`, `orca-pin.md`, the certification record and the README floor move
   together; the next dated review is 2027-01-24. The drift-note tests now run against a frozen
   pin record, and four new tests read the committed one, so no later bump has to edit a test.
+- **The drift workflow files every confirmed re-pin trigger, even when the other check errored**
+  (#661 review). GitHub adds `success()` to a step condition that names no status function, so a
+  `latest` that failed on the network skipped a reached `review-date` alert, and the reverse. The
+  alert steps now run under `!cancelled()`, build the issue from whichever check answered, and
+  the failure steps run last, so an error still fails the job and both errors are named.
+  `tests/test_upstream_probe.py` runs the workflow's own steps for (2,3), (3,2), (3,3), (0,0), (2,2).
 - **Orca v1.4.238 re-witnessed; the pin holds at v1.4.229 until #606 runs** (#508). The
   1040-commit tag range was diffed and every runtime policy (16) and script (44) given a verdict
   (`docs/runs/2026-10-24-pin-it-238.md`). Two claims drifted in docs the #606 ablation
@@ -25,6 +31,16 @@ truth is `.claude-plugin/plugin.json`.
   standing issue carries the cadence; `spawn_worker.sh` re-anchors two stale citations and a test
   pins that an Auto host is refused (exit 5); `threat-model.md` names the real containment
   source; `terminal_ops.py` parks `terminal set-pane-title`.
+- **The trusted merge gate is active, and Codex is the second reviewer** (#594, #595).
+  - **The gate:** `main` now requires `verdict-gate` from the dedicated app `open-fleet-verdict-gate`
+    (app 5451539), whose key lives only in the `main`-limited `verdict-gate` environment, and no
+    longer requires the PR-rewritable `verdict`.
+  - **The witness:** the disposable PR #658 showed that a same-named job and status from
+    `github-actions` cannot satisfy the gate, that a GO at the head can, and that a later push
+    cannot.
+  - **The reviewer:** H-10 is settled by the owner's decision. OpenAI Codex reviews each PR
+    read-only at its head, and no coordinator GO is posted without a Codex GO at the same head.
+    Codex is not a person, so the number of human maintainers is still one.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

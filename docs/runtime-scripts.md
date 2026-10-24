@@ -1679,7 +1679,9 @@ when a binary is at hand — how do its surfaces differ from the last re-pin's r
 Source `runtime/scripts/upstream_probe.py:1-59`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
 (`.github/workflows/upstream-drift.yml`) runs `latest` and `review-date` and opens — or
-comments on — an issue labeled `upstream-drift` when either says a re-pin is due.
+comments on — an issue labeled `upstream-drift` when either says a re-pin is due. Neither check
+can silence the other: the alert is filed from whichever one answered, and a check that could
+not run fails the job only after that (#661 review).
 
 Usage: `upstream_probe.py {latest,review-date,capture,diff} ...`
 

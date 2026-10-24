@@ -38,7 +38,10 @@ truth is `.claude-plugin/plugin.json`.
     and `run` checks all of it, seed and oracles included, before anything starts. A results
     directory holds one registration. A live run refuses uncommitted experiment inputs, and each
     run records their digest. Every path argument is made absolute first, and no results, output
-    or sandbox path may resolve into or around the sources or the registered files.
+    or sandbox path, the per-run sandbox included, may resolve into or around the checkout or
+    the registered files. A sandbox may not be a symbolic link, and `report` and `verify` never
+    write into the results. The posix provider never writes a worker's guard files through a
+    symbolic link in its worktree.
   - Live-run safety:
     - The model pin reaches the harness (claude's `ANTHROPIC_MODEL`). A harness that cannot be
       held to a pin is refused, and a call on another model halts the run.

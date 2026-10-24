@@ -296,12 +296,29 @@ def load_prereg(path: Path | None = None):
 SOURCE_DIRS = ("skills", "playbooks", "runtime", "scripts", "docs", "tests", "bench", "evals", ".git")
 
 
+def sandbox_path(workdir, run_id: str, results: Path, registered=()) -> Path:
+    """The run's sandbox, `<workdir>/<run id>`, resolved and guarded like every other write: never
+    a link (a complete run deletes its sandbox, and rmtree never follows one), never in the checkout
+    or around the results, and new or empty (PR #653 review: the final path skipped the guard)."""
+    sandbox = Path(workdir).expanduser().resolve() / run_id
+    if sandbox.is_symlink():
+        raise Refused(f"the sandbox {sandbox} is a symbolic link: it must be a directory the runner creates")
+    target = check_writable(sandbox, "the sandbox", registered)
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise Refused(f"the sandbox {sandbox} already holds something: a complete run deletes its sandbox, "
+                      "so it must be a directory the runner creates")
+    if results.is_relative_to(target) or target.is_relative_to(results):
+        raise Refused(f"--results {results} and the sandbox {sandbox} overlap: deleting one would delete the other")
+    return target
+
+
 def check_writable(path, what: str, registered=()) -> Path:
-    """`path` resolved (symlinks followed), or Refused when it is, lies inside or contains a
-    source directory or a registered file: a results, output or sandbox path there would
-    overwrite, or later delete, what the experiment is measured against."""
+    """`path` resolved (symlinks followed), or Refused when it is, lies inside or contains the
+    checkout or a registered file: a results, output or sandbox path there would overwrite, or
+    later delete, what the experiment is measured against. The whole checkout, not a list of its
+    directories (Codex review, C5: .github/ and assets/ were outside the list)."""
     target = Path(path).expanduser().resolve()
-    protected = [(ROOT / d).resolve() for d in SOURCE_DIRS]
+    protected = [ROOT.resolve()] + [(ROOT / d).resolve() for d in SOURCE_DIRS]
     protected += [Path(r).resolve() for r in (PREREG_DEFAULT, *registered)]
     for q in protected:
         if target == q or target.is_relative_to(q) or q.is_relative_to(target):
@@ -441,15 +458,7 @@ class Budget:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
             try:
                 fh.seek(0)
-                calls = {}
-                for lineno, line in enumerate(fh.read().splitlines(), 1):
-                    try:
-                        rec = json.loads(line)
-                        calls[rec["call"]] = {**calls.get(rec["call"], {}), **rec}
-                    except (ValueError, KeyError, TypeError) as err:
-                        raise SourceError(f"{self.path}:{lineno} is not a ledger record ({err}): the budget "
-                                          "cannot be read, so nothing may spend against it") from err
-                records, result = fn(calls)
+                records, result = fn(self._parse(fh.read()))
                 for rec in records:
                     fh.write(json.dumps({**rec, "at": now()}, sort_keys=True) + "\n")
                 fh.flush()
@@ -458,9 +467,29 @@ class Budget:
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
+    def _parse(self, text: str) -> dict:
+        calls = {}
+        for lineno, line in enumerate(text.splitlines(), 1):
+            try:
+                rec = json.loads(line)
+                calls[rec["call"]] = {**calls.get(rec["call"], {}), **rec}
+            except (ValueError, KeyError, TypeError) as err:
+                raise SourceError(f"{self.path}:{lineno} is not a ledger record ({err}): the budget "
+                                  "cannot be read, so nothing may spend against it") from err
+        return calls
+
     def calls(self) -> dict:
-        """Every call's state; a directory without a ledger has none (and a read never creates one)."""
-        return self._update(lambda calls: ([], calls)) if self.path.is_file() else {}
+        """Every call's state, read under a shared lock and never written: a directory without a
+        ledger has none, and a read never creates one (a report reads a published copy too)."""
+        if not self.path.is_file():
+            return {}
+        fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            try:
+                return self._parse(fh.read())
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def total(self) -> Decimal:
         return _committed(self.calls())
@@ -534,11 +563,15 @@ def results_lock(results: Path, shared: bool = False):
     cleanup; shared for a report or a verification, which never read a run in progress. Never
     waited for: a held lock is refused, so two commands cannot both spend one budget."""
     results = Path(results)
-    if shared and not results.is_dir():
-        yield
-        return
-    results.mkdir(parents=True, exist_ok=True)
-    fd = os.open(results / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    if shared:  # a read never writes into --results, not even its lock (PR #653 review sweep)
+        try:
+            fd = os.open(results / LOCK_NAME, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:  # no runner ever held this directory
+            yield
+            return
+    else:
+        results.mkdir(parents=True, exist_ok=True)
+        fd = os.open(results / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
     try:
         try:
             fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
@@ -870,7 +903,7 @@ if role == "builder":
     if action == "die":
         answer("stand-in scripted to exit without reporting")
         sys.exit(1)
-    if action in ("solve", "miss", "regress", "plant"):
+    if action in ("solve", "miss", "regress", "plant", "link_review"):
         spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
         runner = importlib.util.module_from_spec(spec_r)
         spec_r.loader.exec_module(runner)
@@ -885,6 +918,9 @@ if role == "builder":
         if action == "regress":  # passes its own oracle, breaks a landed task's: the merge gate fails
             changed += [f for f in runner.apply_edits(Path.cwd(), cfg["script"]["_regress"][task])
                         if f not in changed]
+        if action == "link_review":  # a hostile builder: the review inputs' directory as a link
+            os.symlink(cfg["script"]["_review_link"], ".wip-review")
+            changed.append(".wip-review")
         if action == "plant":  # a hostile builder: every config command channel git offers
             Path(".gitattributes").write_text("* filter=wipevil diff=wipevil\n", encoding="utf-8")
             changed.append(".gitattributes")
@@ -1421,13 +1457,17 @@ class Run:
             started = True
             tid = queue.pop(0)
             a = self.units[tid]["attempts"][-1]
-            if not self.admit(f"{tid}:reviewer"):
-                a["outcome"] = f"stopped-{self.halt}"  # refused before it starts, never detected after
-                continue
             nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
             n = len(self.units[tid]["reviews"]) + 1
             wt = self.sb.dir / "rv" / f"{tid.lower()}-a{a['n']}-r{n}"
             git(self.sb.target, "worktree", "add", "-q", "--detach", str(wt), a["head"], env=self.sb.env)
+            if os.path.lexists(wt / ".wip-review"):  # the builder committed it: a link would carry the
+                self.release_hold(f"{tid}:reviewer")  # runner's writes out of the worktree (sweep)
+                a["outcome"], a["review_blocked"] = "review-failed", "the head carries .wip-review itself"
+                continue
+            if not self.admit(f"{tid}:reviewer"):
+                a["outcome"] = f"stopped-{self.halt}"  # refused before it starts, never detected after
+                continue
             review_dir = wt / ".wip-review" / tid
             review_dir.mkdir(parents=True)
             diff = git(self.sb.target, "diff", a["base"], a["head"], env=self.sb.env).stdout
@@ -1829,7 +1869,7 @@ def check_order(results: Path, sched: dict, wanted: list) -> None:
         taken.add(p)
 
 
-def recover(results: Path) -> list[str]:
+def recover(results: Path, registered=()) -> list[str]:
     """Reconcile every call a LOST run (killed outright: no run.json) left live, under the results
     lock, so the ledger says what was spent instead of holding it forever (PR #653 review). Its
     workers are stopped first. A launched call is charged what its stream reports, or its full
@@ -1848,6 +1888,10 @@ def recover(results: Path) -> list[str]:
         sandbox = sandboxes.get(run)
         db = sandbox / "state" / "runtime.db" if sandbox else None
         if sandbox and (sandbox / "target").is_dir():  # its own store and scrubbed env, setsid, SHELL=/bin/sh
+            if sandbox.is_symlink():  # the runner never made one; Sandbox() would create through it
+                raise Refused(f"the ledger names {sandbox} as lost run {run}'s sandbox, and it is a symbolic "
+                              "link: inspect it before any run starts")
+            check_writable(sandbox, f"lost run {run}'s sandbox (from the ledger)", registered)
             first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"))
         rows, store_read = {}, False
         try:
@@ -2741,7 +2785,7 @@ def cmd_run(args) -> int:
 
 
 def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, registered) -> int:
-    recovered = recover(results)  # the lock is ours: a run directory without run.json is lost
+    recovered = recover(results, registered)  # the lock is ours: a run directory without run.json is lost
     if recovered:
         print(f"wip-curve: reconciled {len(recovered)} call(s) a lost run left live", file=sys.stderr)
     if args.workdir:
@@ -2789,13 +2833,7 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
         check_writable(results / "runs" / rid, "the run directory", registered)  # a planted runs/ link too
         if not args.workdir:
             continue
-        sandbox = Path(args.workdir) / run_id_for(prereg, sched[base]["condition"]["id"], sched[base]["repetition"],
-                                                  attempt)
-        if sandbox.exists() and (not sandbox.is_dir() or any(sandbox.iterdir())):
-            raise Refused(f"the sandbox {sandbox} already holds something: a complete run deletes its sandbox, "
-                          "so it must be a directory the runner creates")
-        if results.is_relative_to(sandbox.resolve()) or sandbox.resolve().is_relative_to(results):
-            raise Refused(f"--results {results} and the sandbox {sandbox} overlap: deleting one would delete the other")
+        sandbox_path(args.workdir, rid, results, registered)
     script = json.loads(args.inert_script) if args.inert_script else DRY_RUN_SCRIPT
     rc = EXIT_OK
     for base, attempt in wanted:
@@ -2823,7 +2861,8 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
                 if wait > 0:  # the cache/warmup confound: no live run starts inside the cooldown
                     print(f"wip-curve: cooldown {int(wait)}s before {entry['run_id']}", flush=True)
                     time.sleep(wait)
-        workdir = Path(args.workdir).resolve() / entry["run_id"] if args.workdir else \
+        # checked again at its creation: the cooldown above may have slept for minutes
+        workdir = sandbox_path(args.workdir, entry["run_id"], results, registered) if args.workdir else \
             Path(tempfile.mkdtemp(prefix=f"wip-curve-{entry['run_id']}-"))
         workdir.mkdir(parents=True, exist_ok=True)
         config = {"taskset": str(taskset_path), "runner": str(Path(__file__).resolve()), "script": script,

@@ -330,9 +330,16 @@ python3 scripts/wip_curve.py run --results <dir> --worker live --agent claude \
 
 Path arguments may be relative: the runner resolves every one of them to an absolute path before
 anything runs. It refuses a results, output or sandbox path that resolves to, inside or around the
-repository's sources (`skills/`, `playbooks/`, `runtime/`, `scripts/`, `docs/`, `tests/` and the
-rest) or the registered pre-registration and task set, with symlinks followed. A sandbox must be a
-new or empty directory, because a complete run deletes it, and it may not overlap the results. Run one scheduled run at a time with `--next 1`, or name runs with `--runs`. Each run takes its
+checkout (all of it, `.github/` and `assets/` included) or the registered pre-registration and task
+set, with symlinks followed. Each run's sandbox, `<workdir>/<run id>`, is checked that way before
+the first run starts and again when it is created. It must be a new or empty directory and never
+a symbolic link, because a complete run deletes it, and it may not overlap the results. `report`
+and `verify` never write into the results directory, not even a lock file. A lost run's sandbox,
+as the ledger names it, is checked the same way before a recovery touches it. The runner never
+writes the review inputs into a reviewer's worktree when the builder's head carries
+`.wip-review` itself. That attempt ends `review-failed`. The posix provider refuses to write a
+worker's guard files through a symbolic link in its worktree. Run one scheduled run at a time
+with `--next 1`, or name runs with `--runs`. Each run takes its
 condition, repetition, position and task order from the schedule. The results directory is
 append-only. A live run's receipt is labelled `live-unreviewed` until a maintainer binds it.
 

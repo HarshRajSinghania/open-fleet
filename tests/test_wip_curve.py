@@ -1463,6 +1463,65 @@ class TestNoWriteTouchesTheRepository(Tmp):
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertTrue(keep.is_file(), "a complete run deleted a directory it did not create")
 
+    def test_the_whole_checkout_is_protected(self):
+        # Codex review (C5): .github/, assets/ and any new directory are the checkout too
+        for path in (ROOT / ".github" / "x", ROOT / "assets" / "badges" / "x", ROOT / "wip-results",
+                     self.link("into-github", ROOT / ".github") / "x"):
+            with self.subTest(path=str(path)), self.assertRaises(wip.Refused):
+                wip.check_writable(path, "--results")
+
+    def test_a_sandbox_that_is_a_link_is_refused_and_nothing_is_written_through_it(self):
+        # PR #653 review (lig): <workdir>/<run id> linked to an empty directory elsewhere
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (self.tmp / "wd").mkdir()
+        (self.tmp / "wd" / "wip1-b1r1-rep1").symlink_to(elsewhere, target_is_directory=True)
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("symbolic link", p.stderr)
+        self.assertEqual(list(elsewhere.iterdir()), [], "the run wrote through the sandbox link")
+
+    def test_a_report_and_a_verification_never_write_into_the_results(self):
+        results = self.tmp / "results"
+        shutil.copytree(Path(dry_run(*B1_BOUNDARY)[0].name) / "results", results)
+        (results / wip.LOCK_NAME).unlink()
+        before = sorted(p.name for p in results.iterdir())
+        out = self.tmp / "out"
+        p = runner("report", "--results", str(results), "--out", str(out), "--basis", "all", env=self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        p = runner("verify", "--results", str(results), "--report", str(out / "report.json"), env=self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(sorted(p.name for p in results.iterdir()), before, "a read wrote into --results")
+
+    def test_a_recovery_never_writes_through_a_sandbox_the_ledger_names(self):
+        # the ledger's record of a lost run names a link: the recovery refuses, never creates through it
+        elsewhere = self.tmp / "elsewhere"
+        (elsewhere / "target").mkdir(parents=True)
+        link = self.link("sandbox-link", elsewhere)
+        results = self.tmp / "results"
+        (results / "runs" / "wip1-b1r1-rep1").mkdir(parents=True)
+        budget = wip.Budget(results)
+        budget.start_run("wip1-b1r1-rep1", link, "inert")
+        budget.hold([("wip1-b1r1-rep1/T5/a1/builder", {"run": "wip1-b1r1-rep1"})], Decimal("0.25"), Decimal("10"))
+        p = runner("run", "--results", str(results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b3r1-rep1", "--cost-cap-usd", "0", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), ["target"], "the recovery wrote through the link")
+
+    def test_a_builder_cannot_point_the_review_inputs_outside_the_worktree(self):
+        # a builder commits .wip-review as a link: the runner's review inputs never follow it
+        escape = self.tmp / "escape"
+        escape.mkdir()
+        script = {"T5": {"builder": ["link_review"]}, "_review_link": str(escape)}
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                   "--inert-script", json.dumps(script), env=self.env)
+        self.assertEqual(list(escape.iterdir()), [], "review inputs were written through the builder's link")
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        t5 = record["units"]["T5"]
+        self.assertEqual((t5["attempts"][0]["outcome"], t5["reviews"]), ("review-failed", []), p.stdout + p.stderr)
+
     def test_results_inside_the_sandbox_it_deletes_are_refused(self):
         wd = self.tmp / "wd"
         results = wd / "wip1-b6r1-rep1" / "results"

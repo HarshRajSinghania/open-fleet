@@ -26,6 +26,7 @@ then the [Unreleased] entries written before fragments existed, which are older 
 Exit: 0 every check holds, 1 a check failed, 2 the input could not be read.
 """
 import argparse
+import bisect
 import re
 import subprocess
 import sys
@@ -48,54 +49,115 @@ LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")
 # lines. Only an attribute named exactly href or src, with a value, is a link (Codex at 54fe725bee:
 # `data-href`, and `x<a` with `href=value` lines later and no tag ever closed, were refused).
 _TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
-_TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
-                          re.IGNORECASE)
-_TAG_END_RE = re.compile(r"\s*/?>")
-# Where a Markdown block may end: a code span never crosses one (CommonMark: inlines are parsed
-# within a block). A blank line, or a line whose first mark, at any indentation (a list item's
-# blocks sit deeper), can open or close a block: a list item, a setext underline or thematic
-# break, a heading, a quote, a table row, an HTML block or a fence. It over-approximates on
-# purpose (Codex at 8585b35789 and 3c01b90b5e): a span cut short can only reveal a tag, never
-# hide one.
-# A line that may open a raw HTML block, where backticks are literal: its first mark is `<`.
-_HTML_LINE_RE = re.compile(r"(?m)^[ \t]*<")
-
-# A fenced code block's opening line (at any indentation): literal to its closing fence (Greptile
-# at 8585b35789: a list marker inside the fence ended the span check early and flagged an example).
-_FENCE_RE = re.compile(r"([ \t]*)(`{3,}|~{3,})([^\n]*)")
-
-
-def _fence_end(text, fence):
-    """Where scanning resumes after the fenced block `fence` opens: after its closing fence, or at
-    the first later line indented less than the fence, where the container holding it (a list
-    item) ends and the fence with it, so no tag after that is hidden; else the text's end."""
-    indent, mark = len(fence.group(1).expandtabs(4)), fence.group(2)
-    closing = re.compile(rf"{re.escape(mark[0])}{{{len(mark)},}}[ \t]*")
-    pos = text.find("\n", fence.end())
-    while pos != -1:
-        start, end = pos + 1, text.find("\n", pos + 1)
-        line = text[start:end if end != -1 else len(text)]
-        body = line.lstrip(" \t")
-        if body and len(line[:len(line) - len(body)].expandtabs(4)) < indent:
-            return start
-        if closing.fullmatch(body):
-            return end if end != -1 else len(text)
-        pos = end
-    return len(text)
-
-
-def _block_start(text, i):
-    """Where the block holding position `i` may start: just after the last blank line before it."""
-    end = text.rfind("\n", 0, i)  # the newline that ends the line above i's
-    while end >= 0:
-        above = text.rfind("\n", 0, end)
-        if not text[above + 1:end].strip():
-            return end + 1
-        end = above
-    return 0
+_TAG_ATTR_RE = re.compile(r"""[ \t\n\x0b\f\r]+([a-z_:][a-z0-9_.:-]*)(?:[ \t\n\x0b\f\r]*=[ \t\n\x0b\f\r]*"""
+                          r"""([^ \t\n\x0b\f\r"'=<>`]+|'[^']*'|"[^"]*"))?""", re.IGNORECASE)
+_TAG_END_RE = re.compile(r"[ \t\n\x0b\f\r]*/?>")
+# Raw HTML blocks (CommonMark 0.31 and GFM, "HTML blocks"): inside one, tags are real, and a
+# backtick or a backslash is text. A line may open one when, past any block-quote or list-item
+# marks, it starts a type 1-5 block (<script, <pre, <style, <textarea, <!--, <?, <!X, <![CDATA[),
+# names a type 6 block tag, or holds one complete tag alone (type 7).
+_HTML_OPENER_RE = re.compile(r"<(?:script|pre|style|textarea)(?:[\s>]|$)|<!--|<\?|<![a-z]|<!\[CDATA\[",
+                             re.IGNORECASE)
+_HTML_BLOCK6_RE = re.compile(
+    r"</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|"
+    r"div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|"
+    r"link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|source|summary|table|tbody|td|"
+    r"tfoot|th|thead|title|tr|track|ul)(?:[\s/>]|$)", re.IGNORECASE)
+_HTML_BLOCK7_RE = re.compile(
+    r"(?:<[a-z][a-z0-9-]*(?:[ \t\n\x0b\f\r]+[a-z_:][a-z0-9_.:-]*(?:[ \t\n\x0b\f\r]*=[ \t\n\x0b\f\r]*"
+    r"(?:[^ \t\n\x0b\f\r\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*[ \t\n\x0b\f\r]*/?>"
+    r"|</[a-z][a-z0-9-]*[ \t\n\x0b\f\r]*>)[ \t]*$", re.IGNORECASE)
+_CONTAINER_RE = re.compile(r"[ \t]*(?:>|[-*+](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$))")
+# A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also
+# split at U+2028 and friends, inventing lines a renderer never sees (Codex at dde9cbedf9).
+_LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+_CLOSE_TAG_RE = re.compile(r"</[a-z][a-z0-9-]*[ \t\n\x0b\f\r]*>", re.IGNORECASE)
+# A "<" a renderer may read as the start of raw HTML or an autolink: a tag, closing tag, comment,
+# declaration, processing instruction, CDATA, URI or e-mail autolink. Renderers disagree on
+# where each ends (Pandoc renders <!X <a href=...> as a link; CommonMark 0.31 calls it one
+# declaration), so the scanner never guesses: past such a "<", backticks and escapes are text.
+_MAY_OPEN_RE = re.compile(r"<[a-z0-9.!#$%&'*+/=?^_`{|}~-]", re.IGNORECASE)
+# What makes a complete tag unsafe to skip whole: a backtick or a "<" inside it, or a line end.
+_UNCLEAR_RE = re.compile(r"[`<\r\n]")
+# A bare URL GFM turns into a link (an extended autolink): its path may hold a backtick, so no
+# code span opens there (fuzzed against Pandoc's GFM reader, #673).
+_BARE_URL_RE = re.compile(r"://|www\.", re.IGNORECASE)
+# A tag as an HTML5 tokenizer reads raw HTML, for _loose_link: a name, then attributes whose
+# names are anything but whitespace, "/", ">" and "=" (a quote included), each with an optional
+# value, quoted or not. Whitespace is HTML's five characters exactly; Python's \s also matches a
+# no-break space, which let a quote swallow the href (Codex at a276405fe8).
+_LOOSE_NAME_RE = re.compile(r"<[a-z][^ \t\n\f\r/>]*", re.IGNORECASE)
+_LOOSE_ATTR_RE = re.compile(r"""[ \t\n\f\r/]*([^ \t\n\f\r/>][^ \t\n\f\r/>=]*)"""
+                            r"""([ \t\n\f\r]*=[ \t\n\f\r]*(?:"[^"]*"|'[^']*'|[^ \t\n\f\r>]*))?""")
 
 
-_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n[ \t]*(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
+def _opens_html(line):
+    """Whether `line`, past any block-quote and list-item marks, may open a raw HTML block."""
+    rest = line.rstrip("\r\n")
+    while mark := _CONTAINER_RE.match(rest):
+        rest = rest[mark.end():]
+    rest = rest.lstrip(" \t")
+    return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
+
+
+# One block quote's mark at a line's start: a renderer strips a quote's marks before reading what
+# it holds, so a tag split across quoted lines is whole once they go (Codex at b12df9e457). Only
+# as many as the quote's depth go: a ">" after them is the content's own, perhaps a tag's end
+# (Codex at 52ef451db4), so each depth is read as its own view.
+_QUOTE_MARK_RE = re.compile(r"[ \t]*>[ \t]?")
+
+
+def _quote_views(text):
+    """`text` with up to 1, 2, ... leading block-quote marks removed from each line, one view per
+    depth, to the deepest any line has."""
+    lines = [m.group() for m in _LINE_RE.finditer(text)]
+
+    def depth(line):
+        n = 0
+        while mark := _QUOTE_MARK_RE.match(line):  # every mark consumes a ">": no cap (Codex at b0a54260f9)
+            line, n = line[mark.end():], n + 1
+        return n
+
+    def strip(line, k):
+        for _ in range(k):
+            if not (mark := _QUOTE_MARK_RE.match(line)):
+                break
+            line = line[mark.end():]
+        return line
+    return ["".join(strip(line, k) for line in lines) for k in range(1, max(map(depth, lines), default=0) + 1)]
+
+
+def _loose_link(text, i, open_ok):
+    """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
+    with a value in it, else None; with `open_ok` (inside a raw HTML block) closed or not. Past a point where renderers may disagree, text may reach the
+    page as raw HTML, so link tags there are read this loosely."""
+    if not (name := _LOOSE_NAME_RE.match(text, i)):
+        return None
+    pos, link = name.end(), False
+    while attr := _LOOSE_ATTR_RE.match(text, pos):
+        link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
+        pos = attr.end()
+    end = re.compile(r"[ \t\n\f\r/]*>").match(text, pos)
+    # In a raw HTML block an unterminated tag counts too: whatever the renderer writes next (a
+    # </li>) can close it (Codex at 075baf07c5). In a paragraph it is text a renderer escapes.
+    return text[i:end.end() if end else pos] if link and (end or open_ok) else None
+
+
+def _tag(text, i):
+    """(end, links) for a complete open or closing tag at text[i], read quote-aware and across
+    lines; None when there is none."""
+    if close := _CLOSE_TAG_RE.match(text, i):
+        return close.end(), False
+    if not (name := _TAG_NAME_RE.match(text, i)):
+        return None
+    pos, link = name.end(), False
+    while attr := _TAG_ATTR_RE.match(text, pos):
+        link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
+        pos = attr.end()
+    end = _TAG_END_RE.match(text, pos)
+    return (end.end(), link) if end else None
+
+
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -103,34 +165,64 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None.
 
-    Scanned left to right as a renderer does: a backslash escape is text, a code span (a run of
-    N backticks closed by the next run of exactly N in the same block) renders literally, so a
-    tag inside one is no link, and an unclosed run is plain backticks. scripts/run_index.py keeps an identical copy:
-    it is loaded alone, so it cannot import this one (tests/test_changelog.py holds them equal).
+    Read so that nothing a renderer shows as a link is missed (#673), in one pass over the text
+    and one over each view of it with a quote's depth of block-quote marks removed from each line,
+    as a renderer reads a quote. A tag is
+    skipped only inside a backslash escape or a code span that closes on the line it opens, and
+    only before any point where renderers may disagree about what follows: a line that may open
+    raw HTML (past list or quote marks), a "<" that may begin raw HTML or an autolink and is not
+    a plain one-line tag, a "[" that may begin a link, a bare URL, a "|" that may edge a table
+    cell, a "$" that may open Pandoc's math, or a backtick run left open on its line. From there on, backticks and
+    escapes are text, and a link tag is read as loosely as a browser reads raw HTML. Fragments allow no blank line and run-index cells no newline, so what this
+    reads as text more strictly than a renderer would is never needed. scripts/run_index.py keeps
+    an identical copy: it is loaded alone, so it cannot import this one (tests/test_changelog.py
+    holds them equal).
     """
+    return next((found for view in (text, *_quote_views(text)) if (found := _first_link(view))), None)
+
+
+def _first_link(text):
+    """html_link's one pass over one view of `text`."""
+    lines = [m.span() for m in _LINE_RE.finditer(text)]
+    starts = [start for start, _end in lines]
+    # Backticks and escapes are text from the first line that may open raw HTML, from the first
+    # "<" that may begin raw HTML or an autolink and is not a plain one-line tag, from the first
+    # "[" (a link or image, whose text, destination or title may hold a backtick), from the first
+    # bare URL (GFM links it), the first "|" (GFM splits a table row into cells before reading a
+    # span), the first "$" (Pandoc's GFM math, $x$ or $`x`$), and from the first backtick run
+    # left open on its line: past any of
+    # these, where a span or construct ends depends on the renderer, and a link tag is read as a
+    # browser reads raw HTML (_loose_link).
+    literal = html = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
     i = 0
     while i < len(text):
-        fence = _FENCE_RE.match(text, i) if i == 0 or text[i - 1] == "\n" else None
-        if fence and not (fence.group(2)[0] == "`" and "`" in fence.group(3)):
-            i = _fence_end(text, fence)
-        elif text[i] == "\\":
+        inline = i < literal
+        if inline and text[i] == "\\":
             i += 2
-        elif text[i] == "`" and _HTML_LINE_RE.search(text, _block_start(text, i), i):
-            i += 1  # inside a raw HTML block a backtick is text (Codex at 0116e8ae34): no code span hides a tag
-        elif text[i] == "`":
-            run = len(text) - i - len(text[i:].lstrip("`"))
-            block = _BLOCK_END_RE.search(text, i + run)
-            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, block.start() if block else len(text))
-            i = close.end() if close else i + run
-        elif text[i] == "<" and (name := _TAG_NAME_RE.match(text, i)):
-            pos, link = name.end(), False
-            while attr := _TAG_ATTR_RE.match(text, pos):
-                link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
-                pos = attr.end()
-            end = _TAG_END_RE.match(text, pos)
-            if end and link:
-                return text[i:end.end()]
-            i = end.end() if end else i + 1
+        elif inline and text[i] == "[":
+            literal, i = i, i + 1  # a link's text, destination or title may hold a backtick (Codex at d16ff6e5cc)
+        elif inline and (_BARE_URL_RE.match(text, i) or text[i] in "|$"):
+            literal, i = i, i + 1  # a bare URL, a table cell's edge, or Pandoc's $math$ (Codex at 737bef7213, b897354b7b)
+        elif inline and text[i] == "`":
+            line_end = lines[bisect.bisect_right(starts, i) - 1][1]
+            run = len(text[i:line_end]) - len(text[i:line_end].lstrip("`"))
+            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, line_end)
+            if close and "|" not in text[i + run:close.start()]:
+                i = close.end()
+            else:  # left open, or holding a "|" that may split it into table cells (Codex at 0527c08900)
+                literal, i = i, i + run
+        elif text[i] == "<":
+            tag = _tag(text, i)
+            if tag and tag[1]:
+                return text[i:tag[0]]
+            if not inline and (loose := _loose_link(text, i, open_ok=i >= html)):
+                return loose
+            if inline and tag and not _UNCLEAR_RE.search(text, i + 1, tag[0]):
+                i = tag[0]  # a whole one-line tag holding no backtick and no "<": skipping it hides nothing
+            elif inline and _MAY_OPEN_RE.match(text, i):
+                literal = i  # read this same "<" again as raw HTML (Codex at 5f1eb56a73), then on
+            else:
+                i += 1
         else:
             i += 1
     return None

@@ -381,10 +381,8 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** `x` and `<a href="../docs/ops.md">ops</a>` are both spans.\n',
         '- **Change** <a name="anchor">no link attribute</a>.\n',
         '- **Change** an escaped \\<a href="../docs/ops.md"> is text.\n',
-        '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
-        # a fenced block is literal to its closing fence, list markers inside it too (Greptile at 8585b35789)
-        '- **Change** an example:\n\n  ```html\n  - example\n  <a href="../x.md">x</a>\n  ```\n',
-        '- **Change** an example:\n\n~~~~\n# not a heading\n<img src="../x.png">\n~~~~\n',
+        # an inline tag at a line's start opens no HTML block: the code span after it stays code (#673)
+        '- **Change** text\n  <span>inline</span> then `<a href="../x.md">example</a>`.\n',
     )
     REFUSED = (
         '- **Change** <a\n  title="x"\n  href="../docs/ops.md">ops</a>.\n',
@@ -412,6 +410,75 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** x\n  ```\n- <a href="../docs/ops.md">ops</a>\n',
         # a closing fence shorter than the opening one does not close it, but the item's end does
         '- **Change** x\n  ````\n  ```\n<a href="../docs/ops.md">ops</a>\n',
+        # inside a raw HTML block a fence mark opens nothing: the tag is real (#673)
+        '- **Change** example:\n  <div>\n  ~~~\n  <a href="../docs/ops.md">ops</a>\n  </div>\n',
+        '- **Change** x\n\n<div>\n```\n<a href="../docs/ops.md">ops</a>\n```\n</div>\n',
+        # a lone tag after a blank line opens a type 7 HTML block: its backticks are text (#673)
+        '- **Change** x\n\n<span>\n`<a href="../docs/ops.md">ops</a>`\n',
+        # a <pre> block runs past a blank line to </pre> (#673)
+        '- **Change** x\n\n<pre>\n\n`<a href="../docs/ops.md">ops</a>`\n</pre>\n',
+        # a setext underline ends the paragraph, so the lone tag after it opens an HTML block (Codex at dde9cbedf9)
+        '- **Change**\n  ---\n  <span>\n  `<a href="../docs/ops.md">ops</a>`\n',
+        '- **Change** x\n## heading\n<span>\n`<a href="../docs/ops.md">ops</a>`\n',
+        # U+2028 is no line ending: no fence opens on it (Codex at dde9cbedf9)
+        '- **Change** x\u2028~~~\u2028<a href="../docs/ops.md">ops</a>\u2028~~~\n',
+        # an empty block quote ends the paragraph too; a lone tag opens a block wherever it stands (Codex at 0b09543855)
+        '- **Change** x\n  >\n  <span>\n  `<a href="../docs/ops.md">ops</a>`\n  </span>\n',
+        # raw HTML opened on a list-item or quote line, past its marks (Codex at c5ac0e4c75)
+        '- <div>\n  <span>example</span>\n  `<a href="../docs/ops.md">sample</a>`\n  </div>\n',
+        '> <div>\n> `<a href="../docs/ops.md">ops</a>`\n',
+        # an indented <pre> cannot invert a fence: no fence is honoured (Codex at c5ac0e4c75)
+        '- text\n      <pre>\n  ```\n  </pre>\n  ```\n  <a href="../docs/ops.md">ops</a>\n',
+        # Read as text on purpose (#673): a code span that wraps a line, and a fenced block. A
+        # renderer may show these as code, but fragments allow no blank line and run-index cells no
+        # newline, so neither is needed, and reading them as text can never hide a link.
+        '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
+        '- **Change** an example:\n  ```html\n  <a href="../x.md">x</a>\n  ```\n',
+        # one pass, as CommonMark reads inlines (Codex at e6a546abf2): a span left open on its line
+        # closes on the next, and a tag's quoted value can carry a backtick across a line
+        '- **Change** `start\n  end` <a href="../docs/ops.md">link</a> `unclosed\n',
+        '- **Change** <span title="\n  `">text</span> <a href="../docs/ops.md">link</a> `\n',
+        # a comment or autolink outranks a code span: the backtick inside it opens none (#673)
+        '- **Change** <!-- `x --> <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** <https://x.example/`> <a href="../docs/ops.md">ops</a> `\n',
+        # a tag torn by an HTML block is no tag: what it seemed to quote is read (#673)
+        "- **Change** <span title=\"\n<div>\n<a href='../docs/ops.md'>ops</a>\n\">\n",
+        # renderers disagree where a declaration ends: past one, backticks are text (fuzzed against Pandoc, #673)
+        '# <!X <a href="../docs/ops.md">ops</a>``<!--</span>\n',
+        # a comment or autolink holding a backtick is not skipped whole: what follows it is read as text (#673)
+        '- **Change** <!-- a `tick --> and `<a href="../x.md">` as code.\n',
+        # a link's title, destination or text may hold a backtick: past a "[", backticks are text (Codex at d16ff6e5cc)
+        '- **Change** text\n  <span>inline</span> [example](https://example.org/ "title`") <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** [a`b](https://example.org/) <a href="../docs/ops.md">ops</a> `\n',
+        '[x]: https://example.org/ "t`"\n<a href="../docs/ops.md">ops</a> `\n',
+        # GFM links a bare URL, backtick and all (fuzzed against Pandoc, #673)
+        '- **Change** see https://e.org/`) <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** see www.e.org/` <a href="../docs/ops.md">ops</a> `\n',
+        # raw HTML reaches a browser, which reads attributes loosely (fuzzed against Pandoc, #673)
+        '</div>\n<a\n[x][y]"\n#   href="../docs/ops.md">x</a>\n',
+        # GFM splits a table row into cells first: backticks in two cells form no span (Codex at 737bef7213)
+        '- | a | b |\n  | - | - |\n  | ` | <a href="../docs/ops.md">ops</a>` |\n',
+        # Pandoc's GFM math takes a backtick as its delimiter (#673)
+        '- **Change** $`x <a href="../docs/ops.md">ops</a> `\n',
+        # a header row needs no leading pipe: a "|" inside a span may split it into cells (Codex at 0527c08900)
+        '- **Change** `a | <a href="../docs/ops.md">ops</a>`\n  --- | ---\n',
+        # a no-break space is no HTML whitespace: it stays in the value, and href stands apart (Codex at a276405fe8)
+        '- **Change**\n  <div>\n  <a junk=\u00a0"x href=../docs/ops.md y">ops</a>\n  </div>\n',
+        # a renderer strips a block quote's marks before it reads the tag they split (Codex at b12df9e457)
+        '- **Change**\n  > <a\n  > href="../docs/ops.md">ops</a>\n',
+        '> > <img\n> > src="../x.png">\n',
+        # only the quote's own marks go: a ">" after them is the content's, here the tag's end (Codex at 52ef451db4)
+        '- **Change**\n  > <div>\n  > <a\n  > href="../docs/ops.md"\n  > >ops\n',
+        # every depth is read, however deep (Codex at b0a54260f9)
+        '- **Change**\n  ' + '> ' * 33 + '<a\n  ' + '> ' * 33 + 'href="../docs/ops.md">ops</a>\n',
+        # in raw HTML a tag left open is closed by what the renderer writes next (Codex at 075baf07c5)
+        '- **Change**\n  <div>\n  <a href="../docs/ops.md"\n- **Next** entry\n',
+        '- **Change**\n  <div>\n  <img src="../x.png"\n',
+        # Pandoc's GFM math takes "$x$" too, backticks and all (Codex at b897354b7b)
+        '- **Change** $x`y$ <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** $x`y$ <img src="../x.png"> `\n',
+        # the "<" that turns reading to raw HTML is itself read as raw HTML (Codex at 5f1eb56a73)
+        '- > <a\n  > href="../docs/ops.md"\n      >x</a>\n',
     )
 
     def errors(self, text):

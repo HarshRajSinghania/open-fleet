@@ -106,6 +106,12 @@ elif argv[:1] == ["ps"]:
     else:  # this launch's own containers, by its nonce: the verification
         if "verify" in scenario.get("hang", []):
             time.sleep(scenario.get("hang_s", 5))
+        if scenario.get("survive_checks"):  # listed for the first N verifications, then gone
+            seen = sum(1 for line in open(os.environ["FAKE_DOCKER_LOG"])
+                       if json.loads(line)["argv"][:4] == argv[:4])
+            if seen <= scenario["survive_checks"]:
+                print(scenario["cid"])
+                sys.exit(0)
         orphan = scenario.get("orphan")
         removed = any(json.loads(line)["argv"] == ["rm", "-f", orphan] for line in open(os.environ["FAKE_DOCKER_LOG"]))
         print(orphan if orphan and not removed else scenario.get("survivor", ""))
@@ -610,6 +616,17 @@ class TeardownNeverLosesTheReceipt(Harness):
         self.assertIs(destroyed["verified"], True)
         self.assertIn(f"docker kill {CID}: exit 1: Error response from daemon: cannot kill container",
                       destroyed["nonzero"])
+
+    def test_a_retried_teardown_keeps_what_the_first_one_saw(self):
+        # #673: the retry replaced the first teardown's record, so its diagnostics vanished
+        self.scenario({"sleep": 60, "fail": ["kill"], "survive_checks": 2})
+        with mock.patch.object(lc, "DESTROY_WAIT_S", 0.3):
+            rc, err = self.launch(timeout="1")
+        self.assertEqual(rc, lc.EXIT_TIMED_OUT, err)
+        destroyed = self.receipt()["destroyed"]
+        self.assertIs(destroyed["verified"], True)
+        kills = [n for n in destroyed["nonzero"] if n.startswith(f"docker kill {CID}")]
+        self.assertEqual(len(kills), 2, f"one teardown's kill failure is missing: {destroyed['nonzero']}")
 
     def test_a_verification_that_keeps_timing_out_fails_closed_with_a_receipt(self):
         self.scenario({"hang": ["verify"], "hang_s": 5})

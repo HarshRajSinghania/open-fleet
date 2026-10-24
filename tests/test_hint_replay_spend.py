@@ -471,5 +471,25 @@ class EveryCallGetsAPositiveLimitWithinItsReservation(StandInRun):
         self.assertEqual(self.calls(), [], "a worker started without a positive limit")
 
 
+class OneRunAtATimeSpendsFromALedger(StandInRun):
+    """#657 review K2: the ledger was read once, so two invocations sharing --out each counted only
+    their own spend and both admitted calls against the same cap. The ledger is now held for the
+    whole invocation: a concurrent run into the same --out is refused before it reserves anything."""
+
+    def test_a_concurrent_run_into_the_same_out_is_refused(self):
+        first = self.spawn(self.live(agent=self.agent("hang"), extra=["--timeout-s", "60"]))
+        self.wait_for(lambda: len(self.recorded_pids()) == 2, "the first run's call to start hanging")
+        code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
+        self.assertEqual(code, 2, err)
+        self.assertIn("held by another run", err)
+        self.assertEqual(len(self.calls()), 1, "a second run started a call against the same cap")
+        first.send_signal(signal.SIGTERM)
+        first.communicate(timeout=60)
+        # Once the first run is gone its hold goes with it, and its open call stays charged.
+        code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.results()["cost"]["prior_spent_usd"], 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()

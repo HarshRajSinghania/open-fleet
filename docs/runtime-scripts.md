@@ -1114,7 +1114,9 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   fsynced, before the call starts, and its charge after. A call the runner never settled (a
   SIGKILL) stays charged in full, and a later run into the same `--out` counts every earlier
   run's spend against its own cap. Each call is keyed by run id, so nothing is counted twice. An
-  unreadable ledger refuses the run.
+  unreadable ledger refuses the run. One run holds the ledger at a time: it is locked
+  exclusively for the whole invocation, so a concurrent run into the same `--out` is refused
+  before it reserves anything, and the lock of a run that dies goes with its process.
 - **No process outlives its call.** Each call (and each oracle) runs under a watchdog that leads
   its own process group. On timeout the whole group is killed and reaped; what a finished worker
   leaves in its group is killed before the next call; SIGTERM/SIGHUP/Ctrl-C kill every live group,

@@ -1076,5 +1076,62 @@ class TheRegisteredLimitIsPositiveAndWithinItsReservation(SafetyNet):
                 self.assertFalse(out.exists(), "a refused run wrote its results directory")
 
 
+class OneRunHoldsTheSpendLedger(SafetyNet):
+    """#657 review K2: SpendLedger read the disk once, at construction, so two runs sharing a ledger
+    each counted only their own spend and both admitted calls against what was left of one cap. A
+    ledger is now held exclusively from construction until release(): a second run on it is refused
+    before it reserves anything, and a dead run's hold goes with its process."""
+
+    def hold(self, path, run):
+        ledger = runner.SpendLedger(path, run)
+        self.addCleanup(lambda: ledger.release() if hasattr(ledger, "release") else None)
+        return ledger
+
+    def test_a_second_ledger_on_a_held_file_is_refused_until_it_is_released(self):
+        path = self.tmpdir() / "spend.jsonl"
+        first = self.hold(path, "run-a")
+        first.start("cell", "agent", 2.0)
+        with self.assertRaises(runner.Refused) as refused:
+            self.hold(path, "run-b")
+        self.assertIn("held by another run", str(refused.exception))
+        first.release()
+        self.assertEqual(self.hold(path, "run-c").total(), 2.0, "the released ledger is read afresh")
+
+    def test_a_concurrent_run_into_the_same_directory_is_refused(self):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        out.mkdir()
+        self.hold(out / "spend.jsonl", "a-run-already-spending")
+        code, _stdout, err = run_main(
+            ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+             "--harness-cmd", self.stub_cmd("plain", "--cost", "1.0"),
+             "--grader-cmd", self.stub_cmd("grader-json", "--cost", "0.25"),
+             "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+        self.assertEqual(code, 2, err)
+        self.assertIn("held by another run", err)
+        self.assertFalse((out / "cells").exists(), "a second run started a cell against the same cap")
+
+    def test_a_killed_holder_releases_the_ledger(self):
+        path = self.tmpdir() / "spend.jsonl"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", textwrap.dedent(f"""
+                import importlib.util, sys, time
+                spec = importlib.util.spec_from_file_location("held", {str(ROOT / "scripts" / "_ablation_run.py")!r})
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                ledger = mod.SpendLedger({str(path)!r}, "holder")
+                print("held", flush=True)
+                time.sleep(60)
+            """)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        with self.assertRaises(runner.Refused):
+            self.hold(path, "while-held")
+        holder.kill()
+        holder.communicate(timeout=30)
+        self.hold(path, "after-the-holder-died")
+
+
 if __name__ == "__main__":
     unittest.main()

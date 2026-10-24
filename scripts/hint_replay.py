@@ -572,8 +572,19 @@ def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, b
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
     try:
         ledger = spend.SpendLedger(out.parent / f"{out.stem}.spend.jsonl", run_id)
-    except spend.Refused as exc:  # an unreadable ledger: spend already made cannot be counted
+    except spend.Refused as exc:  # unreadable, or held by a concurrent run on the same cap (#657 K2)
         raise CorpusError(str(exc)) from exc
+    try:
+        return _live_holding(ledger, out, run_id, tasks, digest, planned, corpus_path, agent_argv, tier,
+                             attempts, model, budget_usd, timeout_s, per_call_usd, limit_flag, limit)
+    finally:
+        ledger.release()
+
+
+def _live_holding(ledger, out, run_id, tasks, digest, planned, corpus_path, agent_argv, tier, attempts,
+                  model, budget_usd, timeout_s, per_call_usd, limit_flag, limit):
+    """The live run proper, holding the spend ledger for the whole invocation (#657 review K2)."""
+    live = tier == "live"
     prior = float(ledger.total())
     reserve = float(per_call_usd) if live else 0.0  # a stub is never paid: it reserves nothing
     cap = float(budget_usd) if budget_usd is not None else 0.0

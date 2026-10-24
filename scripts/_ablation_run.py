@@ -51,10 +51,12 @@ SIGHUP and Ctrl-C kill every live group before the runner exits 128+N (first_run
 #640). A killed call is charged its full reservation, and a run that never completed is not graded.
 Every paid call is entered in the run directory's fsynced spend ledger at its full reservation
 before it starts and settled after, so an interrupted cell is kept at what it was charged, and a
-later run into the same directory counts that spend against its cap.
+later run into the same directory counts that spend against its cap. One run holds the ledger at a
+time (an exclusive lock for the whole run): a concurrent run into the same directory is refused.
 A harness that calls setsid() itself leaves its group and breaks this contract.
 """
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -842,11 +844,34 @@ class SpendLedger:
     a crash, a kill) stays charged in full. A later run into the same directory reads the earlier
     entries and counts them against its own cap. An unreadable ledger refuses the run: spend that
     cannot be counted cannot be capped.
+
+    One run holds a ledger at a time (#657 review K2). The records are read once, so two runs
+    sharing a ledger would each count only their own spend and both admit calls against what is
+    left of one cap. The file is locked exclusively (flock) from construction until release(): a
+    second run on it is refused before it reserves anything, and the kernel drops the hold of a run
+    that dies, a SIGKILLed one included.
     """
 
     def __init__(self, path, run):
         self.path, self.run = Path(path), run
-        self.records = self._read()
+        self._hold = open(self.path, "a", encoding="utf-8")  # an empty ledger on first use
+        try:
+            fcntl.flock(self._hold.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as err:
+            self._hold.close()
+            raise Refused(f"the spend ledger {self.path} is held by another run: two runs admitting calls "
+                          "against one cap could both spend what is left of it, so this one does not "
+                          "start (wait for that run, or give this one its own output)") from err
+        try:
+            self.records = self._read()
+        except Refused:
+            self.release()
+            raise
+
+    def release(self):
+        """Give up the hold once the run is over (idempotent)."""
+        if not self._hold.closed:
+            self._hold.close()
 
     def _read(self):
         if not self.path.is_file():
@@ -1008,7 +1033,16 @@ def run(args, api):
     out.mkdir(parents=True, exist_ok=True)
     # Unique per invocation (two runs in one second and one process stay apart in the ledger).
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
-    ledger = SpendLedger(out / "spend.jsonl", run_id)  # Refused when unreadable, before anything runs
+    # Refused when unreadable or held by another run, before anything runs; held until the run ends.
+    ledger = SpendLedger(out / "spend.jsonl", run_id)
+    try:
+        return _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id, ledger)
+    finally:
+        ledger.release()
+
+
+def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id, ledger):
+    """The run proper, holding the spend ledger throughout (#657 review K2)."""
     prior = ledger.total()
     sandbox = Sandbox(out / "sandbox", tier)
     catalog = out / "catalog"

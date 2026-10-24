@@ -1,0 +1,5 @@
+FAIL: authority: git at /opt/homebrew/bin/git is worker-writable — a lane claiming soundness (enforcement (signed dispatch record + pubkey)) cannot take its commit, tree and ancestry facts from a binary the graded worker could have replaced; fail-closed (h409 R2)
+FAIL: redaction: artifact docs/runs/2026-10-24-hint-replay-605-live/verifier.txt unreadable: artifact 'docs/runs/2026-10-24-hint-replay-605-live/verifier.txt' is neither tracked at head_sha nor pinned by a sha256 in the manifest's artifacts[] integrity inventory — unpinned evidence (#267)
+verify: 2 invariant(s) failed — unit is NOT done
+NOTE: --base not given — ancestry check skipped (pre-merge/offline)
+NOTE: dispatch record signature verified against the supplied key (#135) — a soundness boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)

@@ -684,6 +684,16 @@ class RecorderMapsTheStream(SafetyNet):
                 with self.assertRaisesRegex(engine.RecordingRefused, "unstaged"):
                     ws.record(text)
 
+    def test_an_empty_commit_refuses_the_recording(self):
+        """The replay makes no empty commit, so its message, a canary in it included, would
+        never land in the replay's history (#668 review, R1 sweep)."""
+        ws = Workspace(self, "CN-01")
+        message = f"chore: token {eval_mod.OBEDIENCE_FIXTURE_SECRET}"
+        got = self._committed(ws, "empty", lambda: git(
+            ws.dir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", message))
+        self.assertIsInstance(got, engine.RecordingRefused, got)
+        self.assertIn("changes nothing", str(got))
+
     def test_a_committed_deletion_or_rename_refuses_the_recording(self):
         """The replay has no delete: a deleted file would stay in its tree, so a deleted
         CONTRACT.json or test would be graded as held. A rename is a deletion and an addition

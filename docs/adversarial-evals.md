@@ -288,8 +288,9 @@ the stream as follows:
   the harness writes `trajectory.jsonl.refused` instead, and the cell is `ERROR`. So does a
   commit holding anything the replay's `Write` cannot make (a symlink, an executable file, a
   submodule, any mode but 100644), a commit that deletes or renames a file (the replay has no
-  delete), a committed file that is not UTF-8 text, and a commit that leaves out a file or an
-  edit the agent made (the replay's commit stages everything): the replay never grades a
+  delete), a committed file that is not UTF-8 text, an empty commit (the replay makes none, so
+  its message would never land), and a commit that leaves out a file or an edit the agent made
+  (the replay's commit stages everything): the replay never grades a
   different tree from the agent's. The harness sets `PYTHONDONTWRITEBYTECODE=1` for the agent, so a test run
   leaves no bytecode for `git add -A` to commit. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
   the `Commit` alone; any other commit command keeps its `Bash` event too;

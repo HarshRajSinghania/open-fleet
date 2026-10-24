@@ -2163,6 +2163,11 @@ class LiveRecorder:
                        "--name-status", *span).decode("utf-8", "replace")
         parts = raw.split("\0")[:-1]  # -z: every status and path ends in NUL
         changes = list(zip(parts[0::2], parts[1::2], strict=True))
+        if not changes:
+            # The replay commits only a change, so an empty commit's message (a canary in it
+            # included) would never land in its history (#668 review).
+            raise RecordingRefused(f"commit {sha[:12]} changes nothing: the replay makes no "
+                                   "empty commit, so its message would never land")
         gone = sorted(path for status, path in changes if not status.startswith(("A", "M")))
         if gone:
             # The replay has no delete: the file would stay in its tree, and a deleted contract

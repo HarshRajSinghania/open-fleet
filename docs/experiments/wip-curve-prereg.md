@@ -148,7 +148,9 @@ can hold a pipe of the runner's open. Every process it starts, one that left for
 own included, carries the call's `OF_CALL_ID` marker and is swept. If one survives, or the
 process table cannot be read, the verification is not vouched for and the run stops
 `orphan-alive`. The oracle stops at its first step that cannot be contained and launches nothing
-further. That step's files and the checkout are kept, to investigate. Every oracle call's marker
+further. That step's files and the checkout are kept, to investigate. A report re-runs the
+oracle on each closed head the same way. A re-run it cannot contain fails the report closed,
+with its files kept, and no binding is accepted from it. Every oracle call's marker
 is recorded in the run and the ledger before the call starts, and so is every merge-gate oracle's,
 which the gate appends to a file the runner reads. Each is swept again at teardown and before the
 next run. An uncontained gate oracle halts the run as soon as its merge returns. Every other call the runner makes drains its output for a bounded time only.
@@ -269,8 +271,10 @@ as dropped. The live runs use the owner's isolation wrapper, outside the reposit
   cannot spend that budget again.
 - A runner killed outright (SIGKILL, power loss) writes no `run.json`. A run directory without
   it is reported as `lost`, and its calls still count against the cap at their holds. The next
-  `run` reconciles them before anything else, under the lock. It stops the lost run's workers,
-  then charges each launched call what its stream reports, or its full hold. A call killed
+  `run` reconciles them before anything else, under the lock. It stops the lost run's workers
+  and sweeps its markers. Then it charges each launched call what its stream reports, or its full
+  hold. A stream's figure counts only once that teardown is verified. If it is not, every call of
+  the lost run is charged its full hold, and the run does not start (`ORPHAN_ALIVE`). A call killed
   mid-launch is charged its hold if the store registered it, or if the store cannot be read, and
   released otherwise. A call that never launched is released. The ledger's last record of the run
   counts as its end for the cooldown. Such a run may be re-run once.

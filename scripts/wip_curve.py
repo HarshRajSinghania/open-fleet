@@ -2154,14 +2154,17 @@ def recover(results: Path, registered=()) -> list[str]:
             continue
         sandbox = sandboxes.get(run)
         db = sandbox / "state" / "runtime.db" if sandbox else None
+        tags = run_tags(calls.get(f"{run}/run") or {})
         if sandbox and (sandbox / "target").is_dir():  # its own store and scrubbed env, setsid, SHELL=/bin/sh
             if sandbox.is_symlink():  # the runner never made one; Sandbox() would create through it
                 raise Refused(f"the ledger names {sandbox} as lost run {run}'s sandbox, and it is a symbolic "
                               "link: inspect it before any run starts")
             check_writable(sandbox, f"lost run {run}'s sandbox (from the ledger)", registered)
-            tags = run_tags(calls.get(f"{run}/run") or {})
-            first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"),
-                                   sweep=functools.partial(sweep_tags, tags) if tags else None)
+            teardown = first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"),
+                                              sweep=functools.partial(sweep_tags, tags) if tags else None)
+            verified = first_run.teardown_verified(teardown)
+        else:  # no sandbox to stop: its markers are still swept
+            verified = bool(tags) and sweep_tags(tags)
         rows, store_read = {}, False
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -2187,9 +2190,15 @@ def recover(results: Path, registered=()) -> list[str]:
                 continue
             row = rows.get(disp)
             stream = Path(row["lane_dir"]) / "events.jsonl" if row is not None and row["lane_dir"] else None
-            cost = Run.stream_cost(stream) if stream and stream.is_file() else None
+            # Settled at what its stream reports only once its teardown is verified (PR #668 review):
+            # a process of it may still be spending, so an unverified one is charged its full hold.
+            cost = Run.stream_cost(stream) if verified and stream and stream.is_file() else None
             budget.charge(call, cost if cost is not None else Decimal(v["usd"]), cost is not None)
             settled.append(call)
+        if not verified:  # a call it already settled is raised to its full hold too
+            for call, v in Budget.of_run(budget.calls(), run).items():
+                if v.get("state") == "charged" and v.get("hold_usd"):
+                    budget.top_up(call, Decimal(v["hold_usd"]))
     return settled
 
 
@@ -2352,7 +2361,11 @@ def bind_outcomes(bound: Bound, derived: dict, raw_events: list, prereg: dict, t
                 if tid in tasks:
                     work = Path(tmp) / f"rerun-{tid}-{head[:8]}"
                     extract_tree(repo, head, work)
-                    if run_oracle(work, [tasks[tid]], taskset, Path(tmp))["exit"] != 0:
+                    rerun = run_oracle(work, [tasks[tid]], taskset, Path(tmp))
+                    if not rerun["contained"]:  # worker code a reader re-ran: no result is accepted from it
+                        raise SourceError(f"{what}: the oracle's re-run at that head could not be contained; its "
+                                          f"files are kept at {rerun['kept']}: inspect them before reading this run")
+                    if rerun["exit"] != 0:
                         problems.append(f"{what}: the oracle does not pass again at that head")
         for e in raw_events:
             if e["kind"] != "unit.parked" or not e["data"]["head_sha"]:

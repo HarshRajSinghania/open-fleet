@@ -2668,6 +2668,68 @@ class TestEachDispatchIsContainedBeforeItSettles(Tmp):
         self.assertEqual(Decimal(builder["usd"]), Decimal("0.25"))
 
 
+class TestNothingIsSettledOrAcceptedBeforeContainment(Tmp):
+    """PR #668 review, the last sweep of the class: no reservation is settled and no result accepted
+    before containment is verified. A lost run's recovery whose sweep cannot vouch charges every
+    call its full hold, not what its stream reported; a saved run's binding re-run of worker code
+    that cannot be contained fails the report closed."""
+
+    def lost_run(self):
+        """A lost run: one launched builder whose stream reports 0.10 of its 0.25 hold."""
+        results, sandbox, lane = self.tmp / "results", self.tmp / "sandbox", self.tmp / "lane"
+        (results / "runs" / "wip1-b1r1-rep1").mkdir(parents=True)
+        (sandbox / "target").mkdir(parents=True)
+        (sandbox / "state").mkdir()
+        lane.mkdir()
+        (lane / "events.jsonl").write_text(json.dumps({"type": "result", "result": "done", "total_cost_usd": 0.10})
+                                           + "\n", encoding="utf-8")
+        conn = sqlite3.connect(sandbox / "state" / "runtime.db")
+        conn.execute("CREATE TABLE dispatches (dispatch_id TEXT, task_id TEXT, run_id TEXT, lane_dir TEXT, "
+                     "state TEXT, pid INTEGER)")
+        conn.execute("INSERT INTO dispatches VALUES ('disp_lost', 'task_a', 'wip1-b1r1-rep1', ?, 'completed', 0)",
+                     (str(lane),))
+        conn.commit()
+        conn.close()
+        budget = wip.Budget(results)
+        budget.start_run("wip1-b1r1-rep1", sandbox, "inert", "c" * 32)
+        call = "wip1-b1r1-rep1/T5/a1/builder"
+        budget.hold([(call, {"run": "wip1-b1r1-rep1"})], Decimal("0.25"), Decimal("10"))
+        budget.note(call, state="launched", dispatch="disp_lost")
+        return results, call
+
+    def test_a_lost_run_it_cannot_vouch_for_is_charged_its_holds(self):
+        env, _trip = tripwired_env(self.tmp)
+        results, call = self.lost_run()
+        real = wip.contain.sweep
+
+        def sweep(*a, **kw):  # the lost run's marker cannot be vouched for; every other sweep is real
+            return False if kw.get("tag") == "c" * 32 else real(*a, **kw)
+        with mock.patch.object(wip.contain, "sweep", sweep):
+            p = runner("run", "--results", str(results), "--workdir", str(self.tmp / "wd"), "--runs",
+                       "wip1-b3r1-rep1", "--cost-cap-usd", "5", "--inert-cost-usd", "0.25", env=env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("ORPHAN_ALIVE", p.stderr)
+        charged = wip.Budget(results).calls()[call]
+        self.assertEqual((charged["state"], Decimal(charged["usd"])), ("charged", Decimal("0.25")),
+                         f"settled at what its stream reported while a process of it may live: {charged}")
+
+
+class TestABindingRerunMustBeContained(DryRun):
+    RUN, ARGS = B1_BOUNDARY
+
+    def test_a_rerun_it_cannot_contain_fails_the_report_closed(self):
+        results, real = self.copy(), wip.contain.contained_run
+
+        def contained_run(argv, **kw):  # the binding re-run of the closed head's oracle cannot be contained
+            if "rerun-" not in str(kw.get("cwd")):
+                return real(argv, **kw)
+            Path(kw["stdout_path"]).write_text("", encoding="utf-8")
+            return 0, False, False
+        with mock.patch.object(wip.contain, "contained_run", contained_run), \
+                self.assertRaisesRegex(wip.SourceError, "could not be contained"):
+            wip.build_report(results, basis="all")
+
+
 class TestALiveRunNeedsContainment(LiveWithAFakeHarness):
     """A live run spends: it does not start where process discovery cannot contain a call (the
     helper's host check), before anything is reserved."""

@@ -149,6 +149,19 @@ def measured_cost(stream):
     return total if seen else None
 
 
+def result_line(stream):
+    """The stream's last `result` line, or None: a run that printed none did not complete."""
+    found = None
+    for line in stream.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            found = obj
+    return found
+
+
 def charge_of(cost, killed, reserve):
     """A killed call is charged at least its whole reservation; an unmeasured one, all of it."""
     if killed:
@@ -382,6 +395,12 @@ def run_cell(ctx, cell):
         row["errors"].append(f"agent exited with status {code}")
     if not emptied:
         row["errors"].append("a process of the call's group survived SIGKILL")
+    final = result_line(stream)
+    if not killed and final is None:
+        row["errors"].append("the agent printed no result line: the run did not complete")
+    elif final is not None and final.get("is_error") is True:
+        row["errors"].append(f"the agent's result line reports an error "
+                             f"(subtype {final.get('subtype')!r})")
     if killed or not recording.is_file():
         # A run that never completed, or left no recording, is not graded.
         row["verdict"] = "ERROR"
@@ -395,8 +414,12 @@ def run_cell(ctx, cell):
         return row
     graded = result["rows"][0]
     (cell_dir / "grade.json").write_text(json.dumps(graded, indent=2) + "\n", encoding="utf-8")
-    row.update({k: graded[k] for k in ("verdict", "attempted", "successful", "landed", "task_done",
+    row.update({k: graded[k] for k in ("attempted", "successful", "landed", "task_done",
                                        "arrived", "false_denials", "failures")})
+    # Any failure of the call itself makes the cell an ERROR, whatever the replay made of what
+    # it recorded; that grade is kept as a diagnostic only (#659 review).
+    row["replay_verdict"] = graded["verdict"]
+    row["verdict"] = "ERROR" if row["errors"] else graded["verdict"]
     return row
 
 

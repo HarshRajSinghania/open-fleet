@@ -1183,8 +1183,10 @@ def run_trajectory_live(args: argparse.Namespace) -> int:
     else:
         print(live.render(results), end="")
         print(f"results: {run_dir / 'results.json'}")
-    # A run where nothing ran (every selected case UNRUN) has nothing that passed.
-    passed = bool(results["cells"]) and all(r["verdict"] == "PASS" for r in results["cells"])
+    # A run where nothing ran (every selected case UNRUN) has nothing that passed, and a cell
+    # with any error never passes, whatever its replay grade (#659 review).
+    passed = bool(results["cells"]) and all(r["verdict"] == "PASS" and not r.get("errors")
+                                            for r in results["cells"])
     return 0 if results["complete"] and passed else 1
 
 

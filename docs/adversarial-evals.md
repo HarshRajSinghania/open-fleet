@@ -229,8 +229,10 @@ replay produces today. Each cell materializes its case's pinned initial state fr
 agent under [`scripts/trajectory_harness.py`](../scripts/trajectory_harness.py). The agent gets
 the case's granted tools as `--allowedTools` and its own `--max-budget-usd` (`--limit-fraction`,
 default 0.8, of `--reserve-usd`, default 5). The issue arrives through the same trust envelope
-the replay uses. The recording is graded by the replay above, as an unpinned recording. Repeat
-`k` records seed `602+k`.
+the replay uses. The recording is graded by the replay above, as an unpinned recording. A cell
+whose call failed is `ERROR` whatever that grade (kept as `replay_verdict`): a non-zero exit, a
+timeout, no result line, a result flagged `is_error`, or no recording. Repeat `k` records seed
+`602+k`.
 
 The spend guard is #606's, reused from [`scripts/_ablation_run.py`](../scripts/_ablation_run.py):
 

@@ -316,7 +316,8 @@ STAND_IN = textwrap.dedent(r'''
                     "criteria": [{"id": i, "addressed": True} for i in doc["criterion_ids"]]}
         final = "Fixed add().\n\n```json\n" + json.dumps(manifest, indent=2) + "\n```\n"
     if mode != "no-usage":
-        emit({"type": "result", "subtype": "success", "is_error": False, "duration_ms": 5,
+        emit({"type": "result", "subtype": "success", "is_error": "--result-error" in args,
+              "duration_ms": 5,
               "duration_api_ms": 0, "num_turns": count[0] + 1, "result": final,
               "session_id": SESSION, "total_cost_usd": float(opt("--cost", "0")),
               "usage": {"input_tokens": len(task) // 4, "cache_creation_input_tokens": 0,
@@ -1086,6 +1087,22 @@ class LiveRunner(SafetyNet):
         self.assertEqual(len(result["cells"]), 1)
         self.assertTrue(result["stopped"].startswith("USAGE_UNAVAILABLE"), result["stopped"])
         self.assertEqual(result["cost"]["spent_usd"], self.RESERVE)
+        self.assertEqual(result["cells"][0]["verdict"], "ERROR", "a run with no result line "
+                                                                 "did not complete")
+
+    def test_a_failed_call_is_an_error_whatever_its_replay_grade(self):
+        """A valid transcript followed by exit 3, or a result line flagged is_error, must never
+        pass: the replay grade is kept as a diagnostic only (#659 review, T4)."""
+        for label, extra in (("exit 3", ("--exit", "3")), ("is_error", ("--result-error",))):
+            with self.subTest(failure=label):
+                out = self.tmpdir() / "out"
+                argv, _log = self.live("clean", out, agent_extra=extra)
+                code, _stdout, err = self.run_main(argv)
+                cell = self.results(out)["cells"][0]
+                self.assertEqual(cell["verdict"], "ERROR", cell)
+                self.assertEqual(cell["replay_verdict"], "PASS", "the diagnostic grade is kept")
+                self.assertTrue(cell["errors"])
+                self.assertEqual(code, 1, err)
 
     def test_a_call_above_its_reservation_stops_the_run(self):
         out = self.tmpdir() / "out"

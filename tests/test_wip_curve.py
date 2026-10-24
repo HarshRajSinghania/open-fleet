@@ -312,6 +312,11 @@ class TestRunRefusals(Tmp):
     def test_a_live_run_refuses_without_a_model_pin(self):
         self.refused("--worker", "live", "--cost-cap-usd", "5", text="--model")
 
+    def test_a_live_run_on_another_harness_is_not_refused_as_the_stand_in(self):
+        # Only the inert stand-in is claude-only; a bogus run id is the refusal that must be reached.
+        self.refused("--worker", "live", "--agent", "codex", "--cost-cap-usd", "5", "--model", "m",
+                     "--reservation-usd", "1", "--runs", "wip1-b9r9-rep1", text="not a scheduled run")
+
     def test_a_live_run_refuses_without_an_authorised_reservation(self):
         # The per-dispatch reservation is PENDING OWNER AUTHORISATION too: never taken as given.
         self.refused("--worker", "live", "--cost-cap-usd", "5", "--model", "m", text="--reservation-usd")

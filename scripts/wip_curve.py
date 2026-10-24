@@ -1811,11 +1811,11 @@ def cmd_run(args) -> int:
         if args.reservation_usd is None:
             raise Refused("a live run needs --reservation-usd: the per-dispatch reservation is "
                           f"{prereg['cost']['reservation_status']!r} and the runner never picks it")
+    elif args.agent not in INERT_AGENTS:
+        raise Refused(f"the inert stand-in answers as {INERT_AGENTS}; --agent {args.agent} needs --worker live")
     args.reservation = money(args.reservation_usd if args.reservation_usd is not None else args.inert_cost_usd)
     if args.worker == "live" and args.reservation <= 0:
         raise Refused("a live run needs a reservation above zero")
-    elif args.agent not in INERT_AGENTS:
-        raise Refused(f"the inert stand-in answers as {INERT_AGENTS}; --agent {args.agent} needs --worker live")
     if args.agent not in first_run.posix_harnesses():
         raise Refused(f"--agent {args.agent!r} is not a posix harness")
     registered = (path, taskset_path)

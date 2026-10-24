@@ -324,6 +324,33 @@ class TestPartialUsage(unittest.TestCase):
         self.assertEqual(run["registered"]["review_tokens_per_review"], "20.00")
 
 
+class ReportOver(unittest.TestCase):
+    """build_report() over synthetic run summaries: report logic without a real run."""
+
+    def report(self, runs, basis="compliant"):
+        by_name = {r["run_id"]: r for r in runs}
+        with mock.patch.object(wip, "runs_in", return_value=[Path(r) for r in by_name]), \
+                mock.patch.object(wip, "summarize_run", side_effect=lambda d, *a: copy.deepcopy(by_name[Path(d).name])):
+            return wip.build_report(Path("/nonexistent"), basis=basis)
+
+
+class TestIncomparableRunsAreNeverPooled(ReportOver):
+    """PR #653 review: a run under another model pin or harness version than the first live run
+    is not compliant, whatever its own checks say, so it never enters the curve."""
+
+    def test_another_harness_version_or_model_pin_is_excluded(self):
+        runs = [synthetic_run("wip1-b1r1-rep1", "b1r1", "1.0", started="2026-10-24T10:00:00+00:00"),
+                synthetic_run("wip1-b3r1-rep1", "b3r1", "1.0", harness="h-2", started="2026-10-24T12:00:00+00:00"),
+                synthetic_run("wip1-b6r1-rep1", "b6r1", "1.0", model="m-2", started="2026-10-24T14:00:00+00:00")]
+        out = {r["run_id"]: r for r in self.report(runs)["runs"]}
+        self.assertTrue(out["wip1-b1r1-rep1"]["compliant"])
+        self.assertTrue(any("harness version" in w for w in out["wip1-b3r1-rep1"]["noncompliance"]),
+                        out["wip1-b3r1-rep1"]["noncompliance"])
+        self.assertTrue(any("model pin" in w for w in out["wip1-b6r1-rep1"]["noncompliance"]),
+                        out["wip1-b6r1-rep1"]["noncompliance"])
+        self.assertEqual(self.report(runs)["compliant_runs"], ["wip1-b1r1-rep1"])
+
+
 class TestDecisionRule(unittest.TestCase):
     def setUp(self):
         self.prereg = json.loads(PREREG.read_text(encoding="utf-8"))

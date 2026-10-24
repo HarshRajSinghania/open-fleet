@@ -1685,6 +1685,8 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
            "stop_reason": rec.get("stop_reason"), "error": rec.get("error"),
            "started_at": rec.get("started_at"), "finished_at": rec.get("finished_at"),
            "inputs_sha256": (rec.get("inputs") or {}).get("sha256"),
+           "model_pin": rec.get("model_pin"), "harness_version": (rec.get("harness") or {}).get("version"),
+           "attempt": rec.get("attempt", 1), "timeout_scale": rec.get("timeout_scale"),
            "run_json_sha256": sha256_file(run_dir / "run.json")}
     reasons = []
     if not bound.path("events.jsonl").is_file():
@@ -2002,13 +2004,18 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     cooldown = prereg["isolation"]["cooldown_minutes"] * 60
     live = sorted((r for r in runs if r.get("tier") == "live-unreviewed" and r.get("started_at")),
                   key=lambda r: r["started_at"])
-    first_inputs = next((r.get("inputs_sha256") for r in live), None)
+    # One experiment, one configuration: every live run is held to the FIRST live run's inputs,
+    # model pin and harness version, so a change in any of them is never read as a WIP effect
+    # (PR #653 review). A run that differs is reported, never pooled.
+    first = live[0] if live else {}
     for run in live[1:]:
-        if run.get("inputs_sha256") != first_inputs:
-            run["compliant"] = False
-            run.setdefault("noncompliance", []).append(
-                f"ran on other experiment inputs (sha256 {str(run.get('inputs_sha256'))[:12]}…) than the first live "
-                f"run ({str(first_inputs)[:12]}…): re-register before pooling them")
+        for key, what in (("inputs_sha256", "experiment inputs (sha256)"), ("model_pin", "model pin"),
+                          ("harness_version", "harness version")):
+            if run.get(key) != first.get(key):
+                run["compliant"] = False
+                run.setdefault("noncompliance", []).append(
+                    f"ran on another {what} ({str(run.get(key))[:40]}) than the first live run "
+                    f"{first.get('run_id')} ({str(first.get(key))[:40]}): re-register before pooling them")
     for before, run in zip(live, live[1:], strict=False):
         gap = (datetime.fromisoformat(run["started_at"]) - datetime.fromisoformat(before["finished_at"])).total_seconds()
         if gap < cooldown:

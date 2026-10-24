@@ -226,6 +226,8 @@ A run counts toward the curve only if all of the following hold:
 - It used this registration and this task set.
 - It started at the seed commit.
 - It recorded a model pin and a harness version, and observed only the pinned model.
+- Its model pin, harness version and experiment inputs equal the first live run's, so a change in
+  any of them is never read as an effect of WIP.
 - `events.py` derives the run's throughput, latency, rework and freshness.
 - Every terminal outcome binds (see [Verification](#verification)).
 - The run finished complete.

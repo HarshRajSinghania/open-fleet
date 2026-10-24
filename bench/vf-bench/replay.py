@@ -8,7 +8,10 @@ This runner pins the revision instead of trusting the checkout:
   run        export the pinned commit into a fresh temporary repository (`git init` + a LOCAL
              fetch of that one commit — never the network), run every case N times there under a
              built (not inherited) environment, one process per case with a timeout, and write
-             one JSON report plus a short text summary.
+             one JSON report plus a short text summary. With --heldout DIR it scores a held-out
+             set kept outside the repository instead, once the preflight proves it is the set the
+             pinned revision publishes digests for, and the report carries metrics, ids and
+             verdict classes only (#601).
   compare    diff two reports. Anything outside the host facts (`environment`), the raw refusal
              text (`diagnostics`) and wall time (`wall_seconds`, at the top level and in each
              configuration's metrics and runs) must match, or it fails.

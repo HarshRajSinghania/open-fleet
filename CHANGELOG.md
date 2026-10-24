@@ -6,6 +6,26 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **VF-Bench has a held-out set, held outside the repository, and one evaluation of it** (#601).
+  The owner designated OpenAI Codex (an AI system, `codex-cli` 0.163.0, model `gpt-6.1-sol`) as
+  the holder on 2026-10-24; `heldout-protocol.json` records who designated it, the evidence that
+  it authored no `verify.py` revision, and its limits (not a person; content withheld from the
+  repository and the Claude-operated developer agents by procedure, not technically; it read
+  `verify.py` while authoring). Codex authored held-out v1 in `~/of-live/heldout/v1`, outside every
+  git repository, after the pinned `verify.py` blob `08f568946c1f`: 89 cases, 66 traps and 23
+  valid controls in 22 categories. Only `heldout-v1-digests.json` and the counts are committed.
+  `heldout.py vet` checks a set the way the replay runs it, without running the verifier or
+  quoting a case, and refuses a copy of a development case; `digest --summary` adds the set digest
+  and counts; `validate` refuses an assigned holder without its designation, evidence and limits,
+  a milestone that disagrees with the protocol, published figures that are not the digests', and
+  an evaluation record that does not bind to its report bytes, commit and `verify.py` blob.
+  `replay.py run --heldout DIR` scores a set from outside the repository once its preflight proves
+  it is the published one, and writes metrics, ids and verdict classes only; a case shape the
+  preflight cannot read no longer crashes it. At `ed8f3bcf255c`, three runs: verify.py 0/66 false
+  acceptance, 0/23 false rejection, 4/66 refused for another reason, 66 of 95 inventory rows, no
+  case unscored or moving; the synthetic baseline 66/66 and 0/23. CI's `vfbench_replay` job scans
+  all history for the set on every PR. No external verifier was compatible (four candidates
+  checked by repository and documentation search, nothing installed): unmeasured, score null.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

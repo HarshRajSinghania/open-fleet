@@ -778,6 +778,54 @@ class CiRunsTheLeakageCheckOnEveryPullRequest(unittest.TestCase):
                       f"{held['published_digests']} --all-history", workflow)
 
 
+class TheRecordedEvaluationIsStatedAsMeasured(unittest.TestCase):
+    """The held-out v1 evaluation's numbers are written in the VF-Bench README and the run record;
+    both are pinned to the report the protocol binds, and the report carries no content (#601)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.protocol = _protocol()
+        cls.ev = cls.protocol["evaluations"][0]
+        cls.raw = (ROOT / cls.ev["report"]).read_bytes()
+        cls.report = json.loads(cls.raw)
+
+    def test_the_report_carries_ids_verdicts_and_metrics_only(self):
+        self.assertEqual({k for c in self.report["corpus"]["cases"] for k in c}, {"id"})
+        self.assertEqual(self.report["diagnostics"], {})
+        digests = heldout.load_digests(ROOT / self.protocol["splits"]["heldout"]["published_digests"])
+        self.assertEqual(heldout.scan(self.raw, digests), [])
+        self.assertTrue(self.report["heldout"]["matches_published"])
+
+    def test_the_prose_states_the_bound_numbers(self):
+        sound = self.report["configurations"]["open-fleet verify.py (sound)"]
+        naive = self.report["configurations"]["self-scoring (naive)"]["metrics"]
+        m, cov = sound["metrics"], sound["runs"][0]["coverage"]
+        readme = " ".join((BENCH / "README.md").read_text(encoding="utf-8").split(
+            "**The held-out v1 evaluation", 1)[1].split("\n\n", 1)[0].split())
+        record = (ROOT / Path(self.ev["report"]).parent / "README.md").read_text(encoding="utf-8")
+        self.assertEqual((m["false_acceptance"]["spread"], m["false_rejection"]["spread"],
+                          sound["unstable_cases"]), (0, 0, []))
+        for phrase in (
+                f"`{self.ev['revision'][:12]}`",
+                f"verify.py {m['false_acceptance']['max']}/{m['false_acceptance']['of']} false "
+                f"acceptance and {m['false_rejection']['max']}/{m['false_rejection']['of']} false "
+                f"rejection in every run",
+                f"{m['wrong_reason']['max']}/{m['wrong_reason']['of']} traps",
+                f"{cov['sampled_rows']} of {cov['inventory_rows']} inventory rows",
+                f"the synthetic baseline {naive['false_acceptance']['max']}/"
+                f"{naive['false_acceptance']['of']} and {naive['false_rejection']['max']}/"
+                f"{naive['false_rejection']['of']}"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, readme)
+        for phrase in (self.ev["report_sha256"], self.ev["revision"],
+                       f"| {m['false_acceptance']['max']}/{m['false_acceptance']['of']} | "
+                       f"{m['false_rejection']['max']}/{m['false_rejection']['of']} | "
+                       f"{m['wrong_reason']['max']}/{m['wrong_reason']['of']} | "
+                       f"{cov['sampled_rows']} of {cov['inventory_rows']} |"):
+            with self.subTest(record=phrase):
+                self.assertIn(phrase, record)
+
+
 class AFilledHolderIsValidatedNotTakenOnTrust(unittest.TestCase):
     """#601: a name alone does not fill the role. An assigned holder records who designated it
     and when, why it is independent and where that independence stops; an AI system also names

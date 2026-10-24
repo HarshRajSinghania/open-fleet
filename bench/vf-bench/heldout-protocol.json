@@ -1,7 +1,7 @@
 {
   "protocol": "vf-bench-heldout@1",
   "issue": "#601",
-  "status": "held-out v1 published: 89 cases authored and held by OpenAI Codex (an AI system) outside this repository; only their digests and counts are committed",
+  "status": "held-out v1 published and evaluated once: 89 cases authored and held by OpenAI Codex (an AI system) outside this repository; only their digests, counts and the evaluation's metrics are committed",
   "purpose": "The development traps below are public: anyone building or tuning a verifier can read them, so a score on them alone cannot rule out a verifier fitted to the corpus. The held-out split is evaluated only at a pinned verifier revision, by a holder who keeps its content outside this repository until that evaluation is done.",
   "splits": {
     "development": {
@@ -127,7 +127,8 @@
         "differing_leaves_min": 5,
         "differing_leaves_median": 38,
         "differing_leaves_max": 54,
-        "measured_by": "heldout.py vet, which refuses a copy, run on the holder's directory on 2026-10-24; counts only"
+        "measured_by": "heldout.py vet, which refuses a copy, run on the holder's directory on 2026-10-24; counts only",
+        "unit": "path-value pairs in the symmetric difference with the nearest development case once the held-out fields are dropped; a changed value counts twice; 0 is a copy"
       },
       "set_digest_algorithm": "sha256 over the cases' raw sha256 digests, sorted, one per line (heldout.py set_digest)"
     }
@@ -147,7 +148,7 @@
     "milestones": [
       {"id": "holder-assigned", "milestone": "holder assigned", "date": "2026-10-24", "status": "done", "evidence": "holder: OpenAI Codex, designated by the repository owner on 2026-10-24"},
       {"id": "digests-published", "milestone": "held-out v1 digests published, content withheld", "date": "2026-10-24", "status": "done", "evidence": "bench/vf-bench/heldout-v1-digests.json: 89 case digests, set bc03442ee3bb9090…"},
-      {"id": "evaluated", "milestone": "held-out v1 evaluated at a pinned verifier revision", "date": "2027-02-15", "status": "planned"},
+      {"id": "evaluated", "milestone": "held-out v1 evaluated at a pinned verifier revision", "date": "2026-10-24", "status": "done", "evidence": "docs/runs/2026-10-24-vf-bench-heldout-v1/report.json, bound by evaluations[0]"},
       {"id": "revealed", "milestone": "held-out v1 revealed and folded into the development split", "date": "2027-04-15", "status": "planned"}
     ]
   },
@@ -215,5 +216,22 @@
       "transcript": "not persisted (codex exec --ephemeral); the run's own log stays in the holder directory",
       "final_message": "constrained by --output-schema to counts, two paths and the set digest"
     }
-  }
+  },
+  "evaluations": [
+    {
+      "version": "vf-bench-heldout@1",
+      "date": "2026-10-24",
+      "revision": "ed8f3bcf255c90ae396540c0e9c5a11e571f653a",
+      "verify_blob": "08f568946c1f797207c096a38da93227bfc31c31",
+      "report": "docs/runs/2026-10-24-vf-bench-heldout-v1/report.json",
+      "report_sha256": "7e8eb6683548eb1eb0c71f56b7d08c9f036323877a9882b2ada122dfa98c5a13",
+      "complete": true,
+      "runs": 3,
+      "started": "2026-10-24T06:09:10Z",
+      "finished": "2026-10-24T06:13:59Z",
+      "command": "python3 bench/vf-bench/replay.py run --rev ed8f3bcf25 --heldout ~/of-live/heldout/v1/cases --runs 3 --out report.json --summary summary.txt",
+      "result": "verify.py: false acceptance 0/66 and false rejection 0/23 in every run, 4/66 traps refused for a reason other than the declared one, 66 of 95 inventory rows sampled; synthetic baseline 66/66 and 0/23",
+      "note": "an earlier attempt at 847ac54e5f stopped in the runner's own fixture preflight before any case was scored; the runner was fixed in 301522b788 and the evaluation rerun in full (docs/runs/2026-10-24-vf-bench-heldout-v1/README.md)"
+    }
+  ]
 }

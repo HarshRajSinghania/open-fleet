@@ -199,6 +199,86 @@ def check_writable(path, what: str, registered=()) -> Path:
     return target
 
 
+# The worker contracts are registered text, not code (#604): what a builder and a reviewer are told
+# is pinned by the pre-registration's digest. Each names the fields it may use; the markers are
+# what the inert stand-in and the review parser read.
+PLACEHOLDER = re.compile(r"\{(task|nonce|title|statement|base|head|task_file|diff_file|verdict)\}")
+CONTRACT_FIELDS = {"builder": {"task", "nonce", "title", "statement"},
+                   "reviewer": {"task", "nonce", "base", "head", "task_file", "diff_file"}}
+CONTRACT_MARKERS = {"builder": "WIP-BUILD {nonce} task={task}",
+                    "reviewer": "WIP-REVIEW-REQUEST {nonce} task={task} head={head} diff={diff_file}"}
+
+
+def render(lines, **fields) -> str:
+    """A registered contract with its fields filled; any other brace is left as written."""
+    return "\n".join(PLACEHOLDER.sub(lambda m: str(fields[m.group(1)]), line) for line in lines)
+
+
+def contract_errors(contracts) -> list[str]:
+    errors = []
+    if not isinstance(contracts, dict):
+        return ["contracts are not registered: the builder and reviewer text must be pinned"]
+    for role, allowed in CONTRACT_FIELDS.items():
+        lines = contracts.get(role)
+        if not isinstance(lines, list) or not all(isinstance(x, str) for x in lines) or not lines:
+            errors.append(f"contracts.{role} is not a list of lines")
+            continue
+        text = "\n".join(lines)
+        used = set(PLACEHOLDER.findall(text))
+        if used - allowed:
+            errors.append(f"contracts.{role} uses {sorted(used - allowed)}, which a {role} is not given")
+        if CONTRACT_MARKERS[role] not in text:
+            errors.append(f"contracts.{role} must carry {CONTRACT_MARKERS[role]} (the line the worker is read by)")
+        missing = sorted(f"{{{f}}}" for f in allowed - used)
+        if missing:
+            errors.append(f"contracts.{role} never uses {missing}")
+    verdicts = contracts.get("verdicts")
+    if verdicts != ["approve", "changes"]:
+        errors.append(f"contracts.verdicts is {verdicts!r}; the record knows ['approve', 'changes']")
+    line = contracts.get("verdict_line")
+    for verdict in ("approve", "changes"):
+        sample = render([line], nonce="WIP-NONCE:" + "0" * 16, head="a" * 40, verdict=verdict) \
+            if isinstance(line, str) else ""
+        m = REVIEW_LINE.search(sample)
+        if not m or m.group(3) != verdict or m.group(2) != "a" * 40:
+            errors.append(f"contracts.verdict_line {line!r} is not a line the review parser reads")
+            break
+    return errors
+
+
+# Everything the experiment's measurement depends on: the runner, the registration and task set,
+# and the runtime it drives. A live run refuses while any is uncommitted, and every run records
+# their digest, so runs made on different inputs are never pooled.
+EXPERIMENT_INPUTS = ("scripts/wip_curve.py", "docs/experiments", "runtime")
+
+
+def dirty_inputs(root: Path = ROOT) -> list[str]:
+    """The experiment inputs with uncommitted changes in `root`, as paths relative to it."""
+    proc = git(root, "status", "--porcelain", "--untracked-files=no", "--", *EXPERIMENT_INPUTS, check=False)
+    if proc.returncode != 0:
+        return [f"(git status failed: {proc.stderr.decode('utf-8', 'replace').strip()[:200]})"]
+    return sorted(line[3:] for line in proc.stdout.decode("utf-8", "replace").splitlines() if line.strip())
+
+
+def experiment_inputs(registered=()) -> dict:
+    """{sha256, files}: the bytes of every tracked experiment input (and the registration in use)."""
+    proc = git(ROOT, "ls-files", "-z", "--", *EXPERIMENT_INPUTS, check=False)
+    if proc.returncode == 0:
+        rels = [r for r in proc.stdout.decode("utf-8", "replace").split("\0") if r]
+    else:  # no git metadata (an exported tree): every file but bytecode
+        rels = []
+        for d in EXPERIMENT_INPUTS:
+            base = ROOT / d
+            found = [base] if base.is_file() else sorted(base.rglob("*"))
+            rels += [str(f.relative_to(ROOT)) for f in found if f.is_file() and "__pycache__" not in f.parts]
+    files = {rel: sha256_file(ROOT / rel) for rel in sorted(set(rels)) if (ROOT / rel).is_file()}
+    for path in registered:
+        path = Path(path).resolve()
+        key = str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
+        files[key] = sha256_file(path)
+    return {"sha256": sha256_bytes(json.dumps(files, sort_keys=True).encode()), "files": dict(sorted(files.items()))}
+
+
 def task_by_id(taskset: dict) -> dict:
     return {t["id"]: t for t in taskset["tasks"]}
 
@@ -367,6 +447,7 @@ def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=Tru
         errors.append("isolation.per_run is not stated")
     if not prereg.get("reviewer_availability"):
         errors.append("reviewer_availability is not stated")
+    errors += contract_errors(prereg.get("contracts"))
     if not prereg.get("generalization_limits"):
         errors.append("generalization_limits are not stated")
     reg = prereg.get("taskset") or {}
@@ -826,34 +907,15 @@ class Run:
 
     # --- specs ------------------------------------------------------------------------------
     def builder_spec(self, tid, nonce):
+        """The registered builder contract for one unit (the prereg pins the text, #604)."""
         t = self.tasks[tid]
-        return "\n".join([
-            f"open-fleet WIP-curve builder unit (#604). WIP-BUILD {nonce} task={tid}",
-            f"Task {tid}: {t['title']}",
-            t["statement"],
-            "This worktree is a git checkout of the stocklib package. Run its tests with: "
-            "python3 -m unittest discover -s tests -t .",
-            "Change only what the task needs. Commit your change on the current branch: git add the files "
-            "you changed, then git commit.",
-            "Then report completion with:",
-            '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded '
-            '--run "$OPEN_FLEET_RUN_ID" --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" '
-            "--payload '{\"head\": \"<the commit sha>\"}'",
-            "If you cannot complete the task, send the same message with --outcome failed.",
-        ])
+        return render(self.prereg["contracts"]["builder"], task=tid, nonce=nonce, title=t["title"],
+                      statement=t["statement"])
 
     def review_spec(self, tid, nonce, base, head, task_rel, diff_rel):
-        return "\n".join([
-            f"open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST {nonce} task={tid} head={head} "
-            f"diff={diff_rel}",
-            f"You are a build-blind reviewer. Review the change {base}..{head} for task {tid}. The task "
-            f"statement is in {task_rel} and the change's diff in {diff_rel}, both in your working tree: read "
-            "both to the end. Do not modify anything.",
-            "Approve only if the change does what the task statement asks and nothing it forbids; otherwise "
-            "ask for changes.",
-            f"End your answer with exactly one line: WIP-REVIEW {nonce} {head} approve   or   "
-            f"WIP-REVIEW {nonce} {head} changes",
-        ])
+        """The registered reviewer contract for one review."""
+        return render(self.prereg["contracts"]["reviewer"], task=tid, nonce=nonce, base=base, head=head,
+                      task_file=task_rel, diff_file=diff_rel)
 
     # --- one wave ---------------------------------------------------------------------------
     def wave(self, k, planned):
@@ -1418,6 +1480,7 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
            "position": rec.get("position"), "tier": rec.get("tier"), "status": rec.get("status"),
            "stop_reason": rec.get("stop_reason"), "error": rec.get("error"),
            "started_at": rec.get("started_at"), "finished_at": rec.get("finished_at"),
+           "inputs_sha256": (rec.get("inputs") or {}).get("sha256"),
            "run_json_sha256": sha256_file(run_dir / "run.json")}
     reasons = []
     if not bound.path("events.jsonl").is_file():
@@ -1625,6 +1688,13 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
     cooldown = prereg["isolation"]["cooldown_minutes"] * 60
     live = sorted((r for r in runs if r.get("tier") == "live-unreviewed" and r.get("started_at")),
                   key=lambda r: r["started_at"])
+    first_inputs = next((r.get("inputs_sha256") for r in live), None)
+    for run in live[1:]:
+        if run.get("inputs_sha256") != first_inputs:
+            run["compliant"] = False
+            run.setdefault("noncompliance", []).append(
+                f"ran on other experiment inputs (sha256 {str(run.get('inputs_sha256'))[:12]}…) than the first live "
+                f"run ({str(first_inputs)[:12]}…): re-register before pooling them")
     for before, run in zip(live, live[1:], strict=False):
         gap = (datetime.fromisoformat(run["started_at"]) - datetime.fromisoformat(before["finished_at"])).total_seconds()
         if gap < cooldown:
@@ -1800,7 +1870,9 @@ def cmd_run(args) -> int:
         raise Refused(f"--cost-cap-usd is required: the pre-registered cap is {prereg['cost']['cap_usd']!r}, "
                       "and the runner never picks the spend")
     args.cost_cap = money(args.cost_cap_usd)
-    errors = check_prereg(prereg, taskset, taskset_path, oracles=False)
+    # The whole check, seed and oracles included, before anything starts: a registered input that
+    # moved blocks the run here, never as a failed run record later (#604).
+    errors = check_prereg(prereg, taskset, taskset_path)
     if errors:
         raise Refused("the pre-registration does not check: " + "; ".join(errors))
     if args.worker == "live":
@@ -1824,6 +1896,13 @@ def cmd_run(args) -> int:
         check_writable(args.workdir, "--workdir", registered)
     sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
     done = {d.name for d in runs_in(results)}
+    taskset_sha = sha256_file(taskset_path)
+    for d in runs_in(results):  # one experiment, one registration
+        rec = json.loads((d / "run.json").read_text(encoding="utf-8"))
+        if (rec.get("prereg") or {}).get("sha256") != prereg_sha or (rec.get("taskset") or {}).get("sha256") != taskset_sha:
+            raise Refused(f"{results} holds {d.name}, run under another registration (prereg "
+                          f"{str((rec.get('prereg') or {}).get('sha256'))[:12]}…): re-register (bump the version, "
+                          "which gives new run ids) or use another results directory")
     if args.runs:
         wanted = []
         for rid in args.runs.split(","):
@@ -1836,6 +1915,11 @@ def cmd_run(args) -> int:
     if not wanted:
         print("wip-curve: every scheduled run is already present", file=sys.stderr)
         return EXIT_OK
+    inputs = experiment_inputs((path, taskset_path))
+    if args.worker == "live":
+        dirty = dirty_inputs()
+        if dirty:
+            raise Refused(f"a live run needs committed experiment inputs; uncommitted: {dirty}")
     for base, attempt in wanted:  # every sandbox is checked before the first run starts
         if not args.workdir:
             continue
@@ -1889,7 +1973,7 @@ def cmd_run(args) -> int:
             harness={"path": found, "version": "inert stand-in (no model)" if args.worker == "inert"
                      else first_run.harness_version(found, sb.env)},
             host=host_facts(), clock=run.clock, epoch=1, attempt=attempt,
-            prereg={"path": str(path), "sha256": prereg_sha},
+            prereg={"path": str(path), "sha256": prereg_sha}, inputs=inputs,
             taskset={"path": prereg["taskset"]["path"], "sha256": sha256_file(taskset_path)},
             inert_script=script if args.worker == "inert" else None)
         previous = first_run.trap_termination()

@@ -89,7 +89,9 @@ tree is armed, as `first_run.py` does. If it is not, the runner stops the worker
 A wave dispatches at most `builders` units, and carried (bounced) units go first.
 `reviewers=<n>` is the number of build-blind review units in flight at once. A done unit waits
 for a free reviewer in worker_done order. The reviewer rubric is fixed: the reviewer receives the
-task statement and the diff, and answers `approve` or `changes` on one `WIP-REVIEW` line. The line
+task statement and the diff, and answers `approve` or `changes` on one `WIP-REVIEW` line. The exact
+text each builder and reviewer receives is registered in the JSON's `contracts`, not written in
+the runner, so the registration's digest pins it. The line
 may be wrapped in markdown, but it must carry the review's nonce and the reviewed head. A review
 with no such line ends the attempt `review-failed`, and the unit is rebuilt like any other bounced
 unit. No human reviewer sits in the measured loop. Human review capacity is a separate experiment.
@@ -316,7 +318,19 @@ the tool to detect each one.
 
 ## Changing the registration
 
-After the first live run, any change to the task set, the conditions, the order, the stopping
-rule or the analysis is a new `version` with new run ids. Editing the task set changes its
-digest, and `check-prereg` then refuses the registration until the digest is updated. That
-refusal is deliberate.
+Everything the measurement depends on is pinned:
+
+- The task set (statements, oracles, reference edits and seed files) is pinned by its sha256 in
+  the JSON, and the seed commit it builds is pinned too.
+- The builder and reviewer contracts live in the JSON itself.
+- `run` performs the whole `check-prereg`, seed and oracles included, before anything starts. A
+  moved input is refused there, never recorded as a failed run.
+- A results directory holds one registration. A run is refused when the directory already holds
+  a run made under another pre-registration or task-set digest.
+- A live run is refused while any experiment input (`scripts/wip_curve.py`, `docs/experiments/`,
+  `runtime/`) has uncommitted changes. Every run records the digest of each input, and a live run
+  on inputs other than the first live run's is not compliant, so it is never pooled.
+
+After the first live run, any change to the task set, the contracts, the conditions, the order,
+the stopping rule or the analysis is therefore a new `version`, with new run ids and a new
+results directory.

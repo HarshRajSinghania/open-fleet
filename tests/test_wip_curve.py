@@ -12,8 +12,10 @@ tripwire for every harness name first on PATH, and the tripwire log must stay em
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -26,6 +28,7 @@ import unittest
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "wip_curve.py"
@@ -168,6 +171,32 @@ class TestPreregistration(Tmp):
                 "    def test_nothing(self):\n        self.assertTrue(True)\n")
         errors = self.mutated(taskset_fn=lambda t: t["tasks"][2].__setitem__("oracle", lazy))
         self.assertTrue(any("T3: the oracle passes on the seed" in e for e in errors), errors)
+
+    def test_the_worker_contracts_are_registered_not_coded(self):
+        contracts = json.loads(PREREG.read_text(encoding="utf-8"))["contracts"]
+        prereg, taskset, *_ = wip.load_prereg(PREREG)
+        run = wip.Run.__new__(wip.Run)
+        run.prereg, run.tasks = prereg, wip.task_by_id(taskset)
+        builder = run.builder_spec("T1", "WIP-NONCE:" + "0" * 16)
+        self.assertIn("WIP-BUILD WIP-NONCE:" + "0" * 16 + " task=T1", builder)
+        self.assertIn(contracts["builder"][-1].split("{")[0], builder)
+        review = run.review_spec("T1", "WIP-NONCE:" + "0" * 16, "a" * 40, "b" * 40, "t.md", "c.diff")
+        self.assertIn("WIP-REVIEW-REQUEST WIP-NONCE:" + "0" * 16 + " task=T1 head=" + "b" * 40 + " diff=c.diff", review)
+
+    def test_a_contract_that_loses_a_placeholder_is_refused(self):
+        errors = self.mutated(lambda p: p["contracts"]["reviewer"].__setitem__(
+            0, p["contracts"]["reviewer"][0].replace(" head={head}", "")))
+        self.assertTrue(any("contracts.reviewer" in e and "{head}" in e for e in errors), errors)
+
+    def test_a_verdict_line_the_parser_cannot_read_is_refused(self):
+        errors = self.mutated(lambda p: p["contracts"].__setitem__("verdict_line", "VERDICT: {verdict} for {head}"))
+        self.assertTrue(any("verdict_line" in e for e in errors), errors)
+
+    def test_editing_a_worker_contract_changes_the_registration(self):
+        before = hashlib.sha256(PREREG.read_bytes()).hexdigest()
+        prereg = json.loads(PREREG.read_text(encoding="utf-8"))
+        prereg["contracts"]["reviewer"][1] += " Be lenient."
+        self.assertNotEqual(hashlib.sha256(json.dumps(prereg, indent=2).encode()).hexdigest(), before)
 
     def test_a_reference_edit_that_does_not_apply_is_refused(self):
         def drift(t):
@@ -744,6 +773,14 @@ class TestComplianceNeedsLiveBoundEvidence(unittest.TestCase):
         self.edit(B3[0], model_pin="inert-stand-in")
         self.assertFalse(any("not the pin" in w for w in self.runs()[B3[0]]["noncompliance"]))
 
+    def test_a_run_on_other_experiment_inputs_is_not_compliant(self):
+        live = {"tier": "live-unreviewed", "worker": "live"}
+        self.edit(B3[0], started_at="2026-10-24T10:00:00+00:00", finished_at="2026-10-24T11:00:00+00:00", **live)
+        self.edit(B6_CAPPED[0], started_at="2026-10-24T12:00:00+00:00", finished_at="2026-10-24T13:00:00+00:00",
+                  inputs={"sha256": "f" * 64, "files": {}}, **live)
+        why = self.runs()[B6_CAPPED[0]]["noncompliance"]
+        self.assertTrue(any("experiment inputs" in w for w in why), why)
+
     def test_a_run_that_did_not_start_at_the_seed_does_not_bind(self):
         self.edit(B3[0], seed_commit="0" * 40)
         problems = self.runs()[B3[0]]["binding_problems"]
@@ -864,6 +901,75 @@ class TestNoWriteTouchesTheRepository(Tmp):
                    "--cost-cap-usd", "0", "--inert-script", "{}", env=self.env)
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertFalse(results.exists())
+
+
+class TestRegisteredInputsBlockARun(Tmp):
+    """A change to anything the experiment depends on blocks a run until it is re-registered."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+
+    def test_a_seed_the_task_set_does_not_build_is_refused_before_a_run_starts(self):
+        prereg = json.loads(PREREG.read_text(encoding="utf-8"))
+        prereg["taskset"]["path"] = str(TASKSET)
+        prereg["taskset"]["seed_commit"] = "0" * 40
+        path = self.tmp / "prereg.json"
+        path.write_text(json.dumps(prereg), encoding="utf-8")
+        p = runner("--prereg", str(path), "run", "--results", str(self.tmp / "results"), "--workdir",
+                   str(self.tmp / "wd"), "--runs", "wip1-b1r1-rep1", "--cost-cap-usd", "0", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("seed_commit", p.stderr)
+        self.assertFalse((self.tmp / "results" / "runs").exists(), "a refused run left a run record")
+
+    def test_results_under_another_registration_refuse_the_next_run(self):
+        src = Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
+        results = self.tmp / "results"
+        shutil.copytree(src, results / "runs" / src.name)
+        rec = json.loads((results / "runs" / src.name / "run.json").read_text(encoding="utf-8"))
+        rec["prereg"]["sha256"] = "e" * 64  # a run made under an earlier registration
+        (results / "runs" / src.name / "run.json").write_text(json.dumps(rec), encoding="utf-8")
+        p = runner("run", "--results", str(results), "--workdir", str(self.tmp / "wd"), "--runs", "wip1-b3r1-rep1",
+                   "--cost-cap-usd", "0", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("re-register", p.stderr)
+        self.assertEqual([d.name for d in (results / "runs").iterdir()], [src.name])
+
+    def test_uncommitted_experiment_inputs_are_named(self):
+        repo = self.tmp / "repo"
+        for rel in ("scripts/wip_curve.py", "docs/experiments/wip-curve-prereg.json", "README.md"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("v1\n", encoding="utf-8")
+        wip.git(repo, "init", "-q")
+        wip.git(repo, "add", "-A")
+        wip.git(repo, "-c", "user.email=t@t.invalid", "-c", "user.name=t", "commit", "-qm", "seed")
+        self.assertEqual(wip.dirty_inputs(repo), [])
+        (repo / "scripts" / "wip_curve.py").write_text("v2\n", encoding="utf-8")
+        (repo / "README.md").write_text("v2\n", encoding="utf-8")  # not an experiment input
+        self.assertEqual(wip.dirty_inputs(repo), ["scripts/wip_curve.py"])
+
+    def test_a_live_run_refuses_uncommitted_inputs_before_anything_starts(self):
+        # In-process with dirty_inputs faked. Were the check gone, the cost pre-check (a cap of 1.00
+        # below the first wave's 2.00) would still stop the run before any harness: rc 1, not 2.
+        err = io.StringIO()
+        with mock.patch.object(wip, "dirty_inputs", return_value=["scripts/wip_curve.py"]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = wip.main(["run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"),
+                           "--worker", "live", "--model", "m", "--cost-cap-usd", "1.00", "--reservation-usd",
+                           "1.00", "--runs", "wip1-b1r1-rep1"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("uncommitted: ['scripts/wip_curve.py']", err.getvalue())
+        self.assertFalse((self.tmp / "results" / "runs").exists())
+
+    def test_every_run_records_the_digest_of_its_inputs(self):
+        record = json.loads((Path(dry_run(*B1_BOUNDARY)[0].name) / "results" / "runs" / B1_BOUNDARY[0]
+                             / "run.json").read_text(encoding="utf-8"))
+        files = record["inputs"]["files"]
+        for rel in ("scripts/wip_curve.py", "docs/experiments/wip-curve-prereg.json",
+                    "docs/experiments/wip-curve-taskset.json", "runtime/scripts/events.py",
+                    "runtime/providers/posix.py"):
+            self.assertEqual(files[rel], hashlib.sha256((ROOT / rel).read_bytes()).hexdigest(), rel)
+        self.assertEqual(record["inputs"]["sha256"], wip.experiment_inputs()["sha256"])
 
 
 class TestRelativePaths(unittest.TestCase):

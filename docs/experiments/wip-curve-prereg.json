@@ -36,6 +36,30 @@
     "rubric": "fixed: the reviewer gets the task statement and the diff, and answers approve or changes on one WIP-REVIEW line; the same text in every condition",
     "human_reviewers": "none in the measured loop; a human reviewer would be a different experiment"
   },
+  "contracts": {
+    "builder": [
+      "open-fleet WIP-curve builder unit (#604). WIP-BUILD {nonce} task={task}",
+      "Task {task}: {title}",
+      "{statement}",
+      "This worktree is a git checkout of the stocklib package. Run its tests with: python3 -m unittest discover -s tests -t .",
+      "Change only what the task needs. Commit your change on the current branch: git add the files you changed, then git commit.",
+      "Then report completion with:",
+      "  python3 \"$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py\" --type worker_done --outcome succeeded --run \"$OPEN_FLEET_RUN_ID\" --subject \"worker_done:$OPEN_FLEET_DISPATCH_ID\" --payload '{\"head\": \"<the commit sha>\"}'",
+      "If you cannot complete the task, send the same message with --outcome failed."
+    ],
+    "reviewer": [
+      "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST {nonce} task={task} head={head} diff={diff_file}",
+      "You are a build-blind reviewer. Review the change {base}..{head} for task {task}. The task statement is in {task_file} and the change's diff in {diff_file}, both in your working tree: read both to the end. Do not modify anything.",
+      "Approve only if the change does what the task statement asks and nothing it forbids; otherwise ask for changes.",
+      "End your answer with exactly one line: WIP-REVIEW {nonce} {head} approve   or   WIP-REVIEW {nonce} {head} changes"
+    ],
+    "verdict_line": "WIP-REVIEW {nonce} {head} {verdict}",
+    "verdicts": [
+      "approve",
+      "changes"
+    ],
+    "note": "the exact text every builder and reviewer receives; {name} fields are filled per unit. Editing a contract changes this file's digest, which blocks a run in a results directory made under the old one"
+  },
   "repetitions": 3,
   "order": {
     "seed": "open-fleet-604-wip-curve-v1",
@@ -92,7 +116,7 @@
   },
   "compliance": [
     "a live worker (never the inert stand-in)",
-    "the prereg and task-set digests the runner bound equal this file's",
+    "the prereg and task-set digests the runner bound equal this file's, and its experiment inputs (the runner, this registration, the task set and runtime/) hash to the same digest as the first live run's, none of them uncommitted",
     "the run started at the pre-registered seed commit",
     "the model pin and harness version recorded; every observed model equals the pin",
     "events.py derives every WIP-curve cell (report complete)",

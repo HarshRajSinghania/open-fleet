@@ -28,8 +28,11 @@ truth is `.claude-plugin/plugin.json`.
   under a watchdog that kills what its worker left before it exits. A unique `OF_CALL_ID`
   environment marker contains each call across sessions, so a descendant that calls `setsid()`
   is still swept. No call is settled while anything of it survives or the process table cannot
-  be read. A scenario id must be one safe filename. The limit: a process that re-executes with an
-  emptied environment after leaving the call's tree is not found.
+  be read. A scenario id must be one safe filename. Where process discovery fails, the call's
+  known process group is still killed, by the runner and by its watchdog. A live run refuses to
+  start where a probe cannot be found by its marker. The wait for a call needs no `os.waitid`,
+  which macOS lacks before Python 3.13. The limit: a process that re-executes with an emptied
+  environment after leaving the call's tree is not found.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

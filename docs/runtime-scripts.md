@@ -1086,13 +1086,76 @@ poisoned one and label every hint as expected — and requires the unchecked arm
 corpus can tell the checks from their absence. Fixture-tier result at this change: checked
 retrieval 1.0, stale suppression 1.0, label accuracy 1.0, 0 poisoned; unchecked leaks 20/20 stale
 and 2/2 poisoned notes. The effect on REPEATED task failures needs a worker and is not measured
-yet: `--live --tier live --model <id> --budget-usd <n> --max-runs <n> --attempts <k> --agent-cmd
-'<worker argv>'` runs each `live_task` scenario per arm and attempt in a fresh fixture (the
-packet on stdin and at `$HINT_REPLAY_PACKET`), then its oracle, and counts failures matching the
-recorded pitfall. It refuses a `live` tier without a declared model and budget and more runs than
-`--max-runs`; the report carries the tier the operator declared (`stub` for a deterministic
-stand-in worker, which the tests use to prove the plumbing — never evidence of an effect). Run
-the worker inside a sandbox: it executes in a throwaway fixture repository, but it is a worker.
+yet: `--live` runs each `live_task` scenario per arm and attempt in a fresh fixture (the packet on
+stdin and at `$HINT_REPLAY_PACKET`), then its oracle, and counts failures matching the recorded
+pitfall. It refuses more runs than `--max-runs`; the report carries the tier the operator
+declared (`stub` for a deterministic stand-in worker, which the tests use to prove the plumbing —
+never evidence of an effect).
+
+Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.py`, whose
+`SpendLedger` it shares):
+
+- **Refusals, before anything is written or run.** A `live` tier needs a declared `--model`, an
+  explicit finite cap (`--budget-usd` > 0), a per-call reservation (`--per-call-usd` > 0 and
+  within the cap: the worst case one call is held to), a per-call limit flag
+  (`--agent-limit-flag`, default Claude's `--max-budget-usd`; `''` is refused) and `--out`.
+- **Pre-emptive reservation.** Every call carries its own limit: the flag at 0.8 of its
+  reservation floored to the cent, always appended to the worker's argv (a harness limit can be
+  overshot, so it sits below the reservation). A reservation whose limit would be USD 0.00 (below
+  USD 0.0125) is refused, never run without a limit. A call starts only if the spend so far plus
+  its reservation fits in the cap; otherwise the run stops `CAP_REACHED`.
+- **Observed and charged.** Each call's packet, stdout, stderr and oracle output are saved under
+  `<stem>.calls/<run id>/<scenario>.<arm>.a<k>/` beside `--out` (a scenario id must be one safe
+  filename, and every call's directory is checked to sit there before anything is written), and
+  its `total_cost_usd` is read
+  from Claude's `--output-format json` (or `stream-json`) and charged. An unmeasured call is
+  charged its full reservation and stops the run (`USAGE_UNAVAILABLE`). A measured call above
+  its reservation stops it (`LIMIT_BREACHED`: the harness limit did not hold). A call killed at
+  `--timeout-s` is charged at least its reservation, and the run goes on.
+- **Durable ledger.** `<stem>.spend.jsonl` beside `--out` gets each call at its full reservation,
+  fsynced, before the call starts, and its charge after. A call the runner never settled (a
+  SIGKILL) stays charged in full, and a later run into the same `--out` counts every earlier
+  run's spend against its own cap. Each call is keyed by run id, so nothing is counted twice. An
+  unreadable ledger refuses the run. One run holds the ledger at a time: it is locked
+  exclusively for the whole invocation, so a concurrent run into the same `--out` is refused
+  before it reserves anything, and the lock of a run that dies goes with its process.
+- **No process outlives its call.** Each call (and each oracle) runs under #606's watchdog
+  (`_ablation_run.py --watchdog`), which leads its own process group. On timeout the call is killed
+  and reaped. When the worker exits, the watchdog kills what it left in its group or below it
+  BEFORE exiting, and the runner verifies that sweep before the next call. SIGTERM/SIGHUP/Ctrl-C
+  kill every live call, write the results and exit 128+N. The watchdog kills its whole call if
+  the runner itself is SIGKILLed.
+- **Contained across sessions.** Every process of a call carries a unique `OF_CALL_ID` marker in
+  its environment. Teardown kills every process carrying it, plus every descendant of the call, in
+  whatever session or group it now is, and re-scans until none is left (`/proc` on Linux, `ps -E`
+  elsewhere). A call is never settled while anything of it survives SIGKILL, or while the process
+  table cannot be read: it stays open at its full reservation and the run stops `ORPHAN_ALIVE`.
+  Whatever discovery can see, the call's known process group is killed, and a watchdog whose
+  own sweep fails kills its group with itself. A live run is refused before it reserves anything
+  where a probe carrying a marker cannot be found by it (for example, a sandbox that denies `ps`).
+  The limit: a process that re-executes itself with an emptied environment (`env -i`) after
+  leaving the call's process tree is not found. Run the arm in a disposable sandbox.
+- **Results** (`hint-replay-live/v2`): per call `cost_usd` (`null` when unmeasured), `measured`,
+  `charged_usd`, `reserve_usd`, the `models` the worker reported and its `output` paths. `cost`
+  holds `cap_usd`, `spent_usd`, `prior_spent_usd`, `counted_against_cap_usd`,
+  `measured_calls` and `unmeasured_calls`. `stopped` names why the run ended early, and
+  `complete` is true only when every planned call ran. A stopped run exits 1.
+
+The owner-authorised live run (USD 40 cap; 2 scenarios × 3 arms × 3 attempts = 18 calls at a
+USD 2 reservation each, so all 18 fit even if every call were charged its full reservation), from
+a disposable checkout:
+
+```bash
+python3 scripts/hint_replay.py --live --tier live --model sonnet \
+  --agent-cmd 'claude -p --model sonnet --output-format json --permission-mode acceptEdits' \
+  --budget-usd 40 --per-call-usd 2 --agent-limit-flag=--max-budget-usd \
+  --max-runs 18 --attempts 3 --out hint-replay-605-live/results.json
+```
+
+Re-run into the same `--out` after an interruption: the ledger carries the spend forward. No live
+result is claimed until that results file, its ledger and its call outputs are bound into a run
+report under `docs/runs/` (`runtime/scripts/run_report.py`). The `live` tier is the operator's
+declaration, and the tests drive it with an inert stand-in only (`tests/test_hint_replay_spend.py`).
 
 Exits: n/a (library).
 

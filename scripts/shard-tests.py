@@ -65,6 +65,7 @@ WEIGHTS = {
     # before those classes a mean of 109.6 and 100.2:
     # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
     # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
+    "test_containment": 6.7,  # PR #668 review: the shared process-containment helper
     "test_capability_harnesses": 0.5,
     "test_capability_launch_agreement": 14.3,  # #596, re-measured 2026-10-24 (macOS arm64): the openhands
     # end-to-end runs against a loopback agent-server, and the no-exception claim test

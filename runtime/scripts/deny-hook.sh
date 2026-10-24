@@ -1959,6 +1959,9 @@ _CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmo
                           r"|rmSync|>|open[^)]*[\x22\x27][rbt]*[wax+]")
 # Heads a command built from an expansion is judged as when its value cannot be read (#598).
 _REFUSED_HEADS = ("gh", "git", "rm", "orca")
+# What the reader writes for text it cannot resolve (#654): it reads as an expansion, so a head
+# holding it takes the refused-head fallback in _head_bodies rather than passing as complete.
+_UNRESOLVED = "${__OPEN_FLEET_UNRESOLVED__}"
 _ASSIGNED = {}   # NAME -> the literal values this command line assigns it, anywhere (#598)
 _SIMPLE_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly")
@@ -2039,7 +2042,12 @@ def _code_commands(code):
     out = []
     for m in _EXEC_CALL.finditer(code):
         argtext = _call_args(code, m.end() - 1)
-        for lm in re.finditer(r"\[([^\[\]]*)\]", argtext):
+        # A tuple is an argv as much as a list is: run((git, push, ...)) with literals (#654).
+        # A paren after a name, a dot or a closing bracket opens a CALL, not a tuple: the
+        # arguments of str.format build text, they are not an argv. A word that ends the command
+        # has its closing parens peeled as a subshell close, so a tuple may reach here unclosed:
+        # it then runs to the end of the text.
+        for lm in re.finditer(r"(?:\[|(?<![A-Za-z0-9_.\])])\()([^\[\]()]*)(?:[\])]|$)", argtext):
             items = [a or b for a, b in _CODE_LITERAL.findall(lm[1])]
             if len(items) > 1:
                 out.append(shlex.join(items))
@@ -2056,11 +2064,24 @@ def _note_assigns(assigns, ws):
     if ws and ws[0] in _DECLARERS:
         words += [w for w in ws[1:] if not w.startswith("-")]
     if len(ws) > 3 and ws[0] == "printf" and ws[1] == "-v":   # printf -v NAME FORMAT ARGS
-        words.append(ws[2] + "=" + _printf_text(ws[3], ws[4:]).replace(chr(10), " "))
+        whole, unread = _printf_render(ws[3], ws[4:], False)
+        views = [whole] + ([_printf_render(ws[3], ws[4:], True)[0]] if unread else [])
+        words += [ws[2] + "=" + v.replace(chr(10), " ") for v in views]   # each rendering a value
     for w in words:
         m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", w, re.DOTALL)
-        if m and len(_ASSIGNED.get(m[1], ())) < 8:
-            _ASSIGNED.setdefault(m[1], set()).add(m[2].replace(_QNL, " "))
+        if m:
+            _assign(m[1], m[2].replace(_QNL, " "))
+
+
+def _assign(name, value):
+    """Record one value NAME may hold, from NAME=value or from read NAME. Past the cap a value is
+    not dropped: the name is marked unresolved, so a head built from it falls back to every
+    refused head instead of reading as complete (#654)."""
+    seen = _ASSIGNED.setdefault(name, set())
+    if len(seen) < 8 or value in seen:
+        seen.add(value)
+    else:
+        seen.add(_UNRESOLVED)
 
 
 def _head_bodies(ws):
@@ -2089,7 +2110,9 @@ def _head_bodies(ws):
                 continue
             changed = True
             nxt += [h[:m.start()] + v + h[m.end():] for v in sorted(_ASSIGNED[name])]
-        heads = nxt[:16]
+        # Views past the cap are not dropped silently: an unresolved head stands in for them,
+        # so the refused-head fallback below still runs (#654).
+        heads = nxt[:16] + ([_UNRESOLVED] if len(nxt) > 16 else [])
         if not changed:
             break
     rest = (" " + shlex.join(ws[1:])) if len(ws) > 1 else ""
@@ -2400,20 +2423,89 @@ def _printf_text(fmt, args):
     # What printf FORMAT ARGS writes, conversions filled in order and the format reused while
     # arguments remain: printf "%s%s" gh " issue close 34" prints one command (#598 corpus).
     # The format escapes are decoded, and so is a %b argument (PR #648 review).
-    out, state = [], {"next": 0, "used": 0}
+    # Each conversion is modelled as bash and dash print it (#654): %c is one character, .N cuts
+    # a string, * takes the width or precision from the next argument. When the reader cannot be
+    # sure what a conversion prints (a * argument it cannot read, a conversion it does not
+    # model), the format is rendered twice and BOTH renderings are offered, one per line: once
+    # with the argument whole and once with an unresolved mark in its place, each keeping the
+    # text around it. A width only pads, so one that cannot be read is no padding (PR #655).
+    whole = _printf_render(fmt, args, False)
+    if not whole[1]:
+        return whole[0]
+    return whole[0] + chr(10) + _printf_render(fmt, args, True)[0]
 
-    def fill(m):
-        if m[0] == "%%":
-            return "%"
+
+def _printf_render(fmt, args, mark):
+    """(text, unsure): one rendering of printf FORMAT ARGS. unsure says some conversion could not
+    be read for certain; mark puts an unresolved mark in its place, else its argument whole."""
+    out, state = [], {"next": 0, "used": 0, "unsure": False}
+
+    def take():
         state["used"] += 1
         state["next"] += 1
-        arg = args[state["next"] - 1] if state["next"] <= len(args) else ""
-        return _decode_escapes(arg, percent_b=True) if m[0].endswith("b") else arg
+        return args[state["next"] - 1] if state["next"] <= len(args) else ""
+
+    def number(text):
+        text = text.strip()
+        if text[:1] in (SQ, DQ) and len(text) > 1:
+            return ord(text[1])   # a leading quote: printf %d prints the code of the next char
+        try:
+            return int(text, 0)
+        except ValueError:
+            return 0
+
+    def decimal(text):
+        # A width or precision is decimal: %.03s cuts at 3, not at an octal reading of 03.
+        text = text.strip()
+        return int(text) if re.fullmatch(r"-?[0-9]+", text) else 0
+
+    def star(text):
+        # A * width or precision comes from an argument, which printf reads as a signed integer:
+        # +3 and -3 are plain. One the reader cannot read for certain (a leading zero, hex,
+        # junk) is None, never guessed (PR #655 review).
+        text = text.strip()
+        return int(text) if re.fullmatch(r"[+-]?(?:[1-9][0-9]*|0)", text) else None
+
+    def unsure(arg):
+        state["unsure"] = True
+        return _UNRESOLVED if mark else arg
+
+    def fill(m):
+        if m[1]:
+            return "%"
+        flags, width, prec, conv = m[2] or "", m[3] or "", m[4] or "", m[5]
+        if width == "*":
+            width = str(star(take()) or 0)   # a width only pads: unread, it pads nothing
+        cut = None
+        if prec == ".*":
+            cut = star(take())
+            unread = cut is None
+        else:
+            unread = False
+            cut = decimal(prec[1:] or "0") if prec else None
+        arg = take()
+        if conv in "sbcq":
+            text = _decode_escapes(arg, percent_b=True) if conv == "b" else arg
+            if unread:
+                return unsure(text)
+            if conv == "c":
+                text = text[:1]
+            elif cut is not None and cut >= 0:
+                text = text[:cut]
+        elif conv in "diu":
+            text = str(number(arg))
+        elif conv in "xXo" and number(arg) >= 0:
+            text = format(number(arg), {"x": "x", "X": "X", "o": "o"}[conv])
+        else:
+            return unsure(arg)
+        pad = min(abs(decimal(width)) if width else 0, 4096)
+        return text.ljust(pad) if "-" in flags or width.startswith("-") else text.rjust(pad)
+    pattern = r"%(?:(%)|([-+ #0]*)(-?[0-9]+|\*)?(\.(?:[0-9]*|\*))?([A-Za-z]))"
     while True:
         state["used"] = 0
-        out.append(re.sub(r"%(%|[-+ #0]*[0-9*]*(\.[0-9*]*)?[A-Za-z])", fill, _decode_escapes(fmt)))
+        out.append(re.sub(pattern, fill, _decode_escapes(fmt)))
         if not state["used"] or state["next"] >= len(args):
-            return "".join(out)
+            return "".join(out), state["unsure"]
 
 
 def _echo_data(ws):
@@ -2486,15 +2578,44 @@ def _redirs(seg):
     return words, redirs
 
 
+_REPLACED = chr(0) + "replaced" + chr(0)   # marks a > overwrite between versions of a file
+
+
+def _write_file(written, word, texts, append):
+    """Record what a command writes to a file: >> (and tee -a) adds to what it holds, in order,
+    so a file built across several writes is read whole; > (and tee) starts a new version but
+    never drops the old one: whether the overwrite runs at all (false && ... > f, a branch) is not
+    known here, so what the file held before stays a version too (#654)."""
+    key = os.path.normpath(word)
+    chunks = written.setdefault(key, [])
+    if not append and chunks:
+        chunks.append(_REPLACED)
+    chunks.extend(texts)
+
+
 def _file_texts(word, written):
     """[(text, armable)] a file operand holds when the line shows it: a process substitution
     <(...) holds what its body prints (read while it runs, like a pipe); a file this line wrote
-    holds what was written there (a separate command, so a receipt never arms it)."""
+    holds each version it may have when it is read: every run of writes joined in order, the
+    latest first (a separate command, so a receipt never arms it). Each write is offered alone
+    too, which only adds views."""
     m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)
     if m:
         out = _flow_output(_SUB_TEXTS[int(m[1])]) if int(m[1]) < len(_SUB_TEXTS) else None
         return [(out, True)] if out else []
-    return [(t, False) for t in written.get(os.path.normpath(word), [])]
+    versions, cur = [], []
+    for chunk in written.get(os.path.normpath(word), []):
+        if chunk == _REPLACED:
+            versions.append("".join(cur))
+            cur = []
+        else:
+            cur.append(chunk)
+    versions.append("".join(cur))
+    views = [v for v in reversed(versions) if v]
+    for chunk in written.get(os.path.normpath(word), []):
+        if chunk != _REPLACED and chunk and chunk not in views:
+            views.append(chunk)
+    return [(v, False) for v in dict.fromkeys(views)]
 
 
 def _reader_kind(ws):
@@ -2563,8 +2684,8 @@ def _note_read(ws, stdin):
         values = {text.split(chr(10))[0], text.replace(chr(10), " ").strip()}
         for name in names or ["REPLY"]:
             for value in values:
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and len(_ASSIGNED.get(name, ())) < 8:
-                    _ASSIGNED.setdefault(name, set()).add(value)
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    _assign(name, value)
 
 
 def _flow(surface, docs, inherit=(), written=None):
@@ -2611,7 +2732,7 @@ def _flow(surface, docs, inherit=(), written=None):
                     src = list(fds.get(int(target), []))
                 else:
                     if fd in (1, "&") and target != "-" and not target.isdigit():
-                        writes.append(target)
+                        writes.append((target, op))
                     continue
                 fds.setdefault(fd, []).extend(src)
             own = (prev["out"] if prev else []) + fds.get(0, [])   # zsh order: the pipe first
@@ -2629,15 +2750,18 @@ def _flow(surface, docs, inherit=(), written=None):
             elif head in _PASS_THROUGH:
                 ops = [a for a in ws[1:] if not a.startswith("-")]
                 out = list(stdin)
+                # tee -a, and any short cluster holding a (-ai, -ia), appends (#654).
+                append = any(a == "--append" or re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*", a)
+                             for a in ws[1:])
                 for f in ops:
                     if head == "tee":
-                        local.setdefault(os.path.normpath(f), []).extend(t for t, _a in stdin)
+                        _write_file(local, f, [t for t, _a in stdin], append)
                     else:
                         out += _file_texts(f, local)
             else:
                 out = []
-            for f in writes:
-                local.setdefault(os.path.normpath(f), []).extend(t for t, _a in out)
+            for f, op in writes:
+                _write_file(local, f, [t for t, _a in out], op in (">>", "&>>"))
             kind, feeds = _reader_kind(ws), []
             if kind:
                 feeds += [(kind, t, a) for t, a in stdin]

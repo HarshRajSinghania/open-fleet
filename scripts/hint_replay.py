@@ -90,6 +90,8 @@ hp = search_sessions.hp  # the provenance module the hint itself uses (mutation 
 DEFAULT_CORPUS = ROOT / "tests" / "fixtures" / "hint-replay.json"
 ARMS = ("off", "unchecked", "checked")
 CLASSES = ("useful", "unknown", "stale", "poison", "benign")
+# A scenario id names each live call's artifact directory, so it is one safe filename (#657 review K5).
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 FIXED_EPOCH = 1767225600  # 2026-01-01T00:00:00Z: commit dates are part of the fixture
 LIVE_SCHEMA = "hint-replay-live/v2"  # v2: spend guard, per-call cost, ledger, stop reason (#605)
@@ -286,6 +288,9 @@ def load_corpus(path):
         raise CorpusError("corpus needs a non-empty scenarios list")
     ids = set()
     for scn in scenarios:
+        if isinstance(scn, dict) and scn.get("id") and not (isinstance(scn["id"], str) and SAFE_ID.fullmatch(scn["id"])):
+            raise CorpusError(f"scenario id {scn['id']!r:.80} is not one safe filename (letters, digits, '.', '_' "
+                              "and '-', a letter or digit first): it names each live call's artifact directory")
         if not isinstance(scn, dict) or not scn.get("id") or scn["id"] in ids:
             raise CorpusError(f"scenario without a unique id: {scn!r:.80}")
         ids.add(scn["id"])
@@ -439,11 +444,20 @@ def _terminated(signum, _frame):
     raise SystemExit(128 + signum)
 
 
+def _call_dir(calls_dir, call):
+    """`calls_dir / call`, refused unless it resolves to a directory directly under `calls_dir`: a
+    scenario id must never steer a packet or a worker's output elsewhere (#657 review K5)."""
+    target = calls_dir / call
+    if target.resolve().parent != calls_dir.resolve():
+        raise CorpusError(f"live call {call!r} would write outside {calls_dir}")
+    return target
+
+
 def _live_call(ctx, scenario, arm, attempt, call):
     """One agent call under the guard, then the oracle. Its packet, output and the oracle's are
     kept under the run's calls directory, beside the results."""
     task, ledger, reserve = scenario["live_task"], ctx["ledger"], ctx["reserve"]
-    call_dir = ctx["calls_dir"] / call
+    call_dir = _call_dir(ctx["calls_dir"], call)
     call_dir.mkdir(parents=True)
     paths = {"packet": call_dir / "packet.md", "stdout": call_dir / "agent.stdout",
              "stderr": call_dir / "agent.stderr", "oracle": call_dir / "oracle.txt"}
@@ -517,29 +531,34 @@ def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, b
                           "--per-call-usd and --agent-limit-flag")
     # Nothing is written before this line; everything below is recorded.
     out = Path(out).resolve() if out else Path(tempfile.mkdtemp(prefix="hint-replay-live-")) / "results.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
     # Unique per invocation (two runs in one second and one process stay apart in the ledger).
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
+    calls_dir = out.parent / f"{out.stem}.calls" / run_id
+    for scenario in tasks:  # every call's directory sits under the run's, checked before any write (K5)
+        for arm in ARMS:
+            for attempt in range(1, attempts + 1):
+                _call_dir(calls_dir, f"{scenario['id']}.{arm}.a{attempt}")
+    out.parent.mkdir(parents=True, exist_ok=True)
     try:
         ledger = spend.SpendLedger(out.parent / f"{out.stem}.spend.jsonl", run_id)
     except spend.Refused as exc:  # unreadable, or held by a concurrent run on the same cap (#657 K2)
         raise CorpusError(str(exc)) from exc
     try:
         return _live_holding(ledger, out, run_id, tasks, digest, planned, corpus_path, agent_argv, tier,
-                             attempts, model, budget_usd, timeout_s, per_call_usd, limit_flag, limit)
+                             attempts, model, budget_usd, timeout_s, per_call_usd, limit_flag, limit, calls_dir)
     finally:
         ledger.release()
 
 
 def _live_holding(ledger, out, run_id, tasks, digest, planned, corpus_path, agent_argv, tier, attempts,
-                  model, budget_usd, timeout_s, per_call_usd, limit_flag, limit):
+                  model, budget_usd, timeout_s, per_call_usd, limit_flag, limit, calls_dir):
     """The live run proper, holding the spend ledger for the whole invocation (#657 review K2)."""
     live = tier == "live"
     prior = float(ledger.total())
     reserve = float(per_call_usd) if live else 0.0  # a stub is never paid: it reserves nothing
     cap = float(budget_usd) if budget_usd is not None else 0.0
     ctx = {"ledger": ledger, "reserve": reserve, "tier": tier, "out": out, "timeout": timeout_s,
-           "calls_dir": out.parent / f"{out.stem}.calls" / run_id,
+           "calls_dir": calls_dir,
            # Every path absolute (the worker's cwd is the fixture), then its own limit.
            "argv": spend.absolute_argv(list(agent_argv)) + ([limit_flag, f"{limit:.2f}"] if limit is not None else []),
            # No login-shell rc file may run (~/.zshenv can reorder PATH): the stub-claude rule.

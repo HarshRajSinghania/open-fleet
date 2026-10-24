@@ -1105,7 +1105,9 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   USD 0.0125) is refused, never run without a limit. A call starts only if the spend so far plus
   its reservation fits in the cap; otherwise the run stops `CAP_REACHED`.
 - **Observed and charged.** Each call's packet, stdout, stderr and oracle output are saved under
-  `<stem>.calls/<run id>/<scenario>.<arm>.a<k>/` beside `--out`, and its `total_cost_usd` is read
+  `<stem>.calls/<run id>/<scenario>.<arm>.a<k>/` beside `--out` (a scenario id must be one safe
+  filename, and every call's directory is checked to sit there before anything is written), and
+  its `total_cost_usd` is read
   from Claude's `--output-format json` (or `stream-json`) and charged. An unmeasured call is
   charged its full reservation and stops the run (`USAGE_UNAVAILABLE`). A measured call above
   its reservation stops it (`LIMIT_BREACHED`: the harness limit did not hold). A call killed at

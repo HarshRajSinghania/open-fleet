@@ -550,5 +550,45 @@ class ACallIsContainedAcrossSessions(StandInRun):
         self.assertKeptOpen(code, err)
 
 
+class ArtifactsStayBesideTheResults(StandInRun):
+    """#657 review K5: a live call's artifact directory was `<stem>.calls/<run>/<scenario id>.<arm>.a<k>`
+    with the id checked only for presence, so an id like `/tmp/escape` or `../escape` sent the packet
+    and the worker's output outside `<stem>.calls/`. An id must be one safe filename, and every
+    call's directory must resolve directly under the run's calls directory, before anything is
+    written."""
+
+    def corpus_with_id(self, scenario_id):
+        corpus = json.loads((ROOT / "tests" / "fixtures" / "hint-replay.json").read_text())
+        scenario = dict(next(s for s in corpus["scenarios"] if s["id"] == SCENARIO), id=scenario_id)
+        return {**corpus, "scenarios": [scenario]}
+
+    def stub_on(self, corpus_path):
+        return ["--live", "--tier", "stub", "--agent-cmd", self.agent("plain", "json", 0), "--corpus",
+                str(corpus_path), "--attempts", "1", "--max-runs", "3", "--out", str(self.out)]
+
+    def assertNothingWritten(self):
+        self.assertEqual(self.calls(), [], "a worker started")
+        self.assertEqual(list(self.out.parent.iterdir()), [], "a refused run wrote beside its results")
+        self.assertEqual(sorted(p.name for p in self.tmp.rglob("*escape*")), [], "a write landed outside")
+
+    def test_a_scenario_id_that_is_not_one_safe_filename_is_refused(self):
+        for scenario_id in (str(self.tmp / "escape"), "../escape", "a/b-escape", "..", ".escape"):
+            with self.subTest(id=scenario_id):
+                corpus = self.tmp / "corpus.json"
+                corpus.write_text(json.dumps(self.corpus_with_id(scenario_id)), encoding="utf-8")
+                code, _out, err = self.main(self.stub_on(corpus))
+                self.assertEqual(code, 2, err)
+                self.assertIn("scenario id", err)
+                self.assertNothingWritten()
+
+    def test_a_call_directory_outside_the_run_is_refused_even_past_the_corpus_check(self):
+        corpus = self.corpus_with_id(str(self.tmp / "escape"))
+        with mock.patch.object(replay_mod, "load_corpus", return_value=(corpus, "0" * 64)):
+            code, _out, err = self.main(self.stub_on(self.tmp / "unused.json"))
+        self.assertEqual(code, 2, err)
+        self.assertIn("outside", err)
+        self.assertNothingWritten()
+
+
 if __name__ == "__main__":
     unittest.main()

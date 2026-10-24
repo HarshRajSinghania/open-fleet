@@ -1,0 +1,147 @@
+# #594 verdict-gate activation witness, 2026-10-24
+# Every line below is an API read-back by the coordinator (gh api, authenticated as the owner). No secret values appear.
+
+## App (manifest conversion result, non-secret fields)
+{
+ "id": 5451539,
+ "slug": "open-fleet-verdict-gate",
+ "client_id": "Iv23liVLo3mtxNRMhg8Y",
+ "name": "open-fleet-verdict-gate",
+ "html_url": "https://github.com/apps/open-fleet-verdict-gate",
+ "owner": "ravidsrk"
+}
+
+## Environment verdict-gate
+deployment_branch_policy: {"custom_branch_policies":true,"protected_branches":false}
+branch policy: main (branch)
+variable: VERDICT_GATE_CLIENT_ID=Iv23liVLo3mtxNRMhg8Y
+secret: VERDICT_GATE_PRIVATE_KEY (value withheld; updated 2026-10-24T05:29:32Z)
+
+## main branch protection, before (2026-10-24, pre-switch)
+strict: true; admins: true; conversation resolution: true
+required: gates from app 15368
+required: verdict from app 15368
+required: guard from app 15368
+required: Greptile Review from app 867647
+required: pinned-demo from app 15368
+
+## main branch protection, after
+strict: true; admins: true; conversation resolution: true
+required: gates from app 15368
+required: guard from app 15368
+required: Greptile Review from app 867647
+required: pinned-demo from app 15368
+required: verdict-gate from app 5451539
+
+## Disposable witness PR #658 (never merged)
+
+== #658 1-spoof head 39c6e37a8ddc258790163b62c5bd666c57428374 at 2026-10-24T05:47:28Z
+-- required on main:
+   gates expected app 15368
+   guard expected app 15368
+   Greptile Review expected app 867647
+   pinned-demo expected app 15368
+   verdict-gate expected app 5451539
+-- commit statuses named verdict-gate at head:
+   success by github-actions[bot] at 2026-10-24T05:35:01Z: spoof: same name, wrong source (#594 witness)
+-- check runs named verdict-gate at head:
+   success app 15368 (github-actions)
+-- other checks:
+ Greptile Review=pass
+ floor (3.11, 1)=pass
+ floor (3.11, 2)=pass
+ floor (3.11, 3)=pass
+ floor (3.11, 4)=pass
+ floor (3.12, 1)=pass
+ floor (3.12, 2)=pass
+ floor (3.12, 3)=pass
+ floor (3.12, 4)=pass
+ gates=pass
+ guard=pass
+ pinned-demo=pass
+ tests (1)=pass
+ tests (2)=pass
+ tests (3)=pass
+ tests (4)=pass
+ vfbench=pass
+ vfbench_replay=pass
+-- unresolved review threads:
+0
+-- merge state:
+   BLOCKED MERGEABLE
+
+== #658 2-genuine-go head 39c6e37a8ddc258790163b62c5bd666c57428374 at 2026-10-24T05:50:11Z
+-- required on main:
+   gates expected app 15368
+   guard expected app 15368
+   Greptile Review expected app 867647
+   pinned-demo expected app 15368
+   verdict-gate expected app 5451539
+-- commit statuses named verdict-gate at head:
+   success by open-fleet-verdict-gate[bot] at 2026-10-24T05:48:27Z: GO verdict binds the merge tip
+   success by github-actions[bot] at 2026-10-24T05:35:01Z: spoof: same name, wrong source (#594 witness)
+-- check runs named verdict-gate at head:
+   success app 15368 (github-actions)
+-- other checks:
+ Greptile Review=pass
+ floor (3.11, 1)=pass
+ floor (3.11, 2)=pass
+ floor (3.11, 3)=pass
+ floor (3.11, 4)=pass
+ floor (3.12, 1)=pass
+ floor (3.12, 2)=pass
+ floor (3.12, 3)=pass
+ floor (3.12, 4)=pass
+ gates=pass
+ guard=pass
+ pinned-demo=pass
+ relay=pass
+ tests (1)=pass
+ tests (2)=pass
+ tests (3)=pass
+ tests (4)=pass
+ verdict=pass
+ vfbench=pass
+ vfbench_replay=pass
+-- unresolved review threads:
+0
+-- merge state:
+   CLEAN MERGEABLE
+
+== #658 3-after-push head adb86e6354353758a6ac7523163a092419ef61ac at 2026-10-24T06:03:15Z
+-- required on main:
+   gates expected app 15368
+   guard expected app 15368
+   Greptile Review expected app 867647
+   pinned-demo expected app 15368
+   verdict-gate expected app 5451539
+-- commit statuses named verdict-gate at head:
+   failure by open-fleet-verdict-gate[bot] at 2026-10-24T05:52:59Z: GO verdicts exist but none binds the current head (post a fresh VERDICT: GO with reviewed_sha == head)
+   success by github-actions[bot] at 2026-10-24T05:50:39Z: spoof: same name, wrong source (#594 witness)
+-- check runs named verdict-gate at head:
+   success app 15368 (github-actions)
+-- other checks:
+ Greptile Review=pass
+ floor (3.11, 1)=pass
+ floor (3.11, 2)=pass
+ floor (3.11, 3)=pass
+ floor (3.11, 4)=pass
+ floor (3.12, 1)=pass
+ floor (3.12, 2)=pass
+ floor (3.12, 3)=pass
+ floor (3.12, 4)=pass
+ gates=pass
+ guard=pass
+ pinned-demo=pass
+ relay=pass
+ tests (1)=pass
+ tests (2)=pass
+ tests (3)=pass
+ tests (4)=pass
+ verdict=skipping
+ vfbench=pass
+ vfbench_replay=pass
+-- unresolved review threads:
+0
+-- merge state:
+   BLOCKED MERGEABLE

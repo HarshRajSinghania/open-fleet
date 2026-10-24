@@ -1090,9 +1090,18 @@ def main(argv: list[str] | None = None) -> int:
     receipt["teardown"] = teardown
     if not teardown_verified(teardown) and receipt["verdict"] == "GO":
         # GO stands only on a verified teardown (PR #668 review): a process of the run may still be
-        # running and spending, so this run is NO-GO and its sandbox is kept for inspection.
+        # running and spending, so this run is NO-GO and its sandbox is kept for inspection. The
+        # failure is a step record like any other, and the witness is rebuilt from the final verdict.
         receipt["verdict"] = "NO-GO"
-        receipt["failure"] = {"step": "teardown", "error": f"teardown not verified: {teardown}"[:2000]}
+        receipt["failure"] = {"step": "teardown", "ok": False, "elapsed_s": 0.0,
+                              "detail": f"teardown not verified: {teardown}"[:2000],
+                              "recovery": f"a process of this run may still be running: the sandbox {sb.dir} is "
+                                          f"kept; find what carries {containment.CALL_MARKER}={sb.call_tag} and "
+                                          "end it before another run"}
+        if isinstance(receipt.get("steps"), list):
+            receipt["steps"].append(receipt["failure"])
+        if "witness" in receipt:
+            receipt["witness"] = witness_line(receipt)
     if receipt["verdict"] == "GO" and not args.keep:
         # Everything but the receipt goes: state store, clone, worktrees, verifier checkout.
         for child in workdir.iterdir():

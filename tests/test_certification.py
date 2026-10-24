@@ -701,6 +701,21 @@ class TestAStandaloneFirstRunVouchesForItsTeardown(Tripwired):
         self.assertFalse(receipt.get("sandbox_pruned"), "a sandbox that may still be in use was pruned")
         self.assertTrue(any(p.name != "receipt.json" for p in (self.tmp / "fr").iterdir()))
 
+    def test_a_teardown_no_go_reads_as_no_go_everywhere(self):
+        # Codex review of 9db89fbe3c (P2): the witness line still said verdict=GO, and the default text
+        # output raised KeyError: 'detail'. The failure uses the step schema and the witness is rebuilt.
+        survivors = {"ended": [], "survivors": [{"pgid": 1, "members": [1]}], "leaders_alive": []}
+        wd, out = self.tmp / "fr", io.StringIO()
+        with mock.patch.object(first_run, "reap_groups", return_value=survivors), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(out):
+            rc = first_run.main(["--profile", "ro", "--workdir", str(wd)])
+        receipt = json.loads((wd / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"))
+        self.assertIn("verdict=NO-GO", receipt["witness"])
+        self.assertEqual({"step", "ok", "detail", "recovery"} - set(receipt["failure"]), set(), receipt["failure"])
+        self.assertIn("FIRST_RUN=NO-GO step=teardown", out.getvalue())
+        self.assertIn("FAILURE=", out.getvalue())
+
     def test_a_process_table_it_cannot_read_is_no_go(self):
         with mock.patch.object(first_run.containment, "process_table", side_effect=OSError("no ps")):
             rc, receipt = self.first_run_in_process(self.tmp / "fr")

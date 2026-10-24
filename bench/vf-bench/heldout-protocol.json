@@ -1,7 +1,7 @@
 {
   "protocol": "vf-bench-heldout@1",
   "issue": "#601",
-  "status": "predeclared: no held-out set exists yet and no holder is assigned",
+  "status": "held-out v1 in authoring: the holder (OpenAI Codex, an AI system) is assigned and the verifier revision is pinned; no held-out digests are published yet",
   "purpose": "The development traps below are public: anyone building or tuning a verifier can read them, so a score on them alone cannot rule out a verifier fitted to the corpus. The held-out split is evaluated only at a pinned verifier revision, by a holder who keeps its content outside this repository until that evaluation is done.",
   "splits": {
     "development": {
@@ -28,15 +28,21 @@
   },
   "temporal": {
     "rule": "every held-out case is authored after the verifier revision it evaluates is pinned; the holder records each case's authored date, and the evaluation names the verify.py blob it ran",
-    "refresh": "one held-out version per release window; once revealed, a held-out version becomes development data and is never held out again"
+    "refresh": "one held-out version per release window; once revealed, a held-out version becomes development data and is never held out again",
+    "pinned_verifier": {
+      "commit": "456051e3ecd9f9c84cf7a485c0cc3c78b155e79e",
+      "verify_blob": "08f568946c1f797207c096a38da93227bfc31c31",
+      "committed_at": "2026-10-24T10:47:58+05:30",
+      "note": "origin/main when held-out v1 was commissioned; its verify.py blob last changed in 53053886 (2026-10-24T04:35:04+05:30). Every v1 case records this pin and an authored_at after committed_at"
+    }
   },
   "release_dates": {
-    "label": "PLANNED dates, not commitments: each depends on an assigned holder, and none has happened",
+    "label": "Dates marked done happened, each with its evidence; dates marked planned are PLANNED, not commitments",
     "milestones": [
-      {"milestone": "holder assigned", "date": "2026-11-30", "status": "planned"},
-      {"milestone": "held-out v1 digests published, content withheld", "date": "2027-01-15", "status": "planned"},
-      {"milestone": "held-out v1 evaluated at a pinned verifier revision", "date": "2027-02-15", "status": "planned"},
-      {"milestone": "held-out v1 revealed and folded into the development split", "date": "2027-04-15", "status": "planned"}
+      {"id": "holder-assigned", "milestone": "holder assigned", "date": "2026-10-24", "status": "done", "evidence": "holder: OpenAI Codex, designated by the repository owner on 2026-10-24"},
+      {"id": "digests-published", "milestone": "held-out v1 digests published, content withheld", "date": "2027-01-15", "status": "planned"},
+      {"id": "evaluated", "milestone": "held-out v1 evaluated at a pinned verifier revision", "date": "2027-02-15", "status": "planned"},
+      {"id": "revealed", "milestone": "held-out v1 revealed and folded into the development split", "date": "2027-04-15", "status": "planned"}
     ]
   },
   "leakage_checks": [
@@ -63,16 +69,37 @@
     },
     {
       "id": "temporal",
-      "command": "none: the holder compares each case's authored date with the commit date of the pinned verify.py blob",
+      "command": "none beyond the holder's tools: `vet --pin` refuses a case whose authored_at is not after the pinned commit, and `validate` refuses a published authoring window that starts before it",
       "detects": "a held-out case authored before the verifier revision it evaluates was pinned",
-      "when": "when the evaluation is run"
+      "when": "when the evaluation is run",
+      "limits": "authored_at is the holder's own record, taken from the clock when a case was written; the files' modification times are published beside it as corroboration only; neither proves when a case was first conceived"
     }
   ],
   "holder": {
     "role": "Evaluation maintainer: the independent holder of unseen cases",
-    "assigned": null,
-    "state": "unfilled",
+    "assigned": "OpenAI Codex",
+    "state": "assigned",
+    "kind": "ai-system",
+    "model": "gpt-6.1-sol at reasoning effort xhigh, the client's configured default; the authoring run's own log header is recorded once it has run",
+    "client": "codex-cli 0.163.0, signed in with the owner's ChatGPT account",
+    "operated_by": "run non-interactively on the owner's machine (`codex exec`, workspace-write sandbox, no network) by the Claude-operated coordinating agent, at the owner's direction",
+    "designated_by": "Ravindra Kumar, the repository owner",
+    "designated_on": "2026-10-24",
+    "designation": "the owner's decision in the 2026-10-24 coordinating session, 'If we need second reviewer use Codex', given with full authorisation to complete #601; the coordinator applied it to this role",
     "independence": "the holder must not be an author of the verifier revision under test",
-    "note": "#601 assigns no person. The role stays unfilled here until someone accepts it; it is never given a placeholder name."
+    "independence_evidence": [
+      "none of the 111 commits that touch runtime/scripts/verify.py up to 456051e3ec is authored by Codex or names Codex, OpenAI or GPT: every one is authored under the owner's own identities (git log)",
+      "no review comment on the repository's pull requests comes from a Codex account (GitHub API, 2026-10-24)",
+      "no Codex session recorded on this machine edits verify.py: the ones from this repository's coordinating session reviewed PRs #653, #656 and #657, none of which changes it"
+    ],
+    "limits": [
+      "an AI system operated on the owner's machine at the owner's direction, not a person: it took the role by being run with the authoring brief, not by a person's agreement",
+      "the content is withheld from this repository and from the Claude-operated developer agents by procedure, not technically: the holder directory sits under the OS account those agents also run as (mode 0700 keeps out other accounts only), and the machine's owner can read it",
+      "the coordinating agent that wrote the authoring brief and launched the run states that it did not read the cases; nothing but its own record of the commands it ran supports that",
+      "Codex read the public repository while authoring, verify.py and the development corpus included: the cases are unseen by the verifier's authors, not written blind to its source",
+      "the holder set each case's expected verdict from the evidence protocol without running the verifier, so a case it got wrong is a case defect, found only when the set is revealed"
+    ],
+    "holder_location": "~/of-live/heldout/v1 on the owner's machine, outside every git repository",
+    "note": "#601 assigned no person. The owner designated an AI system on 2026-10-24; every limit above is part of what this split's numbers mean."
   }
 }

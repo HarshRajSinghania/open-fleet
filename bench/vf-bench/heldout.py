@@ -8,16 +8,23 @@ version digests, the planned release dates, the leakage checks and the holder ro
 never reads held-out content from the repository; it only proves there is none:
 
   validate              the committed protocol is complete, its development pins equal gate.py's
-                        and the corpus's, and the holder role is filled honestly or not at all.
+                        and the corpus's, the holder role is filled honestly or not at all, the
+                        published held-out counts and set digest are the digests file's, and each
+                        recorded evaluation binds to its commit, verify.py blob and report bytes.
+  vet CASE_DIR --pin C  holder side: every case is one the replay can run against the verifier
+                        pinned at commit C, authored after it, and names the inventory row it
+                        samples. Prints file names and counts, never case content (#601).
   digest CASE_DIR       holder side: publish DIGESTS of the held-out cases (raw and canonical-JSON
                         sha256, and the sha256 of the split's canary GUID), never their content.
-                        Refuses a case that does not carry the canary.
+                        Refuses a case that does not carry the canary. With --summary (and
+                        --pin), it vets the set and also writes the set digest and the counts
+                        per category, the figures the protocol publishes (#601).
   check --digests FILE  the leakage check: no committed blob at REV (or anywhere in history with
                         --all-history) is a held-out case — verbatim, reformatted, embedded as an
                         object in a larger JSON document — or carries the held-out canary.
 
-Exit 0: valid / clean. Exit 1: invalid protocol, a leak, or a case without its canary. Exit 2:
-usage (unreadable digests, unknown revision).
+Exit 0: valid / clean. Exit 1: invalid protocol, a leak, a case without its canary, or a case
+that fails the vet. Exit 2: usage (unreadable digests, unknown revision).
 """
 import argparse
 import hashlib
@@ -27,6 +34,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -46,6 +55,27 @@ JSON_PARSE_LIMIT = 20 * 1024 * 1024
 JSON_START = re.compile(r"\s*[\[{]")
 JSON_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 LFS_POINTER = b"version https://git-lfs.github.com/spec/v1"
+# What the holder publishes beside the digests: the set digest and the counts (#601).
+SUMMARY_KIND = "vf-bench-heldout-summary"
+HOLDER_KINDS = ("person", "ai-system")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
+VERIFY_PATH = "runtime/scripts/verify.py"
+REPLAY_SCHEMA = "vf-bench-replay@1"
+# A held-out case's id and file name are opaque, so the evaluation report can list them (#601).
+CASE_ID_RE = re.compile(r"^hv\d+-\d{3}$")
+# The fields the replay's case schema reads (vfbench.py's gates and fixture builder) plus the
+# held-out ones. Anything else is refused: a misspelt coordinator field is silently ignored by the
+# gate and would measure a different case than the one written.
+CASE_FIELDS = {"id", "class", "sound_expected", "note", "unit_class", "fixture",
+               "coordinator_contract", "lighting", "no_gh", "execute_nc", "nc_command", "repo",
+               "dispatch", "gh_stub", "gh_reviews", "manifest", "expect_reason", "neighbour",
+               "requires_commits", "contract_source", "contract_digest", "base",
+               "canary", "authored_at", "verifier_pin", "inventory_site"}
+# Read only for a run-time fixture: on a static case the sound gate never passes them on.
+FIXTURE_ONLY_FIELDS = {"coordinator_contract", "lighting", "no_gh", "dispatch", "gh_stub",
+                       "gh_reviews"}
 
 
 class UsageError(Exception):
@@ -168,6 +198,227 @@ def validate(protocol, gate=None, traps_dir=None):
                       "placeholder name")
     elif state != "assigned":
         errors.append(f"a holder is named, so the role's state must be 'assigned', not {state!r}")
+    else:
+        errors += _assigned_holder_errors(holder)
+    errors += _published_errors(protocol)
+    errors += _evaluation_errors(protocol)
+    errors += _milestone_state_errors(protocol)
+    return errors
+
+
+def _text(value):
+    """A non-empty string, or a non-empty list of non-empty strings; anything else is absent."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list) and value and all(isinstance(v, str) and v.strip() for v in value):
+        return " ".join(value)
+    return ""
+
+
+def _assigned_holder_errors(holder):
+    """A filled role says who designated it, when, why the holder is independent and where that
+    independence stops (#601). An AI system also names its model, its client and who runs it: it
+    is not a person, and the protocol must not let it read as one."""
+    errors = []
+    for key in ("kind", "designated_by", "designated_on", "independence_evidence", "limits"):
+        if not _text(holder.get(key)):
+            errors.append(f"an assigned holder must record {key}")
+    if holder.get("kind") and holder.get("kind") not in HOLDER_KINDS:
+        errors.append(f"holder.kind is {holder.get('kind')!r}, not one of {', '.join(HOLDER_KINDS)}")
+    if holder.get("designated_on") and not DATE_RE.match(str(holder["designated_on"])):
+        errors.append("holder.designated_on is not a YYYY-MM-DD date")
+    if holder.get("kind") == "ai-system":
+        for key in ("model", "client", "operated_by"):
+            if not _text(holder.get(key)):
+                errors.append(f"an AI-system holder must record {key}: it is not a person")
+    return errors
+
+
+def set_digest(digests):
+    """The held-out set's identity: sha256 over its cases' raw sha256 digests, sorted, one per
+    line. The replay recomputes it from the files it is handed, so it scores exactly the set whose
+    digests were published (#601)."""
+    return sha256("".join(f"{c['raw_sha256']}\n" for c in sorted(
+        digests["cases"], key=lambda c: c["raw_sha256"])).encode("ascii"))
+
+
+def _when(stamp):
+    """An ISO-8601 timestamp with its offset as an aware datetime, or None."""
+    if not isinstance(stamp, str) or not TIMESTAMP_RE.match(stamp):
+        return None
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def resolve_pin(repo, commit):
+    """{commit, verify_blob, committed_at} for the verifier revision a held-out version is pinned
+    to, read from git: the temporal rule compares authoring times with `committed_at`."""
+    try:
+        full = _git(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}").decode().strip()
+        blob = _git(repo, "rev-parse", "--verify", "--quiet", f"{full}:{VERIFY_PATH}").decode().strip()
+        when = _git(repo, "show", "-s", "--format=%cI", full).decode().strip()
+    except UsageError:
+        raise UsageError(f"{commit!r} is not a commit holding {VERIFY_PATH} in {repo}") from None
+    return {"commit": full, "verify_blob": blob, "committed_at": when}
+
+
+def _published_errors(protocol):
+    """Published digests bind the split's figures: the set digest, the case and category counts
+    and the authoring window are the digests file's and the holder's summary, and they fall after
+    the pinned verifier revision (the temporal rule)."""
+    held = (protocol.get("splits") or {}).get("heldout") or {}
+    published = held.get("published_digests")
+    if published is None:
+        return []
+    errors = []
+    if (protocol.get("holder") or {}).get("state") != "assigned":
+        errors.append("held-out digests are published but no holder is assigned: unseen cases "
+                      "need someone who holds them")
+    try:
+        doc = load_digests(ROOT / str(published))
+    except UsageError:
+        return errors  # named by validate itself
+    if held.get("set_sha256") != set_digest(doc):
+        errors.append("heldout set_sha256 is not the set digest of the published digests file")
+    if held.get("cases") != len(doc["cases"]):
+        errors.append(f"heldout cases is {held.get('cases')!r}; the published digests list "
+                      f"{len(doc['cases'])}")
+    traps, controls = held.get("traps"), held.get("valid_controls")
+    if not (isinstance(traps, int) and isinstance(controls, int) and traps + controls == len(doc["cases"])):
+        errors.append("heldout traps + valid_controls must equal the published case count")
+    if not (isinstance(controls, int) and controls >= 1):
+        errors.append("the held-out split carries no valid control, so it cannot measure false "
+                      "rejection")
+    cats = held.get("by_category")
+    if not (isinstance(cats, dict) and cats and all(
+            isinstance(v, dict) and set(v) == {"traps", "valid_controls"}
+            and all(isinstance(n, int) and n >= 0 for n in v.values()) for v in cats.values())):
+        errors.append("heldout by_category must map each category to {traps, valid_controls}")
+    elif (sum(v["traps"] for v in cats.values()), sum(v["valid_controls"] for v in cats.values())) \
+            != (traps, controls):
+        errors.append("heldout by_category does not sum to the split's traps and valid_controls")
+    pin = (protocol.get("temporal") or {}).get("pinned_verifier") or {}
+    start, end = _when(held.get("authored_from")), _when(held.get("authored_to"))
+    if start is None or end is None or start > end:
+        errors.append("heldout authored_from / authored_to must be ISO-8601 timestamps in order")
+    if not (HEX40.match(str(pin.get("commit") or "")) and HEX40.match(str(pin.get("verify_blob") or ""))
+            and _when(pin.get("committed_at"))):
+        errors.append("temporal.pinned_verifier must name a commit, its verify.py blob and its "
+                      "committed_at timestamp")
+        return errors
+    try:
+        real = resolve_pin(ROOT, pin["commit"])
+    except UsageError as exc:
+        errors.append(f"temporal.pinned_verifier cannot be bound: {exc}")
+        return errors
+    if (real["verify_blob"], _when(real["committed_at"])) != (pin["verify_blob"],
+                                                              _when(pin["committed_at"])):
+        errors.append("temporal.pinned_verifier's verify_blob or committed_at is not what git "
+                      "records for its commit")
+    if start is not None and start <= _when(pin["committed_at"]):
+        errors.append("a held-out case was authored before the verifier revision it evaluates was "
+                      "pinned: the temporal rule is broken")
+    return errors
+
+
+def _evaluation_errors(protocol):
+    """Each recorded evaluation binds: its report hashes to the recorded sha256, is a held-out
+    replay of the recorded commit, ran the pinned verify.py blob, scored the published set, and
+    git agrees the commit holds that blob (#601). A report edited after the run, or a run at
+    another revision, does not bind."""
+    evaluations = protocol.get("evaluations")
+    if evaluations is None:
+        return []
+    if not isinstance(evaluations, list):
+        return ["evaluations must be a list"]
+    held = (protocol.get("splits") or {}).get("heldout") or {}
+    pin = (protocol.get("temporal") or {}).get("pinned_verifier") or {}
+    errors = []
+    for i, ev in enumerate(evaluations):
+        where = f"evaluation {i + 1}"
+        if not isinstance(ev, dict):
+            errors.append(f"{where} is not an object")
+            continue
+        if held.get("published_digests") is None:
+            errors.append(f"{where} is recorded but no held-out digests are published")
+        if ev.get("version") != held.get("version"):
+            errors.append(f"{where} names version {ev.get('version')!r}, not the split's")
+        if not DATE_RE.match(str(ev.get("date") or "")):
+            errors.append(f"{where} has no YYYY-MM-DD date")
+        elif _when(held.get("authored_to")) and ev["date"] < held["authored_to"][:10]:
+            errors.append(f"{where} is dated before the last case was authored")
+        if not (HEX40.match(str(ev.get("revision") or "")) and HEX40.match(str(ev.get("verify_blob") or ""))
+                and HEX64.match(str(ev.get("report_sha256") or "")) and isinstance(ev.get("complete"), bool)):
+            errors.append(f"{where} must record revision, verify_blob, report, report_sha256 and complete")
+            continue
+        if ev["verify_blob"] != pin.get("verify_blob"):
+            errors.append(f"{where} ran verify.py blob {ev['verify_blob'][:12]}, not the pinned "
+                          f"{str(pin.get('verify_blob'))[:12]}")
+        try:
+            blob = _git(ROOT, "rev-parse", "--verify", "--quiet",
+                        f"{ev['revision']}:{VERIFY_PATH}").decode().strip()
+        except UsageError:
+            blob = None
+        if blob != ev["verify_blob"]:
+            errors.append(f"{where}: git does not hold verify.py blob {ev['verify_blob'][:12]} at "
+                          f"{ev['revision'][:12]}")
+        path = ROOT / str(ev.get("report") or "")
+        try:
+            raw = path.read_bytes() if ev.get("report") else None
+        except OSError:
+            raw = None
+        if raw is None:
+            errors.append(f"{where}: report {ev.get('report')!r} cannot be read")
+            continue
+        if sha256(raw) != ev["report_sha256"]:
+            errors.append(f"{where}: report {ev['report']} does not hash to report_sha256")
+        try:
+            report = json.loads(raw)
+        except (ValueError, RecursionError):
+            report = None
+        if not isinstance(report, dict) or report.get("schema") != REPLAY_SCHEMA:
+            errors.append(f"{where}: report {ev['report']} is not a {REPLAY_SCHEMA} report")
+            continue
+        facts = {
+            "a held-out replay": (report.get("protocol") or {}).get("split") == "heldout",
+            "of the recorded revision": (report.get("revision") or {}).get("commit") == ev["revision"],
+            "of the pinned verify.py blob": ((report.get("versions") or {}).get("blobs") or {}).get(
+                VERIFY_PATH) == ev["verify_blob"],
+            "of the published set": (report.get("heldout") or {}).get("set_sha256")
+            == held.get("set_sha256"),
+            "whose completeness is recorded": (report.get("verdict") or {}).get("ok") is ev["complete"],
+        }
+        for fact, holds in facts.items():
+            if not holds:
+                errors.append(f"{where}: report {ev['report']} is not {fact}")
+    return errors
+
+
+def _milestone_state_errors(protocol):
+    """A milestone with an id says whether it happened, and the protocol's own state must agree:
+    a done milestone the protocol does not show, or a planned one it already shows, is a date
+    that lies (#601)."""
+    milestones = [m for m in ((protocol.get("release_dates") or {}).get("milestones") or [])
+                  if isinstance(m, dict) and m.get("id")]
+    held = (protocol.get("splits") or {}).get("heldout") or {}
+    evaluations = protocol.get("evaluations") if isinstance(protocol.get("evaluations"), list) else []
+    happened = {
+        "holder-assigned": (protocol.get("holder") or {}).get("state") == "assigned",
+        "digests-published": held.get("published_digests") is not None,
+        "evaluated": bool(evaluations),
+    }
+    errors = []
+    for m in milestones:
+        did = happened.get(m["id"])
+        if did is None:
+            continue
+        if did and m.get("status") != "done":
+            errors.append(f"milestone {m['id']!r} is still {m.get('status')!r}, but the protocol "
+                          "shows it happened")
+        if not did and m.get("status") == "done":
+            errors.append(f"milestone {m['id']!r} is marked done, but the protocol does not show it")
+        if (m["id"] == "evaluated" and m.get("status") == "done"
+                and m.get("date") not in {e.get("date") for e in evaluations if isinstance(e, dict)}):
+            errors.append("milestone 'evaluated' is dated unlike every recorded evaluation")
     return errors
 
 
@@ -234,6 +485,165 @@ def digest_cases(case_dir, canary):
            "canary_sha256": sha256(canary.encode("utf-8")),
            "cases": sorted(entries, key=lambda e: e["raw_sha256"])}
     return doc, problems
+
+
+def _sibling(name, alias):
+    spec = importlib.util.spec_from_file_location(alias, HERE / name)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _read_case(f):
+    """(parsed object, problem): the case the replay will load, or why it never will."""
+    try:
+        obj = json.loads(f.read_bytes())
+    except OSError as exc:
+        return None, f"cannot be read ({exc.strerror or exc})"
+    except (ValueError, RecursionError):
+        return None, "not JSON the replay can load"
+    return (obj, None) if isinstance(obj, dict) else (None, "not a JSON object")
+
+
+def _unrendered(value):
+    """How many `{{token}}` placeholders survive rendering: each is a fact the fixture never
+    supplies, so verify.py would judge a literal `{{...}}` instead of the case written."""
+    return len(re.findall(r"\{\{[^{}]*\}\}", json.dumps(value)))
+
+
+def vet_cases(case_dir, pin, repo=ROOT):
+    """(problems, cases) for a held-out set, checked the way the replay will run it against the
+    verifier pinned at `pin` (a resolve_pin dict), WITHOUT running the verifier (#601).
+
+    Every problem is `file: reason` and never quotes a case: the holder runs this while authoring,
+    and anyone may run it on the holder's directory without seeing what it holds. Each case:
+    carries only fields the replay reads, has an opaque id equal to its file name, names its
+    category (a check in the pinned inventory) and, for a trap, the ONE inventory row it samples
+    (`inventory_site`: a development trap class or a refusal stem of that row) and the refusal it
+    earns (`expect_reason`); records `authored_at` after the pin and `verifier_pin` equal to it;
+    and, for a run-time fixture, builds and renders with no placeholder left over."""
+    readme = _git(repo, "show", f"{pin['commit']}:bench/vf-bench/README.md").decode("utf-8", "replace")
+    replay = _sibling("replay.py", "vfbench_replay_for_heldout")
+    vf = _sibling("vfbench.py", "vfbench_for_heldout")
+    rows = replay.inventory_rows(readme) or []
+    checks = {c for r in rows for c in r["checks"]}
+    pinned_at, now = _when(pin["committed_at"]), datetime.now(timezone.utc)
+    files = sorted(Path(case_dir).glob("*.json"))
+    if not files:
+        raise UsageError(f"{case_dir} holds no *.json cases")
+    problems, cases = [], {}
+    for f in files:
+        obj, why = _read_case(f)
+        if why:
+            problems.append(f"{f.name}: {why}")
+            continue
+        cases[f.name] = obj
+
+    def bad(name, why):
+        problems.append(f"{name}: {why}")
+
+    ids = [c.get("id") for c in cases.values()]
+    for name, c in cases.items():
+        extra = sorted(set(c) - CASE_FIELDS)
+        if extra:
+            bad(name, f"{len(extra)} field(s) the replay does not read")
+        if not (isinstance(c.get("id"), str) and CASE_ID_RE.match(c["id"]) and name == c["id"] + ".json"):
+            bad(name, "id must be opaque (hv<version>-<3 digits>) and the file named <id>.json")
+        elif ids.count(c["id"]) > 1:
+            bad(name, "its id is not unique in the set")
+        if c.get("class") not in checks:
+            bad(name, "class must be a check named in the pinned verifier-check inventory")
+        if c.get("sound_expected") not in ("RED", "GREEN"):
+            bad(name, "sound_expected must be RED or GREEN")
+        if not isinstance(c.get("manifest"), dict):
+            bad(name, "manifest must be an object")
+        if not (isinstance(c.get("canary"), str) and GUID_TEXT_RE.fullmatch(c["canary"])):
+            bad(name, "canary must be the split's canary GUID")
+        if c.get("sound_expected") == "RED" or "inventory_site" in c:
+            if replay.inventory_row_for(rows, c.get("class"), c.get("inventory_site")) is None:
+                bad(name, "inventory_site does not name exactly one inventory row of its class")
+        if c.get("sound_expected") == "RED" and not (
+                isinstance(c.get("expect_reason"), str) and c["expect_reason"].strip()):
+            bad(name, "a trap must declare the refusal it earns (expect_reason)")
+        authored = _when(c.get("authored_at"))
+        if authored is None:
+            bad(name, "authored_at must be an ISO-8601 timestamp with its offset")
+        elif not pinned_at < authored <= now:
+            bad(name, "authored_at is not after the pinned verifier revision and before now")
+        if c.get("verifier_pin") != {"commit": pin["commit"], "verify_blob": pin["verify_blob"]}:
+            bad(name, "verifier_pin must be {commit, verify_blob} of the pinned revision")
+        if "neighbour" in c and not any(
+                o.get("id") == c["neighbour"] and o.get("sound_expected") == "GREEN"
+                for o in cases.values()):
+            bad(name, "neighbour must be the id of a valid control in this set")
+        if c.get("fixture") is None:
+            carried = sorted(set(c) & FIXTURE_ONLY_FIELDS)
+            if carried:
+                bad(name, f"a static case carries {len(carried)} field(s) only a run-time fixture reads")
+            src = c.get("contract_source")
+            if src is not None:
+                target = (repo / str(src)).resolve()
+                if not (target.is_relative_to(repo.resolve()) and target.is_file()):
+                    bad(name, "contract_source is not a file in the repository")
+                elif c.get("contract_digest") and c["contract_digest"] != (
+                        "sha256:" + sha256(target.read_bytes())):
+                    bad(name, "contract_digest does not hash its contract_source")
+        elif c["fixture"] not in vf.FIXTURES:
+            bad(name, "fixture names no run-time builder of the pinned bench")
+    _vet_rendering(vf, cases, bad)
+    return problems, cases
+
+
+def _vet_rendering(vf, cases, bad):
+    """Build each run-time fixture once and render every case on it, as the sound gate would just
+    before running verify.py — which this never does."""
+    with tempfile.TemporaryDirectory(prefix="vfbench-heldout-vet-") as tmp:
+        built = {}
+        for name, c in cases.items():
+            fixture = c.get("fixture")
+            if fixture not in vf.FIXTURES or not isinstance(c.get("manifest"), dict):
+                continue
+            try:
+                if fixture not in built:
+                    repo = Path(tmp) / fixture.replace("/", "_") / "repo"
+                    built[fixture] = (repo, vf.FIXTURES[fixture](repo))
+                repo, facts = built[fixture]
+                holder = repo.parent / f"holder-{name}"
+                holder.mkdir()
+                cmd, _env = vf.fixture_command(c, facts, repo, holder)
+                rendered = json.loads((repo / "vf-manifest.json").read_text(encoding="utf-8"))
+                left = (_unrendered(rendered) + _unrendered(cmd)
+                        + _unrendered(vf._render(c.get("gh_reviews"), facts)))
+                if left:
+                    bad(name, f"{left} {{{{placeholder}}}}(s) the fixture never fills")
+                source = c.get("coordinator_contract") or facts.get("contract_source", "contract.md")
+                if not (repo / source).is_file():
+                    bad(name, "coordinator_contract names no contract the fixture writes")
+            except Exception as exc:  # one case never stops the vet; its reason names no content
+                bad(name, f"the fixture could not be built or rendered ({type(exc).__name__})")
+
+
+def summarize(cases, digests, pin, files):
+    """The figures a holder publishes beside the digests (#601): the set digest, the counts per
+    category (the verifier check a case samples), the authoring window and the pin. Counts and
+    timestamps only: no id, class name per case, field or value."""
+    by_cat = {}
+    for c in cases.values():
+        slot = by_cat.setdefault(c["class"], {"traps": 0, "valid_controls": 0})
+        slot["traps" if c["sound_expected"] == "RED" else "valid_controls"] += 1
+    stamps = sorted(_when(c["authored_at"]) for c in cases.values())
+    mtimes = sorted(datetime.fromtimestamp(f.stat().st_mtime, timezone.utc) for f in files)
+
+    def iso(d):
+        return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"kind": SUMMARY_KIND, "protocol": PROTOCOL_ID, "set_sha256": set_digest(digests),
+            "cases": len(cases),
+            "traps": sum(v["traps"] for v in by_cat.values()),
+            "valid_controls": sum(v["valid_controls"] for v in by_cat.values()),
+            "by_category": dict(sorted(by_cat.items())),
+            "authored_from": iso(stamps[0]), "authored_to": iso(stamps[-1]),
+            "file_mtime_from": iso(mtimes[0]), "file_mtime_to": iso(mtimes[-1]),
+            "pinned_verifier": pin}
 
 
 def load_digests(path):
@@ -472,10 +882,17 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_val = sub.add_parser("validate", help="the committed protocol is complete and pinned")
     p_val.add_argument("--protocol", default=str(PROTOCOL))
+    p_vet = sub.add_parser("vet", help="holder side: the replay can run every case; no content shown")
+    p_vet.add_argument("case_dir")
+    p_vet.add_argument("--pin", required=True, help="the commit whose verify.py the set evaluates")
+    p_vet.add_argument("--repo", default=str(ROOT))
     p_dig = sub.add_parser("digest", help="holder side: digests of held-out cases, never content")
     p_dig.add_argument("case_dir")
     p_dig.add_argument("--canary", required=True, help="the held-out split's canary GUID")
     p_dig.add_argument("--out", required=True)
+    p_dig.add_argument("--summary", help="also vet the set and write its set digest and counts here")
+    p_dig.add_argument("--pin", help="with --summary: the commit whose verify.py the set evaluates")
+    p_dig.add_argument("--repo", default=str(ROOT))
     p_chk = sub.add_parser("check", help="no committed blob is or carries a held-out case")
     p_chk.add_argument("--digests", required=True)
     p_chk.add_argument("--repo", default=str(ROOT))
@@ -497,21 +914,46 @@ def main(argv=None):
                 return 1
             splits, holder = protocol["splits"], protocol["holder"]
             published = splits["heldout"].get("published_digests")
+            evaluations = protocol.get("evaluations") or []
             print(f"held-out protocol {protocol['protocol']} valid: development split pinned to "
                   f"{splits['development']['corpus_sha256'][:12]}…; held-out digests "
                   f"{'published' if published else 'not yet published'}; "
-                  f"holder {holder.get('assigned') or 'UNFILLED'}")
+                  f"holder {holder.get('assigned') or 'UNFILLED'}"
+                  + (f"; {len(evaluations)} evaluation(s) bound" if evaluations else ""))
             return 0
+        if a.cmd == "vet":
+            pin = resolve_pin(Path(a.repo), a.pin)
+            problems, cases = vet_cases(a.case_dir, pin, Path(a.repo))
+            for p in problems:
+                print(f"REFUSED: {p}")
+            traps = sum(1 for c in cases.values() if c.get("sound_expected") == "RED")
+            print(f"{len(cases)} case(s) read ({traps} trap(s), {len(cases) - traps} other) against "
+                  f"verify.py {pin['verify_blob'][:12]} at {pin['commit'][:12]}: "
+                  + (f"{len(problems)} problem(s)" if problems else "ready to digest"))
+            return 1 if problems else 0
         if a.cmd == "digest":
             if not GUID_RE.fullmatch(a.canary.encode()):
                 raise UsageError("--canary is not a GUID")
+            if a.summary and not a.pin:
+                raise UsageError("--summary needs --pin: the counts are published with the pin")
             doc, problems = digest_cases(a.case_dir, a.canary.lower())
+            cases = {}
+            if a.summary:
+                pin = resolve_pin(Path(a.repo), a.pin)
+                vetted, cases = vet_cases(a.case_dir, pin, Path(a.repo))
+                problems += vetted
             for p in problems:
                 print(f"REFUSED: {p}")
             if problems:
                 return 1
             Path(a.out).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
             print(f"{len(doc['cases'])} case digest(s) written to {a.out}; no case content included")
+            if a.summary:
+                summary = summarize(cases, doc, pin, sorted(Path(a.case_dir).glob("*.json")))
+                Path(a.summary).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+                print(f"set {summary['set_sha256']}: {summary['cases']} case(s), "
+                      f"{summary['traps']} trap(s), {summary['valid_controls']} valid control(s) in "
+                      f"{len(summary['by_category'])} categories; summary written to {a.summary}")
             return 0
         digests = load_digests(a.digests)
         JSON_PARSE_LIMIT = a.max_json_bytes

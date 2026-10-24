@@ -67,7 +67,7 @@ class TheCommittedProtocolIsComplete(unittest.TestCase):
         self.assertEqual(heldout.validate(_protocol()), [])
         r = _cli("validate")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("holder UNFILLED", r.stdout)
+        self.assertIn("holder OpenAI Codex", r.stdout)
 
     def test_the_development_split_is_the_shipped_corpus(self):
         dev = _protocol()["splits"]["development"]
@@ -83,17 +83,19 @@ class TheCommittedProtocolIsComplete(unittest.TestCase):
         self.assertIsNone(held["published_digests"])
         self.assertIsNone(held["cases"])
 
-    def test_the_holder_is_an_unfilled_role_not_a_name(self):
+    def test_the_holder_is_the_designated_ai_system_with_its_limits(self):
+        # #601: the owner designated OpenAI Codex on 2026-10-24. It is an AI system, not a person,
+        # and the role says so with who designated it, the independence evidence and its limits.
         holder = _protocol()["holder"]
-        self.assertIsNone(holder["assigned"])
-        self.assertEqual(holder["state"], "unfilled")
+        self.assertEqual((holder["assigned"], holder["kind"]), ("OpenAI Codex", "ai-system"))
+        self.assertEqual(holder["state"], "assigned")
         self.assertTrue(holder["role"])
 
-    def test_every_date_is_labelled_planned(self):
+    def test_every_date_is_planned_or_done_with_evidence(self):
         dates = _protocol()["release_dates"]
         self.assertIn("PLANNED", dates["label"])
         self.assertTrue(dates["milestones"])
-        self.assertTrue(all(m["status"] == "planned" for m in dates["milestones"]))
+        self.assertTrue(all(m["status"] == "planned" or m.get("evidence") for m in dates["milestones"]))
 
     def test_the_declared_leakage_commands_exist(self):
         for check in _protocol()["leakage_checks"]:
@@ -128,7 +130,7 @@ class ValidateRefusesADishonestProtocol(unittest.TestCase):
             "dates not labelled planned": (
                 lambda d: d["release_dates"].update(label="release dates"), "labelled as planned"),
             "a done milestone without evidence": (
-                lambda d: d["release_dates"]["milestones"][0].update(status="done"), "without evidence"),
+                lambda d: d["release_dates"]["milestones"][-1].update(status="done"), "without evidence"),
             "a malformed date": (
                 lambda d: d["release_dates"]["milestones"][0].update(date="Q1 2027"), "YYYY-MM-DD"),
             "a leakage check dropped": (

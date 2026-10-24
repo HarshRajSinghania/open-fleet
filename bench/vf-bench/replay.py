@@ -530,8 +530,10 @@ def fixture_failures(export, traps, builders):
 
 
 def inventory_rows(readme):
-    """The README's verifier-check inventory (#600) as [{checks, status, cases}], or None when
-    the revision has none. Coverage is measured against it: rows are the invariants."""
+    """The README's verifier-check inventory (#600) as [{checks, status, cases, sites}], or None
+    when the revision has none. Coverage is measured against it: rows are the invariants. `sites`
+    are the refusal stems the guard cell cites after `Sites:`, which is how a held-out case names
+    the row it samples without a development trap class (#601)."""
     if "## Verifier check inventory" not in readme:
         return None
     section = readme.split("## Verifier check inventory", 1)[1].split("\n## ", 1)[0]
@@ -544,11 +546,28 @@ def inventory_rows(readme):
             # Counted, never sampled: dropping it would shrink the denominator and flatter the
             # coverage rate (PR #645 review, the silent-skip class).
             rows.append({"checks": re.findall(r"`([\w.]+)`", cells[0]), "status": "unparsed",
-                         "cases": []})
+                         "cases": [], "sites": []})
             continue
+        sites = cells[1].split("Sites:", 1)[1] if "Sites:" in cells[1] else ""
         rows.append({"checks": re.findall(r"`([\w.]+)`", cells[0]), "status": cells[2],
-                     "cases": re.findall(r"`([^`]+)`", cells[3]) if cells[2] == "trap" else []})
+                     "cases": re.findall(r"`([^`]+)`", cells[3]) if cells[2] == "trap" else [],
+                     "sites": re.findall(r"`([^`]+)`", sites)})
     return rows
+
+
+def inventory_row_for(rows, check, site):
+    """The index of the ONE inventory row a held-out case samples (#601): a row of `check` whose
+    development trap classes or cited refusal stems include `site`. A class names its row
+    outright; a stem two rows share (`Output was:`) names none. None when no single row matches,
+    so an ambiguous case is refused at authoring time instead of being counted twice."""
+    if not isinstance(rows, list) or not isinstance(check, str) or not isinstance(site, str):
+        return None
+    mine = [i for i, r in enumerate(rows) if check in r["checks"]]
+    by_case = [i for i in mine if site in rows[i]["cases"]]
+    if len(by_case) == 1:
+        return by_case[0]
+    by_site = [i for i in mine if site in rows[i].get("sites", [])]
+    return by_site[0] if len(by_case) == 0 and len(by_site) == 1 else None
 
 
 # ---------------------------------------------------------------------------------------------

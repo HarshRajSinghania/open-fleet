@@ -1,8 +1,8 @@
 {
   "unit": "first-run-596-live-2026-10-24",
   "claim": "#596 live first runs bound for the certification record: posix ro and rw with Claude Code 2.1.304 (claude-opus-5-5) GO on the dev Mac through an isolation wrapper and in a fresh ubuntu:24.04 container, all at catalog b96d47e335; the Orca ro/claude re-witness attempt refused at Claude Code's folder-trust prompt before any injection.",
-  "base_sha": "6c3a3a4596ea517883cf034a44b38d16b3b54c7a",
-  "head_sha": "68ca18a91c885dbb9f361cf378b8f65a3fe9fda4",
+  "base_sha": "e60eb67b34e74082e5ec08b8ccb8689344e31ec7",
+  "head_sha": "1804791aa19296516aa0098be3e803acb621d3ab",
   "base_branch": "claude/r03-cert-close",
   "contract": {
     "source": "docs/runs/2026-10-24-review-it-first-run/contract.md@6c3a3a4596ea517883cf034a44b38d16b3b54c7a",
@@ -44,6 +44,10 @@
   ],
   "artifacts": [
     {
+      "path": "docs/runs/2026-10-24-review-it-first-run/binding.md",
+      "sha256": "fd2dd53635cf37ed21f5e46309d7463f4b83db37ae5d642b89ff2c142425f8f9"
+    },
+    {
       "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/clean-host-596.sh",
       "sha256": "1f5680fbf2d6069505601ee357dd376444a9ea5aaf894c8623e4e33d83baf05b"
     },
@@ -66,6 +70,10 @@
     {
       "path": "docs/runs/2026-10-24-review-it-first-run/clean-host/user.sh",
       "sha256": "8132951ef468dade0ebba3858ddb8c7e4ff358416d1da805405635bf551f55d7"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/contract.md",
+      "sha256": "1ec9bc7886a6948a48d102a73e32d6c391c622ad4963aeb12245b13ac5c9420f"
     },
     {
       "path": "docs/runs/2026-10-24-review-it-first-run/first-attempt/ro.receipt.json",
@@ -170,6 +178,18 @@
     {
       "path": "docs/runs/2026-10-24-review-it-first-run/orca-ro-attempt/worker-screen.txt",
       "sha256": "8b7b5e88cde956ccd1b0792abc302b69e8bfef69599d9c1c7df12f1a5a40938e"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/rederive.py",
+      "sha256": "228d1803a1ab0573ab7df44ee90dc46178947b4999c8018829e1c08480f5f4be"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/rederive.txt",
+      "sha256": "b6eafda41f899e7eca744f570fd04337ea670b39347d1d02b2d8193d35b3590e"
+    },
+    {
+      "path": "docs/runs/2026-10-24-review-it-first-run/verifier.txt",
+      "sha256": "23efff186627efa391739e2a61180c2be623b002621fc283b7a813f36b90d86e"
     }
   ],
   "toolchain": "first_run.py at catalog b96d47e3354564e1593d34182a817ae04e54545d (posix/setsid PROFILE=ro and PROFILE=rw, Claude Code 2.1.304, claude-opus-5-5): macOS 27.0.1 arm64 dev Mac via the isolation wrapper; Ubuntu 24.04.5 aarch64 fresh container (OrbStack, Linux 7.2.12). Orca 1.4.229 (orca CLI) for the refused ro attempt.",

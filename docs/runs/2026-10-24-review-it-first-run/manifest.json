@@ -204,6 +204,17 @@
       "commit": "74b9eeb9ab9862b50220c5c623cae54b466eb470",
       "wtree": "52e671dd1a199cc8f15f744d9421cc85f17725c0",
       "artifact": "docs/runs/2026-10-24-review-it-first-run/verifier.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-24T06:38:56Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-review-it-first-run/manifest.json --contract-source docs/runs/2026-10-24-review-it-first-run/contract.md@6c3a3a4596ea517883cf034a44b38d16b3b54c7a --contract-digest sha256:1ec9bc7886a6948a48d102a73e32d6c391c622ad4963aeb12245b13ac5c9420f --unit-class report-only",
+      "cmd_sha256": "c2ecde2ed14edc0539b7df90c28d082216ab93bdd9c4bbf1822bad66931a835f",
+      "exit": 0,
+      "duration_s": 2.115,
+      "commit": "af5e81c26abdb5de7286454c343cd9190366ae6e",
+      "wtree": "e497f7c88c1a9813958b0ac06f1f0c69d90b5313",
+      "artifact": "docs/runs/2026-10-24-review-it-first-run/verifier-2.txt"
     }
   ]
 }

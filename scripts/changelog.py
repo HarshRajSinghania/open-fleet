@@ -114,7 +114,7 @@ def _quote_views(text):
 
     def depth(line):
         n = 0
-        while (mark := _QUOTE_MARK_RE.match(line)) and n < 32:
+        while mark := _QUOTE_MARK_RE.match(line):  # every mark consumes a ">": no cap (Codex at b0a54260f9)
             line, n = line[mark.end():], n + 1
         return n
 

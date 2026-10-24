@@ -469,6 +469,8 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '> > <img\n> > src="../x.png">\n',
         # only the quote's own marks go: a ">" after them is the content's, here the tag's end (Codex at 52ef451db4)
         '- **Change**\n  > <div>\n  > <a\n  > href="../docs/ops.md"\n  > >ops\n',
+        # every depth is read, however deep (Codex at b0a54260f9)
+        '- **Change**\n  ' + '> ' * 33 + '<a\n  ' + '> ' * 33 + 'href="../docs/ops.md">ops</a>\n',
     )
 
     def errors(self, text):

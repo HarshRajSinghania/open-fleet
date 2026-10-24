@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -633,6 +634,27 @@ class CellMechanics(unittest.TestCase):
                            ("phase", "THREE"), ("read", "b"), ("phase", "FOUR"))
         self.assertEqual(runner.deferred_reads(text, cues), {
             "a": "on-time", "b": "late", "c": "early", "d": "omitted", "e": "not-entered"})
+
+    def test_a_read_after_the_next_phase_line_is_late_even_when_that_phase_is_listed(self):
+        # #652 review: for a `VALIDATE|GRILL` cue, VALIDATE then GRILL then the read was on-time;
+        # the registration says a read after the next PHASE line is late.
+        text = self.stream(("phase", "VALIDATE"), ("phase", "GRILL"), ("read", "a"))
+        self.assertEqual(runner.deferred_reads(text, {"a": ["VALIDATE", "GRILL"]}), {"a": "late"})
+        text = self.stream(("phase", "VALIDATE"), ("read", "a"), ("phase", "GRILL"))
+        self.assertEqual(runner.deferred_reads(text, {"a": ["VALIDATE", "GRILL"]}), {"a": "on-time"})
+
+    def test_the_stand_in_reads_each_document_at_its_earliest_phase(self):
+        # The stand-in must never manufacture a late read: a cue whose phases were announced out of
+        # the order they are listed is still read right after the earliest of them.
+        sandbox = runner.Sandbox(Path(tempfile.mkdtemp(prefix="of-ablation-standin-")), "fixture")
+        self.addCleanup(shutil.rmtree, sandbox.root, True)
+        task = ("DEFERRED READS (x): a.md at BUILD · b.md at LAND|BUILD · c.md at LAND · "
+                "d.md at REVIEW|BUILD.\n")
+        out = subprocess.run([str(sandbox.stand_in), "-p"], input=task, capture_output=True, text=True,
+                             env={**sandbox.env, "ABLATION_OUT": str(sandbox.root),
+                                  "ABLATION_CATALOG": str(sandbox.root)}, check=True).stdout
+        cues = {"a": ["BUILD"], "b": ["LAND", "BUILD"], "c": ["LAND"], "d": ["REVIEW", "BUILD"]}
+        self.assertEqual(set(runner.deferred_reads(out, cues).values()), {"on-time"})
 
     def test_trajectory_outcomes_are_classed_from_the_602_oracle(self):
         data = runner.eval_mod().load_json(runner.eval_mod().TRAJECTORY_EVAL)

@@ -142,20 +142,24 @@ DEFERRED = re.compile(r"(?m)^[ \t*_]*DEFERRED READS\b(.+?)(?:\n\n|\Z)", re.DOTAL
 catalog = Path(os.environ.get("ABLATION_CATALOG", "."))
 out = Path(os.environ.get("ABLATION_OUT", "."))
 cell = os.environ.get("ABLATION_CELL", "")
-stream, seen, n = [{"type": "system", "subtype": "init", "model": "inert-stand-in"}], [], 0
-for para in DEFERRED.findall(task):
-    for docs, phases in CUE.findall(para):
-        phase, blocks = phases.split("|")[0], []
-        if phase not in seen:
-            seen.append(phase)
-            blocks.append({"type": "text", "text": "PHASE: " + phase})
-        for doc in re.findall(DOC, docs):
-            found = [catalog / sub / doc for sub in ("playbooks", "runtime", ".")
-                     if (catalog / sub / doc).is_file()]
-            n += 1
-            blocks.append({"type": "tool_use", "id": "toolu_inert_%d" % n, "name": "Read",
-                           "input": {"file_path": str(found[0] if found else catalog / doc)}})
-        stream.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
+stream, n = [{"type": "system", "subtype": "init", "model": "inert-stand-in"}], 0
+cues = [(re.findall(DOC, docs), phases.split("|"))
+        for para in DEFERRED.findall(task) for docs, phases in CUE.findall(para)]
+# Announce each cue's first phase once, in order; then read every document right after the
+# EARLIEST announced phase it lists, so the stand-in never manufactures a late read.
+order = list(dict.fromkeys(phases[0] for _docs, phases in cues))
+groups = {phase: [] for phase in order}
+for docs, phases in cues:
+    groups[order[min(order.index(p) for p in phases if p in order)]].extend(docs)
+for phase in order:
+    blocks = [{"type": "text", "text": "PHASE: " + phase}]
+    for doc in groups[phase]:
+        found = [catalog / sub / doc for sub in ("playbooks", "runtime", ".")
+                 if (catalog / sub / doc).is_file()]
+        n += 1
+        blocks.append({"type": "tool_use", "id": "toolu_inert_%d" % n, "name": "Read",
+                       "input": {"file_path": str(found[0] if found else catalog / doc)}})
+    stream.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
 narration = ["inert stand-in narration %d for %s: no model was called" % (i + 1, cell)
              for i in range(8)]
 for line in narration:
@@ -372,8 +376,10 @@ def deferred_reads(stream_text, cues):
             out[name] = "early"
         else:
             after = min(i for i in reads if i > entered)
+            # The registration's rule, literally: read after the NEXT `PHASE` line is late, even when
+            # that line names another phase the same cue lists (#652 review).
             nxt = next((i for i, (k, v) in enumerate(seq)
-                        if i > entered and k == "phase" and v not in phases), None)
+                        if i > entered and k == "phase"), None)
             out[name] = "on-time" if nxt is None or after < nxt else "late"
     return out
 

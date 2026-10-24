@@ -166,7 +166,8 @@ baseline's own deferrals (`release.md at RELEASE`), so both arms are measured al
 counts as entered once the trace prints `PHASE: <P>` for one of its phases. Then:
 
 - **omitted**: entered and never read.
-- **late**: read only after the next `PHASE` line.
+- **late**: read only after the next `PHASE` line, whichever phase it names (a cue's other listed
+  phase included).
 - **early**: read before its phase. This is reported, and is not an omission.
 
 A read is a `Read` tool_use whose path ends in the document's catalog path. A cue with no

@@ -163,9 +163,10 @@ WEIGHTS = {
     "test_vfbench_heldout": 1.8,
     "test_vfbench_replay": 22.3,
     "test_watchdog": 1.1,
-    # #604, measured 2026-10-24 (macOS arm64; 75.3 and 74.6 s): two whole inert runs through the
-    # posix provider and the merge queue (b3r1, b6r2), then the tamper and binding checks on copies.
-    "test_wip_curve": 74.9,
+    # #604, measured 2026-10-24 (macOS arm64, load average ~8; 113.0 and 119.1 s): five inert runs
+    # through the posix provider and the merge queue (b3r1, b6r2 at the cap, b1r1 at the exact cap,
+    # overspent, and from a relative path), then the tamper, binding and refusal checks on copies.
+    "test_wip_curve": 116.0,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,
     "test_worktree_ops": 0.5,

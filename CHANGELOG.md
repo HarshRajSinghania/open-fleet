@@ -31,7 +31,14 @@ truth is `.claude-plugin/plugin.json`.
     and cost from the retained sources alone. It gives each condition a t interval, gives rework
     a Wilson interval, and includes every failed, stopped or parked run. It re-checks every
     CLOSED unit against git and review authority. `verify` recomputes the report and names every
-    altered cell, then runs `events.py check` on each run's rows.
+    altered cell, then runs `events.py check` on each run's rows. The registration lists its
+    report fields, the report emits each of them (the review queue and cost per CLOSED unit
+    among them), and `check-prereg` refuses a field the report cannot emit.
+  - The registration pins the builder and reviewer contracts as well as the task set and seed,
+    and `run` checks all of it, seed and oracles included, before anything starts. A results
+    directory holds one registration. A live run refuses uncommitted experiment inputs, and each
+    run records their digest. Every path argument is made absolute first, and no results, output
+    or sandbox path may resolve into or around the sources or the registered files.
   - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
     scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
     live runs and publishing a recommendation remain open. Both need the owner to authorise the

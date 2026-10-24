@@ -228,8 +228,15 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
                                   authorised_by="test fixture (not an authorisation)")
         return prereg
 
+    def pending(self):
+        # The committed registration is AUTHORISED since 2026-10-24 (#606); the refusal it once
+        # proved by itself is pinned on a PENDING copy, so it holds whatever the file records.
+        prereg = copy.deepcopy(PREREG)
+        prereg["cost_cap"].update(status=ablation.PENDING, authorised_usd=None, authorised_by=None)
+        return prereg
+
     def test_a_live_run_needs_the_owners_recorded_authorisation(self):
-        self.refused(self.live("--cost-cap-usd", "5"), "PENDING OWNER AUTHORISATION")
+        self.refused(self.live("--cost-cap-usd", "5"), "PENDING OWNER AUTHORISATION", self.pending())
 
     def test_a_live_cap_must_be_within_the_authorised_amount(self):
         self.refused(self.live("--cost-cap-usd", "50"), "within the authorised USD 10.0", self.authorised())

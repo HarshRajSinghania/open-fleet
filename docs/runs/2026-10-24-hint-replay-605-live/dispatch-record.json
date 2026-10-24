@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "hint-replay-605-live",
+    "contract_digest": "sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb",
+    "unit_class": "report-only"
+  },
+  "sig_b64": "/JbTprHGZHhPY1vfCK/6a4uXw5dSBZxz/9t2z2R8brigv0/KKoSK2DfAkqwaOEhPm2wf6tuAupMhxJlrR0bTAg=="
+}

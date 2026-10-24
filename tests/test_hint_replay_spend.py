@@ -654,3 +654,56 @@ class DiscoveryFailureNeverLeavesACallRunning(StandInRun):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def design_problems(results, ledger, corpus):
+    """What a bound #605 live record gets wrong about its own design: every (scenario, arm, attempt)
+    of the registered 2 x 3 x 3 exactly once, each row's call named for its cell, and the ledger's
+    starts and settles exactly those calls."""
+    live = sorted(s["id"] for s in corpus["scenarios"] if s.get("live_task"))
+    want = sorted((s, a, n) for s in live for a in ("off", "unchecked", "checked")
+                  for n in range(1, results["attempts"] + 1))
+    rows = results["results"]
+    problems = []
+    if sorted((r["scenario"], r["arm"], r["attempt"]) for r in rows) != want:
+        problems.append("the rows are not each design cell exactly once")
+    calls = [r["call"] for r in rows]
+    if len(set(calls)) != len(calls):
+        problems.append("a call appears twice")
+    problems += [f"{r['call']} is not named for its cell" for r in rows
+                 if r["call"] != f"{r['scenario']}.{r['arm']}.a{r['attempt']}"]
+    for event in ("start", "settle"):
+        if sorted(e["cell"] for e in ledger if e["event"] == event) != sorted(calls):
+            problems.append(f"the ledger's {event} events are not the row calls")
+    return problems
+
+
+class TheBoundLiveRecordIsTheFullDesign(unittest.TestCase):
+    """PR #669 review (P2, PRRT_kwDOTWxN9c6v3xjN): the bound #605 record's rederive.py counted 18 rows
+    but never checked which (scenario, arm, attempt) they were, so a relabelled row still passed.
+    The run directory is append-only evidence, so the exact-design check lives here and runs on every
+    PR (#605)."""
+
+    RUN = ROOT / "docs" / "runs" / "2026-10-24-hint-replay-605-live"
+
+    def load(self):
+        results = json.loads((self.RUN / "results.json").read_text(encoding="utf-8"))
+        ledger = [json.loads(ln) for ln in
+                  (self.RUN / "results.spend.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+        corpus = json.loads((ROOT / "tests" / "fixtures" / "hint-replay.json").read_text(encoding="utf-8"))
+        return results, ledger, corpus
+
+    def test_the_bound_record_is_each_design_cell_exactly_once(self):
+        results, ledger, corpus = self.load()
+        self.assertEqual(len(results["results"]), 18)
+        self.assertEqual(design_problems(results, ledger, corpus), [])
+
+    def test_a_relabelled_row_is_caught(self):
+        results, ledger, corpus = self.load()
+        moved = json.loads(json.dumps(results))
+        moved["results"][0]["attempt"] = moved["results"][1]["attempt"] if \
+            moved["results"][1]["attempt"] != moved["results"][0]["attempt"] else 3
+        self.assertTrue(design_problems(moved, ledger, corpus))
+        renamed = json.loads(json.dumps(results))
+        renamed["results"][0]["call"] = renamed["results"][1]["call"]
+        self.assertTrue(design_problems(renamed, ledger, corpus))

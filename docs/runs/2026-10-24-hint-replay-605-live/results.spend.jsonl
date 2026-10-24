@@ -1,0 +1,36 @@
+{"call": "agent", "cell": "pitfall-rounding.off.a1", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.off.a1", "charged_usd": 0.202602, "event": "settle", "killed": false, "measured_usd": 0.202602, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.off.a2", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.off.a2", "charged_usd": 0.064112, "event": "settle", "killed": false, "measured_usd": 0.064112, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.off.a3", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.off.a3", "charged_usd": 0.057832, "event": "settle", "killed": false, "measured_usd": 0.057832, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.unchecked.a1", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.unchecked.a1", "charged_usd": 0.067602, "event": "settle", "killed": false, "measured_usd": 0.067602, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.unchecked.a2", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.unchecked.a2", "charged_usd": 0.067383, "event": "settle", "killed": false, "measured_usd": 0.067383, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.unchecked.a3", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.unchecked.a3", "charged_usd": 0.062984, "event": "settle", "killed": false, "measured_usd": 0.062984, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.checked.a1", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.checked.a1", "charged_usd": 0.068786, "event": "settle", "killed": false, "measured_usd": 0.068786, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.checked.a2", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.checked.a2", "charged_usd": 0.067364, "event": "settle", "killed": false, "measured_usd": 0.067364, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.checked.a3", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "pitfall-rounding.checked.a3", "charged_usd": 0.062479, "event": "settle", "killed": false, "measured_usd": 0.062479, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.off.a1", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.off.a1", "charged_usd": 0.054843, "event": "settle", "killed": false, "measured_usd": 0.054843, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.off.a2", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.off.a2", "charged_usd": 0.052922, "event": "settle", "killed": false, "measured_usd": 0.052922, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.off.a3", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.off.a3", "charged_usd": 0.054351, "event": "settle", "killed": false, "measured_usd": 0.054351, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.unchecked.a1", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.unchecked.a1", "charged_usd": 0.056792, "event": "settle", "killed": false, "measured_usd": 0.056792, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.unchecked.a2", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.unchecked.a2", "charged_usd": 0.058414, "event": "settle", "killed": false, "measured_usd": 0.058414, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.unchecked.a3", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.unchecked.a3", "charged_usd": 0.058845, "event": "settle", "killed": false, "measured_usd": 0.058845, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.checked.a1", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.checked.a1", "charged_usd": 0.055836, "event": "settle", "killed": false, "measured_usd": 0.055836, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.checked.a2", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.checked.a2", "charged_usd": 0.056657, "event": "settle", "killed": false, "measured_usd": 0.056657, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.checked.a3", "event": "start", "reserve_usd": 2.0, "run": "20261024T070734-5839-f8f2c0d1"}
+{"call": "agent", "cell": "stale-advice-trap.checked.a3", "charged_usd": 0.054378, "event": "settle", "killed": false, "measured_usd": 0.054378, "run": "20261024T070734-5839-f8f2c0d1"}

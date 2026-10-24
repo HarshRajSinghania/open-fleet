@@ -1,0 +1,21 @@
+{
+  "unit": "hint-replay-605-live",
+  "issue": "#605 (live arm: hints off / unchecked / checked with real workers)",
+  "written": "2026-10-24, at binding time, from the coordinator's binding brief. NOT a pre-registration: the run's design was fixed before it ran by the documented live command and spend guard in docs/runtime-scripts.md at 85daf6d0cf4be9806965f5627bb383182beca4ec, which this contract checks the run against.",
+  "criterion_ids": [
+    "LV-1",
+    "LV-2",
+    "LV-3",
+    "LV-4",
+    "LV-5",
+    "LV-6"
+  ],
+  "criteria": {
+    "LV-1": "Fixed point: the run used the frozen checkout 85daf6d0cf (its corpus hashes to the committed tests/fixtures/hint-replay.json) and the documented live command: USD 40 cap, USD 2 per-call reservation, --max-budget-usd 1.60 on every call, 18 runs, 3 attempts.",
+    "LV-2": "Spend observed and capped: every call was entered in the ledger at its reservation and settled at its measured total_cost_usd; the per-call charges re-derive from each call's own output; the total is within the cap; the run is complete and was not stopped.",
+    "LV-3": "The arms are what they claim: each call's packet carries its arm's hint selection (off: none; unchecked: historical mode, the note shown; checked: current mode, the useful note shown CURRENT and the stale note suppressed).",
+    "LV-4": "The outcome re-derives from the oracle outputs: per arm, runs, passes and repeated failures (an oracle failure matching the scenario's recorded pitfall).",
+    "LV-5": "Retention and hygiene: every output is retained byte-identical with its sha256, with the run script and the isolation wrapper; no credential shape is in any retained file; nothing was redacted.",
+    "LV-6": "An honest reading: the report states what the result shows and what it does not, names the ceiling, and names what a stronger follow-up would need."
+  }
+}

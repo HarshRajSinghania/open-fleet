@@ -863,7 +863,7 @@ class RuntimeProvider:
         try:
             return json.loads(pins.read_text(encoding="utf-8"))["orca"]["version"]
         except Exception:
-            return "v1.4.229"
+            return "v1.4.238"
 
     def status(self) -> dict[str, Any]:
         return {"ready": True, "provider": self.name, "version": self.version()}

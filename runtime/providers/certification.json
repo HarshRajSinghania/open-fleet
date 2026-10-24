@@ -1,7 +1,7 @@
 {
   "_about": "Versioned certification record for every advertised Runtime Provider Interface route (#596). Provider cells are capabilities.json's supported_profiles x supported_harnesses per provider; harness cells are base.py's launch table x {ro, rw}. Each route group names its tier, evidence paths, explicit limitations and, for a refusal, the typed refusal. An upstream version or commit that was never recorded stays null (rendered `unknown`) and is never guessed. A provider bound to a pin (`upstream.pin`) goes STALE — every one of its cells reads `stale`, never its recorded tier — as soon as the pin's commit, version or live_receipts.version differs from `certified_against`; recheck the cells, bump record_version, re-record. runtime/scripts/certification.py validates and renders this file; docs/certification.md explains it and carries the first-run guide.",
   "schema_version": "open-fleet-certification/v1",
-  "record_version": 3,
+  "record_version": 4,
   "recorded": "2026-10-24",
   "tiers": {
     "live-witnessed": "A real upstream build and a real harness ran this route end to end; the evidence is a docs/runs/ report whose RUN: header binds (verifier=GREEN, cited as a mission's proof_evidence) and whose own inventoried artifacts name this exact route, quoted in witnessed.route. Exact upstream and harness versions are recorded.",
@@ -14,13 +14,13 @@
     "orca": {
       "upstream": {
         "repo": "stablyai/orca",
-        "version": "v1.4.229",
-        "commit": "a0cd1644f320f1327f7495650a816111b495f3cd",
+        "version": "v1.4.238",
+        "commit": "e6f7fba58e8e47b45e4343f99101b3ca9e05a5da",
         "pin": "runtime/pins.json#orca"
       },
       "certified_against": {
-        "commit": "a0cd1644f320f1327f7495650a816111b495f3cd",
-        "version": "v1.4.229",
+        "commit": "e6f7fba58e8e47b45e4343f99101b3ca9e05a5da",
+        "version": "v1.4.238",
         "live_receipts_version": "v1.4.224"
       },
       "routes": [
@@ -47,7 +47,7 @@
             "tests/test_spawn_worker.py::test_ro_never_takes_worker_start"
           ],
           "limitations": [
-            "Witnessed on Linux only, at Orca 1.4.224; the current pin v1.4.229 carries these receipts through pins.json live_receipts after a source-delta re-witness, so the 1.4.229 delta itself ran no worker live.",
+            "Witnessed on Linux only, at Orca 1.4.224; the current pin v1.4.238 carries these receipts through pins.json live_receipts after source-delta re-witnesses, so neither the 1.4.229 nor the 1.4.238 delta ran a worker live.",
             "ro rides spawn_worker.sh's custom-argv lane (`claude --permission-mode plan`), never worker-start; turn start was not observable on that substrate and the workers were proven live by screen reads and their worker_done deliveries.",
             "That Orca row is the one claude ro launch WITHOUT base.py's --disallowedTools Edit,Write,MultiEdit,NotebookEdit: the witnessed workflow wrote its report after the coordinator approved the plan in-pane, so adding the set changes this route and needs a re-witness (tests/test_claude_ro_launches.py names the exemption).",
             "macOS was not witnessed for this route."
@@ -86,7 +86,8 @@
           ],
           "limitations": [
             "Witnessed only on the override lane (WORKER_CMD='claude --dangerously-skip-permissions' with ORCA_COORD_ALLOW_CMD_OVERRIDE=1): the supervised worker-start lane read LAUNCHED_UNUSABLE on the witness host because its agentDefaultArgs lacked the bypass flag.",
-            "Witnessed on Linux only, at Orca 1.4.224 (carried to the v1.4.229 pin through pins.json live_receipts)."
+            "Witnessed on Linux only, at Orca 1.4.224 (carried to the v1.4.238 pin through pins.json live_receipts).",
+            "From v1.4.238 a host on Orca's Auto permission switch launches claude with --permission-mode auto, not the rw flag; the wrapper refuses that start as LAUNCHED_UNUSABLE (exit 5), pinned by tests/test_spawn_worker.py, and no live start on an Auto host was witnessed."
           ]
         },
         {

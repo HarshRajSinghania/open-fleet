@@ -6,6 +6,15 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The Orca pin moves to v1.4.238, and #606's registration is re-registered as version 2** (#508).
+  The re-witness had held the pin because four docs in the ablation's registered payloads needed
+  edits. The ablation had not run, so this change applies them and re-registers it in one step
+  (`prereg --refresh`; cap, design, prompts and obligations unchanged). `sandbox-policy.md` names
+  the Auto host mode and its exit 5, `mission-scheduling.md` says `--host` takes host names,
+  `dispatch-lifecycle.md` names the new live pin and `--surface`, and eight stale citations are
+  re-anchored. `pins.json`, `orca-pin.md`, the certification record and the README floor move
+  together; the next dated review is 2027-01-24. The drift-note tests now run against a frozen
+  pin record, and four new tests read the committed one, so no later bump has to edit a test.
 - **The drift workflow files every confirmed re-pin trigger, even when the other check errored**
   (#661 review). GitHub adds `success()` to a step condition that names no status function, so a
   `latest` that failed on the network skipped a reached `review-date` alert, and the reverse. The
@@ -22,6 +31,37 @@ truth is `.claude-plugin/plugin.json`.
   standing issue carries the cadence; `spawn_worker.sh` re-anchors two stale citations and a test
   pins that an Auto host is refused (exit 5); `threat-model.md` names the real containment
   source; `terminal_ops.py` parks `terminal set-pane-title`.
+- **#605's live hint replay ran, and its report binds** (#605). The owner-authorised live arm
+  ran once from origin/main `85daf6d0cf`: 2 scenarios × 3 arms (hints off / unchecked / checked)
+  × 3 attempts, with `claude-opus-5-5` workers behind an isolation wrapper, under the USD 40 cap.
+  [docs/runs/2026-10-24-hint-replay-605-live.md](docs/runs/2026-10-24-hint-replay-605-live.md)
+  retains the results, the spend ledger, every call's packet, output and oracle, and the run
+  script and wrapper. `run_report.py` binds it at `doctrine-only`. `verify.py` is GREEN under a
+  dispatch record the coordinator signed for this unit with its local dispatch key, and the report
+  states the key's custody; the two RED runs before it are recorded. The result is a ceiling, null result. Every arm passed 6/6 with 0 repeated failures,
+  for USD 1.22 of notional spend, so on this corpus hints neither helped nor hurt and the arms
+  cannot be separated. Freshness labelling and poisoned-note withholding remain pinned by
+  `hint_replay.py --check`. A stronger test needs scenarios with real repeated failures.
+- **VF-Bench has a held-out set, held outside the repository, and one evaluation of it** (#601).
+  The owner designated OpenAI Codex (an AI system, `codex-cli` 0.163.0, model `gpt-6.1-sol`) as
+  the holder on 2026-10-24; `heldout-protocol.json` records who designated it, the evidence that
+  it authored no `verify.py` revision, and its limits (not a person; content withheld from the
+  repository and the Claude-operated developer agents by procedure, not technically; it read
+  `verify.py` while authoring). Codex authored held-out v1 in `~/of-live/heldout/v1`, outside every
+  git repository, after the pinned `verify.py` blob `08f568946c1f`: 89 cases, 66 traps and 23
+  valid controls in 22 categories. Only `heldout-v1-digests.json` and the counts are committed.
+  `heldout.py vet` checks a set the way the replay runs it, without running the verifier or
+  quoting a case, and refuses a copy of a development case; `digest --summary` adds the set digest
+  and counts; `validate` refuses an assigned holder without its designation, evidence and limits,
+  a milestone that disagrees with the protocol, published figures that are not the digests', and
+  an evaluation record that does not bind to its report bytes, commit and `verify.py` blob.
+  `replay.py run --heldout DIR` scores a set from outside the repository once its preflight proves
+  it is the published one, and writes metrics, ids and verdict classes only; a case shape the
+  preflight cannot read no longer crashes it. At `ed8f3bcf255c`, three runs: verify.py 0/66 false
+  acceptance, 0/23 false rejection, 4/66 refused for another reason, 66 of 95 inventory rows, no
+  case unscored or moving; the synthetic baseline 66/66 and 0/23. CI's `vfbench_replay` job scans
+  all history for the set on every PR. No external verifier was compatible (four candidates
+  checked by repository and documentation search, nothing installed): unmeasured, score null.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

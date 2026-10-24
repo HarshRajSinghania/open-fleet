@@ -1,0 +1,17 @@
+VF-Bench replay (vf-bench-replay@1) at ed8f3bcf255c (requested 'ed8f3bcf25')
+versions: vf-bench@0.1 · corpus 277f594ca6e1… (= pin) · gate.py d57da44b9f · vfbench.py 901777c7a7 · verify.py 08f568946c
+protocol: 3 run(s) · case timeout 300 s · HELD-OUT set, content withheld (89 cases: 66 traps, 23 valid controls) · clean export, built env
+environment: macOS-27.0.1-arm64-arm-64bit-Mach-O · Python 3.13.15 · git version 2.54.0 (Apple Git-157) (/usr/bin/git) · signed-dispatch cases run under /usr/bin/git, the first git verify.py's own custody probe classes 'system' (h409 R2)
+
+configuration                                                  false accept   false reject   wrong reason  coverage   wall mean  stable
+synthetic baseline (naive self-scorer), never a product score  66/66 100.0%   0/23 0.0%      n/a           69%            0.0 s  yes
+open-fleet verify.py (sound)                                   0/66 0.0%      0/23 0.0%      4/66 6.1%     69%           90.4 s  yes
+
+external verifiers: UNMEASURED — no real external verifier has been run through the adapter contract at this revision; an unmeasured verifier has no score, not a zero.
+held-out split: held-out v1 published: 89 cases authored and held by OpenAI Codex (an AI system) outside this repository; only their digests and counts are committed (holder: assigned)
+held-out set bc03442ee3bb… (89 case file(s)): = the published digests
+skipped: 0
+unsupported: 0
+timeouts: 0
+unscored: 0
+verdict: OK — a complete measurement of the pinned revision

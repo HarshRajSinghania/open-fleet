@@ -227,7 +227,7 @@ class RegistrationDigests(unittest.TestCase):
         self.assertIn("pins sha256", err)
         # Re-pin only the page (not the payloads): the registration is well formed but stale.
         md = ablation.REGISTRATION_LINE.sub(
-            f"Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 "
+            f"Registration: **version {prereg['version']}**, `docs/experiments/ablation-prereg.json` sha256 "
             f"`{ablation.file_sha256(self.json)}`.", self.md.read_text())
         md = ablation.LOADS_BLOCK.sub(lambda m: m.group(1) + ablation.loads_table(
             prereg["registered_payloads"]) + m.group(3), md)

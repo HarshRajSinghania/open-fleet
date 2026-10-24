@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `531123da9a144ed64f819138adf5acc89a523def5811bf5ad0effd048d71cbca`.
+Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `9050682917bc8c95b6eb2e187a1ea2eb550a7cc0c9f066d265b9203775338bec`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no
@@ -12,6 +12,25 @@ no 5,000-token target (ARCHITECTURE.md explains why that figure is not one).
 The machine-readable registration is [`ablation-prereg.json`](ablation-prereg.json). Where this
 page and the JSON differ, the JSON is authoritative. The line above pins its exact bytes;
 `python3 scripts/ablation.py prereg` fails if either file moves without the other.
+
+## Registration history
+
+- **Version 1, 2026-10-24.** The original registration, refreshed through the #652 review; the
+  owner authorised its cost cap the same day.
+- **Version 2, 2026-10-24, before any live cell ran.** The Orca v1.4.238 re-pin (#508;
+  `docs/runs/2026-10-24-pin-it-238.md`) corrected four runtime docs these missions load at
+  activation: `sandbox-policy.md` (v1.4.238's Auto host mode, re-anchored citations),
+  `dispatch-lifecycle.md` (the live pin, `--surface`, citations), `mission-scheduling.md`
+  (`--host` names) and `orca-dag-semantics.md` (schema line, a citation). The edits were held
+  near byte-neutral (each baseline moved by 5 tokens or fewer), but they moved the pinned
+  payloads of all four missions: each baseline and reduced digest, and the token counts in the
+  table below. `prereg --refresh` re-pinned them. The cost cap (`AUTHORISED`, USD 750), the design, arms, tasks, prompts,
+  obligations, metrics and analysis are unchanged. No cell had run, so no data predates the
+  change, and no other version will be compared with it.
+  The same day, still before any cell ran, review of #663 corrected one more stale line in
+  `dispatch-lifecycle.md` (the agent-launch line still named v1.4.229), which moved the
+  ship-it, clean-sweep and review-it baselines again; `prereg --refresh` re-pinned them within
+  version 2. Nothing else in the registration changed.
 
 ## Question and hypothesis
 
@@ -67,10 +86,10 @@ pinned in `registered_payloads`, and a test holds this table to them:
 <!-- BEGIN GENERATED: ablation-loads — scripts/ablation.py prereg --refresh -->
 | Mission | Baseline activation | Reduced activation | Delta |
 |---|---|---|---|
-| ship-it | ~33,999 | ~4,579 | -29,420 |
-| clean-sweep | ~32,653 | ~4,546 | -28,107 |
-| review-it | ~24,475 | ~3,715 | -20,760 |
-| root-cause | ~19,254 | ~6,716 | -12,538 |
+| ship-it | ~33,995 | ~4,579 | -29,416 |
+| clean-sweep | ~32,649 | ~4,546 | -28,103 |
+| review-it | ~24,480 | ~3,724 | -20,756 |
+| root-cause | ~19,249 | ~6,716 | -12,533 |
 <!-- END GENERATED: ablation-loads -->
 
 ## Safety obligations both arms keep

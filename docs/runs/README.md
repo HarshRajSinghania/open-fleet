@@ -27,7 +27,7 @@ re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;
-and two tracker rows are living ledgers — the 2026-09-14 one whose close binds in the next row, and the 2026-09-20 sign-386 one whose run is still open. The mechanism is
+and two tracker rows are living ledgers — the 2026-09-14 one whose close binds in the next row, and the 2026-09-20 sign-386 one whose run is still open; and the 2026-10-24 VF-Bench row is a benchmark evaluation, which no mission tier rests on. The mechanism is
 exercised by `tests/test_run_report.py`, which builds real
 git repositories and includes a fully bound positive case alongside a dozen refused ones.
 
@@ -59,6 +59,7 @@ git repositories and includes a fully bound positive case alongside a dozen refu
 | 2026-10-24 | [pin-it](2026-10-24-pin-it-238.md) | this catalog's runtime doctrine against Orca v1.4.238 (`e6f7fba5`, source-delta re-witness over the 1040-commit tag range vs the v1.4.229 pin; [delta inventory](2026-10-24-pin-it-238/delta-inventory-2026-10-24.md)) | self-run | no — the living ledger, not a binding report; binds, or does not, if a later promotion files one | RE-WITNESSED, PIN HELD at v1.4.229 (policies 10 CURRENT / 2 PATCHED / 4 deferred until #606 runs; scripts 41 CURRENT / 3 PATCHED; Auto host mode and `--host` names drifted in #606-registered docs; dated trigger now filed by the weekly probe) |
 | 2026-10-24 | [pin-it](2026-10-24-pin-it-238-bump.md) | the pin bump the v1.4.238 re-witness deferred: its E1–E8 doctrine edits and B1–B9 bump steps, with #606's registration re-registered as version 2 before any live cell ran | self-run | no — a run note applying a recorded run's deferred edits; it binds nothing | PINNED-WITH-PARKED at v1.4.238 (Auto host mode and `--host` names patched; E3 corrected and one more stale containment path found; no assertion line edited, no budget raised) |
 | 2026-10-24 | [hint-replay](2026-10-24-hint-replay-605-live.md) (experiment, not a mission) | this catalog's episodic hints — #605's live arm: 2 scenarios × 3 arms (off / unchecked / checked) × 3 attempts, `claude-opus-5-5` | self-run | yes — at `doctrine-only`, advancing no tier; verifier GREEN under a coordinator-signed dispatch record (two earlier RED runs recorded) | NULL at a ceiling (every arm 6/6, 0 repeated failures; USD 1.22 notional of a USD 40 cap) |
+| 2026-10-24 | — ([VF-Bench held-out v1](2026-10-24-vf-bench-heldout-v1/)) | `verify.py` blob `08f568946c1f` against 89 held-out cases authored and held by OpenAI Codex (#601) | benchmark evaluation, not a mission run | no — binds no mission tier; `heldout.py validate` binds the report to its commit, `verify.py` blob and set digest | 0/66 false acceptance, 0/23 false rejection, 4/66 refused for another reason, 66 of 95 inventory rows; stable over 3 runs |
 
 ### Self-test campaign 2026-09-16
 

@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["completed", "case_files", "traps", "valid_controls", "categories",
+               "trap_rows_covered", "vet_problems", "digests_path", "summary_path", "set_sha256"],
+  "properties": {
+    "completed": {"type": "boolean"},
+    "case_files": {"type": "integer"},
+    "traps": {"type": "integer"},
+    "valid_controls": {"type": "integer"},
+    "categories": {"type": "integer"},
+    "trap_rows_covered": {"type": "integer"},
+    "vet_problems": {"type": "integer"},
+    "digests_path": {"type": "string"},
+    "summary_path": {"type": "string"},
+    "set_sha256": {"type": "string"}
+  }
+}

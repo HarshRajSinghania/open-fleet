@@ -2043,9 +2043,11 @@ def _code_commands(code):
     for m in _EXEC_CALL.finditer(code):
         argtext = _call_args(code, m.end() - 1)
         # A tuple is an argv as much as a list is: run((git, push, ...)) with literals (#654).
-        # A word that ends the command has its closing parens peeled as a subshell close, so a
-        # tuple may reach here unclosed: it then runs to the end of the text.
-        for lm in re.finditer(r"[\[(]([^\[\]()]*)(?:[\])]|$)", argtext):
+        # A paren after a name, a dot or a closing bracket opens a CALL, not a tuple: the
+        # arguments of str.format build text, they are not an argv. A word that ends the command
+        # has its closing parens peeled as a subshell close, so a tuple may reach here unclosed:
+        # it then runs to the end of the text.
+        for lm in re.finditer(r"(?:\[|(?<![A-Za-z0-9_.\])])\()([^\[\]()]*)(?:[\])]|$)", argtext):
             items = [a or b for a, b in _CODE_LITERAL.findall(lm[1])]
             if len(items) > 1:
                 out.append(shlex.join(items))
@@ -2065,16 +2067,19 @@ def _note_assigns(assigns, ws):
         words.append(ws[2] + "=" + _printf_text(ws[3], ws[4:]).replace(chr(10), " "))
     for w in words:
         m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", w, re.DOTALL)
-        if not m:
-            continue
-        seen = _ASSIGNED.setdefault(m[1], set())
-        value = m[2].replace(_QNL, " ")
-        if len(seen) < 8 or value in seen:
-            seen.add(value)
-        else:
-            # Past the cap a value is not dropped: the name is marked unresolved, so a head built
-            # from it falls back to every refused head instead of reading as complete (#654).
-            seen.add(_UNRESOLVED)
+        if m:
+            _assign(m[1], m[2].replace(_QNL, " "))
+
+
+def _assign(name, value):
+    """Record one value NAME may hold, from NAME=value or from read NAME. Past the cap a value is
+    not dropped: the name is marked unresolved, so a head built from it falls back to every
+    refused head instead of reading as complete (#654)."""
+    seen = _ASSIGNED.setdefault(name, set())
+    if len(seen) < 8 or value in seen:
+        seen.add(value)
+    else:
+        seen.add(_UNRESOLVED)
 
 
 def _head_bodies(ws):
@@ -2435,21 +2440,26 @@ def _printf_text(fmt, args):
         except ValueError:
             return 0
 
+    def decimal(text):
+        # A width or precision is decimal: %.03s cuts at 3, not at an octal reading of 03.
+        text = text.strip()
+        return int(text) if re.fullmatch(r"-?[0-9]+", text) else 0
+
     def fill(m):
         if m[1]:
             return "%"
         flags, width, prec, conv = m[2] or "", m[3] or "", m[4] or "", m[5]
         if width == "*":
-            width = str(number(take()))
+            width = str(decimal(take()))
         if prec == ".*":
-            prec = "." + str(number(take()))
+            prec = "." + str(decimal(take()))
         arg = take()
         if conv in "sbcq":
             text = _decode_escapes(arg, percent_b=True) if conv == "b" else arg
             if conv == "c":
                 text = text[:1]
-            elif prec:
-                text = text[:max(number(prec[1:] or "0"), 0)]
+            elif prec and decimal(prec[1:] or "0") >= 0:
+                text = text[:decimal(prec[1:] or "0")]
         elif conv in "diu":
             text = str(number(arg))
         elif conv in "xXo":
@@ -2457,7 +2467,7 @@ def _printf_text(fmt, args):
             text = format(n, {"x": "x", "X": "X", "o": "o"}[conv]) if n >= 0 else _UNRESOLVED
         else:
             return _UNRESOLVED
-        pad = min(abs(number(width)) if width else 0, 4096)
+        pad = min(abs(decimal(width)) if width else 0, 4096)
         return text.ljust(pad) if "-" in flags or width.startswith("-") else text.rjust(pad)
     pattern = r"%(?:(%)|([-+ #0]*)(-?[0-9]+|\*)?(\.(?:[0-9]*|\*))?([A-Za-z]))"
     while True:
@@ -2537,28 +2547,44 @@ def _redirs(seg):
     return words, redirs
 
 
+_REPLACED = chr(0) + "replaced" + chr(0)   # marks a > overwrite between versions of a file
+
+
 def _write_file(written, word, texts, append):
-    """Record what a command writes to a file: > (and tee) replaces what the file held, >> (and
-    tee -a) adds to it, in order, so a file built across several writes is read whole (#654)."""
+    """Record what a command writes to a file: >> (and tee -a) adds to what it holds, in order,
+    so a file built across several writes is read whole; > (and tee) starts a new version but
+    never drops the old one: whether the overwrite runs at all (false && ... > f, a branch) is not
+    known here, so what the file held before stays a version too (#654)."""
     key = os.path.normpath(word)
-    if append:
-        written.setdefault(key, []).extend(texts)
-    else:
-        written[key] = list(texts)
+    chunks = written.setdefault(key, [])
+    if not append and chunks:
+        chunks.append(_REPLACED)
+    chunks.extend(texts)
 
 
 def _file_texts(word, written):
     """[(text, armable)] a file operand holds when the line shows it: a process substitution
     <(...) holds what its body prints (read while it runs, like a pipe); a file this line wrote
-    holds what was written there, all its writes joined in order (a separate command, so a
-    receipt never arms it). Each write is offered alone too, which only adds views."""
+    holds each version it may have when it is read: every run of writes joined in order, the
+    latest first (a separate command, so a receipt never arms it). Each write is offered alone
+    too, which only adds views."""
     m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)
     if m:
         out = _flow_output(_SUB_TEXTS[int(m[1])]) if int(m[1]) < len(_SUB_TEXTS) else None
         return [(out, True)] if out else []
-    chunks = written.get(os.path.normpath(word), [])
-    whole = "".join(chunks)
-    return ([(whole, False)] if whole else []) + [(t, False) for t in chunks if t != whole]
+    versions, cur = [], []
+    for chunk in written.get(os.path.normpath(word), []):
+        if chunk == _REPLACED:
+            versions.append("".join(cur))
+            cur = []
+        else:
+            cur.append(chunk)
+    versions.append("".join(cur))
+    views = [v for v in reversed(versions) if v]
+    for chunk in written.get(os.path.normpath(word), []):
+        if chunk != _REPLACED and chunk and chunk not in views:
+            views.append(chunk)
+    return [(v, False) for v in dict.fromkeys(views)]
 
 
 def _reader_kind(ws):
@@ -2627,8 +2653,8 @@ def _note_read(ws, stdin):
         values = {text.split(chr(10))[0], text.replace(chr(10), " ").strip()}
         for name in names or ["REPLY"]:
             for value in values:
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and len(_ASSIGNED.get(name, ())) < 8:
-                    _ASSIGNED.setdefault(name, set()).add(value)
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    _assign(name, value)
 
 
 def _flow(surface, docs, inherit=(), written=None):
@@ -2693,7 +2719,9 @@ def _flow(surface, docs, inherit=(), written=None):
             elif head in _PASS_THROUGH:
                 ops = [a for a in ws[1:] if not a.startswith("-")]
                 out = list(stdin)
-                append = any(a in ("-a", "--append") for a in ws[1:])
+                # tee -a, and any short cluster holding a (-ai, -ia), appends (#654).
+                append = any(a == "--append" or re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*", a)
+                             for a in ws[1:])
                 for f in ops:
                     if head == "tee":
                         _write_file(local, f, [t for t, _a in stdin], append)

@@ -2457,6 +2457,32 @@ class TestUnresolvedReadsFailClosed(ReviewHookBase):
         self.expect("allow", ["python3 -c \"import subprocess; subprocess.run(('git', 'status'))\"",
                               "python3 -c \"print(len(('a', 'b')))\""])
 
+    def test_an_overwrite_that_may_not_run_keeps_what_the_file_held(self):
+        # PR #655 review: false && ... > f never runs, so f still holds the first write.
+        self.expect("deny", ['printf %s "git push --force origin main" > s.sh; '
+                             "false && printf %s ls > s.sh; sh s.sh"])
+
+    def test_a_combined_append_cluster_appends(self):
+        # PR #655 review: tee -ai appends as tee -a does.
+        self.expect("deny", ['printf %s git > s.sh; printf %s " push --force origin main" | '
+                             "tee -ai s.sh; sh s.sh"])
+
+    def test_a_printf_precision_is_decimal(self):
+        # PR #655 review: %.03s cuts at 3, not at an octal reading of 03.
+        self.expect("deny", ['printf "%.03s push --force origin main" git | sh'])
+
+    def test_a_name_past_the_cap_through_read_is_unresolved_too(self):
+        # PR #655 review: read NAME sets values the same way NAME=value does.
+        self.expect("deny", ["read c <<< a; read c <<< b; read c <<< c; read c <<< d; "
+                             "read c <<< e; read c <<< f; read c <<< h; read c <<< i; "
+                             "read c <<< git; $c push --force origin main"])
+
+    def test_the_arguments_of_a_call_are_not_an_argv(self):
+        # PR #655 review: str.format builds text that is only echoed; its arguments are no argv.
+        self.expect("allow", ["python3 -c \"import subprocess; subprocess.run("
+                              "'echo {} {} {} {} {}'.format('git', 'push', '--force', 'origin', "
+                              "'main'), shell=True)\""])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

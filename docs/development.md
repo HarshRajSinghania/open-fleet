@@ -58,6 +58,7 @@ when one does not.
 | `python3 scripts/hint_replay.py --check` | Replay the fixed episodic-hint corpus ([`tests/fixtures/hint-replay.json`](../tests/fixtures/hint-replay.json), #605) with hints off, unchecked and checked; fails unless provenance checks retrieve every useful note and leak no stale or poisoned one |
 | `python3 scripts/ablation.py prereg` | Check the #606 [ablation pre-registration](experiments/ablation-prereg.md): schema, obligation anchors, the page pinned to the JSON, payloads current. `ablation.py run --dry-run --cost-cap-usd 0 --repeats 1` drives the paired pipeline with an inert stand-in (no model, no spend) |
 | `python3 scripts/bundle.py --check` | Build in a temporary directory and check bundled references |
+| `python3 scripts/wip_curve.py check-prereg` | Check the [WIP-curve pre-registration](experiments/wip-curve-prereg.md) (#604): its digests, its seed commit, and that every oracle fails on the seed and passes on its reference edit |
 | `python3 scripts/release_check.py --fast --skip-github` | Verify the local [Release 1.0 checklist](release-1.0-checklist.md) gates |
 | `python3 -m unittest discover -s tests -v` | Run the complete contract and fixture suite |
 | `git diff --check` | Catch whitespace errors in the patch |

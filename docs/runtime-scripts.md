@@ -637,6 +637,12 @@ replaced, only for display and checks. An unexpected error inside any step ends 
 receipt that names the step, the error and the line that raised it; it never ends in a
 traceback with no receipt.
 
+Its cleanup (`stop_workers`) stops every live worker, then ends every process group any worker of
+the run's store left behind, finished workers included: posix marks a dispatch `completed` once
+its foreground process exits, without ending a background child it started. A group whose leader
+is gone but whose members remain is such a leftover. A group whose leader still lives is never
+touched, because its number may have been reused.
+
 The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
 `change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
 worker to add its report the same way. A target that ignores `*.diff` or `.first-run/` still

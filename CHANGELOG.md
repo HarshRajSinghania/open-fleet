@@ -31,6 +31,63 @@ truth is `.claude-plugin/plugin.json`.
   standing issue carries the cadence; `spawn_worker.sh` re-anchors two stale citations and a test
   pins that an Auto host is refused (exit 5); `threat-model.md` names the real containment
   source; `terminal_ops.py` parks `terminal set-pane-title`.
+- **The WIP-curve experiment is pre-registered, and everything but its live runs is built** (#604).
+  The attention budget's WIP caps are still ASSERTED. They need at least three
+  protocol-compliant runs at differing WIP settings, and none existed.
+  - `docs/experiments/wip-curve-prereg.json` (explained in `wip-curve-prereg.md`) fixes the design
+    before any data. It sets four conditions (builders=1, the asserted cap of 3, and 6 builders
+    at one and at two reviewers), with three repetitions in a Williams Latin-square order. Each
+    run's task order is seeded, and per-run isolation starts from a seed commit that any host
+    rebuilds. It names the confounds and how each is separated, the stopping rule, the metrics
+    and the decision rule. The owner authorised its USD 150 cost cap on 2026-10-24.
+  - The fixed task set has six tasks on a synthetic package. Two pairs of tasks edit the same
+    region, so wider waves can conflict. `scripts/wip_curve.py check-prereg` shows that every
+    oracle fails on the seed and passes on its reference edit.
+  - `run` drives scheduled runs on the posix provider through the public wrappers. It adds
+    build-blind reviewers up to the condition's reviewer count, a coordinator-run oracle at each
+    worker's head in a clean checkout, and merges through `merge_queue.py`'s git lane. Every
+    observation goes into the run's `events.py` record, and the run retains a git bundle, the
+    store, the receipts, the transcripts and the streams, all bound by sha256. `run` refuses to
+    start without an explicit `--cost-cap-usd`, and a live run without an explicit
+    `--reservation-usd` or a model pin. Before a unit's builder starts, the runner holds the
+    worst case of every call the unit makes. Each dispatch starts only while measured spend and
+    every hold stay within the cap, so an overspent builder refuses its reviewer before it starts.
+  - `report` derives throughput, verification latency, rework, freshness, conflicts, and tokens
+    and cost from the retained sources alone. It gives each condition a t interval, gives rework
+    a Wilson interval, and includes every failed, stopped or parked run. It re-checks every
+    CLOSED unit against git and review authority. `verify` recomputes the report and names every
+    altered cell, then runs `events.py check` on each run's rows. The registration lists its
+    report fields, the report emits each of them (the review queue and cost per CLOSED unit
+    among them), and `check-prereg` refuses a field the report cannot emit.
+  - The registration pins the builder and reviewer contracts as well as the task set and seed,
+    and `run` checks all of it, seed and oracles included, before anything starts. A results
+    directory holds one registration. A live run refuses uncommitted experiment inputs, and each
+    run records their digest. Every path argument is made absolute first, and no results, output
+    or sandbox path, the per-run sandbox included, may resolve into or around the checkout or
+    the registered files. A sandbox may not be a symbolic link, and `report` and `verify` never
+    write into the results. The posix provider never writes a worker's guard files through a
+    symbolic link in its worktree.
+  - Live-run safety:
+    - The model pin reaches the harness (claude's `ANTHROPIC_MODEL`). A harness that cannot be
+      held to a pin is refused, and a call on another model halts the run.
+    - Each launch must carry its assignment.
+    - The run deadline is kept inside a wave.
+    - One runner holds a results directory at a time. Its runs share one ledger, in which every
+      paid call is held, then charged once under its own identity. Each hold is checked against
+      the cap under the ledger's lock.
+    - An interrupted or killed run is charged for every call it launched, and no child process
+      outlives it. The next run reconciles a killed run's calls once and stops its workers.
+      Every run's cleanup, and `first_run.py`'s, also ends what a finished worker left running
+      in its process group.
+    - Coordinator and merge-queue git goes through `gitexec.py`.
+    - Worker code under the oracle gets a minimal environment.
+  - What can be pooled: a run under another machine, harness, model pin, input digest, deadline
+    scale, schedule entry or WIP than its label claims is never pooled. Neither is a live run
+    started out of the registered order, which `run` also refuses before anything is dispatched. Only one re-run is
+    allowed, after an infrastructure failure. The recommendation reads compliant runs only.
+  - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
+    scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
+    live runs and publishing a recommendation remain open; the owner has authorised their spend.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

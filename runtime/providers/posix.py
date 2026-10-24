@@ -158,6 +158,33 @@ HOOK_ARTIFACTS = (
 )
 
 
+# Every file install_worktree_hooks writes, relative to the worktree.
+GUARD_FILES = (
+    ".claude/settings.local.json",
+    ".codex/hooks.json",
+    ".openhands/hooks.json",
+    ".agents/plugins/orca-deny-hook/hooks/hooks.json",
+    ".opencode/plugin/orca-deny-hook.ts",
+    ".open-fleet/bridges/omp_pi_deny_bridge.ts",
+    ".crush-orca-ro/crush.json",
+    ".crush/crush.json",
+)
+
+
+def _refuse_guard_links(wt: Path) -> None:
+    """A worktree's content is the worker's: a commit can carry `.claude`, or a guard file itself,
+    as a symbolic link, and each guard write would follow it out of the worktree. No component of
+    any guard path may be a link (PR #653 review sweep)."""
+    for rel in GUARD_FILES:
+        path = wt
+        for part in Path(rel).parts:
+            path = path / part
+            if path.is_symlink():
+                raise ProviderError("worktree_guard_link",
+                                    f"{path} is a symbolic link: the worktree guard is never written through one",
+                                    {"path": str(path)})
+
+
 def _exclude_hook_artifacts(wt: Path) -> None:
     """Append HOOK_ARTIFACTS to the worktree's `info/exclude` (shared by all linked worktrees)."""
     try:
@@ -202,6 +229,7 @@ def install_worktree_hooks(
     """
     wt = Path(worktree_path).resolve()
     wt.mkdir(parents=True, exist_ok=True)
+    _refuse_guard_links(wt)
     hook = deny_hook_path or str(CANONICAL_DENY_HOOK)
     # shlex-quoted: a path carrying `$`, a backtick or `"` must never expand in the hook shell.
     qwt, qhook = shlex.quote(str(wt)), shlex.quote(hook)

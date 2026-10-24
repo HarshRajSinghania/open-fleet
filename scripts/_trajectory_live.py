@@ -305,7 +305,19 @@ def _run(args, eval_mod, engine, data, cases, out):
     runnable = [c["id"] for c in cases if not unrun_reason(c)]
     cells_plan = plan(runnable, args.repeats, args.seed)
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
-    ledger = g.SpendLedger(out / "spend.jsonl", run_id)  # Refused when unreadable
+    # Refused when unreadable or held by another run (#657 review K2); held until this run ends.
+    ledger = g.SpendLedger(out / "spend.jsonl", run_id)
+    try:
+        return _run_holding(args, eval_mod, engine, data, cases, out, unrun, runnable, cells_plan,
+                            run_id, ledger)
+    finally:
+        ledger.release()
+
+
+def _run_holding(args, eval_mod, engine, data, cases, out, unrun, runnable, cells_plan, run_id,
+                 ledger):
+    """The run proper, holding the spend ledger throughout."""
+    g = guard()
     run_dir = out / "runs" / run_id
     run_dir.mkdir(parents=True)
     prior = ledger.total()
@@ -324,9 +336,9 @@ def _run(args, eval_mod, engine, data, cases, out):
                 if threading.current_thread() is threading.main_thread() else {})
     try:
         for cell in cells_plan:
-            # Read back from disk, not this run's cached copy: this run and every earlier run
-            # into this directory (the lock keeps any other run out while this one holds it).
-            counted = g.SpendLedger(ledger.path, run_id).total()
+            # This run and every earlier run into this directory: the ledger's lock keeps any
+            # other run out while this one holds it, so what it read is the whole spend.
+            counted = ledger.total()
             if counted + reserve > cap:
                 stopped = (f"CAP_REACHED: USD {cap - counted:.2f} of the USD {cap:.2f} cap "
                            f"remains, less than the USD {reserve:.2f} reservation of {cell['cell']}")

@@ -24,8 +24,46 @@ truth is `.claude-plugin/plugin.json`.
   CL-01 controls, 5 repeats by default, under #606's spend guard. It reports TT-01, MP-01 and
   HO-01 as UNRUN. One run at a time holds `--out`, each in its own `runs/<id>/`. A cell whose
   call failed is ERROR whatever the replay grade, a result names the model the agent's own
-  stream reported, and each call's limit is floored to the cent within its reservation. #606's trajectory cells now get their repository-document injection.
+  stream reported, and each call's limit is floored to the cent within its reservation. #606's
+  trajectory cells now get their repository-document injection.
   `tests/test_trajectory_live.py` pins each guard with an inert stand-in agent.
+- **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
+  --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
+  killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier
+  is refused without an explicit finite cap, a per-call reservation (`--per-call-usd`), a per-call
+  limit flag (Claude's `--max-budget-usd`, handed to every call at 0.8 of its reservation) and
+  `--out`. A call starts only if the spend so far plus its reservation fits the cap. Each call's
+  output is saved beside the results and its `total_cost_usd` (json or stream-json) charged. An
+  unmeasured call is charged its full reservation and stops the run, and so does a measured call
+  above its reservation. An fsynced ledger beside `--out` keeps a SIGKILLed call charged on the
+  next invocation without counting anything twice. Each call runs under a watchdog leading its
+  own process group, killed whole on timeout, after the worker exits, on SIGTERM/SIGHUP/Ctrl-C,
+  and when the runner itself is SIGKILLed. The results (`hint-replay-live/v2`) record per-call
+  cost, the cap, total spend, and which calls were measured. `tests/test_hint_replay_spend.py`
+  drives every guard with an inert stand-in that prints Claude JSON. The owner-authorised USD 40
+  command is in docs/runtime-scripts.md. No live result is claimed until a bound run report
+  exists. The PR #657 review hardened the shared guard in `scripts/_ablation_run.py`, so #606's
+  runner gets the same fixes. Each call's limit is floored to the cent, and a reservation too
+  small for a positive limit within it is refused. One run holds a spend ledger at a time (an
+  exclusive lock), so concurrent runs cannot both spend one cap. Every agent and grader call runs
+  under a watchdog that kills what its worker left before it exits. A unique `OF_CALL_ID`
+  environment marker contains each call across sessions, so a descendant that calls `setsid()`
+  is still swept. No call is settled while anything of it survives or the process table cannot
+  be read. A scenario id must be one safe filename. Where process discovery fails, the call's
+  known process group is still killed, by the runner and by its watchdog. A live run refuses to
+  start where a probe cannot be found by its marker. The wait for a call needs no `os.waitid`,
+  which macOS lacks before Python 3.13. The limit: a process that re-executes with an emptied
+  environment after leaving the call's tree is not found.
+- **The trusted merge gate is active, and Codex is the second reviewer** (#594, #595).
+  - **The gate:** `main` now requires `verdict-gate` from the dedicated app `open-fleet-verdict-gate`
+    (app 5451539), whose key lives only in the `main`-limited `verdict-gate` environment, and no
+    longer requires the PR-rewritable `verdict`.
+  - **The witness:** the disposable PR #658 showed that a same-named job and status from
+    `github-actions` cannot satisfy the gate, that a GO at the head can, and that a later push
+    cannot.
+  - **The reviewer:** H-10 is settled by the owner's decision. OpenAI Codex reviews each PR
+    read-only at its head, and no coordinator GO is posted without a Codex GO at the same head.
+    Codex is not a person, so the number of human maintainers is still one.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

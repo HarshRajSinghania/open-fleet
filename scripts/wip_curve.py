@@ -84,6 +84,10 @@ T95 = {1: "12.706", 2: "4.303", 3: "3.182", 4: "2.776", 5: "2.571", 6: "2.447", 
 Z95 = Decimal("1.959963984540054")
 # No harness in the posix launch table (runtime/providers/base.py) is given a per-call budget
 # flag, so a running dispatch can overrun its reservation; the guard refuses every NEXT dispatch.
+# The posix launch table passes no model to any harness; claude reads its model from its own
+# environment, which the setsid launch hands the worker. A harness with no such channel cannot be
+# held to a pin, so a live run on it is refused before any dispatch (PR #653 review).
+MODEL_ENV = {"claude": "ANTHROPIC_MODEL"}
 PER_CALL_LIMIT = "none passed: the posix launch table has no per-call budget flag for any harness"
 # The merge queue's own `failed` receipt reasons (runtime/scripts/merge_queue.py plan()).
 MQ_CONFLICT, MQ_GATE_FAILED = "conflict", "gate_failed"
@@ -662,6 +666,9 @@ from pathlib import Path
 
 harness, argv = sys.argv[1], sys.argv[2:]
 here = Path(sys.argv[0]).resolve().parent
+if argv[:1] == ["--version"]:
+    print("inert-stand-in 0.0 (calls no model)")
+    sys.exit(0)
 cfg = json.loads((here / "wip-config.json").read_text(encoding="utf-8"))
 dispatch = os.environ.get("OPEN_FLEET_DISPATCH_ID", "")
 spec = next((a for a in argv if "WIP-NONCE:" in a), "")
@@ -688,7 +695,8 @@ cost = cfg["script"].get("_cost", {}).get(role, cfg["cost_usd"])  # a fake harne
 def answer(text):
     """Claude's stream-json: the init line names the stand-in, the result line reports its usage
     (zero tokens; the configured synthetic cost, 0 unless a test asks for one)."""
-    print(json.dumps({"type": "system", "subtype": "init", "model": "inert-stand-in"}))
+    model = None if cfg["script"].get("_ignore_model_env") else os.environ.get("ANTHROPIC_MODEL")
+    print(json.dumps({"type": "system", "subtype": "init", "model": model or "inert-stand-in"}))
     usage = {k: 0 for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
                             "cache_creation_input_tokens")}
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
@@ -808,9 +816,11 @@ class Run:
         # What one dispatch may spend: the reservation the owner authorised (--reservation-usd; for
         # the inert stand-in it defaults to the synthetic cost the stand-in reports).
         self.reservation = args.reservation
+        self.model_pin = args.model if args.worker == "live" else None
         self.held: dict[str, Decimal] = {}  # "<task>:<role>" -> the reservation it holds
         self.launched: dict[str, tuple[str, str]] = {}  # dispatch -> (store task, hold key)
-        self.cap_hit = False
+        self.halt: str | None = None  # once set (cost-cap, model-mismatch, time-limit), nothing more starts
+        self.launched_models: dict[str, str | None] = {}
         self.observed = Decimal(0)
         self.reserved = Decimal(0)
         self.usage_seen: set[str] = set()
@@ -871,6 +881,10 @@ class Run:
             rel = f"streams/{dispatch}.jsonl"
             (self.dir / "streams").mkdir(exist_ok=True)
             shutil.copyfile(stream, self.dir / rel)
+            model = launched_model(self.dir / rel)
+            self.launched_models[dispatch] = model
+            if self.model_pin and model != self.model_pin and self.halt is None:
+                self.halt = "model-mismatch"  # the harness did not run the pin: no further call starts
             proc = run_text([sys.executable, str(SCRIPTS / "events.py"), "--log", "events.jsonl",
                                        "ingest-usage", "--stream", rel, "--run", self.rid, "--epoch", "1",
                                        "--clock", self.clock, "--task", store_task, "--dispatch", dispatch],
@@ -910,10 +924,13 @@ class Run:
         return True
 
     def admit(self, key) -> bool:
-        """A dispatch starts only on a hold, and only while everything committed, its own hold
-        included, is within the cap: a dispatch that overspent its hold refuses the next one."""
-        if key in self.held and self.committed() <= self.cap:
+        """A dispatch starts only on a hold, only while nothing has halted the run (a launched
+        model other than the pin, the deadline), and only while everything committed, its own
+        hold included, is within the cap: a dispatch that overspent its hold refuses the next one.
+        A refusal sets `halt` and releases the hold unspent."""
+        if self.halt is None and key in self.held and self.committed() <= self.cap:
             return True
+        self.halt = self.halt or "cost-cap"
         self.held.pop(key, None)
         return False
 
@@ -1135,8 +1152,8 @@ class Run:
             a = attempts[tid]
             if a["outcome"] == "landed":
                 continue
-            if a["outcome"] == "stopped-cost-cap":
-                self.park(tid, "stopped-cost-cap", a.get("head"))
+            if (a["outcome"] or "").startswith("stopped-"):
+                self.park(tid, a["outcome"], a.get("head"))
                 continue
             if len(self.units[tid]["attempts"]) >= self.max_attempts:
                 self.park(tid, "attempts-exhausted", a.get("head"))
@@ -1153,8 +1170,7 @@ class Run:
                 tid = queue.pop(0)
                 a = self.units[tid]["attempts"][-1]
                 if not self.admit(f"{tid}:reviewer"):
-                    a["outcome"] = "stopped-cost-cap"  # refused before it starts, never detected after
-                    self.cap_hit = True
+                    a["outcome"] = f"stopped-{self.halt}"  # refused before it starts, never detected after
                     continue
                 nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
                 n = len(self.units[tid]["reviews"]) + 1
@@ -1360,7 +1376,7 @@ class Run:
                 nxt = (carry + queue)[:builders]  # a wave holds at most `builders`, carried first
                 # The stopping rule is applied BEFORE this wave closes: a unit it parks belongs to
                 # this wave, so the record still derives every cell (#604).
-                reason = ("cost-cap" if self.cap_hit or (nxt and self.over_budget(nxt)) else
+                reason = (self.halt if self.halt else "cost-cap" if (nxt and self.over_budget(nxt)) else
                           "time-limit" if nxt and time.monotonic() - started > self.wall_limit else None)
                 if reason:
                     self.stop(reason, carry)
@@ -1421,6 +1437,7 @@ class Run:
         rec["not_run"] = [t for t, u in self.units.items() if not u["attempts"]] + \
             [t for t in self.entry["task_order"] if t not in self.units]
         rec["merges"] = self.merges
+        rec["launched_models"] = self.launched_models
         rec["commands"] = self.commands
         rec["cost"] = {"cap_usd": str(self.cap), "spent_before_usd": str(self.spent_before),
                        "observed_usd": str(self.observed), "reserved_unobserved_usd": str(self.reserved),
@@ -1843,6 +1860,19 @@ def review_queue(raw: list, rid: str) -> dict:
             "reviews": len(values), "median_exact_s": str(events._median(values)), "max_exact_s": str(max(values))}
 
 
+def launched_model(stream: Path):
+    """The model a dispatch's harness reported launching (Claude's stream-json `system/init`
+    line), or None when its stream names none."""
+    for line in Path(stream).read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "system" and obj.get("subtype") == "init":
+            return obj.get("model") if isinstance(obj.get("model"), str) else None
+    return None
+
+
 def tokens_per_review(review_usage: dict):
     """(input + output tokens) per review, or None when either count is unobserved (a partial
     sum is not the reviewers' usage, and never a TypeError, PR #653 review)."""
@@ -2201,6 +2231,9 @@ def cmd_run(args) -> int:
         if args.reservation_usd is None:
             raise Refused("a live run needs --reservation-usd: the per-dispatch reservation is "
                           f"{prereg['cost']['reservation_status']!r} and the runner never picks it")
+        if args.agent not in MODEL_ENV:
+            raise Refused(f"cannot enforce the model pin on {args.agent}: the posix launch table passes no model "
+                          f"and only {sorted(MODEL_ENV)} read one from their environment")
     elif args.agent not in INERT_AGENTS:
         raise Refused(f"the inert stand-in answers as {INERT_AGENTS}; --agent {args.agent} needs --worker live")
     args.reservation = money(args.reservation_usd if args.reservation_usd is not None else args.inert_cost_usd)
@@ -2282,6 +2315,10 @@ def cmd_run(args) -> int:
         config = {"taskset": str(taskset_path), "runner": str(Path(__file__).resolve()), "script": script,
                   "cost_usd": str(args.inert_cost_usd)}
         sb = Sandbox(workdir, args.worker, args.agent, config)
+        for var in MODEL_ENV.values():  # only the pin, and only for a live run, chooses the model
+            sb.env.pop(var, None)
+        if args.worker == "live":
+            sb.env[MODEL_ENV[args.agent]] = args.model
         run = Run(args, prereg, taskset, (path, prereg_sha, taskset_path), entry, results, spent)
         binary = first_run.HARNESS_BINARIES.get(args.agent, args.agent)
         found = shutil.which(binary, path=sb.env["PATH"])

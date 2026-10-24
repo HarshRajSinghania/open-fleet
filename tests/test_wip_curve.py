@@ -865,6 +865,7 @@ class TestSpendIsReservedBeforeEachDispatch(Tmp):
         run = wip.Run.__new__(wip.Run)
         run.cap, run.spent_before, run.reservation = Decimal(cap), Decimal(spent_before), Decimal("0.25")
         run.observed, run.reserved, run.held, run.usage_seen = Decimal(0), Decimal(0), {}, set()
+        run.halt = None
         return run
 
     def test_the_exact_boundary_is_admitted_and_a_cent_over_is_not(self):
@@ -1211,6 +1212,89 @@ class TestAnInterruptedRunSettlesItsSpend(Tmp):
 
     def test_ctrl_c_mid_dispatch(self):
         self.assert_settled(*self.interrupt(signal.SIGINT))
+
+
+def install_fake_harness(bin_dir: Path, *, cost="0.25", script=None) -> Path:
+    """A fake `claude` first on PATH for a --worker live run: the runner's own inert stand-in,
+    answering as a harness that reads its model from ANTHROPIC_MODEL and reports fake costs."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / "worker.py").write_text(wip.INERT_WORKER, encoding="utf-8")
+    (bin_dir / "wip-config.json").write_text(json.dumps(
+        {"taskset": str(TASKSET), "runner": str(RUNNER), "script": script or {}, "cost_usd": cost}), encoding="utf-8")
+    launcher = bin_dir / "claude"
+    launcher.write_text(f'#!/bin/sh\nexec {sys.executable} -I {bin_dir / "worker.py"} claude "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    return launcher
+
+
+def run_in_process(argv, env, cwd=None):
+    """wip_curve.main() in this process (so coverage traces it), under `env`, with output captured."""
+    out, err = io.StringIO(), io.StringIO()
+    old_cwd = os.getcwd()
+    with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out), \
+            contextlib.redirect_stderr(err):
+        try:
+            if cwd is not None:
+                os.chdir(cwd)
+            try:
+                rc = wip.main(list(argv))
+            except SystemExit as exc:  # argparse, or a trapped signal
+                rc = exc.code
+        finally:
+            os.chdir(old_cwd)
+    return subprocess.CompletedProcess(argv, rc, out.getvalue(), err.getvalue())
+
+
+class LiveWithAFakeHarness(Tmp):
+    """--worker live end to end, against a fake harness (never a real one: a tripwire answers
+    for every other harness name, and HOME is private)."""
+
+    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25"):
+        env, self.trip_log = tripwired_env(self.tmp)
+        fake = self.tmp / "fake-bin"
+        install_fake_harness(fake, cost=cost, script=script)
+        env.update(PATH=os.pathsep.join([str(fake), env["PATH"]]), HOME=str(self.tmp / "home"))
+        (self.tmp / "home").mkdir(exist_ok=True)
+        self.results = self.tmp / "results"
+        with mock.patch.object(wip, "dirty_inputs", return_value=[]):
+            p = run_in_process(["run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"),
+                                "--worker", "live", "--agent", "claude", "--model", model, "--cost-cap-usd", "20",
+                                "--reservation-usd", cost, "--runs", run, *extra], env)
+        self.assertFalse(self.trip_log.exists(), "a real harness name was reached")
+        return p, self.results / "runs" / run / "run.json"
+
+
+class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
+    """PR #653 review: --model must reach the harness, and the run records the model each call
+    truly launched; a harness that ignores the pin is stopped before its next call."""
+
+    def test_the_pinned_model_is_the_model_every_call_launched(self):
+        p, run_json = self.live()
+        self.assertTrue(run_json.is_file(), p.stdout + p.stderr)
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "complete", p.stdout + p.stderr)
+        self.assertTrue(record["launched_models"])
+        self.assertEqual(set(record["launched_models"].values()), {"wip-fake-model"})
+        report = wip.build_report(self.results, basis="all")
+        self.assertEqual(report["runs"][0]["metrics"]["models"], ["wip-fake-model"])
+
+    def test_a_harness_that_ignores_the_pin_gets_no_second_call(self):
+        p, run_json = self.live(script={"_ignore_model_env": True})
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "model-mismatch"),
+                         p.stdout + p.stderr)
+        self.assertEqual(list(record["launched_models"].values()), ["inert-stand-in"])
+        t5 = record["units"]["T5"]
+        self.assertEqual((t5["reviews"], t5["final"], t5["park_class"]), ([], "parked", "stopped-model-mismatch"))
+
+    def test_a_harness_with_no_enforceable_model_selection_is_refused(self):
+        env, trip_log = tripwired_env(self.tmp)
+        p = run_in_process(["run", "--results", str(self.tmp / "r"), "--worker", "live", "--agent", "codex",
+                            "--model", "m", "--cost-cap-usd", "5", "--reservation-usd", "1", "--runs",
+                            "wip1-b1r1-rep1"], env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("cannot enforce", p.stderr)
+        self.assertFalse(trip_log.exists())
 
 
 class TestRelativePaths(unittest.TestCase):

@@ -70,8 +70,15 @@ These fields are filled at run time and recorded in every run's `run.json`:
   The event clock is labelled with a hash of the host name, so a published record identifies the
   machine without carrying its name.
 - **Harness:** `--agent`. The runner records the harness binary's `--version`.
-- **Model:** `--model` is required for a live run. Every model that the usage record observes
-  must equal the pin.
+- **Model:** `--model` is required for a live run. The posix launch table passes no model to any
+  harness, so the runner hands the pin to the harness through its own environment
+  (`ANTHROPIC_MODEL` for claude, which the setsid launch passes to the worker).
+  - A live run on a harness with no such channel is refused before any dispatch.
+  - The model each call actually launched is read from the call's own stream and recorded in
+    `run.json` as `launched_models`.
+  - The first call that launched another model halts the run (`stopped`, `model-mismatch`), so
+    no further call starts.
+  - Every model the usage record observes must equal the pin.
 
 Builders run with `PROFILE=rw`. Reviewers run with `PROFILE=ro` on the same harness and model.
 After every spawn, the runner checks that the deny hook the provider installed in the worker's

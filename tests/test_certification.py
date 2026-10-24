@@ -771,6 +771,61 @@ class TestCommittedReportIsChecked(Tripwired):
         self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
 
 
+class TestRwWorkerPrintsItsReport(Tripwired):
+    """#596 live rw run: Claude Code committed the right report and sent worker_done, but its final
+    answer was a one-line summary, because the rw assignment never asked for the report there, and
+    `result` reads the report from the final answer on both profiles. The stand-in printed it anyway,
+    so no fixture caught it. first_run now installs the stand-in in LITERAL mode, which prints the
+    report only when its assignment asks, and the rw assignment asks: commit, report completion,
+    then print that same report as the final answer."""
+
+    ASK = re.compile(r"(?i)\bprint\b[^\n]*\breport\b[^\n]*\bas your final answer\b")
+
+    def spec_for(self, profile: str) -> str:
+        fr = first_run.FirstRun(first_run.parse_args(["--profile", profile]), None)
+        fr.facts["reviewed"] = {"base_sha": "a" * 40, "head_sha": "b" * 40}
+        fr.facts["contract"] = {"source": f"{fr.unit_dir}/contract.md@{'c' * 40}", "digest": "sha256:" + "d" * 64}
+        return fr.spec()
+
+    def in_process(self, name: str, *args: str):
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main([*args, "--workdir", str(self.tmp / name), "--json"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_the_rw_assignment_asks_for_the_committed_report_as_the_final_answer(self):
+        lines = self.spec_for("rw").splitlines()
+        asks = [i for i, ln in enumerate(lines) if self.ASK.search(ln)]
+        sends = [i for i, ln in enumerate(lines) if "worker_done" in ln]
+        self.assertTrue(asks, "the rw assignment never asks for the report as the final answer")
+        self.assertTrue(sends and asks[-1] > sends[-1], "the final answer comes after the worker_done it reports")
+        self.assertRegex(lines[asks[-1]], r"(?i)\bsame report\b", "the printed report is the committed one")
+        self.assertTrue(any(self.ASK.search(ln) for ln in self.spec_for("ro").splitlines()))
+
+    def test_first_run_installs_the_literal_stand_in(self):
+        self.assertIn("\nLITERAL = False\n", first_run.INERT_WORKER)
+        self.assertIn("\nLITERAL = True\n", first_run.literal_stand_in(first_run.INERT_WORKER))
+        rc, receipt = self.in_process("installed", "--profile", "rw", "--keep")
+        self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+        installed = (self.tmp / "installed" / "inert" / "worker.py").read_text(encoding="utf-8")
+        self.assertIn("\nLITERAL = True\n", installed)
+
+    def test_a_literal_rw_worker_is_no_go_when_its_assignment_never_asks(self):
+        # The live run's semantics, kept as a mutation control: drop the ask and the literal
+        # stand-in answers with a summary, exactly as Claude Code did, and `result` refuses it.
+        real = first_run.FirstRun.spec
+
+        def without_the_ask(fr):
+            return "\n".join(ln for ln in real(fr).splitlines() if not self.ASK.search(ln))
+
+        with mock.patch.object(first_run.FirstRun, "spec", without_the_ask):
+            rc, receipt = self.in_process("unasked", "--profile", "rw")
+        self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"))
+        self.assertEqual(receipt["failure"]["step"], "result")
+        self.assertIn("report does not open with", receipt["failure"]["detail"])
+        self.assertIn("committed the report, and sent the completion message", receipt["failure"]["detail"])
+
+
 class TestInterruptedRunStopsItsWorker(Tripwired):
     """Ctrl-C mid-run: the setsid worker is in its own session, so the terminal's SIGINT never
     reaches it; the run itself must stop it before exiting, or it keeps running and spending."""

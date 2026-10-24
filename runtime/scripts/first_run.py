@@ -31,7 +31,9 @@ Profiles: `ro` (default; the review-it shape — the worker prints its report an
 send mail. posix relays the completion line its assignment names as its `worker_done` and records a
 clean exit without that line as `worker_died (exit=0)`; either settles the unit, and the
 coordinator commits the report it read from the transcript, #596) and `rw` (the worker commits the
-report itself and sends `worker_done`; its HEAD is re-read from git, never taken from the claim).
+report itself, sends `worker_done`, then prints the same report as its final answer; both copies must
+meet the contract, and its HEAD is re-read from git, never taken from the claim). The inert stand-in
+is LITERAL: it prints its report only when the assignment asks, as a live worker does (#596).
 
 The reviewed target is a two-commit repository the run synthesizes, or `--target <repo>`
 (cloned into the sandbox, never modified) with `--base/--head`. Every artifact lives in one
@@ -217,9 +219,24 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
 done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
 if done:
     report += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
+# Literal mode (#596 live rw run): a real worker does what its assignment says and no more. Its
+# final answer is the report only when the spec asks for exactly that; otherwise it is a one-line
+# summary, as Claude Code's was when the rw assignment never asked. first_run installs the stand-in
+# in this mode (literal_stand_in); a bare stand-in run outside any assignment keeps printing.
+LITERAL = False
+if LITERAL and not re.search(r"(?i)\bprint\b[^\n]*\breport\b[^\n]*\bas your final answer\b", spec):
+    if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
+        report = "I reviewed the change, committed the report, and sent the completion message.\n"
+    else:
+        report = "I reviewed the change.\n"
 answer(report)
 sys.exit(rc)
 '''
+
+
+def literal_stand_in(source: str) -> str:
+    """The stand-in in literal mode: it prints its report only when its assignment asks (#596)."""
+    return source.replace("\nLITERAL = False\n", "\nLITERAL = True\n")
 
 
 class Sandbox:
@@ -267,7 +284,9 @@ class Sandbox:
     def _install_inert(self) -> None:
         self.inert.mkdir(parents=True, exist_ok=True)
         self.tripwire.mkdir(parents=True, exist_ok=True)
-        (self.inert / "worker.py").write_text(INERT_WORKER, encoding="utf-8")
+        # Literal: an assignment that never asks for the report as the final answer must fail
+        # here as it failed live, not pass because the stand-in printed it anyway (#596).
+        (self.inert / "worker.py").write_text(literal_stand_in(INERT_WORKER), encoding="utf-8")
         for name in all_harness_binaries():
             trip = self.tripwire / name
             trip.write_text(f'#!/bin/sh\necho "{name} $*" >> {shlex.quote(str(self.tripwire / "hits.log"))}\nexit 97\n',
@@ -509,6 +528,9 @@ class FirstRun:
                 "Then report completion with:",
                 '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded'
                 ' --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" --payload \'{"head": "<the report commit sha>"}\'',
+                # The run reads the report from the final answer AND from the commit, and both must
+                # meet the contract; without this line a live worker answered with a summary (#596).
+                "Last, print the same report you committed, exactly as committed, as your final answer.",
             ]
         else:
             lines.append("Modify nothing. Print the report as your final answer.")

@@ -2064,7 +2064,9 @@ def _note_assigns(assigns, ws):
     if ws and ws[0] in _DECLARERS:
         words += [w for w in ws[1:] if not w.startswith("-")]
     if len(ws) > 3 and ws[0] == "printf" and ws[1] == "-v":   # printf -v NAME FORMAT ARGS
-        words.append(ws[2] + "=" + _printf_text(ws[3], ws[4:]).replace(chr(10), " "))
+        whole, unread = _printf_render(ws[3], ws[4:], False)
+        views = [whole] + ([_printf_render(ws[3], ws[4:], True)[0]] if unread else [])
+        words += [ws[2] + "=" + v.replace(chr(10), " ") for v in views]   # each rendering a value
     for w in words:
         m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", w, re.DOTALL)
         if m:
@@ -2422,9 +2424,21 @@ def _printf_text(fmt, args):
     # arguments remain: printf "%s%s" gh " issue close 34" prints one command (#598 corpus).
     # The format escapes are decoded, and so is a %b argument (PR #648 review).
     # Each conversion is modelled as bash and dash print it (#654): %c is one character, .N cuts
-    # a string, * takes the width or precision from the next argument. A conversion the reader
-    # does not model reads as unresolved, never as its argument.
-    out, state = [], {"next": 0, "used": 0}
+    # a string, * takes the width or precision from the next argument. When the reader cannot be
+    # sure what a conversion prints (a * argument it cannot read, a conversion it does not
+    # model), the format is rendered twice and BOTH renderings are offered, one per line: once
+    # with the argument whole and once with an unresolved mark in its place, each keeping the
+    # text around it. A width only pads, so one that cannot be read is no padding (PR #655).
+    whole = _printf_render(fmt, args, False)
+    if not whole[1]:
+        return whole[0]
+    return whole[0] + chr(10) + _printf_render(fmt, args, True)[0]
+
+
+def _printf_render(fmt, args, mark):
+    """(text, unsure): one rendering of printf FORMAT ARGS. unsure says some conversion could not
+    be read for certain; mark puts an unresolved mark in its place, else its argument whole."""
+    out, state = [], {"next": 0, "used": 0, "unsure": False}
 
     def take():
         state["used"] += 1
@@ -2448,39 +2462,42 @@ def _printf_text(fmt, args):
     def star(text):
         # A * width or precision comes from an argument, which printf reads as a signed integer:
         # +3 and -3 are plain. One the reader cannot read for certain (a leading zero, hex,
-        # junk) is unresolved rather than guessed (PR #655 review).
+        # junk) is None, never guessed (PR #655 review).
         text = text.strip()
         return int(text) if re.fullmatch(r"[+-]?(?:[1-9][0-9]*|0)", text) else None
+
+    def unsure(arg):
+        state["unsure"] = True
+        return _UNRESOLVED if mark else arg
 
     def fill(m):
         if m[1]:
             return "%"
         flags, width, prec, conv = m[2] or "", m[3] or "", m[4] or "", m[5]
-        unsure = False
         if width == "*":
-            got = star(take())
-            unsure = got is None
-            width = str(got or 0)
+            width = str(star(take()) or 0)   # a width only pads: unread, it pads nothing
+        cut = None
         if prec == ".*":
-            got = star(take())
-            unsure = unsure or got is None
-            prec = "." + str(got if got is not None else 0)
+            cut = star(take())
+            unread = cut is None
+        else:
+            unread = False
+            cut = decimal(prec[1:] or "0") if prec else None
         arg = take()
-        if unsure:
-            return _UNRESOLVED
         if conv in "sbcq":
             text = _decode_escapes(arg, percent_b=True) if conv == "b" else arg
+            if unread:
+                return unsure(text)
             if conv == "c":
                 text = text[:1]
-            elif prec and decimal(prec[1:] or "0") >= 0:
-                text = text[:decimal(prec[1:] or "0")]
+            elif cut is not None and cut >= 0:
+                text = text[:cut]
         elif conv in "diu":
             text = str(number(arg))
-        elif conv in "xXo":
-            n = number(arg)
-            text = format(n, {"x": "x", "X": "X", "o": "o"}[conv]) if n >= 0 else _UNRESOLVED
+        elif conv in "xXo" and number(arg) >= 0:
+            text = format(number(arg), {"x": "x", "X": "X", "o": "o"}[conv])
         else:
-            return _UNRESOLVED
+            return unsure(arg)
         pad = min(abs(decimal(width)) if width else 0, 4096)
         return text.ljust(pad) if "-" in flags or width.startswith("-") else text.rjust(pad)
     pattern = r"%(?:(%)|([-+ #0]*)(-?[0-9]+|\*)?(\.(?:[0-9]*|\*))?([A-Za-z]))"
@@ -2488,7 +2505,7 @@ def _printf_text(fmt, args):
         state["used"] = 0
         out.append(re.sub(pattern, fill, _decode_escapes(fmt)))
         if not state["used"] or state["next"] >= len(args):
-            return "".join(out)
+            return "".join(out), state["unsure"]
 
 
 def _echo_data(ws):

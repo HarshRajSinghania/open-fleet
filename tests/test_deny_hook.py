@@ -2477,6 +2477,15 @@ class TestUnresolvedReadsFailClosed(ReviewHookBase):
                              'printf "%.*s push --force origin main" 010 git | sh'])
         self.expect("allow", ['printf "%.*s\\n" 3 hello'])
 
+    def test_an_unread_width_or_precision_keeps_the_whole_argument(self):
+        # PR #655 review: an unreadable * value must not erase the text the argument holds. A
+        # width only pads; an unreadable precision offers the argument whole AND unresolved,
+        # each with the text around it.
+        self.expect("deny", ["printf '%*s' 010 'git push --force origin main' | sh",
+                             "printf '%.*s' 0x3 'git push --force origin main' | sh",
+                             'printf "%.*s --force origin main" 0x9 "git push" | sh'])
+        self.expect("allow", ["printf '%*s' 010 'ls -la' | sh"])
+
     def test_a_name_past_the_cap_through_read_is_unresolved_too(self):
         # PR #655 review: read NAME sets values the same way NAME=value does.
         self.expect("deny", ["read c <<< a; read c <<< b; read c <<< c; read c <<< d; "

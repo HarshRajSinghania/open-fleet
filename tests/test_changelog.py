@@ -447,6 +447,15 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '# <!X <a href="../docs/ops.md">ops</a>``<!--</span>\n',
         # a comment or autolink holding a backtick is not skipped whole: what follows it is read as text (#673)
         '- **Change** <!-- a `tick --> and `<a href="../x.md">` as code.\n',
+        # a link's title, destination or text may hold a backtick: past a "[", backticks are text (Codex at d16ff6e5cc)
+        '- **Change** text\n  <span>inline</span> [example](https://example.org/ "title`") <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** [a`b](https://example.org/) <a href="../docs/ops.md">ops</a> `\n',
+        '[x]: https://example.org/ "t`"\n<a href="../docs/ops.md">ops</a> `\n',
+        # GFM links a bare URL, backtick and all (fuzzed against Pandoc, #673)
+        '- **Change** see https://e.org/`) <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** see www.e.org/` <a href="../docs/ops.md">ops</a> `\n',
+        # raw HTML reaches a browser, which reads attributes loosely (fuzzed against Pandoc, #673)
+        '</div>\n<a\n[x][y]"\n#   href="../docs/ops.md">x</a>\n',
     )
 
     def errors(self, text):

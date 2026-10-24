@@ -71,6 +71,14 @@ _CLOSE_TAG_RE = re.compile(r"</[a-z][a-z0-9-]*\s*>", re.IGNORECASE)
 _MAY_OPEN_RE = re.compile(r"<[a-z0-9.!#$%&'*+/=?^_`{|}~-]", re.IGNORECASE)
 # What makes a complete tag unsafe to skip whole: a backtick or a "<" inside it, or a line end.
 _UNCLEAR_RE = re.compile(r"[`<\r\n]")
+# A bare URL GFM turns into a link (an extended autolink): its path may hold a backtick, so no
+# code span opens there (fuzzed against Pandoc's GFM reader, #673).
+_BARE_URL_RE = re.compile(r"://|www\.", re.IGNORECASE)
+# A tag as an HTML5 tokenizer reads raw HTML, for _loose_link: a name, then attributes whose
+# names are anything but whitespace, "/", ">" and "=" (a quote included), each with an optional
+# value, quoted or not.
+_LOOSE_NAME_RE = re.compile(r"<[a-z][^\s/>]*", re.IGNORECASE)
+_LOOSE_ATTR_RE = re.compile(r"""[\s/]*([^\s/>][^\s/>=]*)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?""")
 
 
 def _opens_html(line):
@@ -80,6 +88,20 @@ def _opens_html(line):
         rest = rest[mark.end():]
     rest = rest.lstrip(" \t")
     return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
+
+
+def _loose_link(text, i):
+    """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
+    with a value in it, else None. Past a point where renderers may disagree, text may reach the
+    page as raw HTML, so link tags there are read this loosely."""
+    if not (name := _LOOSE_NAME_RE.match(text, i)):
+        return None
+    pos, link = name.end(), False
+    while attr := _LOOSE_ATTR_RE.match(text, pos):
+        link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
+        pos = attr.end()
+    end = re.compile(r"[\s/]*>").match(text, pos)
+    return text[i:end.end()] if end and link else None
 
 
 def _tag(text, i):
@@ -106,20 +128,26 @@ HEADER = ("| Date       | Mission     | Target                        | Ran as  
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None: read
     in one pass, skipping a tag only inside an escape or a one-line code span before any raw HTML
-    line, unclear "<" or open backtick run. An identical copy of scripts/changelog.py's html_link
+    line, unclear "<", "[", bare URL or open backtick run, and loosely after one. An identical copy of scripts/changelog.py's html_link
     (this script is loaded alone; tests/test_changelog.py holds the two equal)."""
     lines = [m.span() for m in _LINE_RE.finditer(text)]
     starts = [start for start, _end in lines]
     # Backticks and escapes are text from the first line that may open raw HTML, from the first
-    # "<" that may begin raw HTML or an autolink and is not a plain one-line tag, and from the
-    # first backtick run left open on its line: past any of these, where a span or construct ends
-    # depends on the renderer.
+    # "<" that may begin raw HTML or an autolink and is not a plain one-line tag, from the first
+    # "[" (a link or image, whose text, destination or title may hold a backtick), from the first
+    # bare URL (GFM links it), and from the first backtick run left open on its line: past any of
+    # these, where a span or construct ends depends on the renderer, and a link tag is read as a
+    # browser reads raw HTML (_loose_link).
     literal = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
     i = 0
     while i < len(text):
         inline = i < literal
         if inline and text[i] == "\\":
             i += 2
+        elif inline and text[i] == "[":
+            literal, i = i, i + 1  # a link's text, destination or title may hold a backtick (Codex at d16ff6e5cc)
+        elif inline and _BARE_URL_RE.match(text, i):
+            literal, i = i, i + 1
         elif inline and text[i] == "`":
             line_end = lines[bisect.bisect_right(starts, i) - 1][1]
             run = len(text[i:line_end]) - len(text[i:line_end].lstrip("`"))
@@ -132,6 +160,8 @@ def html_link(text):
             tag = _tag(text, i)
             if tag and tag[1]:
                 return text[i:tag[0]]
+            if not inline and (loose := _loose_link(text, i)):
+                return loose
             if inline and tag and not _UNCLEAR_RE.search(text, i + 1, tag[0]):
                 i = tag[0]  # a whole one-line tag holding no backtick and no "<": skipping it hides nothing
             else:

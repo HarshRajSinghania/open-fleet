@@ -125,7 +125,10 @@ a fresh bare origin and clone. The clone is built from the task set's seed with 
 committer and date, so every run starts at the same registered seed commit. The runner and the
 verifier both check this. A task always starts from the integration head at the moment its wave
 opens. A bounced task is rebuilt from scratch from the integration head at that time. No
-worktree, branch, store or transcript is shared between runs.
+worktree, branch, store or transcript is shared between runs. The oracle, and the merge gate
+that reuses it, execute worker-written code on the coordinator. They run it in its own process
+group, under a timeout, with a minimal environment (PATH, a private HOME and TMPDIR, LANG,
+PYTHONPATH), and never with the coordinator's environment, where a harness API key lives.
 
 ## Confounds and how each is separated
 

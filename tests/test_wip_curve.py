@@ -609,6 +609,28 @@ class TestRunRefusals(Tmp):
                      rc=1, text="not started")
 
 
+class TestWorkerCodeRunsWithoutTheCoordinatorsEnvironment(Tmp):
+    """Adversarial pass (every subprocess): the oracle and the merge gate execute worker-written
+    code on the coordinator. They hand it a minimal environment and a private HOME and TMPDIR,
+    never the coordinator's own (where a harness API key lives)."""
+
+    def test_the_oracle_sees_no_coordinator_secret_and_no_real_home(self):
+        taskset = json.loads(TASKSET.read_text(encoding="utf-8"))
+        checkout = self.tmp / "ck"
+        wip.build_seed(taskset, checkout)
+        probe = {"id": "TX", "oracle": (
+            "import os, tempfile, unittest\n\n\nclass Oracle(unittest.TestCase):\n"
+            "    def test_environment(self):\n"
+            # booleans only: a failure must never print the environment it is guarding
+            "        self.assertFalse('WIP_CURVE_TEST_SECRET' in os.environ, 'a coordinator variable reached it')\n"
+            f"        self.assertFalse(os.environ.get('HOME') == {os.environ.get('HOME', '')!r}, 'the real HOME')\n"
+            "        self.assertTrue(tempfile.gettempdir().startswith(os.environ['HOME']), 'a private TMPDIR')\n"
+            "        self.assertFalse(len(os.environ) > 12, 'more than the minimal environment')\n")}
+        with mock.patch.dict(os.environ, {"WIP_CURVE_TEST_SECRET": "s3cret"}):
+            result = wip.run_oracle(checkout, [probe], taskset, self.tmp)
+        self.assertEqual(result["exit"], 0, result["tail"])
+
+
 class TestGate(Tmp):
     """The merge gate runs the oracle of every task the prefix commit contains, so a later unit
     that breaks a landed one fails the gate even when its own oracle passes."""

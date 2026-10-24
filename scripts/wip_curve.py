@@ -481,8 +481,14 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
     oracle_dir.mkdir(parents=True)
     for task in tasks:
         (oracle_dir / f"test_oracle_{task['id'].lower()}.py").write_text(task["oracle"], encoding="utf-8")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-    env.update(PYTHONPATH=str(checkout), PYTHONDONTWRITEBYTECODE="1")
+    # Worker-written code runs here, on the coordinator: it gets a minimal environment and its
+    # own HOME and TMPDIR, never the coordinator's (where a harness API key lives) (adversarial
+    # pass: every subprocess). PATH is this Python's directory and the system directories.
+    home = oracle_dir / "home"
+    (home / "tmp").mkdir(parents=True)
+    env = {"PATH": os.pathsep.join([os.path.dirname(sys.executable), "/usr/bin", "/bin"]), "HOME": str(home),
+           "TMPDIR": str(home / "tmp"), "LANG": "C.UTF-8", "PYTHONPATH": str(checkout),
+           "PYTHONDONTWRITEBYTECODE": "1"}
     steps, tail, exit_code = [], [], 0
     commands = [("visible", python_argv(*taskset["visible_tests"]))]
     if tasks:

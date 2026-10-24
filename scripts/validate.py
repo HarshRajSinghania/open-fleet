@@ -1182,25 +1182,17 @@ def check_badge_freshness(gen_module=None):
     return mod.check(include_test_count=False)
 
 
-def _load_script(name):
-    """A scripts/ tool loaded by path (no sys.path edits), or None when the checkout lacks it."""
-    path = ROOT / "scripts" / name
-    if not path.is_file():
-        return None
-    spec = importlib.util.spec_from_file_location("_validate_" + path.stem, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def check_changelog_fragments():
     """changelog.d/ fragments the release cut can fold (scripts/changelog.py). Shape only: the
     rule that CHANGELOG.md itself gains no [Unreleased] entry needs a PR base, so CI runs it as
     `changelog.py check --base`."""
-    mod = _load_script("changelog.py")
-    if mod is None:
+    path = ROOT / "scripts" / "changelog.py"  # loaded by path, as _countlint is: no sys.path edits
+    if not path.is_file():
         return ["scripts/changelog.py missing — nothing can fold changelog.d/ into a release"]
     try:
+        spec = importlib.util.spec_from_file_location("_validate_changelog", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
         return mod.check_fragments(ROOT / "changelog.d")
     except (OSError, ValueError) as err:  # a check reports; it never takes later gates down
         return [f"changelog fragments unreadable: {err}"]
@@ -1209,10 +1201,13 @@ def check_changelog_fragments():
 def check_run_index():
     """One well-formed docs/runs/index/<run>.json row per dated run report (scripts/run_index.py).
     The table and its yes-count in docs/runs/README.md are generated from them at the cut."""
-    mod = _load_script("run_index.py")
-    if mod is None:
+    path = ROOT / "scripts" / "run_index.py"  # loaded by path, as _countlint is: no sys.path edits
+    if not path.is_file():
         return ["scripts/run_index.py missing — the run index has no generator"]
     try:
+        spec = importlib.util.spec_from_file_location("_validate_run_index", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
         return mod.check_rows(ROOT) + mod.check_snapshot(ROOT)
     except (OSError, ValueError) as err:  # a check reports; it never takes later gates down
         return [f"run index unreadable: {err}"]

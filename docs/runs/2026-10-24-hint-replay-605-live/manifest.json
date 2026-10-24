@@ -1,0 +1,438 @@
+{
+  "unit": "hint-replay-605-live",
+  "claim": "#605 live arm, run once under the USD 40 cap: 2 scenarios x 3 arms (off / unchecked / checked) x 3 attempts with claude-opus-5-5 workers. Every arm passed 6/6 with 0 repeated failures (a ceiling, null result); 18/18 calls measured, USD 1.224182 notional spend.",
+  "base_sha": "85daf6d0cf4be9806965f5627bb383182beca4ec",
+  "head_sha": "9b814e7eee035fffcac0b969c7eb08012847722e",
+  "contract": {
+    "source": "docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e",
+    "digest": "sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb",
+    "criterion_ids": [
+      "LV-1",
+      "LV-2",
+      "LV-3",
+      "LV-4",
+      "LV-5",
+      "LV-6"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "LV-1",
+      "text": "Fixed point: the run used the frozen checkout 85daf6d0cf (its corpus hashes to the committed tests/fixtures/hint-replay.json) and the documented live command: USD 40 cap, USD 2 per-call reservation, --max-budget-usd 1.60 on every call, 18 runs, 3 attempts.",
+      "addressed": true
+    },
+    {
+      "id": "LV-2",
+      "text": "Spend observed and capped: every call was entered in the ledger at its reservation and settled at its measured total_cost_usd; the per-call charges re-derive from each call's own output; the total is within the cap; the run is complete and was not stopped.",
+      "addressed": true
+    },
+    {
+      "id": "LV-3",
+      "text": "The arms are what they claim: each call's packet carries its arm's hint selection (off: none; unchecked: historical mode, the note shown; checked: current mode, the useful note shown CURRENT and the stale note suppressed).",
+      "addressed": true
+    },
+    {
+      "id": "LV-4",
+      "text": "The outcome re-derives from the oracle outputs: per arm, runs, passes and repeated failures (an oracle failure matching the scenario's recorded pitfall).",
+      "addressed": true
+    },
+    {
+      "id": "LV-5",
+      "text": "Retention and hygiene: every output is retained byte-identical with its sha256, with the run script and the isolation wrapper; no credential shape is in any retained file; nothing was redacted.",
+      "addressed": true
+    },
+    {
+      "id": "LV-6",
+      "text": "An honest reading: the report states what the result shows and what it does not, names the ceiling, and names what a stronger follow-up would need.",
+      "addressed": true
+    }
+  ],
+  "negative_control": {
+    "tool": "source-binding",
+    "did": "re-derived every figure the report states from the retained bytes alone",
+    "command": "python3 docs/runs/2026-10-24-hint-replay-605-live/rederive.py",
+    "artifact": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt",
+    "result": "rederive.py exit 0: 102 checks PASS, 0 FAIL, on the content of head_sha"
+  },
+  "toolchain": "python 3.13.15 (macOS arm64); worker claude 2.1.304 via bin/claude",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/bin/claude",
+      "sha256": "e2c35ae7b1fef3a58ff3595233c048d6cef65305496ef68de4783a368ea07302"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/bin/run-605.sh",
+      "sha256": "8e59ecac088918b37ffb682e57ccc48a3d270ee018606f17e9600e795589c146"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/contract.json",
+      "sha256": "18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/rederive.py",
+      "sha256": "845c01a4c21e4d2c7c9ac399c471f652ed2fcf0a4acd1c9a544bf4b2c586a98f"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a1/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a1/agent.stdout",
+      "sha256": "8335686ea6058a055ef8627ab845e23329c8fd2ee68413c499bf70c91e7560d0"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a1/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a1/packet.md",
+      "sha256": "3ef5ce41702db2fe5a0819b8059f38336edb717ceaba6a43bbe6f1e68b5eac89"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a2/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a2/agent.stdout",
+      "sha256": "75b41249307f9e566a68c344c91da039a27cd6fc49de82e6b5e70fe512d71df4"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a2/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a2/packet.md",
+      "sha256": "3ef5ce41702db2fe5a0819b8059f38336edb717ceaba6a43bbe6f1e68b5eac89"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a3/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a3/agent.stdout",
+      "sha256": "0ef295d3d9380205ef9e4cd62ba3efb33eca7c7428f0844e67d5fa6cade2aa84"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a3/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.checked.a3/packet.md",
+      "sha256": "3ef5ce41702db2fe5a0819b8059f38336edb717ceaba6a43bbe6f1e68b5eac89"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a1/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a1/agent.stdout",
+      "sha256": "59109319e522c57a949f80451af1e03f3012356d8e4d90dbe4a1721dc823c617"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a1/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a1/packet.md",
+      "sha256": "e3abe201d5eabb9cd544701326b79fdebd6ff3c65558b44f79b15cf564743a97"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a2/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a2/agent.stdout",
+      "sha256": "be37c788496feab690318b7a4c1424997571e2b1aeb115c0f4a186db54d19ac4"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a2/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a2/packet.md",
+      "sha256": "e3abe201d5eabb9cd544701326b79fdebd6ff3c65558b44f79b15cf564743a97"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a3/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a3/agent.stdout",
+      "sha256": "e878530442bb4103d071312c3943a42234d58b4b79da341d9f93b0627521d391"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a3/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.off.a3/packet.md",
+      "sha256": "e3abe201d5eabb9cd544701326b79fdebd6ff3c65558b44f79b15cf564743a97"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a1/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a1/agent.stdout",
+      "sha256": "d1e56d60a6fba78d71b73d5011c912e1854787e3d155fe3721690336ca4e0e94"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a1/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a1/packet.md",
+      "sha256": "173892b91d43435fc0c30bc1dbc20f6d5e559ab2511c1e8a2bd6322b478ca3cb"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a2/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a2/agent.stdout",
+      "sha256": "257fc15dcb030b83c952ddf52007a8246a8ea831f9cd6e5aa241b80b845384d3"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a2/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a2/packet.md",
+      "sha256": "173892b91d43435fc0c30bc1dbc20f6d5e559ab2511c1e8a2bd6322b478ca3cb"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a3/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a3/agent.stdout",
+      "sha256": "8a0c8fc13280c4d5ef93a7c206235d1c41287b22d283522e635c2eacbf9b32ca"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a3/oracle.txt",
+      "sha256": "2a50b4749107e50e3993c9a59df48e8d8cebd81e26a286e83bb83d7fe81b2d90"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/pitfall-rounding.unchecked.a3/packet.md",
+      "sha256": "173892b91d43435fc0c30bc1dbc20f6d5e559ab2511c1e8a2bd6322b478ca3cb"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a1/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a1/agent.stdout",
+      "sha256": "aff872057415d1327c733b273943eef1d3d6e1c07db08624a792738edd62e4e7"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a1/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a1/packet.md",
+      "sha256": "24bb2dbc5d969f18f0fe6c596ed98dbf0a34a605c786aa8d42de8c4f4562c785"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a2/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a2/agent.stdout",
+      "sha256": "9055fad6e1ab720bac66458192ab929627ba765f4ac8051c0a890377d8779d4f"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a2/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a2/packet.md",
+      "sha256": "24bb2dbc5d969f18f0fe6c596ed98dbf0a34a605c786aa8d42de8c4f4562c785"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a3/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a3/agent.stdout",
+      "sha256": "34fb5b30601e1da715d398ebddd8d65aa6f210339c6d5ea00e6ee5f9f4709268"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a3/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.checked.a3/packet.md",
+      "sha256": "24bb2dbc5d969f18f0fe6c596ed98dbf0a34a605c786aa8d42de8c4f4562c785"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a1/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a1/agent.stdout",
+      "sha256": "e78e05a6fff1f1f8918b6c0e5e2e81666cc812239a89fb2ddd3ec2eced939208"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a1/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a1/packet.md",
+      "sha256": "966fe086407cb11867910c29555109525ade61b8673302015995c43ec29fb0fc"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a2/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a2/agent.stdout",
+      "sha256": "dd44fd1be97eecafb20b6ad83b3fa6493a8f5d04d1f403d468c9332df2fa8da9"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a2/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a2/packet.md",
+      "sha256": "966fe086407cb11867910c29555109525ade61b8673302015995c43ec29fb0fc"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a3/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a3/agent.stdout",
+      "sha256": "7b0b464fcea1896e9578c8e7a5315e057f881e85047412eece0a243419d2ba5d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a3/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.off.a3/packet.md",
+      "sha256": "966fe086407cb11867910c29555109525ade61b8673302015995c43ec29fb0fc"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a1/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a1/agent.stdout",
+      "sha256": "a2fc07c1aeb6ccc41e928eb797e03a5d549ae119d8bab551a30c7585ee781d04"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a1/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a1/packet.md",
+      "sha256": "c250e1f86a8f277d56c2cccd1154aff3b3614e49ec79ac5a98f01d41c0800df8"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a2/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a2/agent.stdout",
+      "sha256": "f68b3829f41a37ccbb3b75dd6a5e58241fabc2cfc67ce847a408d0e175e1fdc7"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a2/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a2/packet.md",
+      "sha256": "c250e1f86a8f277d56c2cccd1154aff3b3614e49ec79ac5a98f01d41c0800df8"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a3/agent.stderr",
+      "sha256": "de8f61180dfd6b00ad02c9688d8fbe00b27cad193f4531c9e2017688bbeca57d"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a3/agent.stdout",
+      "sha256": "58a9c030878cde66f15ff14dc0d8b41b4dcc7322d35ad0995b7b793d18c9a4c9"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a3/oracle.txt",
+      "sha256": "445221b98f22d14309aaea4fee1a9f41c9659ced4c922d71fbc0dcbbde571045"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.calls/20261024T070734-5839-f8f2c0d1/stale-advice-trap.unchecked.a3/packet.md",
+      "sha256": "c250e1f86a8f277d56c2cccd1154aff3b3614e49ec79ac5a98f01d41c0800df8"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.json",
+      "sha256": "8681cc2a98e7ed7b74396fefb388ad21df4becc466bae9fa9df49b7d72efe834"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/results.spend.jsonl",
+      "sha256": "796f4b06723a0a04acdd61fff7037f04869fb3063032edeac568a834ce081ce1"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/run.log",
+      "sha256": "449d390f02a7743f8c9a6012567bc73f0af023f7e053c8ca5f039cf1a17fdbab"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt",
+      "sha256": "7b243f682b962d262157975df0ad5036f2a3808de29c50bbc343b89e316c55ef"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/verifier-signed.txt",
+      "sha256": "962fcea0a3a3fa7ae8c0842383cdd87d97640836426fe6f193b654cef49c74c6"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/verifier.txt",
+      "sha256": "ef2d781c74b73def57183f216e0082d4e8990974a052f4b8b315f302bf986a94"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/verifier-signed-2.txt",
+      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
+    }
+  ],
+  "commands": [
+    {
+      "label": "rederive",
+      "ts": "2026-10-24T07:21:33Z",
+      "cmd": "python3 docs/runs/2026-10-24-hint-replay-605-live/rederive.py",
+      "cmd_sha256": "e8e8d5268eeefbc709392268b1ee91eba9bc7d071021f72d585ced84c496ae28",
+      "exit": 0,
+      "duration_s": 0.024,
+      "commit": "9b814e7eee035fffcac0b969c7eb08012847722e",
+      "wtree": "b57f03eb12cee1c8e1bae295a51f1b1059525e7c",
+      "artifact": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-24T07:21:59Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --contract-source docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e --contract-digest sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb --unit-class report-only",
+      "cmd_sha256": "7860f7c0516b70cc68e241ba5d6faa3fb079805b0f5b9919d235a3efd126d750",
+      "exit": 2,
+      "duration_s": 4.316,
+      "commit": "6240133480ad11ada924700e6e2565fc2fa56541",
+      "wtree": "ef145e282079489528ff9ceb7cf1518f16fdf218",
+      "artifact": "docs/runs/2026-10-24-hint-replay-605-live/verifier.txt"
+    },
+    {
+      "label": "verifier-signed",
+      "ts": "2026-10-24T07:34:55Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --contract-source docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e --contract-digest sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb --unit-class report-only --dispatch-record docs/runs/2026-10-24-hint-replay-605-live/dispatch-record.json@72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af --dispatch-pubkey docs/runs/2026-10-24-hint-replay-605-live/dispatch-pubkey.hex@72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af",
+      "cmd_sha256": "c2541998dcfdb24c46eefc887c4d2a9301a9b5081ecb6b6d6ed0508fdece38db",
+      "exit": 2,
+      "duration_s": 4.5,
+      "commit": "72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af",
+      "wtree": "d4ef02148d70dfc8c3d930d6d6c1ed9d1decac86",
+      "artifact": "docs/runs/2026-10-24-hint-replay-605-live/verifier-signed.txt"
+    },
+    {
+      "label": "verifier-signed-2",
+      "ts": "2026-10-24T07:36:16Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-hint-replay-605-live/manifest.json --contract-source docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e --contract-digest sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb --unit-class report-only --dispatch-record docs/runs/2026-10-24-hint-replay-605-live/dispatch-record.json@72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af --dispatch-pubkey docs/runs/2026-10-24-hint-replay-605-live/dispatch-pubkey.hex@72e702c20c1a75a9b44c7e6d50f6cf0ba97e28af",
+      "cmd_sha256": "c2541998dcfdb24c46eefc887c4d2a9301a9b5081ecb6b6d6ed0508fdece38db",
+      "exit": 0,
+      "duration_s": 4.713,
+      "commit": "ee0635aa7ddaea4726bccdd400242acd0d8ac8c8",
+      "wtree": "b0352177b8982d7a406173eba4517a6fe3d9aa95",
+      "artifact": "docs/runs/2026-10-24-hint-replay-605-live/verifier-signed-2.txt"
+    }
+  ]
+}

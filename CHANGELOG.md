@@ -109,6 +109,17 @@ truth is `.claude-plugin/plugin.json`.
   stream reported, and each call's limit is floored to the cent within its reservation. #606's
   trajectory cells now get their repository-document injection.
   `tests/test_trajectory_live.py` pins each guard with an inert stand-in agent.
+- **#605's live hint replay ran, and its report binds** (#605). The owner-authorised live arm
+  ran once from origin/main `85daf6d0cf`: 2 scenarios × 3 arms (hints off / unchecked / checked)
+  × 3 attempts, with `claude-opus-5-5` workers behind an isolation wrapper, under the USD 40 cap.
+  [docs/runs/2026-10-24-hint-replay-605-live.md](docs/runs/2026-10-24-hint-replay-605-live.md)
+  retains the results, the spend ledger, every call's packet, output and oracle, and the run
+  script and wrapper. `run_report.py` binds it at `doctrine-only`. `verify.py` is GREEN under a
+  dispatch record the coordinator signed for this unit with its local dispatch key, and the report
+  states the key's custody; the two RED runs before it are recorded. The result is a ceiling, null result. Every arm passed 6/6 with 0 repeated failures,
+  for USD 1.22 of notional spend, so on this corpus hints neither helped nor hurt and the arms
+  cannot be separated. Freshness labelling and poisoned-note withholding remain pinned by
+  `hint_replay.py --check`. A stronger test needs scenarios with real repeated failures.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""live_broker.py — the live harness's credential broker: the one process that holds the
+subscription token, alone in its own container beside the arm's (scripts/live_container.py starts
+both; docs/guides/live-harness.md is the operator's guide).
+
+The arm's container shares this container's network namespace and nothing else: it reaches the
+broker at 127.0.0.1:PORT, never its files, its processes or its environment. The arm's `claude`
+(scripts/live_container_bin/claude) sends every model call here with a placeholder credential. The
+broker forwards POST /v1/messages and /v1/messages/count_tokens to the API with the token in its
+place and refuses every other request. So no process of the arm can read the token, and no model
+call it makes, through claude or around it, escapes the cap.
+
+The cap is a reservation ledger. A call starts only when the settled spend, the reservations of
+the calls still in flight and its own reservation fit under --cap-usd. Its reservation is its
+worst case at its model's highest list price: its body's bytes as input tokens (no token is
+shorter than a byte) plus FRAMING_TOKENS for the API's own framing, all priced as 1-hour cache
+writes, and its max_tokens as output. When it ends, the reservation is released and the usage the
+API reported is settled as the API bills it; a call that ends without a complete usage report
+settles its whole reservation. Nothing unpriced runs: a model with no price, a body that is not a JSON object with a
+positive max_tokens, and a server-side tool or MCP server (billed beyond tokens) are refused.
+
+The ledger (--ledger, appended, mode 0600) is one JSON line per event: open, start, settle and
+refuse. It never holds the token, a request or a response. The launcher reads it after both
+containers are destroyed, into the receipt.
+"""
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import re
+import sys
+import threading
+import time
+import urllib.parse
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = 8787  # scripts/live_container_bin/claude's BROKER names the same port
+UPSTREAM = "https://api.anthropic.com"
+OAUTH_BETA = "oauth-2025-04-20"  # a subscription token is an OAuth bearer token
+# USD per million tokens (input, output, cache read): the Claude API's list prices as of
+# 2026-10-06. A cache write is 1.25x input for the 5-minute TTL and 2x for the 1-hour one; fast
+# mode is 2x. Haiku 5.5 costs more above 100K prompt tokens (TIERED).
+PRICES = {
+    "claude-fable-5-1": (10.0, 50.0, 0.25), "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.20), "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-opus-4-8": (5.0, 25.0, 0.50), "claude-opus-4-7": (5.0, 25.0, 0.50),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.20), "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-haiku-4-5": (1.0, 5.0, 0.10),
+}
+TIERED = {"claude-haiku-5-5": (100_000, (0.50, 2.50, 0.05))}
+WRITE_5M, WRITE_1H, FAST = 1.25, 2.0, 2.0
+FRAMING_TOKENS = 4096
+MAX_BODY = 64 << 20
+UPSTREAM_TIMEOUT_S = 900
+PRICED_PATH, FREE_PATH = "/v1/messages", "/v1/messages/count_tokens"
+SERVER_TOOL_RE = re.compile(r"^(web_search|web_fetch|code_execution)")
+DATED_RE = re.compile(r"-\d{8}$")
+# What the client sent that never reaches the API: its credential, and hop-by-hop headers.
+DROP = {"host", "authorization", "x-api-key", "content-length", "connection", "keep-alive", "proxy-authorization",
+        "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "accept-encoding", "cookie"}
+DROP_BACK = {"content-length", "transfer-encoding", "connection", "keep-alive", "content-encoding", "set-cookie"}
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def model_key(model):
+    """The PRICES key for `model` (a dated id prices as its alias), or None."""
+    key = DATED_RE.sub("", model) if isinstance(model, str) else None
+    return key if key in PRICES else None
+
+
+def priced(usage, model, fast=False):
+    """USD for one call's reported usage, as the API bills it: each cache write at its TTL's rate
+    (the 1-hour rate when the report does not split them), at the tier its prompt reached."""
+    key = model_key(model)
+    tokens = lambda key, doc=usage: max(int(doc.get(key) or 0), 0)
+    prompt = tokens("input_tokens") + tokens("cache_creation_input_tokens") + tokens("cache_read_input_tokens")
+    inp, out, read = PRICES[key]
+    if key in TIERED and prompt > TIERED[key][0]:
+        inp, out, read = TIERED[key][1]
+    split = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+    w5, w1 = tokens("ephemeral_5m_input_tokens", split), tokens("ephemeral_1h_input_tokens", split)
+    written = tokens("cache_creation_input_tokens")
+    write = w5 * WRITE_5M + w1 * WRITE_1H if split and w5 + w1 == written else written * WRITE_1H
+    usd = (tokens("input_tokens") * inp + write * inp + tokens("cache_read_input_tokens") * read
+           + tokens("output_tokens") * out) / 1e6
+    return usd * (FAST if fast else 1)
+
+
+def reservation(body_len, max_tokens, model, fast=False):
+    """USD for one call's worst case: every byte of its body an input token written to the 1-hour
+    cache, plus the framing, and every token of max_tokens an output token, at its highest tier."""
+    key = model_key(model)
+    inp, out, _read = TIERED[key][1] if key in TIERED else PRICES[key]
+    usd = ((body_len + FRAMING_TOKENS) * inp * WRITE_1H + max_tokens * out) / 1e6
+    return usd * (FAST if fast else 1)
+
+
+def why_unpriced(doc):
+    """Why a /v1/messages body cannot be priced, or None."""
+    if not isinstance(doc, dict):
+        return "the body is not a JSON object"
+    if model_key(doc.get("model")) is None:
+        return f"no price for model {doc.get('model')!r}: the broker runs only {', '.join(sorted(PRICES))}"
+    max_tokens = doc.get("max_tokens")
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+        return "the body carries no positive integer max_tokens"
+    for tool in doc.get("tools") or []:
+        kind = tool.get("type") if isinstance(tool, dict) else None
+        if isinstance(kind, str) and SERVER_TOOL_RE.match(kind):
+            return f"a server-side tool ({kind}) is billed beyond its tokens"
+    if doc.get("mcp_servers") or doc.get("container"):
+        return "an MCP server or a container is billed beyond its tokens"
+    return None
+
+
+def merged_usage(seen, usage):
+    """The API reports usage at message_start and (cumulatively) at message_delta: keep each
+    count's largest value, the cache-write split's included."""
+    for key, value in (usage or {}).items():
+        if isinstance(value, int) and not isinstance(value, bool):
+            seen[key] = max(seen.get(key, 0), value)
+        elif key == "cache_creation" and isinstance(value, dict):
+            merged_usage(seen.setdefault(key, {}), value)
+    return seen
+
+
+class Ledger:
+    """The reservation ledger: settled spend, the calls in flight, and the append-only file."""
+
+    def __init__(self, path, cap_usd):
+        self.cap, self.settled, self.inflight, self.n = cap_usd, 0.0, {}, 0
+        self.lock = threading.Lock()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        self.fh = os.fdopen(fd, "a", encoding="utf-8")
+        self.write({"event": "open", "cap_usd": cap_usd, "prices_usd_per_mtok": PRICES, "tiered": TIERED,
+                    "framing_tokens": FRAMING_TOKENS, "pid": os.getpid()})
+
+    def write(self, entry):
+        self.fh.write(json.dumps({"at": now(), **entry}, sort_keys=True) + "\n")
+        self.fh.flush()
+        os.fsync(self.fh.fileno())
+
+    def reserve(self, model, usd):
+        """A call id when the call fits under the cap with every call in flight, else None."""
+        with self.lock:
+            committed = self.settled + sum(self.inflight.values())
+            if committed + usd > self.cap:
+                self.write({"event": "refuse", "model": model, "reserved_usd": round(usd, 6),
+                            "committed_usd": round(committed, 6), "why": "the cap"})
+                return None
+            self.n += 1
+            self.inflight[self.n] = usd
+            self.write({"event": "start", "call": self.n, "model": model, "reserved_usd": round(usd, 6)})
+            return self.n
+
+    def refuse(self, why, model=None):
+        with self.lock:
+            self.write({"event": "refuse", "model": model, "why": why})
+
+    def settle(self, call, usd, status, usage, complete):
+        """Release the call's reservation and settle `usd`, or the whole reservation when None."""
+        with self.lock:
+            reserved = self.inflight.pop(call, 0.0)
+            usd = reserved if usd is None else usd
+            self.settled += usd
+            self.write({"event": "settle", "call": call, "cost_usd": round(usd, 6), "status": status, "usage": usage,
+                        "complete": complete, "settled_usd": round(self.settled, 6)})
+
+
+class Broker(BaseHTTPRequestHandler):
+    """One request: forwarded with the token in place of the client's credential, or refused."""
+
+    server_version = "open-fleet-live-broker"
+    token = ledger = upstream = None  # set by serve()
+
+    def log_message(self, *args):  # no request line anywhere: the ledger is the record
+        pass
+
+    def fail(self, status, kind, why):
+        data = json.dumps({"type": "error", "error": {"type": kind, "message": f"open-fleet live broker: {why}"}})
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data.encode())
+
+    def do_GET(self):
+        if self.path == "/health":
+            data = json.dumps({"ok": True, "cap_usd": self.ledger.cap}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.ledger.refuse(f"GET {urllib.parse.urlsplit(self.path).path}")
+        self.fail(403, "permission_error", "only POST /v1/messages and /v1/messages/count_tokens are forwarded")
+
+    def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path not in (PRICED_PATH, FREE_PATH):
+            self.ledger.refuse(f"POST {path}")
+            return self.fail(403, "permission_error", "only POST /v1/messages and /v1/messages/count_tokens are forwarded")
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            return self.fail(411, "invalid_request_error", "a request needs a Content-Length")
+        if not 0 <= length <= MAX_BODY:
+            return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
+        body = self.rfile.read(length)
+        if path == FREE_PATH:
+            return self.relay(body, None, None, False)
+        try:
+            doc = json.loads(body)
+        except ValueError:
+            doc = None
+        why = why_unpriced(doc)
+        model = doc.get("model") if isinstance(doc, dict) else None
+        if why:
+            self.ledger.refuse(why, model)
+            return self.fail(400, "invalid_request_error", why)
+        fast = doc.get("speed") == "fast"
+        call = self.ledger.reserve(model, reservation(len(body), doc["max_tokens"], model, fast))
+        if call is None:
+            return self.fail(403, "permission_error", f"the spend cap (${self.ledger.cap:g}) would be passed")
+        self.relay(body, call, model, fast)
+
+    def relay(self, body, call, model, fast):
+        """Forward to the API and relay the answer as it arrives; settle the call's usage."""
+        usage, complete, status = {}, False, None
+        try:
+            up = urllib.parse.urlsplit(self.upstream)
+            conn_cls = http.client.HTTPSConnection if up.scheme == "https" else http.client.HTTPConnection
+            conn = conn_cls(up.hostname, up.port, timeout=UPSTREAM_TIMEOUT_S)
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in DROP}
+            betas = [b.strip() for b in self.headers.get("anthropic-beta", "").split(",") if b.strip()]
+            headers = {k: v for k, v in headers.items() if k.lower() != "anthropic-beta"}
+            headers.update({"Authorization": f"Bearer {self.token}", "Accept-Encoding": "identity",
+                            "anthropic-beta": ",".join(betas + ([OAUTH_BETA] if OAUTH_BETA not in betas else []))})
+            conn.request("POST", self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+            status = resp.status
+            self.send_response(resp.status)
+            for key, value in resp.getheaders():
+                if key.lower() not in DROP_BACK:
+                    self.send_header(key, value)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            sse = "text/event-stream" in (resp.getheader("Content-Type") or "")
+            pending, whole = b"", []
+            while chunk := resp.read1(65536):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                if call is None:
+                    continue
+                if not sse:
+                    whole.append(chunk)
+                    continue
+                pending += chunk
+                *lines, pending = pending.split(b"\n")
+                for line in lines:
+                    if not line.startswith(b"data:"):
+                        continue
+                    try:
+                        event = json.loads(line[5:])
+                    except ValueError:
+                        continue
+                    if event.get("type") == "message_start":
+                        merged_usage(usage, (event.get("message") or {}).get("usage"))
+                    elif event.get("type") == "message_delta":
+                        merged_usage(usage, event.get("usage"))
+                    elif event.get("type") == "message_stop":
+                        complete = True
+            if call is not None and not sse:
+                try:
+                    doc = json.loads(b"".join(whole))
+                except ValueError:
+                    doc = None
+                if isinstance(doc, dict) and isinstance(doc.get("usage"), dict):
+                    merged_usage(usage, doc["usage"])
+                    complete = status == 200
+                elif status != 200:  # an error the API answered at once bills nothing
+                    complete = True
+            conn.close()
+        except Exception as err:  # the client left, or the API did: whatever ran is settled below
+            if status is None:
+                try:
+                    self.fail(502, "api_error", f"the API could not be reached ({type(err).__name__})")
+                except OSError:
+                    pass
+        finally:
+            if call is not None:
+                self.ledger.settle(call, priced(usage, model, fast) if complete else None, status, usage, complete)
+
+
+def read_token(path):
+    """The token, from the read-only mount: one ASCII line. A refusal names the path, never a byte."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        token = raw.decode("ascii").strip()
+    except (OSError, UnicodeDecodeError) as err:
+        raise SystemExit(f"live_broker: cannot read the token at {path} ({type(err).__name__})") from None
+    if not token or any(c.isspace() for c in token):
+        raise SystemExit(f"live_broker: the token at {path} must be one line")
+    return token
+
+
+def serve(token, ledger_path, cap_usd, port=PORT, upstream=UPSTREAM, host="127.0.0.1"):
+    """A started server (its own thread) and its ledger; the caller owns shutdown."""
+    handler = type("BoundBroker", (Broker,), {"token": token, "ledger": Ledger(ledger_path, cap_usd),
+                                              "upstream": upstream})
+    server = ThreadingHTTPServer((host, port), handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, handler.ledger
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="live_broker.py", description=__doc__.split("\n", 1)[0])
+    p.add_argument("--token-file", required=True)
+    p.add_argument("--ledger", required=True)
+    p.add_argument("--cap-usd", type=float, required=True)
+    p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--upstream", default=UPSTREAM, help=argparse.SUPPRESS)
+    args = p.parse_args(argv)
+    if not args.cap_usd > 0:
+        p.error("--cap-usd must be a positive number of dollars")
+    server, _ledger = serve(read_token(args.token_file), args.ledger, args.cap_usd, args.port, args.upstream)
+    print(f"live_broker: listening on 127.0.0.1:{server.server_address[1]}, cap ${args.cap_usd:g}", file=sys.stderr)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        server.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

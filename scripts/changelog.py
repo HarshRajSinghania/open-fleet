@@ -51,6 +51,10 @@ _TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
 _TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
                           re.IGNORECASE)
 _TAG_END_RE = re.compile(r"\s*/?>")
+# Where a Markdown block ends: a code span never crosses one (CommonMark: inlines are parsed
+# within a block). A blank line, or a line opening a list item, heading, quote or fence.
+_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|#{1,6}(?:[ \t]|$)|>|```|~~~)",
+                           re.MULTILINE)
 UNRELEASED = "## [Unreleased]"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -59,8 +63,8 @@ def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None.
 
     Scanned left to right as a renderer does: a backslash escape is text, a code span (a run of
-    N backticks closed by the next run of exactly N) renders literally, so a tag inside one is no
-    link, and an unclosed run is plain backticks. scripts/run_index.py keeps an identical copy:
+    N backticks closed by the next run of exactly N in the same block) renders literally, so a
+    tag inside one is no link, and an unclosed run is plain backticks. scripts/run_index.py keeps an identical copy:
     it is loaded alone, so it cannot import this one (tests/test_changelog.py holds them equal).
     """
     i = 0
@@ -69,7 +73,8 @@ def html_link(text):
             i += 2
         elif text[i] == "`":
             run = len(text) - i - len(text[i:].lstrip("`"))
-            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run)
+            block = _BLOCK_END_RE.search(text, i + run)
+            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, block.start() if block else len(text))
             i = close.end() if close else i + run
         elif text[i] == "<" and (name := _TAG_NAME_RE.match(text, i)):
             pos, link = name.end(), False

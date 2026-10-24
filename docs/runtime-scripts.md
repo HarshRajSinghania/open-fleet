@@ -36,7 +36,7 @@ boundary rather than assembling a gate command from its flags alone.
 | Review a pack pin bump for rug-pulls | [`pin_review.py`](#pin_reviewpy) | [Pack pin bumps](../runtime/orca-pin.md#pack-pin-bumps-carry-a-rug-pull-review-559), [`pins.json`](#pinsjson), plus the section below |
 | See how far a provider/harness route is proven, or which cells a re-pin voids | [`certification.py`](#certificationpy) | [Certification](certification.md) |
 | Reproduce a first run on the posix route, inert or live, and its negative probes | [`first_run.py`](#first_runpy) | [First run on a clean host](certification.md#first-run-on-a-clean-host) |
-| Run a paid live experiment arm in a disposable container | [`live_container.py`](../scripts/live_container.py), checked inside by [`containment.py`](#containmentpy) | [Live harness guide](guides/live-harness.md) |
+| Run a paid live experiment arm in a disposable container | [`live_container.py`](../scripts/live_container.py) with its credential broker [`live_broker.py`](../scripts/live_broker.py), checked inside by [`containment.py`](#containmentpy) | [Live harness guide](guides/live-harness.md) |
 
 The remaining reference sections cover:
 

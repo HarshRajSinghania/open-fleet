@@ -2541,6 +2541,17 @@ class TestAnUncontainedMergeGateHaltsTheRun(Tmp):
         self.assertEqual(run.gate_tags(), lines[:1])
         self.assertEqual(run.halt, "orphan-alive")
 
+    def test_a_failed_containment_overrides_any_earlier_halt(self):
+        # Codex at 47e0616eac: every containment failure sets orphan-alive over whatever halted the
+        # run first, since each guard that stops the next oracle or gate asks for orphan-alive.
+        (self.tmp / "gate-tags.txt").write_text(f"UNCONTAINED {self.tmp}\n", encoding="utf-8")
+        for earlier in ("model-mismatch", "cost-cap", "time-limit"):
+            with self.subTest(earlier=earlier):
+                run = bare_run(self.tmp)
+                run.sb, run.halt = argparse.Namespace(dir=self.tmp), earlier
+                run.gate_tags()
+                self.assertEqual(run.halt, "orphan-alive")
+
 
 class TestEveryOracleMarkerIsSwept(Tmp):
     """PR #668 review (Codex C-d): each oracle call, and each merge-gate oracle the merge queue runs,
@@ -2975,6 +2986,14 @@ class TestAnUncontainedGateStopsTheDrain(Tmp):
     def test_a_run_already_halted_orphan_alive_starts_no_gate(self):
         _run, calls, attempts = self.merge([], halt="orphan-alive")
         self.assertEqual(calls, [], "a gate could start after a failed containment")
+
+    def test_an_uncontained_gate_overrides_an_earlier_halt(self):
+        # Codex at 47e0616eac: `halt = halt or "orphan-alive"` kept an earlier reason, and every
+        # guard asks for orphan-alive, so after a model-mismatch the drain went on beside a survivor.
+        run, calls, _attempts = self.merge(["d" * 32, f"UNCONTAINED {self.tmp / 'kept'}"], halt="model-mismatch")
+        self.assertEqual(run.halt, "orphan-alive")
+        self.assertEqual(calls.count("drain"), 1, f"the queue drained again after an uncontained gate: {calls}")
+        self.assertNotIn("resolve", calls, f"the entry was bounced after an uncontained gate: {calls}")
 
 
 class TestNoOracleStartsAfterAnUncontainedOne(Tmp):

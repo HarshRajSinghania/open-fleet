@@ -44,6 +44,10 @@ _TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
 _TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
                           re.IGNORECASE)
 _TAG_END_RE = re.compile(r"\s*/?>")
+# Where a Markdown block ends: a code span never crosses one (CommonMark: inlines are parsed
+# within a block). A blank line, or a line opening a list item, heading, quote or fence.
+_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|#{1,6}(?:[ \t]|$)|>|```|~~~)",
+                           re.MULTILINE)
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
@@ -62,7 +66,8 @@ def html_link(text):
             i += 2
         elif text[i] == "`":
             run = len(text) - i - len(text[i:].lstrip("`"))
-            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run)
+            block = _BLOCK_END_RE.search(text, i + run)
+            close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, block.start() if block else len(text))
             i = close.end() if close else i + run
         elif text[i] == "<" and (name := _TAG_NAME_RE.match(text, i)):
             pos, link = name.end(), False

@@ -381,6 +381,7 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** `x` and `<a href="../docs/ops.md">ops</a>` are both spans.\n',
         '- **Change** <a name="anchor">no link attribute</a>.\n',
         '- **Change** an escaped \\<a href="../docs/ops.md"> is text.\n',
+        '- **Change** a span `across\n  a soft break <a href="../docs/ops.md">` is code.\n',
     )
     REFUSED = (
         '- **Change** <a\n  title="x"\n  href="../docs/ops.md">ops</a>.\n',
@@ -388,6 +389,11 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** <img src="../assets/x.png"/>.\n',
         '- **Change** an unclosed `span, then <a href="../docs/ops.md">ops</a>.\n',
         '- **Change** `code` then <a href="../docs/ops.md">ops</a>.\n',
+        # a code span never crosses a block (Codex at 47e0616eac): a list item, a blank line, a heading
+        '- **Change** an open `span\n- <a href="../docs/ops.md">ops</a> and a closing `.\n',
+        '- **Change** an open `span\n\n<a href="../docs/ops.md">ops</a> then `.\n',
+        '- **Change** an open `span\n## <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** an open `span\n1. <a href="../docs/ops.md">ops</a> `\n',
     )
 
     def errors(self, text):

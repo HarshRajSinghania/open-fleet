@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """live_container.py — the container-based live harness: ONE paid live arm in a fresh, disposable
-Linux container, destroyed after (PR #668; docs/guides/live-harness.md is the operator's guide).
+Linux container beside a credential broker in its own, both destroyed after (PR #668;
+docs/guides/live-harness.md is the operator's guide).
 
   build   build the harness image from scripts/live_container.Dockerfile: the base pinned by
           digest, git, and Claude Code pinned to one version by its official installer, installed
@@ -12,7 +13,9 @@ Linux container, destroyed after (PR #668; docs/guides/live-harness.md is the op
               trajectories  scripts/eval.py run --suite trajectories ARGS
               first_run     runtime/scripts/first_run.py ARGS
           ARGS follow `--`; inside the container the repository is /repo (read-only) and the
-          results directory is /results, the working directory, where every output must go
+          results directory is /results, the working directory, where every output must go: an
+          arm's output flag (OUTPUTS) must name a path under it, and an arm whose ledger defaults
+          to a temp dir must name one (REQUIRED)
 
 Why a container. Process containment (runtime/scripts/containment.py) finds every process of a
 paid call by the OF_CALL_ID marker in its environment. On macOS no sweep can see every
@@ -23,32 +26,46 @@ own hostname, and the strong probe passing, which it does on Linux. Destroying t
 the final backstop for anything in-process containment misses, a process that clears its own
 environment included.
 
-What the container gets: the image's non-root user, --rm, a pids/memory/CPU limit, no capability,
-no-new-privileges, no privileged flag and no host namespace; the subscription token as a read-only
-file mount (SECRET) of the operator's 0600 token file, never in the container's environment, so
-`docker inspect` never shows it, nor any command line or log (inside, scripts/live_container_bin/
-claude, first on PATH, reads it and execs the pinned Claude Code with the token in that process's
-own environment); a clean export of the checkout's HEAD, read-only (the launcher refuses a dirty tree, and nothing the container writes reaches the
-checkout, its .git or its ignored files); one read-write results directory, so the spend ledger
-and the evidence outlive the container; and the attestation, read-only. A wall-clock limit ends
-it: the launcher kills and removes the container, then verifies with `docker ps -a --filter`
-that it no longer exists. The receipt, written outside every mount, records all of it.
+The token never enters the arm's container (Codex at 47e0616eac: its uid runs the agents and the
+tests they write, so any of them could read a token mounted there). It is mounted read-only
+(SECRET) into a second container that runs scripts/live_broker.py alone, the credential broker.
+The arm's container joins the broker's network namespace and nothing else; its `claude`
+(scripts/live_container_bin/claude, first on PATH) sends every model call to the broker, which
+puts the token in place of a placeholder and refuses any call that would pass --cap-usd. The
+broker's ledger is written beside the receipt, out of the arm's reach, and summarised in it.
+
+What the arm's container gets: the image's non-root user, --rm, a pids/memory/CPU limit, no
+capability, no-new-privileges, no privileged flag, no host namespace, and the broker's network
+alone; a clean export of the checkout's HEAD, read-only (the launcher refuses a dirty tree, and
+nothing the container writes reaches the checkout, its .git or its ignored files); one read-write
+results directory, so the arm's own ledger and evidence outlive the container; and the
+attestation, read-only. The broker's container gets the same user, hardening and export, limits
+of its own, the token file read-only, and its ledger directory. One launch at a time holds LOCK,
+from the leftover check to the receipt. A wall-clock limit ends it: the launcher kills and removes
+both containers, then verifies with `docker ps -a --filter label=LABEL=<nonce>` that neither
+exists. A teardown step that fails or times out is recorded, never raised, so the receipt,
+written outside every mount, is always written. The container's output is saved through a
+redactor to a 0600 file: no byte of the token reaches the disk.
 
 The limit, honestly: this guards against accidents on the host, never against an operator who
 deliberately fakes a container (as root: a /.dockerenv, an attestation, a hostname). The
 attestation proves which launch a container came from to the receipt, not to an adversary.
 
-Exit: the arm's exit status, once the container is verified destroyed · 2 usage or a refused
-start (nothing was created) · 3 the container could not be verified destroyed (fail closed) ·
-124 the wall-clock limit ended it (verified destroyed) · 128+N on signal N (verified destroyed).
+Exit: the arm's exit status, once both containers are verified destroyed · 2 usage or a refused
+start (whatever was created is destroyed first) · 3 a container could not be verified destroyed
+(fail closed) · 124 the wall-clock limit ended it (verified destroyed) · 128+N on signal N
+(verified destroyed).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import secrets
 import shutil
 import signal
@@ -56,6 +73,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,14 +84,18 @@ DOCKERFILE = ROOT / "scripts" / "live_container.Dockerfile"
 CLAUDE_CODE = "2.1.304"
 IMAGE = f"open-fleet-live:claude-{CLAUDE_CODE}"
 LABEL = "org.open-fleet.live-harness"  # every harness container carries it: its value is the nonce
+ROLE_LABEL = "org.open-fleet.role"  # broker or arm
 DOCKERFILE_LABEL = "org.open-fleet.dockerfile-sha256"
-TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"  # set by the in-container wrapper in claude's own process, nowhere else
+TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"  # never in any environment the launcher sets: the broker holds the token
 TOKEN_FILE = "~/of-live/oauth-token"
 RECEIPTS = "~/of-live/receipts"
+LOCK = "~/of-live/live-harness.lock"  # held by one launch from its leftover check to its receipt
 USER = "10001:10001"  # the image's `runner`, never root
-REPO_IN, RESULTS_IN = "/repo", "/results"
-SECRET = "/run/secrets/claude_token"  # the token: a read-only file mount, never the container's environment
-WRAPPER_DIR = "scripts/live_container_bin"  # its `claude` reads SECRET and execs the pinned Claude Code
+REPO_IN, RESULTS_IN, LEDGER_IN = "/repo", "/results", "/ledger"
+SECRET = "/run/secrets/claude_token"  # the token: a read-only file mount in the broker's container alone
+BROKER_SCRIPT, BROKER_PORT = "scripts/live_broker.py", 8787
+BROKER_LIMITS = {"pids": 64, "memory": "512m", "cpus": "1"}
+WRAPPER_DIR = "scripts/live_container_bin"  # its `claude` sends every model call to the broker
 # The container's whole PATH: the wrapper first, and never ~/.local/bin, where the raw binary lies.
 CONTAINER_PATH = f"{REPO_IN}/{WRAPPER_DIR}:/usr/local/bin:/usr/bin:/bin"
 ARMS = {
@@ -83,10 +105,18 @@ ARMS = {
     "trajectories": ("scripts/eval.py", "run", "--suite", "trajectories"),
     "first_run": ("runtime/scripts/first_run.py",),
 }
+# Each arm's flags that name where its ledger and evidence go: each must be under /results, and an
+# arm whose ledger defaults to a temp dir must name one (Codex at 47e0616eac: destroying the
+# container erased it).
+OUTPUTS = {"wip_curve": ("--results", "--out"), "ablation": ("--out",), "hint_replay": ("--out",),
+           "trajectories": ("--out",), "first_run": ("--workdir",)}
+REQUIRED = {"ablation": "--out", "hint_replay": "--out", "trajectories": "--out"}
 LIMITS = {"pids": 4096, "memory": "8g", "cpus": "4"}
 BACKSTOP_S = 120  # the in-container `timeout`, past the launcher's limit: a dead launcher still ends it
 DESTROY_WAIT_S = 30
-RECEIPT_SCHEMA = "open-fleet.live-container-receipt/1"
+TEARDOWN_TIMEOUT_S = 60  # each docker call of a teardown
+REDACTED = b"[REDACTED]"
+RECEIPT_SCHEMA = "open-fleet.live-container-receipt/2"
 EXIT_USAGE, EXIT_NOT_DESTROYED, EXIT_TIMED_OUT = 2, 3, 124
 
 
@@ -109,7 +139,7 @@ gitexec = _load("live_container_gitexec", ROOT / "runtime" / "scripts" / "gitexe
 
 
 class Refused(Exception):
-    """A refused start: nothing was created (exit 2)."""
+    """A refused start: exit 2, after whatever was created is destroyed."""
 
 
 def now():
@@ -208,39 +238,162 @@ def leftovers():
     return proc.stdout.split()
 
 
-def create_argv(image_id, nonce, arm, cmd, export, results, attestation, token_file, limits):
-    """`docker create` for one arm. The token is a read-only file mount, never an environment
-    variable: the container's environment is the image's and PATH alone. No privileged flag, no
-    host namespace, no capability, no device."""
+def output_problem(arm, arm_args):
+    """Why the arm's arguments would leave its ledger or evidence outside /results, or None. An
+    abbreviation argparse would accept (`--ou`) counts as the flag it abbreviates."""
+    flags, named, i = OUTPUTS.get(arm, ()), set(), 0
+    while i < len(arm_args):
+        opt, eq, value = arm_args[i].partition("=")
+        flag = next((f for f in flags if opt.startswith("--") and len(opt) > 2 and f.startswith(opt)), None)
+        if flag:
+            if not eq:
+                if i + 1 >= len(arm_args):
+                    return f"{opt} names no path"
+                i, value = i + 1, arm_args[i + 1]
+            path = posixpath.normpath(posixpath.join(RESULTS_IN, value))
+            if path != RESULTS_IN and not path.startswith(RESULTS_IN + "/"):
+                return f"{flag} {value} is outside {RESULTS_IN}: destroying the container would erase it"
+            named.add(flag)
+        i += 1
+    need = REQUIRED.get(arm)
+    if need and need not in named:
+        return (f"the {arm} arm needs {need} under {RESULTS_IN}: its default is a temp dir that destroying the "
+                "container erases")
+    return None
+
+
+def hardened(nonce, role, limits):
+    """What both containers share: the non-root user, --rm, limits, no capability, no privilege."""
     mem = str(limits["memory"])
-    return ["create", "--rm", "--init", "--user", USER,
-            "--hostname", containment.HARNESS_HOSTNAME + nonce,
-            "--label", f"{LABEL}={nonce}", "--label", f"org.open-fleet.arm={arm}",
+    return ["create", "--rm", "--init", "--user", USER, "--label", f"{LABEL}={nonce}", "--label", f"{ROLE_LABEL}={role}",
             "--pids-limit", str(limits["pids"]), "--memory", mem, "--memory-swap", mem, "--cpus", str(limits["cpus"]),
-            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "none",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "none"]
+
+
+def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeout):
+    """`docker create` for the broker: the one container the token is mounted in, read-only. It
+    carries the harness hostname, which the arm's container inherits with its network namespace."""
+    return [*hardened(nonce, "broker", BROKER_LIMITS), "--hostname", containment.HARNESS_HOSTNAME + nonce,
+            "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
+            "--mount", f"type=bind,src={token_file},dst={SECRET},readonly",
+            "--mount", f"type=bind,src={ledger_dir},dst={LEDGER_IN}",
+            "--workdir", LEDGER_IN, image_id,
+            "timeout", "--kill-after=30", str(int(timeout) + 2 * BACKSTOP_S),
+            "python3", "-I", f"{REPO_IN}/{BROKER_SCRIPT}", "--token-file", SECRET,
+            "--ledger", f"{LEDGER_IN}/spend.jsonl", "--cap-usd", repr(float(cap_usd)), "--port", str(BROKER_PORT)]
+
+
+def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation, limits):
+    """`docker create` for the arm: the broker's network namespace and nothing else of it, and no
+    credential: its environment is the image's and PATH alone. No privileged flag, no host
+    namespace, no capability, no device."""
+    return [*hardened(nonce, "arm", limits), "--label", f"org.open-fleet.arm={arm}",
+            "--network", f"container:{broker_id}",
             "--env", f"PATH={CONTAINER_PATH}",
             "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
             "--mount", f"type=bind,src={results},dst={RESULTS_IN}",
             "--mount", f"type=bind,src={attestation},dst={containment.ATTESTATION},readonly",
-            "--mount", f"type=bind,src={token_file},dst={SECRET},readonly",
             "--workdir", RESULTS_IN, image_id, *cmd]
 
 
-def destroy(cid):
-    """Kill and remove the container, then verify it no longer exists (`docker ps -a --filter`)."""
-    docker("kill", cid, timeout=60)
-    docker("rm", "-f", cid, timeout=60)
-    check = ["ps", "-a", "--filter", f"id={cid}", "--format", "{{.ID}}"]
+def destroy(ids, nonce):
+    """Kill and remove every container of this launch, then verify that none exists (`docker ps -a
+    --filter label=LABEL=<nonce>`, which also finds one whose id the launcher never learned). A
+    docker call that fails or times out is recorded and the rest still run: this never raises, so
+    the receipt is always written (Codex and Greptile at 47e0616eac)."""
+    errors = []
+
+    def attempt(*args):
+        try:
+            return docker(*args, timeout=TEARDOWN_TIMEOUT_S)
+        except (subprocess.TimeoutExpired, OSError, Refused) as err:
+            errors.append(f"docker {' '.join(args[:2])}: {type(err).__name__}")
+            return None
+    for cid in ids:
+        attempt("kill", cid)
+    for cid in ids:
+        attempt("rm", "-f", cid)
+    check = ["ps", "-a", "--filter", f"label={LABEL}={nonce}", "--format", "{{.ID}}"]
     deadline = time.monotonic() + DESTROY_WAIT_S
     while True:
-        proc = docker(*check, timeout=60)
-        if proc.returncode == 0 and not proc.stdout.strip():
-            return {"verified": True, "check": ["docker", *check], "output": ""}
+        proc = attempt(*check)
+        listed = proc.stdout.split() if proc is not None and proc.returncode == 0 else None
+        if listed == []:
+            return {"verified": True, "check": ["docker", *check], "output": "", "errors": errors}
         if time.monotonic() > deadline:
-            return {"verified": False, "check": ["docker", *check],
-                    "output": (proc.stdout + proc.stderr).strip()[:300]}
-        docker("rm", "-f", cid, timeout=60)  # --rm removes it asynchronously; ask again
+            output = (proc.stdout + proc.stderr).strip()[:300] if proc is not None else "; ".join(errors)[-300:]
+            return {"verified": False, "check": ["docker", *check], "output": output, "errors": errors}
+        for cid in dict.fromkeys([*ids, *(listed or [])]):  # --rm removes asynchronously; ask again
+            attempt("rm", "-f", cid)
         time.sleep(0.5)
+
+
+class Redactor:
+    """Writes a byte stream with every occurrence of `secret` replaced, holding back only the
+    longest tail that could begin it, so a secret split across two reads is caught too."""
+
+    def __init__(self, fh, secret):
+        self.fh, self.secret, self.tail, self.count = fh, secret, b"", 0
+
+    def write(self, data):
+        buf = self.tail + data
+        self.count += buf.count(self.secret)
+        buf = buf.replace(self.secret, REDACTED)
+        keep = next((k for k in range(min(len(self.secret) - 1, len(buf)), 0, -1) if buf.endswith(self.secret[:k])), 0)
+        self.fh.write(buf[:len(buf) - keep])
+        self.tail = buf[len(buf) - keep:]
+
+    def close(self):
+        self.fh.write(self.tail)
+        self.tail = b""
+        self.fh.close()
+
+
+def pump(stream, redactor):
+    """Copy the container's output through the redactor until it ends."""
+    while chunk := stream.read1(65536):
+        redactor.write(chunk)
+
+
+@contextlib.contextmanager
+def launch_lock(path):
+    """Hold the launch lock, or Refused: two launchers can never both pass the leftover check
+    (Greptile at 47e0616eac). The lock ends with this process, however it ends."""
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused(f"another launch holds {path}: one arm runs at a time") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def spend(ledger):
+    """The broker's ledger, summarised for the receipt: what the arm spent, by the broker's count."""
+    try:
+        lines = Path(ledger).read_text(encoding="utf-8").splitlines()
+    except OSError as err:
+        return {"ledger": str(ledger), "read": False, "error": type(err).__name__}
+    events = []
+    for line in lines:
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    starts = {e.get("call"): e for e in events if e.get("event") == "start"}
+    settles = {e.get("call"): e for e in events if e.get("event") == "settle"}
+    opened = next((e for e in events if e.get("event") == "open"), {})
+    unsettled = [c for c in starts if c not in settles]
+    return {"ledger": str(ledger), "read": True, "cap_usd": opened.get("cap_usd"), "calls": len(starts),
+            "refused": sum(1 for e in events if e.get("event") == "refuse"),
+            "settled_usd": round(sum(e.get("cost_usd") or 0 for e in settles.values()), 6),
+            "unsettled_calls": len(unsettled),
+            "unsettled_reserved_usd": round(sum(starts[c].get("reserved_usd") or 0 for c in unsettled), 6)}
 
 
 def write_new(path, data, mode=0o600):
@@ -257,11 +410,15 @@ def inside(path, other):
 
 
 def run(args):
-    """Run one arm in a fresh container, destroy it, and write the receipt. Returns the exit code."""
+    """Check the request, then launch under the lock. Returns the exit code."""
     if args.arm not in ARMS:
         raise Refused(f"unknown arm {args.arm!r}: one of {', '.join(ARMS)}")
     if args.timeout <= 0:
         raise Refused("--timeout must be a positive number of seconds")
+    if not args.cap_usd > 0:
+        raise Refused("--cap-usd must be a positive number of dollars: the broker refuses every call past it")
+    if why := output_problem(args.arm, args.arm_args):
+        raise Refused(why)
     results = Path(args.results).expanduser().resolve()
     receipts = Path(args.receipts).expanduser().resolve()
     token_file = Path(args.token_file).expanduser().absolute()
@@ -278,13 +435,20 @@ def run(args):
     token = read_token(token_file)  # its value only to check the file and to redact the output
     commit = pinned_commit(repo)
     image = image_facts(args.image)
-    if leftovers():
-        raise Refused(f"a harness container already exists (docker ps -a --filter label={LABEL}): one arm runs "
-                      "at a time; inspect it, then `docker rm -f` it")
+    with launch_lock(args.lock):
+        if leftovers():
+            raise Refused(f"a harness container already exists (docker ps -a --filter label={LABEL}): one arm runs "
+                          "at a time; inspect it, then `docker rm -f` it")
+        return launch(args, results, receipts, token_file, token, repo, commit, image)
+
+
+def launch(args, results, receipts, token_file, token, repo, commit, image):
+    """Create the broker's container and the arm's, run the arm, destroy both, write the receipt
+    (always, once anything was created). Returns the exit code."""
     nonce = secrets.token_hex(16)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     base = receipts / f"{stamp}-{args.arm}-{nonce[:8]}"
-    log_path = base.with_suffix(".log")
+    log_path, ledger_dir = base.with_suffix(".log"), base.with_suffix(".broker")
     staging = Path(tempfile.mkdtemp(prefix="of-live-"))
     limits = {"pids": args.pids_limit, "memory": args.memory, "cpus": args.cpus}
     script, *prefix = ARMS[args.arm]
@@ -293,22 +457,25 @@ def run(args):
     receipt = {"schema": RECEIPT_SCHEMA, "arm": args.arm, "arm_args": args.arm_args, "argv": cmd,
                "commit": commit, "repo": str(repo), "image": image, "nonce": nonce,
                "hostname": containment.HARNESS_HOSTNAME + nonce,
-               "token": {"env": TOKEN_ENV, "file": str(token_file), "mounted_at": SECRET,
-                         "passed": f"a read-only file mount; {WRAPPER_DIR}/claude sets {TOKEN_ENV} in the "
-                                   "pinned claude's own process alone"},
-               "container": {"id": None, "user": USER, "limits": limits, "network": "default bridge",
+               "token": {"file": str(token_file), "mounted_at": SECRET,
+                         "passed": "a read-only file mount in the broker's container alone; the arm's container "
+                                   "holds no credential"},
+               "container": {"id": None, "user": USER, "limits": limits, "network": "the broker's namespace",
                              "mounts": {REPO_IN: "the export of the commit, read-only", RESULTS_IN: str(results),
-                                        containment.ATTESTATION: "the attestation, read-only",
-                                        SECRET: "the token file, read-only"}, "path": CONTAINER_PATH},
+                                        containment.ATTESTATION: "the attestation, read-only"}, "path": CONTAINER_PATH},
+               "broker": {"id": None, "user": USER, "limits": BROKER_LIMITS, "port": BROKER_PORT,
+                          "cap_usd": args.cap_usd, "spend": None,
+                          "mounts": {REPO_IN: "the export of the commit, read-only", SECRET: "the token file, read-only",
+                                     LEDGER_IN: str(ledger_dir)}},
                "wall_clock_limit_s": args.timeout, "started_at": None, "ended_at": None, "elapsed_s": None,
-               "timed_out": False, "interrupted": None, "exit_status": None,
-               "destroyed": {"verified": False, "check": None, "output": "no container was created"},
+               "timed_out": False, "interrupted": None, "refused": None, "exit_status": None,
+               "destroyed": {"verified": False, "check": None, "output": "no container was created", "errors": []},
                "log": str(log_path), "token_redactions": 0}
-    cid = None
+    ids, refused, redactor = [], None, None
     try:
         export = staging / "repo"
         export_checkout(repo, commit, export)
-        for need in (script, f"{WRAPPER_DIR}/claude"):
+        for need in (script, f"{WRAPPER_DIR}/claude", BROKER_SCRIPT):
             if not (export / need).is_file():
                 raise Refused(f"{need} is not in commit {commit[:12]}")
         attestation = staging / "attestation.json"
@@ -317,63 +484,70 @@ def run(args):
         write_new(attestation, (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode(), mode=0o644)
         results.mkdir(parents=True, exist_ok=True)
         receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
-        proc = docker(*create_argv(image["id"], nonce, args.arm, cmd, export, results, attestation, token_file,
-                                   limits))
+        ledger_dir.mkdir(mode=0o700)
+        for role in ("broker", "arm"):
+            argv = (broker_argv(image["id"], nonce, export, token_file, ledger_dir, args.cap_usd, args.timeout)
+                    if role == "broker" else
+                    arm_argv(image["id"], nonce, args.arm, ids[0], cmd, export, results, attestation, limits))
+            proc = docker(*argv)
+            if proc.returncode != 0:
+                raise Refused(f"docker create of the {role} failed: {proc.stderr.strip()[:300]}")
+            ids.append(proc.stdout.strip().splitlines()[-1])
+            receipt["broker" if role == "broker" else "container"]["id"] = ids[-1]
+        proc = docker("start", ids[0])
         if proc.returncode != 0:
-            raise Refused(f"docker create failed: {proc.stderr.strip()[:300]}")
-        cid = proc.stdout.strip().splitlines()[-1]
-        receipt["container"]["id"] = cid
+            raise Refused(f"docker start of the broker failed: {proc.stderr.strip()[:300]}")
         receipt["started_at"], started = now(), time.monotonic()
-        exe = shutil.which("docker")
-        with open(log_path, "xb") as log:
-            attach = subprocess.Popen([exe, "start", "--attach", cid], env=docker_env(), stdin=subprocess.DEVNULL,
-                                      stdout=log, stderr=subprocess.STDOUT)
-            try:
-                receipt["exit_status"] = attach.wait(timeout=args.timeout)
-            except subprocess.TimeoutExpired:
-                receipt["timed_out"] = True
-            finally:
-                receipt["ended_at"], receipt["elapsed_s"] = now(), round(time.monotonic() - started, 1)
-                if attach.poll() is None:
-                    receipt["destroyed"] = destroy(cid)
-                    attach.kill()
-                    attach.wait()
-        if not receipt["destroyed"]["verified"]:
-            receipt["destroyed"] = destroy(cid)
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        redactor = Redactor(os.fdopen(fd, "wb"), token.encode())
+        attach = subprocess.Popen([shutil.which("docker"), "start", "--attach", ids[1]], env=docker_env(),
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        pumper = threading.Thread(target=pump, args=(attach.stdout, redactor), daemon=True)
+        pumper.start()
+        try:
+            receipt["exit_status"] = attach.wait(timeout=args.timeout)
+        except subprocess.TimeoutExpired:
+            receipt["timed_out"] = True
+        finally:
+            receipt["ended_at"], receipt["elapsed_s"] = now(), round(time.monotonic() - started, 1)
+            if attach.poll() is None:
+                receipt["destroyed"] = destroy(ids, nonce)
+                attach.kill()
+                attach.wait()
+            pumper.join(timeout=30)
+            attach.stdout.close()
+    except Refused as err:
+        if not ids:
+            raise
+        receipt["refused"], refused = str(err), err
     except (KeyboardInterrupt, SystemExit) as err:
         receipt["interrupted"] = getattr(err, "code", None) or 128 + signal.SIGINT
         raise
     finally:
-        if cid and not receipt["destroyed"]["verified"]:
-            receipt["destroyed"] = destroy(cid)
+        if ids and not receipt["destroyed"]["verified"]:
+            receipt["destroyed"] = destroy(ids, nonce)
         shutil.rmtree(staging, ignore_errors=True)
-        if cid:
-            receipt["token_redactions"] = redact(log_path, token)
+        if redactor is not None:
+            with contextlib.suppress(OSError, ValueError):
+                redactor.close()
+            receipt["token_redactions"] = redactor.count
+        if ids:
+            receipt["broker"]["spend"] = spend(ledger_dir / "spend.jsonl")
             text = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
             if token in text:  # never: nothing above holds it
                 raise RuntimeError("the receipt would carry the token")
             write_new(base.with_suffix(".json"), text.encode())
             print(f"live_container: receipt {base.with_suffix('.json')}", file=sys.stderr)
     if not receipt["destroyed"]["verified"]:
-        print(f"live_container: FAIL-CLOSED: container {cid} could not be verified destroyed: "
+        print(f"live_container: FAIL-CLOSED: launch {nonce}'s containers could not be verified destroyed: "
               f"{receipt['destroyed']['output']}", file=sys.stderr)
         return EXIT_NOT_DESTROYED
+    if refused:
+        raise refused
     if receipt["timed_out"]:
         return EXIT_TIMED_OUT
     code = receipt["exit_status"]
     return code if code >= 0 else 128 - code  # the attach client died of signal -code
-
-
-def redact(path, token):
-    """Replace every occurrence of the token in the container's output; how many there were."""
-    try:
-        data = Path(path).read_bytes()
-    except OSError:
-        return 0
-    count = data.count(token.encode())
-    if count:
-        Path(path).write_bytes(data.replace(token.encode(), b"[REDACTED]"))
-    return count
 
 
 def build(args):
@@ -404,10 +578,13 @@ def parser():
     r.add_argument("--arm", required=True, choices=sorted(ARMS))
     r.add_argument("--results", required=True, help="the host results directory, /results inside")
     r.add_argument("--timeout", type=float, required=True, help="wall-clock limit, seconds")
+    r.add_argument("--cap-usd", type=float, required=True, dest="cap_usd",
+                   help="the spend cap the broker enforces on every model call: the arm's authorised cap")
     r.add_argument("--token-file", default=TOKEN_FILE, dest="token_file",
                    help=f"the subscription token, mode 0600 (default {TOKEN_FILE})")
     r.add_argument("--receipts", default=RECEIPTS, help=f"where the receipt goes (default {RECEIPTS})")
     r.add_argument("--image", default=IMAGE)
+    r.add_argument("--lock", default=LOCK, help=argparse.SUPPRESS)
     r.add_argument("--pids-limit", type=int, default=LIMITS["pids"], dest="pids_limit")
     r.add_argument("--memory", default=LIMITS["memory"])
     r.add_argument("--cpus", default=LIMITS["cpus"])
@@ -429,7 +606,7 @@ def main(argv=None):
     except Refused as err:
         print(f"live_container: refused: {err}", file=sys.stderr)
         return EXIT_USAGE
-    except KeyboardInterrupt:  # the container is already destroyed and the receipt written
+    except KeyboardInterrupt:  # the containers are already destroyed and the receipt written
         return 128 + signal.SIGINT
     finally:
         for s, handler in previous.items():

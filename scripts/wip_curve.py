@@ -1185,7 +1185,9 @@ class Run:
         self.held: dict[str, Decimal] = {}  # "<task>:<role>" -> the reservation it holds
         self.launched: dict[str, tuple[str, str]] = {}  # dispatch -> (store task, hold key)
         self.launches: dict[str, dict] = {}  # dispatch -> its effective launch (agent, flags, digest)
-        self.halt: str | None = None  # once set (cost-cap, model-mismatch, time-limit), nothing more starts
+        # Once set (cost-cap, model-mismatch, time-limit), nothing more starts; orphan-alive, a failed
+        # containment, overrides any of them, since it alone also stops the next oracle and gate.
+        self.halt: str | None = None
         self.deadline = float("inf")  # the run's absolute wall-clock deadline (monotonic), set at start
         self.launched_models: dict[str, str | None] = {}
         self.usage_seen: set[str] = set()
@@ -1672,8 +1674,8 @@ class Run:
             tags, uncontained = [], ["UNCONTAINED (the gate journal cannot be read)"]
         if tags:
             self.budget.note(f"{self.rid}/run", gate_tags=tags)
-        if uncontained:  # a gate's oracle could not be contained
-            self.halt = self.halt or "orphan-alive"
+        if uncontained:  # a gate's oracle could not be contained: this halt overrides any other
+            self.halt = "orphan-alive"
         return tags
 
     def end_dispatch(self, disp, key):
@@ -1699,8 +1701,8 @@ class Run:
                 vouched = False  # the process table cannot be read: nothing is vouched for
         if call and (left or not vouched):
             self.full_hold[call] = True
-        if not vouched:
-            self.halt = self.halt or "orphan-alive"
+        if not vouched:  # overrides any earlier halt: every guard after a failed containment asks for it
+            self.halt = "orphan-alive"
         return vouched, left
 
     def on_time(self, disp, state, deadline_at) -> str:
@@ -1826,7 +1828,7 @@ class Run:
         result = run_oracle(ck, [self.tasks[tid]], self.taskset, self.sb.dir,
                             timeout=min(ORACLE_TIMEOUT, max(self.remaining(), 0.1)), on_tag=self.record_oracle_tag)
         if not result["contained"]:  # a process the worker's code started may still run: nothing more starts
-            self.halt = self.halt or "orphan-alive"
+            self.halt = "orphan-alive"  # over any earlier halt (Codex at 47e0616eac)
             a["outcome"] = "stopped-orphan-alive"
             a["kept"] = [str(ck), result["kept"]]  # the checkout and the oracle's files, to investigate
             return False

@@ -59,10 +59,17 @@ re-dumped from the installed binary and replayed live on the Linux serve substra
 
 ## Noted since the pin (inherited by the next re-pin)
 
+- **v1.4.238 re-witnessed 2026-10-24; the pin is HELD at v1.4.229** (tag `v1.4.238` →
+  `e6f7fba58e8e47b45e4343f99101b3ca9e05a5da`; docs/runs/2026-10-24-pin-it-238.md). Schema
+  v43, orchestration guides byte-identical. Two claims in #606-registered docs went stale
+  (`sandbox-policy.md` lacks the v1.4.238 Auto host mode; `mission-scheduling.md` still
+  refuses `--host` names), so the bump waits until #606 runs; the run record carries the
+  exact edits and the bump package (one-way floor waiver for the pin literals included).
+
 Both 2026-09-28 compass points (#513) shipped and were dispositioned at v1.4.224:
 `recipient_run_bound_redirect` (v1.4.217) replayed live — `dispatch-lifecycle.md`
 addressing now names it; `dsh` (v1.4.218) is upstream-available and deliberately not on
-the `spawn_worker.sh` roster. Notes carried at v1.4.229:
+the `spawn_worker.sh` roster (both zero-diff through v1.4.238). Notes carried at v1.4.229:
 
 - The Linux witness's first `serve` logged `[agent-state-rules] download failed: HTTP 404`
   — witness-first-run noise to watch, not a doctrine claim (relates to #526).
@@ -70,22 +77,23 @@ the `spawn_worker.sh` roster. Notes carried at v1.4.229:
   (an agent account signed in there) — the same substrate the self-run programs need.
 - `ORCA_CHAT_VISUALS_DIR` was renamed to `ORCA_CHAT_SCRATCH_DIR` in v1.4.229 (`orca-chat-visuals`);
   no fleet script references it.
-- A weekly probe (`runtime/scripts/upstream_probe.py`, `.github/workflows/upstream-drift.yml`,
-  #516) files an `upstream-drift` issue when a new minor lands or the pin falls ten patches
-  behind, so the date trigger below is no longer the only thing keeping a quiet upstream honest.
+- The weekly probe (`runtime/scripts/upstream_probe.py`, `.github/workflows/upstream-drift.yml`,
+  #516) files an `upstream-drift` issue on a new minor, ten patches behind, or — `review-date`,
+  #508 — on or after `pins.json` `orca.next_review`, so no standing issue carries the cadence.
 
 ## Re-pin cadence + owner
 
 A re-pin fires on whichever comes first:
 
-1. Each Orca **minor** release (patch bumps ride unless a drift NOTE or guide diff says otherwise).
+1. Each Orca **minor** release (patch bumps ride until ten pile up, or a drift NOTE or guide diff says otherwise).
 2. **Quarterly** at minimum — the date trigger keeps a quiet upstream honest.
 3. A `SPAWN=NOTE … run pin-it` sighting in the field, or any dispatch-doc drift report.
 
-Owner: the **pin-it** mission (its coordinator runs the loop; the maintainer files the issue).
-Next trigger: **2026-12-28** (the standing quarterly date, kept) or the next minor / drift
-sighting, whichever first — the successor run inherits this run's park register
-(docs/runs/2026-10-17-pin-it-229.md) and carries #508 forward.
+Owner: the **pin-it** mission (its coordinator runs the loop; the weekly probe files the issue).
+Next trigger: **2026-12-28** (`pins.json` `orca.next_review`, the standing quarterly date) or
+the next minor / ten patches behind / drift sighting, whichever first. The weekly probe files
+triggers 1 and 2 itself — no issue to open; the successor run inherits the park register in
+docs/runs/2026-10-24-pin-it-238.md.
 
 ## How to re-pin (so a stranger can reproduce the diff)
 
@@ -100,8 +108,9 @@ sighting, whichever first — the successor run inherits this run's park registe
    teardown — without one, PARK them with the exact probe, never reclassify.
 4. Tabulate the drift table (one row per policy + per script entry point, every row a
    verdict), fix drift in place, update this file and `pins.json` together.
-5. Refresh the park register, file the next dated re-pin issue, regenerate badges
-   (`scripts/gen-badges.py`), and land with `scripts/validate.py` + `tests/` green.
+5. Refresh the park register, set the next quarterly date in `pins.json` `orca.next_review`
+   and the Next trigger line together (the weekly probe files it — no issue to open),
+   regenerate badges (`scripts/gen-badges.py`), and land with `scripts/validate.py` + `tests/` green.
 
 ## Pack pin bumps carry a rug-pull review (#559)
 

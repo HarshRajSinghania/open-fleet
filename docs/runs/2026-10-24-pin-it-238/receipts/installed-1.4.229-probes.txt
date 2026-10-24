@@ -1,0 +1,77 @@
+# Installed binary — read-only / help-level probes only (2026-10-24, macOS arm64)
+# Nothing was installed, upgraded or started: no worker, no Run, no agent CLI.
+
+$ readlink /usr/local/bin/orca
+/Applications/Orca.app/Contents/Resources/bin/orca
+$ orca --version
+1.4.229
+$ defaults read /Applications/Orca.app/Contents/Info CFBundleShortVersionString
+1.4.229
+
+$ orca status --json
+{
+  "id": "local-status",
+  "ok": true,
+  "result": {
+    "target": {
+      "kind": "local"
+    },
+    "app": {
+      "running": false,
+      "pid": null
+    },
+    "runtime": {
+      "state": "not_running",
+      "reachable": false,
+      "runtimeId": null
+    },
+    "graph": {
+      "state": "not_running"
+    }
+  },
+  "_meta": {
+    "runtimeId": "none"
+  }
+}
+
+$ orca terminal --help   (D9 help half: `stop` stays unlisted)
+orca terminal
+
+Usage: orca terminal <command> [options]
+
+Commands:
+  list               List live Orca-managed terminals
+  show               Show terminal metadata and preview
+  read               Read bounded terminal output
+  send               Send input to a live terminal
+  wait               Wait for a terminal condition
+  create             Create a terminal session in the current worktree
+  switch             Switch to a terminal tab in the UI
+  close              Close one terminal, its whole tab, or every terminal in a workspace
+  rename             Set or clear the title of a terminal tab
+  split              Split an existing terminal pane
+
+Run `orca terminal <command> --help` for command-specific usage.
+
+$ ORCA_CLI_COMMAND=/usr/local/bin/orca upstream_probe.py capture --out <scratch>  (agent-context, --help, terminal --help, skills get <orchestration|orca-cli> + --references + every --reference)
+binary-served guides vs the 2026-10-17 tag-source archive (docs/runs/2026-10-17-pin-it-229/guides/):
+  identical orca-cli--automations.md
+  identical orca-cli--browser.md
+  identical orca-cli--publishing.md
+  identical orca-cli.md
+  identical orca-cli.refs.txt
+  identical orchestration--coordinator-loop.md
+  identical orchestration--legacy-contract-migration.md
+  identical orchestration--low-level-topology.md
+  identical orchestration--messaging-and-gates.md
+  identical orchestration--placement-and-remote.md
+  identical orchestration--recovery-and-cleanup.md
+  identical orchestration--worker-contract.md
+  identical orchestration.md
+  identical orchestration.refs.txt
+agent-context command count: 281
+
+$ upstream_probe.py diff --baseline docs/runs/2026-10-12-pin-it-224 --fresh <scratch capture>  (installed 1.4.229 vs the last binary capture, 1.4.224)
+  agent-context: 249 -> 281 commands - added: agent launch, jira assignee clear, jira assignee list, jira assignee set, jira comment add, jira comment list, jira connection, jira create, jira issue, jira label add, jira label rm, jira label set, jira list, jira priority clear, jira priority list, jira priority set, jira project fields, jira project list, jira project types, jira search, jira status list, jira status set, reference add, reference find, reference list, reference remove, serve restore resume, serve service install, serve service status, serve service uninstall, terminal-daemon restart, terminal-daemon status - removed: none - changed: automations runs, environment stop, file open, project setup-delete, search, serve, skills install, skills update, terminal create, terminal switch, worktree create
+  help-root.txt: CHANGED (+18/-8 lines)
+  VERDICT: DRIFT - 32 added / 0 removed / 11 changed command(s); 6 changed file(s): help-root.txt, guides/orca-cli--publishing.md, guides/orca-cli.md, guides/orchestration--low-level-topology.md, guides/orchestration--recovery-and-cleanup.md, guides/orchestration.md; guides added 0, removed 0

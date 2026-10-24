@@ -1,0 +1,35 @@
+# Oracle — pin-it re-witness, 2026-10-24 (read-only; no software installed or upgraded)
+
+## git ls-remote https://github.com/stablyai/orca.git (tag objects, then peeled commits)
+c1d7a1700816ec9177563f923fb6eca719960e4b	HEAD
+a3fdce0977b75dc3777439df6d3b928ad4d911cf	refs/tags/v1.4.229
+a0cd1644f320f1327f7495650a816111b495f3cd	refs/tags/v1.4.229^{}
+ee4079b1dfb1bdee46e82137f53c340449711f5e	refs/tags/v1.4.238
+e6f7fba58e8e47b45e4343f99101b3ca9e05a5da	refs/tags/v1.4.238^{}
+
+## peeled in a blobless clone (git rev-parse <tag>^{commit}; git log -1)
+v1.4.229 a0cd1644f320f1327f7495650a816111b495f3cd 2026-10-17T05:58:58Z release: v1.4.229
+v1.4.238 e6f7fba58e8e47b45e4343f99101b3ca9e05a5da 2026-10-23T13:52:50-07:00 release: v1.4.238
+merge-base: de1f6e3d8176beabdb189e71e6f3047bbe0edfad
+commits in tag range v1.4.229..v1.4.238: 1040
+package.json at v1.4.238: "version":"1.4.238"
+SCHEMA_VERSION at v1.4.238: 23:export const SCHEMA_VERSION = 43
+
+## gh api repos/stablyai/orca/releases (newest 8, tag / published / prerelease)
+v1.4.238	2026-10-23T21:47:22Z	false
+v1.4.237	2026-10-21T07:25:23Z	false
+v1.4.235	2026-10-20T22:52:23Z	false
+v1.4.233	2026-10-20T18:27:32Z	false
+v1.4.232	2026-10-20T06:20:47Z	false
+mobile-android-v0.0.58	2026-10-20T20:05:17Z	true
+v1.4.230	2026-10-19T06:30:00Z	false
+v1.4.229	2026-10-17T06:54:05Z	false
+
+## stable tags above the pin (git tag -l, sorted)
+v1.4.230 v1.4.231 v1.4.232 v1.4.233 v1.4.234 v1.4.235 v1.4.236 v1.4.237 v1.4.238 
+
+## runtime/scripts/upstream_probe.py latest (live GitHub API) and review-date, this branch
+{"pin": "v1.4.229", "latest": "v1.4.238", "drift": "patch", "patches_behind": 9}
+exit=0
+{"pin": "v1.4.229", "next_review": "2026-12-28", "today": "2026-10-24", "days_left": 65}
+exit=0

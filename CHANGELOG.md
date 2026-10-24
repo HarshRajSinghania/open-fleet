@@ -6,6 +6,16 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Orca v1.4.238 re-witnessed; the pin holds at v1.4.229 until #606 runs** (#508). The
+  1040-commit tag range was diffed and every runtime policy (16) and script (44) given a verdict
+  (`docs/runs/2026-10-24-pin-it-238.md`). Two claims drifted in docs the #606 ablation
+  registered — `sandbox-policy.md` does not name v1.4.238's Auto host mode, and
+  `mission-scheduling.md` still refuses `--host` names — so those edits and the pin bump are
+  written down, not applied. Fixed here: `upstream_probe.py review-date` reads `orca.next_review`
+  from `pins.json` and the weekly `upstream-drift` workflow files the dated re-pin, so no
+  standing issue carries the cadence; `spawn_worker.sh` re-anchors two stale citations and a test
+  pins that an Auto host is refused (exit 5); `threat-model.md` names the real containment
+  source; `terminal_ops.py` parks `terminal set-pane-title`.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

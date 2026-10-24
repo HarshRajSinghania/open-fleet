@@ -92,6 +92,16 @@ STUB = textwrap.dedent(r'''
                                  stderr=subprocess.DEVNULL)
         with open(pids_file, "w", encoding="utf-8") as fh:
             json.dump([os.getpid(), child.pid], fh)
+    def spawn_escaper(pids_file):
+        """A grandchild in a session of its own from birth (setsid) that sleeps: no process group
+        of the call holds it, so only the call's marker can find it (#657 review K4)."""
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        with open(pids_file, "w", encoding="utf-8") as fh:
+            json.dump([child.pid], fh)
+    if mode == "grader-escape":
+        spawn_escaper(os.environ["ABLATION_GRADER_USAGE"] + ".pids")
     if mode == "grader-hang":
         spawn_sleeper(os.environ["ABLATION_GRADER_USAGE"] + ".pids")
         import time
@@ -127,6 +137,8 @@ STUB = textwrap.dedent(r'''
         time.sleep(60)
     if mode == "orphan":
         spawn_sleeper(os.path.join(out, "agent.pids"))
+    if mode == "escape":
+        spawn_escaper(os.path.join(out, "agent.pids"))
     cues = re.findall(r"([A-Za-z0-9-]+)\.md at ([A-Z][A-Z0-9_-]*)", "\n".join(
         p for p in task.split("\n\n") if p.startswith("DEFERRED READS")))
     catalog = os.environ["ABLATION_CATALOG"]
@@ -1222,6 +1234,100 @@ class TheWatchdogCleansUpBeforeItLetsGo(SafetyNet):
         proc.send_signal(signal.SIGKILL)
         proc.communicate(timeout=30)
         self.assertAllDead(out, at_least=2)
+
+
+class ACallIsContainedAcrossSessions(SafetyNet):
+    """#657 review K4, swept into #606's runner: cleanup killed the call's process GROUP, so a
+    harness or grader descendant that called setsid() left it, kept running (and spending), and
+    the call still reported itself empty. Every call now carries a unique OF_CALL_ID marker in its
+    environment; teardown kills every process carrying it and re-scans until none is left, and a
+    call is never settled while anything of it survives or the process table cannot be read."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 8
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def started_clean(self, out):
+        return [json.loads(f.read_text())["alive_at_start"] for f in sorted(out.rglob("stub-env.json"))]
+
+    def live(self, out, agent="plain", grader="grader-json"):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        return ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                "--harness-cmd", self.stub_cmd(agent, "--cost", "1.0"),
+                "--grader-cmd", self.stub_cmd(grader, "--cost", "0.25"),
+                "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)]
+
+    def test_an_agent_grandchild_that_leaves_the_session_is_swept(self):
+        out = self.out_dir()
+        code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("escape"),
+                                       "--cost-cap-usd", "0", "--mission", "review-it", "--task",
+                                       "behavioral-4", "--repeats", "1", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.started_clean(out), [[], []], "a cell started while an escaped grandchild lived")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_grader_grandchild_that_leaves_the_session_is_swept(self):
+        out = self.out_dir()
+        code, _stdout, err = run_main(self.live(out, grader="grader-escape"))
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 2, err)
+        self.assertEqual(self.started_clean(out), [[], []], "a cell started while a grader's escapee lived")
+        self.assertAllDead(out, at_least=2)
+
+    def assertKeptOpen(self, out, code, err):
+        self.assertEqual(code, 1, err)
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 1, "a cell started while a process of the last one lived")
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
+        cell = results["cells"][0]
+        self.assertFalse(cell["grader_called"], "a paid grader started while the agent's process lived")
+        self.assertEqual(cell["charged_usd"], PREREG["cost_cap"]["max_cost_per_agent_run_usd"])
+        ledger = [json.loads(ln) for ln in (out / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["call"], r["event"]) for r in ledger], [("agent", "start")],
+                         "a call was settled while a process of it lived")
+
+    def test_a_survivor_keeps_its_call_open_and_stops_the_run(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "sweep", return_value=False, create=True):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertKeptOpen(out, code, err)
+
+    def test_a_process_table_it_cannot_read_is_a_survivor(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "process_table", side_effect=OSError("no ps"), create=True):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertKeptOpen(out, code, err)
+
+    def test_a_call_is_its_marker_its_group_and_everything_below_them(self):
+        # Platform-free: what a sweep kills, given a process table (/proc on Linux, ps -E elsewhere).
+        tag, other = "a" * 32, "b" * 32
+        table = {
+            10: (1, 10, ()),                                    # the watchdog, leading group 10
+            11: (10, 10, ()),                                   # its worker
+            12: (11, 12, ()),                                   # left the group, still below it
+            20: (1, 20, (f"{runner.CALL_MARKER}={tag}",)),      # left the tree and the group, tagged
+            21: (20, 21, ("PATH=/bin",)),                       # below the escapee, marker cleared
+            30: (1, 30, (f"{runner.CALL_MARKER}={other}",)),    # another call's
+            40: (1, 40, ("PATH=/bin",)),                        # a stranger
+        }
+        self.assertEqual(runner.call_processes(table, groups=(10,), tag=tag, exclude=(10,)), {11, 12, 20, 21})
+        self.assertEqual(runner.call_processes(table, roots=(11,)), {11, 12})
+        self.assertEqual(runner.call_processes(table, tag=other), {30})
 
 
 if __name__ == "__main__":

@@ -36,8 +36,11 @@ Every call is entered in an fsynced ledger beside ``--out`` at its full reservat
 starts and settled after, so a call the runner never settled (a SIGKILL) stays charged, and a
 later run into the same ``--out`` counts it against its own cap. No call outlives the runner: each
 leads its own process group, killed whole on timeout, after its leader exits, on SIGTERM/SIGHUP/
-Ctrl-C, and -- through a watchdog leader -- when the runner itself is SIGKILLed. A worker that
-calls setsid() itself leaves its group and breaks this contract: run it in a disposable sandbox.
+Ctrl-C, and -- through a watchdog leader -- when the runner itself is SIGKILLed. Every process of a
+call carries a unique OF_CALL_ID marker in its environment, so one that leaves the group (setsid)
+is swept too, and a call is never settled while anything of it survives. A process that
+re-executes itself with an emptied environment after leaving the call's tree is not found: run
+the worker in a disposable sandbox.
 
     python3 scripts/hint_replay.py --check                  # fixture tier, deterministic, free
     python3 scripts/hint_replay.py --live --tier live --model sonnet \\
@@ -417,8 +420,8 @@ def stop_reason(row, reserve, tier, spent):
     reservation and the run goes on: its spend is held by the same per-call limit as any call's."""
     call, cost = row["call"], row["cost_usd"]
     if row["orphans"]:
-        return (f"ORPHAN_ALIVE at {call}: a process of its group survived SIGKILL, so no further "
-                "call may start")
+        return (f"ORPHAN_ALIVE at {call}: a process of the call survived SIGKILL, or the process table "
+                "could not be read; it stays open at its full reservation and no further call may start")
     if tier == "live" and cost is not None and cost > reserve:
         return (f"LIMIT_BREACHED at {call}: it cost USD {cost} against its USD {reserve:.2f} "
                 "reservation, so the per-call limit did not hold and the cap can no longer be guaranteed")
@@ -459,17 +462,20 @@ def _live_call(ctx, scenario, arm, attempt, call):
                                                     stdin_path=packet_path, stdout_path=paths["stdout"],
                                                     stderr_path=paths["stderr"])
         cost, models = reported_cost(paths["stdout"].read_text(encoding="utf-8", errors="replace"))
-        ledger.settle(call, "agent", call_charge(cost, killed, reserve, ctx["tier"]), cost, killed)
-        oracle_code, oracle_killed, oracle_emptied = spend.contained_run(
-            task["oracle"], cwd=repo, env=ctx["env"], timeout=ORACLE_TIMEOUT_S, stdout_path=paths["oracle"])
-        output = paths["oracle"].read_text(encoding="utf-8", errors="replace")
+        if emptied:
+            ledger.settle(call, "agent", call_charge(cost, killed, reserve, ctx["tier"]), cost, killed)
+            oracle_code, oracle_killed, oracle_emptied = spend.contained_run(
+                task["oracle"], cwd=repo, env=ctx["env"], timeout=ORACLE_TIMEOUT_S, stdout_path=paths["oracle"])
+            output = paths["oracle"].read_text(encoding="utf-8", errors="replace")
+        else:  # something of the call survived: it stays open at its full reservation, and stops here (K4)
+            oracle_code, oracle_killed, oracle_emptied, output = None, False, True, ""
     oracle_exit = "timeout" if oracle_killed else oracle_code
     return {"scenario": scenario["id"], "arm": arm, "attempt": attempt, "call": call,
             "agent_exit": "timeout" if killed else code, "agent_killed": killed,
             "oracle_exit": oracle_exit,
             "repeated_failure": oracle_exit != 0 and bool(re.search(task["pitfall"], output)),
             "reserve_usd": reserve, "cost_usd": cost, "measured": cost is not None,
-            "charged_usd": ledger.total(ledger.run, call), "models": models,
+            "charged_usd": ledger.total(ledger.run, call), "settled": emptied, "models": models,
             "orphans": not (emptied and oracle_emptied),
             "output": {k: os.path.relpath(v, ctx["out"].parent) for k, v in paths.items()}}
 

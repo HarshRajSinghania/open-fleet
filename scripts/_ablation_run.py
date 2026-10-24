@@ -55,7 +55,12 @@ Every paid call is entered in the run directory's fsynced spend ledger at its fu
 before it starts and settled after, so an interrupted cell is kept at what it was charged, and a
 later run into the same directory counts that spend against its cap. One run holds the ledger at a
 time (an exclusive lock for the whole run): a concurrent run into the same directory is refused.
-A harness that calls setsid() itself leaves its group and breaks this contract.
+Every call also carries a unique OF_CALL_ID marker in its environment, and a call is contained
+across sessions (#657 review K4): teardown kills every process carrying the marker, and every
+descendant of the call, then re-scans until none is left; a call is never settled while anything
+of it survives SIGKILL or the process table cannot be read. The limit: a process that re-executes
+itself with an emptied environment (env -i) after it has left the call's process tree is not
+found.
 """
 import contextlib
 import fcntl
@@ -353,13 +358,27 @@ def kill_group(pgid, wait_s=10.0):
 # ---------------------------------------------------------------------------
 # the watchdog: every call's leader, which never lets go before its cleanup (#657 review K3)
 # ---------------------------------------------------------------------------
-WATCHDOG = Path(__file__).resolve()  # run as `python3 -I _ablation_run.py --watchdog OWNER -- ARGV`
+WATCHDOG = Path(__file__).resolve()  # run as `python3 -I _ablation_run.py --watchdog OWNER [TAG] -- ARGV`
+# Every process of a call carries `OF_CALL_ID=<its tag>` in its environment, wherever it goes: a
+# descendant that calls setsid() leaves the call's process group but keeps the marker (K4).
+CALL_MARKER = "OF_CALL_ID"
+LIVE_TAGS = set()  # calls this run started and has not yet seen swept
+
+
+def _environ_of(pid):
+    """A Linux process's environment as it was started (empty when it is not ours to read)."""
+    try:
+        raw = Path("/proc", str(pid), "environ").read_bytes()
+    except OSError:
+        return ()
+    return tuple(raw.decode("utf-8", errors="replace").split("\0"))
 
 
 def process_table():
-    """{pid: (ppid, pgid)} for every live process this user can see; a zombie runs nothing and is
-    left out. Linux reads /proc, elsewhere `ps`. OSError when the table cannot be read: a sweep
-    that cannot see cannot vouch for anything."""
+    """{pid: (ppid, pgid, environment entries)} for every live process this user can see; a zombie
+    runs nothing and is left out. Linux reads /proc; elsewhere `ps -E` lists each of this user's
+    own processes with the environment it started with (others' read as empty). OSError when the
+    table cannot be read: a sweep that cannot see cannot vouch for anything."""
     table = {}
     if os.path.isdir("/proc/self"):
         for entry in os.listdir("/proc"):
@@ -371,9 +390,10 @@ def process_table():
                 continue  # gone since the listing
             fields = stat.rsplit(")", 1)[-1].split()  # after `pid (comm)`: comm may hold spaces
             if fields and fields[0] not in ("Z", "X"):
-                table[int(entry)] = (int(fields[1]), int(fields[2]))
+                table[int(entry)] = (int(fields[1]), int(fields[2]), _environ_of(entry))
         return table
-    scan = subprocess.Popen(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,stat="], stdin=subprocess.DEVNULL,
+    scan = subprocess.Popen(["ps", "-A", "-E", "-ww", "-o", "pid=,ppid=,pgid=,stat=,command="],
+                            stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace",
                             start_new_session=True)
     try:
@@ -385,20 +405,24 @@ def process_table():
     if scan.returncode != 0:
         raise OSError(f"ps exited with status {scan.returncode}")
     for line in out.splitlines():
-        parts = line.split()
+        parts = line.split(None, 4)
         if len(parts) >= 4 and parts[0].isdigit() and not parts[3].startswith("Z"):
-            table[int(parts[0])] = (int(parts[1]), int(parts[2]))
+            # `command` is the argv then (-E) the environment, space-separated: a marker is a token.
+            env = tuple(parts[4].split()) if len(parts) > 4 else ()
+            table[int(parts[0])] = (int(parts[1]), int(parts[2]), env)
     table.pop(scan.pid, None)  # the scan itself is nobody's call
     return table
 
 
-def call_processes(table, roots=(), groups=(), exclude=()):
-    """A call's live pids in `table`: every member of `groups`, every one of `roots`, and every
-    descendant of either -- minus `exclude` and this process, which never sweeps itself."""
+def call_processes(table, roots=(), groups=(), exclude=(), tag=None):
+    """A call's live pids in `table`: every process carrying its `tag`, every member of `groups`,
+    every one of `roots`, and every descendant of any of them -- minus `exclude` and this process,
+    which never sweeps itself."""
+    marker = f"{CALL_MARKER}={tag}" if tag else None
     children = {}
-    for pid, (ppid, _pgid) in table.items():
+    for pid, (ppid, _pgid, _env) in table.items():
         children.setdefault(ppid, []).append(pid)
-    stack = [pid for pid, (_ppid, pgid) in table.items() if pgid in groups]
+    stack = [pid for pid, (_ppid, pgid, env) in table.items() if pgid in groups or (marker and marker in env)]
     stack += [pid for pid in roots if pid in table]
     found = set()
     while stack:
@@ -409,13 +433,13 @@ def call_processes(table, roots=(), groups=(), exclude=()):
     return found - set(exclude) - {os.getpid()}
 
 
-def sweep(roots=(), groups=(), exclude=(), wait_s=10.0):
+def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None):
     """SIGKILL a call's processes (call_processes) until a fresh scan finds none: True. False when
     one survives `wait_s`, or when the process table cannot be read (fail closed)."""
     deadline = time.monotonic() + wait_s
     while True:
         try:
-            left = call_processes(process_table(), roots, groups, exclude)
+            left = call_processes(process_table(), roots, groups, exclude, tag)
         except OSError:
             return False
         if not left:
@@ -429,27 +453,31 @@ def sweep(roots=(), groups=(), exclude=(), wait_s=10.0):
 
 
 def watchdog_main(argv):
-    """`python3 -I _ablation_run.py --watchdog OWNER_PID -- ARGV...`: the leader of one call.
+    """`python3 -I _ablation_run.py --watchdog OWNER_PID [TAG] -- ARGV...`: the leader of one call.
 
     It runs ARGV, its stdin/stdout/stderr passed straight through, in a process group of its own,
     and never gives up ownership before its cleanup (#657 review K3). When ARGV exits, everything
     it left in the group or below the watchdog is killed BEFORE the watchdog exits, so a runner
     killed from then on cannot orphan any of it. When OWNER (the runner) dies -- a SIGKILL nothing
-    can trap -- the whole call is killed. Exit: ARGV's status (128+N for signal N), 127 when ARGV
-    cannot start, 137 after its owner died, 2 on a usage error.
+    can trap -- the whole call is killed. With a TAG, ARGV runs with OF_CALL_ID=TAG in its
+    environment and every process carrying it is part of the call, in whatever session it is
+    (K4). Exit: ARGV's status (128+N for signal N), 127 when ARGV cannot start, 137 after its
+    owner died, 2 on a usage error.
     """
     try:
-        owner, cmd = int(argv[0]), argv[argv.index("--") + 1:]
+        sep = argv.index("--")
+        owner, tags, cmd = int(argv[0]), argv[1:sep], argv[sep + 1:]
     except (IndexError, ValueError):
-        cmd = []
-    if not cmd:
-        sys.stderr.write("usage: _ablation_run.py --watchdog OWNER_PID -- ARGV...\n")
+        tags, cmd = [], []
+    if not cmd or len(tags) > 1:
+        sys.stderr.write("usage: _ablation_run.py --watchdog OWNER_PID [TAG] -- ARGV...\n")
         return 2
+    tag = tags[0] if tags else None
     me = os.getpid()
     if os.getsid(0) != me:
         os.setsid()  # a group of its own: what it sweeps is its call's, never its owner's
     try:
-        proc = subprocess.Popen(cmd)
+        proc = subprocess.Popen(cmd, env=dict(os.environ, **{CALL_MARKER: tag}) if tag else None)
     except OSError as err:
         sys.stderr.write(f"watchdog: cannot start {cmd[0]!r}: {err}\n")
         return 127
@@ -459,10 +487,15 @@ def watchdog_main(argv):
             break
         except subprocess.TimeoutExpired:
             if os.getppid() != owner:
-                sweep(roots=(me,), groups=(me,), exclude=(me,), wait_s=30.0)
+                sweep(roots=(me,), groups=(me,), exclude=(me,), wait_s=30.0, tag=tag)
                 return 137
-    sweep(roots=(me,), groups=(me,), exclude=(me,))
+    sweep(roots=(me,), groups=(me,), exclude=(me,), tag=tag)
     return status if status >= 0 else 128 - status
+
+
+def watchdog_argv(tag):
+    """The prefix that runs a command as one tagged call under the watchdog, owned by this run."""
+    return [sys.executable, "-I", str(WATCHDOG), "--watchdog", str(os.getpid()), tag, "--"]
 
 
 def _exited(pid, timeout):
@@ -484,26 +517,30 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
     timeout, or an exception mid-call (an interrupt), the watchdog and everything below it or in
     its group are killed; after a normal exit the runner verifies the watchdog's sweep. The
     watchdog is waited for without being reaped until that sweep is done, so its pid cannot pass
-    to a stranger the sweep would walk. `emptied` is False only when a process survived SIGKILL or
-    the process table could not be read, and then no next call may start.
+    to a stranger the sweep would walk. Every process of the call carries a fresh OF_CALL_ID tag,
+    so one that left the group (setsid) is swept too (K4). `emptied` is False only when a process
+    survived SIGKILL or the process table could not be read: then the call must not be settled,
+    and no next call may start.
     """
+    tag = secrets.token_hex(16)
     with contextlib.ExitStack() as files:
         fin = files.enter_context(open(stdin_path, "rb")) if stdin_path else subprocess.DEVNULL
         fout = files.enter_context(open(stdout_path, "wb"))
         ferr = files.enter_context(open(stderr_path, "wb")) if stderr_path else subprocess.STDOUT
-        proc = subprocess.Popen([sys.executable, "-I", str(WATCHDOG), "--watchdog", str(os.getpid()), "--",
-                                 *argv], stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
-                                start_new_session=True)
+        proc = subprocess.Popen([*watchdog_argv(tag), *argv], stdin=fin, stdout=fout, stderr=ferr,
+                                cwd=cwd, env=env, start_new_session=True)
     LIVE_GROUPS.add(proc.pid)
+    LIVE_TAGS.add(tag)
     killed = False
     try:
         killed = not _exited(proc.pid, timeout)
     finally:
-        emptied = sweep(roots=(proc.pid,), groups=(proc.pid,))
+        emptied = sweep(roots=(proc.pid,), groups=(proc.pid,), tag=tag)
         proc.kill()  # a no-op once it has exited (Popen polls first)
         proc.wait()
         if emptied:
             LIVE_GROUPS.discard(proc.pid)
+            LIVE_TAGS.discard(tag)
     return (None if killed else proc.returncode), killed, emptied
 
 
@@ -534,6 +571,9 @@ def stop_all_groups():
     for pgid in sorted(LIVE_GROUPS):
         if sweep(groups=(pgid,)):  # its leader is reaped: walk its group, never its stale pid
             LIVE_GROUPS.discard(pgid)
+    for tag in sorted(LIVE_TAGS):
+        if sweep(tag=tag):
+            LIVE_TAGS.discard(tag)
     for pgid_file in sorted(GRADER_GROUP_FILES, key=str):
         sweep_grader_group(pgid_file)
 
@@ -726,14 +766,17 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=Non
         # A run that never completed is not graded: its trace is partial and grading costs money.
         errors.append("not graded: the agent run did not complete")
     else:
-        sink = {}
+        sink, tag = {}, secrets.token_hex(16)
         pgid_file = Path(f"{usage_path}.pgid") if usage_path else None
         if usage_path:
             sink = {"ABLATION_GRADER_USAGE": str(usage_path),
                     "ABLATION_GRADER_TIMEOUT": f"{grader_inner_timeout():.1f}"}
             GRADER_GROUP_FILES.add(pgid_file)
+        LIVE_TAGS.add(tag)
         try:
-            with _environ(EVAL_GRADER_CMD=grader_cmd, **sink):
+            # A tagged call under the watchdog: a runner SIGKILLed mid-grade takes the grader with
+            # it, and a grader descendant that leaves its session is still swept (#657 review).
+            with _environ(EVAL_GRADER_CMD=shlex.join(watchdog_argv(tag)) + " " + grader_cmd, **sink):
                 graded = ev_mod._grade_trace(assertions, trace)
         except (OSError, subprocess.SubprocessError) as err:
             timed_out = isinstance(err, subprocess.TimeoutExpired)
@@ -744,6 +787,9 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=Non
                 # the next cell does not start until it is empty (#652 review, P1).
                 emptied = sweep_grader_group(pgid_file)
                 GRADER_GROUP_FILES.discard(pgid_file)
+            emptied = sweep(tag=tag) and emptied  # anything of the call, in any session (K4)
+            if emptied:
+                LIVE_TAGS.discard(tag)
         try:
             usage = json.loads(Path(usage_path).read_text(encoding="utf-8")) if usage_path else {}
         except (OSError, ValueError):
@@ -752,7 +798,8 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=Non
             errors.append("grader returned no valid JSON verdict for the requested assertions")
     killed = bool(usage.get("killed")) or timed_out
     if not emptied:
-        errors.append("a process of the grader's group survived SIGKILL")
+        errors.append("a process of the grader's call survived SIGKILL, or the process table could "
+                      "not be read: the call stays open at its full reservation")
     passed = sum(1 for row in (graded or {}).get("assertions", []) if row.get("passed"))
     success = graded is not None and passed == len(assertions) and not state_failed
     return {"success": success, "correct_terminal": success, "assertions_passed": passed,
@@ -819,13 +866,15 @@ def run_cell(ctx, pair, arm):
     try:
         stream, code, killed, emptied = run_group(ctx["agent_cmd"], input_text=text, cwd=workspace,
                                                   env=env, timeout=ctx["timeout"])
-        completed = not killed
+        # Nothing more is paid for while a process of the agent's call may still be spending (K4).
+        completed = not killed and emptied
         if killed:
             errors.append(f"agent timed out after {ctx['timeout']} s; its whole process group was killed")
         elif code != 0:
             errors.append(f"agent exited with status {code}")
         if not emptied:
-            errors.append("a process of the agent's group survived SIGKILL")
+            errors.append("a process of the agent's call survived SIGKILL, or the process table could "
+                          "not be read: the call stays open at its full reservation")
     except (OSError, subprocess.SubprocessError) as err:
         stream = ""
         errors.append(f"agent invocation failed: {eval_mod()._process_error(err)}")
@@ -836,7 +885,8 @@ def run_cell(ctx, pair, arm):
     tokens_in, tokens_out, cost, reasons = usage_of(stream_path, cell_id, task)
     cell.update({"input_tokens": tokens_in, "output_tokens": tokens_out, "cost_usd": cost,
                  "usage_unavailable": reasons})
-    ledger.settle(cell_id, "agent", agent_charge(cell, model, tier), cost, killed)
+    if emptied:  # a call something of which survives stays open, charged its full reservation (K4)
+        ledger.settle(cell_id, "agent", agent_charge(cell, model, tier), cost, killed)
     reads = deferred_reads(stream, ctx["cues"][mission][arm])
     cell["deferred_reads"] = reads
     for status in ("omitted", "late", "early"):
@@ -847,7 +897,7 @@ def run_cell(ctx, pair, arm):
             ledger.start(cell_id, "grader", model["grader_reserve_usd"])
         graded = grade_behavioral(ev, workspace, originals, stream,
                                   ctx["grader_cmd"] if completed else None, cell_dir / "grader-usage.json")
-        if completed:
+        if completed and not graded["orphans"]:
             ledger.settle(cell_id, "grader", grader_charge(graded, model, tier),
                           graded["grader_cost_usd"], graded["grader_killed"])
     else:
@@ -1207,9 +1257,8 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
         grader_output = args.grader_output or prereg["harness"]["grader_output"]
     else:
         grader, grader_output = [str(sandbox.stand_in), "-p", "--output-format", "json"], "claude-json"
-    # The meter runs under the watchdog too: a runner SIGKILLed mid-grade takes its grader with it.
-    ctx["grader_cmd"] = shlex.join([sys.executable, "-I", str(WATCHDOG), "--watchdog", str(os.getpid()), "--",
-                                    sys.executable, "-I", str(sandbox.meter), grader_output, "--",
+    # Each grading runs this meter as a tagged call under the watchdog (grade_behavioral).
+    ctx["grader_cmd"] = shlex.join([sys.executable, "-I", str(sandbox.meter), grader_output, "--",
                                     *grader, *grader_limit])
     variants = {}
     for mission in missions:

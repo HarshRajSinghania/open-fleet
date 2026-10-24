@@ -104,6 +104,13 @@ STAND_IN = textwrap.dedent(r'''
                                  stderr=subprocess.DEVNULL)
         with open(os.path.join(opt("--pids"), "%d.pids" % os.getpid()), "w", encoding="utf-8") as fh:
             json.dump([os.getpid(), child.pid], fh)
+    if mode == "escape":
+        # A grandchild in a session of its own from birth (setsid): no process group holds it (K4).
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        with open(os.path.join(opt("--pids"), "%d.pids" % os.getpid()), "w", encoding="utf-8") as fh:
+            json.dump([child.pid], fh)
     model = "stand-in-not-a-model"
     init = {"type": "system", "subtype": "init", "model": model, "session_id": "s-%d" % call,
             "tools": ["Read", "Edit", "Write"]}
@@ -507,6 +514,40 @@ class TheWatchdogCleansUpBeforeItLetsGo(StandInRun):
         self.assertEqual([c["alive_at_start"] for c in self.calls()], [[], [], []],
                          "a call started while an earlier call's grandchild lived")
         self.assertAllDead(at_least=6)
+
+
+class ACallIsContainedAcrossSessions(StandInRun):
+    """#657 review K4: cleanup killed the call's process GROUP, so a worker descendant that called
+    setsid() left it, kept running (and spending), and the call still reported itself empty. Every
+    call now carries a unique OF_CALL_ID marker in its environment; teardown kills every process
+    carrying it and re-scans until none is left, and a call is never settled while anything of it
+    survives or the process table cannot be read."""
+
+    def test_a_grandchild_that_leaves_the_session_is_still_swept(self):
+        code, _out, err = self.main(self.stub(self.agent("escape", "json", 0)))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["alive_at_start"] for c in self.calls()], [[], [], []],
+                         "a call started while an escaped grandchild lived")
+        self.assertAllDead(at_least=3)
+
+    def assertKeptOpen(self, code, err):
+        self.assertEqual(code, 1, err)
+        results = self.results()
+        self.assertEqual(len(self.calls()), 1, "a call started while a process of the last one lived")
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
+        self.assertEqual([r["event"] for r in self.ledger()], ["start"],
+                         "a call was settled while a process of it lived")
+        self.assertEqual(results["results"][0]["charged_usd"], 2.0)
+
+    def test_a_survivor_keeps_its_call_open_and_stops_the_run(self):
+        with mock.patch.object(replay_mod.spend, "sweep", return_value=False, create=True):
+            code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
+        self.assertKeptOpen(code, err)
+
+    def test_a_process_table_it_cannot_read_is_a_survivor(self):
+        with mock.patch.object(replay_mod.spend, "process_table", side_effect=OSError("no ps"), create=True):
+            code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
+        self.assertKeptOpen(code, err)
 
 
 if __name__ == "__main__":

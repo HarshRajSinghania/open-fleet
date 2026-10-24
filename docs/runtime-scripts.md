@@ -1122,8 +1122,14 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   and reaped. When the worker exits, the watchdog kills what it left in its group or below it
   BEFORE exiting, and the runner verifies that sweep before the next call. SIGTERM/SIGHUP/Ctrl-C
   kill every live call, write the results and exit 128+N. The watchdog kills its whole call if
-  the runner itself is SIGKILLed. A worker that calls `setsid()` itself leaves its group and breaks this contract, so
-  run the arm in a disposable sandbox.
+  the runner itself is SIGKILLed.
+- **Contained across sessions.** Every process of a call carries a unique `OF_CALL_ID` marker in
+  its environment. Teardown kills every process carrying it, plus every descendant of the call, in
+  whatever session or group it now is, and re-scans until none is left (`/proc` on Linux, `ps -E`
+  elsewhere). A call is never settled while anything of it survives SIGKILL, or while the process
+  table cannot be read: it stays open at its full reservation and the run stops `ORPHAN_ALIVE`.
+  The limit: a process that re-executes itself with an emptied environment (`env -i`) after
+  leaving the call's process tree is not found. Run the arm in a disposable sandbox.
 - **Results** (`hint-replay-live/v2`): per call `cost_usd` (`null` when unmeasured), `measured`,
   `charged_usd`, `reserve_usd`, the `models` the worker reported and its `output` paths. `cost`
   holds `cap_usd`, `spent_usd`, `prior_spent_usd`, `counted_against_cap_usd`,

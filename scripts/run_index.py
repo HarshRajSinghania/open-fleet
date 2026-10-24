@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CELLS = ("mission", "target", "ran_as", "binds", "outcome")
 REQUIRED = ("date", "report") + CELLS
 OPTIONAL = ("summary", "order")
+_LINK_RE = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")  # relative Markdown links
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
@@ -97,6 +98,12 @@ def row_errors(name, data, root=ROOT):
         value = data.get(cell)
         if isinstance(value, str) and ("|" in value or "\n" in value):
             errors.append(f"{where}: {cell} holds a '|' or a newline, which breaks the table")
+    for cell in CELLS + ("summary",):  # the README is not re-rendered until the cut (PR #670)
+        value = data.get(cell)
+        for href in _LINK_RE.findall(value) if isinstance(value, str) else ():
+            path = href.split("#", 1)[0]
+            if path and not (runs_dir(root) / path).exists():
+                errors.append(f"{where}: {cell} link ({href}) does not resolve from docs/runs/")
     binds = data["binds"]
     if not (binds == "yes" or binds.startswith("yes ") or binds.startswith("no ")
             or binds == "no"):

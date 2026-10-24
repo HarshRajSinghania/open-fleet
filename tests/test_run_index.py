@@ -92,6 +92,35 @@ class TheLiveIndex(unittest.TestCase):
                       ri.render(rows, "2026-10-24"))
 
 
+class RowLinksResolve(unittest.TestCase):
+    """PR #670 review (P2, PRRT_kwDOTWxN9c6v5pBs): row_errors checked the report exists but not the
+    links in a row's cells, and the README stays unchanged between releases, so a dead link in a new
+    row passed CI and only broke the next release. Every relative link resolves from docs/runs/."""
+
+    def test_a_dead_link_in_any_cell_is_refused(self):
+        report = "2026-01-02-demo-it-self-run.md"
+        for cell in ("target", "outcome"):
+            with self.subTest(cell=cell), tempfile.TemporaryDirectory() as tmp:
+                root = make_root(tmp)
+                write_row(root, row(report, **{cell: "see [inventory](missing.md)"}))
+                errors = ri.check_rows(root)
+                self.assertTrue(any("missing.md" in e and "does not resolve" in e for e in errors),
+                                f"{cell}: {errors}")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            write_row(root, row(report, binds="yes", summary="the run, [notes](gone/notes.md)"))
+            self.assertTrue(any("gone/notes.md" in e for e in ri.check_rows(root)))
+
+    def test_live_links_anchors_and_urls_pass(self):
+        report = "2026-01-02-demo-it-self-run.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            write_row(root, row(report, target="[the other run](2026-01-03-demo-it-run/)",
+                                outcome="[spec](https://example.invalid/x) [top](#runs) "
+                                        f"[report]({report}#section)"))
+            self.assertEqual(ri.check_rows(root), [])
+
+
 class RowFilesAreHeldToTheTableShape(unittest.TestCase):
     def test_a_clean_fixture_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

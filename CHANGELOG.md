@@ -21,7 +21,15 @@ truth is `.claude-plugin/plugin.json`.
   cost, the cap, total spend, and which calls were measured. `tests/test_hint_replay_spend.py`
   drives every guard with an inert stand-in that prints Claude JSON. The owner-authorised USD 40
   command is in docs/runtime-scripts.md. No live result is claimed until a bound run report
-  exists.
+  exists. The PR #657 review hardened the shared guard in `scripts/_ablation_run.py`, so #606's
+  runner gets the same fixes. Each call's limit is floored to the cent, and a reservation too
+  small for a positive limit within it is refused. One run holds a spend ledger at a time (an
+  exclusive lock), so concurrent runs cannot both spend one cap. Every agent and grader call runs
+  under a watchdog that kills what its worker left before it exits. A unique `OF_CALL_ID`
+  environment marker contains each call across sessions, so a descendant that calls `setsid()`
+  is still swept. No call is settled while anything of it survives or the process table cannot
+  be read. A scenario id must be one safe filename. The limit: a process that re-executes with an
+  emptied environment after leaving the call's tree is not found.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

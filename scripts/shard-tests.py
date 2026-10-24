@@ -53,7 +53,7 @@ WEIGHTS = {
     "test_a2a_export": 0.9,
     "test_a2a_schema": 0.4,
     "test_ablation": 2.9,  # #606/#652, re-measured 2026-10-24 (macOS arm64, load ~5-8): 2.37, 3.37
-    "test_ablation_runner": 24.5,  # #606/#652, re-measured 2026-10-24 (macOS arm64, load ~5-8): 24.45
+    "test_ablation_runner": 44.4,  # #606/#652/#657, re-measured 2026-10-24 (macOS arm64, load ~8): 44.4
     "test_architecture": 37.5,
     "test_bind_check": 5.7,
     "test_bundle": 61.8,
@@ -94,7 +94,7 @@ WEIGHTS = {
     "test_governance_commands": 1.6,
     "test_guard_text": 3.7,
     "test_hint_provenance": 20.6,
-    "test_hint_replay_spend": 15.9,  # #605, measured 2026-10-24 (macOS arm64, load ~3-4): 15.89
+    "test_hint_replay_spend": 36.2,  # #605/#657, re-measured 2026-10-24 (macOS arm64, load ~8): 36.2
     "test_hitl_ask": 0.5,
     "test_hitl_loop": 1.0,
     "test_injection_corpus": 0.4,

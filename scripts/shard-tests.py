@@ -60,15 +60,19 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
-    "test_certification": 104.9,  # #596, re-measured 2026-10-24 (macOS arm64, mean of 109.6 and 100.2):
+    "test_certification": 117.7,  # #596, re-measured 2026-10-24 (macOS arm64, load ~6): 117.7 s with the
+    # rw-final-answer, receipt-witness, live-record and bound-first-run classes; earlier 112.4 s, and
+    # before those classes a mean of 109.6 and 100.2:
     # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
     # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
+    "test_containment": 6.7,  # PR #668 review: the shared process-containment helper
     "test_capability_harnesses": 0.5,
-    "test_capability_launch_agreement": 8.8,
+    "test_capability_launch_agreement": 14.3,  # #596, re-measured 2026-10-24 (macOS arm64): the openhands
+    # end-to-end runs against a loopback agent-server, and the no-exception claim test
     "test_capability_matrix": 0.1,
     "test_chain_check": 0.2,
     "test_check_reply": 0.7,
-    "test_claude_ro_launches": 0.9,
+    "test_claude_ro_launches": 1.3,  # #596, re-measured 2026-10-24: the Orca ro row probe
     "test_cross_runtime_upgrades": 2.4,
     "test_decisions": 11.9,
     "test_deny_hook": 134.4,
@@ -145,11 +149,12 @@ WEIGHTS = {
     "test_send_msg": 0.5,
     "test_shard_tests": 1.4,
     "test_spawn_upstream": 15.2,
-    "test_spawn_worker": 42.2,
+    "test_spawn_worker": 45.9,  # #596: +3.7 s for TestOrcaRoLanePrerequisites (measured 2026-10-24)
     "test_superset_provider": 0.8,
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,
     "test_trajectory_evals": 70.0,  # #602/#644, measured 2026-10-23, macOS host at load average ~21
+    "test_trajectory_live": 94.3,  # #602 live arm + PR #659/#668 reviews, measured 2026-10-24 (macOS arm64, load ~9-11): 94.31
     "test_upstream_probe": 4.1,
     "test_validate": 9.6,
     "test_validate_catalog_grammar": 0.3,
@@ -167,6 +172,11 @@ WEIGHTS = {
     "test_vfbench_heldout": 1.8,
     "test_vfbench_replay": 22.3,
     "test_watchdog": 1.1,
+    # #604, measured 2026-10-24 (macOS arm64, load average ~4-5; 227.0 and 243.4 s): about a dozen
+    # whole runs through the posix provider and the merge queue, inert and against a fake claude
+    # (the cap, the gate, planted git config, the model pin, deadlines, interrupts, relative paths),
+    # driven in-process so coverage traces them, then the tamper, binding and refusal checks.
+    "test_wip_curve": 640.5,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,
     "test_worktree_ops": 0.5,

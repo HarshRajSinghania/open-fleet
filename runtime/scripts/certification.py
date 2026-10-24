@@ -33,7 +33,13 @@ Checks (`check`, the default) — each failure is one `FAIL:` line:
      scripts/validate.py applies to proof_evidence (it re-hashes the inventory at the pinned
      commit, so it needs full git history, like validate.py). `route` quotes whole lines of that
      run's inventoried artifacts, read at its inventory_at, which must NAME every cell of the
-     group: provider, PROFILE=<p> beside the harness, and the recorded versions;
+     group: provider, PROFILE=<p> beside the harness, and the recorded versions. Quotes of an
+     inert first run (its `witness` line says worker=inert / tier=fixture-tested) certify
+     nothing, and a harness cell needs a provider other than orca named (base.py's table runs
+     off Orca; Orca launches spawn_worker.sh's own rows). The fields a maintainer copies from a
+     first_run.py receipt are checked too: a harness cell's upstream.version is named in
+     witnessed.harness_version, an in-repo provider's upstream_version is a commit on HEAD's
+     history (the receipt's catalog commit), and witnessed.date is YYYY-MM-DD;
   5. unsupported: needs the typed `refusal` code the route is refused with;
   6. freshness: a provider bound to a pin (`upstream.pin` = `<file>#<key>`) is STALE once the
      pin's commit, version or live_receipts.version differs from `certified_against`. Every
@@ -51,6 +57,7 @@ Exit: 0 valid and fresh · 1 invalid or stale (matrix/markdown still print) · 2
 from __future__ import annotations
 
 import argparse
+import datetime
 import functools
 import importlib.util
 import json
@@ -71,6 +78,11 @@ HARNESS_WORDS = {"claude": ("claude", "claude code"), "omp": ("omp", "oh-my-pi")
                  "cursor": ("cursor", "cursor-agent")}
 PROVIDER_WORDS = {"orca": ("orca-ide", "Orca")}
 PROFILE_RE = r"""\bPROFILE=["']?{profile}\b"""
+# A first_run.py receipt says what kind of worker ran (its `witness` line): a stand-in proves the
+# fleet's route only, so evidence that quotes one certifies nothing live (#596).
+FIXTURE_MARKS = ("worker=inert", "tier=fixture-tested")
+# An upstream that is this repository: its witness is the catalog commit the run ran (#596).
+IN_REPO = "in-repo"
 SYMBOL_RE = r"(?m)^\s*(?:class|def|async def)\s+{name}\b"
 
 
@@ -172,7 +184,7 @@ def _names(text: str, words: tuple[str, ...], *, case: bool = False) -> bool:
 
 
 def _route_errors(where: str, cells: list[tuple[str, str, str, str]], witnessed: dict, bound: list[str],
-                  root: Path) -> list[str]:
+                  root: Path, providers: tuple[str, ...] = ()) -> list[str]:
     """A live cell is live only for the route its bound evidence NAMES (#596 review): a group
     that copied another route's witness and cited its run must not certify a harness, profile
     or provider that run never dispatched. The record only points (`route`: path + whole lines);
@@ -204,11 +216,21 @@ def _route_errors(where: str, cells: list[tuple[str, str, str, str]], witnessed:
         texts.append("\n".join(want))
     if errors:
         return errors
+    fixture = sorted({m for m in FIXTURE_MARKS for t in texts if m in t})
+    if fixture:
+        return [f"{where}: the quoted evidence is a fixture run ({', '.join(fixture)}): an inert stand-in "
+                "proves the fleet's route, never a live one"]
+    # base.py's launch table runs off Orca only; Orca launches spawn_worker.sh's own rows (#596).
+    off_orca = [p for p in providers if p != "orca"]
     for kind, name, profile, harness in cells:
         words = HARNESS_WORDS.get(harness, (harness,))
         missing = []
         if kind == "provider" and not any(_names(t, PROVIDER_WORDS.get(name, (name,)), case=True) for t in texts):
             missing.append(f"provider {name}")
+        if kind == "harness" and not any(_names(t, PROVIDER_WORDS.get(p, (p,)), case=True)
+                                         for t in texts for p in off_orca):
+            missing.append("provider that launches base.py's line: the harness table runs off Orca only, and "
+                           "the Orca route launches spawn_worker.sh's own rows")
         if not any(re.search(PROFILE_RE.format(profile=re.escape(profile)), t) and _names(t, words) for t in texts):
             missing.append(f"PROFILE={profile} beside harness {harness} in one quote")
         hv, uv = witnessed.get("harness_version"), witnessed.get("upstream_version")
@@ -222,7 +244,7 @@ def _route_errors(where: str, cells: list[tuple[str, str, str, str]], witnessed:
     return errors
 
 
-def _live_errors(where: str, group: dict, root: Path, run_report, cells=()) -> list[str]:
+def _live_errors(where: str, group: dict, root: Path, run_report, cells=(), providers=()) -> list[str]:
     errors = []
     witnessed = group.get("witnessed")
     if not isinstance(witnessed, dict) or any(not witnessed.get(k) for k in WITNESS_KEYS):
@@ -243,7 +265,39 @@ def _live_errors(where: str, group: dict, root: Path, run_report, cells=()) -> l
         errors.append(f"{where}: live-witnessed without a binding run report — cite a docs/runs/*.md whose RUN: "
                       "header records verifier=GREEN and which binds under run_report.py")
     elif isinstance(witnessed, dict):
-        errors += _route_errors(where, list(cells), witnessed, bound, root)
+        errors += _route_errors(where, list(cells), witnessed, bound, root, tuple(providers))
+    return errors
+
+
+def _witness_field_errors(where: str, kind: str, upstream: dict, witnessed, root: Path, run_report) -> list[str]:
+    """The fields a maintainer copies from the run's receipt agree with the witness (#596).
+
+    A harness cell's own `upstream.version` is the version the run reported (receipt
+    facts.harness.version, quoted as witnessed.harness_version); an in-repo provider is witnessed
+    at the catalog commit the run ran (receipt host.catalog_commit), which must be in this
+    repository's history; and the date is a calendar date.
+    """
+    if not isinstance(witnessed, dict):
+        return []
+    errors = []
+    date = str(witnessed.get("date") or "")
+    try:
+        datetime.date.fromisoformat(date)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise ValueError(date)
+    except ValueError:
+        if date:
+            errors.append(f"{where}: witnessed.date {date!r} is not a calendar date (YYYY-MM-DD)")
+    hv = str(witnessed.get("harness_version") or "")
+    version = upstream.get("version")
+    if kind == "harness" and version and str(version) not in hv:
+        errors.append(f"{where}: upstream.version {version!r} is not the witnessed harness version {hv!r}: copy "
+                      "it from the run receipt's facts.harness.version")
+    uv = str(witnessed.get("upstream_version") or "")
+    if kind == "provider" and version == IN_REPO and not (
+            re.fullmatch(r"[0-9a-f]{40}", uv) and run_report.is_ancestor(uv, "HEAD", root)):
+        errors.append(f"{where}: an in-repo provider is witnessed at a commit of this repository: upstream_version "
+                      f"{uv!r} must be the run receipt's host.catalog_commit, an ancestor of HEAD")
     return errors
 
 
@@ -345,9 +399,10 @@ def validate(root: Path, record_path: Path | None = None, pins_path: Path | None
             group = {"witnessed": cell["witnessed"], "evidence": cell["evidence"]}
             route = [(c["kind"], c["name"], c["profile"], c["harness"]) for c in cells
                      if (c["kind"], c["name"], c["group"]) == gkey]
-            errors += _live_errors(where, group, root, run_report, route)
+            errors += _live_errors(where, group, root, run_report, route, tuple(caps.get("providers") or {}))
             if not (cell["upstream"].get("version") or cell["upstream"].get("commit")):
                 errors.append(f"{where}: live-witnessed on an upstream whose version is unknown")
+            errors += _witness_field_errors(where, cell["kind"], cell["upstream"], cell["witnessed"], root, run_report)
         elif cell["witnessed"] is not None:
             errors.append(f"{where}: only a live-witnessed route carries `witnessed`")
         if cell["tier"] == "unsupported" and not (isinstance(cell["refusal"], str) and cell["refusal"]):

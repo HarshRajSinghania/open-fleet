@@ -22,6 +22,10 @@ counts attempts that fail with the recorded pitfall. It never runs unless asked,
 than ``--max-runs``, and labels its report with the tier the operator declared -- a stub agent is
 tier ``stub``, never ``live``.
 
+A ``live`` tier is DISABLED (PR #668): ``--live --tier live`` is refused, before the corpus is
+read or anything reserved, until the container-based live harness lands
+(runtime/scripts/containment.py). The machinery stays, and is what follows.
+
 A ``live`` tier spends model budget, under the spend guard #606's runner uses
 (scripts/_ablation_run.py, whose ledger it shares). It is refused without a declared model, an
 explicit finite cap (``--budget-usd``), a per-call reservation (``--per-call-usd``, the worst case
@@ -43,6 +47,7 @@ re-executes itself with an emptied environment after leaving the call's tree is 
 the worker in a disposable sandbox.
 
     python3 scripts/hint_replay.py --check                  # fixture tier, deterministic, free
+    # refused while the live tier is disabled (PR #668):
     python3 scripts/hint_replay.py --live --tier live --model sonnet \\
         --agent-cmd 'claude -p --model sonnet --output-format json --permission-mode acceptEdits' \\
         --budget-usd 40 --per-call-usd 2 --agent-limit-flag=--max-budget-usd \\
@@ -698,6 +703,10 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    why = spend.live_disabled() if args.live and args.tier == "live" else None
+    if why:  # first, before the corpus is read or anything reserved (PR #668: the live tier is off)
+        print(f"hint_replay: {why}", file=sys.stderr)
+        return EXIT_USAGE
     try:
         if args.live:
             preflight_live(args)

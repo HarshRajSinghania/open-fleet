@@ -45,6 +45,24 @@ ablation = _load("ablation_for_runner_tests", "scripts/ablation.py")
 runner = ablation._runner()
 PREREG = ablation.load_prereg()
 SAFETY = {}
+# The host probe, as the runner has it. setUpModule injects a proven host in its place (Python-level,
+# never an environment variable or flag): these tests are about the runner, not this machine. The
+# probe's own tests, and the refusal tests, put the real one back (PR #668 review).
+REAL_PROBE, REAL_TABLE = runner.containment_problem, runner.process_table
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). These
+# tests drive the live machinery, so setUpModule lifts it in this process the same Python-level
+# way; TheLiveTierIsDisabled puts the real one back, and runs the CLI as its own process too.
+REAL_LIVE_GATE = runner.live_disabled
+DISABLED = "live runs are disabled until the container-based live harness lands"
+
+def _fixture(name):
+    spec = importlib.util.spec_from_file_location(f"fixture_{name}", ROOT / "tests" / "fixtures" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+TABLES = _fixture("containment_tables")  # a process table blind to system binaries (PR #668 review)
 
 
 def setUpModule():
@@ -57,9 +75,15 @@ def setUpModule():
                   shell=os.environ.get("SHELL"))
     os.environ["PATH"] = f"{bindir}{os.pathsep}{SAFETY['path']}"
     os.environ["SHELL"] = "/bin/sh"
+    SAFETY["probe"] = mock.patch.object(runner, "containment_problem", lambda system_binary=True: None)
+    SAFETY["probe"].start()
+    SAFETY["live"] = mock.patch.object(runner, "live_disabled", lambda: None)
+    SAFETY["live"].start()
 
 
 def tearDownModule():
+    SAFETY["live"].stop()
+    SAFETY["probe"].stop()
     os.environ["PATH"] = SAFETY["path"]
     if SAFETY["shell"] is None:
         os.environ.pop("SHELL", None)
@@ -246,6 +270,12 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         prereg = copy.deepcopy(PREREG)
         prereg["cost_cap"].update(status=ablation.PENDING, authorised_usd=None, authorised_by=None)
         return prereg
+
+    def test_a_host_blind_to_system_binaries_refuses_a_live_run(self):
+        # Python visible, system binaries hidden (macOS's view): the strong probe refuses (PR #668).
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", TABLES.blind_to_system_binaries(REAL_TABLE)):
+            self.refused(self.live("--cost-cap-usd", "5"), "process discovery cannot contain", self.authorised())
 
     def test_a_live_run_needs_the_owners_recorded_authorisation(self):
         self.refused(self.live("--cost-cap-usd", "5"), "PENDING OWNER AUTHORISATION", self.pending())
@@ -758,7 +788,9 @@ class InterruptedSpendIsRecorded(SafetyNet):
 
     def test_a_real_sigterm_mid_agent_records_the_reservation_durably(self):
         env = {**os.environ, "SHELL": "/bin/sh"}
-        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"),
+        proc = subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                                     "mod._runner().containment_problem = proven; "
+                                                     "mod._runner().live_disabled = lifted"),
                                  *self.live(20, "--timeout", "60", agent="hang")],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(self.out) if pid_alive(p)])
@@ -1172,7 +1204,9 @@ class TheWatchdogCleansUpBeforeItLetsGo(SafetyNet):
 
     def spawn(self, argv):
         env = {**os.environ, "SHELL": "/bin/sh"}
-        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"), *argv],
+        proc = subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                                     "mod._runner().containment_problem = proven; "
+                                                     "mod._runner().live_disabled = lifted"), *argv],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         return proc
@@ -1329,6 +1363,81 @@ class ACallIsContainedAcrossSessions(SafetyNet):
         self.assertEqual(runner.call_processes(table, groups=(10,), tag=tag, exclude=(10,)), {11, 12, 20, 21})
         self.assertEqual(runner.call_processes(table, roots=(11,)), {11, 12})
         self.assertEqual(runner.call_processes(table, tag=other), {30})
+
+
+class TestTheContainmentProbeCoversASystemBinary(unittest.TestCase):
+    """PR #668 review sweep (B1): macOS's `ps -E` cannot read the environment of an Apple system
+    binary (/bin/sh, /bin/sleep), so a call's detached shell is invisible there, while a Python
+    process is not. A probe that launches only Python vouches for a table blind to exactly what a
+    worker's shell starts. Asked to (the WIP-curve runner does), the probe must also find its marker
+    on a system binary, or report the host as unable to contain a call."""
+
+    def test_a_table_blind_to_system_binaries_cannot_contain_a_call(self):
+        real, mark = runner.process_table, f"{runner.CALL_MARKER}="
+
+        def blind_but_to_python():
+            table = {}
+            for pid, (ppid, pgid, env) in real().items():
+                if any(tok.startswith(mark) for tok in env):
+                    comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True,
+                                          text=True).stdout
+                    if "python" not in comm.lower():
+                        env = tuple(tok for tok in env if not tok.startswith(mark))
+                table[pid] = (ppid, pgid, env)
+            return table
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", blind_but_to_python):
+            self.assertIsNotNone(runner.containment_problem(system_binary=True),
+                                 "a table blind to system binaries was trusted")
+
+
+class TheLiveTierIsDisabled(SafetyNet):
+    """PR #668, the owner's decision: `ablation.py run --tier live` is refused on every host, exit 2,
+    before the registration is read or anything reserved, until the container-based live harness
+    lands. The registration still records an AUTHORISED cap; that changes nothing."""
+
+    def live_argv(self, prereg, out):
+        return ["--prereg", str(prereg), "run", "--tier", "live", "--cost-cap-usd", "5",
+                "--harness-cmd", self.stub_cmd("plain"), "--model", "stub-not-a-model",
+                "--harness-version", "0", "--out", str(out)]
+
+    def test_a_live_run_is_refused_before_the_registration_is_read(self):
+        out = self.tmpdir() / "out"
+        with mock.patch.object(runner, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(ablation, "load_prereg", side_effect=AssertionError("the registration was read")):
+            code, _stdout, err = run_main(self.live_argv(self.tmpdir() / "no-such-prereg.json", out))
+        self.assertEqual(code, 2, err)
+        self.assertIn(DISABLED, err)
+        self.assertIn("PR #668", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertFalse(out.exists(), "a refused live run wrote its results directory")
+
+    def test_an_authorised_registration_does_not_reenable_it(self):
+        out = self.tmpdir() / "out"
+        self.assertEqual(PREREG["cost_cap"]["status"], ablation.AUTHORISED)
+        with mock.patch.object(runner, "live_disabled", REAL_LIVE_GATE):
+            code, _stdout, err = run_main(self.live_argv(ablation.PREREG, out))
+        self.assertEqual(code, 2, err)
+        self.assertIn(DISABLED, err)
+        self.assertFalse(out.exists(), "a refused live run reserved its spend ledger")
+
+    def test_the_cli_refuses_as_its_own_process(self):
+        # No seam at all: the script as an operator runs it.
+        out = self.tmpdir() / "out"
+        p = subprocess.run([sys.executable, str(ROOT / "scripts" / "ablation.py"),
+                            *self.live_argv(self.tmpdir() / "no-such-prereg.json", out)],
+                           env={**os.environ, "SHELL": "/bin/sh"}, capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(DISABLED, p.stderr)
+        self.assertFalse(out.exists())
+
+    def test_the_fixture_and_stub_tiers_are_untouched(self):
+        with mock.patch.object(runner, "live_disabled", REAL_LIVE_GATE):
+            code, _stdout, err = run_main(["run", "--tier", "stub", "--cost-cap-usd", "0",
+                                           "--out", str(self.tmpdir() / "out")])
+        self.assertEqual(code, 2, err)
+        self.assertIn("needs --harness-cmd", err)
+        self.assertNotIn(DISABLED, err)
 
 
 @contextlib.contextmanager
@@ -1531,7 +1640,8 @@ class DiscoveryFailureNeverLeavesACallRunning(SafetyNet):
 
     def test_a_live_run_is_refused_where_discovery_is_unavailable(self):
         out = self.out_dir()
-        with mock.patch.object(runner, "process_table", side_effect=OSError("no ps")):
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", side_effect=OSError("no ps")):
             code, _stdout, err = run_main(self.live(out))
         self.assertEqual(code, 2, err)
         self.assertIn("process discovery", err)
@@ -1543,7 +1653,8 @@ class DiscoveryFailureNeverLeavesACallRunning(SafetyNet):
 
         def no_environments():
             return {pid: (ppid, pgid, ()) for pid, (ppid, pgid, _env) in real().items()}
-        with mock.patch.object(runner, "process_table", no_environments):
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", no_environments):
             code, _stdout, err = run_main(self.live(out))
         self.assertEqual(code, 2, err)
         self.assertIn("process discovery", err)

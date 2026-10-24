@@ -99,6 +99,9 @@ REQUIRED_RUNTIME = tuple(f"runtime/scripts/{name}" for name in (
     # The shared catalog grammar: proof_status.py and quarantine_check.py (preflight's quarantine
     # gate) load it beside themselves (2026-10-23 review, P1-9 / P1-10).
     "_catalog_grammar.py",
+    # Process containment: first_run.py loads it beside itself, and every paid runner's marker sweep
+    # and host probe live there (PR #668 review).
+    "containment.py",
     "decisions.py", "deny-hook.sh", "diff_scope.py", "dispatch-sign.py", "ed25519.py",
     "egress.py", "evidence-run.py", "floor_guard.py", "guard_text.py", "hitl-loop.template.sh",
     "inventory.py", "pm.py", "preflight.py", "proof_status.py", "quarantine_check.py",

@@ -270,6 +270,26 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
         self.assertTrue((wt / ".open-fleet" / "bridges" / "omp_pi_deny_bridge.ts").is_file())
         self.assertTrue((wt / ".crush-orca-ro" / "crush.json").is_file())
 
+    def test_install_worktree_hooks_never_writes_through_a_link(self):
+        # A worktree's content is the worker's: a landed commit can carry `.claude` (or a guard file)
+        # as a symbolic link, and the guard must never be written through it (PR #653 review sweep).
+        for planted in (".claude", ".codex/hooks.json", ".open-fleet"):
+            with self.subTest(planted=planted):
+                wt, escape = Path(self.tmp.name) / f"wt-{len(planted)}", Path(self.tmp.name) / f"escape-{len(planted)}"
+                wt.mkdir()
+                escape.mkdir()
+                link = wt / planted
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(escape if planted.count("/") == 0 else escape / "hooks.json")
+                with self.assertRaises(self.posix_mod.ProviderError) as caught:
+                    self.posix_mod.install_worktree_hooks(wt, agent="claude", profile="rw")
+                self.assertEqual(caught.exception.code, "worktree_guard_link")
+                self.assertEqual(list(escape.iterdir()), [], f"the guard was written through {planted}")
+        clean = Path(self.tmp.name) / "wt-clean"
+        self.posix_mod.install_worktree_hooks(clean, agent="claude", profile="rw")
+        written = {str(f.relative_to(clean)) for f in clean.rglob("*") if f.is_file()}
+        self.assertLessEqual(written, set(self.posix_mod.GUARD_FILES), "a guard file the link check does not cover")
+
     def test_posix_provider_worktree_and_worker_lifecycle(self):
         state_db = Path(self.tmp.name) / "state.db"
         env = {

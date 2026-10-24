@@ -171,6 +171,14 @@ partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any o
   upstream versions. The record only points to the lines; the route is read from them. A
   group that copies another route's witness, or cites a run that never names a route, is
   refused;
+- a `live-witnessed` group whose quotes come from a fixture run (`worker=inert` or
+  `tier=fixture-tested` in a first-run `witness` line), or a live harness cell whose quotes name
+  no provider other than `orca` (base.py's table runs off Orca; Orca launches spawn_worker.sh's
+  own rows);
+- the fields copied from a run receipt that disagree with the witness: a live harness cell's
+  `upstream.version` not named in `witnessed.harness_version`, an `in-repo` provider whose
+  `witnessed.upstream_version` is not a commit on HEAD's history (the receipt's
+  `host.catalog_commit`), or a `witnessed.date` that is not `YYYY-MM-DD`;
 - a provider whose pin (`upstream.pin`, `<file>#<key>`) moved after `certified_against`.
 
 A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
@@ -609,16 +617,24 @@ Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert
 and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
 
 `--worker inert` (the default) puts a stand-in for the harness first on PATH, behind tripwires
-for every other harness name. It calls no model and its receipt reads `fixture-tested`.
-`--worker live` uses the operator's real harness. That run spends, and its receipt reads
-`live-unreviewed` until a maintainer binds it into `docs/runs/`.
+for every other harness name. It calls no model and its receipt reads `fixture-tested`. The
+stand-in is LITERAL: its final answer is the report only when the assignment asks for that, and
+otherwise a one-line summary, as a live worker answered when the rw assignment never asked (#596).
+`--worker live` is disabled until the container-based live harness lands
+([`containment.py`](#containmentpy)): it is refused, exit 2, before anything is read or created.
+The machinery it would run stays and is described here. `--worker live` uses the operator's real
+harness. That run spends, and its receipt reads
+`live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
+when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
+different file than the operator's own PATH does (`harness_shadow`).
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
 completion line its assignment names as the worker's `worker_done` (#596), which must report
 `succeeded`; any other relayed outcome is NO-GO. Otherwise the worker exits cleanly with no line
-and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report and send `worker_done`;
-the coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
+and posix records `worker_died (exit=0)`. The inert stand-in prints the line. `rw` has the worker commit the report, send `worker_done`,
+then print the same report as its final answer, which `result` reads as it does for `ro`; the
+coordinator re-reads its HEAD from git and refuses a claim that git contradicts. In both
 profiles the report committed at the evidence head, the file `verify.py` binds, must open with
 the frozen `FIRST-RUN-REPORT` line, so a worker cannot print one report and commit another.
 
@@ -637,6 +653,20 @@ replaced, only for display and checks. An unexpected error inside any step ends 
 receipt that names the step, the error and the line that raised it; it never ends in a
 traceback with no receipt.
 
+Its cleanup (`stop_workers`) stops every live worker, then ends every process group any worker of
+the run's store left behind, finished workers included: posix marks a dispatch `completed` once
+its foreground process exits, without ending a background child it started. A group whose leader
+is gone but whose members remain is such a leftover. A group whose leader still lives is never
+touched, because its number may have been reused. A descendant that called `setsid()` has left
+its group, and only a marker it carries can find it. So every process of the run carries the run's
+own `OF_CALL_ID`, set in the sandbox environment the provider passes to each worker. After the
+groups are reaped, the cleanup sweeps that marker with [`containment.py`](#containmentpy) until a
+fresh scan finds nothing. The receipt's `teardown` records the result. GO stands only on a
+verified teardown: the sweep vouched, nothing survived SIGKILL, and every teardown call answered.
+Anything else is NO-GO at step `teardown`, and the sandbox is kept. `stop_workers(sb, sweep=...)`
+takes the caller's sweep, which the WIP-curve runner uses too. Without one, `contained` is `None`,
+which never verifies.
+
 The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
 `change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
 worker to add its report the same way. A target that ignores `*.diff` or `.first-run/` still
@@ -654,7 +684,10 @@ its last `FIRST-RUN-REPORT` line. The inert stand-in prints each of these format
 malformed runtime response, and missing capability. Each must refuse before a launch.
 
 Every run writes `receipt.json` with each step's exit, elapsed seconds and recovery hint, every
-command's argv and exit, and host facts. After a GO the sandbox is pruned down to the receipt;
+command's argv and exit, and host facts. It also carries `started_at` (UTC), a one-line `witness`
+(provider/backend, `PROFILE=`, harness and version, worker, tier, catalog commit, verdict) that a
+certification record can quote, and, when the harness reports it (Claude Code's stream-json),
+`facts.harness_usage`: model, turns, duration and cost. After a GO the sandbox is pruned down to the receipt;
 after a NO-GO it is kept whole. However the run ends, it first stops every worker still live in
 its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal closes (SIGHUP).
 A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended
@@ -665,6 +698,68 @@ Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its
 > Why: the provider matrix was certified by adapter unit tests alone, and no documented path
 > took a fresh clone through dispatch to independently verified evidence (#596). The inert and
 > live modes share one code path, so the live first run is one flag away from the fixture CI runs.
+
+## `containment.py`
+
+The process containment every paid runner shares: [`first_run.py`](#first_runpy), #606's ablation
+runner (`scripts/_ablation_run.py`, whose watchdog and `contained_run` use it) and the WIP-curve
+runner. It ships in the runtime bundle with `first_run.py`.
+
+- **The marker.** Every process of a call carries `OF_CALL_ID=<its tag>` in its environment. A
+  descendant that calls `setsid()` leaves its call's process group, and its process tree once its
+  parent exits, but it keeps the marker.
+- **`sweep(roots, groups, exclude, wait_s, tag, table)`** SIGKILLs everything carrying the tag,
+  every member of `groups` and every descendant of any of them, until a fresh scan finds none
+  (True). It returns False when one survives `wait_s`, or when the process table cannot be read.
+- **`containment_problem(system_binary, table)`** is the host check a paid live run makes before
+  it reserves anything. Probes in sessions of their own, carrying a marker, must show up in the
+  process table by it, or it names why not.
+- **`table`** is the process-table reader (`process_table` by default): a caller or a test injects
+  it as a Python argument. No environment variable or flag skips a check.
+
+Discovery is only as good as the table. Linux reads `/proc/<pid>/environ`, which shows every
+process the user owns. Elsewhere it uses `ps -E`; on macOS that cannot read an Apple system
+binary's environment (`/bin/sh`, `/bin/sleep`), so a detached shell is invisible there.
+
+**The rule for paid live runs.** A paid live run starts only on a host where containment is
+proven. The strong probe must pass, so that every descendant is discoverable, a system binary
+included. Otherwise the run refuses before it reserves anything. The probe is every paid runner's
+default: #606's ablation runner, hint replay, the trajectory live arm, the WIP-curve runner and
+`first_run.py --worker live`. No environment variable or flag skips it. Tests inject the probe and
+the process table as Python arguments.
+
+On macOS the strong probe fails, so a live run refuses there, as intended. Run live arms in a
+disposable Linux container (OrbStack provides one on macOS). There, `/proc/<pid>/environ` shows
+every process the user owns, and destroying the container is the final backstop for anything a
+sweep could not reach.
+
+**The paid live tier is disabled (PR #668).** Until the container-based live harness lands, every
+paid live entry point refuses, on every host, before it reads or reserves anything: exit 2 and one
+message (`containment.LIVE_DISABLED`). The five are `wip_curve.py run --worker live`,
+`ablation.py run --tier live`, `hint_replay.py --live --tier live`,
+`eval.py run --suite trajectories --tier live` and `first_run.py --worker live`. No flag,
+environment variable or argument re-enables them. The marker, the sweep and the strong probe stay
+as they are, and the harness builds on them. The live machinery's tests drive it through the same
+Python-level seam as the probe: they replace `live_disabled()` in their own process.
+
+**The container harness's entry criteria.** The live tier comes back only when the harness runs
+each live arm in a disposable Linux container and these three findings from the Codex review of
+PR #668 at `9db89fbe3c` are fixed, each with a test that fails without its fix:
+
+1. **A merge gate never starts after failed containment.** In the WIP-curve runner, a gate that
+   writes `UNCONTAINED` is treated today as an ordinary gate failure: the entry is bounced, and
+   another unit's oracle can launch while the first gate's child survives. Containment must be
+   checked right after every drain, and the run stopped before any bounce or retry.
+2. **Crash recovery sweeps the gate's markers.** Recovery reads only the markers in the spend
+   ledger. A runner that dies after an uncontained gate, but before `gate_tags()` copies the
+   gate's markers into the ledger, leaves `gate-tags.txt` unread, so the next run starts without
+   sweeping the surviving child. Recovery must read the gate journal on its own, or the markers
+   must be made durable before each gate launches.
+3. **Report-time oracle re-runs keep their markers.** The report's binding re-run of an oracle
+   (`run_oracle` under a temporary directory) records no markers. Failed containment there raises
+   without a final sweep or a durable record, so a surviving child is outside every later run
+   check, and the temporary directory deletes the files the error says were kept. Its markers must
+   be recorded durably and swept, and a failed-containment directory must be kept.
 
 ## `events.py`
 
@@ -1133,6 +1228,10 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   Whatever discovery can see, the call's known process group is killed, and a watchdog whose
   own sweep fails kills its group with itself. A live run is refused before it reserves anything
   where a probe carrying a marker cannot be found by it (for example, a sandbox that denies `ps`).
+  The probe is the strong one: a Python process and a system binary (`sleep`), because macOS's
+  `ps -E` cannot read an Apple system binary's environment (`/bin/sh` and the rest), so a detached
+  shell would be invisible there. On macOS a live run is therefore refused; run it in a disposable
+  Linux container ([`containment.py`](#containmentpy)).
   The limit: a process that re-executes itself with an emptied environment (`env -i`) after
   leaving the call's process tree is not found. Run the arm in a disposable sandbox.
 - **Results** (`hint-replay-live/v2`): per call `cost_usd` (`null` when unmeasured), `measured`,
@@ -1143,7 +1242,9 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
 
 The owner-authorised live run (USD 40 cap; 2 scenarios × 3 arms × 3 attempts = 18 calls at a
 USD 2 reservation each, so all 18 fit even if every call were charged its full reservation), from
-a disposable checkout:
+a disposable checkout. The live tier is now disabled until the container-based live harness lands
+([`containment.py`](#containmentpy)), so this command is refused, exit 2, before the corpus is
+read:
 
 ```bash
 python3 scripts/hint_replay.py --live --tier live --model sonnet \
@@ -1632,7 +1733,14 @@ behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also c
 deny-hook arming (#562): with `ORCA_DENY_HOOK_SETTINGS` naming the operator-wired
 settings file, the file must register `runtime/scripts/deny-hook.sh` and the hook must
 answer a deny probe, else `SPAWN=REFUSED`; unset, the spawn proceeds with a loud
-`UNVERIFIED` warning — the guard is never claimed unchecked.
+`UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
+`terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
+`new-top-level` there are refused before any task is created, since only `worker-start` creates a
+worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,
+such as `agent-trust-workspace`, Claude Code's folder-trust question), the spawn fails naming it
+and injects nothing: a trust prompt is the operator's to answer (#596). A refused `dispatch --inject` keeps its
+receipt's code, reason and `nextSteps`. It exits 2 on a typed policy refusal such as
+`inject_rejected`, as the supervised lane does, and 1 otherwise.
 
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 
@@ -1651,7 +1759,9 @@ would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
 
 Agents: `claude`, `codex`, `cursor`, `gemini`, `grok`, `droid`, `opencode`, `omp`, `pi`, `antigravity`,
-`jcode`, `goose`, `hermes`, `crush`
+`jcode`, `goose`, `hermes`, `crush`, and `openhands`, the OpenHands SDK agent, which runs on
+`OPEN_FLEET_RUNTIME=openhands` only; that runtime refuses every other agent name before any
+upstream call, since it would start its own agent under it (#596)
 (default `claude`; effort default `xhigh`, keyset `minimal|low|medium|high|xhigh|max|ultra`
 — the codex levels, the only path that interpolates it); unknown agents refuse. Off Orca every
 launch is `runtime/providers/base.py`'s line. On Orca, `ro` runs the script's own row on the
@@ -1659,9 +1769,10 @@ custom-argv lane: the jcode and hermes rows carry base.py's ro restriction (jcod
 allowlist and `--disabled-tools` set; hermes' `HERMES_WRITE_SAFE_ROOT=/dev/null` and
 `--toolsets file,web,session_search`), and crush `ro` refuses there, because its read-only mode
 is a `<data-dir>/crush.json` that only the posix provider installs (#596). The Orca claude `ro` row
-stays the live-witnessed plan-mode TUI line and does not carry base.py's
-`--disallowedTools Edit,Write,MultiEdit,NotebookEdit`; every other claude `ro` launch and alias
-does (`tests/test_claude_ro_launches.py`). `opencode`, `omp` and
+is plan mode plus base.py's `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`, like every
+other claude `ro` launch and alias (`tests/test_claude_ro_launches.py`): the coordinator's in-pane
+plan approval exits plan mode, and the set still holds after it. That row is the live-witnessed
+Orca route, and its witness predates the set, so it is owed a fresh one. `opencode`, `omp` and
 `pi` have no Orca row for any profile, so they refuse on Orca without a `WORKER_CMD`. Profiles: `ro`, `rw`
 (default), `danger` — least privilege; `danger` needs the ephemeral sandbox plus
 `ORCA_SANDBOX_RECIPE`, and the script runs the doctor transcript itself into

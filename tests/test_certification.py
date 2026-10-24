@@ -18,9 +18,11 @@ a tripwire for each harness name first on PATH, and the tripwire log must stay e
 """
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import contextlib
 import copy
+import hashlib
 import importlib
 import importlib.util
 import io
@@ -29,6 +31,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -58,6 +61,24 @@ def _load(name: str, path: Path):
 
 certification = _load("certification_under_test", SCRIPTS / "certification.py")
 first_run = _load("first_run_under_test", SCRIPTS / "first_run.py")
+TABLES = _load("fixture_containment_tables", ROOT / "tests" / "fixtures" / "containment_tables.py")  # PR #668
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). The live
+# first-run tests drive the live machinery, so setUpModule lifts it in this process, the Python-level
+# seam the host probe uses; TestTheLiveTierIsDisabled puts the real one back, and runs the CLI as its
+# own process too.
+REAL_LIVE_GATE = first_run.containment.live_disabled
+DISABLED = "live runs are disabled until the container-based live harness lands"
+SEAMS: dict = {}
+
+
+def setUpModule():
+    SEAMS["live"] = mock.patch.object(first_run.containment, "live_disabled", lambda: None)
+    SEAMS["live"].start()
+
+
+def tearDownModule():
+    SEAMS["live"].stop()
+
 
 LEAKY = ("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", "OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME",
          "OPEN_FLEET_STATE_DB", "OPEN_FLEET_STATE_DIR", "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE",
@@ -134,7 +155,7 @@ class TestRecordValidates(Tripwired):
     def test_only_bound_run_reports_carry_live_witnessed(self):
         _errors, _stale, cells = certification.validate(ROOT)
         live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["tier"] == "live-witnessed"}
-        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude")})
+        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude"), ("posix", "ro", "claude"), ("posix", "rw", "claude"), ("claude", "ro", "claude"), ("claude", "rw", "claude")})
         unknown = [c for c in cells if c["kind"] == "provider" and c["name"] not in ("orca", "posix")]
         self.assertTrue(unknown and all(certification.version_label(c["upstream"]) == "unknown" for c in unknown),
                         "an external adapter's upstream version was never recorded: it must read unknown")
@@ -223,7 +244,7 @@ class TestPinRefreshInvalidatesCells(Tripwired):
                 _p, cells = self.matrix("--pins", str(pins))
                 orca = {k: v for k, v in cells.items() if k[0] == "orca"}
                 self.assertEqual(set(orca.values()), {"stale"}, "a cell kept its tier after the pin moved")
-                self.assertEqual(cells[("posix", "ro", "claude")], "fixture-tested", "staleness is per provider")
+                self.assertEqual(cells[("posix", "ro", "claude")], "live-witnessed", "staleness is per provider")
 
     def test_rechecking_and_re_recording_makes_the_cells_fresh_again(self):
         pins = self.pins(lambda e: e.update(commit="e" * 40, version="v1.4.240"))
@@ -544,8 +565,12 @@ class TestFirstRunFixture(Tripwired):
         agent = next((h for h in CAPS["providers"]["posix"]["supported_harnesses"]
                       if not shutil.which(first_run.HARNESS_BINARIES.get(h, h), path=bare)), None)
         self.assertIsNotNone(agent, "every posix harness is installed system-wide; nothing safe to probe")
-        p = self.run_py("first_run.py", "--worker", "live", "--agent", agent, "--workdir", str(self.tmp / "live"),
-                        "--json", env={"PATH": bare})
+        # A proven host injected at the Python level: this test is about prerequisites, not this
+        # machine's process table (PR #668 review: the strong probe refuses a live run on macOS).
+        boot = TABLES.proven_host(sys.executable, SCRIPTS / "first_run.py", "mod.containment.containment_problem = proven; "
+                                  "mod.containment.live_disabled = lifted")
+        p = subprocess.run([*boot, "--worker", "live", "--agent", agent, "--workdir", str(self.tmp / "live"), "--json"],
+                           env={**self.env, "PATH": bare}, cwd=str(ROOT), capture_output=True, text=True, timeout=300)
         receipt = json.loads(p.stdout)
         self.assertEqual(p.returncode, 1)
         self.assertEqual(receipt["tier"], "live-unreviewed")
@@ -589,6 +614,201 @@ class TestNegativeProbes(Tripwired):
         self.assertTrue(any("a worker launched" in x for x in control["problems"]), control["problems"])
         self.assertTrue(any("a dispatch was recorded" in x for x in control["problems"]), control["problems"])
         self.assertTrue(all(r["refused"] for r in receipt["probes"] if r["probe"] != "control-no-parent"))
+
+
+class TestStopWorkersEndsWhatAFinishedWorkerLeft(unittest.TestCase):
+    """Codex review of PR #653 (C3): a dispatch is `completed` once its foreground process exits,
+    and the provider never kills a finished dispatch's group (its pid may be reused), so a child
+    the worker left in its process group outlived the cleanup. stop_workers ends every orphaned
+    group of the sandbox's store, finished dispatches included, and never a group with a living
+    leader (a reused number)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="first-run-reap-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def leftover(self):
+        """A group leader that starts a background child and exits: (leader pid, child pid)."""
+        proc = subprocess.Popen(["/bin/sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], stdout=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        child = int(proc.communicate(timeout=30)[0].strip())
+        self.addCleanup(TABLES.kill, child)
+        return proc.pid, child
+
+    def store(self, rows):
+        db = self.tmp / "state" / "runtime.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE dispatches (dispatch_id TEXT, state TEXT, pid INTEGER)")
+        conn.executemany("INSERT INTO dispatches VALUES (?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+        return argparse.Namespace(dir=self.tmp, target=self.tmp / "target", state_db=db,
+                                  env={**os.environ, "SHELL": "/bin/sh"})
+
+    def alive(self, pid, wait_s=5.0):
+        end = time.monotonic() + wait_s
+        while time.monotonic() < end:
+            if not TABLES.running(pid):  # /proc where there is one: no procps needed (PR #668 CI)
+                return False
+            time.sleep(0.1)
+        return True
+
+    def test_a_process_table_it_cannot_read_is_a_teardown_error(self):
+        # PR #668 CI (F1): the group reap read `ps` and, where it could not run (a Linux image with
+        # no procps), saw no groups at all and reported nothing. It reads the shared process table
+        # (/proc on Linux) now, and one it cannot read is a teardown error, never an empty table.
+        leader, _child = self.leftover()
+        with mock.patch.object(first_run.containment, "process_table", side_effect=OSError("no ps")):
+            teardown = first_run.stop_workers(self.store([("disp_done", "completed", leader)]))
+        self.assertTrue(teardown["errors"], teardown)
+        self.assertFalse(first_run.teardown_verified(teardown))
+
+    def test_a_completed_dispatch_leaves_no_process_behind(self):
+        leader, child = self.leftover()
+        first_run.stop_workers(self.store([("disp_done", "completed", leader)]))
+        self.assertFalse(self.alive(child), "a finished worker's child outlived stop_workers")
+
+    def test_a_group_with_a_living_leader_is_never_touched(self):
+        leader = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        self.addCleanup(leader.kill)
+        first_run.stop_workers(self.store([("disp_reused", "completed", leader.pid)]))
+        self.assertTrue(self.alive(leader.pid, wait_s=1.0), "a group whose leader lives may not be ours")
+
+
+class TestAStandaloneFirstRunVouchesForItsTeardown(Tripwired):
+    """Codex review of PR #668 (C-a): a standalone first run stopped only its workers' process
+    groups and ignored what that teardown found, so a detached helper (a new session, its output
+    redirected) survived and the run still said GO. Every process of the run now carries the run's
+    OF_CALL_ID; teardown sweeps it, and GO stands only on a verified teardown. Anything else is
+    NO-GO, step `teardown`, with the sandbox kept."""
+
+    def first_run_in_process(self, wd, execute=None):
+        out = io.StringIO()
+        patches = [mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(out)]
+        if execute:
+            patches.append(mock.patch.object(first_run.FirstRun, "execute", execute))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            rc = first_run.main(["--profile", "ro", "--workdir", str(wd), "--json"])
+        return rc, json.loads((wd / "receipt.json").read_text(encoding="utf-8"))
+
+    def test_a_detached_helper_is_ended_before_go(self):
+        real, helpers = first_run.FirstRun.execute, []
+
+        def execute(run):  # the worker leaves a helper in a session of its own, output redirected
+            receipt = real(run)
+            helpers.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], env=run.sb.env,
+                                            start_new_session=True, stdin=subprocess.DEVNULL,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            return receipt
+        rc, receipt = self.first_run_in_process(self.tmp / "fr", execute)
+        self.addCleanup(helpers[0].kill)
+        try:
+            helpers[0].wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("the detached helper outlived the first run")
+        self.assertEqual((rc, receipt["verdict"]), (0, "GO"), receipt.get("failure"))
+
+    def test_a_teardown_that_found_a_survivor_is_no_go_and_keeps_the_sandbox(self):
+        survivors = {"ended": [], "survivors": [{"pgid": 1, "members": [1]}], "leaders_alive": []}
+        with mock.patch.object(first_run, "reap_groups", return_value=survivors):
+            rc, receipt = self.first_run_in_process(self.tmp / "fr")
+        self.assertEqual((rc, receipt["verdict"], (receipt["failure"] or {}).get("step")), (1, "NO-GO", "teardown"))
+        self.assertFalse(receipt.get("sandbox_pruned"), "a sandbox that may still be in use was pruned")
+        self.assertTrue(any(p.name != "receipt.json" for p in (self.tmp / "fr").iterdir()))
+
+    def test_a_teardown_no_go_reads_as_no_go_everywhere(self):
+        # Codex review of 9db89fbe3c (P2): the witness line still said verdict=GO, and the default text
+        # output raised KeyError: 'detail'. The failure uses the step schema and the witness is rebuilt.
+        survivors = {"ended": [], "survivors": [{"pgid": 1, "members": [1]}], "leaders_alive": []}
+        wd, out = self.tmp / "fr", io.StringIO()
+        with mock.patch.object(first_run, "reap_groups", return_value=survivors), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(out):
+            rc = first_run.main(["--profile", "ro", "--workdir", str(wd)])
+        receipt = json.loads((wd / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"))
+        self.assertIn("verdict=NO-GO", receipt["witness"])
+        self.assertEqual({"step", "ok", "detail", "recovery"} - set(receipt["failure"]), set(), receipt["failure"])
+        self.assertIn("FIRST_RUN=NO-GO step=teardown", out.getvalue())
+        self.assertIn("FAILURE=", out.getvalue())
+
+    def test_a_process_table_it_cannot_read_is_no_go(self):
+        with mock.patch.object(first_run.containment, "process_table", side_effect=OSError("no ps")):
+            rc, receipt = self.first_run_in_process(self.tmp / "fr")
+        self.assertEqual((rc, receipt["verdict"], (receipt["failure"] or {}).get("step")), (1, "NO-GO", "teardown"))
+
+
+class TestALiveFirstRunNeedsProvenContainment(Tripwired):
+    """PR #668 review (C-c): a live worker spends, so `--worker live` starts only where the strong
+    probe proves containment: Python visible and system binaries visible. A table that hides a
+    system binary's marker (macOS's view) refuses it before anything is created."""
+
+    def test_a_host_blind_to_system_binaries_refuses_a_live_first_run(self):
+        err, wd = io.StringIO(), self.tmp / "fr"
+        blind = TABLES.blind_to_system_binaries(first_run.containment.process_table)
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(first_run.containment, "process_table", blind), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = first_run.main(["--worker", "live", "--profile", "ro", "--workdir", str(wd), "--json"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("process discovery cannot contain", err.getvalue())
+        self.assertFalse(wd.exists(), "a refused live run created its sandbox")
+
+
+class TestTheLiveTierIsDisabled(Tripwired):
+    """PR #668, the owner's decision: `first_run.py --worker live` is refused on every host, exit 2,
+    before anything is read, created or launched, until the container-based live harness lands.
+    The inert worker, which spends nothing, is untouched."""
+
+    def test_a_live_first_run_is_refused_before_anything_is_created(self):
+        err, wd = io.StringIO(), self.tmp / "fr"
+        with mock.patch.object(first_run.containment, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(first_run.containment, "containment_problem",
+                                  side_effect=AssertionError("the host was probed")), \
+                mock.patch.object(first_run, "make_workdir", side_effect=AssertionError("a sandbox was made")), \
+                mock.patch.dict(os.environ, self.env, clear=True), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = first_run.main(["--worker", "live", "--profile", "ro", "--target", str(self.tmp / "no-such-repo"),
+                                 "--workdir", str(wd), "--json"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn(DISABLED, err.getvalue())
+        self.assertIn("PR #668", err.getvalue())
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1, err.getvalue())
+        self.assertFalse(wd.exists(), "a refused live run created its sandbox")
+
+    def test_the_cli_refuses_as_its_own_process_for_either_profile(self):
+        # No seam at all: the script as an operator runs it, as the certification page shows it.
+        for profile in ("ro", "rw"):
+            with self.subTest(profile=profile):
+                wd = self.tmp / f"cli-{profile}"
+                p = self.run_py("first_run.py", "--worker", "live", "--agent", "claude", "--profile", profile,
+                                "--keep", "--workdir", str(wd), "--json")
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn(DISABLED, p.stderr)
+                self.assertEqual(p.stdout, "", "a refused live run printed a receipt")
+                self.assertFalse(wd.exists())
+
+    def test_every_mode_refuses_a_live_worker(self):
+        # `probes` never launches the worker it is given, but `--worker live` is refused there too:
+        # the rule is unconditional.
+        err = io.StringIO()
+        with mock.patch.object(first_run.containment, "live_disabled", REAL_LIVE_GATE), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = first_run.main(["probes", "--worker", "live", "--workdir", str(self.tmp / "probes")])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn(DISABLED, err.getvalue())
+        self.assertFalse((self.tmp / "probes").exists())
+
+    def test_the_inert_worker_passes_the_gate(self):
+        class Reached(Exception):
+            """main() got past the gate to the sandbox it makes."""
+
+        with mock.patch.object(first_run.containment, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(first_run, "make_workdir", side_effect=Reached):
+            with self.assertRaises(Reached):
+                first_run.main(["--worker", "inert", "--workdir", str(self.tmp / "inert")])
 
 
 class TestDocsCarryTheGeneratedMatrix(unittest.TestCase):
@@ -769,6 +989,61 @@ class TestCommittedReportIsChecked(Tripwired):
     def test_the_committed_report_itself_passes(self):
         rc, receipt = self.run_rw("report", "control")
         self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+
+
+class TestRwWorkerPrintsItsReport(Tripwired):
+    """#596 live rw run: Claude Code committed the right report and sent worker_done, but its final
+    answer was a one-line summary, because the rw assignment never asked for the report there, and
+    `result` reads the report from the final answer on both profiles. The stand-in printed it anyway,
+    so no fixture caught it. first_run now installs the stand-in in LITERAL mode, which prints the
+    report only when its assignment asks, and the rw assignment asks: commit, report completion,
+    then print that same report as the final answer."""
+
+    ASK = re.compile(r"(?i)\bprint\b[^\n]*\breport\b[^\n]*\bas your final answer\b")
+
+    def spec_for(self, profile: str) -> str:
+        fr = first_run.FirstRun(first_run.parse_args(["--profile", profile]), None)
+        fr.facts["reviewed"] = {"base_sha": "a" * 40, "head_sha": "b" * 40}
+        fr.facts["contract"] = {"source": f"{fr.unit_dir}/contract.md@{'c' * 40}", "digest": "sha256:" + "d" * 64}
+        return fr.spec()
+
+    def in_process(self, name: str, *args: str):
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main([*args, "--workdir", str(self.tmp / name), "--json"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_the_rw_assignment_asks_for_the_committed_report_as_the_final_answer(self):
+        lines = self.spec_for("rw").splitlines()
+        asks = [i for i, ln in enumerate(lines) if self.ASK.search(ln)]
+        sends = [i for i, ln in enumerate(lines) if "worker_done" in ln]
+        self.assertTrue(asks, "the rw assignment never asks for the report as the final answer")
+        self.assertTrue(sends and asks[-1] > sends[-1], "the final answer comes after the worker_done it reports")
+        self.assertRegex(lines[asks[-1]], r"(?i)\bsame report\b", "the printed report is the committed one")
+        self.assertTrue(any(self.ASK.search(ln) for ln in self.spec_for("ro").splitlines()))
+
+    def test_first_run_installs_the_literal_stand_in(self):
+        self.assertIn("\nLITERAL = False\n", first_run.INERT_WORKER)
+        self.assertIn("\nLITERAL = True\n", first_run.literal_stand_in(first_run.INERT_WORKER))
+        rc, receipt = self.in_process("installed", "--profile", "rw", "--keep")
+        self.assertEqual((rc, receipt["verdict"]), (0, "GO"), json.dumps(receipt.get("failure"), indent=1))
+        installed = (self.tmp / "installed" / "inert" / "worker.py").read_text(encoding="utf-8")
+        self.assertIn("\nLITERAL = True\n", installed)
+
+    def test_a_literal_rw_worker_is_no_go_when_its_assignment_never_asks(self):
+        # The live run's semantics, kept as a mutation control: drop the ask and the literal
+        # stand-in answers with a summary, exactly as Claude Code did, and `result` refuses it.
+        real = first_run.FirstRun.spec
+
+        def without_the_ask(fr):
+            return "\n".join(ln for ln in real(fr).splitlines() if not self.ASK.search(ln))
+
+        with mock.patch.object(first_run.FirstRun, "spec", without_the_ask):
+            rc, receipt = self.in_process("unasked", "--profile", "rw")
+        self.assertEqual((rc, receipt["verdict"]), (1, "NO-GO"))
+        self.assertEqual(receipt["failure"]["step"], "result")
+        self.assertIn("report does not open with", receipt["failure"]["detail"])
+        self.assertIn("committed the report, and sent the completion message", receipt["failure"]["detail"])
 
 
 class TestInterruptedRunStopsItsWorker(Tripwired):
@@ -1025,7 +1300,7 @@ class TestLiveRouteIsIdentified(Tripwired):
         self.assertEqual(p.returncode, 0, p.stderr)
         _errors, _stale, cells = certification.validate(ROOT)
         live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["effective"] == "live-witnessed"}
-        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude")})
+        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude"), ("posix", "ro", "claude"), ("posix", "rw", "claude"), ("claude", "ro", "claude"), ("claude", "rw", "claude")})
 
 
 class TargetRepo(Tripwired):
@@ -1097,6 +1372,251 @@ class TestTargetIgnoreRules(TargetRepo):
                     for argv in adds:
                         self.assertEqual(argv[2:4], ["-f", "--"], f"not a force-add of exact paths: {argv}")
                         self.assertFalse([a for a in argv[4:] if set(a) & set("*?[")], f"a glob was added: {argv}")
+
+
+
+# --- the record takes a live first run (#596) ---------------------------------------------------
+
+class TestReceiptCarriesTheWitness(Tripwired):
+    """A first-run receipt names everything a live record needs in one quotable line, and what
+    the harness itself reported (model, turns, cost); a live run never uses a harness the
+    interpreter's directory shadows."""
+
+    def in_process(self, name: str, *args: str):
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main([*args, "--workdir", str(self.tmp / name), "--json"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_the_receipt_names_its_route_in_one_quotable_line(self):
+        rc, receipt = self.in_process("witness", "--profile", "ro", "--keep")
+        self.assertEqual(rc, 0, json.dumps(receipt.get("failure"), indent=1))
+        line = receipt["witness"]
+        for part in ("posix/setsid", "PROFILE=ro", "harness=claude", "worker=inert", "tier=fixture-tested",
+                     f"catalog={receipt['host']['catalog_commit']}", "verdict=GO"):
+            self.assertIn(part, line)
+        self.assertRegex(receipt["started_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        on_disk = (self.tmp / "witness" / "receipt.json").read_text(encoding="utf-8").splitlines()
+        self.assertIn(f'"witness": {json.dumps(line)},', [ln.strip() for ln in on_disk], "quotable as one line")
+
+    def test_the_harness_own_usage_is_read_from_its_output(self):
+        lines = _events({"type": "system", "subtype": "init", "model": "claude-opus-5-5", "session_id": "s"},
+                        {"type": "assistant", "message": {"role": "assistant", "content": []}},
+                        {"type": "result", "subtype": "success", "num_turns": 3, "total_cost_usd": 0.1999,
+                         "duration_ms": 8341, "result": FR_REPORT})
+        self.assertEqual(first_run.harness_usage(lines),
+                         {"model": "claude-opus-5-5", "num_turns": 3, "total_cost_usd": 0.1999, "duration_ms": 8341})
+        self.assertEqual(first_run.harness_usage(UPSTREAM_STDOUT["gemini"]), {}, "plain text reports nothing")
+
+    def test_a_live_run_refuses_a_harness_the_interpreter_directory_shadows(self):
+        # The sandbox puts the interpreter's directory first on PATH; a `claude` there would run
+        # instead of the one the operator's PATH names (an isolation wrapper, say).
+        pybin = self.tmp / "pybin"
+        pybin.mkdir()
+        (pybin / "python3").symlink_to(sys.executable)
+        shadow = pybin / "claude"
+        shadow.write_text(f'#!/bin/sh\necho "shadow $*" >> "{self.trip_log}"\nexit 97\n', encoding="utf-8")
+        shadow.chmod(0o755)
+        buf = io.StringIO()
+        with mock.patch.object(first_run.sys, "executable", str(pybin / "python3")), \
+                mock.patch.object(first_run.containment, "containment_problem", return_value=None), \
+                mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
+            rc = first_run.main(["--worker", "live", "--workdir", str(self.tmp / "shadowed"), "--json"])
+        receipt = json.loads(buf.getvalue())
+        self.assertEqual((rc, receipt["failure"]["step"]), (1, "prereqs"))
+        self.assertIn(str(shadow), receipt["failure"]["detail"])
+        self.assertIn(str(self.trip / "claude"), receipt["failure"]["detail"])
+        self.assertEqual([s["step"] for s in receipt["steps"]], ["prereqs"])
+
+    def test_the_shadow_check_passes_one_binary_and_names_two(self):
+        one = str(self.trip)
+        self.assertEqual(first_run.harness_shadow("claude", one, one), "")
+        other = self.tmp / "other"
+        other.mkdir()
+        (other / "claude").symlink_to(self.trip / "claude")  # the same file by another name
+        self.assertEqual(first_run.harness_shadow("claude", str(other), one), "")
+        (self.tmp / "third").mkdir()
+        (self.tmp / "third" / "claude").write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        (self.tmp / "third" / "claude").chmod(0o755)
+        self.assertIn("third", first_run.harness_shadow("claude", str(self.tmp / "third"), one))
+        self.assertIn("not on your PATH", first_run.harness_shadow("claude", one, str(self.tmp / "nowhere")))
+
+
+def _git_out(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, check=True).stdout.strip()
+
+
+class TestLiveRecordTakesTheFirstRun(unittest.TestCase):
+    """The record can take a live posix first run (#596). In a scratch repository, a first_run.py
+    receipt bound in a run report certifies posix ro/claude and the claude ro harness cell; the
+    fields the coordinator copies from the receipt are checked against the bound evidence."""
+
+    RUN = "docs/runs/2026-10-24-review-it-first-run"
+    REPORT = "docs/runs/2026-10-24-review-it-first-run.md"
+    HV = "2.1.304 (Claude Code)"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name).resolve()
+        _git_out(self.repo, "init", "-q", ".")
+        for key, val in (("user.email", "t@example.com"), ("user.name", "t"), ("commit.gpgsign", "false")):
+            _git_out(self.repo, "config", key, val)
+        caps = {"providers": {"posix": {"supported_profiles": ["ro"], "supported_harnesses": ["claude"]}}}
+        (self.repo / "runtime" / "providers").mkdir(parents=True)
+        (self.repo / "runtime" / "providers" / "capabilities.json").write_text(json.dumps(caps), encoding="utf-8")
+        (self.repo / "README.md").write_text("scratch catalog\n", encoding="utf-8")
+        _git_out(self.repo, "add", "-A")
+        _git_out(self.repo, "commit", "-qm", "catalog")
+        self.catalog = _git_out(self.repo, "rev-parse", "HEAD")
+
+    def bind(self, worker: str = "live", catalog: str | None = None) -> str:
+        """Commit a receipt and a verifier-ledger manifest, write the run report; the quotable line."""
+        receipt = {"schema": first_run.SCHEMA, "verdict": "GO",
+                   "tier": "live-unreviewed" if worker == "live" else "fixture-tested",
+                   "route": {"provider": "posix", "backend": "setsid", "profile": "ro", "harness": "claude",
+                             "worker": worker},
+                   "host": {"catalog_commit": catalog or self.catalog, "catalog_dirty": False},
+                   "facts": {"harness": {"name": "claude", "version": self.HV}}}
+        receipt["witness"] = first_run.witness_line(receipt)
+        run = self.repo / self.RUN
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        _git_out(self.repo, "add", "-A")
+        _git_out(self.repo, "commit", "-qm", "first-run receipt")
+        manifest = f"{self.RUN}/manifest.json"
+        cmd = f"python3 runtime/scripts/verify.py --manifest {manifest}"
+        (self.repo / manifest).write_text(json.dumps({"unit": "first-run", "commands": [
+            {"cmd": cmd, "cmd_sha256": hashlib.sha256(cmd.encode()).hexdigest(), "exit": 0,
+             "wtree": _git_out(self.repo, "rev-parse", "HEAD^{tree}")}]}) + "\n", encoding="utf-8")
+        _git_out(self.repo, "add", "-A")
+        _git_out(self.repo, "commit", "-qm", "manifest")
+        rev = _git_out(self.repo, "rev-parse", "HEAD")
+        rows = "\n".join(f"{hashlib.sha256((self.repo / p).read_bytes()).hexdigest()}  {p}"
+                         for p in (manifest, f"{self.RUN}/receipt.json"))
+        (self.repo / self.REPORT).write_text(
+            f"# Run report\n\nRUN: mission=review-it tier=self-run inventory_at={rev} manifest={manifest} "
+            f"verifier=GREEN\n\n    {cmd}\n    exit 0\n\n## Run-close integrity inventory (sha256)\n\n```\n{rows}\n```\n",
+            encoding="utf-8")
+        return next(ln.strip() for ln in (run / "receipt.json").read_text(encoding="utf-8").splitlines()
+                    if ln.strip().startswith('"witness": '))
+
+    def record(self, quote: str, **over) -> dict:
+        witnessed = {"upstream_version": self.catalog, "harness_version": self.HV, "host": "macOS-27.0.1-arm64",
+                     "date": "2026-10-24", "route": [{"path": f"{self.RUN}/receipt.json", "lines": [quote]}]}
+        witnessed.update(over.pop("witnessed", {}))
+        live = {"tier": "live-witnessed", "witnessed": witnessed, "evidence": [self.REPORT],
+                "limitations": ["one live first run"]}
+        idle = {"tier": "unavailable", "evidence": ["README.md"], "limitations": ["scratch"]}
+        harnesses = {h: {"upstream": {"version": None}, "routes": [{"profiles": ["ro", "rw"], **idle}]}
+                     for h in base.SUPPORTED_HARNESSES}
+        harnesses["claude"] = {"upstream": {"version": over.pop("harness_version", "2.1.304")},
+                               "routes": [{"profiles": ["ro"], **copy.deepcopy(live)}, {"profiles": ["rw"], **idle}]}
+        upstream = {"repo": "open-fleet", "version": "in-repo", "commit": None}
+        real = json.loads(RECORD.read_text(encoding="utf-8"))
+        return {"schema_version": real["schema_version"], "record_version": 1, "recorded": "2026-10-24",
+                "tiers": real["tiers"], "harnesses": harnesses,
+                "providers": {"posix": {"upstream": upstream, "routes": [
+                    {"profiles": ["ro"], "harnesses": ["claude"], **copy.deepcopy(live)}]}}}
+
+    def check(self, record: dict) -> tuple[list[str], list[dict]]:
+        path = self.repo / "record.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        errors, _stale, cells = certification.validate(self.repo, path)
+        return errors, cells
+
+    def test_a_bound_live_receipt_certifies_the_posix_and_harness_cells(self):
+        errors, cells = self.check(self.record(self.bind()))
+        self.assertEqual(errors, [])
+        live = {(c["kind"], c["name"], c["profile"]) for c in cells if c["effective"] == "live-witnessed"}
+        self.assertEqual(live, {("provider", "posix", "ro"), ("harness", "claude", "ro")})
+
+    def test_the_harness_version_field_must_be_the_witnessed_one(self):
+        line = self.bind()
+        for version, needle in (("2.1.305", "is not the witnessed harness version"),
+                                (None, "upstream whose version is unknown")):
+            with self.subTest(version=version):
+                errors, _cells = self.check(self.record(line, harness_version=version))
+                self.assertTrue(any(needle in e and "harness claude" in e for e in errors), errors)
+
+    def test_an_in_repo_witness_names_a_commit_of_this_repository(self):
+        line = self.bind(catalog="f" * 40)
+        errors, _cells = self.check(self.record(line, witnessed={"upstream_version": "f" * 40}))
+        self.assertTrue(any("provider posix" in e and "a commit of this repository" in e for e in errors), errors)
+
+    def test_a_fixture_receipt_certifies_nothing_live(self):
+        errors, _cells = self.check(self.record(self.bind(worker="inert")))
+        self.assertTrue(any("fixture" in e and "provider posix" in e for e in errors), errors)
+        self.assertTrue(any("fixture" in e and "harness claude" in e for e in errors), errors)
+
+    def test_a_witness_date_is_a_calendar_date(self):
+        errors, _cells = self.check(self.record(self.bind(), witnessed={"date": "last week"}))
+        self.assertTrue(any("witnessed.date" in e for e in errors), errors)
+
+    def test_an_orca_witness_does_not_certify_base_py_launch_line(self):
+        # The Orca route runs spawn_worker.sh's own rows, never base.py's table: its witness cannot
+        # make a harness cell live, even though it names the harness and the profile.
+        record = json.loads(RECORD.read_text(encoding="utf-8"))
+        orca_ro = next(g for g in record["providers"]["orca"]["routes"]
+                       if g["tier"] == "live-witnessed" and g["profiles"] == ["ro"])
+        claude = record["harnesses"]["claude"]
+        claude["upstream"]["version"] = "2.1.296"
+        claude["routes"] = [{"profiles": ["ro"], "tier": "live-witnessed", "witnessed": copy.deepcopy(orca_ro["witnessed"]),
+                             "evidence": list(orca_ro["evidence"]), "limitations": ["copied"]},
+                            {**claude["routes"][0], "profiles": ["rw"]}]
+        path = Path(tempfile.mkdtemp(prefix="of-cert-orca-")) / "record.json"
+        self.addCleanup(shutil.rmtree, path.parent, True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+        p = cert_main("check", "--record", str(path))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("harness claude", p.stderr)
+        self.assertIn("off Orca", p.stderr)
+
+
+
+class TestTheBoundFirstRunsAreLive(unittest.TestCase):
+    """Record version 5 (#596): the 2026-10-24 live first runs, bound in a run report, certify
+    posix ro/rw with claude and the claude harness cells; the fields copied from their receipts
+    are what check holds them to."""
+
+    REPORT = "docs/runs/2026-10-24-review-it-first-run.md"
+    LIVE = {("posix", "ro", "claude"), ("posix", "rw", "claude"), ("claude", "ro", "claude"), ("claude", "rw", "claude")}
+
+    def check_with(self, fn):
+        record = json.loads(RECORD.read_text(encoding="utf-8"))
+        fn(record)
+        tmp = Path(tempfile.mkdtemp(prefix="of-cert-v5-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "record.json").write_text(json.dumps(record), encoding="utf-8")
+        return cert_main("check", "--record", str(tmp / "record.json"))
+
+    @staticmethod
+    def posix_live(rec):
+        return next(g for g in rec["providers"]["posix"]["routes"] if g["tier"] == "live-witnessed")
+
+    def test_the_shipped_record_binds_the_first_runs(self):
+        errors, _stale, cells = certification.validate(ROOT)
+        self.assertEqual(errors, [])
+        live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["effective"] == "live-witnessed"}
+        self.assertTrue(self.LIVE <= live, live)
+        rec = json.loads(RECORD.read_text(encoding="utf-8"))
+        self.assertIn(self.REPORT, self.posix_live(rec)["evidence"])
+        run_report = _load("run_report_for_v5", SCRIPTS / "run_report.py")
+        self.assertEqual(run_report.check_report(self.REPORT, "review-it", "external-run"), [])
+        self.assertEqual(rec["harnesses"]["claude"]["upstream"]["version"], "2.1.304")
+
+    def test_without_the_bound_report_the_cells_are_not_live(self):
+        def unbind(rec):
+            group = self.posix_live(rec)
+            group["evidence"] = [e for e in group["evidence"] if e != self.REPORT]
+        p = self.check_with(unbind)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("without a binding run report", p.stderr)
+
+    def test_a_harness_version_the_runs_did_not_report_is_refused(self):
+        p = self.check_with(lambda rec: rec["harnesses"]["claude"]["upstream"].update(version="2.1.305"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("is not the witnessed harness version", p.stderr)
 
 
 if __name__ == "__main__":

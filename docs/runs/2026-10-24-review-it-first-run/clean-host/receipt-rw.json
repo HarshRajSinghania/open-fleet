@@ -1,0 +1,625 @@
+{
+  "schema": "open-fleet-first-run/v1",
+  "started_at": "2026-10-24T06:25:29Z",
+  "verdict": "GO",
+  "tier": "live-unreviewed",
+  "witness": "posix/setsid PROFILE=rw harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO",
+  "route": {
+    "provider": "posix",
+    "backend": "setsid",
+    "profile": "rw",
+    "harness": "claude",
+    "worker": "live"
+  },
+  "host": {
+    "platform": "Linux-7.2.12-orbstack-00394-gbecdd6130068-aarch64-with-glibc2.39",
+    "python": "3.12.3",
+    "git": "git version 2.43.0",
+    "bash": "GNU bash, version 5.2.21(1)-release (aarch64-unknown-linux-gnu)",
+    "catalog_commit": "b96d47e3354564e1593d34182a817ae04e54545d",
+    "catalog_dirty": false
+  },
+  "facts": {
+    "run_id": "fr-1f1c9a",
+    "nonce": "FR-NONCE:b2d0c8d2466469b9",
+    "harness": {
+      "name": "claude",
+      "path": "/home/fr/.local/bin/claude",
+      "version": "2.1.304 (Claude Code)"
+    },
+    "reviewed": {
+      "base_sha": "9a581a4bc4487f767b420f0ecf7a2376db83aacb",
+      "head_sha": "35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c"
+    },
+    "change": {
+      "input": ".first-run/fr-1f1c9a/change.diff",
+      "paths": [
+        "app.py"
+      ]
+    },
+    "task": "task_0fffd2b0a2",
+    "dispatch": "disp_ae4dac4aef",
+    "handle": "term_bbebf63f",
+    "launch_effective": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command": "claude -p --dangerously-skip-permissions --output-format stream-json --verbose 'open-fleet first-run review unit fr-1f1c9a (FR-NONCE:b2d0c8d2466469b9).\nReview the change 9a581a4bc4487f767b420f0ecf7a2376db83aacb..35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c. Its diff is written to .first-run/fr-1f1c9a/change.diff in your working tree: read that file to its end. You need no shell for this, and must not change it.\nReport what the change does and any problem you see, one line each, naming every changed path.\nYour report MUST start with this exact line: FIRST-RUN-REPORT FR-NONCE:b2d0c8d2466469b9 35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c\nThe file'\"'\"'s last line is a read receipt: copy that line, verbatim, into your report.\nModify nothing except: write the report to .first-run/fr-1f1c9a/report.md and commit only that file, adding it with `git add -f -- .first-run/fr-1f1c9a/report.md` (the repository may ignore it).\nThen report completion with:\n  python3 \"$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py\" --type worker_done --outcome succeeded --subject \"worker_done:$OPEN_FLEET_DISPATCH_ID\" --payload '\"'\"'{\"head\": \"<the report commit sha>\"}'\"'\"'\nLast, print the same report you committed, exactly as committed, as your final answer.\nFrozen contract: .first-run/fr-1f1c9a/contract.md@4c7be10ab078cbf0aee402060db94d5ce64e8128 (sha256:3dc99905c0e6e84740a2c5039ad4711c38a6710fffac27c08c011559ccf06b4f).'"
+    },
+    "worktree": "/home/fr/fr-rw/state/worktrees/fr-1f1c9a-2842130461",
+    "worker_claim": {
+      "head": "a676b2e369e1598ab1996d40578e97d4d0479ff1"
+    },
+    "settled": {
+      "state": "completed",
+      "signal": "worker_done"
+    },
+    "harness_usage": {
+      "model": "claude-opus-5-5",
+      "num_turns": 4,
+      "total_cost_usd": 0.08953219999999999,
+      "duration_ms": 13682
+    },
+    "evidence": {
+      "base_sha": "4c7be10ab078cbf0aee402060db94d5ce64e8128",
+      "head_sha": "a676b2e369e1598ab1996d40578e97d4d0479ff1"
+    },
+    "verify": {
+      "argv": [
+        "/home/fr/open-fleet/runtime/scripts/verify.py",
+        "--manifest",
+        ".first-run/fr-1f1c9a/manifest.json",
+        "--contract-source",
+        ".first-run/fr-1f1c9a/contract.md@4c7be10ab078cbf0aee402060db94d5ce64e8128",
+        "--contract-digest",
+        "sha256:3dc99905c0e6e84740a2c5039ad4711c38a6710fffac27c08c011559ccf06b4f",
+        "--unit-class",
+        "report-only"
+      ],
+      "cwd": "/home/fr/fr-rw/verify",
+      "rc": 0,
+      "out": [
+        "NOTE: --base not given \u2014 ancestry check skipped (pre-merge/offline)",
+        "NOTE: report-only (unsupervised) \u2014 claimed with no signed dispatch record. base_sha..head_sha changes docs/tests only, so the class is consistent with the change, but nothing off-worker authorized it (#310)",
+        "verify: OK \u2014 all required checks passed"
+      ]
+    },
+    "contract": {
+      "source": ".first-run/fr-1f1c9a/contract.md@4c7be10ab078cbf0aee402060db94d5ce64e8128",
+      "digest": "sha256:3dc99905c0e6e84740a2c5039ad4711c38a6710fffac27c08c011559ccf06b4f",
+      "criterion_ids": [
+        "FR-1",
+        "FR-2",
+        "FR-3",
+        "FR-4"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step": "prereqs",
+      "ok": true,
+      "detail": "claude -> /home/fr/.local/bin/claude",
+      "elapsed_s": 0.009
+    },
+    {
+      "step": "target",
+      "ok": true,
+      "detail": "reviewed 9a581a4bc448..35ad6a67080c; contract frozen",
+      "elapsed_s": 0.035
+    },
+    {
+      "step": "preflight",
+      "ok": true,
+      "detail": "preflight: OK \u2014 mode=readonly, runtime=posix (binary + repo checks only; no BASE/PR invariants)",
+      "elapsed_s": 0.048
+    },
+    {
+      "step": "create",
+      "ok": true,
+      "detail": "task_0fffd2b0a2",
+      "elapsed_s": 0.059
+    },
+    {
+      "step": "dispatch",
+      "ok": true,
+      "detail": "disp_ae4dac4aef on term_bbebf63f",
+      "elapsed_s": 0.294
+    },
+    {
+      "step": "guard",
+      "ok": true,
+      "detail": "deny-hook: armed in /home/fr/fr-rw/state/worktrees/fr-1f1c9a-2842130461/.claude/settings.local.json for claude (OPEN_FLEET_UNIT_WORKTREE=/home/fr/fr-rw/state/worktrees/fr-1f1c9a-2842130461 ORCA_UNIT_WORKTREE=/home/fr/fr-rw/state/worktrees/fr-1f1c9a-2842130461 sh /home/fr/open-fleet/runtime/scripts/deny-hook.sh)",
+      "elapsed_s": 0.289
+    },
+    {
+      "step": "delivery",
+      "ok": true,
+      "detail": "spec in the recorded launch (the live worker's echo is checked at result)",
+      "elapsed_s": 0.0
+    },
+    {
+      "step": "result",
+      "ok": true,
+      "detail": "settled completed; report names the reviewed head",
+      "elapsed_s": 14.574
+    },
+    {
+      "step": "evidence",
+      "ok": true,
+      "detail": "4c7be10ab078..a676b2e369e1 carries only .first-run/fr-1f1c9a/report.md",
+      "elapsed_s": 0.01
+    },
+    {
+      "step": "verify",
+      "ok": true,
+      "detail": "verify: OK (report-only, SHA-bound)",
+      "elapsed_s": 0.081
+    },
+    {
+      "step": "release",
+      "ok": true,
+      "detail": "retained, then released; the evidence commit survives",
+      "elapsed_s": 0.147
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "init",
+        "-q",
+        "-b",
+        "main"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "user.email",
+        "first-run@open-fleet.invalid"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.0
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "user.name",
+        "open-fleet first run"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.0
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "commit.gpgsign",
+        "false"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.0
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "tag.gpgsign",
+        "false"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.0
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "core.hooksPath",
+        "/dev/null"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.0
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        "README.md"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "seed"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.006
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        "app.py"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "add greet()"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--verify",
+        "HEAD~1^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.002
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.004
+    },
+    {
+      "argv": [
+        "git",
+        "checkout",
+        "-q",
+        "-b",
+        "first-run/fr-1f1c9a",
+        "35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.002
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "9a581a4bc4487f767b420f0ecf7a2376db83aacb",
+        "35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.006
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "9a581a4bc4487f767b420f0ecf7a2376db83aacb",
+        "35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.002
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        ".first-run/fr-1f1c9a/contract.md",
+        ".first-run/fr-1f1c9a/change.diff"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "first-run fr-1f1c9a: freeze contract"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.005
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/preflight.py",
+        "--mission",
+        "review-it",
+        "--runtime",
+        "posix",
+        "--mode",
+        "readonly"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.048
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet first-run review unit fr-1f1c9a (FR-NONCE:b2d0c8d2466469b9).\nReview the change 9a581a4bc4487f767b420f0ecf7a2376db83aacb..35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c. Its diff is written to .first-run/fr-1f1c9a/change.diff in your working tree: read that file to its end. You need no shell for this, and must not change it.\nReport what the change does and any problem you see, one line each, naming every changed path.\nYour report MUST start with this exact line: FIRST-RUN-REPORT FR-NONCE:b2d0c8d2466469b9 35ad6a67080c6d586b0a9e74c0eb5ceb3e1e059c\nThe file's last line is a read receipt: copy that line, verbatim, into your report.\nModify nothing except: write the report to .first-run/fr-1f1c9a/report.md and commit only that file, adding it with `git add -f -- .first-run/fr-1f1c9a/report.md` (the repository may ignore it).\nThen report completion with:\n  python3 \"$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py\" --type worker_done --outcome succeeded --subject \"worker_done:$OPEN_FLEET_DISPATCH_ID\" --payload '{\"head\": \"<the report commit sha>\"}'\nLast, print the same report you committed, exactly as committed, as your final answer.\nFrozen contract: .first-run/fr-1f1c9a/contract.md@4c7be10ab078cbf0aee402060db94d5ce64e8128 (sha256:3dc99905c0e6e84740a2c5039ad4711c38a6710fffac27c08c011559ccf06b4f)."
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.059
+    },
+    {
+      "argv": [
+        "bash",
+        "/home/fr/open-fleet/runtime/scripts/spawn_worker.sh",
+        "task_0fffd2b0a2",
+        "new-child",
+        "fr-1f1c9a",
+        "claude"
+      ],
+      "env": [
+        "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE",
+        "PROFILE"
+      ],
+      "rc": 0,
+      "elapsed_s": 0.294
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-show",
+        "--dispatch",
+        "disp_ae4dac4aef",
+        "--json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.032
+    },
+    {
+      "argv": [
+        "sh",
+        "/home/fr/open-fleet/runtime/scripts/deny-hook.sh",
+        "--verify-settings",
+        "/home/fr/fr-rw/state/worktrees/fr-1f1c9a-2842130461/.claude/settings.local.json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.256
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/check_reply.py",
+        "check",
+        "--terminal",
+        "coordinator"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.042
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/worker_ops.py",
+        "read",
+        "--dispatch",
+        "disp_ae4dac4aef",
+        "--source",
+        "transcript"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.04
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_ae4dac4aef",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.032
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.006
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only",
+        "4c7be10ab078cbf0aee402060db94d5ce64e8128",
+        "a676b2e369e1598ab1996d40578e97d4d0479ff1"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.002
+    },
+    {
+      "argv": [
+        "git",
+        "show",
+        "a676b2e369e1598ab1996d40578e97d4d0479ff1:.first-run/fr-1f1c9a/report.md"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.002
+    },
+    {
+      "argv": [
+        "git",
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        "/home/fr/fr-rw/verify",
+        "a676b2e369e1598ab1996d40578e97d4d0479ff1"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.003
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/verify.py",
+        "--manifest",
+        ".first-run/fr-1f1c9a/manifest.json",
+        "--contract-source",
+        ".first-run/fr-1f1c9a/contract.md@4c7be10ab078cbf0aee402060db94d5ce64e8128",
+        "--contract-digest",
+        "sha256:3dc99905c0e6e84740a2c5039ad4711c38a6710fffac27c08c011559ccf06b4f",
+        "--unit-class",
+        "report-only"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.077
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/worker_ops.py",
+        "retain",
+        "--dispatch",
+        "disp_ae4dac4aef"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.042
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_ae4dac4aef"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.034
+    },
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-e",
+        "a676b2e369e1598ab1996d40578e97d4d0479ff1^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/worker_ops.py",
+        "release",
+        "--dispatch",
+        "disp_ae4dac4aef"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.04
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fr/open-fleet/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_ae4dac4aef"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.029
+    },
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-e",
+        "a676b2e369e1598ab1996d40578e97d4d0479ff1^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.001
+    }
+  ],
+  "failure": null,
+  "elapsed_s": 15.545,
+  "sandbox": "/home/fr/fr-rw"
+}

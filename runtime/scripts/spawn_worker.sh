@@ -76,7 +76,8 @@
 #
 # Usage:
 #   SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec <text> <worktree_selector>) <title> [agent] [effort]
-#   agent ∈ claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush (default claude)
+#   agent ∈ claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush (default claude),
+#           or openhands, the OpenHands SDK agent, on OPEN_FLEET_RUNTIME=openhands only (#596)
 # Options:
 #   --mark-ready               opt-in: mark a pending task ready when deps are complete
 #   --timeout-ms <n>           worker-start timeout, positive int (supervised lane only)
@@ -388,10 +389,12 @@ esac
 # WORKER_CMD (below).
 # `kilo` is deliberately ABSENT for the same reason opencode fails closed: Orca STRIPS
 # `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:5-8` at v1.4.203).
+# `openhands` is no CLI harness: it is the OpenHands SDK agent, which only the openhands runtime
+# runs (checked once the runtime is resolved, below).
 case "$agent" in
-  claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush) : ;;
+  claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush|openhands) : ;;
   *)
-    echo "SPAWN=REFUSED task=${task} unknown agent '${agent}' (want claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush)" >&2
+    echo "SPAWN=REFUSED task=${task} unknown agent '${agent}' (want claude|codex|cursor|gemini|grok|droid|opencode|omp|pi|antigravity|jcode|goose|hermes|crush, or openhands on the openhands runtime)" >&2
     exit 2
     ;;
 esac
@@ -434,6 +437,17 @@ except ProviderError as err:
 PY
 ); then
   echo "SPAWN=REFUSED task=${tname} unknown runtime OPEN_FLEET_RUNTIME/ORCA_FLEET_RUNTIME — see runtime/providers/__init__.py" >&2
+  exit 2
+fi
+# The openhands runtime runs its own SDK agent whatever name it is handed: `claude` there printed a
+# claude launch, started an OpenHands conversation, then read LAUNCHED_UNUSABLE off the receipt.
+# capabilities.json claims exactly that pairing, so the wrapper launches exactly that one (#596).
+if [ "$agent" = "openhands" ] && [ "$ACTIVE_RUNTIME" != "openhands" ]; then
+  echo "SPAWN=REFUSED task=${tname} agent 'openhands' is the OpenHands SDK agent, which only the openhands runtime runs (OPEN_FLEET_RUNTIME=openhands); the active runtime is '${ACTIVE_RUNTIME}'" >&2
+  exit 2
+fi
+if [ "$ACTIVE_RUNTIME" = "openhands" ] && [ "$agent" != "openhands" ]; then
+  echo "SPAWN=REFUSED task=${tname} the openhands runtime runs only its own OpenHands SDK agent: agent '${agent}' would start an OpenHands conversation, not ${agent} — pass the agent openhands" >&2
   exit 2
 fi
 # The parent profile a child must not exceed is the MOST restrictive of every source that
@@ -701,7 +715,10 @@ fi
 cmd_default=""
 _cx_effort="-c model_reasoning_effort=\"$effort\""
 case "$agent:$PROFILE" in
-  claude:ro)                 cmd_default="claude --permission-mode plan" ;;
+  # claude ro is plan mode PLUS base.py's CLI floor, the disallowed set `=`-joined as base.py's label
+  # spells it: the coordinator's in-pane plan approval exits plan mode, and the set still holds
+  # after it (#596). This is the live-witnessed Orca route; the witness ran it without the set.
+  claude:ro)                 cmd_default="claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit" ;;
   claude:rw|claude:danger)   cmd_default="claude --dangerously-skip-permissions" ;;
   codex:ro)                  cmd_default="codex --sandbox read-only $_cx_effort" ;;
   codex:rw|codex:danger)     cmd_default="codex --dangerously-bypass-approvals-and-sandbox $_cx_effort" ;;
@@ -758,13 +775,18 @@ fi
 # profile keeps bash/edit), so ro here must be base.py's `shell` line verbatim (#580). An
 # (agent, profile) base.py refuses leaves cmd_default empty and fails closed to WORKER_CMD.
 # base_launch <worktree>: line 1 the `shell` launch, line 2 its profile_flag; empty on refusal.
+# openhands has no argv: its line names the agent-server conversation the provider starts (#596).
 base_launch() {
   python3 -I - "$HERE/.." "$agent" "$PROFILE" "$1" "$effort" <<'PY' || true
 import sys
 sys.path.insert(0, sys.argv[1])
 from providers.base import ProviderError, build_harness_command
 try:
-    launch = build_harness_command(sys.argv[2], sys.argv[3], sys.argv[4], None, effort=sys.argv[5])
+    if sys.argv[2] == "openhands":
+        from providers.openhands import launch_line
+        launch = launch_line(sys.argv[3])
+    else:
+        launch = build_harness_command(sys.argv[2], sys.argv[3], sys.argv[4], None, effort=sys.argv[5])
     print(launch["shell"])
     print(launch["profile_flag"])
 except ProviderError as err:
@@ -866,6 +888,16 @@ if [ "$custom_lane" = "1" ]; then
   if [ "$RETRY_REQ_GIVEN" = "1" ]; then
     echo "SPAWN=REFUSED task=${tname} --retry-request is a worker-start flag, and this spawn takes the custom-argv lane (override or PROFILE=ro) where no worker-start runs" >&2
     exit 2
+  fi
+  # Orca's `terminal create` takes an existing worktree (path:, id:, name:, branch:, current);
+  # new-child/new-top-level create one only through worker-start. Refuse before task-create
+  # rather than fail at terminal create with the task already made (#596 Orca re-witness).
+  if [ "$ACTIVE_RUNTIME" = "orca" ]; then
+    case "$sel" in
+      new-child|new-top-level)
+        echo "SPAWN=REFUSED task=${tname} --worktree '${sel}' creates a worktree only through worker-start, and this spawn takes the custom-argv lane (override or PROFILE=ro), whose terminal create needs an existing worktree — pass path:<abs-path>, id:<repoId>::<path> or current" >&2
+        exit 2 ;;
+    esac
   fi
 fi
 
@@ -1056,8 +1088,9 @@ if [ "$custom_lane" = "0" ]; then
     opencode) profile_flag="--auto --standalone" ;;
     pi)     profile_flag="--tools read,bash,edit,write,grep,find,ls" ;;
   esac
-  # ro off Orca: the provider launched base.py's ro line, so ITS flag is the one to find.
-  if [ "$PROFILE" = "ro" ]; then profile_flag="$base_profile_flag"; fi
+  # ro off Orca: the provider launched base.py's ro line, so ITS flag is the one to find. The
+  # openhands agent's toolset token comes from its provider for every profile (#596).
+  if [ "$PROFILE" = "ro" ] || [ "$agent" = "openhands" ]; then profile_flag="$base_profile_flag"; fi
 
   step=read-start-receipt
   # Line 1 is the machine verdict; the remaining stdout lines are the caller-facing receipt
@@ -1359,6 +1392,28 @@ print("true" if s is True else "false" if s is False else "absent")
 PY
 )
   if [ "$satisfied" = "false" ] || [ "$wait_rc" != "0" ]; then
+    # Orca names the prompt an agent stopped at (`wait.blockedReason`): say it, and never answer
+    # it for the operator. A trust prompt is a grant only the operator gives (#596).
+    blocked=$(python3 -I - "$tw" <<'PY'
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+r = d.get("result", d) if isinstance(d, dict) else {}
+w = r.get("wait") if isinstance(r, dict) else None
+reason = w.get("blockedReason") if isinstance(w, dict) else None
+print(reason if isinstance(reason, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", reason) else "")
+PY
+)
+    if [ -n "$blocked" ]; then
+      _hint="the agent is waiting on its own prompt, so no preamble was injected"
+      case "$blocked" in
+        agent-trust-workspace) _hint="${_hint}: it asks whether to trust this folder, a grant only you give — answer it in the pane or trust the folder once in a plain terminal, then close this pane and re-run" ;;
+      esac
+      echo "SPAWN=FAILED task=${task} step=${step} rc=1 — terminal wait unsatisfied (wait.satisfied=${satisfied}, cli_rc=${wait_rc}, blockedReason=${blocked}); ${_hint}. Inspect: ${ORCA_BIN} terminal read --terminal ${h} --screen" >&2
+      exit 1
+    fi
     echo "SPAWN=FAILED task=${task} step=${step} rc=1 — terminal wait unsatisfied (wait.satisfied=${satisfied}, cli_rc=${wait_rc}); the TUI never went idle, so an injected preamble would land in a booting pane. Inspect: ${ORCA_BIN} terminal read --terminal ${h} --screen" >&2
     exit 1
   fi
@@ -1368,7 +1423,50 @@ PY
   # --inject SUBMITS the preamble; it does not merely paste it. The --json receipt carries
   # result.prompt{requestId, stages}. There is no Enter to send after this.
   dj="$SP/dispatch-$safe_title.json"
-  orca_json "$dj" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
+  # The receipt is the verdict here too: a typed refusal is a policy answer (exit 2, like the
+  # supervised lane) and keeps its code, reason and the runtime's own nextSteps. Orca 1.4.229
+  # refused one with `inject_rejected` / `no_agent_detected`, and this lane said only that the
+  # step failed (#596).
+  dj_rc=0
+  "$ORCA_BIN" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$dj" || dj_rc=$?
+  dj_err=$(python3 -I - "$dj" <<'PY'
+import json, sys
+POLICY_CODES = {"task_not_found", "task_not_startable", "inject_rejected",
+                "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive"}
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+if not isinstance(d, dict):
+    raise SystemExit(0)
+r = d.get("result") if isinstance(d.get("result"), dict) else {}
+err = d.get("error") or r.get("error")
+if not err:
+    raise SystemExit(0)
+if not isinstance(err, dict):
+    err = {"code": str(err)}
+data = err.get("data") if isinstance(err.get("data"), dict) else {}
+for step in data.get("nextSteps") or []:
+    print(f"nextStep: {step}", file=sys.stderr)
+code = str(err.get("code") or "unknown")
+reason = data.get("reason") if isinstance(data.get("reason"), str) else ""
+msg = " ".join(str(err.get("message") or "").split())[:300]
+verdict = "refused" if code in POLICY_CODES else "failed"
+print(f"{verdict} CODE={code}" + (f" reason={reason}" if reason else "") + f" — {msg}")
+PY
+)
+  case "$dj_err" in
+    "refused "*)
+      echo "SPAWN=REFUSED task=${task} dispatch --inject ${dj_err#refused } (policy/usage — nextSteps above; nothing was injected; receipt in $dj; the agent pane ${h} is still open: inspect it, never resend)" >&2
+      exit 2 ;;
+    "failed "*)
+      echo "SPAWN=FAILED task=${task} step=${step} rc=1 — dispatch --inject ${dj_err#failed } (receipt in $dj)" >&2
+      exit 1 ;;
+  esac
+  if [ "$dj_rc" != "0" ]; then
+    echo "SPAWN=FAILED task=${task} step=${step} rc=${dj_rc} — dispatch --inject exited ${dj_rc} with no readable receipt (in $dj)" >&2
+    exit 1
+  fi
 
   step=read-inject-receipt
   read_stages() {

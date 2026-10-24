@@ -1,0 +1,216 @@
+{
+  "schema": "open-fleet.wip-curve-taskset/1",
+  "name": "stocklib-6",
+  "version": 1,
+  "issue": 604,
+  "description": "Six fixed, named tasks against a synthetic stdlib-only Python package. Two pairs edit the same region (T2/T5 in ledger.py, T4/T6 at the end of report.py), so a wave that builds both from one base meets a merge conflict that a serial wave cannot. Each task's oracle is a unittest module the coordinator runs at the worker's head in a clean checkout; workers never receive it. `reference` is the edit the inert stand-in applies and the proof that each oracle discriminates (check-prereg): it fails on the seed and passes on the reference, and every order of the six references composes.",
+  "seed": {
+    "author_name": "open-fleet wip-curve",
+    "author_email": "wip-curve@open-fleet.invalid",
+    "date": "2026-10-24T00:00:00+00:00",
+    "message": "stocklib: the WIP-curve experiment's seed (#604)\n",
+    "files": {
+      ".gitignore": "__pycache__/\n.claude/\n.wip-review/\n",
+      "README.md": "# stocklib\n\nA tiny stock-keeping library: the fixed target of open-fleet's pre-registered WIP-curve\nexperiment (#604). It is synthetic, small and stdlib-only on purpose.\n\nRun the tests with `python3 -m unittest discover -s tests -t .`\n",
+      "stocklib/__init__.py": "\"\"\"stocklib: a tiny stock-keeping library (the WIP-curve experiment's target, open-fleet #604).\"\"\"\n",
+      "stocklib/ledger.py": "\"\"\"A stock ledger: quantities per SKU.\"\"\"\n\n\nclass Ledger:\n    def __init__(self):\n        self._stock = {}\n\n    def add(self, sku, qty):\n        if qty <= 0:\n            raise ValueError(\"qty to add must be positive\")\n        self._stock[sku] = self._stock.get(sku, 0) + qty\n\n    def remove(self, sku, qty):\n        if qty <= 0:\n            raise ValueError(\"qty to remove must be positive\")\n        self._stock[sku] = self._stock.get(sku, 0) - qty\n\n    def quantity(self, sku):\n        return self._stock.get(sku, 0)\n\n    def skus(self):\n        return sorted(self._stock)\n",
+      "stocklib/report.py": "\"\"\"Plain-text reports over a Ledger.\"\"\"\n\n\ndef summary(ledger):\n    lines = [f\"{sku}: {ledger.quantity(sku)}\" for sku in ledger.skus()]\n    return \"\\n\".join(lines)\n",
+      "stocklib/textutil.py": "\"\"\"Text helpers.\"\"\"\nimport re\n\n\ndef slugify(text):\n    text = text.strip().lower()\n    text = re.sub(r\"[^a-z0-9]+\", \"-\", text)\n    return text.strip(\"-\")\n",
+      "stocklib/units.py": "\"\"\"Unit conversion for stock quantities, by mass.\"\"\"\n\nFACTORS = {\n    \"g\": 1,\n    \"kg\": 1000,\n}\n\n\ndef convert(value, from_unit, to_unit):\n    \"\"\"`value` in `from_unit`, expressed in `to_unit`.\"\"\"\n    try:\n        return value * FACTORS[from_unit] / FACTORS[to_unit]\n    except KeyError as err:\n        raise ValueError(f\"unknown unit {err.args[0]!r}\") from None\n",
+      "tests/__init__.py": "",
+      "tests/test_stocklib.py": "import unittest\n\nfrom stocklib.ledger import Ledger\nfrom stocklib.report import summary\nfrom stocklib.textutil import slugify\nfrom stocklib.units import convert\n\n\nclass LedgerTest(unittest.TestCase):\n    def test_add_and_remove(self):\n        ledger = Ledger()\n        ledger.add(\"bolt\", 5)\n        ledger.remove(\"bolt\", 2)\n        self.assertEqual(ledger.quantity(\"bolt\"), 3)\n\n    def test_non_positive_quantities_are_refused(self):\n        ledger = Ledger()\n        with self.assertRaises(ValueError):\n            ledger.add(\"bolt\", 0)\n        with self.assertRaises(ValueError):\n            ledger.remove(\"bolt\", -1)\n\n\nclass UnitsTest(unittest.TestCase):\n    def test_kilograms_to_grams(self):\n        self.assertEqual(convert(2, \"kg\", \"g\"), 2000)\n\n    def test_unknown_unit(self):\n        with self.assertRaises(ValueError):\n            convert(1, \"stone\", \"g\")\n\n\nclass ReportTest(unittest.TestCase):\n    def test_summary_lists_each_sku(self):\n        ledger = Ledger()\n        ledger.add(\"nut\", 2)\n        ledger.add(\"bolt\", 1)\n        self.assertIn(\"bolt: 1\", summary(ledger))\n        self.assertIn(\"nut: 2\", summary(ledger))\n\n\nclass TextTest(unittest.TestCase):\n    def test_slugify(self):\n        self.assertEqual(slugify(\"  Hello, World! \"), \"hello-world\")\n"
+    }
+  },
+  "visible_tests": [
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-t",
+    "."
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "slug": "slugify-accents",
+      "difficulty": "S",
+      "files": [
+        "stocklib/textutil.py"
+      ],
+      "title": "slugify transliterates accented letters",
+      "statement": "Make stocklib.textutil.slugify transliterate accented Latin letters to plain ASCII before slugging, so slugify('Crème Brûlée') returns 'creme-brulee' and slugify('Ångström units') returns 'angstrom-units'. Decompose with unicodedata NFKD and drop combining marks. Behaviour for ASCII input must not change.",
+      "oracle": "import unittest\n\nfrom stocklib.textutil import slugify\n\n\nclass Oracle(unittest.TestCase):\n    def test_accents_are_transliterated(self):\n        self.assertEqual(slugify(\"Crème Brûlée\"), \"creme-brulee\")\n        self.assertEqual(slugify(\"Ångström units\"), \"angstrom-units\")\n\n    def test_ascii_behaviour_is_unchanged(self):\n        self.assertEqual(slugify(\"  Hello, World! \"), \"hello-world\")\n",
+      "reference": [
+        {
+          "file": "stocklib/textutil.py",
+          "replace": "import re",
+          "with": [
+            "import re",
+            "import unicodedata"
+          ]
+        },
+        {
+          "file": "stocklib/textutil.py",
+          "replace": "    text = text.strip().lower()",
+          "with": [
+            "    text = unicodedata.normalize(\"NFKD\", text)",
+            "    text = \"\".join(c for c in text if not unicodedata.combining(c))",
+            "    text = text.strip().lower()"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T2",
+      "slug": "ledger-no-overdraw",
+      "difficulty": "S",
+      "files": [
+        "stocklib/ledger.py"
+      ],
+      "title": "Ledger.remove refuses to overdraw",
+      "statement": "Make stocklib.ledger.Ledger.remove raise ValueError when asked to remove more than the quantity in stock for that SKU (an unknown SKU has 0 in stock). A refused removal must leave the stock unchanged. Removing exactly the quantity in stock is allowed and leaves 0.",
+      "oracle": "import unittest\n\nfrom stocklib.ledger import Ledger\n\n\nclass Oracle(unittest.TestCase):\n    def test_overdraw_is_refused_and_stock_unchanged(self):\n        ledger = Ledger()\n        ledger.add(\"bolt\", 5)\n        with self.assertRaises(ValueError):\n            ledger.remove(\"bolt\", 6)\n        self.assertEqual(ledger.quantity(\"bolt\"), 5)\n\n    def test_unknown_sku_cannot_be_removed(self):\n        with self.assertRaises(ValueError):\n            Ledger().remove(\"nut\", 1)\n\n    def test_exact_removal_empties_the_sku(self):\n        ledger = Ledger()\n        ledger.add(\"bolt\", 2)\n        ledger.remove(\"bolt\", 2)\n        self.assertEqual(ledger.quantity(\"bolt\"), 0)\n",
+      "reference": [
+        {
+          "file": "stocklib/ledger.py",
+          "replace": "            raise ValueError(\"qty to remove must be positive\")",
+          "with": [
+            "            raise ValueError(\"qty to remove must be positive\")",
+            "        if self._stock.get(sku, 0) < qty:",
+            "            raise ValueError(f\"insufficient stock for {sku!r}\")"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T3",
+      "slug": "units-imperial",
+      "difficulty": "M",
+      "files": [
+        "stocklib/units.py"
+      ],
+      "title": "convert supports pounds and ounces",
+      "statement": "Make stocklib.units.convert also accept the units 'lb' (exactly 453.59237 g) and 'oz' (exactly 28.349523125 g), in either direction and between any two supported units. Unknown units must still raise ValueError.",
+      "oracle": "import unittest\n\nfrom stocklib.units import convert\n\n\nclass Oracle(unittest.TestCase):\n    def test_pounds_and_ounces(self):\n        self.assertAlmostEqual(convert(1, \"lb\", \"g\"), 453.59237, places=9)\n        self.assertAlmostEqual(convert(16, \"oz\", \"lb\"), 1.0, places=9)\n        self.assertAlmostEqual(convert(1, \"kg\", \"oz\"), 1000 / 28.349523125, places=9)\n\n    def test_unknown_units_are_still_refused(self):\n        with self.assertRaises(ValueError):\n            convert(1, \"stone\", \"lb\")\n",
+      "reference": [
+        {
+          "file": "stocklib/units.py",
+          "replace": "    \"kg\": 1000,",
+          "with": [
+            "    \"kg\": 1000,",
+            "    \"lb\": 453.59237,",
+            "    \"oz\": 28.349523125,"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T4",
+      "slug": "report-csv",
+      "difficulty": "M",
+      "files": [
+        "stocklib/report.py"
+      ],
+      "title": "report.to_csv exports the ledger",
+      "statement": "Add stocklib.report.to_csv(ledger) returning CSV text: a header row 'sku,quantity', then one row per SKU in sorted SKU order, each line ending in '\\n' (including the last). Quote fields per RFC 4180 (use the csv module), so a SKU containing a comma is quoted. An empty ledger yields only the header line.",
+      "oracle": "import unittest\n\nfrom stocklib.ledger import Ledger\nfrom stocklib.report import to_csv\n\n\nclass Oracle(unittest.TestCase):\n    def test_header_sorted_rows_and_quoting(self):\n        ledger = Ledger()\n        ledger.add(\"b\", 2)\n        ledger.add(\"a,1\", 3)\n        self.assertEqual(to_csv(ledger), 'sku,quantity\\n\"a,1\",3\\nb,2\\n')\n\n    def test_an_empty_ledger_is_the_header(self):\n        self.assertEqual(to_csv(Ledger()), \"sku,quantity\\n\")\n",
+      "reference": [
+        {
+          "file": "stocklib/report.py",
+          "append": [
+            "",
+            "",
+            "def to_csv(ledger):",
+            "    import csv",
+            "    import io",
+            "",
+            "    out = io.StringIO()",
+            "    writer = csv.writer(out, lineterminator=\"\\n\")",
+            "    writer.writerow([\"sku\", \"quantity\"])",
+            "    for sku in ledger.skus():",
+            "        writer.writerow([sku, ledger.quantity(sku)])",
+            "    return out.getvalue()"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T5",
+      "slug": "ledger-history",
+      "difficulty": "L",
+      "files": [
+        "stocklib/ledger.py"
+      ],
+      "title": "Ledger keeps an audit history",
+      "statement": "Give stocklib.ledger.Ledger an audit trail: Ledger.history() returns a list of (operation, sku, qty) tuples, operation 'add' or 'remove', in call order, recording only operations that succeeded (a call that raises is not recorded). history() returns a copy, so mutating the returned list does not change the ledger.",
+      "oracle": "import unittest\n\nfrom stocklib.ledger import Ledger\n\n\nclass Oracle(unittest.TestCase):\n    def test_successful_operations_are_recorded_in_order(self):\n        ledger = Ledger()\n        ledger.add(\"bolt\", 3)\n        ledger.remove(\"bolt\", 1)\n        ledger.add(\"nut\", 2)\n        self.assertEqual(ledger.history(),\n                         [(\"add\", \"bolt\", 3), (\"remove\", \"bolt\", 1), (\"add\", \"nut\", 2)])\n\n    def test_a_refused_operation_is_not_recorded(self):\n        ledger = Ledger()\n        with self.assertRaises(ValueError):\n            ledger.add(\"bolt\", 0)\n        self.assertEqual(ledger.history(), [])\n\n    def test_history_is_a_copy(self):\n        ledger = Ledger()\n        ledger.add(\"bolt\", 1)\n        ledger.history().append((\"add\", \"x\", 1))\n        self.assertEqual(len(ledger.history()), 1)\n",
+      "reference": [
+        {
+          "file": "stocklib/ledger.py",
+          "replace": "        self._stock = {}",
+          "with": [
+            "        self._stock = {}",
+            "        self._history = []"
+          ]
+        },
+        {
+          "file": "stocklib/ledger.py",
+          "replace": "        self._stock[sku] = self._stock.get(sku, 0) + qty",
+          "with": [
+            "        self._stock[sku] = self.quantity(sku) + qty",
+            "        self._history.append((\"add\", sku, qty))"
+          ]
+        },
+        {
+          "file": "stocklib/ledger.py",
+          "replace": "        self._stock[sku] = self._stock.get(sku, 0) - qty",
+          "with": [
+            "        self._stock[sku] = self.quantity(sku) - qty",
+            "        self._history.append((\"remove\", sku, qty))"
+          ]
+        },
+        {
+          "file": "stocklib/ledger.py",
+          "replace": "        return sorted(self._stock)",
+          "with": [
+            "        return sorted(self._stock)",
+            "",
+            "    def history(self):",
+            "        return list(self._history)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T6",
+      "slug": "report-totals",
+      "difficulty": "L",
+      "files": [
+        "stocklib/report.py"
+      ],
+      "title": "summary ends with a TOTAL line",
+      "statement": "Add stocklib.report.totals(ledger) returning the sum of all quantities as an int, and make stocklib.report.summary(ledger) end with a final line 'TOTAL <n>' where n is that sum. The summary of an empty ledger is exactly 'TOTAL 0'. Every other summary line is unchanged.",
+      "oracle": "import unittest\n\nfrom stocklib.ledger import Ledger\nfrom stocklib.report import summary, totals\n\n\nclass Oracle(unittest.TestCase):\n    def test_totals_and_the_total_line(self):\n        ledger = Ledger()\n        ledger.add(\"nut\", 2)\n        ledger.add(\"bolt\", 3)\n        self.assertEqual(totals(ledger), 5)\n        self.assertEqual(summary(ledger), \"bolt: 3\\nnut: 2\\nTOTAL 5\")\n\n    def test_an_empty_ledger(self):\n        self.assertEqual(totals(Ledger()), 0)\n        self.assertEqual(summary(Ledger()), \"TOTAL 0\")\n",
+      "reference": [
+        {
+          "file": "stocklib/report.py",
+          "replace": "    return \"\\n\".join(lines)",
+          "with": [
+            "    lines.append(f\"TOTAL {totals(ledger)}\")",
+            "    return \"\\n\".join(lines)"
+          ]
+        },
+        {
+          "file": "stocklib/report.py",
+          "append": [
+            "",
+            "",
+            "def totals(ledger):",
+            "    return sum(ledger.quantity(sku) for sku in ledger.skus())"
+          ]
+        }
+      ]
+    }
+  ]
+}

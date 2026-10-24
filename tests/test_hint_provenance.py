@@ -36,6 +36,21 @@ def _load(name, rel):
 replay_mod = _load("hint_replay", "scripts/hint_replay.py")
 ss = replay_mod.search_sessions
 hp = replay_mod.hp
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). The live
+# arm's own refusals are tested here through main(), so setUpModule lifts it in this process, the
+# Python-level seam tests/test_hint_replay_spend.py uses; that suite pins the refusal itself.
+SEAMS = {}
+
+
+def setUpModule():
+    SEAMS["live"] = mock.patch.object(replay_mod.spend, "live_disabled", lambda: None)
+    SEAMS["live"].start()
+
+
+def tearDownModule():
+    SEAMS["live"].stop()
+
+
 gt = ss.guard_text
 watchdog = _load("watchdog_605", "runtime/scripts/watchdog.py")
 CORPUS = ROOT / "tests" / "fixtures" / "hint-replay.json"

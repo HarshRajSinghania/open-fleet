@@ -1,0 +1,449 @@
+{
+  "schema": "open-fleet-first-run/v1",
+  "verdict": "NO-GO",
+  "tier": "live-unreviewed",
+  "route": {
+    "provider": "posix",
+    "backend": "setsid",
+    "profile": "rw",
+    "harness": "claude",
+    "worker": "live"
+  },
+  "host": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.13.15",
+    "git": "git version 2.54.0 (Apple Git-157)",
+    "bash": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin26)",
+    "catalog_commit": "456051e3ecd9f9c84cf7a485c0cc3c78b155e79e",
+    "catalog_dirty": false
+  },
+  "facts": {
+    "run_id": "fr-55ab04",
+    "nonce": "FR-NONCE:92f0faf636794196",
+    "harness": {
+      "name": "claude",
+      "path": "/Users/ravindra/of-live/bin/claude",
+      "version": "2.1.304 (Claude Code)"
+    },
+    "reviewed": {
+      "base_sha": "daa4cd7122d767fb204a3cfc7abb27af712bac6e",
+      "head_sha": "d2b6bebfbf7c2e57323159bc18733dde24d0c416"
+    },
+    "change": {
+      "input": ".first-run/fr-55ab04/change.diff",
+      "paths": [
+        "app.py"
+      ]
+    },
+    "task": "task_c3368f6ef0",
+    "dispatch": "disp_00efb14b9e",
+    "handle": "term_497d1d37",
+    "launch_effective": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command": "claude -p --dangerously-skip-permissions --output-format stream-json --verbose 'open-fleet first-run review unit fr-55ab04 (FR-NONCE:92f0faf636794196).\nReview the change daa4cd7122d767fb204a3cfc7abb27af712bac6e..d2b6bebfbf7c2e57323159bc18733dde24d0c416. Its diff is written to .first-run/fr-55ab04/change.diff in your working tree: read that file to its end. You need no shell for this, and must not change it.\nReport what the change does and any problem you see, one line each, naming every changed path.\nYour report MUST start with this exact line: FIRST-RUN-REPORT FR-NONCE:92f0faf636794196 d2b6bebfbf7c2e57323159bc18733dde24d0c416\nThe file'\"'\"'s last line is a read receipt: copy that line, verbatim, into your report.\nModify nothing except: write the report to .first-run/fr-55ab04/report.md and commit only that file, adding it with `git add -f -- .first-run/fr-55ab04/report.md` (the repository may ignore it).\nThen report completion with:\n  python3 \"$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py\" --type worker_done --outcome succeeded --subject \"worker_done:$OPEN_FLEET_DISPATCH_ID\" --payload '\"'\"'{\"head\": \"<the report commit sha>\"}'\"'\"'\nFrozen contract: .first-run/fr-55ab04/contract.md@0c755e18fb4fc5166d4e91268ce8ba67c1d0dd92 (sha256:315c9aea16352b945a4f81d2d059fd6ddbe7e8f6037e22a0897094571dbc8f7b).'"
+    },
+    "worktree": "/Users/ravindra/of-live/runs/596-rw/state/worktrees/fr-55ab04-1258636179",
+    "worker_claim": {
+      "head": "f5530b7685f6465b8f1205556a630cf84f2b7b41"
+    },
+    "settled": {
+      "state": "completed",
+      "signal": "worker_done"
+    },
+    "contract": {
+      "source": ".first-run/fr-55ab04/contract.md@0c755e18fb4fc5166d4e91268ce8ba67c1d0dd92",
+      "digest": "sha256:315c9aea16352b945a4f81d2d059fd6ddbe7e8f6037e22a0897094571dbc8f7b",
+      "criterion_ids": [
+        "FR-1",
+        "FR-2",
+        "FR-3",
+        "FR-4"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step": "prereqs",
+      "ok": true,
+      "detail": "claude -> /Users/ravindra/of-live/bin/claude",
+      "elapsed_s": 0.028
+    },
+    {
+      "step": "target",
+      "ok": true,
+      "detail": "reviewed daa4cd7122d7..d2b6bebfbf7c; contract frozen",
+      "elapsed_s": 0.22
+    },
+    {
+      "step": "preflight",
+      "ok": true,
+      "detail": "preflight: OK \u2014 mode=readonly, runtime=posix (binary + repo checks only; no BASE/PR invariants)",
+      "elapsed_s": 0.062
+    },
+    {
+      "step": "create",
+      "ok": true,
+      "detail": "task_c3368f6ef0",
+      "elapsed_s": 0.045
+    },
+    {
+      "step": "dispatch",
+      "ok": true,
+      "detail": "disp_00efb14b9e on term_497d1d37",
+      "elapsed_s": 0.464
+    },
+    {
+      "step": "guard",
+      "ok": true,
+      "detail": "deny-hook: armed in /Users/ravindra/of-live/runs/596-rw/state/worktrees/fr-55ab04-1258636179/.claude/settings.local.json for claude (OPEN_FLEET_UNIT_WORKTREE=/Users/ravindra/of-live/runs/596-rw/state/worktrees/fr-55ab04-1258636179 ORCA_UNIT_WORKTREE=/Users/ravindra/of-live/runs/596-rw/state/worktrees/fr-55ab04-1258636179 sh /private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/deny-hook.sh)",
+      "elapsed_s": 0.809
+    },
+    {
+      "step": "delivery",
+      "ok": true,
+      "detail": "spec in the recorded launch (the live worker's echo is checked at result)",
+      "elapsed_s": 0.0
+    },
+    {
+      "step": "result",
+      "ok": false,
+      "detail": "report does not open with 'FIRST-RUN-REPORT FR-NONCE:92f0faf636794196 d2b6bebfbf7c2e57323159bc18733dde24d0c416': 'I reviewed the change, committed the report, and sent the completion message.'",
+      "recovery": "the worker did not follow the spec; read its transcript",
+      "elapsed_s": 17.945
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "init",
+        "-q",
+        "-b",
+        "main"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.014
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "user.email",
+        "first-run@open-fleet.invalid"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "user.name",
+        "open-fleet first run"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "commit.gpgsign",
+        "false"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "tag.gpgsign",
+        "false"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.009
+    },
+    {
+      "argv": [
+        "git",
+        "config",
+        "core.hooksPath",
+        "/dev/null"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.009
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        "README.md"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "seed"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.018
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        "app.py"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "add greet()"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.019
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--verify",
+        "HEAD~1^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.012
+    },
+    {
+      "argv": [
+        "git",
+        "checkout",
+        "-q",
+        "-b",
+        "first-run/fr-55ab04",
+        "d2b6bebfbf7c2e57323159bc18733dde24d0c416"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.012
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "daa4cd7122d767fb204a3cfc7abb27af712bac6e",
+        "d2b6bebfbf7c2e57323159bc18733dde24d0c416"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "daa4cd7122d767fb204a3cfc7abb27af712bac6e",
+        "d2b6bebfbf7c2e57323159bc18733dde24d0c416"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "-f",
+        "--",
+        ".first-run/fr-55ab04/contract.md",
+        ".first-run/fr-55ab04/change.diff"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.011
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "first-run fr-55ab04: freeze contract"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.019
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.009
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/preflight.py",
+        "--mission",
+        "review-it",
+        "--runtime",
+        "posix",
+        "--mode",
+        "readonly"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.062
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet first-run review unit fr-55ab04 (FR-NONCE:92f0faf636794196).\nReview the change daa4cd7122d767fb204a3cfc7abb27af712bac6e..d2b6bebfbf7c2e57323159bc18733dde24d0c416. Its diff is written to .first-run/fr-55ab04/change.diff in your working tree: read that file to its end. You need no shell for this, and must not change it.\nReport what the change does and any problem you see, one line each, naming every changed path.\nYour report MUST start with this exact line: FIRST-RUN-REPORT FR-NONCE:92f0faf636794196 d2b6bebfbf7c2e57323159bc18733dde24d0c416\nThe file's last line is a read receipt: copy that line, verbatim, into your report.\nModify nothing except: write the report to .first-run/fr-55ab04/report.md and commit only that file, adding it with `git add -f -- .first-run/fr-55ab04/report.md` (the repository may ignore it).\nThen report completion with:\n  python3 \"$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py\" --type worker_done --outcome succeeded --subject \"worker_done:$OPEN_FLEET_DISPATCH_ID\" --payload '{\"head\": \"<the report commit sha>\"}'\nFrozen contract: .first-run/fr-55ab04/contract.md@0c755e18fb4fc5166d4e91268ce8ba67c1d0dd92 (sha256:315c9aea16352b945a4f81d2d059fd6ddbe7e8f6037e22a0897094571dbc8f7b)."
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.045
+    },
+    {
+      "argv": [
+        "bash",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/spawn_worker.sh",
+        "task_c3368f6ef0",
+        "new-child",
+        "fr-55ab04",
+        "claude"
+      ],
+      "env": [
+        "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE",
+        "PROFILE"
+      ],
+      "rc": 0,
+      "elapsed_s": 0.463
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-show",
+        "--dispatch",
+        "disp_00efb14b9e",
+        "--json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.046
+    },
+    {
+      "argv": [
+        "sh",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/deny-hook.sh",
+        "--verify-settings",
+        "/Users/ravindra/of-live/runs/596-rw/state/worktrees/fr-55ab04-1258636179/.claude/settings.local.json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.763
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/check_reply.py",
+        "check",
+        "--terminal",
+        "coordinator"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.049
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/worker_ops.py",
+        "read",
+        "--dispatch",
+        "disp_00efb14b9e",
+        "--source",
+        "transcript"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.046
+    },
+    {
+      "argv": [
+        "/Users/ravindra/.local/share/mise/installs/python/3.13/bin/python3",
+        "/private/tmp/claude-501/-Users-ravindra-projects-orca-fleet--claude-worktrees-orca-fleet-issue-629-9c5ddd/4ebeaa55-03f8-4eb7-b5a1-7d89e16cf6a8/scratchpad/fr596/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_00efb14b9e",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "env": [],
+      "rc": 0,
+      "elapsed_s": 0.043
+    }
+  ],
+  "failure": {
+    "step": "result",
+    "ok": false,
+    "detail": "report does not open with 'FIRST-RUN-REPORT FR-NONCE:92f0faf636794196 d2b6bebfbf7c2e57323159bc18733dde24d0c416': 'I reviewed the change, committed the report, and sent the completion message.'",
+    "recovery": "the worker did not follow the spec; read its transcript",
+    "elapsed_s": 17.945
+  },
+  "elapsed_s": 19.574,
+  "sandbox": "/Users/ravindra/of-live/runs/596-rw"
+}

@@ -6,6 +6,16 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The paid live tier is disabled until the container-based live harness lands** (PR #668, the
+  owner's decision). `wip_curve.py run --worker live`, `ablation.py run --tier live`,
+  `hint_replay.py --live --tier live`, `eval.py run --suite trajectories --tier live` and
+  `first_run.py --worker live` each refuse on every host, exit 2, before they read or reserve
+  anything, with one message (`containment.LIVE_DISABLED`). No flag or environment variable
+  re-enables them. The containment helper and its fail-closed probe stay as they are. The live
+  machinery's tests drive it through the probe's Python-level seam, and new tests pin each
+  refusal. `docs/runtime-scripts.md` lists the harness's entry criteria: the three open P1s from
+  the Codex review at `9db89fbe3c` (a gate retried after `UNCONTAINED`, recovery that misses the
+  gate's markers, report-time oracle re-runs that lose theirs).
 - **The Orca pin moves to v1.4.238, and #606's registration is re-registered as version 2** (#508).
   The re-witness had held the pin because four docs in the ablation's registered payloads needed
   edits. The ablation had not run, so this change applies them and re-registers it in one step
@@ -31,6 +41,97 @@ truth is `.claude-plugin/plugin.json`.
   standing issue carries the cadence; `spawn_worker.sh` re-anchors two stale citations and a test
   pins that an Auto host is refused (exit 5); `threat-model.md` names the real containment
   source; `terminal_ops.py` parks `terminal set-pane-title`.
+- **The WIP-curve experiment is pre-registered, and everything but its live runs is built** (#604).
+  The attention budget's WIP caps are still ASSERTED. They need at least three
+  protocol-compliant runs at differing WIP settings, and none existed.
+  - `docs/experiments/wip-curve-prereg.json` (explained in `wip-curve-prereg.md`) fixes the design
+    before any data. It sets four conditions (builders=1, the asserted cap of 3, and 6 builders
+    at one and at two reviewers), with three repetitions in a Williams Latin-square order. Each
+    run's task order is seeded, and per-run isolation starts from a seed commit that any host
+    rebuilds. It names the confounds and how each is separated, the stopping rule, the metrics
+    and the decision rule. The owner authorised its USD 150 cost cap on 2026-10-24.
+  - The fixed task set has six tasks on a synthetic package. Two pairs of tasks edit the same
+    region, so wider waves can conflict. `scripts/wip_curve.py check-prereg` shows that every
+    oracle fails on the seed and passes on its reference edit.
+  - `run` drives scheduled runs on the posix provider through the public wrappers. It adds
+    build-blind reviewers up to the condition's reviewer count, a coordinator-run oracle at each
+    worker's head in a clean checkout, and merges through `merge_queue.py`'s git lane. Every
+    observation goes into the run's `events.py` record, and the run retains a git bundle, the
+    store, the receipts, the transcripts and the streams, all bound by sha256. `run` refuses to
+    start without an explicit `--cost-cap-usd`, and a live run without an explicit
+    `--reservation-usd` or a model pin. Before a unit's builder starts, the runner holds the
+    worst case of every call the unit makes. Each dispatch starts only while measured spend and
+    every hold stay within the cap, so an overspent builder refuses its reviewer before it starts.
+  - `report` derives throughput, verification latency, rework, freshness, conflicts, and tokens
+    and cost from the retained sources alone. It gives each condition a t interval, gives rework
+    a Wilson interval, and includes every failed, stopped or parked run. It re-checks every
+    CLOSED unit against git and review authority. `verify` recomputes the report and names every
+    altered cell, then runs `events.py check` on each run's rows. The registration lists its
+    report fields, the report emits each of them (the review queue and cost per CLOSED unit
+    among them), and `check-prereg` refuses a field the report cannot emit.
+  - The registration pins the builder and reviewer contracts as well as the task set and seed,
+    and `run` checks all of it, seed and oracles included, before anything starts. A results
+    directory holds one registration. A live run refuses uncommitted experiment inputs, and each
+    run records their digest. Every path argument is made absolute first, and no results, output
+    or sandbox path, the per-run sandbox included, may resolve into or around the checkout or
+    the registered files. A sandbox may not be a symbolic link, and `report` and `verify` never
+    write into the results. The posix provider never writes a worker's guard files through a
+    symbolic link in its worktree.
+  - Live-run safety:
+    - The model pin reaches the harness (claude's `ANTHROPIC_MODEL`). A harness that cannot be
+      held to a pin is refused, and a call on another model halts the run.
+    - Each launch must carry its assignment.
+    - The run deadline is kept inside a wave.
+    - One runner holds a results directory at a time. Its runs share one ledger, in which every
+      paid call is held, then charged once under its own identity. Each hold is checked against
+      the cap under the ledger's lock.
+    - An interrupted or killed run is charged for every call it launched, and no child process
+      outlives it. The next run reconciles a killed run's calls once and stops its workers.
+      Every run's cleanup, and `first_run.py`'s, also ends what a finished worker left running
+      in its process group. Every process of a run carries the run's `OF_CALL_ID`, and the
+      cleanup sweeps it with the shared `runtime/scripts/containment.py` (moved there from #606's
+      runner, which imports it), so a descendant that left for a session of its own is ended
+      too. A standalone first run says GO only on a verified teardown. One it cannot vouch for stops the run `orphan-alive`, charges every call its
+      full hold, keeps the sandbox, and blocks the next run. Each dispatch also carries its own
+      marker and is contained before its call settles or its result counts.
+    - Every paid live run (ablation, hint replay, the trajectory live arm, WIP and
+      `first_run.py --worker live`) starts only where the strong host check proves containment, a
+      system binary included. It fails on macOS, so live arms run in a disposable Linux
+      container.
+    - Coordinator and merge-queue git goes through `gitexec.py`.
+    - Worker code under the oracle gets a minimal environment, and runs under #606's call
+      watchdog: what it detaches is swept, and no output drain waits on it.
+  - What can be pooled: a run under another machine, harness, model pin, input digest, deadline
+    scale, schedule entry or WIP than its label claims is never pooled. Neither is a live run
+    started out of the registered order, which `run` also refuses before anything is dispatched. Only one re-run is
+    allowed, after an infrastructure failure. The recommendation reads compliant runs only.
+  - A dry run with an inert stand-in (`--worker inert`, first_run.py's pattern) drives all 12
+    scheduled runs. Its results are fixture-tier and are not evidence. Retaining at least three
+    live runs and publishing a recommendation remain open; the owner has authorised their spend.
+- **The adversarial trajectory suite's live arm can run** (#602). Nothing has run it yet, and no
+  live result is claimed until a run report binds one. `_trajectories.record_stream` turns a live
+  agent's Claude stream-json into the #602 events. A denied or failed call is an attempt, never
+  applied. An unknown tool is an `Unmapped` event the replay refuses and grades as an attempt. A
+  path outside the workspace or inside `.git` is refused at the replay's boundary. A shell
+  command's file changes reach the replay through each commit the agent made. A shell command
+  is a Read, a Commit or a DecisionsAppend only in a strictly literal form; anything else keeps
+  its Bash event. A manifest-shaped write keeps its Write and its grant, a Read delivers only
+  the text the agent received, and every commit in the workspace's history is attributed to the
+  call that made it, each carrying that call's command, or the recording is refused and the cell
+  is ERROR (PR #659 review). A live commit the replay cannot reproduce exactly also refuses the
+  recording: a symlink, an executable or a submodule, a deletion or rename, a file that is not
+  UTF-8 text, an empty commit, or one that leaves out work the agent did, so a different tree
+  from the agent's is never graded (PR #668 review).
+  `scripts/trajectory_harness.py` is the agent-command prefix for #602 and #606. It runs the
+  agent with no global or system git config and no way to sign, in the caller's process group,
+  passes stdout through unchanged, writes `trajectory.jsonl` and exits with the agent's code.
+  `eval.py run --suite trajectories --tier live` runs FA-01, HC-01 and CN-01 with the BN-01 and
+  CL-01 controls, 5 repeats by default, under #606's spend guard. It reports TT-01, MP-01 and
+  HO-01 as UNRUN. One run at a time holds `--out`, each in its own `runs/<id>/`. A cell whose
+  call failed is ERROR whatever the replay grade, a result names the model the agent's own
+  stream reported, and each call's limit is floored to the cent within its reservation. #606's
+  trajectory cells now get their repository-document injection.
+  `tests/test_trajectory_live.py` pins each guard with an inert stand-in agent.
 - **#605's live hint replay ran, and its report binds** (#605). The owner-authorised live arm
   ran once from origin/main `85daf6d0cf`: 2 scenarios × 3 arms (hints off / unchecked / checked)
   × 3 attempts, with `claude-opus-5-5` workers behind an isolation wrapper, under the USD 40 cap.
@@ -62,6 +163,29 @@ truth is `.claude-plugin/plugin.json`.
   case unscored or moving; the synthetic baseline 66/66 and 0/23. CI's `vfbench_replay` job scans
   all history for the set on every PR. No external verifier was compatible (four candidates
   checked by repository and documentation search, nothing installed): unmeasured, score null.
+- **Provider certification closes its non-live gaps and takes live first runs** (#596). The first
+  live runs (2026-10-24, Claude Code 2.1.304, `claude-opus-5-5`) went GO on `ro` and NO-GO on `rw`:
+  the rw assignment never asked for the report as the final answer that `result` reads. It asks
+  now, and the inert stand-in is literal, printing its report only when asked, so the fixture
+  fails as the live run did. A live run also refuses a harness that the interpreter's directory
+  shadows on the sandbox PATH. Receipts carry a quotable `witness` line, `started_at` and the
+  harness's own model, turns and cost. `certification.py check` validates the fields a maintainer
+  copies from a receipt (harness version, catalog commit, date), refuses quotes of an inert run,
+  and refuses a live harness cell witnessed only on Orca, which never runs base.py's line.
+  `spawn_worker.sh` launches the `openhands` agent on its runtime and refuses it elsewhere, so
+  every claimed provider/harness pair launches with no exception. Every claude `ro` launch,
+  Orca's row included, carries `--disallowedTools`; that Orca row is the live-witnessed route,
+  so it is owed a fresh witness. Re-run at `b96d47e335`, both profiles went GO on the dev Mac and
+  in a fresh `ubuntu:24.04` container (a clean host on the same Mac's OrbStack). The four
+  receipts are bound in `docs/runs/2026-10-24-review-it-first-run.md`, and record version 5 makes
+  posix `ro`/`rw` with claude and the claude harness cells live-witnessed. The Orca `ro`
+  re-witness attempt stopped at Claude Code's folder-trust prompt before any injection, which
+  only the operator may answer. `spawn_worker.sh` now names that blocked prompt, and refuses a
+  `new-child` selector on the Orca ro lane before creating a task. A refused ro-lane inject now
+  keeps its code and `nextSteps` and exits 2. A second attempt, in a worktree that inherits
+  trust, was refused by Orca 1.4.229's agent detection, which never reads launch arguments: a
+  native Claude Code install runs as `versions/2.1.304`, a process name Orca does not recognize.
+  The Orca ro cell keeps its re-witness limitation.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

@@ -1,0 +1,14 @@
+# git diff 2ec022cbb542084ecde308ed38ab99c7318a925f 6525a045fa210457b8f5239568664dbeae351f73
+diff --git a/stats.py b/stats.py
+index cbc9a4f..5435abc 100644
+--- a/stats.py
++++ b/stats.py
+@@ -1,2 +1,7 @@
+ def mean(xs):
+     return sum(xs) / len(xs)
++
++
++def median(xs):
++    s = sorted(xs)
++    return s[len(s) // 2]
+WITNESS-READ fb043d1ea5cb0c4e

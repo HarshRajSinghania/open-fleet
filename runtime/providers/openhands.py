@@ -47,12 +47,44 @@ from ._external import insert_dispatch, load_dispatch, local_worker_list, record
 RO_ALLOWED_TOOLS = ["glob", "grep", "planning_file_editor"]
 RO_DISABLED_TOOLS = ["terminal", "file_editor", "apply_patch", "task_tracker", "browser_tool_set"]
 RW_TOOLS = ["terminal", "file_editor", "glob", "grep", "task_tracker"]
+# The token worker_start reports in launch.effective for each profile; spawn_worker.sh requires it
+# on the receipt, as it requires a CLI harness's profile flag (#596).
+PROFILE_FLAGS = {
+    "ro": "tools=" + ",".join(RO_ALLOWED_TOOLS),
+    "rw": "tools=" + ",".join(RW_TOOLS),
+    "danger": "conversation_runtime=docker",
+}
 
 DENY_HOOK = Path(__file__).resolve().parent.parent / "scripts" / "deny-hook.sh"
 
 
 def _is_placeholder(worktree: str | None) -> bool:
     return not worktree or worktree.startswith(("new-", "current", "active"))
+
+
+def _selector_path(worktree: str) -> str:
+    """`path:/abs` and `<repo>::<path>` name a directory: spawn_worker.sh passes selectors verbatim,
+    and `os.path.abspath("path:/abs")` is a directory nobody asked for (#596)."""
+    if worktree.startswith("path:"):
+        return worktree.split(":", 1)[1]
+    if "::" in worktree:
+        return worktree.split("::", 1)[1]
+    return worktree
+
+
+def launch_line(profile: str) -> dict[str, str]:
+    """What spawn_worker.sh prints and checks for an openhands launch (#596).
+
+    The SDK agent runs inside an agent-server conversation, so there is no CLI argv to print: the
+    line names the conversation and its toolset, and `profile_flag` is the token worker_start
+    reports in launch.effective, which the wrapper then requires on the receipt.
+    """
+    if profile not in PROFILE_FLAGS:
+        raise ProviderError("invalid_profile", f"unknown profile {profile!r}")
+    hook = "" if profile == "danger" else " hook=pre_tool_use:deny-hook.sh"
+    return {"shell": f"openhands agent-server conversation {PROFILE_FLAGS[profile]} "
+                     f"confirmation_policy=NeverConfirm{hook}",
+            "profile_flag": PROFILE_FLAGS[profile]}
 
 
 def deny_hook_config(profile: str, hook_path: str | None = None, unit_worktree: str | None = None) -> dict[str, Any]:
@@ -227,11 +259,11 @@ class OpenHandsProvider(RuntimeProvider):
         if profile == "ro":
             tools = list(RO_ALLOWED_TOOLS)
             disabled_tools = list(RO_DISABLED_TOOLS)
-            profile_flag = "tools=glob,grep,planning_file_editor"
+            profile_flag = PROFILE_FLAGS["ro"]
         elif profile == "rw":
             tools = list(RW_TOOLS)
             disabled_tools = []
-            profile_flag = "tools=terminal,file_editor,glob,grep,task_tracker"
+            profile_flag = PROFILE_FLAGS["rw"]
         elif profile == "danger":
             requested = (workspace_type or on_env or self._env(
                 "OPEN_FLEET_OPENHANDS_WORKSPACE_TYPE", "ORCA_OPENHANDS_WORKSPACE_TYPE", "docker"
@@ -256,10 +288,11 @@ class OpenHandsProvider(RuntimeProvider):
                 )
             tools = list(RW_TOOLS)
             disabled_tools = []
-            profile_flag = "conversation_runtime=docker"
+            profile_flag = PROFILE_FLAGS["danger"]
         else:
             raise ProviderError("invalid_profile", f"unknown profile {profile!r}")
 
+        worktree = _selector_path(worktree)
         if _is_placeholder(worktree):
             # Let the server cut a dedicated git worktree from the repo root.
             working_dir = self._env("OPEN_FLEET_REPO_ROOT", "ORCA_REPO_ROOT", os.getcwd())

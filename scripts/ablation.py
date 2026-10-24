@@ -4,7 +4,8 @@
 The 34,000-token activation cap (ARCHITECTURE.md) is a ratchet with no behavioural evidence
 behind it either way. #606 asks whether a smaller activation keeps a mission's task AND safety
 outcomes. Answering that needs live model runs, which need the owner's spend authorisation. This
-script is everything short of that spend, so the live run is one command away:
+script is everything short of that spend; its live tier is disabled until the container-based
+live harness lands (PR #668):
 
   prereg    validate docs/experiments/ablation-prereg.json (the registration) and report
             whether its pinned payloads still match the catalog; --refresh re-pins them
@@ -15,8 +16,9 @@ script is everything short of that spend, so the live run is one command away:
             included): every registered obligation that applies to the mission must still be in
             the variant's activation text, or be deferred-loaded at a phase it allows
   run       drive both arms through the registered tasks (scripts/_ablation_run.py): an INERT
-            stand-in harness by default (`--dry-run`), an operator stub, or — only with a recorded
-            owner authorisation and an explicit cap — a live harness
+            stand-in harness by default (`--dry-run`) or an operator stub. `--tier live` is
+            DISABLED until the container-based live harness lands (PR #668): it is refused
+            before anything is read, whatever the registration authorises
   report    render a results file: per-mission paired effects with uncertainty, and failures
 
 What a variant may and may not do. The reduced arm is "minimal contract plus phase-triggered

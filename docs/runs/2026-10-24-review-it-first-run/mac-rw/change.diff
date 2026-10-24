@@ -1,0 +1,11 @@
+# first-run fr-925ea2: the change under review, `git diff 4d4aa92ce453a15073ce8772cdffb27292a2dd52 070ed9dc4aeadb40924cbd932cbb5ce1a279a96c`.
+# Written before dispatch. Read it to the end: its last line is the read receipt.
+diff --git a/app.py b/app.py
+new file mode 100644
+index 0000000..f630251
+--- /dev/null
++++ b/app.py
+@@ -0,0 +1,2 @@
++def greet(name):
++    return f'hello {name}'
+FIRST-RUN-READ 82f6509c406145dd

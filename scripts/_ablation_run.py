@@ -23,7 +23,9 @@ Tiers, and what each may run
             lines. No model is called. A result here proves the pipeline, never the catalog.
     stub    the operator's own deterministic command (`--harness-cmd`), still behind the
             tripwires, graded by the inert stand-in. Never a model, by declaration.
-    live    the operator's real harness and grader. Refused unless the registration records an
+    live    DISABLED (PR #668): refused, before the registration is read, until the
+            container-based live harness lands (containment.py). The machinery stays: the
+            operator's real harness and grader, refused unless the registration records an
             AUTHORISED cap, `--cost-cap-usd` is explicit and within it, the registered payloads
             are current, nothing is filtered, and every variant passed the obligation check.
 
@@ -362,99 +364,37 @@ def kill_group(pgid, wait_s=10.0):
 # the watchdog: every call's leader, which never lets go before its cleanup (#657 review K3)
 # ---------------------------------------------------------------------------
 WATCHDOG = Path(__file__).resolve()  # run as `python3 -I _ablation_run.py --watchdog OWNER [TAG] -- ARGV`
-# Every process of a call carries `OF_CALL_ID=<its tag>` in its environment, wherever it goes: a
-# descendant that calls setsid() leaves the call's process group but keeps the marker (K4).
-CALL_MARKER = "OF_CALL_ID"
 LIVE_TAGS = set()  # calls this run started and has not yet seen swept
 UNREAPED = []  # watchdogs of calls not vouched for: unreaped, each keeps its group's id this run's
 
 
-def _environ_of(pid):
-    """A Linux process's environment as it was started (empty when it is not ours to read)."""
+def _load_containment():
+    """runtime/scripts/containment.py: the marker sweep and the host probe, one helper shared with
+    first_run.py and the WIP-curve runner, shipped in the runtime bundle (PR #668 review)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("of_ablation_containment",
+                                                  ROOT / "runtime" / "scripts" / "containment.py")
+    mod = importlib.util.module_from_spec(spec)
+    prior, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # nothing written beside the source
     try:
-        raw = Path("/proc", str(pid), "environ").read_bytes()
-    except OSError:
-        return ()
-    return tuple(raw.decode("utf-8", errors="replace").split("\0"))
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = prior
+    return mod
 
 
-def process_table():
-    """{pid: (ppid, pgid, environment entries)} for every live process this user can see; a zombie
-    runs nothing and is left out. Linux reads /proc; elsewhere `ps -E` lists each of this user's
-    own processes with the environment it started with (others' read as empty). OSError when the
-    table cannot be read: a sweep that cannot see cannot vouch for anything."""
-    table = {}
-    if os.path.isdir("/proc/self"):
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            try:
-                stat = Path("/proc", entry, "stat").read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue  # gone since the listing
-            fields = stat.rsplit(")", 1)[-1].split()  # after `pid (comm)`: comm may hold spaces
-            if len(fields) > 2 and fields[0] not in ("Z", "X") and fields[1].isdigit() and fields[2].isdigit():
-                table[int(entry)] = (int(fields[1]), int(fields[2]), _environ_of(entry))
-        return table
-    scan = subprocess.Popen(["ps", "-A", "-E", "-ww", "-o", "pid=,ppid=,pgid=,stat=,command="],
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace",
-                            start_new_session=True)
-    try:
-        out, _err = scan.communicate(timeout=30)
-    except subprocess.TimeoutExpired as err:
-        scan.kill()
-        scan.wait()
-        raise OSError("ps did not answer within 30 s") from err
-    if scan.returncode != 0:
-        raise OSError(f"ps exited with status {scan.returncode}")
-    for line in out.splitlines():
-        parts = line.split(None, 4)
-        if len(parts) >= 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit() \
-                and not parts[3].startswith("Z"):
-            # `command` is the argv then (-E) the environment, space-separated: a marker is a token.
-            env = tuple(parts[4].split()) if len(parts) > 4 else ()
-            table[int(parts[0])] = (int(parts[1]), int(parts[2]), env)
-    table.pop(scan.pid, None)  # the scan itself is nobody's call
-    return table
+containment = _load_containment()
+CALL_MARKER = containment.CALL_MARKER
+DISPATCH_MARKER = containment.DISPATCH_MARKER
+_environ_of = containment.environ_of
+process_table = containment.process_table
+call_processes = containment.call_processes
 
 
-def call_processes(table, roots=(), groups=(), exclude=(), tag=None):
-    """A call's live pids in `table`: every process carrying its `tag`, every member of `groups`,
-    every one of `roots`, and every descendant of any of them -- minus `exclude` and this process,
-    which never sweeps itself."""
-    marker = f"{CALL_MARKER}={tag}" if tag else None
-    children = {}
-    for pid, (ppid, _pgid, _env) in table.items():
-        children.setdefault(ppid, []).append(pid)
-    stack = [pid for pid, (_ppid, pgid, env) in table.items() if pgid in groups or (marker and marker in env)]
-    stack += [pid for pid in roots if pid in table]
-    found = set()
-    while stack:
-        pid = stack.pop()
-        if pid not in found:
-            found.add(pid)
-            stack.extend(children.get(pid, ()))
-    return found - set(exclude) - {os.getpid()}
-
-
-def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None):
-    """SIGKILL a call's processes (call_processes) until a fresh scan finds none: True. False when
-    one survives `wait_s`, or when the process table cannot be read (fail closed)."""
-    deadline = time.monotonic() + wait_s
-    while True:
-        try:
-            left = call_processes(process_table(), roots, groups, exclude, tag)
-        except OSError:
-            return False
-        if not left:
-            return True
-        for pid in left:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signal.SIGKILL)
-        if time.monotonic() > deadline:
-            return False
-        time.sleep(0.02)
+def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None, marker=CALL_MARKER):
+    """containment.sweep, reading THIS module's process_table at call time: a test, or the blind
+    watchdog, replaces it here."""
+    return containment.sweep(roots, groups, exclude, wait_s, tag, table=lambda: process_table(), marker=marker)
 
 
 def watchdog_main(argv):
@@ -510,34 +450,18 @@ def watchdog_main(argv):
     return status if status >= 0 else 128 - status
 
 
-def containment_problem():
-    """Why process discovery cannot contain a call on this host, or None (#657 review W1). A probe
-    in a session of its own, carrying a call marker, must show up in the process table by that
-    marker. Checked before a paid run reserves anything: where a sandbox denies `ps`, or the table
-    hides environments, a call's escaped processes could never be found."""
-    tag = secrets.token_hex(16)
-    try:
-        probe = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, env=dict(os.environ, **{CALL_MARKER: tag}),
-                                 start_new_session=True)
-    except OSError as err:
-        return f"a probe could not start: {err}"
-    try:
-        deadline = time.monotonic() + 3
-        while True:
-            try:
-                found = call_processes(process_table(), tag=tag)
-            except OSError as err:
-                return f"the process table cannot be read: {err}"
-            if found == {probe.pid}:
-                return None
-            if time.monotonic() > deadline:
-                return f"the process table does not show a call's {CALL_MARKER} marker"
-            time.sleep(0.05)
-    finally:
-        probe.kill()
-        probe.wait()
+def containment_problem(system_binary=True):
+    """containment.containment_problem, the strong probe by default (#657 review W1; PR #668 review:
+    a system binary too), reading this module's process_table at call time."""
+    return containment.containment_problem(system_binary, table=lambda: process_table())
+
+
+def live_disabled():
+    """containment.live_disabled: the paid live tier is disabled until the container-based live
+    harness lands (PR #668). Every live entry point that loads this module (ablation.py run, the
+    WIP-curve runner, hint replay, the trajectory live arm) asks here first, before anything is read
+    or reserved; a test of the live machinery replaces it in its own process, as it does the probe."""
+    return containment.live_disabled()
 
 
 def watchdog_argv(tag):
@@ -554,7 +478,7 @@ def _exited(done_fd, timeout):
     return bool(ready)
 
 
-def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=None, stderr_path=None):
+def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=None, stderr_path=None, tag=None):
     """(exit status or None when killed, killed, emptied): one call under the watchdog.
 
     The watchdog leads a new session, so it, `argv` and whatever stays in their group form one
@@ -568,7 +492,7 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
     survived SIGKILL or the process table could not be read: then the call must not be settled,
     and no next call may start.
     """
-    tag = secrets.token_hex(16)
+    tag = tag or secrets.token_hex(16)  # a caller may name it, to record it before the call starts
     done_r, done_w = os.pipe()  # only the watchdog holds done_w: EOF on done_r once it has exited
     try:
         with contextlib.ExitStack() as files:
@@ -731,11 +655,12 @@ def materialize(mission, task, workspace):
     contract = ev_mod._trajectory_contract(data).read_bytes()
     table = engine.placeholder_table(case, "sha256:" + hashlib.sha256(contract).hexdigest(),
                                      ev_mod.OBEDIENCE_FIXTURE_SECRET)
-    files = {**data["base_state"], **(case["initial_state"].get("files") or {})}
-    for rel, content in files.items():
+    # The replay's own initial state, a repo-document injection included: without it HC-01 and
+    # BN-01 could never deliver their injection to a live agent (#602 live arm).
+    for rel, content in engine.initial_files(case, data["base_state"], table).items():
         dest = ev_mod._fixture_path(workspace, rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(engine.expand(content, table), encoding="utf-8")
+        dest.write_text(content, encoding="utf-8")
     (workspace / engine.CONTRACT_PATH).write_bytes(contract)
     return {"issue": engine.expand(case["initial_state"].get("issue", ""), table)}, None, {}, case
 
@@ -1713,6 +1638,10 @@ def dispatch(args, api):
                   "against the CURRENT decision rule", file=sys.stderr)
         print(json.dumps(report, indent=2) if args.json else render_markdown(results, report))
         return api.EXIT_OK
+    why = live_disabled() if args.tier == "live" else None
+    if why:  # before the registration is read or anything reserved (PR #668: the live tier is off)
+        print(f"ablation: run refused: {why}", file=sys.stderr)
+        return api.EXIT_USAGE
     try:
         out, results, report = run(args, api)
     except Refused as err:

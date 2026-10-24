@@ -23,15 +23,19 @@ ONE code path, two kinds of worker:
       spec and the change file it names, and answers in the harness's own result shape. No model
       is called and nothing is spent. A GO here is a FIXTURE result: it proves the fleet's
       route, never the harness.
-  --worker live             the operator's real harness on PATH does the review. The receipt
-      is labelled `live-unreviewed`: it becomes certification evidence only once a maintainer
-      binds it into docs/runs/ (runtime/providers/certification.json says which cells hold).
+  --worker live             DISABLED (PR #668): refused, before anything is read or created,
+      until the container-based live harness lands (containment.py). The machinery stays: the
+      operator's real harness on PATH does the review, and the receipt is labelled
+      `live-unreviewed`: it becomes certification evidence only once a maintainer binds it into
+      docs/runs/ (runtime/providers/certification.json says which cells hold).
 
 Profiles: `ro` (default; the review-it shape — the worker prints its report and has no tool to
 send mail. posix relays the completion line its assignment names as its `worker_done` and records a
 clean exit without that line as `worker_died (exit=0)`; either settles the unit, and the
 coordinator commits the report it read from the transcript, #596) and `rw` (the worker commits the
-report itself and sends `worker_done`; its HEAD is re-read from git, never taken from the claim).
+report itself, sends `worker_done`, then prints the same report as its final answer; both copies must
+meet the contract, and its HEAD is re-read from git, never taken from the claim). The inert stand-in
+is LITERAL: it prints its report only when the assignment asks, as a live worker does (#596).
 
 The reviewed target is a two-commit repository the run synthesizes, or `--target <repo>`
 (cloned into the sandbox, never modified) with `--base/--head`. Every artifact lives in one
@@ -54,6 +58,7 @@ Exit: 0 GO · 1 NO-GO (receipt names the step) · 2 usage · 143/129 SIGTERM/SIG
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import importlib.util
 import json
@@ -64,6 +69,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -81,15 +87,28 @@ HARNESS_BINARIES = {"antigravity": "agy"}
 LIVE_STATES = ("ready", "running", "retained")
 REPORT_HEAD = "FIRST-RUN-REPORT "
 READ_HEAD = "FIRST-RUN-READ "
+def load_module(name: str, path: Path):
+    """A sibling runtime module, loaded by path, never writing bytecode beside it (PR #668 CI: a load wrote into the source tree)."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    prior, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = prior
+    return mod
+
+
 # The per-harness final-answer reader is shared with the posix monitor's ro completion line, so the
 # two never disagree about what a worker answered (runtime/providers/transcript.py, #596 review).
-_spec = importlib.util.spec_from_file_location("of_first_run_transcript", ROOT / "runtime" / "providers" / "transcript.py")
-TRANSCRIPT = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(TRANSCRIPT)
+TRANSCRIPT = load_module("of_first_run_transcript", ROOT / "runtime" / "providers" / "transcript.py")
 REPORT_FORMATS = TRANSCRIPT.FINAL_ANSWER_FORMATS
 # These carry every turn's text, not only the last answer: the report starts at its own header.
 ANCHORED_FORMATS = TRANSCRIPT.ALL_TURN_FORMATS
 MONITOR_EVENTS = TRANSCRIPT.MONITOR_EVENTS
+# Process containment (runtime/scripts/containment.py, one helper shared with #606's runner and the
+# WIP-curve runner): the marker every process of a run carries, its sweep, and the host probe.
+containment = load_module("of_first_run_containment", SCRIPTS / "containment.py")
 
 
 class StepFailed(Exception):
@@ -132,11 +151,62 @@ def harness_report(agent: str, lines: list[str]) -> str:
     return answer
 
 
+def harness_usage(lines: list[str]) -> dict:
+    """What the harness itself reported about its run, where its output carries it (#596): Claude
+    Code's stream-json `init` event names the model, its `result` event the turns, duration and
+    cost. Other output formats report nothing here; nothing is estimated."""
+    usage: dict = {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "system" and event.get("subtype") == "init" and isinstance(event.get("model"), str):
+            usage["model"] = event["model"]
+        if event.get("type") == "result":
+            for key in ("num_turns", "total_cost_usd", "duration_ms"):
+                value = event.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    usage[key] = value
+    return usage
+
+
+def harness_shadow(binary: str, run_path: str, own_path: str) -> str:
+    """'' when the run's PATH resolves `binary` to the file the operator's own PATH names (#596).
+
+    The sandbox puts the interpreter's directory first on PATH, so every wrapper runs this Python.
+    A harness that directory also holds would then run in place of the operator's (an isolation
+    wrapper, a pinned build): a live run refuses that rather than spend on the wrong binary.
+    """
+    run, own = shutil.which(binary, path=run_path), shutil.which(binary, path=own_path)
+    if not own:
+        return f"`{binary}` is not on your PATH; the run would launch {run}"
+    if not run or os.path.realpath(run) != os.path.realpath(own):
+        return f"the run's PATH resolves `{binary}` to {run}, but your PATH resolves it to {own}"
+    return ""
+
+
+def witness_line(receipt: dict) -> str:
+    """The run's route, harness version, catalog commit and verdict on ONE line (#596).
+
+    certification.json certifies a live cell by quoting whole lines of a bound run's artifacts,
+    which together must name the provider, `PROFILE=<p>` beside the harness, the harness version
+    and the upstream version: this line carries all of them, so the receipt itself is quotable.
+    It also says `worker=` and `tier=`, and certification.py refuses a quote of an inert run.
+    """
+    route, host = receipt.get("route") or {}, receipt.get("host") or {}
+    harness = (receipt.get("facts") or {}).get("harness") or {}
+    return (f"{route.get('provider')}/{route.get('backend')} PROFILE={route.get('profile')} "
+            f"harness={route.get('harness')} version={harness.get('version') or 'unknown'} "
+            f"worker={route.get('worker')} tier={receipt.get('tier')} catalog={host.get('catalog_commit')} "
+            f"dirty={host.get('catalog_dirty')} verdict={receipt.get('verdict')}")
+
+
 def all_harness_binaries() -> list[str]:
     """Every harness name and binary base.py knows: each gets a tripwire in inert mode."""
-    spec = importlib.util.spec_from_file_location("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_module("of_first_run_base", ROOT / "runtime" / "providers" / "base.py")
     names = {HARNESS_BINARIES.get(h, h) for h in mod.SUPPORTED_HARNESSES}
     return sorted(names | set(mod.SUPPORTED_HARNESSES))
 
@@ -217,9 +287,24 @@ if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
 done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
 if done:
     report += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
+# Literal mode (#596 live rw run): a real worker does what its assignment says and no more. Its
+# final answer is the report only when the spec asks for exactly that; otherwise it is a one-line
+# summary, as Claude Code's was when the rw assignment never asked. first_run installs the stand-in
+# in this mode (literal_stand_in); a bare stand-in run outside any assignment keeps printing.
+LITERAL = False
+if LITERAL and not re.search(r"(?i)\bprint\b[^\n]*\breport\b[^\n]*\bas your final answer\b", spec):
+    if os.environ.get("OPEN_FLEET_SANDBOX_PROFILE") == "rw":
+        report = "I reviewed the change, committed the report, and sent the completion message.\n"
+    else:
+        report = "I reviewed the change.\n"
 answer(report)
 sys.exit(rc)
 '''
+
+
+def literal_stand_in(source: str) -> str:
+    """The stand-in in literal mode: it prints its report only when its assignment asks (#596)."""
+    return source.replace("\nLITERAL = False\n", "\nLITERAL = True\n")
 
 
 class Sandbox:
@@ -263,11 +348,21 @@ class Sandbox:
         if worker == "inert":
             # The stand-in needs no credentials; a private HOME keeps every user config out.
             self.env["HOME"] = str(self.home)
+        # Every process of the run carries the run's own OF_CALL_ID, wherever it goes: the provider
+        # passes this environment to each monitor and worker, and a descendant that leaves its
+        # group for a session of its own keeps it, so teardown finds it (PR #668 review). A
+        # dedicated marker, not OPEN_FLEET_DISPATCH_ID: nothing in the fleet rewrites it (a nested
+        # dispatch rewrites the dispatch id), it exists before any launch is registered, and the
+        # containment helper's probe and sweep speak it.
+        self.call_tag = secrets.token_hex(16)
+        self.env[containment.CALL_MARKER] = self.call_tag
 
     def _install_inert(self) -> None:
         self.inert.mkdir(parents=True, exist_ok=True)
         self.tripwire.mkdir(parents=True, exist_ok=True)
-        (self.inert / "worker.py").write_text(INERT_WORKER, encoding="utf-8")
+        # Literal: an assignment that never asks for the report as the final answer must fail
+        # here as it failed live, not pass because the stand-in printed it anyway (#596).
+        (self.inert / "worker.py").write_text(literal_stand_in(INERT_WORKER), encoding="utf-8")
         for name in all_harness_binaries():
             trip = self.tripwire / name
             trip.write_text(f'#!/bin/sh\necho "{name} $*" >> {shlex.quote(str(self.tripwire / "hits.log"))}\nexit 97\n',
@@ -371,8 +466,8 @@ def host_facts() -> dict:
         except (OSError, subprocess.SubprocessError, IndexError):
             return None
 
-    catalog = run_text(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
-    dirty = run_text(["git", "-C", str(ROOT), "status", "--porcelain"])
+    catalog = run_text(["git", "-C", str(ROOT), "rev-parse", "HEAD"], timeout=60)
+    dirty = run_text(["git", "-C", str(ROOT), "status", "--porcelain"], timeout=60)
     return {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -397,6 +492,7 @@ class FirstRun:
         # Only the change file carries this: quoting it shows the worker read that file (FR-4).
         self.read_receipt = f"{READ_HEAD}{secrets.token_hex(8)}"
         self.facts: dict = {"run_id": self.run_id, "nonce": self.nonce}
+        self.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     # Each method is one step; it returns its detail string or raises StepFailed.
     def prereqs(self) -> str:
@@ -411,6 +507,11 @@ class FirstRun:
             raise StepFailed(f"`{binary}` is not on PATH", f"install {self.args.agent} and sign it in, or use --worker inert")
         if self.args.worker == "live" and Path(found).resolve().is_relative_to(self.sb.dir.resolve()):
             raise StepFailed("live mode resolved the harness inside the sandbox", "remove the stand-in from PATH")
+        shadow = "" if self.args.worker == "inert" else harness_shadow(binary, self.sb.env["PATH"],
+                                                                         os.environ.get("PATH", os.defpath))
+        if shadow:
+            raise StepFailed(shadow, "run first_run.py with an interpreter whose directory holds no harness, "
+                                     "or put the harness you mean first on your own PATH")
         self.facts["harness"] = {
             "name": self.args.agent,
             "path": found,
@@ -509,6 +610,9 @@ class FirstRun:
                 "Then report completion with:",
                 '  python3 "$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py" --type worker_done --outcome succeeded'
                 ' --subject "worker_done:$OPEN_FLEET_DISPATCH_ID" --payload \'{"head": "<the report commit sha>"}\'',
+                # The run reads the report from the final answer AND from the commit, and both must
+                # meet the contract; without this line a live worker answered with a summary (#596).
+                "Last, print the same report you committed, exactly as committed, as your final answer.",
             ]
         else:
             lines.append("Modify nothing. Print the report as your final answer.")
@@ -657,6 +761,9 @@ class FirstRun:
         except (ValueError, KeyError, TypeError):
             raise StepFailed(f"worker-read unreadable: {proc.stdout[:200]!r}") from None
         lines = [str(block.get("text") or "") for msg in messages for block in (msg.get("blocks") or [])]
+        usage = harness_usage(lines)
+        if usage:  # the spend and the model a live run's record names (#596)
+            self.facts["harness_usage"] = usage
         return harness_report(self.args.agent, lines)
 
     def evidence(self) -> str:
@@ -758,10 +865,12 @@ class FirstRun:
         facts = {k: v for k, v in self.facts.items() if k not in ("report", "contract")}
         if "contract" in self.facts:
             facts["contract"] = {k: self.facts["contract"][k] for k in ("source", "digest", "criterion_ids")}
-        return {
+        out = {
             "schema": SCHEMA,
+            "started_at": self.started_at,
             "verdict": "NO-GO" if failed else "GO",
             "tier": "fixture-tested" if self.sb.worker == "inert" else "live-unreviewed",
+            "witness": "",
             "route": {"provider": "posix", "backend": "setsid", "profile": self.args.profile,
                       "harness": self.args.agent, "worker": self.sb.worker},
             "host": host_facts(),
@@ -772,6 +881,8 @@ class FirstRun:
             "elapsed_s": elapsed,
             "sandbox": str(self.sb.dir),
         }
+        out["witness"] = witness_line(out)
+        return out
 
 
 def write_manifest(path: Path, manifest: dict) -> None:
@@ -837,7 +948,7 @@ def probes(sb: Sandbox) -> dict:
     git(rec, "commit", "-q", "--allow-empty", "-m", "seed", cwd=sb.target)
 
     unarmed = sb.dir / "unarmed-settings.json"
-    block = run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)], check=True).stdout
+    block = run_text(["sh", str(SCRIPTS / "deny-hook.sh"), "--settings", str(sb.target)], check=True, timeout=60).stdout
     doc = json.loads(block)
     for entry in doc["hooks"]["PreToolUse"]:
         for hook in entry["hooks"]:
@@ -890,7 +1001,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("mode", nargs="?", default="run", choices=("run", "probes"))
     ap.add_argument("--profile", default="ro", choices=("ro", "rw"))
     ap.add_argument("--agent", default="claude")
-    ap.add_argument("--worker", default="inert", choices=("inert", "live"))
+    ap.add_argument("--worker", default="inert", choices=("inert", "live"),
+                    help="live is disabled until the container-based live harness lands (PR #668)")
     ap.add_argument("--target", default=None, help="git repository to review (cloned; never modified)")
     ap.add_argument("--base", default="HEAD~1")
     ap.add_argument("--head", default="HEAD")
@@ -952,6 +1064,19 @@ def emit(receipt: dict, path: Path, as_json: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    why = containment.live_disabled() if args.worker == "live" else None
+    if why:  # first, before anything is read, created or launched (PR #668: the live tier is off)
+        print(f"first_run.py: refused: {why}", file=sys.stderr)
+        return 2
+    if args.worker == "live" and args.mode != "probes":
+        # A live worker spends: it starts only where containment is proven, a detached system
+        # binary included, before anything is created (PR #668 review: the strong probe).
+        why = containment.containment_problem()
+        if why:
+            print(f"first_run.py: refused: process discovery cannot contain a call on this host ({why}): a "
+                  "live worker's escaped processes could never be found or stopped, so a live run does not "
+                  "start (run it in a disposable Linux container)", file=sys.stderr)
+            return 2
     workdir = make_workdir(args.workdir)
     agent = "claude" if args.mode == "probes" else args.agent
     sb = Sandbox(workdir, "inert" if args.mode == "probes" else args.worker, agent)
@@ -966,9 +1091,24 @@ def main(argv: list[str] | None = None) -> int:
         for sig in previous:
             signal.signal(sig, signal.SIG_IGN)
         try:
-            stop_workers(sb)
+            teardown = stop_workers(sb, sweep=functools.partial(containment.sweep, tag=sb.call_tag))
         finally:
             restore_signals(previous)
+    receipt["teardown"] = teardown
+    if not teardown_verified(teardown) and receipt["verdict"] == "GO":
+        # GO stands only on a verified teardown (PR #668 review): a process of the run may still be
+        # running and spending, so this run is NO-GO and its sandbox is kept for inspection. The
+        # failure is a step record like any other, and the witness is rebuilt from the final verdict.
+        receipt["verdict"] = "NO-GO"
+        receipt["failure"] = {"step": "teardown", "ok": False, "elapsed_s": 0.0,
+                              "detail": f"teardown not verified: {teardown}"[:2000],
+                              "recovery": f"a process of this run may still be running: the sandbox {sb.dir} is "
+                                          f"kept; find what carries {containment.CALL_MARKER}={sb.call_tag} and "
+                                          "end it before another run"}
+        if isinstance(receipt.get("steps"), list):
+            receipt["steps"].append(receipt["failure"])
+        if "witness" in receipt:
+            receipt["witness"] = witness_line(receipt)
     if receipt["verdict"] == "GO" and not args.keep:
         # Everything but the receipt goes: state store, clone, worktrees, verifier checkout.
         for child in workdir.iterdir():
@@ -1001,17 +1141,120 @@ def restore_signals(previous: dict) -> None:
         signal.signal(sig, signal.SIG_DFL if handler is None else handler)
 
 
-def stop_workers(sb: Sandbox) -> None:
-    """Fence anything still live in this sandbox's store before its directory goes away."""
-    proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
-                    cwd=str(sb.target) if sb.target.is_dir() else str(sb.dir), env=sb.env)
+STOP_TIMEOUT_S = 120  # one worker listing or stop, at most: teardown never waits on a hung call
+
+
+def stop_workers(sb: Sandbox, sweep=None) -> dict:
+    """Fence anything still live in this sandbox's store before its directory goes away, then end
+    whatever any of its workers left behind (reap_groups); the teardown it verified. Every call is
+    bounded (Codex review of PR #668): one that times out is a teardown error, never a hang.
+
+    A process group is only what stayed in it: a descendant that called setsid() leaves its worker's
+    group, and only a marker it carries can find it. `sweep`, when given, is the caller's marker
+    sweep (scripts/_ablation_run.py's, bound to the run's OF_CALL_ID): True once nothing carrying the
+    marker is left, False when one survives or the process table cannot be read. Its answer is
+    `contained`; without one, `contained` is None: the groups were reaped, nothing more is vouched."""
+    errors = []
     try:
+        proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
+                        cwd=str(sb.target) if sb.target.is_dir() else str(sb.dir), env=sb.env, timeout=STOP_TIMEOUT_S)
         workers = json.loads(proc.stdout)["result"]["workers"]
+    except subprocess.TimeoutExpired:
+        workers, errors = [], errors + [f"worker-list timed out after {STOP_TIMEOUT_S}s"]
     except (ValueError, KeyError, TypeError):
-        return
+        workers = []
     for w in workers:
         if w.get("state") in LIVE_STATES:
-            run_text(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env, cwd=str(sb.dir))
+            try:
+                run_text(py("worker_ops.py", "stop", "--dispatch", w["dispatchId"]), env=sb.env, cwd=str(sb.dir),
+                         timeout=STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                errors.append(f"worker_ops.py stop {w['dispatchId']} timed out after {STOP_TIMEOUT_S}s")
+    reaped = reap_groups(sb)
+    contained = None
+    if sweep is not None:
+        try:
+            contained = bool(sweep())
+        except Exception as err:  # a sweep that breaks vouches for nothing
+            contained, errors = False, errors + [f"the marker sweep failed: {err}"]
+    return {**reaped, "errors": reaped.get("errors", []) + errors, "contained": contained}
+
+
+def teardown_verified(teardown: dict) -> bool:
+    """Nothing of the run is left: the marker sweep vouched, no group member survived SIGKILL, and
+    every teardown call answered."""
+    return teardown.get("contained") is True and not teardown.get("survivors") and not teardown.get("errors")
+
+
+def process_groups() -> dict[int, set[int]]:
+    """{process group id: its living members}, from the shared process table (containment.py:
+    /proc on Linux, `ps` elsewhere; a zombie is already dead and is not a member). OSError when the
+    table cannot be read: a reap that cannot see vouches for nothing (PR #668 CI: reading `ps`
+    alone, a Linux host without procps saw no groups and reported nothing)."""
+    groups: dict[int, set[int]] = {}
+    for pid, (_ppid, pgid, _env) in containment.process_table().items():
+        groups.setdefault(pgid, set()).add(pid)
+    return groups
+
+
+def reap_groups(sb: Sandbox, wait_s: float = 5.0, grace_s: float = 3.0) -> dict:
+    """End every process group a worker of this sandbox's store leaves behind, finished dispatches
+    included (Codex review of PR #653: a dispatch is `completed` once its foreground process
+    exits, and the provider never kills a finished dispatch's group because its pid may be reused,
+    so a background child the worker started outlived every cleanup). A group whose leader is gone
+    but whose members remain is a worker's leftover; a reused number always has its own living
+    leader, so a group with a living leader is never touched (it is waited for, then reported).
+    Returns {"ended", "survivors", "leaders_alive"}: survivors are members still alive after
+    SIGKILL, which the caller must not settle as torn down."""
+    try:
+        conn = sqlite3.connect(f"file:{sb.state_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT * FROM dispatches").fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.Error, AttributeError):
+        rows = []
+    pending: dict[int, str] = {}
+    for row in rows:
+        for col in ("pid", "monitor_pid"):
+            if col in row.keys() and row[col] and int(row[col]) > 1:
+                pending[int(row[col])] = row["dispatch_id"]
+    ended: list[dict] = []
+    try:
+        return _reap(pending, ended, wait_s, grace_s)
+    except OSError as err:  # the table could not be read: nothing it has not ended is vouched for
+        return {"ended": ended, "survivors": [], "leaders_alive": [{"dispatch": d, "pgid": g} for g, d in sorted(pending.items())],
+                "errors": [f"the process table cannot be read: {err}"]}
+
+
+def _reap(pending: dict, ended: list, wait_s: float, grace_s: float) -> dict:
+    end = time.monotonic() + wait_s
+    while pending:
+        groups = process_groups()
+        for pgid in sorted(pending):
+            members = groups.get(pgid, set())
+            if not members:
+                pending.pop(pgid)  # nothing of it is left
+            elif pgid not in members:  # leader gone, members left: the worker's leftovers
+                ended.append({"dispatch": pending.pop(pgid), "pgid": pgid, "members": sorted(members)})
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(pgid, sig)
+                    except OSError:
+                        break
+                    stop_by = time.monotonic() + grace_s
+                    while time.monotonic() < stop_by and process_groups().get(pgid):
+                        time.sleep(0.05)
+                    if not process_groups().get(pgid):
+                        break
+        if not pending or time.monotonic() >= end:
+            break
+        time.sleep(0.2)
+    groups = process_groups()
+    return {"ended": ended,
+            "survivors": [{"pgid": e["pgid"], "members": sorted(groups[e["pgid"]])} for e in ended if groups.get(e["pgid"])],
+            "leaders_alive": [{"dispatch": d, "pgid": g} for g, d in sorted(pending.items())]}
 
 
 if __name__ == "__main__":

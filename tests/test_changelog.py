@@ -471,6 +471,9 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change**\n  > <div>\n  > <a\n  > href="../docs/ops.md"\n  > >ops\n',
         # every depth is read, however deep (Codex at b0a54260f9)
         '- **Change**\n  ' + '> ' * 33 + '<a\n  ' + '> ' * 33 + 'href="../docs/ops.md">ops</a>\n',
+        # in raw HTML a tag left open is closed by what the renderer writes next (Codex at 075baf07c5)
+        '- **Change**\n  <div>\n  <a href="../docs/ops.md"\n- **Next** entry\n',
+        '- **Change**\n  <div>\n  <img src="../x.png"\n',
     )
 
     def errors(self, text):

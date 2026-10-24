@@ -129,7 +129,7 @@ def _quote_views(text):
 
 def _loose_link(text, i):
     """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
-    with a value in it, else None. Past a point where renderers may disagree, text may reach the
+    with a value in it, closed or not, else None. Past a point where renderers may disagree, text may reach the
     page as raw HTML, so link tags there are read this loosely."""
     if not (name := _LOOSE_NAME_RE.match(text, i)):
         return None
@@ -138,7 +138,9 @@ def _loose_link(text, i):
         link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
         pos = attr.end()
     end = re.compile(r"[ \t\n\f\r/]*>").match(text, pos)
-    return text[i:end.end()] if end and link else None
+    # An unterminated tag counts too: whatever the renderer writes next (a </li>) can close it
+    # (Codex at 075baf07c5).
+    return text[i:end.end() if end else pos] if link else None
 
 
 def _tag(text, i):

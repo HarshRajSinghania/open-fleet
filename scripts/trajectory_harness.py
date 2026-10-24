@@ -13,9 +13,9 @@
    a cell's whole group on a timeout or an interrupt, and an agent that left it would outlive its
    call. stdin is inherited; stdout is passed through byte for byte (the runners read usage from
    it) and kept; stderr is inherited;
-3. as each tool-result line streams past, snapshots the workspace's commits (`git rev-list`
-   from the base, every ref and reflog), so a quiet or wrapped commit is attributed to the call
-   whose result first showed it;
+3. as tool results stream past, snapshots the workspace's commits (`git rev-list` from the
+   base, every ref and reflog) with every call started by then, so a quiet or wrapped commit is
+   attributed to the one shell call that can have made it, and refused when two could;
 4. once the agent exits, turns the kept Claude stream-json into #602 events
    (scripts/_trajectories.py, record_stream) and writes them to $ABLATION_OUT/trajectory.jsonl,
    or to --trajectory-out when ABLATION_OUT is unset. A destination is required before the agent
@@ -36,6 +36,7 @@ Stdlib only. Writes nothing outside the workspace, its private GNUPGHOME and the
 import importlib.util
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -146,17 +147,67 @@ def commits_after(workspace, env, base):
         return None
 
 
-def result_ids(line):
-    """The tool_use ids a stream line carries results for: a `user` message's tool_results."""
+def _block_ids(line, kind, block_type, key):
+    if f'"{block_type}"'.encode() not in line:
+        return []
     try:
         obj = json.loads(line)
     except ValueError:
         return []
-    message = obj.get("message") if isinstance(obj, dict) and obj.get("type") == "user" else None
+    message = obj.get("message") if isinstance(obj, dict) and obj.get("type") == kind else None
     content = message.get("content") if isinstance(message, dict) else None
-    return [b["tool_use_id"] for b in content if isinstance(b, dict)
-            and b.get("type") == "tool_result" and isinstance(b.get("tool_use_id"), str)] \
-        if isinstance(content, list) else []
+    return [b[key] for b in content if isinstance(b, dict) and b.get("type") == block_type
+            and isinstance(b.get(key), str)] if isinstance(content, list) else []
+
+
+def result_ids(line):
+    """The tool_use ids a stream line carries results for: a `user` message's tool_results."""
+    return _block_ids(line, "user", "tool_result", "tool_use_id")
+
+
+def use_ids(line):
+    """The tool_use ids a stream line starts: an `assistant` message's tool_uses."""
+    return _block_ids(line, "assistant", "tool_use", "id")
+
+
+class Stream:
+    """The agent's stdout as it passes through: forwarded byte for byte, kept, and read line by
+    line for the calls it starts and the results it reads back."""
+
+    def __init__(self, fd):
+        self.fd, self.kept, self.partial, self.open, self.eof = fd, bytearray(), b"", True, False
+        self.started = []
+
+    def take(self, chunk):
+        """Forward and keep `chunk`; the tool_use ids whose results its complete lines carry."""
+        self.kept += chunk
+        self.open = _forward(sys.stdout.fileno(), chunk, self.open)
+        *lines, self.partial = (self.partial + chunk).split(b"\n")
+        return self.lines(lines)
+
+    def lines(self, lines):
+        results = []
+        for line in lines:
+            self.started += [u for u in use_ids(line) if u not in self.started]
+            results += result_ids(line)
+        return results
+
+    def read(self):
+        chunk = os.read(self.fd, 65536)
+        self.eof = not chunk
+        return self.take(chunk) if chunk else []
+
+    def drain(self):
+        """Everything already in the pipe, without waiting: a call whose tool_use was printed
+        before a snapshot finished may have run before it."""
+        results = []
+        while not self.eof and select.select([self.fd], [], [], 0)[0]:
+            results += self.read()
+        return results
+
+    def finish(self):
+        results, self.partial = self.lines([self.partial]), b""
+        return results
 
 
 def write_recording(dest, events):
@@ -199,25 +250,22 @@ def main(argv=None):
             return 127
         previous = {sig: signal.signal(sig, lambda signum, _frame: proc.send_signal(signum))
                     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
-        kept, open_, partial, history = bytearray(), True, b"", []
+        out, history = Stream(proc.stdout.fileno()), []
 
-        def snapshot(lines):
-            # After a tool's result streams past and before the model can answer it, the
-            # workspace's history shows what that call committed.
-            for line in lines:
-                ids = result_ids(line) if b'"tool_result"' in line else []
-                if ids and history is not None:
-                    history.append({"results": ids, "commits": commits_after(workspace, env, base)})
+        def snapshot(results):
+            # Once results stream past, the workspace's history shows what those calls (or any
+            # call already started) committed. What the pipe already holds is read first, so a
+            # call that started before the snapshot finished is counted as started.
+            while results:
+                commits = commits_after(workspace, env, base)
+                later = out.drain()
+                history.append({"results": results, "started": list(out.started),
+                                "commits": commits})
+                results = later
         try:
-            while True:
-                chunk = os.read(proc.stdout.fileno(), 65536)
-                if not chunk:
-                    break
-                kept += chunk
-                open_ = _forward(sys.stdout.fileno(), chunk, open_)
-                *lines, partial = (partial + chunk).split(b"\n")
-                snapshot(lines)
-            snapshot([partial])
+            while not out.eof:
+                snapshot(out.read())
+            snapshot(out.finish())
             code = proc.wait()
         finally:
             for sig, handler in previous.items():
@@ -226,8 +274,8 @@ def main(argv=None):
             history = None  # a snapshot git could not take: attribute named commits only
         engine = _engine()
         try:
-            events = engine.record_stream(bytes(kept).decode("utf-8", "replace"), workspace, base,
-                                          history=history)
+            events = engine.record_stream(bytes(out.kept).decode("utf-8", "replace"), workspace,
+                                          base, history=history)
             write_recording(dest, events)
         except engine.RecordingRefused as err:
             refused.write_text(f"{err}\n", encoding="utf-8")

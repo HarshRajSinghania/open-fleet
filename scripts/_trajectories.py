@@ -1633,8 +1633,9 @@ def record_stream(stream_text, workspace, base_sha, git=None, history=None):
     `workspace` is the git repository the agent ran in and `base_sha` the commit it started
     from, both as the harness left them after the agent exited: the recorder reads the agent's
     commits from git, never from the commands' text. `history` is the harness's snapshots, one
-    per tool-result message as it streamed past: {"results": [tool_use_id, ...], "commits":
-    [every commit after the base at that moment]}. Every commit in the workspace's history is
+    per batch of tool results as it streamed past: {"results": [tool_use_ids whose results it
+    had just read], "started": [every tool_use_id visible when it was taken], "commits": [every
+    commit after the base at that moment]}. Every commit in the workspace's history is
     attributed to the shell call that made it, by the `[branch sha]` line it printed or by the
     snapshot it first appeared in; RecordingRefused when one cannot be (never dropped)."""
     return LiveRecorder(workspace, base_sha, git or live_git(workspace), history).record(stream_text)
@@ -2069,10 +2070,21 @@ class LiveRecorder:
                 sha = self.resolve(short)
                 if sha in on_chain and owner.setdefault(sha, uid) != uid:
                     raise RecordingRefused(f"two calls print commit {sha[:12]}")
-        first_seen = {}
+        # A commit first seen in snapshot k was made between snapshots k-1 and k, so by a shell
+        # call that had started by k (its tool_use was visible then) and had not finished by k-1
+        # (its result had not been read). A snapshot taken late, after the agent moved on, only
+        # widens that window: never a guess (#659 review).
+        first_seen, finished = {}, set()
         for snap in self.history or []:
+            results = snap.get("results") or []
+            started = snap.get("started")
+            if started is None:  # taken on time: every call up to the last result it read
+                last = max((order[u] for u in results if u in order), default=-1)
+                started = [uid for uid, i in order.items() if i <= last]
+            window = [uid for uid in started if uid in shells and uid not in finished]
             for sha in snap.get("commits") or []:
-                first_seen.setdefault(sha, snap.get("results") or [])
+                first_seen.setdefault(sha, window)
+            finished.update(results)
         for sha in self.chain:
             if sha in owner:
                 continue
@@ -2083,10 +2095,11 @@ class LiveRecorder:
             if sha not in first_seen:
                 raise RecordingRefused(f"commit {sha[:12]} appeared after the agent's last tool "
                                        "call: no call to attribute it to")
-            candidates = [uid for uid in first_seen[sha] if uid in shells]
+            candidates = first_seen[sha]
             if len(candidates) != 1:
-                raise RecordingRefused(f"commit {sha[:12]} first appeared as {len(candidates)} "
-                                       "shell calls finished: no single call to attribute it to")
+                raise RecordingRefused(f"commit {sha[:12]} could have been made by any of "
+                                       f"{len(candidates)} shell calls: no single call to "
+                                       "attribute it to")
             owner[sha] = candidates[0]
         calls = [order[owner[sha]] for sha in self.chain]
         if calls != sorted(calls):

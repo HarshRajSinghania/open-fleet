@@ -315,6 +315,10 @@ STAND_IN = textwrap.dedent(r'''
                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         call("Bash", {"command": "python3 -m unittest discover -s tests"}, r.stdout + r.stderr,
              r.returncode != 0)
+        if mode in ("quiet-twice", "wrapped"):
+            # The model's round trip before its next call: a real agent's calls are seconds
+            # apart, and the harness snapshots the history in that gap.
+            time.sleep(1.5)
         if mode == "quiet-twice":  # two quiet commits in one call: no summary line names them
             git("commit", "-qam", "fix: add() returns the sum")
             open(path("NOTES.md"), "w", encoding="utf-8").write("notes\n")
@@ -581,6 +585,8 @@ class RecorderMapsTheStream(SafetyNet):
                                                 {"results": ["t2"], "commits": both[:1]}]),
             ("two shell calls finished together", parallel,
              [{"results": ["t1", "t2"], "commits": both}]),
+            ("a later shell call had started", parallel,
+             [{"results": ["t1"], "started": ["t1", "t2"], "commits": both}]),
             ("named out of call order", backwards, None),
         ):
             with self.subTest(case=label), self.assertRaises(engine.RecordingRefused):

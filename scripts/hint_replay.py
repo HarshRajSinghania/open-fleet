@@ -529,6 +529,10 @@ def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, b
     if why or (live and limit is None):  # a live call never starts without a positive limit (K1)
         raise CorpusError(why or "a live run hands every call its own per-call limit: it needs "
                           "--per-call-usd and --agent-limit-flag")
+    unseen = spend.containment_problem() if live else None
+    if unseen:  # a paid call is never started where its escaped processes could not be found (W1)
+        raise CorpusError(f"process discovery cannot contain a call on this host ({unseen}): a live "
+                          "run does not start")
     # Nothing is written before this line; everything below is recorded.
     out = Path(out).resolve() if out else Path(tempfile.mkdtemp(prefix="hint-replay-live-")) / "results.json"
     # Unique per invocation (two runs in one second and one process stay apart in the ledger).

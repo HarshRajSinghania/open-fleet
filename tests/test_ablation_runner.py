@@ -1309,7 +1309,8 @@ class ACallIsContainedAcrossSessions(SafetyNet):
 
     def test_a_process_table_it_cannot_read_is_a_survivor(self):
         out = self.out_dir()
-        with mock.patch.object(runner, "process_table", side_effect=OSError("no ps"), create=True):
+        with mock.patch.object(runner, "containment_problem", return_value=None, create=True), \
+                mock.patch.object(runner, "process_table", side_effect=OSError("no ps"), create=True):
             code, _stdout, err = run_main(self.live(out))
         self.assertKeptOpen(out, code, err)
 
@@ -1378,6 +1379,188 @@ class TheCallLifecycleIsPortable(SafetyNet):
                                            "behavioral-4", "--repeats", "1", "--out", str(out)])
         self.assertEqual(code, 0, err)
         self.assertEqual(len(json.loads((out / "results.json").read_text())["cells"]), 2)
+
+
+# A watchdog whose process discovery fails, as in a sandbox that denies `ps`: the real watchdog
+# (loaded from _ablation_run.py) with its process_table replaced. Tests put it in place of
+# watchdog_argv() so discovery fails in the watchdog as well as in the runner (#657 review W1).
+BLIND_WATCHDOG = textwrap.dedent("""
+    import importlib.util, sys
+    spec = importlib.util.spec_from_file_location("blind_watchdog", sys.argv[1])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    def unavailable():
+        raise OSError("process discovery denied (test)")
+    mod.process_table = unavailable
+    sys.exit(mod.watchdog_main(sys.argv[3:]))
+""")
+
+
+# The same watchdog with a process table that BREAKS (not merely unavailable): its sweep raises.
+BROKEN_WATCHDOG = BLIND_WATCHDOG.replace('raise OSError("process discovery denied (test)")',
+                                         'raise ValueError("an unparseable process table (test)")')
+
+
+def broken_watchdog_argv(tag):
+    return [sys.executable, "-I", "-c", BROKEN_WATCHDOG, str(runner.WATCHDOG), "--watchdog",
+            str(os.getpid()), tag, "--"]
+
+
+def blind_watchdog_argv(tag, owner=None):
+    return [sys.executable, "-I", "-c", BLIND_WATCHDOG, str(runner.WATCHDOG), "--watchdog",
+            str(owner or os.getpid()), tag, "--"]
+
+
+# A worker leaving a sleeping grandchild in its own process group, recorded with it; `hang` keeps
+# the worker itself alive too.
+TREE_WORKER = textwrap.dedent("""
+    import json, subprocess, sys, time
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(sys.argv[1], "w", encoding="utf-8") as fh:
+        json.dump([__import__("os").getpid(), child.pid], fh)
+    if sys.argv[2] == "hang":
+        time.sleep(60)
+""")
+
+
+class DiscoveryFailureNeverLeavesACallRunning(SafetyNet):
+    """#657 review W1 (Codex): when process discovery failed (a sandbox that denies `ps`), the
+    sweep returned False having killed nothing, the runner then killed the watchdog alone, and
+    the watchdog -- its own sweep failing too -- exited, so a paid worker kept running. The base
+    implementation had killed it. Now the call's known process group is always killed, whatever
+    discovery can see; a watchdog whose sweep fails kills its whole group with itself; a live run
+    refuses to start where discovery cannot contain a call; and a failure mid-run leaves the call
+    open at its reservation and stops the run."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 8
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def blind(self):
+        """Discovery fails in the runner AND in every watchdog it starts."""
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(runner, "process_table", side_effect=OSError("no ps")))
+        stack.enter_context(mock.patch.object(runner, "watchdog_argv", blind_watchdog_argv))
+        return stack
+
+    def tree(self, out, mode):
+        out.mkdir(parents=True, exist_ok=True)
+        return [sys.executable, "-c", TREE_WORKER, str(out / "tree.pids"), mode]
+
+    def test_a_timed_out_call_dies_whole_when_nothing_can_be_discovered(self):
+        out = self.out_dir()
+        with self.blind():
+            result = runner.contained_run(self.tree(out, "hang"), timeout=1, stdout_path=out / "stdout")
+        self.assertEqual(result[1:], (True, False), "killed, and not vouched for")
+        self.assertAllDead(out, at_least=2)
+
+    def test_what_a_finished_worker_left_dies_when_nothing_can_be_discovered(self):
+        out = self.out_dir()
+        with self.blind():
+            result = runner.contained_run(self.tree(out, "exit"), timeout=30, stdout_path=out / "stdout")
+        self.assertEqual(result[1:], (False, False), "finished, and not vouched for")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_blind_watchdog_kills_its_group_before_it_lets_go(self):
+        # The runner's own teardown never runs (as if SIGKILLed the instant the watchdog exited),
+        # and the watchdog cannot discover anything: it must still take its group down with it.
+        out = self.out_dir()
+        with mock.patch.object(runner, "watchdog_argv", blind_watchdog_argv), \
+                mock.patch.object(runner, "kill_group", return_value=True), \
+                mock.patch.object(runner, "sweep", return_value=True):
+            runner.contained_run(self.tree(out, "exit"), timeout=30, stdout_path=out / "stdout")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_sweep_that_breaks_still_kills_the_call(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "sweep", side_effect=ValueError("broken scan")), \
+                self.assertRaises(ValueError):
+            runner.contained_run(self.tree(out, "hang"), timeout=1, stdout_path=out / "stdout")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_watchdog_whose_sweep_breaks_still_kills_its_group(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "watchdog_argv", broken_watchdog_argv), \
+                mock.patch.object(runner, "kill_group", return_value=True), \
+                mock.patch.object(runner, "sweep", return_value=True):
+            runner.contained_run(self.tree(out, "exit"), timeout=30, stdout_path=out / "stdout")
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_blind_watchdog_whose_owner_dies_still_kills_its_call(self):
+        out = self.out_dir()
+        out.mkdir(parents=True)
+        owner = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+            import os, subprocess, sys, time
+            argv = {blind_watchdog_argv("t" * 32)!r}
+            argv[argv.index("--watchdog") + 1] = str(os.getpid())
+            subprocess.Popen(argv + {self.tree(out, "hang")!r}, start_new_session=True)
+            time.sleep(60)
+        """)])
+        self.addCleanup(lambda: owner.poll() is None and owner.kill())
+        deadline = time.monotonic() + 30
+        while not (out / "tree.pids").is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.2)
+        self.assertTrue((out / "tree.pids").is_file(), "the call never started")
+        owner.kill()
+        owner.wait()
+        self.assertAllDead(out, at_least=2)
+
+    def live(self, out, agent="plain", *extra):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        return ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                "--harness-cmd", self.stub_cmd(agent, "--cost", "1.0"),
+                "--grader-cmd", self.stub_cmd("grader-json", "--cost", "0.25"),
+                "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out), *extra]
+
+    def test_a_live_run_is_refused_where_discovery_is_unavailable(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "process_table", side_effect=OSError("no ps")):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertEqual(code, 2, err)
+        self.assertIn("process discovery", err)
+        self.assertFalse(out.exists(), "a refused run wrote its results directory")
+
+    def test_a_live_run_is_refused_where_a_call_marker_is_invisible(self):
+        out = self.out_dir()
+        real = runner.process_table
+
+        def no_environments():
+            return {pid: (ppid, pgid, ()) for pid, (ppid, pgid, _env) in real().items()}
+        with mock.patch.object(runner, "process_table", no_environments):
+            code, _stdout, err = run_main(self.live(out))
+        self.assertEqual(code, 2, err)
+        self.assertIn("process discovery", err)
+        self.assertFalse(out.exists(), "a refused run wrote its results directory")
+
+    def test_discovery_failing_mid_run_still_kills_the_call_keeps_it_charged_and_stops(self):
+        out = self.out_dir()
+        with mock.patch.object(runner, "containment_problem", return_value=None, create=True), self.blind():
+            code, _stdout, err = run_main(self.live(out, "hang", "--timeout", "2"))
+        self.assertEqual(code, 1, err)
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
+        self.assertEqual(results["cells"][0]["charged_usd"], PREREG["cost_cap"]["max_cost_per_agent_run_usd"])
+        ledger = [json.loads(ln) for ln in (out / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["call"], r["event"]) for r in ledger], [("agent", "start")])
+        self.assertAllDead(out, at_least=2)
 
 
 if __name__ == "__main__":

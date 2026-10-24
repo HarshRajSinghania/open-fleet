@@ -58,9 +58,11 @@ time (an exclusive lock for the whole run): a concurrent run into the same direc
 Every call also carries a unique OF_CALL_ID marker in its environment, and a call is contained
 across sessions (#657 review K4): teardown kills every process carrying the marker, and every
 descendant of the call, then re-scans until none is left; a call is never settled while anything
-of it survives SIGKILL or the process table cannot be read. The limit: a process that re-executes
-itself with an emptied environment (env -i) after it has left the call's process tree is not
-found.
+of it survives SIGKILL or the process table cannot be read. Whatever discovery can see, a call's
+known process group is killed, and a watchdog whose sweep fails kills its group with itself; a
+live run refuses to start where a probe cannot be found by its marker (#657 review W1). The
+limit: a process that re-executes itself with an emptied environment (env -i) after it has left
+the call's process tree is not found.
 """
 import contextlib
 import fcntl
@@ -364,6 +366,7 @@ WATCHDOG = Path(__file__).resolve()  # run as `python3 -I _ablation_run.py --wat
 # descendant that calls setsid() leaves the call's process group but keeps the marker (K4).
 CALL_MARKER = "OF_CALL_ID"
 LIVE_TAGS = set()  # calls this run started and has not yet seen swept
+UNREAPED = []  # watchdogs of calls not vouched for: unreaped, each keeps its group's id this run's
 
 
 def _environ_of(pid):
@@ -390,7 +393,7 @@ def process_table():
             except OSError:
                 continue  # gone since the listing
             fields = stat.rsplit(")", 1)[-1].split()  # after `pid (comm)`: comm may hold spaces
-            if fields and fields[0] not in ("Z", "X"):
+            if len(fields) > 2 and fields[0] not in ("Z", "X") and fields[1].isdigit() and fields[2].isdigit():
                 table[int(entry)] = (int(fields[1]), int(fields[2]), _environ_of(entry))
         return table
     scan = subprocess.Popen(["ps", "-A", "-E", "-ww", "-o", "pid=,ppid=,pgid=,stat=,command="],
@@ -407,7 +410,8 @@ def process_table():
         raise OSError(f"ps exited with status {scan.returncode}")
     for line in out.splitlines():
         parts = line.split(None, 4)
-        if len(parts) >= 4 and parts[0].isdigit() and not parts[3].startswith("Z"):
+        if len(parts) >= 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit() \
+                and not parts[3].startswith("Z"):
             # `command` is the argv then (-E) the environment, space-separated: a marker is a token.
             env = tuple(parts[4].split()) if len(parts) > 4 else ()
             table[int(parts[0])] = (int(parts[1]), int(parts[2]), env)
@@ -488,10 +492,52 @@ def watchdog_main(argv):
             break
         except subprocess.TimeoutExpired:
             if os.getppid() != owner:
-                sweep(roots=(me,), groups=(me,), exclude=(me,), wait_s=30.0, tag=tag)
+                # The runner is gone (a SIGKILL nothing can trap): the whole call goes with this
+                # watchdog, whatever discovery can see -- its group last, itself included (W1).
+                try:
+                    sweep(roots=(me,), groups=(me,), exclude=(me,), wait_s=30.0, tag=tag)
+                finally:
+                    os.killpg(me, signal.SIGKILL)
                 return 137
-    sweep(roots=(me,), groups=(me,), exclude=(me,), tag=tag)
+    vouched = False
+    try:
+        vouched = sweep(roots=(me,), groups=(me,), exclude=(me,), tag=tag)
+    finally:
+        if not vouched:
+            # Not vouched for (discovery failed, something survived, or the sweep broke): the
+            # group dies now, this watchdog included, rather than outlive its supervision (W1).
+            os.killpg(me, signal.SIGKILL)
     return status if status >= 0 else 128 - status
+
+
+def containment_problem():
+    """Why process discovery cannot contain a call on this host, or None (#657 review W1). A probe
+    in a session of its own, carrying a call marker, must show up in the process table by that
+    marker. Checked before a paid run reserves anything: where a sandbox denies `ps`, or the table
+    hides environments, a call's escaped processes could never be found."""
+    tag = secrets.token_hex(16)
+    try:
+        probe = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, env=dict(os.environ, **{CALL_MARKER: tag}),
+                                 start_new_session=True)
+    except OSError as err:
+        return f"a probe could not start: {err}"
+    try:
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                found = call_processes(process_table(), tag=tag)
+            except OSError as err:
+                return f"the process table cannot be read: {err}"
+            if found == {probe.pid}:
+                return None
+            if time.monotonic() > deadline:
+                return f"the process table does not show a call's {CALL_MARKER} marker"
+            time.sleep(0.05)
+    finally:
+        probe.kill()
+        probe.wait()
 
 
 def watchdog_argv(tag):
@@ -543,12 +589,22 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
         killed = not _exited(done_r, timeout)
     finally:
         os.close(done_r)
-        emptied = sweep(roots=(proc.pid,), groups=(proc.pid,), tag=tag)
-        proc.kill()  # a no-op once it has exited (Popen polls first)
-        proc.wait()
+        # Discovery first, while the watchdog (alive, or a zombie not yet reaped) still holds its
+        # pid: its tree, its group, and everything carrying the call's tag.
+        emptied = False
+        try:
+            emptied = sweep(roots=(proc.pid,), groups=(proc.pid,), tag=tag)
+        finally:
+            # Then, whatever discovery could see -- even if the sweep broke -- the call's known
+            # process group dies (#657 review W1). The unreaped watchdog keeps the group's id
+            # this run's, so this reaches no stranger.
+            kill_group(proc.pid, wait_s=0)
         if emptied:
+            proc.wait()
             LIVE_GROUPS.discard(proc.pid)
             LIVE_TAGS.discard(tag)
+        else:
+            UNREAPED.append(proc)  # reaped only after the run's final sweep (stop_all_groups)
     return (None if killed else proc.returncode), killed, emptied
 
 
@@ -577,13 +633,18 @@ def stop_all_groups():
     """Every child group this run still knows about, killed and waited for: the runner's last act
     before it exits on a signal, as first_run.py stops its workers (#640)."""
     for pgid in sorted(LIVE_GROUPS):
-        if sweep(groups=(pgid,)):  # its leader is reaped: walk its group, never its stale pid
+        # Its watchdog is unreaped (a call not vouched for) or still running: the id is ours. The
+        # group dies whatever discovery can see (W1), before the sweep walks it.
+        kill_group(pgid, wait_s=0)
+        if sweep(groups=(pgid,)):
             LIVE_GROUPS.discard(pgid)
     for tag in sorted(LIVE_TAGS):
         if sweep(tag=tag):
             LIVE_TAGS.discard(tag)
     for pgid_file in sorted(GRADER_GROUP_FILES, key=str):
         sweep_grader_group(pgid_file)
+    while UNREAPED:  # their groups are dead: only now may their ids go back to the system
+        UNREAPED.pop().wait()
 
 
 def _terminated(signum, _frame):
@@ -1206,6 +1267,10 @@ def preflight(args, api, prereg):
     if failing:
         raise Refused(f"{failing}: the variant fails the obligation check; a live run never "
                       "spends on a disqualified variant")
+    why = containment_problem()
+    if why:
+        raise Refused(f"process discovery cannot contain a call on this host ({why}): a paid call's "
+                      "escaped processes could never be found or stopped, so a live run does not start")
     return tier
 
 

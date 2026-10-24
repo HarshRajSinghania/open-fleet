@@ -545,7 +545,8 @@ class ACallIsContainedAcrossSessions(StandInRun):
         self.assertKeptOpen(code, err)
 
     def test_a_process_table_it_cannot_read_is_a_survivor(self):
-        with mock.patch.object(replay_mod.spend, "process_table", side_effect=OSError("no ps"), create=True):
+        with mock.patch.object(replay_mod.spend, "containment_problem", return_value=None, create=True), \
+                mock.patch.object(replay_mod.spend, "process_table", side_effect=OSError("no ps"), create=True):
             code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
         self.assertKeptOpen(code, err)
 
@@ -604,6 +605,51 @@ class TheCallLifecycleIsPortable(StandInRun):
         self.assertEqual(code, 0, err)
         self.assertEqual(len(self.calls()), 3)
         self.assertEqual(self.results()["cost"]["spent_usd"], 0.75)
+
+
+# The real watchdog with its process discovery failing, as in a sandbox that denies `ps` (W1).
+BLIND_WATCHDOG = textwrap.dedent("""
+    import importlib.util, sys
+    spec = importlib.util.spec_from_file_location("blind_watchdog", sys.argv[1])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    def unavailable():
+        raise OSError("process discovery denied (test)")
+    mod.process_table = unavailable
+    sys.exit(mod.watchdog_main(sys.argv[3:]))
+""")
+
+
+class DiscoveryFailureNeverLeavesACallRunning(StandInRun):
+    """#657 review W1 (Codex): a failed process discovery killed nothing, the runner then killed
+    the watchdog alone, and the watchdog's own failed sweep let it exit, so a paid worker kept
+    running. A live run now refuses to start where discovery cannot contain a call, and a failure
+    mid-run still kills the call's known process group, keeps the call charged and stops the run."""
+
+    def test_a_live_run_is_refused_where_discovery_is_unavailable(self):
+        with mock.patch.object(replay_mod.spend, "process_table", side_effect=OSError("no ps")):
+            code, _out, err = self.main(self.live())
+        self.assertEqual(code, 2, err)
+        self.assertIn("process discovery", err)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(list(self.out.parent.iterdir()), [], "a refused run wrote beside its results")
+
+    def test_discovery_failing_mid_run_still_kills_the_call_keeps_it_charged_and_stops(self):
+        spend = replay_mod.spend
+
+        def blind_argv(tag):
+            return [sys.executable, "-I", "-c", BLIND_WATCHDOG, str(spend.WATCHDOG), "--watchdog",
+                    str(os.getpid()), tag, "--"]
+        with mock.patch.object(spend, "containment_problem", return_value=None, create=True), \
+                mock.patch.object(spend, "process_table", side_effect=OSError("no ps")), \
+                mock.patch.object(spend, "watchdog_argv", blind_argv):
+            code, _out, err = self.main(self.live(agent=self.agent("hang"), extra=["--timeout-s", "2"]))
+        self.assertEqual(code, 1, err)
+        results = self.results()
+        self.assertTrue(results["stopped"].startswith("ORPHAN_ALIVE"), results["stopped"])
+        self.assertEqual(results["results"][0]["charged_usd"], 2.0)
+        self.assertEqual([r["event"] for r in self.ledger()], ["start"])
+        self.assertAllDead(at_least=2)
 
 
 if __name__ == "__main__":

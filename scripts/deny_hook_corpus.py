@@ -503,8 +503,120 @@ def receipt_grid():
     return [Case(f"receipt:{name}", tpl, "receipt") for name, tpl in RECEIPT_GRID + REPEAT_GRID]
 
 
+# Who reads which body (PR #648 review PRRT_kwDOTWxN9c6vzGqz, PRRT_kwDOTWxN9c6vzGq3): a heredoc
+# or here-string on a reader, crossed with every redirection form in every position and every
+# pipeline position (first, middle, last, |&). {X} is the hole: {CMD}, or {SEND} in receipt mode.
+# These run under bash AND dash (DASH_FAMILIES): a hole either shell runs must be refused.
+STDIN_SOURCES = (   # (name, redirection on the reader, the body lines after the command line)
+    ("heredoc", "<<EOF", "{X}" + NL + "EOF"), ("heredoc-q", "<<'EOF'", "{X}" + NL + "EOF"),
+    ("heredoc-dash", "<<-EOF", TAB + "{X}" + NL + TAB + "EOF"), ("herestring", "<<< '{X}'", ""),
+    ("fd0-heredoc", "0<<EOF", "{X}" + NL + "EOF"), ("fd0-herestring", "0<<< '{X}'", ""),
+    ("dup-heredoc", "3<<EOF 0<&3", "{X}" + NL + "EOF"), ("dup-herestring", "3<<< '{X}' 0<&3", ""),
+    # controls: a body on another descriptor, or dup-ed before it opens, is never read
+    ("fd3-heredoc", "3<<EOF", "{X}" + NL + "EOF"), ("dup-early", "0<&3 3<<EOF", "{X}" + NL + "EOF"),
+)
+STDIN_READERS = ("bash", "sh", "bash -s", "sh /dev/stdin")
+STDIN_REDIRS = ("", "> /dev/null", ">/dev/null 2>&1", "2>&1", "2>/dev/null", "&>/dev/null",
+                ">> out.txt", "> out.txt", ">&2", "1>&2", ">| out.txt", "3>&1", "< /dev/null")
+STDIN_PIPES = (("alone", "{C}"), ("first", "{C} | cat"), ("first-amp", "{C} |& cat"),
+               ("middle", "echo safe | {C} | cat"), ("last", "echo safe | {C}"),
+               ("last-amp", "echo safe |& {C}"), ("middle-amp", "echo safe |& {C} |& cat"),
+               ("and", "true && {C}"))
+# A body reaching a reader through another command: a pass-through stage, a group, a loop, a
+# function, exec, xargs, read, a process substitution, $(cat) reading the pipe.
+STDIN_ROUTES = (
+    ("cat-pipe", "cat {S} | {READER}"), ("cat-tee", "cat {S} | tee t.txt | {READER}"),
+    ("cat-cat", "cat {S} | cat | {READER}"), ("cat-amp", "cat {S} |& {READER}"),
+    ("cat-quiet", "cat {S} 2>/dev/null | {READER}"), ("echo-cat", "echo '{X}' | cat | {READER}"),
+    ("echo-amp", "echo '{X}' |& {READER}"), ("printf-amp", "printf '%s\\n' '{X}' |& cat |& {READER}"),
+    ("group", "{ {READER}; } {S}"), ("subshell", "( {READER} ) {S}"),
+    ("subshell-cd", "(cd .; {READER}) {S}"), ("group-late", "{ {READER}; true; } {S}"),
+    ("pipe-group", "echo '{X}' | { true; {READER}; }"), ("pipe-subshell", "echo '{X}' | (cd .; {READER})"),
+    ("while-read", "while read -r l; do $l; done {S}"), ("read-var", "read -r l {S}; $l"),
+    ("pipe-read", "echo '{X}' | while read -r l; do $l; done"), ("exec", "exec {S}; {READER}"),
+    ("func", "f() { {READER}; }; f {S}"), ("func-glued", "f(){ {READER};};f {S}"), ("xargs-i", "xargs -I{} {READER} -c '{}' {S}"),
+    ("procsub", "{READER} <(echo '{X}')"), ("procsub-stdin", "{READER} < <(echo '{X}')"),
+    ("procsub-cat", "{READER} <(cat {S})"), ("eval-cat", "echo '{X}' | eval \"$(cat)\""),
+    ("eval-sub", "eval \"$(cat {S})\""), ("head-sub", "$(cat {S})"),
+    ("eval-sub-heredoc", "eval \"$(cat <<EOF" + NL + "{X}" + NL + "EOF" + NL + ")\""),
+    ("head-sub-heredoc", "$(cat <<EOF" + NL + "{X}" + NL + "EOF" + NL + ")"),
+    # allow controls: the body is data -- written, printed, or handed to a command that ignores
+    # its standard input -- and must stay allowed
+    ("control/cat-file", "cat {S} > notes.txt"), ("control/cat-tee", "cat {S} | tee notes.txt"),
+    ("control/tee", "tee notes.txt {S}"), ("control/cat-cat-file", "cat {S} | cat > notes.txt"),
+    ("control/null", ": {S}"), ("control/sh-c", "{READER} -c 'echo hi' {S}"),
+    ("control/sh-c-cat", "{READER} -c cat {S}"), ("control/group-cat", "{ cat; } {S}"),
+    ("control/read-echo", "read -r l {S}; echo \"$l\""), ("control/xargs-echo", "xargs echo {S}"),
+    ("control/echo-file", "echo '{X}' > notes.txt"), ("control/echo-cat-file", "echo '{X}' | cat > notes.txt"),
+)
+
+
+def _stdin_text(line, body, x, armed=False):
+    """One template: the command line (receipt-armed if asked), then any heredoc body lines."""
+    text = ("{R} && " if armed else "") + line
+    return (text + NL + body if body else text).replace("{X}", x)
+
+
+def _reader_cmd(reader, src, redir, where):
+    parts = {"pre": (redir, reader, src), "mid": (reader, redir, src), "post": (reader, src, redir)}
+    return " ".join(w for w in parts[where] if w)
+
+
+def stdin_grid(every=False):
+    """Command-mode cases (payloads rotating) and receipt-mode cases for the stdin family. The
+    bounded set crosses each source with each redirection and with each pipeline position, each
+    reader with each source, and every route; every=True is the whole product (readers bash and
+    sh /dev/stdin). Receipt mode: each case unreceipted, and receipted where bash reads one body."""
+    cmd, rcpt = [], []
+    readers = ("bash", "sh /dev/stdin") if every else STDIN_READERS
+    combos = []
+    if every:
+        combos = [(r, s, d, w, p) for r in readers for s in STDIN_SOURCES for d in STDIN_REDIRS
+                  for w in ("pre", "mid", "post") for p in STDIN_PIPES]
+    else:
+        wheres = ("pre", "mid", "post")
+        for k, (s, d) in enumerate(product(STDIN_SOURCES, STDIN_REDIRS)):
+            w = wheres[k % 3] if d != "< /dev/null" else "pre"
+            combos.append(("bash", s, d, w, STDIN_PIPES[0]))
+        for k, (s, p) in enumerate(product(STDIN_SOURCES, STDIN_PIPES)):
+            combos.append((STDIN_READERS[k % len(STDIN_READERS)], s, "> /dev/null", "mid", p))
+        combos += [(r, s, "", "post", STDIN_PIPES[0]) for r in STDIN_READERS for s in STDIN_SOURCES]
+        combos.append(("bash", STDIN_SOURCES[0], "< /dev/null", "post", STDIN_PIPES[0]))
+    seen = set()
+    for reader, (sname, src, body), redir, where, (pname, pipe) in combos:
+        line = pipe.replace("{C}", _reader_cmd(reader, src, redir, where))
+        name = f"stdin:{pname}/{sname}/{reader.replace(' ', '_')}/{redir.replace(' ', '') or 'none'}@{where}"
+        if line + body in seen:
+            continue
+        seen.add(line + body)
+        cmd.append(Case(name, _stdin_text(line, body, CMD), tuple(PAYLOADS)[len(cmd) % len(PAYLOADS)]))
+        rcpt.append(Case(name, _stdin_text(line, body, "{SEND}"), "receipt"))
+        last_wins = "/dev/null" not in redir or "<" not in redir or where == "pre"
+        if pname in ("alone", "first", "first-amp") and last_wins:
+            rcpt.append(Case(name + "/receipted", _stdin_text(line, body, "{SEND}", True), "receipt"))
+    for (rname, route), (sname, src, body) in product(STDIN_ROUTES, STDIN_SOURCES[:4:3]):
+        if "{S}" not in route and sname != "heredoc":
+            continue   # a route with no source of its own is one case
+        if "{S}" in route and body and ("$(" in route or "<(" in route):
+            continue   # a heredoc inside a substitution keeps its body inside: the -heredoc routes
+        for reader in (("sh",) if "{READER}" in route else ("",)):
+            line = route.replace("{READER}", reader).replace("{S}", src)
+            name = f"stdin:route/{rname}/{sname}"
+            body_ = body if "{S}" in route else ""
+            cmd.append(Case(name, _stdin_text(line, body_, CMD), tuple(PAYLOADS)[len(cmd) % len(PAYLOADS)]))
+            rcpt.append(Case(name, _stdin_text(line, body_, "{SEND}"), "receipt"))
+    cmd.append(Case("stdin:route/xargs-append", "xargs {HEAD} <<< '{ARGS}'", "push"))
+    cmd.append(Case("stdin:route/xargs-append-pipe", "echo '{ARGS}' | xargs {HEAD}", "send"))
+    return cmd + rcpt
+
+
 def corpus(random_count=BOUNDED_RANDOM, seed=SEED, both=False):
     cases = list(guard_grid(every=both)) + receipt_grid()
+    known = {c.id for c in cases} | {Case("", c.template, p).id for c in grid() for p in PAYLOADS}
+    for case in stdin_grid(every=both):   # a stdin case another family already holds runs once
+        if case.id not in known:
+            known.add(case.id)
+            cases.append(case)
     for k, case in enumerate(grid()):
         payloads = tuple(PAYLOADS) if both else (tuple(PAYLOADS)[k % len(PAYLOADS)],)
         cases += [Case(case.family, case.template, p) for p in payloads]
@@ -515,9 +627,19 @@ def corpus(random_count=BOUNDED_RANDOM, seed=SEED, both=False):
 
 
 # --- the oracle: real bash, inert sentinel, throwaway directory ----------------------------
+# Families also run under dash: a hole that either shell runs is live (ran = either). bash
+# stays the one that names a parse error.
+DASH_FAMILIES = ("stdin:",)
+
+
+def shells_for(case, oracle):
+    return ("bash", "dash") if case.family.startswith(DASH_FAMILIES) and oracle.dash else ("bash",)
+
+
 class BashOracle:
     def __init__(self, bash=None):
         self.bash = bash or shutil.which("bash") or "/bin/bash"
+        self.dash = shutil.which("dash") or ("/bin/dash" if os.path.exists("/bin/dash") else None)
         self.root = Path(tempfile.mkdtemp(prefix="dh-oracle-"))
         self.bindir = self.root / "bin"
         self.bindir.mkdir()
@@ -525,7 +647,11 @@ class BashOracle:
         # It records its own argv, one word per unit separator: the hole RAN only when the
         # sentinel got exactly the payload's words, so `{HEAD};{ARGS}` (the head alone, then a
         # stray command) or one quoted word holding them all is not a run of the payload.
-        sentinel.write_text("#!/bin/sh\nIFS=$(printf '\\037')\n"
+        # It stands for a BINARY (git, gh, rm): a shell handed it as a script (sh orca_sentinel
+        # ARGS finds it on PATH, where sh gh ARGS fails on a binary) records nothing. Run as a
+        # program, $0 is the path the shell found.
+        sentinel.write_text("#!/bin/sh\ncase $0 in */*) ;; *) exit 0 ;; esac\n"
+                            "IFS=$(printf '\\037')\n"
                             "printf '%s\\n' \"$*\" >> \"$ORCA_SENTINEL_MARK\"\n", encoding="utf-8")
         sentinel.chmod(0o755)
         # The guard mode's rm: removes its operands only when they resolve inside the case dir.
@@ -558,16 +684,37 @@ class BashOracle:
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def run(self, text, payload="push"):
+    def run(self, text, payload="push", shells=("bash",)):
         """(the hole ran, bash reported a parse error) for one safe form of a payload."""
-        return self.observe(text, payload)[:2]
+        return self.observe(text, payload, shells)[:2]
 
-    def observe(self, text, payload="push"):
-        """run(), plus whether the hole was touched at all (the sentinel with any argv)."""
+    def observe(self, text, payload="push", shells=("bash",)):
+        """run(), plus whether the hole was touched at all (the sentinel with any argv). Under
+        several shells the hole ran if ANY ran it; the parse error is bash's."""
         if not safe_form_ok(text):
             raise ValueError(f"a safe form may reach only the sentinel: {text!r}")
+        seen = [self._observe(text, payload, shell) for shell in shells]
+        return any(s[0] for s in seen), seen[0][1], any(s[2] for s in seen)
+
+    def _exec(self, shell, text, cwd, env):
+        """bash (no rc files) or dash running text, under CPU, file-size and core limits set by
+        the parent sh (preexec_fn is not safe beside the worker threads), with a timeout."""
+        exe, opts = (self.bash, "--norc --noprofile ") if shell == "bash" else (self.dash, "")
+        limited = ['/bin/sh', '-c', 'ulimit -t 5 2>/dev/null; ulimit -f 2048 2>/dev/null; '
+                   'ulimit -c 0 2>/dev/null; exec "$0" ' + opts + '-c "$1"', exe, text]
+        proc = subprocess.Popen(limited, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                start_new_session=True)
+        try:
+            _out, err = proc.communicate(timeout=BASH_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, 9)
+            _out, err = proc.communicate()
+        return err.decode("utf-8", "replace")
+
+    def _observe(self, text, payload, shell):
         if payload_kind(payload) == "receipt":
-            return self._observe_receipts(text)
+            return self._observe_receipts(text, shell)
         with self._lock:
             self._n += 1
             work = self.root / f"case-{self._n}"
@@ -585,19 +732,7 @@ class BashOracle:
         mark = work / ".sentinel"
         env = {"PATH": str(self.bindir), "HOME": str(work), "TMPDIR": str(work), "LC_ALL": "C",
                "ORCA_SENTINEL_MARK": str(mark), "DCOY_HOME": home}
-        # CPU seconds, file size and core limits are set by the parent sh before bash starts:
-        # preexec_fn is not safe beside the worker threads.
-        limited = ['/bin/sh', '-c', 'ulimit -t 5 2>/dev/null; ulimit -f 2048 2>/dev/null; '
-                   'ulimit -c 0 2>/dev/null; exec "$0" --norc --noprofile -c "$1"', self.bash, text]
-        proc = subprocess.Popen(limited, cwd=work, env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                start_new_session=True)
-        try:
-            _out, err = proc.communicate(timeout=BASH_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, 9)
-            _out, err = proc.communicate()
-        err = err.decode("utf-8", "replace")
+        err = self._exec(shell, text, work, env)
         # A parse error refuses to run the text: bash exits 2 for a syntax error and 1 for a bad
         # substitution, so the message, not the status, says which runs ended there.
         syntax = bool(re.search(r"syntax error|unexpected EOF|unexpected end of file|"
@@ -616,7 +751,7 @@ class BashOracle:
         shutil.rmtree(work, ignore_errors=True)
         return ran, syntax, touched
 
-    def _observe_receipts(self, text):
+    def _observe_receipts(self, text, shell="bash"):
         """(a send ran without its own fresh successful receipt, parse error, any send ran).
         Run twice: receipts succeeding, where each send must consume one receipt recorded since
         the last send; and receipts failing, where no send may run at all."""
@@ -631,19 +766,9 @@ class BashOracle:
             mark = work / ".sentinel"
             env = {"PATH": str(self.bindir), "HOME": str(work), "TMPDIR": str(work), "LC_ALL": "C",
                    "ORCA_SENTINEL_MARK": str(mark), "DCOY_RECEIPT_RC": rc}
-            limited = ['/bin/sh', '-c', 'ulimit -t 5 2>/dev/null; ulimit -f 2048 2>/dev/null; '
-                       'ulimit -c 0 2>/dev/null; exec "$0" --norc --noprofile -c "$1"',
-                       self.bash, text.replace(LATER, NL)]
-            proc = subprocess.Popen(limited, cwd=work, env=env, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                    start_new_session=True)
-            try:
-                _out, err = proc.communicate(timeout=BASH_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, 9)
-                _out, err = proc.communicate()
+            err = self._exec(shell, text.replace(LATER, NL), work, env)
             syntax = syntax or bool(re.search(r"syntax error|unexpected EOF|unexpected end of "
-                                              r"file|bad substitution", err.decode("utf-8", "replace")))
+                                              r"file|bad substitution", err))
             lines = mark.read_text(encoding="utf-8").splitlines() if mark.exists() else []
             shutil.rmtree(work, ignore_errors=True)
             available = 0
@@ -693,10 +818,10 @@ def evaluate(cases, oracle, hook=HOOK, jobs=4, bash_cache=None):
     cache = {} if bash_cache is None else bash_cache
 
     def one(case):
-        safe = render(case.template, case.payload, True)
-        if (case.payload, safe) not in cache:
-            cache[(case.payload, safe)] = oracle.run(safe, case.payload)
-        ran, syntax = cache[(case.payload, safe)]
+        safe, shells = render(case.template, case.payload, True), shells_for(case, oracle)
+        if (case.payload, safe, shells) not in cache:
+            cache[(case.payload, safe, shells)] = oracle.run(safe, case.payload, shells)
+        ran, syntax = cache[(case.payload, safe, shells)]
         decision = hook_decision(render(case.template, case.payload, False, oracle.hook_root),
                                  hook, oracle.hook_root)
         return {"id": case.id, "family": case.family, "payload": case.payload,
@@ -763,7 +888,8 @@ def minimize(result, oracle, hook=HOOK):
         if (HEAD in template and ARGS not in template) or not safe_form_ok(safe) \
                 or _GLUED.search(template):
             return False   # never run a real tool name; never glue text onto the payload words
-        ran, syntax, touched = oracle.observe(safe, payload)
+        ran, syntax, touched = oracle.observe(
+            safe, payload, shells_for(Case(result.get("family", ""), template, payload), oracle))
         if want == "false-deny" and touched:
             return False   # the hole ran with other words: a shrink that changed the command
         decision = hook_decision(render(template, payload, False, oracle.hook_root), hook,

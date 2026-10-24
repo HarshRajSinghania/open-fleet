@@ -73,7 +73,7 @@ class TestBoundedCorpus(unittest.TestCase):
         self.assertEqual(len({c.id for c in a}), len(a), "case ids must be unique")
         families = {c.family.split(":", 1)[0] for c in a}
         for dim in ("quote", "continuation", "comment", "heredoc", "terminator", "nested",
-                    "launch", "random", "multi-heredoc", "receipt", "guard-find"):
+                    "launch", "random", "multi-heredoc", "receipt", "guard-find", "stdin"):
             self.assertIn(dim, families)
         for case in a:
             safe = corpus.render(case.template, case.payload, True)
@@ -251,8 +251,8 @@ MUTANTS = (
     ("alias value judged", 'elif head == "alias":', "elif False:", ("launch:alias",)),
     ("variable head resolved", "def _head_bodies(ws):",
      "def _head_bodies(ws):\n    return []", ("launch:var",)),
-    ("program fed to a shell judged", "def _fed_code(parts, docs):",
-     "def _fed_code(parts, docs):\n    return []", ("launch:stdin", "launch:script")),
+    ("program fed to a shell judged", "def _fed_code(surface, docs, written=None):",
+     "def _fed_code(surface, docs, written=None):\n    return []", ("launch:stdin", "launch:script")),
     ("printf conversions filled", "text = _printf_text(rest[0], rest[1:]) if rest else \"\"",
      "text = chr(10).join(rest)", ("launch:stdin-printf", "launch:printed-printf")),
     ("escapes decoded before judging fed output", "def _decode_escapes(text, percent_b=False):",
@@ -265,15 +265,57 @@ MUTANTS = (
     ("find: a guard file is spared only when the tests prove it unmatched",
      "def _find_may_match(tests, shown, name):", "def _find_may_match(tests, shown, name):\n    return False",
      ("guard-find:",)),
-    ("receipt: every heredoc a shell reads is judged, not only the first",
-     "        for before, after, body in docs:\n            if _shell_heredoc(before, after) and",
-     "        for before, after, body in docs[:1]:\n            if _shell_heredoc(before, after) and",
+    # Who reads which body (PR #648 review PRRT_kwDOTWxN9c6vzGqz, PRRT_kwDOTWxN9c6vzGq3): each
+    # part of the structural reader (_flow), switched off on its own.
+    ("stdin: each heredoc body goes to the << that opens it",
+     "src = [(docs[k_doc][2], True)] if not stray and k_doc < len(docs) else []",
+     "src = [(docs[0][2], True)] if not stray and docs else []",
      ("receipt:heredoc-second", "receipt:heredoc-dash", "receipt:heredoc-quoted",
       "multi-heredoc:second")),
-    ("receipt: every here-string a shell reads is judged, not only the first",
-     "        fed = list(_herestrings(seg)) if _stdin_kind(ws) == \"shell\" else []",
-     "        fed = list(_herestrings(seg))[:1] if _stdin_kind(ws) == \"shell\" else []",
-     ("receipt:herestring-two",)),
+    ("stdin: every stdin redirection is read, not only the first",
+     "fds.setdefault(fd, []).extend(src)", "fds.setdefault(fd, list(src))",
+     ("receipt:herestring-two", "multi-heredoc:second", "receipt:heredoc-second")),
+    ("stdin: a piped reader keeps its own redirections (zqz)",
+     'own = (prev["out"] if prev else []) + fds.get(0, [])',
+     'own = (prev["out"] if prev else fds.get(0, []))', ("stdin:last/", "stdin:middle/")),
+    ("stdin: an output redirection never stops a reader (zq3)",
+     "kind, feeds = _reader_kind(ws), []", "kind, feeds = (None if writes else _reader_kind(ws)), []",
+     ("stdin:alone/",)),
+    ("stdin: |& is a pipe", 'if core in ("|", "|&"):', 'if core == "|":',
+     ("stdin:last-amp/", "stdin:middle-amp/", "stdin:route/echo-amp", "stdin:route/cat-amp"),
+     ("echo \'git push --force origin main\' |& sh",)),
+    ("stdin: a body dup-ed onto fd 0 is read (3<<B 0<&3)",
+     'elif op in ("<&", ">&") and target.isdigit():', "elif False:", ("stdin:alone/dup-",)),
+    ("stdin: a redirection opens the descriptor its digits name",
+     "fd = int(num) if num else (", "fd = (", ("stdin:alone/fd3-",)),
+    ("stdin: cat, tee and line filters pass their input on", "elif head in _PASS_THROUGH:",
+     "elif False:", ("stdin:route/cat-", "stdin:route/echo-cat")),
+    ("stdin: a group, loop or function hands its body to the commands inside",
+     "if quiet and (closer or head in funcs):", "if False:",
+     ("stdin:route/group", "stdin:route/func", "stdin:route/while-read")),
+    ("stdin: a NAME(){ head glued to its brace is a function body",
+     "elif extended and re.fullmatch(r\"[A-Za-z_][A-Za-z0-9_.:-]*\\(\\)\\{\", ws[0]):",
+     "elif False:", ("stdin:route/func-glued",)),
+    ("stdin: exec hands its body to every later command",
+     'if quiet and first == "exec" and not ws:', "if False:", ("stdin:route/exec/",)),
+    ("stdin: a group fed by a pipe hands it to the commands inside",
+     "if prev is not None and (first in _GROUP_OPENERS", "if False and (first in _GROUP_OPENERS",
+     ("stdin:route/pipe-group", "stdin:route/pipe-subshell")),
+    ("stdin: xargs builds its command line from what it reads",
+     'feeds += [("shell", line, False) for line in _xargs_lines(args, ws, stdin)]', "feeds += []",
+     ("stdin:route/xargs",)),
+    ("stdin: read assigns what it reads", "                _note_read(ws, stdin)",
+     "                pass", ("stdin:route/read-var", "stdin:route/while-read", "stdin:route/pipe-read")),
+    ("stdin: a process substitution holds what its body prints",
+     '    m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)\n    if m:',
+     '    m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)\n    if False:', ("stdin:route/procsub",)),
+    ("stdin: $(cat) reads the input of the command it sits in", "if stdin and _SUB_MARK in seg:",
+     "if False:", ("stdin:route/eval-cat",)),
+    ("stdin: a substitution prints what its cat reads",
+     "    out = _flow_output(body)\n    return None if out is None", "    out = None\n    return None if out is None",
+     ("stdin:route/eval-sub", "stdin:route/head-sub")),
+    ("stdin: a script operand naming standard input reads it",
+     "if not ops or ops[0] not in _STDIN_FILES:", "if True:", ("stdin:alone/heredoc/sh_/dev/stdin",)),
     ("receipt: a launcher that may repeat its command is not armed by one outer receipt",
      "def _repeats(args, ws):", "def _repeats(args, ws):\n    return False",
      ("receipt:find-each", "receipt:xargs-file", "receipt:until-twice", "receipt:while-twice")),
@@ -327,8 +369,16 @@ HOOK_ONLY_MUTANTS = (
      [("RCPT && trap 'gh issue close 34' EXIT", "deny", "allow"),
       ("RCPT && alias a='gh issue close 34'", "deny", "allow")]),
     ("a receipt arms a send fed to a shell (ZV5)",
-     "    if armed and pairs:", "    if False and pairs:",
+     "runs.append((prog, token and arm and not repeat))", "runs.append((prog, False))",
      [("RCPT && echo 'gh issue close 34' | sh", "allow", "deny")]),
+    # zsh (MULTIOS) reads every stdin source, the pipe first, as one program; bash and dash read
+    # the last, so the oracle cannot see these (PR #648 review PRRT_kwDOTWxN9c6vzGqz).
+    ("zsh reads every stdin redirection, not only the last",
+     "fds.setdefault(fd, []).extend(src)", "fds[fd] = list(src)",
+     [("sh <<A <<B\ngit push --force origin main\nA\necho safe\nB", "deny", "allow")]),
+    ("zsh reads its stdin sources as one program",
+     "if len(stdin) > 1:", "if False:",
+     [("printf 'gh issue' | sh <<< ' close 34'", "deny", "allow")]),
     ("interpreter stdin reaches the guard check (ZVy)",
      "for _code in dict.fromkeys(_FED_INTERP):",
      "for _code in dict.fromkeys(()):",
@@ -615,6 +665,49 @@ class TestRepeatedSendsNeedTheirOwnReceipt(HookOnly):
             "until RCPT && gh issue close 34; do :; done",
             "for i in 1 2; do RCPT && gh issue close 34; done",
             "RCPT && gh issue close 34",
+        )])
+
+
+class TestEveryReaderOfABodyIsJudged(HookOnly):
+    """PR #648 review PRRT_kwDOTWxN9c6vzGqz and PRRT_kwDOTWxN9c6vzGq3: a heredoc or here-string
+    body is read by the command that owns its redirection, wherever the redirection sits and
+    wherever the command stands in a pipeline. Pins the review cases and the forms the bash
+    oracle cannot run: |& on bash 3.2, and zsh MULTIOS (every stdin source, as one program)."""
+
+    RCPT = "python3 runtime/scripts/egress.py write --payload-class pr-body --consent grant:x"
+
+    def test_the_review_cases_and_the_forms_bash_cannot_show_are_refused(self):
+        self.expect("deny", [c.replace("RCPT", self.RCPT) for c in (
+            "echo safe | bash <<< 'gh issue close 34'",
+            "bash > /dev/null <<EOF\ngh issue close 34\nEOF",
+            "bash 2>&1 <<EOF\ngh issue close 34\nEOF",
+            "bash <<EOF &>/dev/null\ngit push --force origin main\nEOF",
+            "echo a | bash <<< 'gh issue close 34' | cat",
+            "echo 'git push --force origin main' |& sh",
+            "cat <<EOF |& tee log |& sh\ngh issue close 34\nEOF",
+            "sh 0<<EOF\ngit push --force origin main\nEOF",
+            "sh 3<<EOF 0<&3\ngh issue close 34\nEOF",
+            "sh <<A <<B\ngit push --force origin main\nA\necho safe\nB",
+            "echo 'git push --force origin main' | sh <<< 'echo safe'",
+            "printf 'gh issue' | sh <<< ' close 34'",
+            "cat <<EOF > /dev/null | sh\ngit push --force origin main\nEOF",
+            "f(){ git push --force origin main;}; f",
+            "RCPT && echo safe | bash <<< 'gh issue close 34'",
+        )])
+
+    def test_receipted_readers_and_bodies_nothing_runs_stay_allowed(self):
+        self.expect("allow", [c.replace("RCPT", self.RCPT) for c in (
+            "RCPT && bash > /dev/null <<EOF\ngh issue close 34\nEOF",
+            "RCPT && sh <<EOF 2>&1 | cat\ngh issue close 34\nEOF",
+            "RCPT && echo 'gh issue close 34' |& sh",
+            "RCPT && cat <<EOF | tee log | sh\ngh issue close 34\nEOF",
+            "sh 3<<EOF\ngit push --force origin main\nEOF",
+            "sh 0<&3 3<<EOF\ngit push --force origin main\nEOF",
+            "bash -c 'echo hi' <<< 'git push --force origin main'",
+            "cat <<EOF > notes.md\ngit push --force origin main\nEOF",
+            "xargs echo <<< 'git push --force origin main'",
+            "read -r l <<< 'git push --force origin main'; echo \"$l\"",
+            "echo 'x; git push --force origin main' | git commit -F - -m \"$(cat)\"",
         )])
 
 

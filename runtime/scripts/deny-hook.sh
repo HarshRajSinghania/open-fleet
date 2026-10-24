@@ -32,10 +32,15 @@
 # command of flock, su, runuser, script, watch, parallel (its template completed
 # with each ::: argument), ssh, find -exec, fd -x/-X, entr and zsh repeat,
 # interpreter code handing a literal to os.system/subprocess (from -c, stdin or a
-# heredoc), a program fed to a shell
-# on stdin (pipe from echo/printf/cat, heredoc, here-string) or written to a file
-# and run in the same command, and a head built from a variable or a substitution
-# (its literal value on the line, what echo prints, else each refused head).
+# heredoc), a program a shell reads on stdin or from a file written in the same
+# command, and a head built from a variable or a substitution (its literal value
+# on the line, what echo prints, else each refused head). Who reads a body is
+# structural (PR #648 review): each simple command is its words plus its
+# redirections wherever they sit, each pipeline stage (| or |&) a command with its
+# own stdin; a heredoc or here-string is read by the command owning its << or <<<
+# on fd 0 (or 3<<B 0<&3), an output redirection never stops it reading, cat/tee
+# pass it on, and a group, loop, exec, function, xargs, read, <(...) or $(cat)
+# hands it to what it runs. Sources are unioned, as zsh (MULTIOS) reads them all.
 # printf/echo escapes (\xHH, \NNN, \n …) are decoded before the fed program is
 # read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
 # refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10;
@@ -757,11 +762,12 @@ def _norm_join(sep_chars):
     # every other separator run (||, ;, |, &, newline, mixes) runs it
     # regardless, so a receipt joined that way proves nothing about the send.
     # A lone pipe is told apart (#598): the command after it reads the one before
-    # it on stdin, which is how echo CMD | sh runs CMD. Rule 5 reads it as "seq".
+    # it on stdin, which is how echo CMD | sh runs CMD. |& is a pipe too (2>&1 |),
+    # so echo CMD |& sh runs CMD as well (PR #648 review). Rule 5 reads it as "seq".
     core = sep_chars.replace(chr(10), "")
     if not core:
         return "start"
-    if core == "|":
+    if core in ("|", "|&"):
         return "|"
     return "&&" if core == "&&" else "seq"
 
@@ -897,10 +903,12 @@ def policy_word(word):
                    else ch for ch in word) or "\\000"
 
 
-def shell_tokens(seg):
+def shell_tokens(seg, with_fd=False):
     # Keep operator identity BEFORE quote removal: quoted/escaped > is data.
     # A descriptor is optional and may have several digits. After an operator,
     # however, the next word is its target: in 10>&1>file, 1 is not another fd.
+    # with_fd: every token carries a third item, the descriptor a redirection opens
+    # (0 for <-forms, 1 for >-forms, "&" for &> and &>>; None for a word).
     ops = r"(?:&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)"
     i, target = 0, False
     while i < len(seg):
@@ -909,7 +917,13 @@ def shell_tokens(seg):
             continue
         op = re.match(ops if target else r"[0-9]*" + ops, seg[i:])
         if op:
-            yield "redirect", op[0].lstrip("0123456789")
+            name = op[0].lstrip("0123456789")
+            if with_fd:
+                num = op[0][:len(op[0]) - len(name)]
+                fd = int(num) if num else ("&" if name[0] == "&" else int(name[0] == ">"))
+                yield "redirect", name, fd
+            else:
+                yield "redirect", name
             i += len(op[0])
             target = True
             continue
@@ -931,7 +945,7 @@ def shell_tokens(seg):
             i += 1
         if i == start:
             raise ValueError("unexpected operator")
-        yield "word", _unquote(seg[start:i])
+        yield ("word", _unquote(seg[start:i])) + ((None,) if with_fd else ())
         target = False
 
 
@@ -1378,6 +1392,8 @@ def _plain_words(args, peel_bang=True, extended=False, assigns=None):
             ws = ws[2:]
         elif extended and ws[1:2] == ["()"]:
             ws = ws[2:]  # NAME () { …: the body is judged as if called
+        elif extended and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]*\(\)\{", ws[0]):
+            ws = ws[1:]  # NAME(){ glued to its brace opens the same body (PR #648 review sweep)
         elif extended and len(ws[0]) > 1 and ws[0].endswith(")") \
                 and (ws[0].endswith("()") or "(" not in ws[0]):
             ws = ws[1:]  # a case-arm pattern word or a NAME() head names no command
@@ -1661,7 +1677,7 @@ def _brace_end(text, j):
     return len(text)
 
 
-def substitution_bodies(text, depth=0, _stop_paren=False):
+def substitution_bodies(text, depth=0, _stop_paren=False, flat=True):
     # Command substitution runs its body as a command BEFORE the outer word is used:
     # `echo $(rm -rf /)`, `x=\`rm -rf /\``, `diff <(curl ...) f` and $(...) inside an
     # unquoted heredoc all execute, yet no segment of the outer line names them (#592
@@ -1670,7 +1686,9 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
     # $((...)), and the body of a heredoc whose delimiter is quoted (<<"EOF", <<\EOF) --
     # so documentation and fixtures that QUOTE a shell example stay writable. Return
     # the command surface without heredoc bodies, plus patch bodies for target checks,
-    # plus each heredoc with the opener text around it (_fed_code finds its consumer).
+    # plus each heredoc with the opener text around it. flat=False returns each body RAW and
+    # only the heredocs of this text, in the order their << appear (_flow reads each body
+    # with its own heredocs, PR #648 review).
     out, i, n, in_sq, in_dq = [], 0, len(text), False, False
     ansi = False   # inside $<SQ>...<SQ>, where a backslash escapes the quote (P2-10)
     source_length, paren_level = n, 1
@@ -1899,7 +1917,7 @@ def substitution_bodies(text, depth=0, _stop_paren=False):
         raise ValueError("unclosed shell expansion context")
     if _stop_paren:
         return source_length, False
-    if depth < 4:
+    if depth < 4 and flat:
         analyzed = []
         for body in out:
             nested, inner_surface, nested_patches, nested_docs = substitution_bodies(body, depth + 1)
@@ -2413,104 +2431,308 @@ def _echo_data(ws):
 
 
 def _printed(body):
-    """What a substitution body prints when it is only echo/printf commands, else None."""
+    """What a substitution body prints, newlines read as spaces: echo/printf commands, or any
+    body whose output the reader can follow (cat <<< CMD, cat <<EOF, a pipe; _flow_output),
+    else None."""
     try:
         chunks = [_echo_data(_command_words(_tokenize(seg)[0])) for _j, seg in _split(body)]
     except ValueError:
-        return None
-    if not chunks or any(chunk is None for chunk in chunks):
-        return None
-    return " ".join(chunks).replace(chr(10), " ").strip()
+        chunks = None
+    if chunks and all(chunk is not None for chunk in chunks):
+        return " ".join(chunks).replace(chr(10), " ").strip()
+    out = _flow_output(body)
+    return None if out is None else out.replace(chr(10), " ").strip()
 
 
-def _herestrings(seg):
-    out, pending = [], False
-    for kind, value in shell_tokens(seg):
+# --- Who reads which body (PR #648 review PRRT_kwDOTWxN9c6vzGqz, PRRT_kwDOTWxN9c6vzGq3) -----
+# A simple command is its words plus its redirections, wherever they sit among the words, and
+# each pipeline stage is a command of its own, with its own redirections and its own standard
+# input. A heredoc or here-string body is read by the command that owns its << or <<< on fd 0
+# (or dup-ed onto it, 3<<B 0<&3), never by its place on the line, and an output redirection
+# (> f, 2>&1, &>/dev/null) never stops a command reading its input. A piped stage reads what
+# the stage before it writes, through | and |& alike, and cat, tee and the line filters pass
+# what they read on. Sources are UNIONED, never last-wins: bash and dash read only the last
+# stdin redirection, but zsh (MULTIOS, on by default) reads the pipe and every redirection in
+# turn and writes to a file AND the pipe; the hook does not know which shell runs the line.
+# A group, loop, exec or function call reading a body hands it to the commands inside it.
+_PASS_THROUGH = ("cat", "tee", "head", "tail", "tac", "sort", "uniq")
+_STDIN_FILES = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+_GROUP_CLOSERS = ("}", "done", "fi", "esac")
+_GROUP_OPENERS = ("{", "while", "until", "if", "for", "select", "case")
+_GH_WORD = re.compile(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)")
+_FLOW_OUT = {}
+
+
+def _redirs(seg):
+    """(words, [(fd, op, target)]) of ONE simple command: every redirection is an attribute of
+    the command wherever it sits among the words. fd is the descriptor it opens: 3<<B opens 3,
+    not standard input, and &> or &>> opens "&" (1 and 2)."""
+    words, redirs, pending = [], [], None
+    for kind, value, fd in shell_tokens(seg, with_fd=True):
         if kind == "redirect":
-            pending = value == "<<<"
+            pending = (fd, value)
         elif pending:
-            out.append(value)
-            pending = False
-    return out
+            redirs.append(pending + (value,))
+            pending = None
+        else:
+            words.append(value)
+    return words, redirs
 
 
-def _heredoc_owner(before, after):
-    """(words, write targets, pipe-target words) of the command a heredoc is attached to."""
-    starts_fresh = before.rstrip(BLANKS)[-1:] in tuple(";&|(" + chr(10)) or not before.strip()
-    pre = [] if starts_fresh else _split(before)
-    head_text = pre[-1][1] if pre else ""
-    post = _split(after)
-    lead = after.lstrip(BLANKS)[:1]
-    if not post or lead in tuple(";&|)" + chr(10)):   # nothing, a comment, or a separator
-        owner_text, k = head_text, 0
-    else:
-        owner_text, k = head_text + " " + post[0][1], 1
-    args, writes = _tokenize(owner_text) if owner_text.strip() else ([], [])
-    pipe = _command_words(_tokenize(post[k][1])[0]) if k < len(post) and post[k][0] == "|" else None
-    return _command_words(args), writes, pipe
+def _file_texts(word, written):
+    """[(text, armable)] a file operand holds when the line shows it: a process substitution
+    <(...) holds what its body prints (read while it runs, like a pipe); a file this line wrote
+    holds what was written there (a separate command, so a receipt never arms it)."""
+    m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)
+    if m:
+        out = _flow_output(_SUB_TEXTS[int(m[1])]) if int(m[1]) < len(_SUB_TEXTS) else None
+        return [(out, True)] if out else []
+    return [(t, False) for t in written.get(os.path.normpath(word), [])]
 
 
-def _fed_code(parts, docs):
-    """[(kind, program)] a shell or interpreter reads on stdin, or from a file this same command
-    wrote and then runs (#598): a heredoc or here-string handed to sh, echo/printf/cat piped
-    into it, `printf CMD > f.sh; sh f.sh`. A command the program could come from but whose
-    text this hook cannot see (a download, a file already on disk) stays beyond it."""
-    out, written = [], {}
-    for before, after, body in docs:
+def _reader_kind(ws):
+    """shell or interp when ws runs the program on its standard input: sh, bash -s, sh -,
+    python3, or a script operand naming standard input (sh /dev/stdin, source /dev/fd/0)."""
+    kind = _stdin_kind(ws)
+    if kind or not ws:
+        return kind
+    head = ws[0].rsplit("/", 1)[-1]
+    ops = [w for w in ws[1:] if not w.startswith(("-", "+"))]
+    if not ops or ops[0] not in _STDIN_FILES:
+        return None
+    if head in _SHELLS or head in ("source", "."):
+        return "shell"
+    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    return "interp" if key in _INLINE_FLAGS else None
+
+
+def _xargs_lines(args, ws, stdin):
+    """The command lines xargs builds from what it reads: its command with each input line in
+    place of the -I/-J/-i string, else with the input words appended. xargs splits its input
+    into ARGUMENTS (quotes honoured) and runs no shell, so a ; in the input is data."""
+    pre = args[:len(args) - len(ws)]
+    at = [i for i, w in enumerate(pre) if w.rsplit("/", 1)[-1] == "xargs"]
+    if not at or not ws or not stdin or _echo_data(ws) is not None:
+        return []   # xargs echo prints its input: data, as echo is
+    opts, repl = pre[at[-1] + 1:], None
+    for i, w in enumerate(opts):
+        if w in ("-I", "-J") and i + 1 < len(opts):
+            repl = opts[i + 1]
+        elif w in ("-i", "--replace"):
+            repl = "{}"
+        elif w.startswith("--replace="):
+            repl = w[len("--replace="):]
+        elif re.fullmatch(r"-[IJi].+", w, re.DOTALL):
+            repl = w[2:]
+    out = []
+    for text, _arm in stdin:
+        if repl:
+            out += [shlex.join([w.replace(repl, line) for w in ws])
+                    for line in text.split(chr(10)) if line.strip()]
+            continue
         try:
-            owner, writes, pipe = _heredoc_owner(before, after)
+            words = shlex.split(text)
         except ValueError:
-            # An opener line this reader cannot tokenize names no owner it could prove; the
-            # same text is judged as a segment below, and an unreadable segment refuses.
-            owner, writes, pipe = [], [], None
-        kind = _stdin_kind(owner)
-        if not kind and pipe is not None and owner[:1] and owner[0].rsplit("/", 1)[-1] in ("cat", "tee"):
-            kind = _stdin_kind(pipe)
-        if kind:
-            out.append((kind, body))
-        for w in writes:
-            written.setdefault(os.path.basename(w), []).append(body)
-    for part in parts:
-        prev = None
-        for join, seg in _split(part):
-            args, writes = _tokenize(seg)
+            words = text.split()
+        out.append(shlex.join(ws + words))
+    return out[:16]
+
+
+def _note_read(ws, stdin):
+    """read NAME... takes its value from standard input: each line it may read becomes a value
+    of NAME, so $NAME used as a command is judged as that line, as NAME=value is (#598)."""
+    names, i = [], 1
+    while i < len(ws):
+        w = ws[i]
+        if w == "--":
+            names += ws[i + 1:]
+            break
+        if w.startswith("-") and len(w) > 1:
+            i += 2 if w[-1] in "adinNptu" else 1
+            continue
+        names.append(w)
+        i += 1
+    for text, _arm in stdin:
+        values = {text.split(chr(10))[0], text.replace(chr(10), " ").strip()}
+        for name in names or ["REPLY"]:
+            for value in values:
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and len(_ASSIGNED.get(name, ())) < 8:
+                    _ASSIGNED.setdefault(name, set()).add(value)
+
+
+def _flow(surface, docs, inherit=(), written=None):
+    """The pipelines of one surface, [(join, [stage])]; docs are its own heredocs in the order
+    their << appear. A stage is a dict: seg, args (words as typed), ws (peeled), stdin (every
+    (text, armable) that may reach its fd 0), out (what it writes to stdout, when readable),
+    reads (it runs the program on its stdin), feeds ((kind, program, armable) it runs from
+    what it reads) and prev (the stage piped into it). armable: the text reaches the reader
+    inside the same pipeline, so a receipt &&-before that pipeline may arm what it runs."""
+    written = {} if written is None else written
+    parsed = []
+    for join, seg in _split(surface):
+        words, redirs = _redirs(seg)
+        parsed.append((join, seg, words, redirs))
+    opened = sum(op in ("<<", "<<-") for p in parsed for _fd, op, _t in p[3])
+    # A count that disagrees with the heredocs the scanner found would misplace bodies: each is
+    # then given to every command on the line instead, never dropped.
+    stray = [] if opened == len(docs) else [(body, False) for _b, _a, body in docs]
+    funcs = set()
+    for _j, _s, words, _r in parsed:
+        named = re.match(r"([A-Za-z_][A-Za-z0-9_.:-]*)(\(\))?\{?$", words[1] if words[:1] == ["function"]
+                         and len(words) > 1 else (words[0] if words else ""))
+        if named and (words[:1] == ["function"] or named[2] or words[1:2] == ["()"]):
+            funcs.add(named[1])
+    extra, pipes, local = {}, [], dict(written)
+    for _round in range(4):
+        pipes, k_doc, later, given = [], 0, list(stray), {}
+        local = {key: list(v) for key, v in written.items()}
+        for idx, (join, seg, args, redirs) in enumerate(parsed):
             ws = _command_words(args)
+            prev = pipes[-1][1][-1] if join == "|" and pipes else None
+            if prev is None:
+                pipes.append((join, []))
+            fds, writes = {}, []
+            for fd, op, target in redirs:
+                if op in ("<<", "<<-"):
+                    src = [(docs[k_doc][2], True)] if not stray and k_doc < len(docs) else []
+                    k_doc += 1
+                elif op == "<<<":
+                    src = [(target.replace(_QNL, chr(10)) + chr(10), True)]
+                elif op in ("<", "<>"):
+                    src = _file_texts(target, local)
+                elif op in ("<&", ">&") and target.isdigit():
+                    src = list(fds.get(int(target), []))
+                else:
+                    if fd in (1, "&") and target != "-" and not target.isdigit():
+                        writes.append(target)
+                    continue
+                fds.setdefault(fd, []).extend(src)
+            own = (prev["out"] if prev else []) + fds.get(0, [])   # zsh order: the pipe first
+            stdin = own + list(inherit) + later + extra.get(idx, [])
+            head = ws[0].rsplit("/", 1)[-1] if ws else ""
             data = _echo_data(ws)
-            for w in writes if data is not None else ():
-                written.setdefault(os.path.normpath(w), []).append(data)
-            kind = _stdin_kind(ws)
+            if data is not None:
+                flags = []
+                for a in ws[1:]:
+                    if not re.fullmatch(r"-[neE]+", a):
+                        break
+                    flags.append(a)
+                newline = head == "echo" and not any("n" in f for f in flags)
+                out = [(data + (chr(10) if newline else ""), True)]
+            elif head in _PASS_THROUGH:
+                ops = [a for a in ws[1:] if not a.startswith("-")]
+                out = list(stdin)
+                for f in ops:
+                    if head == "tee":
+                        local.setdefault(os.path.normpath(f), []).extend(t for t, _a in stdin)
+                    else:
+                        out += _file_texts(f, local)
+            else:
+                out = []
+            for f in writes:
+                local.setdefault(os.path.normpath(f), []).extend(t for t, _a in out)
+            kind, feeds = _reader_kind(ws), []
             if kind:
-                out += [(kind, hs.replace(_QNL, chr(10))) for hs in _herestrings(seg)]
-            if kind and join == "|" and prev is not None:
-                pdata = _echo_data(prev[0])
-                if pdata is not None:
-                    out.append((kind, pdata))
-                elif prev[0][:1] and prev[0][0].rsplit("/", 1)[-1] == "cat":
-                    out += [(kind, code) for f in prev[0][1:]
-                            for code in written.get(os.path.normpath(f), [])]
-                    out += [(kind, hs.replace(_QNL, chr(10))) for hs in _herestrings(prev[1])]
-                if _SUB_MARK in prev[1]:
-                    _FED_SUB.append(prev[1])
+                feeds += [(kind, t, a) for t, a in stdin]
+                if len(stdin) > 1:   # zsh reads them all, as one program, in this order
+                    feeds.append((kind, "".join(t for t, _a in stdin), all(a for _t, a in stdin)))
             script = _script_operand(ws)
-            if script:
-                out += [("shell", code) for code in written.get(os.path.normpath(script), [])]
-            prev = (ws, seg)
+            if script and script not in _STDIN_FILES:
+                feeds += [("shell", t, a) for t, a in _file_texts(script, local)]
+            feeds += [("shell", line, False) for line in _xargs_lines(args, ws, stdin)]
+            if head == "read":
+                _note_read(ws, stdin)
+            if stdin and _SUB_MARK in seg:
+                # $(cat) reads the standard input of the command it sits in: echo CMD | eval
+                # "$(cat)" runs CMD. The output is one word where it stands (an argument stays
+                # data); as the head it is split into the command it names.
+                for i, word in enumerate(ws):
+                    for m in re.finditer(_SUB_MARK + r"([0-9]+)_", word):
+                        k = int(m[1])
+                        fed = _flow_output(_SUB_TEXTS[k], stdin) if k < len(_SUB_TEXTS) else None
+                        if not fed or fed == _flow_output(_SUB_TEXTS[k]):
+                            continue
+                        new = word.replace(m[0], fed.strip(chr(10)))
+                        line = (new + " " + shlex.join(ws[1:])) if i == 0 \
+                            else shlex.join(ws[:i] + [new] + ws[i + 1:])
+                        feeds.append(("shell", line.strip(), all(a for _t, a in stdin)))
+            st = {"seg": seg, "args": args, "ws": ws, "stdin": stdin, "out": out,
+                  "reads": bool(kind), "feeds": feeds, "prev": prev}
+            pipes[-1][1].append(st)
+            quiet = [(t, False) for t, _a in own]
+            first = args[0] if args else ""
+            if quiet and first == "exec" and not ws:   # exec <<EOF: every later command reads it
+                later += quiet
+            if prev is not None and (first in _GROUP_OPENERS or first.startswith("(")):
+                later += quiet   # echo CMD | { ...; sh; }: the whole group reads the pipe
+            closer = first in _GROUP_CLOSERS or (bool(args) and args[-1].endswith(")")
+                                                 and not first.startswith("("))
+            if quiet and (closer or head in funcs):
+                for j in range(len(parsed)):   # { ...; sh; } <<EOF, f <<EOF: the body is read inside
+                    if j != idx:
+                        given.setdefault(j, [])
+                        given[j] += [q for q in quiet if q not in given[j]]
+        if given == extra:
+            break
+        extra = given
+    written.update(local)
+    return pipes
+
+
+def _flow_output(body, inherit=()):
+    """What a substitution body writes to standard output when every pipeline in it ends in a
+    command whose output is readable (echo, printf, cat or tee of a heredoc, here-string, pipe
+    or of what the body inherits on standard input), else None."""
+    key = (body, tuple(inherit))
+    if key not in _FLOW_OUT:
+        _FLOW_OUT[key] = None   # a body met again while it is read reads as unknown
+        try:
+            _raws, surface, _p, docs = substitution_bodies(body, 1, flat=False)
+            outs = [stages[-1]["out"] for _j, stages in _flow(surface, docs, inherit)]
+        except ValueError:
+            outs = []
+        if outs and all(outs):
+            _FLOW_OUT[key] = "".join(t for o in outs for t, _a in o)
+    return _FLOW_OUT[key]
+
+
+def _fed_code(surface, docs, written=None):
+    """[(kind, program)] the commands of ONE surface run from what they read (#598, PR #648
+    review): a shell or interpreter reading a heredoc, here-string, pipe, process substitution
+    or a file this line wrote, a command line xargs builds, a $(cat) reading the pipe (_flow).
+    A command the program could come from but whose text this hook cannot see (a download, a
+    file already on disk) stays beyond it."""
+    out = []
+    for _join, stages in _flow(surface, docs, written=written):
+        for st in stages:
+            out += [("interp" if kind == "interp" else "shell", prog) for kind, prog, _a in st["feeds"]]
+            if st["reads"] and st["prev"] is not None and _SUB_MARK in st["prev"]["seg"]:
+                _FED_SUB.append(st["prev"]["seg"])
+    out = list(dict.fromkeys(out))
     _FED_INTERP.extend(prog for kind, prog in out if kind == "interp")
     return out
 
 
-def _expand(text, depth=0):
-    """(command texts this line runs, patch bodies): the surface, every substitution body, and
-    every program it feeds a shell (or, via _code_commands, an interpreter) -- each judged as
-    command lines of their own."""
-    subs, surface, patches, docs = substitution_bodies(text)
-    parts = [surface] + subs
+def _expand(text, depth=0, nest=0, written=None):
+    """(command texts this line runs, patch bodies): the surface, every substitution body (each
+    read with its own heredocs), and every program a command reads (_fed_code) -- each judged
+    as command lines of their own."""
+    written = {} if written is None else written
+    raws, surface, patches, docs = substitution_bodies(text, 1 if nest else 0, flat=False)
+    parts = [surface]
+    for raw in raws:
+        if nest < 4:
+            more, more_patches = _expand(raw, depth, nest + 1, written)
+            parts += more
+            patches = patches + more_patches
+        else:
+            parts.append(raw)
     if depth < 3:
-        for kind, code in _fed_code(parts, docs):
+        for kind, code in _fed_code(surface, docs, written):
             if kind == "shell":
-                more, more_patches = _expand(code, depth + 1)
+                more, more_patches = _expand(code, depth + 1, 0, written)
                 parts += more
-                patches += more_patches
+                patches = patches + more_patches
             else:
                 parts += _code_commands(code)
     return parts, patches
@@ -2608,162 +2830,63 @@ def _repeats(args, ws):
                for w in args[:max(0, len(args) - len(ws))])
 
 
-def _receipt_pairs(surface):
-    """(join, args, fed_programs) per segment of a SURFACE (substitutions already lifted out).
-    fed_programs are what a shell consumer runs from its here-strings, or from echo/printf (or
-    cat <<< ...) piped into it, attached to the consumer with the pipeline leading join kept, so an
-    outer && receipt arms them exactly as it arms sh -c SEND (PR #648 review ...vvZV5). Every
-    here-string counts, not only the first. Heredoc bodies are judged per heredoc instead, in
-    _unreceipted_scope: a segment can carry several and bash reads the last."""
-    segs, out, i = _split(surface), [], 0
-    while i < len(segs):
-        join, seg = segs[i]
-        args = _tokenize(seg)[0]
-        ws = _command_words(args)
-        head = ws[0].rsplit("/", 1)[-1] if ws else ""
-        fed = list(_herestrings(seg)) if _stdin_kind(ws) == "shell" else []
-        if i + 1 < len(segs) and segs[i + 1][0] == "|":
-            nxt = _command_words(_tokenize(segs[i + 1][1])[0])
-            if _stdin_kind(nxt) == "shell":
-                data = _echo_data(ws)
-                data = [data] if data is not None else (
-                    list(_herestrings(seg)) if head == "cat" else [])
-                if data:
-                    fed, i = fed + data, i + 1   # the producer carries the join; skip the shell
-        out.append((join, args, [f.replace(_QNL, chr(10)) for f in fed]))
-        i += 1
-    return out
-
-
-def _shell_heredoc(before, after):
-    """True when a shell runs this heredoc as its program: the heredoc is the stdin of a shell,
-    or of cat/tee piped into one. A heredoc redirected into a file is a write (_fed_detached)."""
-    try:
-        owner, writes, pipe = _heredoc_owner(before, after)
-    except ValueError:
-        return False
-    if writes:
-        return False
-    head = owner[0].rsplit("/", 1)[-1] if owner else ""
-    return _stdin_kind(owner) == "shell" or (head in ("cat", "tee") and _stdin_kind(pipe) == "shell")
-
-
-def _heredoc_armed(before, text, armed):
-    """Whether an egress receipt arms the program in ONE heredoc: the pipeline that reads it is
-    &&-joined right after a receipt on its own line, or it opens a scope entered armed. Judged
-    per heredoc, so the second of `sh <<A <<B` is read as well as the first (PR #648 review
-    PRRT_kwDOTWxN9c6vxmAb)."""
-    pre = _split(before)
-    if not pre or before.rstrip(BLANKS)[-1:] in tuple(";&|(" + chr(10)):
-        return False
-    s = len(pre) - 1
-    while s > 0 and pre[s][0] == "|":
-        s -= 1
-    if s > 0:
-        return pre[s][0] == "&&" and _is_receipt(_tokenize(pre[s - 1][1])[0])
-    return bool(armed) and text.lstrip().startswith(before.lstrip())
-
-
-def _unreceipted(pairs, armed=False, depth=0):
-    """True when an off-repo write in pairs has no receipt immediately &&-before it."""
-    if armed and pairs:
-        # The scope was entered right after a receipt on the success path, so its FIRST command
-        # is &&-armed however it is joined inside the body (receipt && sh -c SEND).
-        pairs = [("&&",) + tuple(pairs[0][1:])] + list(pairs[1:])
-    for item in pairs:
-        join, args = item[0], item[1]
-        fed = item[2] if len(item) > 2 and depth < 3 else []
-        if _is_receipt(args):
+def _unreceipted_flow(pipes, armed=False, depth=0):
+    """True when an off-repo write in these pipelines (_flow) has no receipt immediately
+    &&-before it. A receipt arms the ONE pipeline &&-joined after it (or the first pipeline of a
+    scope entered armed): its first stage (a send, sh -c SEND, a launcher), and a program any of
+    its stages reads from a heredoc, here-string, pipe or process substitution. One receipt
+    covers exactly one send, so the first stage or program that runs one takes it. A stage
+    after a pipe is not itself &&-joined, so its own send or -c body is never armed; a DEFERRED
+    or REPEATED body never is either (PR #648 review)."""
+    for n, (join, stages) in enumerate(pipes):
+        token = armed and (join == "&&" or n == 0)
+        if len(stages) == 1 and _is_receipt(stages[0]["args"]):
             armed = True
             continue
-        ws = _command_words(args)
-        deferred = _is_deferred_def(ws)
-        repeat = _repeats(args, ws)
-        body = _inner_body(ws) if depth < 3 else None
-        # A body that runs NOW (sh -c, eval, a launcher, $c, or a program fed to a shell by a
-        # pipeline or heredoc) can be armed by an outer && receipt; a DEFERRED definition body
-        # cannot -- its send fires later, so the receipt must sit inside it (PR #648 review).
-        for run_body, defer in ([(body, deferred)] if body is not None else []) \
-                + [(program, False) for program in fed]:
-            lead = armed and join == "&&" and not defer and not repeat
-            try:
-                if _unreceipted_scope(run_body, lead, depth + 1):
-                    return True
-            except ValueError:
-                gh_word = re.search(r"(^|[^A-Za-z0-9_.-])gh([^A-Za-z0-9_.-]|$)", run_body)
-                if gh_word and not lead:
-                    return True
-        if body is not None or fed:
-            armed = False
-            continue
-        if _is_send(args):
-            if repeat or not (armed and join == "&&"):
-                return True   # a send a launcher may repeat needs its receipt inside it
-            armed = False  # one receipt covers exactly one send
-            continue
-        armed = False  # any other segment consumes the arming
+        armed = False
+        for k, st in enumerate(stages):
+            args, ws = st["args"], st["ws"]
+            repeat = _repeats(args, ws)
+            mine = token and k == 0 and not repeat
+            body = _inner_body(ws) if depth < 3 else None
+            runs = [(body, mine and not _is_deferred_def(ws))] if body is not None else []
+            if depth < 3:
+                for kind, prog, arm in st["feeds"]:
+                    if kind == "interp":
+                        runs += [(code, False) for code in _code_commands(prog)]
+                    else:
+                        runs.append((prog, token and arm and not repeat))
+            for text, lead in runs:
+                try:
+                    if _unreceipted_scope(text, lead, depth + 1):
+                        return True
+                except ValueError:
+                    if _GH_WORD.search(text) and not lead:
+                        return True
+            if runs:
+                token = False   # what this stage runs took the receipt
+                continue
+            if _is_send(args):
+                if not mine:
+                    return True   # not &&-joined to a receipt, or a launcher may repeat it
+                token = False   # one receipt covers exactly one send
     return False
 
 
-def _fed_detached(surface, docs=()):
-    """Shell programs fed by a construct an outer receipt CANNOT arm: a program written to a
-    file and then run (printf SEND > f; sh f, or cat > f <<EOF then sh f), or cat of such a file
-    piped to a shell. The receipt-to-send adjacency is broken by the intervening write, so each
-    is judged unarmed (PR #648 review). Pipelines and heredocs a receipt CAN arm: _receipt_pairs."""
-    written, out = {}, []
-    for before, after, body in docs:   # cat > f <<EOF writes body to f; python3 <<EOF runs it
-        try:
-            owner, writes, pipe = _heredoc_owner(before, after)
-        except ValueError:
-            owner, writes, pipe = [], [], None
-        for w in writes:
-            written.setdefault(os.path.normpath(w), []).append(body)
-        interp = owner if _stdin_kind(owner) == "interp" else (
-            pipe if _stdin_kind(pipe) == "interp" else None)
-        if interp is not None:
-            out += _code_commands(body)   # the shell commands the interpreter hands to the system
-    segs = _split(surface)
-    for i, (_join, seg) in enumerate(segs):
-        args = _tokenize(seg)[0]
-        ws = _command_words(args)
-        data = _echo_data(ws)
-        if data is not None:
-            for w in _tokenize(seg)[1]:
-                written.setdefault(os.path.normpath(w), []).append(data)
-            if i + 1 < len(segs) and segs[i + 1][0] == "|":   # echo CODE | python3
-                nxt = _command_words(_tokenize(segs[i + 1][1])[0])
-                if _stdin_kind(nxt) == "interp":
-                    out += _code_commands(data)
-        script = _script_operand(ws)
-        if script:
-            out += written.get(os.path.normpath(script), [])
-        if ws[:1] and ws[0].rsplit("/", 1)[-1] == "cat":   # cat f | shell, f written above
-            out += [c for f in ws[1:] for c in written.get(os.path.normpath(f), [])]
-    return out
-
-
-def _unreceipted_scope(text, armed=False, depth=0):
-    """One receipt scope: the SURFACE commands of text (armed by an incoming &&-receipt), then
-    each command substitution body as its OWN unarmed scope -- a send inside $(...) runs during
-    word expansion, so an outer receipt never arms it. substitution_bodies lifts every nested
-    body (at every depth) into subs as an analysed surface, so each is judged by _split alone;
-    re-parsing one would let a heredoc opener it still carries swallow the next command, which
-    the flat judge tolerated (PR #648 review PRRT_kwDOTWxN9c6vvZVy regression)."""
+def _unreceipted_scope(text, armed=False, depth=0, nest=0):
+    """One receipt scope: the pipelines of text (the first armed by an incoming &&-receipt),
+    then each command substitution body as its OWN unarmed scope -- a send inside $(...) runs
+    during word expansion, so an outer receipt never arms it. Each body is read raw, with its
+    own heredocs (substitution_bodies flat=False), so a heredoc inside $(...) is placed by the
+    same reader as one on the surface (PR #648 review)."""
     if depth > 4:
         return False
-    subs, surface, _patch, docs = substitution_bodies(text)
-    if _unreceipted(_receipt_pairs(surface), armed, depth):
+    raws, surface, _patch, docs = substitution_bodies(text, 1 if nest else 0, flat=False)
+    if _unreceipted_flow(_flow(surface, docs), armed, depth):
         return True
-    if depth < 3:
-        # EVERY heredoc a shell reads -- the second of `sh <<A <<B`, a <<- body, one inside a
-        # $(...) -- is its own scope, armed only by a receipt on its own line (or the scope lead).
-        for before, after, body in docs:
-            if _shell_heredoc(before, after) and \
-                    _unreceipted_scope(body, _heredoc_armed(before, text, armed), depth + 1):
-                return True
-        if any(_unreceipted_scope(prog, False, depth + 1) for prog in _fed_detached(surface, docs)):
-            return True
-    return any(_unreceipted(_receipt_pairs(sub), False, depth + 1) for sub in subs)
+    if nest >= 4:   # past the depth substitutions are read to: a gh word there refuses
+        return any(_GH_WORD.search(raw) for raw in raws)
+    return any(_unreceipted_scope(raw, False, depth, nest + 1) for raw in raws)
 
 
 if _unreceipted_scope(raw_command):
@@ -2786,12 +2909,12 @@ def _alias_refusal(ws):
         # A shell alias (! or --shell) expands to a command line; a plain alias to gh ARGS.
         body = alias[2] if alias[3] else "gh " + alias[2]
         try:
-            pairs = _body_pairs(body)
+            unreceipted = _unreceipted_scope(body)
         except ValueError:
-            pairs = [("start", body.split())]
+            unreceipted = _is_send(body.split())
         # The saved action is deferred, so an outer receipt cannot arm it: a send inside with
         # no receipt INSIDE the expansion is refused outright (PR #648 review).
-        if _unreceipted(pairs):
+        if unreceipted:
             return ("a gh alias whose expansion is an off-repo write runs it later; an outer "
                     "egress receipt cannot cover a deferred send (rule 5). Put the receipt "
                     "inside the alias, or run the write itself, receipted.")

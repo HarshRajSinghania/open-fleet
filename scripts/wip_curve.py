@@ -31,8 +31,10 @@ Two kinds of worker, ONE code path (first_run.py's pattern, #596):
       PATH, behind tripwires for every other harness name, with a private HOME. It applies each
       task's reference edit (or a scripted miss) and answers reviews; it calls no model and spends
       nothing. Its runs are labelled fixture-tested and are never protocol-compliant.
-  --worker live    the operator's real harness. Refused without an explicit --cost-cap-usd above
-      zero and a --model pin. Its runs are labelled live-unreviewed until a maintainer binds them.
+  --worker live    DISABLED (PR #668): refused, before anything is read or reserved, until the
+      container-based live harness lands (runtime/scripts/containment.py). The machinery stays:
+      the operator's real harness, refused without an explicit --cost-cap-usd above zero and a
+      --model pin, its runs labelled live-unreviewed until a maintainer binds them.
 
 Exit: 0 ok · 1 incomplete, mismatch or refused check · 2 usage or refused start · 3 fail-closed (a
 bound source is missing, altered or unreadable).
@@ -3350,7 +3352,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--results", required=True, help="the results directory (append-only; one dir per run)")
     r.add_argument("--cost-cap-usd", default=None, dest="cost_cap_usd",
                    help="REQUIRED: the spend cap the owner authorised, across every run in --results")
-    r.add_argument("--worker", choices=("inert", "live"), default="inert")
+    r.add_argument("--worker", choices=("inert", "live"), default="inert",
+                   help="live is disabled until the container-based live harness lands (PR #668)")
     r.add_argument("--agent", default="claude")
     r.add_argument("--model", default=None, help="the model pin (required for --worker live)")
     pick = r.add_mutually_exclusive_group()
@@ -3390,6 +3393,10 @@ PATH_ARGS = ("prereg", "results", "workdir", "out", "report", "report_md", "task
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    why = contain.live_disabled() if args.command == "run" and args.worker == "live" else None
+    if why:  # first, before anything is read or reserved (PR #668: the live tier is off)
+        print(f"wip-curve: refused: {why}", file=sys.stderr)
+        return EXIT_USAGE
     # Every path argument is absolute before anything runs: the runner, git and events.py later
     # work from other directories (a temporary repository, the run directory), where a relative
     # path names something else or nothing (PR #652's class; a relative bundle path did, #604).

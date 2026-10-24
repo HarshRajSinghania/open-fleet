@@ -23,9 +23,11 @@ ONE code path, two kinds of worker:
       spec and the change file it names, and answers in the harness's own result shape. No model
       is called and nothing is spent. A GO here is a FIXTURE result: it proves the fleet's
       route, never the harness.
-  --worker live             the operator's real harness on PATH does the review. The receipt
-      is labelled `live-unreviewed`: it becomes certification evidence only once a maintainer
-      binds it into docs/runs/ (runtime/providers/certification.json says which cells hold).
+  --worker live             DISABLED (PR #668): refused, before anything is read or created,
+      until the container-based live harness lands (containment.py). The machinery stays: the
+      operator's real harness on PATH does the review, and the receipt is labelled
+      `live-unreviewed`: it becomes certification evidence only once a maintainer binds it into
+      docs/runs/ (runtime/providers/certification.json says which cells hold).
 
 Profiles: `ro` (default; the review-it shape — the worker prints its report and has no tool to
 send mail. posix relays the completion line its assignment names as its `worker_done` and records a
@@ -999,7 +1001,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("mode", nargs="?", default="run", choices=("run", "probes"))
     ap.add_argument("--profile", default="ro", choices=("ro", "rw"))
     ap.add_argument("--agent", default="claude")
-    ap.add_argument("--worker", default="inert", choices=("inert", "live"))
+    ap.add_argument("--worker", default="inert", choices=("inert", "live"),
+                    help="live is disabled until the container-based live harness lands (PR #668)")
     ap.add_argument("--target", default=None, help="git repository to review (cloned; never modified)")
     ap.add_argument("--base", default="HEAD~1")
     ap.add_argument("--head", default="HEAD")
@@ -1061,6 +1064,10 @@ def emit(receipt: dict, path: Path, as_json: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    why = containment.live_disabled() if args.worker == "live" else None
+    if why:  # first, before anything is read, created or launched (PR #668: the live tier is off)
+        print(f"first_run.py: refused: {why}", file=sys.stderr)
+        return 2
     if args.worker == "live" and args.mode != "probes":
         # A live worker spends: it starts only where containment is proven, a detached system
         # binary included, before anything is created (PR #668 review: the strong probe).

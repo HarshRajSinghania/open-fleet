@@ -6,6 +6,16 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The paid live tier is disabled until the container-based live harness lands** (PR #668, the
+  owner's decision). `wip_curve.py run --worker live`, `ablation.py run --tier live`,
+  `hint_replay.py --live --tier live`, `eval.py run --suite trajectories --tier live` and
+  `first_run.py --worker live` each refuse on every host, exit 2, before they read or reserve
+  anything, with one message (`containment.LIVE_DISABLED`). No flag or environment variable
+  re-enables them. The containment helper and its fail-closed probe stay as they are. The live
+  machinery's tests drive it through the probe's Python-level seam, and new tests pin each
+  refusal. `docs/runtime-scripts.md` lists the harness's entry criteria: the three open P1s from
+  the Codex review at `9db89fbe3c` (a gate retried after `UNCONTAINED`, recovery that misses the
+  gate's markers, report-time oracle re-runs that lose theirs).
 - **The Orca pin moves to v1.4.238, and #606's registration is re-registered as version 2** (#508).
   The re-witness had held the pin because four docs in the ablation's registered payloads needed
   edits. The ablation had not run, so this change applies them and re-registers it in one step

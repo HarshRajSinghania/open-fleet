@@ -43,7 +43,9 @@ Usage:
     python3 scripts/eval.py run --suite trajectories --tier live --case <id>|--all-live \
         --agent-cmd <cmd> --model <id> --harness-version <v> --cost-cap-usd <N> [--out <dir>]
 
-`--tier live` is the trajectory suite's model-dependent arm (#602): it runs --agent-cmd under
+`--tier live` is the trajectory suite's model-dependent arm (#602). It is DISABLED (PR #668):
+refused, before anything is read or reserved, until the container-based live harness lands
+(runtime/scripts/containment.py). The machinery stays: it runs --agent-cmd under
 scripts/trajectory_harness.py and grades the recording with the same replay. It spends money, so
 it refuses to start without an explicit cap; its output is never evidence until a run report binds
 it (scripts/_trajectory_live.py says how the spend is guarded).
@@ -1170,6 +1172,10 @@ def run_trajectory_live(args: argparse.Namespace) -> int:
     """`run --suite trajectories --tier live`: exit 2 refused (nothing run), 0 when every
     planned cell ran and graded PASS, 1 otherwise. Never evidence (see _trajectory_live.py)."""
     live = _trajectory_live()
+    why = live.guard().live_disabled()
+    if why:  # first, before the suite is read or anything reserved (PR #668: the live tier is off)
+        print(f"Trajectory live run refused: {why}", file=sys.stderr)
+        return 2
     try:
         run_dir, results = live.run_live(args)
     except live.guard().Refused as err:

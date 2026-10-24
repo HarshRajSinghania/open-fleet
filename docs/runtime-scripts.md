@@ -620,7 +620,10 @@ and `first_run.py probes [--workdir <dir>] [--keep] [--json]`.
 for every other harness name. It calls no model and its receipt reads `fixture-tested`. The
 stand-in is LITERAL: its final answer is the report only when the assignment asks for that, and
 otherwise a one-line summary, as a live worker answered when the rw assignment never asked (#596).
-`--worker live` uses the operator's real harness. That run spends, and its receipt reads
+`--worker live` is disabled until the container-based live harness lands
+([`containment.py`](#containmentpy)): it is refused, exit 2, before anything is read or created.
+The machinery it would run stays and is described here. `--worker live` uses the operator's real
+harness. That run spends, and its receipt reads
 `live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
 when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
 different file than the operator's own PATH does (`harness_shadow`).
@@ -729,6 +732,34 @@ On macOS the strong probe fails, so a live run refuses there, as intended. Run l
 disposable Linux container (OrbStack provides one on macOS). There, `/proc/<pid>/environ` shows
 every process the user owns, and destroying the container is the final backstop for anything a
 sweep could not reach.
+
+**The paid live tier is disabled (PR #668).** Until the container-based live harness lands, every
+paid live entry point refuses, on every host, before it reads or reserves anything: exit 2 and one
+message (`containment.LIVE_DISABLED`). The five are `wip_curve.py run --worker live`,
+`ablation.py run --tier live`, `hint_replay.py --live --tier live`,
+`eval.py run --suite trajectories --tier live` and `first_run.py --worker live`. No flag,
+environment variable or argument re-enables them. The marker, the sweep and the strong probe stay
+as they are, and the harness builds on them. The live machinery's tests drive it through the same
+Python-level seam as the probe: they replace `live_disabled()` in their own process.
+
+**The container harness's entry criteria.** The live tier comes back only when the harness runs
+each live arm in a disposable Linux container and these three findings from the Codex review of
+PR #668 at `9db89fbe3c` are fixed, each with a test that fails without its fix:
+
+1. **A merge gate never starts after failed containment.** In the WIP-curve runner, a gate that
+   writes `UNCONTAINED` is treated today as an ordinary gate failure: the entry is bounced, and
+   another unit's oracle can launch while the first gate's child survives. Containment must be
+   checked right after every drain, and the run stopped before any bounce or retry.
+2. **Crash recovery sweeps the gate's markers.** Recovery reads only the markers in the spend
+   ledger. A runner that dies after an uncontained gate, but before `gate_tags()` copies the
+   gate's markers into the ledger, leaves `gate-tags.txt` unread, so the next run starts without
+   sweeping the surviving child. Recovery must read the gate journal on its own, or the markers
+   must be made durable before each gate launches.
+3. **Report-time oracle re-runs keep their markers.** The report's binding re-run of an oracle
+   (`run_oracle` under a temporary directory) records no markers. Failed containment there raises
+   without a final sweep or a durable record, so a surviving child is outside every later run
+   check, and the temporary directory deletes the files the error says were kept. Its markers must
+   be recorded durably and swept, and a failed-containment directory must be kept.
 
 ## `events.py`
 
@@ -1211,7 +1242,9 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
 
 The owner-authorised live run (USD 40 cap; 2 scenarios × 3 arms × 3 attempts = 18 calls at a
 USD 2 reservation each, so all 18 fit even if every call were charged its full reservation), from
-a disposable checkout:
+a disposable checkout. The live tier is now disabled until the container-based live harness lands
+([`containment.py`](#containmentpy)), so this command is refused, exit 2, before the corpus is
+read:
 
 ```bash
 python3 scripts/hint_replay.py --live --tier live --model sonnet \

@@ -208,6 +208,11 @@ UNRUN needs: a separately authorized spend budget and a disposable environment; 
 
 ## Running the live arm
 
+**The live tier is disabled until the container-based live harness lands (PR #668).** Both
+commands below are refused, exit 2, before anything is read or reserved, on every host
+([`containment.py`](runtime-scripts.md#containmentpy)). They are kept as the design the harness
+will run.
+
 The live cells above are UNRUN, and **no live result is claimed until a run report under
 [`docs/runs/`](runs/) binds the run** (`runtime/scripts/run_report.py`). A run's own output says
 `live-unreviewed`. These commands spend money: run them only under an authorised budget, in a

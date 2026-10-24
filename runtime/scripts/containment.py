@@ -7,6 +7,8 @@ every member of the given groups and every descendant of any of them, until a fr
 none; it fails closed when one survives or when the process table cannot be read.
 `containment_problem` is the host check a paid live run makes before it reserves anything: probes
 in sessions of their own, carrying a marker, must show up in the process table by that marker.
+`live_disabled` is the refusal every paid live entry point gives first: the live tier is disabled
+until the container-based live harness lands (PR #668).
 
 One helper, shared: scripts/_ablation_run.py (#606/#657, its watchdog and contained_run),
 first_run.py and the WIP-curve runner use this module. It ships in the runtime bundle, which
@@ -35,6 +37,22 @@ CALL_MARKER = "OF_CALL_ID"
 # A second marker, alongside the call's: one dispatch of a run carries its own tag, so what that one
 # dispatch left behind can be found and ended before its call is settled (PR #668 review).
 DISPATCH_MARKER = "OF_DISPATCH_TAG"
+
+# The paid live tier is DISABLED (PR #668, the owner's decision). Every paid entry point refuses a
+# live run with this one message, exit 2, before it reads or reserves anything, on every host,
+# until the container-based live harness lands: wip_curve.py run --worker live, ablation.py run
+# --tier live, hint_replay.py --live --tier live, eval.py run --suite trajectories --tier live and
+# first_run.py --worker live. No flag, environment variable or argument re-enables it. The
+# marker, the sweep and the probe stay as they are: the harness will build on them.
+LIVE_DISABLED = ("live runs are disabled until the container-based live harness lands (PR #668): "
+                 "nothing was read, reserved or run")
+
+
+def live_disabled():
+    """Why a paid live run does not start: LIVE_DISABLED, always. Each entry point asks this
+    function rather than read the constant so that the live machinery's own tests can replace it
+    in their process (the Python-level seam the host probe uses); nothing in production can."""
+    return LIVE_DISABLED
 
 
 def environ_of(pid):

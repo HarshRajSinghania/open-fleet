@@ -68,6 +68,19 @@ _tables_spec = importlib.util.spec_from_file_location("fixture_containment_table
 TABLES = importlib.util.module_from_spec(_tables_spec)  # a process table blind to system binaries (PR #668)
 _tables_spec.loader.exec_module(TABLES)
 
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). These
+# tests drive the live machinery, so setUpModule lifts it in this process, the Python-level seam the
+# host probe uses; TestTheLiveTierIsDisabled puts the real one back, and runs the CLI as its own
+# process too.
+REAL_LIVE_GATE = wip.contain.live_disabled
+DISABLED = "live runs are disabled until the container-based live harness lands"
+SEAMS: dict = {}
+
+
+def setUpModule():
+    SEAMS["live"] = mock.patch.object(wip.contain, "live_disabled", lambda: None)
+    SEAMS["live"].start()
+
 
 def tripwired_env(tmp: Path) -> tuple[dict, Path]:
     """SHELL=/bin/sh and a tripwire for every harness name first on PATH (test_certification.py)."""
@@ -652,6 +665,50 @@ class TestDecisionRule(unittest.TestCase):
 
 # ---------------------------------------------------------------------------- refusals + gate
 
+class TestTheLiveTierIsDisabled(Tmp):
+    """PR #668, the owner's decision: `wip_curve.py run --worker live` is refused on every host, exit
+    2, before the pre-registration is read or anything reserved, until the container-based live
+    harness lands. The owner's authorised cap and reservation change nothing."""
+
+    def argv(self):
+        return ["run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"),
+                "--worker", "live", "--agent", "claude", "--model", "m", "--cost-cap-usd", "20",
+                "--reservation-usd", "0.25", "--next", "1"]
+
+    def test_a_live_run_is_refused_before_anything_is_read(self):
+        env, trip_log = tripwired_env(self.tmp)
+        with mock.patch.object(wip.contain, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(wip, "load_prereg", side_effect=AssertionError("the registration was read")), \
+                mock.patch.object(wip, "dirty_inputs", side_effect=AssertionError("the inputs were read")):
+            p = run_in_process(["--prereg", str(self.tmp / "no-such-prereg.json"), *self.argv()], env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(DISABLED, p.stderr)
+        self.assertIn("PR #668", p.stderr)
+        self.assertEqual(len(p.stderr.strip().splitlines()), 1, p.stderr)
+        self.assertFalse((self.tmp / "results").exists(), "a refused live run created its results")
+        self.assertFalse((self.tmp / "wd").exists(), "a refused live run created its sandbox")
+        self.assertFalse(trip_log.exists(), "a refused live run reached a harness")
+
+    def test_the_cli_refuses_as_its_own_process(self):
+        # No seam at all: the script as an operator runs it.
+        env, trip_log = tripwired_env(self.tmp)
+        p = subprocess.run([sys.executable, str(RUNNER), *self.argv()], cwd=str(ROOT), env=env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(DISABLED, p.stderr)
+        self.assertFalse((self.tmp / "results").exists())
+        self.assertFalse(trip_log.exists())
+
+    def test_the_inert_worker_is_untouched(self):
+        env, _trip_log = tripwired_env(self.tmp)
+        with mock.patch.object(wip.contain, "live_disabled", REAL_LIVE_GATE):
+            p = run_in_process(["run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"),
+                                "--runs", "wip1-b1r1-rep1-a3", "--cost-cap-usd", "0"], env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("one re-run", p.stderr)
+        self.assertNotIn(DISABLED, p.stderr)
+
+
 class TestRunRefusals(Tmp):
     """Refusals happen before anything launches: no run directory, no tripwire hit."""
 
@@ -836,6 +893,7 @@ B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd",
 
 
 def tearDownModule():
+    SEAMS["live"].stop()
     for tmp, *_rest in _DRY_RUNS.values():
         tmp.cleanup()
     if "tmp" in _DOCUMENTED:

@@ -62,6 +62,23 @@ def _load(name: str, path: Path):
 certification = _load("certification_under_test", SCRIPTS / "certification.py")
 first_run = _load("first_run_under_test", SCRIPTS / "first_run.py")
 TABLES = _load("fixture_containment_tables", ROOT / "tests" / "fixtures" / "containment_tables.py")  # PR #668
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). The live
+# first-run tests drive the live machinery, so setUpModule lifts it in this process, the Python-level
+# seam the host probe uses; TestTheLiveTierIsDisabled puts the real one back, and runs the CLI as its
+# own process too.
+REAL_LIVE_GATE = first_run.containment.live_disabled
+DISABLED = "live runs are disabled until the container-based live harness lands"
+SEAMS: dict = {}
+
+
+def setUpModule():
+    SEAMS["live"] = mock.patch.object(first_run.containment, "live_disabled", lambda: None)
+    SEAMS["live"].start()
+
+
+def tearDownModule():
+    SEAMS["live"].stop()
+
 
 LEAKY = ("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", "OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME",
          "OPEN_FLEET_STATE_DB", "OPEN_FLEET_STATE_DIR", "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE",
@@ -550,7 +567,8 @@ class TestFirstRunFixture(Tripwired):
         self.assertIsNotNone(agent, "every posix harness is installed system-wide; nothing safe to probe")
         # A proven host injected at the Python level: this test is about prerequisites, not this
         # machine's process table (PR #668 review: the strong probe refuses a live run on macOS).
-        boot = TABLES.proven_host(sys.executable, SCRIPTS / "first_run.py", "mod.containment.containment_problem = proven")
+        boot = TABLES.proven_host(sys.executable, SCRIPTS / "first_run.py", "mod.containment.containment_problem = proven; "
+                                  "mod.containment.live_disabled = lifted")
         p = subprocess.run([*boot, "--worker", "live", "--agent", agent, "--workdir", str(self.tmp / "live"), "--json"],
                            env={**self.env, "PATH": bare}, cwd=str(ROOT), capture_output=True, text=True, timeout=300)
         receipt = json.loads(p.stdout)
@@ -737,6 +755,60 @@ class TestALiveFirstRunNeedsProvenContainment(Tripwired):
         self.assertEqual(rc, 2, err.getvalue())
         self.assertIn("process discovery cannot contain", err.getvalue())
         self.assertFalse(wd.exists(), "a refused live run created its sandbox")
+
+
+class TestTheLiveTierIsDisabled(Tripwired):
+    """PR #668, the owner's decision: `first_run.py --worker live` is refused on every host, exit 2,
+    before anything is read, created or launched, until the container-based live harness lands.
+    The inert worker, which spends nothing, is untouched."""
+
+    def test_a_live_first_run_is_refused_before_anything_is_created(self):
+        err, wd = io.StringIO(), self.tmp / "fr"
+        with mock.patch.object(first_run.containment, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(first_run.containment, "containment_problem",
+                                  side_effect=AssertionError("the host was probed")), \
+                mock.patch.object(first_run, "make_workdir", side_effect=AssertionError("a sandbox was made")), \
+                mock.patch.dict(os.environ, self.env, clear=True), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = first_run.main(["--worker", "live", "--profile", "ro", "--target", str(self.tmp / "no-such-repo"),
+                                 "--workdir", str(wd), "--json"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn(DISABLED, err.getvalue())
+        self.assertIn("PR #668", err.getvalue())
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1, err.getvalue())
+        self.assertFalse(wd.exists(), "a refused live run created its sandbox")
+
+    def test_the_cli_refuses_as_its_own_process_for_either_profile(self):
+        # No seam at all: the script as an operator runs it, as the certification page shows it.
+        for profile in ("ro", "rw"):
+            with self.subTest(profile=profile):
+                wd = self.tmp / f"cli-{profile}"
+                p = self.run_py("first_run.py", "--worker", "live", "--agent", "claude", "--profile", profile,
+                                "--keep", "--workdir", str(wd), "--json")
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn(DISABLED, p.stderr)
+                self.assertEqual(p.stdout, "", "a refused live run printed a receipt")
+                self.assertFalse(wd.exists())
+
+    def test_every_mode_refuses_a_live_worker(self):
+        # `probes` never launches the worker it is given, but `--worker live` is refused there too:
+        # the rule is unconditional.
+        err = io.StringIO()
+        with mock.patch.object(first_run.containment, "live_disabled", REAL_LIVE_GATE), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = first_run.main(["probes", "--worker", "live", "--workdir", str(self.tmp / "probes")])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn(DISABLED, err.getvalue())
+        self.assertFalse((self.tmp / "probes").exists())
+
+    def test_the_inert_worker_passes_the_gate(self):
+        class Reached(Exception):
+            """main() got past the gate to the sandbox it makes."""
+
+        with mock.patch.object(first_run.containment, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(first_run, "make_workdir", side_effect=Reached):
+            with self.assertRaises(Reached):
+                first_run.main(["--worker", "inert", "--workdir", str(self.tmp / "inert")])
 
 
 class TestDocsCarryTheGeneratedMatrix(unittest.TestCase):

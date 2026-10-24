@@ -49,6 +49,11 @@ SAFETY = {}
 # never an environment variable or flag): these tests are about the runner, not this machine. The
 # probe's own tests, and the refusal tests, put the real one back (PR #668 review).
 REAL_PROBE, REAL_TABLE = runner.containment_problem, runner.process_table
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). These
+# tests drive the live machinery, so setUpModule lifts it in this process the same Python-level
+# way; TheLiveTierIsDisabled puts the real one back, and runs the CLI as its own process too.
+REAL_LIVE_GATE = runner.live_disabled
+DISABLED = "live runs are disabled until the container-based live harness lands"
 
 def _fixture(name):
     spec = importlib.util.spec_from_file_location(f"fixture_{name}", ROOT / "tests" / "fixtures" / f"{name}.py")
@@ -72,9 +77,12 @@ def setUpModule():
     os.environ["SHELL"] = "/bin/sh"
     SAFETY["probe"] = mock.patch.object(runner, "containment_problem", lambda system_binary=True: None)
     SAFETY["probe"].start()
+    SAFETY["live"] = mock.patch.object(runner, "live_disabled", lambda: None)
+    SAFETY["live"].start()
 
 
 def tearDownModule():
+    SAFETY["live"].stop()
     SAFETY["probe"].stop()
     os.environ["PATH"] = SAFETY["path"]
     if SAFETY["shell"] is None:
@@ -781,7 +789,8 @@ class InterruptedSpendIsRecorded(SafetyNet):
     def test_a_real_sigterm_mid_agent_records_the_reservation_durably(self):
         env = {**os.environ, "SHELL": "/bin/sh"}
         proc = subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
-                                                     "mod._runner().containment_problem = proven"),
+                                                     "mod._runner().containment_problem = proven; "
+                                                     "mod._runner().live_disabled = lifted"),
                                  *self.live(20, "--timeout", "60", agent="hang")],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(self.out) if pid_alive(p)])
@@ -1196,7 +1205,8 @@ class TheWatchdogCleansUpBeforeItLetsGo(SafetyNet):
     def spawn(self, argv):
         env = {**os.environ, "SHELL": "/bin/sh"}
         proc = subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
-                                                     "mod._runner().containment_problem = proven"), *argv],
+                                                     "mod._runner().containment_problem = proven; "
+                                                     "mod._runner().live_disabled = lifted"), *argv],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         return proc
@@ -1379,6 +1389,55 @@ class TestTheContainmentProbeCoversASystemBinary(unittest.TestCase):
                 mock.patch.object(runner, "process_table", blind_but_to_python):
             self.assertIsNotNone(runner.containment_problem(system_binary=True),
                                  "a table blind to system binaries was trusted")
+
+
+class TheLiveTierIsDisabled(SafetyNet):
+    """PR #668, the owner's decision: `ablation.py run --tier live` is refused on every host, exit 2,
+    before the registration is read or anything reserved, until the container-based live harness
+    lands. The registration still records an AUTHORISED cap; that changes nothing."""
+
+    def live_argv(self, prereg, out):
+        return ["--prereg", str(prereg), "run", "--tier", "live", "--cost-cap-usd", "5",
+                "--harness-cmd", self.stub_cmd("plain"), "--model", "stub-not-a-model",
+                "--harness-version", "0", "--out", str(out)]
+
+    def test_a_live_run_is_refused_before_the_registration_is_read(self):
+        out = self.tmpdir() / "out"
+        with mock.patch.object(runner, "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(ablation, "load_prereg", side_effect=AssertionError("the registration was read")):
+            code, _stdout, err = run_main(self.live_argv(self.tmpdir() / "no-such-prereg.json", out))
+        self.assertEqual(code, 2, err)
+        self.assertIn(DISABLED, err)
+        self.assertIn("PR #668", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertFalse(out.exists(), "a refused live run wrote its results directory")
+
+    def test_an_authorised_registration_does_not_reenable_it(self):
+        out = self.tmpdir() / "out"
+        self.assertEqual(PREREG["cost_cap"]["status"], ablation.AUTHORISED)
+        with mock.patch.object(runner, "live_disabled", REAL_LIVE_GATE):
+            code, _stdout, err = run_main(self.live_argv(ablation.PREREG, out))
+        self.assertEqual(code, 2, err)
+        self.assertIn(DISABLED, err)
+        self.assertFalse(out.exists(), "a refused live run reserved its spend ledger")
+
+    def test_the_cli_refuses_as_its_own_process(self):
+        # No seam at all: the script as an operator runs it.
+        out = self.tmpdir() / "out"
+        p = subprocess.run([sys.executable, str(ROOT / "scripts" / "ablation.py"),
+                            *self.live_argv(self.tmpdir() / "no-such-prereg.json", out)],
+                           env={**os.environ, "SHELL": "/bin/sh"}, capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(DISABLED, p.stderr)
+        self.assertFalse(out.exists())
+
+    def test_the_fixture_and_stub_tiers_are_untouched(self):
+        with mock.patch.object(runner, "live_disabled", REAL_LIVE_GATE):
+            code, _stdout, err = run_main(["run", "--tier", "stub", "--cost-cap-usd", "0",
+                                           "--out", str(self.tmpdir() / "out")])
+        self.assertEqual(code, 2, err)
+        self.assertIn("needs --harness-cmd", err)
+        self.assertNotIn(DISABLED, err)
 
 
 @contextlib.contextmanager

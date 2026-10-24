@@ -82,9 +82,12 @@ def setUpModule():
     SAFETY["probe"].start()
     SAFETY["live"] = mock.patch.object(eval_mod, "_trajectory_live", lambda: live_mod)  # eval reaches the same guard
     SAFETY["live"].start()
+    SAFETY["gate"] = mock.patch.object(live_mod.guard(), "live_disabled", lambda: None)
+    SAFETY["gate"].start()
 
 
 def tearDownModule():
+    SAFETY["gate"].stop()
     SAFETY["live"].stop()
     SAFETY["probe"].stop()
     os.environ["PATH"] = SAFETY["path"]
@@ -1234,6 +1237,11 @@ live_mod = _load("trajectory_live_under_test", "scripts/_trajectory_live.py")
 # The host probe, as the live runner's guard has it. setUpModule injects a proven host in its place
 # (Python-level, never an environment variable or flag); the refusal tests put the real one back.
 REAL_PROBE, REAL_TABLE = live_mod.guard().containment_problem, live_mod.guard().process_table
+# The live tier's refusal (PR #668: disabled until the container-based live harness lands). These
+# tests drive the live machinery, so setUpModule lifts it in this process the same Python-level
+# way; TheLiveTierIsDisabled puts the real one back, and runs the CLI as its own process too.
+REAL_LIVE_GATE = live_mod.guard().live_disabled
+DISABLED = "live runs are disabled until the container-based live harness lands"
 TABLES = _load("fixture_containment_tables", "tests/fixtures/containment_tables.py")  # PR #668 review
 
 
@@ -1479,7 +1487,7 @@ class LiveRunner(SafetyNet):
 
     def _runner(self, argv):
         inject = ("live = mod._trajectory_live(); live.guard().containment_problem = proven; "
-                  "mod._trajectory_live = lambda: live")
+                  "live.guard().live_disabled = lifted; mod._trajectory_live = lambda: live")
         return subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "eval.py", inject), *argv],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -1721,6 +1729,49 @@ class LiveRunner(SafetyNet):
 # ---------------------------------------------------------------------------
 # #606's paired runner, with the harness as its agent-command prefix
 # ---------------------------------------------------------------------------
+class TheLiveTierIsDisabled(SafetyNet):
+    """PR #668, the owner's decision: `eval.py run --suite trajectories --tier live` is refused on
+    every host, exit 2, before the suite is read or anything reserved, until the container-based
+    live harness lands. The fixture tier, the pinned replay, is untouched."""
+
+    def argv(self, out):
+        return ["run", "--suite", "trajectories", "--tier", "live", "--all-live",
+                "--agent-cmd", "unused", "--model", "inert-stand-in", "--harness-version", "0.0.0-test",
+                "--cost-cap-usd", "5", "--out", str(out)]
+
+    def test_a_live_run_is_refused_before_anything_is_read(self):
+        out = self.tmpdir() / "out"
+        err = io.StringIO()
+        with mock.patch.object(live_mod.guard(), "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(live_mod, "run_live", side_effect=AssertionError("the live runner started")), \
+                mock.patch.object(eval_mod, "load_json", side_effect=AssertionError("the suite was read")), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = eval_mod.main(self.argv(out))
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertIn(DISABLED, err.getvalue())
+        self.assertIn("PR #668", err.getvalue())
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1, err.getvalue())
+        self.assertFalse(out.exists(), "a refused live run reserved its spend ledger")
+
+    def test_the_cli_refuses_as_its_own_process(self):
+        # No seam at all: the script as an operator runs it.
+        out = self.tmpdir() / "out"
+        p = subprocess.run([sys.executable, str(ROOT / "scripts" / "eval.py"), *self.argv(out)],
+                           env={**os.environ, "SHELL": "/bin/sh"}, capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(DISABLED, p.stderr)
+        self.assertFalse(out.exists())
+
+    def test_the_fixture_tier_passes_the_gate(self):
+        err = io.StringIO()
+        with mock.patch.object(live_mod.guard(), "live_disabled", REAL_LIVE_GATE), \
+                mock.patch.object(eval_mod, "run_trajectory_eval", return_value={"error": "reached"}) as replay, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            eval_mod.main(["run", "--suite", "trajectories"])
+        replay.assert_called_once()
+        self.assertNotIn(DISABLED, err.getvalue())
+
+
 class AblationTrajectoryCells(SafetyNet):
     def test_a_trajectory_cell_starts_from_the_replays_initial_state(self):
         """#606 materializes a trajectory cell's workspace itself; a repo-document injection

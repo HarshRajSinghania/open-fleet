@@ -298,6 +298,11 @@ Expected output: one `PROBE=<name> REFUSED` line per probe, then `PROBES=GO`.
 
 ### 3. Live first run (one command per profile)
 
+**Disabled until the container-based live harness lands (PR #668).** `--worker live` is refused,
+exit 2, before anything is read or created, on every host
+([`containment.py`](runtime-scripts.md#containmentpy)). The commands below are the ones the live
+cells were bound with, kept for the record and for the harness that replaces them:
+
 ```bash
 PATH="<harness-dir>:$PATH" python3 runtime/scripts/first_run.py --worker live --agent claude \
   --profile ro --keep --workdir <runs>/ro --json > <runs>/ro.receipt.json

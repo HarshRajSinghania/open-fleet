@@ -185,9 +185,31 @@ so it is retained but unbound.
   before and after, and are identical. The two Runs remain: Orca's CLI has no command to delete
   one. Each holds one cancelled task.
 
+**Why the inject was not recognized: not the launch line.** Orca's agent-presence check for
+`dispatch --inject` never reads launch arguments. Read upstream at v1.4.229 (`a0cd1644`) and
+v1.4.238 (`e6f7fba5`), where every file below is identical:
+
+- `src/main/runtime/runtime-terminal-agent-presence.ts`
+- `src/shared/agent-process-recognition.ts`
+- `src/shared/tui-agent-config.ts`
+- `src/main/runtime/agent-state-rules/claude.json`
+- `src/main/runtime/terminal-wait-detection.ts`
+- `src/main/runtime/agent-state-rules/agent-state-text-anchors.ts`
+- `src/main/runtime/rpc/methods/orchestration/runs/dispatch-methods.ts`
+
+The check reads four things: the pane and tab titles (for Claude, the `✳` rest glyph), Orca's
+agent status, known ready-prompt text, and the PTY's foreground process name. That name is
+node-pty's `.process`, the kernel's short name for the executable file on macOS. Claude Code's
+native installer runs `~/.local/share/claude/versions/2.1.304`, so the name is `2.1.304`: a
+stand-in binary launched through a `claude` symlink reads `ucomm=2.1.304`. The recognizer has
+versioned-binary rules for `codex-*`, `qoder*`, `grok-*` and `muse-bin-*`, but none for
+Claude's native layout. Presence therefore rested on Claude's title alone, which evidently was
+not there when the inject came. `--disallowedTools` and `--permission-mode plan` play no part.
+The code is unchanged at 1.4.238, so a re-witness should expect the same refusal there unless
+the pane shows Claude's rest title first. That makes it an upstream gap, not a fault in this row.
+
 Still owed: a fresh Orca `ro`/`claude` witness on the current row. It can now run only at the
-build installed on this Mac, Orca 1.4.238, so it belongs with the pin move to 1.4.238 and
-should also establish why the inject was not recognized.
+build installed on this Mac, Orca 1.4.238, so it belongs with the pin move to 1.4.238.
 
 ## Verifier outcome (recorded exactly)
 

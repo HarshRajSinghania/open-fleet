@@ -1008,9 +1008,13 @@ class LiveRunner(SafetyNet):
                       key=lambda d: d.stat().st_mtime)
 
     def results(self, out):
+        """The latest run's results. A runner that wrote them at the top of --out (before each
+        run had its own directory) is still read, so a test fails for its own reason there;
+        test_each_run_keeps_its_own_cells_and_results pins the per-run layout."""
         dirs = self.run_dirs(out)
-        self.assertTrue(dirs, f"no run under {out} wrote its results")
-        return json.loads((dirs[-1] / "results.json").read_text(encoding="utf-8"))
+        path = dirs[-1] / "results.json" if dirs else out / "results.json"
+        self.assertTrue(path.is_file(), f"no run under {out} wrote its results")
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def ledger(self, out):
         return [json.loads(ln) for ln in (out / "spend.jsonl").read_text().splitlines() if ln]

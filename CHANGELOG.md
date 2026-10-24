@@ -11,13 +11,17 @@ truth is `.claude-plugin/plugin.json`.
   agent's Claude stream-json into the #602 events. A denied or failed call is an attempt, never
   applied. An unknown tool is an `Unmapped` event the replay refuses and grades as an attempt. A
   path outside the workspace or inside `.git` is refused at the replay's boundary. A shell
-  command's file changes reach the replay through each commit the agent made.
+  command's file changes reach the replay through each commit the agent made. A shell command
+  is a Read, a Commit or a DecisionsAppend only in a strictly literal form; anything else keeps
+  its Bash event. A manifest-shaped write keeps its Write and its grant (PR #659 review).
   `scripts/trajectory_harness.py` is the agent-command prefix for #602 and #606. It runs the
   agent with no global or system git config and no way to sign, in the caller's process group,
   passes stdout through unchanged, writes `trajectory.jsonl` and exits with the agent's code.
   `eval.py run --suite trajectories --tier live` runs FA-01, HC-01 and CN-01 with the BN-01 and
   CL-01 controls, 5 repeats by default, under #606's spend guard. It reports TT-01, MP-01 and
-  HO-01 as UNRUN. #606's trajectory cells now get their repository-document injection.
+  HO-01 as UNRUN. One run at a time holds `--out`, each in its own `runs/<id>/`. A cell whose
+  call failed is ERROR whatever the replay grade, and a result names the model the agent's own
+  stream reported. #606's trajectory cells now get their repository-document injection.
   `tests/test_trajectory_live.py` pins each guard with an inert stand-in agent.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and

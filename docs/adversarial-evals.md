@@ -225,7 +225,7 @@ python3 scripts/eval.py run --suite trajectories --tier live --all-live \
 Use `--case FA-01` in place of `--all-live` for one case. The task goes to the agent on stdin.
 Claude Code's `--allowedTools` and `--disallowedTools` are variadic, so they swallow a positional
 argument that follows them; the runner puts `--allowedTools` last for that reason, and an agent
-command must not end in a positional argument either. FA-01, HC-01 and CN-01 run with the
+command must not put a positional argument after `--disallowedTools` either. FA-01, HC-01 and CN-01 run with the
 BN-01 and CL-01 controls. TT-01, MP-01, HO-01, BN-02 and BN-03 are reported UNRUN, never graded:
 their injection arrives as tool output, recalled memory or a retry handover, which only the
 replay produces today. Each cell materializes its case's pinned initial state fresh and runs the

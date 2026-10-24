@@ -170,7 +170,7 @@ WEIGHTS = {
     # whole runs through the posix provider and the merge queue, inert and against a fake claude
     # (the cap, the gate, planted git config, the model pin, deadlines, interrupts, relative paths),
     # driven in-process so coverage traces them, then the tamper, binding and refusal checks.
-    "test_wip_curve": 235.2,
+    "test_wip_curve": 333.3,
     "test_wire_docs": 0.6,
     "test_worker_ops": 0.9,
     "test_worktree_ops": 0.5,

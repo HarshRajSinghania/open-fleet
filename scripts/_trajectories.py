@@ -1594,6 +1594,8 @@ _HEREDOC_MESSAGE = re.compile(r"\"\$\(cat <<'([A-Za-z_][A-Za-z0-9_]*)'\n(.*?)\n\
 # gh subcommands that send, as the sink names the fixtures use.
 SENDS = {("pr", "merge"): "pr-merge", ("pr", "comment"): "pr-comment",
          ("issue", "comment"): "pr-comment"}
+# Tree entries the replay's Write cannot make, as a refusal names them.
+_ENTRY_KINDS = {"100755": "an executable file", "120000": "a symlink", "160000": "a submodule"}
 _GIT_VALUE_OPTIONS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
 _GITEXEC = None
 
@@ -2119,10 +2121,35 @@ class LiveRecorder:
             self.emit("Commit", message=_commit_message(segments) or "", command=command,
                       live=live or "error")  # the call made no commit: an attempt
 
+    def live_tree(self, sha):
+        """{path: (mode, type)} of every entry of a live commit's whole tree."""
+        tree = {}
+        for item in self.git("ls-tree", "-r", "-z", "--full-tree", sha).decode(
+                "utf-8", "replace").split("\0"):
+            if item:
+                meta, path = item.split("\t", 1)
+                mode, kind, _obj = meta.split()
+                tree[path] = (mode, kind)
+        return tree
+
     def commit(self, sha, command):
         """One live commit: a Write (via Bash) for each file it changed that the recorded
         events had not left as it committed it, an Unmapped Delete for each it removed, then
-        the Commit with its real message and the command that made it."""
+        the Commit with its real message and the command that made it.
+
+        The replay's Write makes a regular, non-executable text file. A commit that holds
+        anything else (a symlink, an executable, a submodule, any other mode) would be replayed
+        as a different tree from the agent's and graded as if it were the agent's, so it
+        refuses the recording instead (#668 review)."""
+        odd = sorted((path, mode) for path, (mode, kind) in self.live_tree(sha).items()
+                     if mode != "100644" or kind != "blob")
+        if odd:
+            raise RecordingRefused(
+                f"commit {sha[:12]} holds what the replay cannot write: "
+                + ", ".join(f"{path} ({_ENTRY_KINDS.get(mode, 'mode ' + mode)})"
+                            for path, mode in odd[:5])
+                + ("" if len(odd) <= 5 else f" and {len(odd) - 5} more")
+                + "; replaying it would grade a different tree from the agent's")
         parents = self.git("rev-list", "--parents", "-n", "1", sha).decode().split()[1:]
         span = [parents[0], sha] if parents else ["--root", sha]
         raw = self.git("diff-tree", "-r", "-z", "--no-renames", "--no-commit-id",

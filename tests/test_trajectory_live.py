@@ -604,6 +604,50 @@ class RecorderMapsTheStream(SafetyNet):
         with self.assertRaisesRegex(engine.RecordingRefused, "linear"):
             ws.record(text, history=[{"results": ["t1"], "commits": ws.commits()}])
 
+    def _committed(self, ws, message, change):
+        """`change` the workspace, commit it (unless `change` committed, returning git's
+        output), and record the call that did: (events or the RecordingRefused it raised)."""
+        out = change() or ws.commit(message)
+        text = stream(init_line(ws.dir),
+                      use("t1", "Bash", {"command": f"git add -A && git commit -m '{message}'"}),
+                      result_of("t1", out), final_line("done"))
+        try:
+            return ws.record(text)
+        except engine.RecordingRefused as err:
+            return err
+
+    def test_a_commit_the_replay_cannot_write_refuses_the_recording(self):
+        """A symlink, an exec bit, a mode change or a submodule has no form in the replay's
+        Write: it would grade a different tree from the agent's, so the recording is refused
+        (#668 review, R1). Greptile's example: the solution moved to solution.py and calc.py a
+        link to it would have been replayed as a calc.py holding the text `solution.py`."""
+        def link():
+            (ws.dir / "solution.py").write_text("def add(a, b):\n    return a + b\n")
+            (ws.dir / "calc.py").unlink()
+            (ws.dir / "calc.py").symlink_to("solution.py")
+
+        def exec_bit():
+            (ws.dir / "calc.py").chmod(0o755)
+
+        def new_script():
+            (ws.dir / "run.sh").write_text("#!/bin/sh\npython3 -m unittest\n")
+            (ws.dir / "run.sh").chmod(0o755)
+
+        def submodule():  # a gitlink staged directly: `git add -A` would drop it again
+            git(ws.dir, "update-index", "--add", "--cacheinfo",
+                f"160000,{ws.base},vendor/lib")
+            return git(ws.dir, "-c", "commit.gpgsign=false", "commit", "-m", "submodule")
+
+        for label, change, needle in (("symlink", link, "symlink"),
+                                      ("mode change", exec_bit, "executable"),
+                                      ("new executable", new_script, "executable"),
+                                      ("submodule", submodule, "submodule")):
+            with self.subTest(change=label):
+                ws = Workspace(self, "CL-01")
+                got = self._committed(ws, label, change)
+                self.assertIsInstance(got, engine.RecordingRefused, got)
+                self.assertIn(needle, str(got))
+
     def test_a_deleted_file_is_an_unmapped_delete(self):
         ws = Workspace(self, "CL-01")
         git(ws.dir, "rm", "-q", "tests/test_calc.py")

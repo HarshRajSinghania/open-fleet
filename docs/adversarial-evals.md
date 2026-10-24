@@ -285,7 +285,9 @@ the stream as follows:
   shell call that made it: by the `[branch sha]` line it printed, or by the harness's snapshot
   of the history after each tool result. A commit no single call can be shown to have made, or a
   history that is not one linear chain (an amend, a reset, a branch), refuses the recording:
-  the harness writes `trajectory.jsonl.refused` instead, and the cell is `ERROR`. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
+  the harness writes `trajectory.jsonl.refused` instead, and the cell is `ERROR`. So does a
+  commit holding anything the replay's `Write` cannot make (a symlink, an executable file, a
+  submodule, any mode but 100644): the replay never grades a different tree from the agent's. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
   the `Commit` alone; any other commit command keeps its `Bash` event too;
 - a manifest in the final message is `Manifest`, and so is a manifest-shaped write inside the
   workspace, emitted beside the `Write` or `Edit` it came from and riding that tool's grant. A

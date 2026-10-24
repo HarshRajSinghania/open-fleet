@@ -77,8 +77,9 @@ installed) launch a fake agent from a temporary `bin` and put a tripwire ahead o
 harness on `PATH`, so a test never starts your installed `claude` or other agent CLI.
 
 The full suite creates temporary Git repositories and can take several minutes. To run one
-CI-sized partition locally, use `python3 scripts/shard-tests.py --shard 1 --of 4`; run all four
-partitions for full coverage. `python3 scripts/shard-tests.py --check` verifies the partition.
+CI-sized partition locally, use `python3 scripts/shard-tests.py --shard 1 --of 6`; run all six
+partitions for full coverage. `python3 scripts/shard-tests.py --check` verifies the partition,
+and `--list` prints it: a few heavy modules run as one unit per TestCase class.
 
 If running tests from an agent terminal that exports `ORCA_TERMINAL_HANDLE`, omit that identity
 for the test process so fixture senders can use their own handles:
@@ -118,8 +119,9 @@ count belongs to the release cut (`--release`), so a PR adding tests never edits
 [generator guide](../assets/diagrams/generator/README.md); a prose correction does not require
 regenerating every image.
 
-If you add a test module, add its measured weight to
-[`scripts/shard-tests.py`](../scripts/shard-tests.py), following the procedure in its header.
+If you add a test module, add its measured weight as its own file,
+`tests/shard-weights/test_<name>.json`, following the procedure in
+[`scripts/shard-tests.py`](../scripts/shard-tests.py)'s header.
 
 ## Local checks and CI
 

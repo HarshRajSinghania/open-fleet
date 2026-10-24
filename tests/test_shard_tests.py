@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 import types
 import unittest
@@ -49,14 +50,30 @@ def collect_ids(suite):
     return out
 
 
+def unit_ids(loader, tests_dir, unit):
+    """The test IDs one shard unit collects, named the way full discovery names them.
+
+    A whole module goes through the same per-module discover as always. A class unit
+    (`test_mod.TestCase`, a module the sharder splits by class) goes through the loader's dotted
+    name, the call `python -m unittest tests.test_mod.TestCase` makes in the shard, with tests/
+    importable as the top level discover uses, so its IDs compare with discovery's directly.
+    """
+    module, _, cls = unit.partition(".")
+    if not cls:
+        return collect_ids(loader.discover(tests_dir, pattern=unit + ".py"))
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    return collect_ids(loader.loadTestsFromName(unit))
+
+
 def shard_union_ids(shards):
-    """Every ID the shards collect, through the union test's own per-module loader call."""
+    """Every ID the shards collect, through the union test's own per-unit loader call."""
     loader = unittest.TestLoader()
     tests_dir = str(ROOT / "tests")
     union = set()
     for shard in shards:
         for mod in shard:
-            union |= collect_ids(loader.discover(tests_dir, pattern=mod + ".py"))
+            union |= unit_ids(loader, tests_dir, mod)
     return union
 
 
@@ -99,7 +116,7 @@ class ShardCoverage(unittest.TestCase):
                 # dotted import collects the same tests under different IDs
                 # ("tests."-prefixed), which would fake a mismatch. Same loader
                 # call shape both sides, so IDs are directly comparable.
-                found = collect_ids(loader.discover(tests_dir, pattern=mod + ".py"))
+                found = unit_ids(loader, tests_dir, mod)
                 self.assertTrue(found, f"{mod} collected zero tests in its shard")
                 for tid in found:
                     self.assertNotIn(tid, seen,
@@ -396,6 +413,179 @@ class ShardCliAndWorkflowAgreement(unittest.TestCase):
                          "an unscoped full-suite run survives beside the matrix")
         self.assertIn("shard-tests.py", WORKFLOW.read_text(encoding="utf-8"),
                       "no CI step invokes the sharder — the mechanism is unwired")
+
+
+class ShardWeightFiles(unittest.TestCase):
+    """CI speed and bookkeeping change: WEIGHTS was one dict literal in the sharder, so every PR
+    adding a test module added a line beside every other PR's and they conflicted. A module's
+    weight is now its own tests/shard-weights/<module>.json, which no other change edits."""
+
+    def test_the_sharder_holds_no_per_module_table(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        named = [m for m in load_sharder().discover_modules() if f'"{m}"' in source]
+        self.assertEqual(named, [], "a weight lives in the shared script again: one file per "
+                                    "module (tests/shard-weights/) keeps PRs off each other's lines")
+
+    def test_every_weight_file_names_a_module_and_every_recorded_class_exists(self):
+        sh = load_sharder()
+        files = sorted(p.stem for p in sh.WEIGHTS_DIR.glob("*.json"))
+        self.assertEqual(files, sorted(sh.WEIGHTS), "a weight file did not load")
+        for mod, recorded in sorted(sh.CLASS_WEIGHTS.items()):
+            live = sh.live_classes(mod)
+            with self.subTest(module=mod):
+                self.assertTrue(live, f"{mod} records class weights but cannot be split")
+                stale = sorted(set(recorded) - set(live))
+                self.assertEqual(stale, [], f"{mod} records weights for classes it no longer "
+                                            f"has: {stale} — rename them in its weight file")
+
+    def test_each_malformed_weight_file_is_refused_by_name(self):
+        sh = load_sharder()
+        cases = {
+            "test_a.json": ("{", "unreadable"),
+            "test_b.json": ("[]", "one JSON object"),
+            "test_c.json": ('{"seconds": 1, "measured": "x", "secs": 2}', "unknown keys"),
+            "test_d.json": ('{"measured": "x"}', "positive number"),
+            "test_e.json": ('{"seconds": 0, "measured": "x"}', "positive number"),
+            "test_f.json": ('{"seconds": true, "measured": "x"}', "positive number"),
+            "test_g.json": ('{"seconds": 1}', "when and how"),
+            "test_h.json": ('{"seconds": 1, "measured": "x", "classes": []}', "class names"),
+            "test_i.json": ('{"seconds": 1, "measured": "x", "classes": {"not a name": 1}}',
+                            "class names"),
+            "test_j.json": ('{"seconds": 1, "measured": "x", "fixture_seconds": 1}',
+                            "only a module split by class"),
+            "test_k.json": ('{"seconds": 1, "measured": "x", "classes": {"A": 1}, '
+                            '"fixture_seconds": -1}', "non-negative"),
+            "notes.json": ('{"seconds": 1, "measured": "x"}', "named after a test module"),
+        }
+        for name, (text, why) in cases.items():
+            with self.subTest(file=name), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / name).write_text(text, encoding="utf-8")
+                with self.assertRaises(ValueError) as caught:
+                    sh.load_weights(tmp)
+                self.assertIn(name, str(caught.exception))
+                self.assertIn(why, str(caught.exception))
+
+    def test_a_module_with_no_file_still_runs_on_the_median(self):
+        sh = load_sharder()
+        weights = {"test_a": 1.0, "test_b": 3.0, "test_c": 9.0}
+        shards = sh.partition(["test_a", "test_b", "test_c", "test_new"], 2, weights)
+        self.assertEqual(sh.check(shards, ["test_a", "test_b", "test_c", "test_new"]), [])
+        self.assertEqual(sh.predicted_wall(["test_new"], weights), 3.0)
+
+
+class ClassLevelSplitting(unittest.TestCase):
+    """A module whose weight file records classes runs as one unit per live TestCase class."""
+
+    def test_a_split_module_runs_every_live_class_once_and_never_whole(self):
+        sh = load_sharder()
+        self.assertTrue(sh.CLASS_WEIGHTS, "no module is split: the heaviest stays one shard")
+        units = [u for shard in sh.partition(sh.discover_modules(), sh.DEFAULT_SHARDS)
+                 for u in shard]
+        for mod in sorted(sh.CLASS_WEIGHTS):
+            with self.subTest(module=mod):
+                self.assertNotIn(mod, units, f"{mod} runs whole beside its classes")
+                pieces = sorted(u.split(".", 1)[1] for u in units if u.startswith(mod + "."))
+                self.assertEqual(pieces, sorted(sh.live_classes(mod)))
+
+    def test_a_class_the_record_has_not_seen_still_runs(self):
+        sh = load_sharder()
+        live = sh.live_classes("test_shard_tests")
+        self.assertGreaterEqual(len(live), 3)
+        classes = {"test_shard_tests": {live[0]: 5.0}}  # one recorded, the rest new
+        modules = ["test_shard_tests", "test_pins"]
+        shards = sh.partition(modules, 2, {"test_shard_tests": 9.0, "test_pins": 1.0}, classes)
+        self.assertEqual(sh.check(shards, modules), [])
+        units = sorted(u for s in shards for u in s)
+        self.assertEqual(units, sorted(["test_pins"] + [f"test_shard_tests.{c}" for c in live]))
+
+    def test_check_names_every_way_a_split_can_go_wrong(self):
+        sh = load_sharder()
+        live = sh.live_classes("test_shard_tests")
+        mods = ["test_shard_tests", "test_pins"]
+        every = [f"test_shard_tests.{c}" for c in live]
+        cases = (
+            ([every[1:], ["test_pins"]], f"test_shard_tests.{live[0]} is in no shard"),
+            ([every, ["test_pins", every[0]]], f"test_shard_tests.{live[0]} is in shards 1 and 2"),
+            ([every, ["test_pins", "test_shard_tests"]], "runs whole and split by class"),
+            ([every + ["test_shard_tests.NoSuchCase"], ["test_pins"]],
+             "test_shard_tests.NoSuchCase is sharded but test_shard_tests has no such test class"),
+            ([every, ["test_pins", "test_gone.SomeCase"]], "test_gone is sharded but no longer exists"),
+        )
+        for shards, want in cases:
+            with self.subTest(want=want):
+                errors = sh.check(shards, mods)
+                self.assertTrue(any(want in e for e in errors), errors)
+        self.assertEqual(sh.check([every, ["test_pins"]], mods), [])
+
+    def test_a_module_that_cannot_be_split_runs_whole(self):
+        sh = load_sharder()
+        self.assertIsNone(sh.live_classes("test_no_such_module_anywhere"))
+        with mock.patch.object(sh, "live_classes", lambda mod: None):
+            units = sh.units(["test_pins"], {"test_pins": 2.0}, {"test_pins": {"Anything": 1.0}})
+        self.assertEqual(units, [("test_pins", "test_pins", 2.0)])
+        errors = sh.check([["test_pins.Anything"]], ["test_pins"])
+        self.assertTrue(any("no such test class" in e for e in errors), errors)
+
+    def test_a_class_unit_runs_by_its_dotted_name(self):
+        sh = load_sharder()
+        cmd = sh.shard_command(["test_pins", "test_shard_tests.ShardCoverage"], with_coverage=True)
+        self.assertEqual(cmd[6:], ["unittest", "tests.test_pins", "tests.test_shard_tests.ShardCoverage"])
+
+    def test_a_split_modules_classes_run_together_and_its_fixture_is_charged_once(self):
+        sh = load_sharder()
+        weights = {"test_shard_tests": 30.0, "test_pins": 1.0}
+        live = sh.live_classes("test_shard_tests")
+        classes = {"test_shard_tests": {c: 5.0 for c in live}}
+        shards = sh.partition(["test_shard_tests", "test_pins"], 1, weights, classes,
+                              {"test_shard_tests": 4.0})
+        self.assertEqual(shards[0], sorted(shards[0]), "a shard does not run in sorted order")
+        self.assertEqual(sh.predicted_wall(shards[0], weights, classes, {"test_shard_tests": 4.0}),
+                         5.0 * len(live) + 4.0 + 1.0)
+
+    def test_at_every_shard_count_each_unit_lands_exactly_once(self):
+        sh = load_sharder()
+        modules = sh.discover_modules()
+        for n in (1, 2, 4, 6, 9):
+            with self.subTest(shards=n):
+                self.assertEqual(sh.check(sh.partition(modules, n), modules), [])
+
+    def test_the_heaviest_module_no_longer_sets_the_wall(self):
+        """The defect this split closes: test_wip_curve alone was the slowest shard (640-745 s
+        of CI wall) while the others idled. Split, no shard is far above the mean."""
+        sh = load_sharder()
+        walls = [sh.predicted_wall(s)
+                 for s in sh.partition(sh.discover_modules(), sh.DEFAULT_SHARDS)]
+        mean = sum(walls) / len(walls)
+        self.assertLessEqual(max(walls), 1.1 * mean, f"shard predictions {walls}")
+        self.assertLess(max(walls), max(sh.WEIGHTS.values()),
+                        "the heaviest module still sets the critical path")
+
+    def test_the_default_matches_the_ci_matrix(self):
+        sh = load_sharder()
+        wf = WORKFLOW.read_text(encoding="utf-8")
+        found = re.findall(r"shard:\s*\[([0-9,\s]+)\]", wf)
+        self.assertTrue(found)
+        for m in found:
+            self.assertEqual(len(m.split(",")), sh.DEFAULT_SHARDS,
+                             "--list and --check describe a different partition than CI runs")
+
+    def test_measure_prints_a_weight_file(self):
+        r = subprocess.run([sys.executable, str(SCRIPT), "--measure", "test_pins", "--scale", "2"],
+                           capture_output=True, text=True, cwd=ROOT, timeout=300)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        record = json.loads(r.stdout)
+        self.assertEqual(set(record), {"seconds", "measured", "classes", "fixture_seconds"})
+        self.assertIn("x2 to the CI lane", record["measured"])
+        self.assertTrue(record["classes"])
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "test_pins.json").write_text(r.stdout, encoding="utf-8")
+            weights, classes, _ = load_sharder().load_weights(tmp)
+        self.assertIn("test_pins", weights)
+        for bad in (["--measure", "test_no_such_module"], ["--measure", "test_pins", "--scale", "0"]):
+            with self.subTest(args=bad):
+                r = subprocess.run([sys.executable, str(SCRIPT), *bad],
+                                   capture_output=True, text=True, cwd=ROOT, timeout=60)
+                self.assertEqual(r.returncode, 2, r.stderr)
 
 
 if __name__ == "__main__":

@@ -181,10 +181,17 @@ and parks; and usage. The experiment report adds the following per run:
   was bounced, contributes no observation. Its own row prints `unavailable`, and under
   `run_report.py` that row cannot bind.
 - **Rework:** bounced unit-waves over all unit-waves. **Freshness:** approving reviews voided
-  because the unit closed at another head. **Retries.**
+  because the unit closed at another head. **Retries.** **Review queue:** median and maximum
+  time from a worker_done to a review of that head starting, per review.
 - **Conflicts and gate failures:** the merge queue's `failed` receipts. Each conflict is
   re-derived from git with `git merge-tree` against the prefix commit that the run pinned.
 - **Tokens and cost:** per model and per run. An unobserved field is `unavailable` and never 0.
+
+The JSON's `metrics.report_fields` registers every field the report must emit, per run and per
+condition, and the report prints each one under "Registered metrics". Among them are the review
+queue, cost per verified-CLOSED unit, latency maximum by condition, the condition's role and each
+run's parked units. `check-prereg` refuses a registered field that the reporter cannot emit, and
+the tests diff the registered list against the report.
 
 For each condition the report gives the mean, the sample standard deviation and a two-sided 95%
 Student-t interval over its runs, and it lists every run's value. Rework is reported as a pooled

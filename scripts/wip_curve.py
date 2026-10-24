@@ -448,6 +448,15 @@ def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=Tru
     if not prereg.get("reviewer_availability"):
         errors.append("reviewer_availability is not stated")
     errors += contract_errors(prereg.get("contracts"))
+    fields = (prereg.get("metrics") or {}).get("report_fields") or {}
+    for scope, known in (("run", REPORTED_RUN), ("condition", REPORTED_CONDITION)):
+        listed = fields.get(scope)
+        if not isinstance(listed, list) or not listed:
+            errors.append(f"metrics.report_fields.{scope} is not registered")
+            continue
+        unknown = sorted(set(listed) - set(known))
+        if unknown:
+            errors.append(f"metrics.report_fields.{scope} registers {unknown}, which the report cannot emit")
     if not prereg.get("generalization_limits"):
         errors.append("generalization_limits are not stated")
     reg = prereg.get("taskset") or {}
@@ -1485,6 +1494,7 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
     reasons = []
     if not bound.path("events.jsonl").is_file():
         out.update(metrics=None, compliant=False, noncompliance=["no event record was retained"])
+        out["registered"] = registered_run(out)
         return out
     try:
         raw, file_sha, head = events.read_log(bound.path("events.jsonl"))
@@ -1542,7 +1552,8 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
                                           "exact": str(tput), "verified_closed": closed, "wall_clock_s": str(wall)}),
         "latency": cell("latency", {"median_min": fmt(events._median(lat) / 60) if lat else None,
                                     "max_min": fmt(max(lat) / 60) if lat else None, "units": len(lat),
-                                    "median_exact_s": str(events._median(lat)) if lat else None}),
+                                    "median_exact_s": str(events._median(lat)) if lat else None,
+                                    "max_exact_s": str(max(lat)) if lat else None}),
         "rework": cell("rework", {"bounced": bounced, "units": units}),
         "freshness": None if why["freshness"] else fresh,
         "retries": retries if not why["retries"] else None,
@@ -1569,6 +1580,14 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
         review_usage[field] = (sum(values) if covered == reviewers and reviewers and None not in values
                                else None)
     metrics["review_usage"] = review_usage
+    metrics["review_queue"] = review_queue(raw, rid)
+    closed_total = sum(w["outcomes"]["verified-closed"] for w in derived["waves"])
+    cost = metrics["usage"]["cost_usd"]
+    metrics["cost_per_verified_closed_usd"] = (
+        str((Decimal(cost) / closed_total).quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN))
+        if cost is not None and closed_total else None)
+    metrics["parked"] = {by_store.get(u["task"], u["task"]): ",".join(u["park_classes"])
+                         for w in derived["waves"] for u in w["units"] if u["outcome"] == "parked"}
     tasks_out = {}
     for w in derived["waves"]:
         for u in w["units"]:
@@ -1580,6 +1599,7 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
                 entry["latency_min"].append(fmt(Fraction(u["latency"]["seconds"]) / 60))
     metrics["tasks"] = dict(sorted(tasks_out.items()))
     out["metrics"] = metrics
+    out["registered"] = registered_run(out)
     out["record"] = {"log_sha256": file_sha, "head": head, "events": len(raw)}
     out["binding_problems"] = bind_outcomes(bound, derived, raw, prereg, taskset)
     # Protocol compliance (prereg "compliance"), each failure named.
@@ -1600,6 +1620,71 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
     out["compliant"] = not reasons
     out["noncompliance"] = reasons
     return out
+
+
+# What the report emits for the registration's metrics.report_fields: check-prereg refuses a
+# registered field not listed here, and the tests diff the two (PR #652's class: a registered
+# metric the report silently omitted — review queue, cost per CLOSED unit, latency max by
+# condition, the condition's role and parked units were, #604).
+REPORTED_RUN = ("status", "throughput_per_h", "latency_median_min", "latency_max_min", "rework", "freshness",
+                "conflicts", "gate_failures", "retries", "review_queue_median_min", "review_queue_max_min",
+                "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                "cost_usd", "cost_per_verified_closed_usd", "review_tokens_per_review", "parked")
+REPORTED_CONDITION = ("role", "throughput_per_h", "latency_median_min", "latency_max_min", "rework", "freshness",
+                      "conflicts", "gate_failures", "retries", "review_queue_median_min", "review_queue_max_min",
+                      "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                      "cost_usd", "cost_per_verified_closed_usd", "review_tokens_per_review", "tasks")
+
+
+def review_queue(raw: list, rid: str) -> dict:
+    """worker_done at a head -> a review of that head starting, per review (a reviewer dispatch
+    and head), on the record events.py admits; unavailable with events.py's reasons otherwise."""
+    kept = events.screen([e for e in raw if e["run"] == rid])[0]
+    dones, starts = {}, {}
+    for e in kept:
+        if e["kind"] == "task.done" and e["data"]["head_sha"]:
+            dones.setdefault((e["task"], e["data"]["head_sha"]), []).append(e)
+        elif e["kind"] == "review.started":
+            key = (e["task"], e["dispatch"] or e["event_id"], e["data"]["head_sha"])
+            starts.setdefault(key, []).append(e)
+    values, why = [], []
+    for (task, _review, head), started in sorted(starts.items()):
+        at = dones.get((task, head))
+        if not at:
+            why.append(f"unit {task}: review started at {head[:12]} with no worker_done at that head")
+            continue
+        (start, w1), (end, w2) = events.first(at, f"unit {task} worker_done"), events.first(started, "review.started")
+        secs, w3 = (None, w1 or w2) if (w1 or w2) else events.interval(start, end, f"unit {task} review queue")
+        if secs is None:
+            why.append(w3)
+        else:
+            values.append(secs)
+    if why or not values:
+        return {"value": None, events.UNAVAILABLE: sorted(set(why)) or ["no review started"]}
+    return {"median_min": fmt(events._median(values) / 60), "max_min": fmt(max(values) / 60),
+            "reviews": len(values), "median_exact_s": str(events._median(values)), "max_exact_s": str(max(values))}
+
+
+def registered_run(run: dict) -> dict:
+    """The registered per-run metrics, flat; None where the record cannot say (never 0)."""
+    m = run.get("metrics")
+    if not m:
+        return {f: (run.get("status") if f == "status" else None) for f in REPORTED_RUN}
+    usage, rv = m["usage"], m["review_usage"]
+    reviews_tokens = (fmt(Fraction(rv["input_tokens"] + rv["output_tokens"], rv["reviews"]))
+                      if rv["input_tokens"] is not None and rv["reviews"] else None)
+    return {
+        "status": run.get("status"), "throughput_per_h": m["throughput"].get("value"),
+        "latency_median_min": m["latency"].get("median_min"), "latency_max_min": m["latency"].get("max_min"),
+        "rework": f"{m['rework']['bounced']}/{m['rework']['units']}" if "bounced" in m["rework"] else None,
+        "freshness": m["freshness"], "conflicts": m["conflicts"], "gate_failures": m["gate_failures"],
+        "retries": m["retries"], "review_queue_median_min": m["review_queue"].get("median_min"),
+        "review_queue_max_min": m["review_queue"].get("max_min"),
+        **{f: usage[f] for f in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                                 "cache_creation_input_tokens", "cost_usd")},
+        "cost_per_verified_closed_usd": m["cost_per_verified_closed_usd"],
+        "review_tokens_per_review": reviews_tokens, "parked": m["parked"],
+    }
 
 
 def condition_block(cond: dict, runs: list[dict]) -> dict:
@@ -1635,11 +1720,24 @@ def condition_block(cond: dict, runs: list[dict]) -> dict:
             entry["verified_closed"] += info["outcome"] == "verified-closed"
             entry["latency_min"] += info["latency_min"]
     block["tasks"] = dict(sorted(tasks.items()))
-    for field in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cost_usd"):
-        vals = [r["metrics"]["usage"][field] for r in runs if r.get("metrics")]
-        block[field] = (describe([Fraction(str(v)) for v in vals], 4 if field == "cost_usd" else 2)
+    for field in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                  "cost_usd", "cost_per_verified_closed_usd"):
+        vals = [r["metrics"]["usage"][field] if field in r["metrics"]["usage"] else r["metrics"][field]
+                for r in usable]
+        block[field] = (describe([Fraction(str(v)) for v in vals], 4 if "cost" in field else 2)
                         if vals and None not in vals else {"n": len(vals), "unavailable":
-                                                           "a run's usage was not fully observed; never 0"})
+                                                           "a run's value was not fully observed; never 0"})
+
+    def per_run(get):
+        vals = [get(r["metrics"]) for r in usable]
+        return describe([Fraction(v) / 60 for v in vals]) if vals and None not in vals else \
+            {"n": len(vals), "unavailable": "a run's value could not be derived"}
+
+    block["latency_max_min"] = per_run(lambda m: m["latency"].get("max_exact_s"))
+    block["review_queue_median_min"] = per_run(lambda m: m["review_queue"].get("median_exact_s"))
+    block["review_queue_max_min"] = per_run(lambda m: m["review_queue"].get("max_exact_s"))
+    block["role"] = cond.get("role")
+    block["registered"] = {f: block[f] for f in REPORTED_CONDITION}
     return block
 
 
@@ -1738,6 +1836,25 @@ def _cell(value):
     return str(value)
 
 
+def _registered_cell(value) -> str:
+    """One registered metric as a table cell: `unavailable` where the record cannot say."""
+    if value is None:
+        return "unavailable"
+    if isinstance(value, dict) and "k" in value and "ci95" in value:  # a Wilson proportion
+        return f"{value['k']}/{value['n']} = {value['p']} [{value['ci95'][0]}, {value['ci95'][1]}]" \
+            if value["p"] else ("unavailable" if value.get("unavailable") else "no unit")
+    if isinstance(value, dict) and "total" in value:  # summed counts
+        return _cell(value["total"])
+    if isinstance(value, dict) and ("mean" in value or "unavailable" in value):
+        return _cell(value) if "mean" in value else "unavailable"
+    if isinstance(value, dict):  # parked units, or per-task rows
+        if not value:
+            return "none"
+        return "; ".join(f"{k}: {v if not isinstance(v, dict) else str(v.get('verified_closed')) + '/' + str(v.get('runs'))}"
+                         for k, v in sorted(value.items()))
+    return str(value).replace("|", "/")
+
+
 def render_markdown(report: dict) -> str:
     lines = ["# WIP-curve experiment report", "",
              f"Pre-registration `{report['prereg']['path']}` v{report['prereg']['version']} "
@@ -1777,6 +1894,21 @@ def render_markdown(report: dict) -> str:
             cells.append(f"{entry['verified_closed']}/{entry['runs']}, "
                          + (fmt(events._median(lat)) if lat else "no latency"))
         lines.append(f"| {tid} | " + " | ".join(cells) + " |")
+    lines += ["", "## Registered metrics by condition", "",
+              "Every field `metrics.report_fields.condition` registers, in order.", "",
+              "| Metric | " + " | ".join(f"`{c['condition']}`" for c in report["conditions"]) + " |",
+              "|---|" + "---|" * len(report["conditions"])]
+    for field in (report["conditions"][0]["registered"] if report["conditions"] else []):
+        lines.append(f"| `{field}` | " + " | ".join(_registered_cell(c["registered"][field])
+                                                   for c in report["conditions"]) + " |")
+    lines += ["", "## Registered metrics by run", "",
+              "Every field `metrics.report_fields.run` registers, in order, for every run.", ""]
+    if report["runs"]:
+        lines += ["| Metric | " + " | ".join(f"`{r['run_id']}`" for r in report["runs"]) + " |",
+                  "|---|" + "---|" * len(report["runs"])]
+        for field in report["runs"][0]["registered"]:
+            lines.append(f"| `{field}` | " + " | ".join(_registered_cell(r["registered"][field])
+                                                       for r in report["runs"]) + " |")
     lines += ["", "## Runs (every run, failed, stopped and parked included)", "",
               "| Run | Condition | Tier | Status | Throughput | Latency median/max min | Rework | Freshness | "
               "Conflicts | Retries | Cost USD | Compliant |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]

@@ -112,6 +112,10 @@
       "retries and review queue time",
       "model tokens and cost per run and per verified-CLOSED unit, never 0 when unobserved"
     ],
+    "report_fields": {
+      "run": ["status", "throughput_per_h", "latency_median_min", "latency_max_min", "rework", "freshness", "conflicts", "gate_failures", "retries", "review_queue_median_min", "review_queue_max_min", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "cost_usd", "cost_per_verified_closed_usd", "review_tokens_per_review", "parked"],
+      "condition": ["role", "throughput_per_h", "latency_median_min", "latency_max_min", "rework", "freshness", "conflicts", "gate_failures", "retries", "review_queue_median_min", "review_queue_max_min", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "cost_usd", "cost_per_verified_closed_usd", "review_tokens_per_review", "tasks"]
+    },
     "uncertainty": "per condition: mean, sample standard deviation and a two-sided 95% Student-t interval over its runs, with every run's value listed; rework as a pooled proportion with a 95% Wilson interval. With three runs per condition the intervals are wide; the report says so rather than narrowing them"
   },
   "compliance": [

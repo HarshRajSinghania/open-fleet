@@ -154,6 +154,10 @@ class TestPreregistration(Tmp):
         errors = self.mutated(lambda p: p["stopping_rule"].pop("cost"))
         self.assertTrue(any("stopping_rule.cost" in e for e in errors), errors)
 
+    def test_a_registered_metric_the_report_cannot_emit_is_refused(self):
+        errors = self.mutated(lambda p: p["metrics"]["report_fields"]["run"].append("vibes_per_hour"))
+        self.assertTrue(any("vibes_per_hour" in e for e in errors), errors)
+
     def test_a_cap_that_is_neither_pending_nor_an_amount_is_refused(self):
         errors = self.mutated(lambda p: p["cost"].__setitem__("cap_usd", "plenty"))
         self.assertTrue(any("cost.cap_usd" in e for e in errors), errors)
@@ -504,6 +508,22 @@ class TestDryRunPipeline(DryRun):
         p = self.verify(results)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("recomputes", p.stdout)
+
+    def test_the_report_emits_every_registered_metric(self):
+        """The registration's metric list, diffed against what the report emits (PR #652's class)."""
+        fields = json.loads(PREREG.read_text(encoding="utf-8"))["metrics"]["report_fields"]
+        results = self.copy()
+        report = self.report(results)
+        md = (results / "report.md").read_text(encoding="utf-8")
+        for run in report["runs"]:
+            self.assertEqual(sorted(run["registered"]), sorted(fields["run"]), run["run_id"])
+        for cond in report["conditions"]:
+            self.assertEqual(sorted(cond["registered"]), sorted(fields["condition"]), cond["condition"])
+        for name in fields["run"] + fields["condition"]:
+            self.assertIn(f"`{name}`", md, f"report.md never shows {name}")
+        run = report["runs"][0]["registered"]
+        self.assertIsNotNone(run["review_queue_median_min"], "the run's reviews have a measurable queue")
+        self.assertEqual(run["parked"], {})
 
     def test_a_fixture_run_is_never_evidence(self):
         report = self.report(self.copy())

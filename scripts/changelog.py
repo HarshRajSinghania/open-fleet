@@ -241,23 +241,26 @@ def main(argv=None):
     a.add_argument("version")
     a.add_argument("date")
     args = parser.parse_args(argv)
+    # Every call names ROOT at call time (not a def-time default), so a test can point the
+    # whole CLI at a fixture repository in-process.
+    root, fragments = ROOT, ROOT / "changelog.d"
     try:
         if args.cmd == "preview":
-            body = release_body()
+            body = release_body(root)
             print(body if body else "(nothing to release)")
             return 0
         if args.cmd == "assemble":
-            folded, legacy = assemble(args.version, args.date)
+            folded, legacy = assemble(args.version, args.date, root)
             print(f"CHANGELOG.md: [{args.version}] - {args.date} folds {folded} fragment(s) "
                   f"and {legacy} earlier [Unreleased] entr{'y' if legacy == 1 else 'ies'}")
             if not folded and not legacy:
                 print("changelog.py: warning: the release section is empty", file=sys.stderr)
             return 0
-        errors = check_fragments()
+        errors = check_fragments(fragments)
         if args.base:
-            errors += check_base(args.base)
+            errors += check_base(args.base, root)
         if args.released:
-            errors += check_released()
+            errors += check_released(root)
     except (OSError, ValueError) as err:
         print(f"changelog.py: {err}", file=sys.stderr)
         return 2
@@ -265,7 +268,7 @@ def main(argv=None):
         print(f"FAIL {e}")
     if errors:
         return 1
-    pending = len(fragment_paths())
+    pending = len(fragment_paths(fragments))
     print(f"changelog: {pending} fragment(s) well formed"
           + ("; nothing left to fold" if args.released else ""))
     return 0

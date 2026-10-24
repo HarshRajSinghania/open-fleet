@@ -10,7 +10,9 @@ releases but never contradicts itself, and the cut's exact re-render.
 
     python3 -m unittest tests.test_run_index -v
 """
+import contextlib
 import importlib.util
+import io
 import json
 import shutil
 import subprocess
@@ -18,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "run_index.py"
@@ -232,8 +235,23 @@ class TheRendering(unittest.TestCase):
 
 class TheCommandLine(unittest.TestCase):
     def run_cli(self, root, *args):
-        return subprocess.run([sys.executable, str(root / "scripts" / "run_index.py"), *args],
-                              cwd=root, capture_output=True, text=True, timeout=60)
+        """run_index.main in this process, ROOT pointed at the fixture (so coverage sees it)."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ri, "ROOT", root), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            rc = ri.main(list(args))
+        return subprocess.CompletedProcess(args, rc, out.getvalue(), err.getvalue())
+
+    def test_it_runs_as_a_program(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            (root / "scripts").mkdir()
+            shutil.copy2(SCRIPT, root / "scripts" / "run_index.py")
+            ri.write("2026-02-01", root)
+            r = subprocess.run([sys.executable, str(root / "scripts" / "run_index.py"), "check"],
+                               cwd=root, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("run index: 2 reports, one row each", r.stdout)
 
     def test_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,7 +278,6 @@ class TheCommandLine(unittest.TestCase):
         validate = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(validate)
         self.assertEqual(validate.check_run_index(), [])
-        from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
             root = make_root(tmp)
             (root / "scripts").mkdir()

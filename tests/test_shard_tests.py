@@ -11,7 +11,9 @@ perf budgets live in harnesses, never in tests).
 
     python3 -m unittest tests.test_shard_tests -v
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -586,6 +588,62 @@ class ClassLevelSplitting(unittest.TestCase):
                 r = subprocess.run([sys.executable, str(SCRIPT), *bad],
                                    capture_output=True, text=True, cwd=ROOT, timeout=60)
                 self.assertEqual(r.returncode, 2, r.stderr)
+
+
+class TheCommandLineInProcess(unittest.TestCase):
+    """main() and run_shard() in this process, the shard's own unittest run stubbed, so the
+    suite's coverage traces the code CI calls (a subprocess of the script would not be)."""
+
+    def main(self, *args, check=None):
+        sh = load_sharder()
+        calls = []
+
+        def fake_run(cmd, cwd=None):
+            calls.append((cmd, cwd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sh.subprocess, "run", fake_run), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            if check is not None:
+                with mock.patch.object(sh, "check", check):
+                    rc = sh.main(list(args))
+            else:
+                rc = sh.main(list(args))
+        return rc, out.getvalue(), err.getvalue(), calls, sh
+
+    def test_list_and_check(self):
+        rc, out, _, calls, _ = self.main("--list")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(re.findall(r"(?m)^shard \d/6: ~", out)), 6, out)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.main("--check")[0], 0)
+
+    def test_a_shard_runs_its_units_once_under_coverage(self):
+        rc, out, _, calls, sh = self.main("--shard", "2", "--with-coverage")
+        self.assertEqual(rc, 0)
+        shard = sh.partition(sh.discover_modules(), sh.DEFAULT_SHARDS)[1]
+        self.assertEqual(calls, [(sh.shard_command(shard, True), sh.ROOT)])
+        self.assertIn(f"shard 2/6: {len(shard)} units, predicted ~", out)
+
+    def test_a_broken_partition_runs_nothing(self):
+        rc, _, err, calls, _ = self.main("--shard", "1", check=lambda shards, modules: ["boom"])
+        self.assertEqual((rc, calls), (1, []))
+        self.assertIn("shard-tests: boom", err)
+        rc, _, err, _, _ = self.main("--check", check=lambda shards, modules: ["boom"])
+        self.assertEqual(rc, 1)
+        self.assertIn("shard-tests: boom", err)
+
+    def test_usage_errors_exit_2(self):
+        for args in (["--shard", "7"], ["--of", "0"], [], ["--measure", "test_no_such_module"],
+                     ["--measure", "test_pins", "--scale", "-1"]):
+            with self.subTest(args=args):
+                self.assertEqual(self.main(*args)[0], 2)
+
+    def test_measure_in_process(self):
+        rc, out, _, _, _ = self.main("--measure", "test_pins")
+        self.assertEqual(rc, 0)
+        self.assertIn("x1 to the CI lane", json.loads(out)["measured"])
 
 
 if __name__ == "__main__":

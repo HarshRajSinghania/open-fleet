@@ -261,9 +261,10 @@ def main(argv=None):
     w = sub.add_parser("write", help="rewrite the README block (the release cut runs this)")
     w.add_argument("--as-of", required=True, help="the date the block says it was generated")
     args = parser.parse_args(argv)
+    root = ROOT  # read at call time, so a test can point the CLI at a fixture in-process
     try:
         if args.cmd == "print":
-            rows, errors = load_rows()
+            rows, errors = load_rows(root)
             for e in errors:
                 print(f"FAIL {e}", file=sys.stderr)
             print(render(rows, date.today().isoformat()))
@@ -271,12 +272,12 @@ def main(argv=None):
         if args.cmd == "write":
             if date.fromisoformat(args.as_of).isoformat() != args.as_of:
                 raise ValueError(f"--as-of {args.as_of!r} is not YYYY-MM-DD")
-            n = write(args.as_of)
+            n = write(args.as_of, root)
             print(f"docs/runs/README.md: run index rendered from {n} row files, as of {args.as_of}")
             return 0
-        errors = check_rows() + check_snapshot()
+        errors = check_rows(root) + check_snapshot(root)
         if args.current:
-            errors += check_current()
+            errors += check_current(root)
     except (OSError, ValueError) as err:
         print(f"run_index.py: {err}", file=sys.stderr)
         return 2
@@ -284,7 +285,7 @@ def main(argv=None):
         print(f"FAIL {e}")
     if errors:
         return 1
-    print(f"run index: {len(dated_reports())} reports, one row each"
+    print(f"run index: {len(dated_reports(root))} reports, one row each"
           + ("; the README block is current" if args.current else ""))
     return 0
 

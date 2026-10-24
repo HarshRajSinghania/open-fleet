@@ -9,7 +9,9 @@ newest first, and deletes them. Each guard is shown failing on the shape it exis
 
     python3 -m unittest tests.test_changelog -v
 """
+import contextlib
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -85,8 +87,13 @@ def make_repo(tmp):
 
 
 def run_cli(repo, *args):
-    return subprocess.run([sys.executable, str(repo / "scripts" / "changelog.py"), *args],
-                          cwd=repo, env=git_env(), capture_output=True, text=True, timeout=60)
+    """changelog.main in this process, its ROOT pointed at `repo`: the CLI's own code path, traced
+    by the suite's coverage (a subprocess of a copied script would not be)."""
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.object(cl, "ROOT", repo), contextlib.redirect_stdout(out), \
+            contextlib.redirect_stderr(err):
+        rc = cl.main(list(args))
+    return subprocess.CompletedProcess(args, rc, out.getvalue(), err.getvalue())
 
 
 class FragmentsAreWellFormed(unittest.TestCase):
@@ -280,6 +287,21 @@ class TheCutFoldsEverythingOnce(unittest.TestCase):
         self.assertIn('["scripts/changelog.py", "assemble", version, day]', prepare)
         self.assertNotIn('text.replace("## [Unreleased]"', prepare)
         self.assertRegex(cut, r"git add CHANGELOG\.md changelog\.d ")
+
+
+class TheScriptRunsAsAProgram(unittest.TestCase):
+    def test_check_and_preview_from_a_subprocess(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            (repo / "changelog.d" / "one.md").write_text("- **One.**\n", encoding="utf-8")
+            script = str(repo / "scripts" / "changelog.py")
+            r = subprocess.run([sys.executable, script, "check"], cwd=repo, env=git_env(),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("1 fragment(s) well formed", r.stdout)
+            r = subprocess.run([sys.executable, script, "preview"], cwd=repo, env=git_env(),
+                               capture_output=True, text=True, timeout=60)
+            self.assertTrue(r.stdout.startswith("- **One.**\n- **Older entry one**"), r.stdout)
 
 
 class ValidateRunsTheShapeCheck(unittest.TestCase):

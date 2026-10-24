@@ -60,8 +60,9 @@ WEIGHTS = {
     "test_bundle_out": 12.0,
     "test_call_for_runs": 0.1,
     "test_capabilities_preflight": 0.6,
-    "test_certification": 112.4,  # #596, re-measured 2026-10-24 (macOS arm64, load ~11): 112.4 s with the
-    # rw-final-answer, receipt-witness and live-record classes; before them, a mean of 109.6 and 100.2:
+    "test_certification": 117.7,  # #596, re-measured 2026-10-24 (macOS arm64, load ~6): 117.7 s with the
+    # rw-final-answer, receipt-witness, live-record and bound-first-run classes; earlier 112.4 s, and
+    # before those classes a mean of 109.6 and 100.2:
     # 20 posix first runs plus the report-format, committed-report, interrupt/signal, read-proof,
     # encoding and ignore-rule runs, and the live-route checks (each re-hashes a run inventory)
     "test_capability_harnesses": 0.5,
@@ -146,7 +147,7 @@ WEIGHTS = {
     "test_send_msg": 0.5,
     "test_shard_tests": 1.4,
     "test_spawn_upstream": 15.2,
-    "test_spawn_worker": 42.2,
+    "test_spawn_worker": 45.9,  # #596: +3.7 s for TestOrcaRoLanePrerequisites (measured 2026-10-24)
     "test_superset_provider": 0.8,
     "test_task_ops": 0.8,
     "test_terminal_ops": 0.8,

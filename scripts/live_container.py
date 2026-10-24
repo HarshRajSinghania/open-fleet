@@ -310,9 +310,9 @@ def destroy(ids, nonce):
         except (subprocess.TimeoutExpired, OSError, Refused) as err:
             errors.append(f"docker {' '.join(args[:2])}: {type(err).__name__}")
             return None
-    for cid in ids:
+    for cid in reversed(ids):  # the arm first: the broker settles what it left in flight, then goes
         attempt("kill", cid)
-    for cid in ids:
+    for cid in reversed(ids):
         attempt("rm", "-f", cid)
     check = ["ps", "-a", "--filter", f"label={LABEL}={nonce}", "--format", "{{.ID}}"]
     deadline = time.monotonic() + DESTROY_WAIT_S

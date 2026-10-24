@@ -204,7 +204,9 @@ class Broker(BaseHTTPRequestHandler):
         self.fail(403, "permission_error", "only POST /v1/messages and /v1/messages/count_tokens are forwarded")
 
     def do_POST(self):
-        path = urllib.parse.urlsplit(self.path).path
+        target = urllib.parse.urlsplit(self.path)
+        path = target.path
+        self.target = path + (f"?{target.query}" if target.query else "")  # what is forwarded: never a host
         if path not in (PRICED_PATH, FREE_PATH):
             self.ledger.refuse(f"POST {path}")
             return self.fail(403, "permission_error", "only POST /v1/messages and /v1/messages/count_tokens are forwarded")
@@ -234,7 +236,7 @@ class Broker(BaseHTTPRequestHandler):
 
     def relay(self, body, call, model, fast):
         """Forward to the API and relay the answer as it arrives; settle the call's usage."""
-        usage, complete, status = {}, False, None
+        usage, complete, status, conn = {}, False, None, None
         try:
             up = urllib.parse.urlsplit(self.upstream)
             conn_cls = http.client.HTTPSConnection if up.scheme == "https" else http.client.HTTPConnection
@@ -244,7 +246,7 @@ class Broker(BaseHTTPRequestHandler):
             headers = {k: v for k, v in headers.items() if k.lower() != "anthropic-beta"}
             headers.update({"Authorization": f"Bearer {self.token}", "Accept-Encoding": "identity",
                             "anthropic-beta": ",".join(betas + ([OAUTH_BETA] if OAUTH_BETA not in betas else []))})
-            conn.request("POST", self.path, body=body, headers=headers)
+            conn.request("POST", self.target, body=body, headers=headers)
             resp = conn.getresponse()
             status = resp.status
             self.send_response(resp.status)
@@ -288,7 +290,6 @@ class Broker(BaseHTTPRequestHandler):
                     complete = status == 200
                 elif status != 200:  # an error the API answered at once bills nothing
                     complete = True
-            conn.close()
         except Exception as err:  # the client left, or the API did: whatever ran is settled below
             if status is None:
                 try:
@@ -296,6 +297,8 @@ class Broker(BaseHTTPRequestHandler):
                 except OSError:
                     pass
         finally:
+            if conn is not None:
+                conn.close()
             if call is not None:
                 self.ledger.settle(call, priced(usage, model, fast) if complete else None, status, usage, complete)
 

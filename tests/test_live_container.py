@@ -599,6 +599,8 @@ class TheWallClockLimitEndsIt(Harness):
         for cid in (CID, BID):
             self.assertIn(["kill", cid], argvs)
             self.assertIn(["rm", "-f", cid], argvs)
+        self.assertLess(argvs.index(["kill", CID]), argvs.index(["kill", BID]),
+                        "the broker went before the arm, leaving its calls unsettled")
         r = self.receipt()
         self.assertIs(r["timed_out"], True)
         self.assertIs(r["destroyed"]["verified"], True)
@@ -841,6 +843,16 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         conn.close()
         self.assertEqual(self.api.requests, [], "a refused request reached the API")
         self.assertNotIn("start", [e["event"] for e in self.events()])
+
+    def test_only_the_checked_path_and_query_are_forwarded(self):
+        self.broker()
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        body = json.dumps(self.body()).encode()
+        conn.request("POST", "http://elsewhere.invalid/v1/messages?beta=true", body=body,
+                     headers={"Content-Type": "application/json"})
+        self.assertEqual(conn.getresponse().status, 200)
+        conn.close()
+        self.assertEqual(self.api.requests[0]["path"], "/v1/messages?beta=true")
 
     def test_count_tokens_is_forwarded_and_free(self):
         self.broker()

@@ -2,10 +2,10 @@
   "unit": "hint-replay-605-live",
   "claim": "#605 live arm, run once under the USD 40 cap: 2 scenarios x 3 arms (off / unchecked / checked) x 3 attempts with claude-opus-5-5 workers. Every arm passed 6/6 with 0 repeated failures (a ceiling, null result); 18/18 calls measured, USD 1.224182 notional spend.",
   "base_sha": "85daf6d0cf4be9806965f5627bb383182beca4ec",
-  "head_sha": "",
+  "head_sha": "9b814e7eee035fffcac0b969c7eb08012847722e",
   "contract": {
-    "source": "",
-    "digest": "",
+    "source": "docs/runs/2026-10-24-hint-replay-605-live/contract.json@9b814e7eee035fffcac0b969c7eb08012847722e",
+    "digest": "sha256:18c981a462540e089ba0d5eaf3ac66f575401a1bf65965db1d0d884e222533eb",
     "criterion_ids": [
       "LV-1",
       "LV-2",
@@ -51,8 +51,8 @@
     "tool": "source-binding",
     "did": "re-derived every figure the report states from the retained bytes alone",
     "command": "python3 docs/runs/2026-10-24-hint-replay-605-live/rederive.py",
-    "artifact": "",
-    "result": ""
+    "artifact": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt",
+    "result": "rederive.py exit 0: 102 checks PASS, 0 FAIL, on the content of head_sha"
   },
   "toolchain": "python 3.13.15 (macOS arm64); worker claude 2.1.304 via bin/claude",
   "artifacts": [
@@ -371,7 +371,23 @@
     {
       "path": "docs/runs/2026-10-24-hint-replay-605-live/run.log",
       "sha256": "449d390f02a7743f8c9a6012567bc73f0af023f7e053c8ca5f039cf1a17fdbab"
+    },
+    {
+      "path": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt",
+      "sha256": "7b243f682b962d262157975df0ad5036f2a3808de29c50bbc343b89e316c55ef"
     }
   ],
-  "commands": []
+  "commands": [
+    {
+      "label": "rederive",
+      "ts": "2026-10-24T07:21:33Z",
+      "cmd": "python3 docs/runs/2026-10-24-hint-replay-605-live/rederive.py",
+      "cmd_sha256": "e8e8d5268eeefbc709392268b1ee91eba9bc7d071021f72d585ced84c496ae28",
+      "exit": 0,
+      "duration_s": 0.024,
+      "commit": "9b814e7eee035fffcac0b969c7eb08012847722e",
+      "wtree": "b57f03eb12cee1c8e1bae295a51f1b1059525e7c",
+      "artifact": "docs/runs/2026-10-24-hint-replay-605-live/rederive.txt"
+    }
+  ]
 }

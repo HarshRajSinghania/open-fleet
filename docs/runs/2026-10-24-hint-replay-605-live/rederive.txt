@@ -1,0 +1,110 @@
+PASS schema hint-replay-live/v2, tier live
+PASS complete, not stopped
+PASS 18 planned calls, 3 attempts, 18 rows
+PASS corpus is tests/fixtures/hint-replay.json as committed here
+PASS cap USD 40, reservation USD 2, limit --max-budget-usd 1.60 on every call
+PASS ledger: one run, 18 starts at USD 2, 18 settles, no open call
+PASS pitfall-rounding.off.a1: charge re-derives (stdout 0.202602 = results 0.202602 = ledger 0.202602)
+PASS pitfall-rounding.off.a1: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.off.a1: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.off.a1: stderr is the permission-mode notice only
+PASS pitfall-rounding.off.a1: packet carries the off arm's hint selection
+PASS pitfall-rounding.off.a2: charge re-derives (stdout 0.064112 = results 0.064112 = ledger 0.064112)
+PASS pitfall-rounding.off.a2: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.off.a2: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.off.a2: stderr is the permission-mode notice only
+PASS pitfall-rounding.off.a2: packet carries the off arm's hint selection
+PASS pitfall-rounding.off.a3: charge re-derives (stdout 0.057832 = results 0.057832 = ledger 0.057832)
+PASS pitfall-rounding.off.a3: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.off.a3: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.off.a3: stderr is the permission-mode notice only
+PASS pitfall-rounding.off.a3: packet carries the off arm's hint selection
+PASS pitfall-rounding.unchecked.a1: charge re-derives (stdout 0.067602 = results 0.067602 = ledger 0.067602)
+PASS pitfall-rounding.unchecked.a1: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.unchecked.a1: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.unchecked.a1: stderr is the permission-mode notice only
+PASS pitfall-rounding.unchecked.a1: packet carries the unchecked arm's hint selection
+PASS pitfall-rounding.unchecked.a2: charge re-derives (stdout 0.067383 = results 0.067383 = ledger 0.067383)
+PASS pitfall-rounding.unchecked.a2: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.unchecked.a2: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.unchecked.a2: stderr is the permission-mode notice only
+PASS pitfall-rounding.unchecked.a2: packet carries the unchecked arm's hint selection
+PASS pitfall-rounding.unchecked.a3: charge re-derives (stdout 0.062984 = results 0.062984 = ledger 0.062984)
+PASS pitfall-rounding.unchecked.a3: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.unchecked.a3: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.unchecked.a3: stderr is the permission-mode notice only
+PASS pitfall-rounding.unchecked.a3: packet carries the unchecked arm's hint selection
+PASS pitfall-rounding.checked.a1: charge re-derives (stdout 0.068786 = results 0.068786 = ledger 0.068786)
+PASS pitfall-rounding.checked.a1: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.checked.a1: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.checked.a1: stderr is the permission-mode notice only
+PASS pitfall-rounding.checked.a1: packet carries the checked arm's hint selection
+PASS pitfall-rounding.checked.a2: charge re-derives (stdout 0.067364 = results 0.067364 = ledger 0.067364)
+PASS pitfall-rounding.checked.a2: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.checked.a2: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.checked.a2: stderr is the permission-mode notice only
+PASS pitfall-rounding.checked.a2: packet carries the checked arm's hint selection
+PASS pitfall-rounding.checked.a3: charge re-derives (stdout 0.062479 = results 0.062479 = ledger 0.062479)
+PASS pitfall-rounding.checked.a3: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS pitfall-rounding.checked.a3: oracle exit 0, repeated failure False re-derives
+PASS pitfall-rounding.checked.a3: stderr is the permission-mode notice only
+PASS pitfall-rounding.checked.a3: packet carries the checked arm's hint selection
+PASS stale-advice-trap.off.a1: charge re-derives (stdout 0.054843 = results 0.054843 = ledger 0.054843)
+PASS stale-advice-trap.off.a1: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.off.a1: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.off.a1: stderr is the permission-mode notice only
+PASS stale-advice-trap.off.a1: packet carries the off arm's hint selection
+PASS stale-advice-trap.off.a2: charge re-derives (stdout 0.052922 = results 0.052922 = ledger 0.052922)
+PASS stale-advice-trap.off.a2: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.off.a2: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.off.a2: stderr is the permission-mode notice only
+PASS stale-advice-trap.off.a2: packet carries the off arm's hint selection
+PASS stale-advice-trap.off.a3: charge re-derives (stdout 0.054351 = results 0.054351 = ledger 0.054351)
+PASS stale-advice-trap.off.a3: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.off.a3: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.off.a3: stderr is the permission-mode notice only
+PASS stale-advice-trap.off.a3: packet carries the off arm's hint selection
+PASS stale-advice-trap.unchecked.a1: charge re-derives (stdout 0.056792 = results 0.056792 = ledger 0.056792)
+PASS stale-advice-trap.unchecked.a1: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.unchecked.a1: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.unchecked.a1: stderr is the permission-mode notice only
+PASS stale-advice-trap.unchecked.a1: packet carries the unchecked arm's hint selection
+PASS stale-advice-trap.unchecked.a2: charge re-derives (stdout 0.058414 = results 0.058414 = ledger 0.058414)
+PASS stale-advice-trap.unchecked.a2: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.unchecked.a2: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.unchecked.a2: stderr is the permission-mode notice only
+PASS stale-advice-trap.unchecked.a2: packet carries the unchecked arm's hint selection
+PASS stale-advice-trap.unchecked.a3: charge re-derives (stdout 0.058845 = results 0.058845 = ledger 0.058845)
+PASS stale-advice-trap.unchecked.a3: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.unchecked.a3: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.unchecked.a3: stderr is the permission-mode notice only
+PASS stale-advice-trap.unchecked.a3: packet carries the unchecked arm's hint selection
+PASS stale-advice-trap.checked.a1: charge re-derives (stdout 0.055836 = results 0.055836 = ledger 0.055836)
+PASS stale-advice-trap.checked.a1: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.checked.a1: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.checked.a1: stderr is the permission-mode notice only
+PASS stale-advice-trap.checked.a1: packet carries the checked arm's hint selection
+PASS stale-advice-trap.checked.a2: charge re-derives (stdout 0.056657 = results 0.056657 = ledger 0.056657)
+PASS stale-advice-trap.checked.a2: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.checked.a2: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.checked.a2: stderr is the permission-mode notice only
+PASS stale-advice-trap.checked.a2: packet carries the checked arm's hint selection
+PASS stale-advice-trap.checked.a3: charge re-derives (stdout 0.054378 = results 0.054378 = ledger 0.054378)
+PASS stale-advice-trap.checked.a3: worker succeeded on claude-opus-5-5, exit 0, no permission denial
+PASS stale-advice-trap.checked.a3: oracle exit 0, repeated failure False re-derives
+PASS stale-advice-trap.checked.a3: stderr is the permission-mode notice only
+PASS stale-advice-trap.checked.a3: packet carries the checked arm's hint selection
+PASS total re-derives: sum of settled charges = spent = counted against the cap
+PASS spend within the cap
+PASS 18 measured, 0 unmeasured
+PASS arm off: runs/passed/repeated failures re-derive
+PASS arm unchecked: runs/passed/repeated failures re-derive
+PASS arm checked: runs/passed/repeated failures re-derive
+
+| arm | runs | passed | repeated failures | cost USD (sum) | cost USD (mean) | turns | mean turns | mean s | mean output tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| off | 6 | 6 | 0 | 0.486662 | 0.081110 | 5, 5, 4, 4, 4, 4 | 4.33 | 10.0 | 694 |
+| unchecked | 6 | 6 | 0 | 0.372020 | 0.062003 | 5, 5, 4, 4, 4, 4 | 4.33 | 10.0 | 728 |
+| checked | 6 | 6 | 0 | 0.365500 | 0.060917 | 5, 5, 4, 4, 4, 4 | 4.33 | 9.2 | 701 |
+
+total USD 1.224182 of a USD 40.0 cap; 0 failure(s)

@@ -1117,11 +1117,12 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   unreadable ledger refuses the run. One run holds the ledger at a time: it is locked
   exclusively for the whole invocation, so a concurrent run into the same `--out` is refused
   before it reserves anything, and the lock of a run that dies goes with its process.
-- **No process outlives its call.** Each call (and each oracle) runs under a watchdog that leads
-  its own process group. On timeout the whole group is killed and reaped; what a finished worker
-  leaves in its group is killed before the next call; SIGTERM/SIGHUP/Ctrl-C kill every live group,
-  write the results and exit 128+N; and the watchdog kills its group if the runner itself is
-  SIGKILLed. A worker that calls `setsid()` itself leaves its group and breaks this contract, so
+- **No process outlives its call.** Each call (and each oracle) runs under #606's watchdog
+  (`_ablation_run.py --watchdog`), which leads its own process group. On timeout the call is killed
+  and reaped. When the worker exits, the watchdog kills what it left in its group or below it
+  BEFORE exiting, and the runner verifies that sweep before the next call. SIGTERM/SIGHUP/Ctrl-C
+  kill every live call, write the results and exit 128+N. The watchdog kills its whole call if
+  the runner itself is SIGKILLed. A worker that calls `setsid()` itself leaves its group and breaks this contract, so
   run the arm in a disposable sandbox.
 - **Results** (`hint-replay-live/v2`): per call `cost_usd` (`null` when unmeasured), `measured`,
   `charged_usd`, `reserve_usd`, the `models` the worker reported and its `output` paths. `cost`

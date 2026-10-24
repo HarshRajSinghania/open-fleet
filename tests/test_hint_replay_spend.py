@@ -33,6 +33,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "hint_replay.py"
@@ -489,6 +490,23 @@ class OneRunAtATimeSpendsFromALedger(StandInRun):
         code, _out, err = self.main(self.live(agent=self.agent(cost=0.25)))
         self.assertEqual(code, 0, err)
         self.assertEqual(self.results()["cost"]["prior_spent_usd"], 2.0)
+
+
+class TheWatchdogCleansUpBeforeItLetsGo(StandInRun):
+    """#657 review K3: the watchdog exited as soon as its worker did, and only the runner then
+    killed what the worker left in its group. A runner SIGKILLed in between left that grandchild
+    with no supervisor. The watchdog now kills it before it exits."""
+
+    def test_with_the_runner_gone_at_once_a_finished_worker_leaves_nothing_behind(self):
+        # The runner's own teardown never runs, as if it were SIGKILLed the instant the call's
+        # leader exited: only the watchdog stands between the orphan and the next call.
+        with mock.patch.object(replay_mod.spend, "kill_group", return_value=True), \
+                mock.patch.object(replay_mod.spend, "sweep", return_value=True, create=True):
+            code, _out, err = self.main(self.stub(self.agent("orphan", "json", 0)))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["alive_at_start"] for c in self.calls()], [[], [], []],
+                         "a call started while an earlier call's grandchild lived")
+        self.assertAllDead(at_least=6)
 
 
 if __name__ == "__main__":

@@ -349,62 +349,6 @@ def check(report):
 
 # --- live arm: repeated task failures with hints on/off (needs a worker; REMAINING by default) ----
 
-# The leader of every call's process group (#605). It starts the worker as its own child (so in
-# its group), passes the call's stdin/stdout/stderr straight through, and kills the whole group
-# the moment the runner is gone: a SIGKILL nothing can trap would otherwise leave a paid worker
-# running with no one to stop it. Exit 127: the worker could not be started at all.
-WATCHDOG = r'''
-import os, signal, subprocess, sys
-runner = int(sys.argv[1])
-try:
-    proc = subprocess.Popen(sys.argv[2:])
-except OSError as err:
-    sys.stderr.write("hint_replay watchdog: cannot start %r: %s\n" % (sys.argv[2], err))
-    sys.exit(127)
-while True:
-    try:
-        rc = proc.wait(timeout=0.2)
-        break
-    except subprocess.TimeoutExpired:
-        if os.getppid() != runner:
-            os.killpg(0, signal.SIGKILL)
-sys.exit(rc if rc >= 0 else 128 - rc)
-'''
-
-
-def run_group(argv, *, cwd, env, timeout, stdout_path, stdin_path=None, stderr_path=None):
-    """(exit status or None when killed, killed, emptied): _ablation_run.run_group's contract
-    (#652 review), with the streams going straight to files, so a call's output outlives the
-    runner, and a watchdog leader, so the group also dies with a runner that is SIGKILLed.
-
-    The watchdog leads a new session, so it, the worker and everything the worker starts form
-    one process group. On timeout the whole group is killed and reaped; after a normal exit,
-    anything left behind in the group is killed too; and an exception mid-call (an interrupt)
-    kills it on the way out. `emptied` is False only when a member survived SIGKILL, and then no
-    next call may start. No `stderr_path` merges stderr into stdout.
-    """
-    with contextlib.ExitStack() as files:
-        fin = files.enter_context(open(stdin_path, "rb")) if stdin_path else subprocess.DEVNULL
-        fout = files.enter_context(open(stdout_path, "wb"))
-        ferr = files.enter_context(open(stderr_path, "wb")) if stderr_path else subprocess.STDOUT
-        proc = subprocess.Popen([sys.executable, "-I", "-c", WATCHDOG, str(os.getpid()), *argv],
-                                stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
-                                start_new_session=True)
-    spend.LIVE_GROUPS.add(proc.pid)
-    killed = False
-    try:
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            killed = True
-    finally:
-        if proc.poll() is None:  # timed out, or an interrupt unwound the wait: the leader still runs
-            spend.kill_group(proc.pid, wait_s=0)
-            proc.wait()
-        emptied = spend.kill_group(proc.pid)
-    return (None if killed else proc.returncode), killed, emptied
-
-
 def _usd(value):
     """A cost a result can report: a finite, non-negative number (never a bool)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
@@ -511,12 +455,12 @@ def _live_call(ctx, scenario, arm, attempt, call):
         paths["packet"].write_text(packet, encoding="utf-8")
         env = dict(ctx["env"], HINT_REPLAY_PACKET=str(packet_path))
         ledger.start(call, "agent", reserve)  # on disk at its full reservation BEFORE the call starts
-        code, killed, emptied = run_group(ctx["argv"], cwd=repo, env=env, timeout=ctx["timeout"],
-                                          stdin_path=packet_path, stdout_path=paths["stdout"],
-                                          stderr_path=paths["stderr"])
+        code, killed, emptied = spend.contained_run(ctx["argv"], cwd=repo, env=env, timeout=ctx["timeout"],
+                                                    stdin_path=packet_path, stdout_path=paths["stdout"],
+                                                    stderr_path=paths["stderr"])
         cost, models = reported_cost(paths["stdout"].read_text(encoding="utf-8", errors="replace"))
         ledger.settle(call, "agent", call_charge(cost, killed, reserve, ctx["tier"]), cost, killed)
-        oracle_code, oracle_killed, oracle_emptied = run_group(
+        oracle_code, oracle_killed, oracle_emptied = spend.contained_run(
             task["oracle"], cwd=repo, env=ctx["env"], timeout=ORACLE_TIMEOUT_S, stdout_path=paths["oracle"])
         output = paths["oracle"].read_text(encoding="utf-8", errors="replace")
     oracle_exit = "timeout" if oracle_killed else oracle_code

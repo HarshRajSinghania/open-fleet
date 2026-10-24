@@ -1133,5 +1133,96 @@ class OneRunHoldsTheSpendLedger(SafetyNet):
         self.hold(path, "after-the-holder-died")
 
 
+class TheWatchdogCleansUpBeforeItLetsGo(SafetyNet):
+    """#657 review K3, swept into #606's runner. An agent call had no supervisor: a runner killed
+    by SIGKILL left the agent and everything it started running, and a hung grader's meter kept
+    its grader alive until its own timeout. Every agent and grader call now runs under a watchdog
+    that kills what its worker left behind BEFORE it exits, and sweeps the whole call when its
+    owner dies. The fakes sleep and spawn a sleeping grandchild; nothing calls a model."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 8
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def spawn(self, argv):
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"), *argv],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        return proc
+
+    def wait_for(self, out, pattern):
+        deadline = time.monotonic() + 60
+        while not list(out.rglob(pattern)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(list(out.rglob(pattern)), f"no {pattern} appeared: the call never started")
+        time.sleep(0.2)
+
+    def test_the_watchdog_kills_what_its_worker_left_before_it_exits(self):
+        tree = self.out_dir() / "tree.pids"
+        tree.parent.mkdir(parents=True)
+        worker = ("import json, subprocess, sys\n"
+                  "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+                  "                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                  "json.dump([c.pid], open(sys.argv[1], 'w'))\n")
+        done = subprocess.run([sys.executable, "-I", str(ROOT / "scripts" / "_ablation_run.py"), "--watchdog",
+                               str(os.getpid()), "--", sys.executable, "-c", worker, str(tree)], timeout=60)
+        self.assertTrue(tree.is_file(), "the watchdog never ran its worker")
+        self.assertEqual(done.returncode, 0)
+        # Nobody else swept: what the worker left was killed before the watchdog let go of it.
+        self.assertAllDead(tree.parent, at_least=1)
+
+    def test_with_the_runner_gone_at_once_a_finished_agent_leaves_nothing_behind(self):
+        # The runner's own teardown never runs, as if it were SIGKILLed the instant the call's
+        # leader exited: only the watchdog stands between the orphan and the next cell.
+        out = self.out_dir()
+        with mock.patch.object(runner, "kill_group", return_value=True), \
+                mock.patch.object(runner, "sweep", return_value=True, create=True):
+            code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("orphan"),
+                                           "--cost-cap-usd", "0", "--mission", "review-it", "--task",
+                                           "behavioral-4", "--repeats", "1", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        envs = [json.loads(f.read_text()) for f in sorted(out.rglob("stub-env.json"))]
+        self.assertEqual([e["alive_at_start"] for e in envs], [[], []], "a cell started while an orphan lived")
+        self.assertAllDead(out, at_least=4)
+
+    def test_a_sigkilled_runner_takes_its_agent_with_it(self):
+        out = self.out_dir()
+        proc = self.spawn(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("hang"), "--cost-cap-usd", "0",
+                           "--mission", "review-it", "--task", "behavioral-4", "--repeats", "1",
+                           "--timeout", "60", "--out", str(out)])
+        self.wait_for(out, "agent.pids")
+        proc.send_signal(signal.SIGKILL)
+        proc.communicate(timeout=30)
+        self.assertAllDead(out, at_least=2)
+
+    def test_a_sigkilled_runner_takes_its_grader_with_it(self):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.out_dir()
+        proc = self.spawn(["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                           "--harness-cmd", self.stub_cmd("plain", "--cost", "1.0"),
+                           "--grader-cmd", self.stub_cmd("grader-hang"),
+                           "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+        self.wait_for(out, "grader-usage.json.pids")
+        proc.send_signal(signal.SIGKILL)
+        proc.communicate(timeout=30)
+        self.assertAllDead(out, at_least=2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -43,9 +43,11 @@ ABLATION_OUT, ABLATION_CELL, ABLATION_ARM, ABLATION_SEED, ABLATION_CATALOG; SHEL
 path it is handed is absolute: --out is resolved before any cell, and a relative path in the
 harness command is resolved against the invocation's cwd, never the workspace's.
 
-No child outlives its call or the run (#652 review). The agent and the grader each lead their own
-process group: a timeout, or a leader that exits leaving children behind, kills and reaps the whole
-group, and the next cell starts only once it is empty. The grader meter has its own timeout,
+No child outlives its call or the run (#652 review). The agent and the grader each run under a
+watchdog (this file, `--watchdog`) that leads its own process group: a timeout kills and reaps the
+call, the watchdog kills what its worker left behind BEFORE it exits, and the next cell starts only
+once the runner has verified that sweep. If the runner itself is SIGKILLed, each watchdog kills its
+whole call (#657 review K3). The grader meter has its own timeout,
 shorter than eval.py's, so it stops and reaps its grader before the outer one fires. SIGTERM,
 SIGHUP and Ctrl-C kill every live group before the runner exits 128+N (first_run.py's pattern,
 #640). A killed call is charged its full reservation, and a run that never completed is not graded.
@@ -348,36 +350,173 @@ def kill_group(pgid, wait_s=10.0):
     return True
 
 
-def run_group(argv, *, input_text, timeout, cwd=None, env=None):
-    """(stdout, exit status or None when killed, killed, emptied).
+# ---------------------------------------------------------------------------
+# the watchdog: every call's leader, which never lets go before its cleanup (#657 review K3)
+# ---------------------------------------------------------------------------
+WATCHDOG = Path(__file__).resolve()  # run as `python3 -I _ablation_run.py --watchdog OWNER -- ARGV`
 
-    `argv` leads a new session, so the harness and everything it starts form one process group.
-    On timeout the whole group is killed and reaped; after a normal exit, anything the leader left
-    behind in its group is killed too; and an exception mid-call (an interrupt) kills it on the way
-    out. `emptied` is False only when a member survived SIGKILL, and then no next cell may start.
+
+def process_table():
+    """{pid: (ppid, pgid)} for every live process this user can see; a zombie runs nothing and is
+    left out. Linux reads /proc, elsewhere `ps`. OSError when the table cannot be read: a sweep
+    that cannot see cannot vouch for anything."""
+    table = {}
+    if os.path.isdir("/proc/self"):
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                stat = Path("/proc", entry, "stat").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue  # gone since the listing
+            fields = stat.rsplit(")", 1)[-1].split()  # after `pid (comm)`: comm may hold spaces
+            if fields and fields[0] not in ("Z", "X"):
+                table[int(entry)] = (int(fields[1]), int(fields[2]))
+        return table
+    scan = subprocess.Popen(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,stat="], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace",
+                            start_new_session=True)
+    try:
+        out, _err = scan.communicate(timeout=30)
+    except subprocess.TimeoutExpired as err:
+        scan.kill()
+        scan.wait()
+        raise OSError("ps did not answer within 30 s") from err
+    if scan.returncode != 0:
+        raise OSError(f"ps exited with status {scan.returncode}")
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].isdigit() and not parts[3].startswith("Z"):
+            table[int(parts[0])] = (int(parts[1]), int(parts[2]))
+    table.pop(scan.pid, None)  # the scan itself is nobody's call
+    return table
+
+
+def call_processes(table, roots=(), groups=(), exclude=()):
+    """A call's live pids in `table`: every member of `groups`, every one of `roots`, and every
+    descendant of either -- minus `exclude` and this process, which never sweeps itself."""
+    children = {}
+    for pid, (ppid, _pgid) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    stack = [pid for pid, (_ppid, pgid) in table.items() if pgid in groups]
+    stack += [pid for pid in roots if pid in table]
+    found = set()
+    while stack:
+        pid = stack.pop()
+        if pid not in found:
+            found.add(pid)
+            stack.extend(children.get(pid, ()))
+    return found - set(exclude) - {os.getpid()}
+
+
+def sweep(roots=(), groups=(), exclude=(), wait_s=10.0):
+    """SIGKILL a call's processes (call_processes) until a fresh scan finds none: True. False when
+    one survives `wait_s`, or when the process table cannot be read (fail closed)."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            left = call_processes(process_table(), roots, groups, exclude)
+        except OSError:
+            return False
+        if not left:
+            return True
+        for pid in left:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+
+
+def watchdog_main(argv):
+    """`python3 -I _ablation_run.py --watchdog OWNER_PID -- ARGV...`: the leader of one call.
+
+    It runs ARGV, its stdin/stdout/stderr passed straight through, in a process group of its own,
+    and never gives up ownership before its cleanup (#657 review K3). When ARGV exits, everything
+    it left in the group or below the watchdog is killed BEFORE the watchdog exits, so a runner
+    killed from then on cannot orphan any of it. When OWNER (the runner) dies -- a SIGKILL nothing
+    can trap -- the whole call is killed. Exit: ARGV's status (128+N for signal N), 127 when ARGV
+    cannot start, 137 after its owner died, 2 on a usage error.
     """
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, cwd=cwd, env=env, start_new_session=True)
+    try:
+        owner, cmd = int(argv[0]), argv[argv.index("--") + 1:]
+    except (IndexError, ValueError):
+        cmd = []
+    if not cmd:
+        sys.stderr.write("usage: _ablation_run.py --watchdog OWNER_PID -- ARGV...\n")
+        return 2
+    me = os.getpid()
+    if os.getsid(0) != me:
+        os.setsid()  # a group of its own: what it sweeps is its call's, never its owner's
+    try:
+        proc = subprocess.Popen(cmd)
+    except OSError as err:
+        sys.stderr.write(f"watchdog: cannot start {cmd[0]!r}: {err}\n")
+        return 127
+    while True:
+        try:
+            status = proc.wait(timeout=0.2)
+            break
+        except subprocess.TimeoutExpired:
+            if os.getppid() != owner:
+                sweep(roots=(me,), groups=(me,), exclude=(me,), wait_s=30.0)
+                return 137
+    sweep(roots=(me,), groups=(me,), exclude=(me,))
+    return status if status >= 0 else 128 - status
+
+
+def _exited(pid, timeout):
+    """Wait up to `timeout` s for child `pid` to exit WITHOUT reaping it: True once it has."""
+    deadline = time.monotonic() + timeout
+    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=None, stderr_path=None):
+    """(exit status or None when killed, killed, emptied): one call under the watchdog.
+
+    The watchdog leads a new session, so it, `argv` and whatever stays in their group form one
+    process group, and it kills what `argv` leaves before it exits. The streams go straight to
+    files, so a call's output outlives the runner; no `stderr_path` merges stderr into stdout. On
+    timeout, or an exception mid-call (an interrupt), the watchdog and everything below it or in
+    its group are killed; after a normal exit the runner verifies the watchdog's sweep. The
+    watchdog is waited for without being reaped until that sweep is done, so its pid cannot pass
+    to a stranger the sweep would walk. `emptied` is False only when a process survived SIGKILL or
+    the process table could not be read, and then no next call may start.
+    """
+    with contextlib.ExitStack() as files:
+        fin = files.enter_context(open(stdin_path, "rb")) if stdin_path else subprocess.DEVNULL
+        fout = files.enter_context(open(stdout_path, "wb"))
+        ferr = files.enter_context(open(stderr_path, "wb")) if stderr_path else subprocess.STDOUT
+        proc = subprocess.Popen([sys.executable, "-I", str(WATCHDOG), "--watchdog", str(os.getpid()), "--",
+                                 *argv], stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
+                                start_new_session=True)
     LIVE_GROUPS.add(proc.pid)
     killed = False
     try:
-        try:
-            out, _err = proc.communicate(input_text, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            killed = True
-            kill_group(proc.pid, wait_s=0)
-            try:
-                out, _err = proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:  # a process outside the group holds the pipe open
-                proc.kill()
-                proc.wait()
-                out = ""
+        killed = not _exited(proc.pid, timeout)
     finally:
-        if proc.poll() is None:
-            kill_group(proc.pid, wait_s=0)
-            proc.wait()
-        emptied = kill_group(proc.pid)
-    return out, (None if killed else proc.returncode), killed, emptied
+        emptied = sweep(roots=(proc.pid,), groups=(proc.pid,))
+        proc.kill()  # a no-op once it has exited (Popen polls first)
+        proc.wait()
+        if emptied:
+            LIVE_GROUPS.discard(proc.pid)
+    return (None if killed else proc.returncode), killed, emptied
+
+
+def run_group(argv, *, input_text, timeout, cwd=None, env=None):
+    """(stdout, exit status or None when killed, killed, emptied): contained_run with the task on
+    stdin and stdout read back. The harness never shares a pipe with the runner, so nothing it
+    leaves behind can hold one open."""
+    with tempfile.TemporaryDirectory(prefix="of-ablation-call-") as tmp:
+        stdin, stdout = Path(tmp) / "stdin", Path(tmp) / "stdout"
+        stdin.write_text(input_text, encoding="utf-8")
+        code, killed, emptied = contained_run(argv, timeout=timeout, cwd=cwd, env=env, stdin_path=stdin,
+                                              stdout_path=stdout, stderr_path=Path(tmp) / "stderr")
+        return stdout.read_text(encoding="utf-8", errors="replace"), code, killed, emptied
 
 
 def sweep_grader_group(pgid_file):
@@ -393,7 +532,8 @@ def stop_all_groups():
     """Every child group this run still knows about, killed and waited for: the runner's last act
     before it exits on a signal, as first_run.py stops its workers (#640)."""
     for pgid in sorted(LIVE_GROUPS):
-        kill_group(pgid)
+        if sweep(groups=(pgid,)):  # its leader is reaped: walk its group, never its stale pid
+            LIVE_GROUPS.discard(pgid)
     for pgid_file in sorted(GRADER_GROUP_FILES, key=str):
         sweep_grader_group(pgid_file)
 
@@ -1067,7 +1207,9 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
         grader_output = args.grader_output or prereg["harness"]["grader_output"]
     else:
         grader, grader_output = [str(sandbox.stand_in), "-p", "--output-format", "json"], "claude-json"
-    ctx["grader_cmd"] = shlex.join([sys.executable, "-I", str(sandbox.meter), grader_output, "--",
+    # The meter runs under the watchdog too: a runner SIGKILLed mid-grade takes its grader with it.
+    ctx["grader_cmd"] = shlex.join([sys.executable, "-I", str(WATCHDOG), "--watchdog", str(os.getpid()), "--",
+                                    sys.executable, "-I", str(sandbox.meter), grader_output, "--",
                                     *grader, *grader_limit])
     variants = {}
     for mission in missions:
@@ -1462,3 +1604,10 @@ def dispatch(args, api):
         print(render_markdown(results, report))
         print(f"results: {out / 'results.json'}")
     return api.EXIT_OK if results["complete"] else api.EXIT_FAILED
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--watchdog"]:
+        sys.exit(watchdog_main(sys.argv[2:]))
+    sys.stderr.write("_ablation_run.py is ablation.py's library; run `ablation.py run` instead\n")
+    sys.exit(2)

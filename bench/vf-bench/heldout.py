@@ -76,6 +76,10 @@ CASE_FIELDS = {"id", "class", "sound_expected", "note", "unit_class", "fixture",
 # Read only for a run-time fixture: on a static case the sound gate never passes them on.
 FIXTURE_ONLY_FIELDS = {"coordinator_contract", "lighting", "no_gh", "dispatch", "gh_stub",
                        "gh_reviews"}
+# What a held-out case adds to, or renames in, a development case. Dropped before the two are
+# compared, so what is compared is the gaming move as written (#601).
+HELDOUT_META = {"id", "class", "canary", "authored_at", "verifier_pin", "inventory_site", "note",
+                "neighbour", "repo"}
 
 
 class UsageError(Exception):
@@ -505,6 +509,45 @@ def _read_case(f):
     return (obj, None) if isinstance(obj, dict) else (None, "not a JSON object")
 
 
+def _move(case):
+    """A case without its held-out metadata, its review repository name and its unit name."""
+    move = {k: v for k, v in case.items() if k not in HELDOUT_META}
+    if isinstance(move.get("manifest"), dict):
+        move["manifest"] = {k: v for k, v in move["manifest"].items() if k != "unit"}
+    return move
+
+
+def _leaves(node):
+    """{(path, value)} for every scalar in a parsed JSON value, walked without recursion."""
+    out, stack = set(), [(node, "")]
+    while stack:
+        node, path = stack.pop()
+        if isinstance(node, dict):
+            stack.extend((v, f"{path}.{k}") for k, v in node.items())
+        elif isinstance(node, list):
+            stack.extend((v, f"{path}[{i}]") for i, v in enumerate(node))
+        else:
+            out.add((path, json.dumps(node)))
+    return out
+
+
+def development_moves(traps_dir=None):
+    return [_move(json.loads(f.read_text(encoding="utf-8")))
+            for f in sorted(Path(traps_dir or HERE / "traps").glob("*.json"))]
+
+
+def novelty(cases, dev_moves):
+    """How far the set is from the public corpus, in numbers only (#601): for each case, the
+    leaves (scalar values by path) by which it differs from its NEAREST development case once
+    held-out metadata is dropped; zero is a copy. Counts, never which case or what differs."""
+    dev = [_leaves(d) for d in dev_moves]
+    diffs = sorted(min(len(_leaves(_move(c)) ^ d) for d in dev) for c in cases.values()) if dev else []
+    if not diffs:
+        return None
+    return {"copies": sum(1 for d in diffs if d == 0), "differing_leaves_min": diffs[0],
+            "differing_leaves_median": diffs[len(diffs) // 2], "differing_leaves_max": diffs[-1]}
+
+
 def _unrendered(value):
     """How many `{{token}}` placeholders survive rendering: each is a fact the fixture never
     supplies, so verify.py would judge a literal `{{...}}` instead of the case written."""
@@ -543,7 +586,11 @@ def vet_cases(case_dir, pin, repo=ROOT):
         problems.append(f"{name}: {why}")
 
     ids = [c.get("id") for c in cases.values()]
+    public = {json.dumps(m, sort_keys=True) for m in development_moves()}
     for name, c in cases.items():
+        if json.dumps(_move(c), sort_keys=True) in public:
+            bad(name, "a copy of a development case once the held-out fields are dropped: it "
+                      "measures nothing the public corpus does not")
         extra = sorted(set(c) - CASE_FIELDS)
         if extra:
             bad(name, f"{len(extra)} field(s) the replay does not read")
@@ -643,6 +690,7 @@ def summarize(cases, digests, pin, files):
             "by_category": dict(sorted(by_cat.items())),
             "authored_from": iso(stamps[0]), "authored_to": iso(stamps[-1]),
             "file_mtime_from": iso(mtimes[0]), "file_mtime_to": iso(mtimes[-1]),
+            "nearest_development_case": novelty(cases, development_moves()),
             "pinned_verifier": pin}
 
 
@@ -927,6 +975,11 @@ def main(argv=None):
             for p in problems:
                 print(f"REFUSED: {p}")
             traps = sum(1 for c in cases.values() if c.get("sound_expected") == "RED")
+            near = novelty(cases, development_moves())
+            if near:
+                print(f"nearest development case: {near['copies']} copies; differing leaves min "
+                      f"{near['differing_leaves_min']}, median {near['differing_leaves_median']}, "
+                      f"max {near['differing_leaves_max']}")
             print(f"{len(cases)} case(s) read ({traps} trap(s), {len(cases) - traps} other) against "
                   f"verify.py {pin['verify_blob'][:12]} at {pin['commit'][:12]}: "
                   + (f"{len(problems)} problem(s)" if problems else "ready to digest"))

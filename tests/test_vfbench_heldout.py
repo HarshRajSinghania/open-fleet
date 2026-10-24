@@ -77,11 +77,21 @@ class TheCommittedProtocolIsComplete(unittest.TestCase):
         self.assertEqual(dev["canary_guid"], gate.EXPECTED_CANARY_GUID)
         self.assertEqual(dev["location"], "bench/vf-bench/traps/*.json")
 
-    def test_held_out_content_is_declared_uncommitted_and_unpublished(self):
+    def test_held_out_content_is_uncommitted_and_only_its_digests_are_published(self):
+        # #601: held-out v1's digests are published; its content is not committed anywhere.
         held = _protocol()["splits"]["heldout"]
         self.assertIs(held["committed"], False)
-        self.assertIsNone(held["published_digests"])
-        self.assertIsNone(held["cases"])
+        digests = heldout.load_digests(ROOT / held["published_digests"])
+        self.assertEqual(held["cases"], len(digests["cases"]))
+        self.assertEqual(set(digests), {"kind", "protocol", "canary_sha256", "cases"})
+
+    def test_this_repository_carries_none_of_the_published_held_out_cases(self):
+        # The leakage check run for real: digests, canonical forms, embedded objects and the
+        # held-out canary, against every blob committed at HEAD (#601).
+        held = _protocol()["splits"]["heldout"]
+        r = _cli("check", "--digests", held["published_digests"], "--rev", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"against {held['cases']} held-out case digest(s)", r.stdout)
 
     def test_the_holder_is_the_designated_ai_system_with_its_limits(self):
         # #601: the owner designated OpenAI Codex on 2026-10-24. It is an AI system, not a person,
@@ -757,6 +767,284 @@ class HistoryTheCloneNeverFetchedIsNeverClean(unittest.TestCase):
                 if "heldout.py check" in job and "--all-history" in job:
                     with self.subTest(workflow=wf.name, job=job.split(":", 1)[0]):
                         self.assertRegex(job, r"fetch-depth:\s*0\b")
+
+
+class AFilledHolderIsValidatedNotTakenOnTrust(unittest.TestCase):
+    """#601: a name alone does not fill the role. An assigned holder records who designated it
+    and when, why it is independent and where that independence stops; an AI system also names
+    its model, client and operator, so it cannot read as a person."""
+
+    def _errors(self, mutate):
+        doc = _protocol()
+        mutate(doc)
+        return heldout.validate(doc)
+
+    def test_each_missing_field_is_named(self):
+        for key in ("kind", "designated_by", "designated_on", "independence_evidence", "limits",
+                    "model", "client", "operated_by"):
+            with self.subTest(field=key):
+                errors = self._errors(lambda d, k=key: d["holder"].pop(k))
+                self.assertTrue(any(f"must record {key}" in e for e in errors), errors)
+
+    def test_an_unknown_kind_and_a_malformed_date_are_refused(self):
+        self.assertTrue(any("holder.kind" in e for e in
+                            self._errors(lambda d: d["holder"].update(kind="robot"))))
+        self.assertTrue(any("designated_on" in e for e in
+                            self._errors(lambda d: d["holder"].update(designated_on="today"))))
+
+    def test_a_person_needs_no_model(self):
+        def person(d):
+            d["holder"].update(kind="person", assigned="A. Person")
+            for key in ("model", "client", "operated_by"):
+                d["holder"].pop(key)
+        self.assertEqual(self._errors(person), [])
+
+
+class AMilestoneCannotDisagreeWithTheProtocol(unittest.TestCase):
+    def _errors(self, mutate):
+        doc = _protocol()
+        mutate(doc)
+        return heldout.validate(doc)
+
+    def _milestone(self, doc, mid):
+        return next(m for m in doc["release_dates"]["milestones"] if m["id"] == mid)
+
+    def test_a_planned_milestone_that_happened_is_refused(self):
+        errors = self._errors(lambda d: self._milestone(d, "holder-assigned").update(status="planned"))
+        self.assertTrue(any("'holder-assigned' is still 'planned'" in e for e in errors), errors)
+
+    def test_a_done_milestone_the_protocol_does_not_show_is_refused(self):
+        def mutate(d):
+            self._milestone(d, "revealed").update(status="done", evidence="said so")
+            self._milestone(d, "revealed")["id"] = "evaluated"
+            d.pop("evaluations", None)
+            for m in d["release_dates"]["milestones"]:
+                if m["id"] == "evaluated" and m.get("milestone", "").startswith("held-out v1 evaluated"):
+                    m["status"] = "planned"
+        errors = self._errors(mutate)
+        self.assertTrue(any("'evaluated' is marked done, but" in e for e in errors), errors)
+
+
+def _vet_set(where, pin, n=3):
+    """A synthetic held-out set the vet accepts: development-shaped run-time fixture cases
+    re-labelled with the held-out fields. Built at test time; none of it is the real set."""
+    where.mkdir(parents=True)
+    now = heldout.datetime.now(heldout.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sources = [("lighting-swap", "check_lighting", "lighting-swap"),
+               ("mutation-valid-control", "check_lighting", None),
+               ("stale-wtree", "check_commands", "no recorded command with exit 0")][:n]
+    for i, (src, cls, site) in enumerate(sources, 1):
+        case = json.loads((BENCH / "traps" / f"{src}.json").read_text(encoding="utf-8"))
+        case.pop("neighbour", None)
+        # Reworded, so no case is a copy of its development source (the vet refuses copies).
+        case["manifest"]["criteria"][0]["text"] = "add(a, b) is the sum of a and b"
+        case.update({"id": f"hv1-{i:03d}", "class": cls, "canary": CANARY, "authored_at": now,
+                     "verifier_pin": {"commit": pin["commit"], "verify_blob": pin["verify_blob"]}})
+        if site:
+            case["inventory_site"] = site
+            case.setdefault("expect_reason", site)
+        (where / f"hv1-{i:03d}.json").write_text(json.dumps(case, indent=2), encoding="utf-8")
+    return sorted(where.glob("*.json"))
+
+
+class TheVetChecksWhatTheReplayWillRunAndQuotesNothing(unittest.TestCase):
+    """`vet` is the holder's lint: it refuses a case the replay could not run as written, and
+    names each problem by file without quoting the case (#601). It never runs the verifier."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pin = heldout.resolve_pin(ROOT, "HEAD")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.files = _vet_set(self.tmp / "cases", self.pin)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _edit(self, n, edit):
+        f = self.files[n]
+        case = json.loads(f.read_text(encoding="utf-8"))
+        edit(case)
+        f.write_text(json.dumps(case), encoding="utf-8")
+
+    def test_a_well_formed_set_is_ready(self):
+        problems, cases = heldout.vet_cases(self.tmp / "cases", self.pin)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(cases), 3)
+        r = _cli("vet", str(self.tmp / "cases"), "--pin", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ready to digest", r.stdout)
+
+    def test_each_defect_is_named_by_file_and_quotes_no_value(self):
+        secret = "hv-secret-77"
+        defects = {
+            "a field the replay does not read": (0, lambda c: c.update({secret: 1}),
+                                                 "field(s) the replay does not read"),
+            "an id that is not opaque": (0, lambda c: c.update(id=secret), "id must be opaque"),
+            "a category that is no check": (0, lambda c: c.update({"class": secret}),
+                                            "class must be a check"),
+            "a trap with no declared refusal": (0, lambda c: c.pop("expect_reason"),
+                                                "expect_reason"),
+            "a site that names no row": (0, lambda c: c.update(inventory_site=secret),
+                                         "exactly one inventory row"),
+            "a site two rows share": (0, lambda c: c.update({"class": "execute_negative_control",
+                                                             "inventory_site": "Output was:"}),
+                                      "exactly one inventory row"),
+            "authored before the pin": (0, lambda c: c.update(authored_at="2020-01-01T00:00:00Z"),
+                                        "not after the pinned verifier revision"),
+            "another verifier pin": (0, lambda c: c["verifier_pin"].update(verify_blob="0" * 40),
+                                     "verifier_pin must be"),
+            "an unknown builder": (0, lambda c: c.update(fixture=secret), "no run-time builder"),
+            "a placeholder no fixture fills": (
+                0, lambda c: c["manifest"]["intent"].update(goal="{{" + secret + "}}"),
+                "placeholder"),
+            "a contract the fixture never writes": (
+                0, lambda c: c.update(coordinator_contract=f"coordinator/{secret}.md"),
+                "coordinator_contract names no contract"),
+            "a neighbour that is no control": (0, lambda c: c.update(neighbour="hv1-003"),
+                                               "neighbour must be the id of a valid control"),
+            "a static case with fixture-only fields": (
+                0, lambda c: c.pop("fixture"), "only a run-time fixture reads"),
+            "a development case under new ids": (
+                0, lambda c: c["manifest"]["criteria"][0].update(text="add(a, b) returns a + b"),
+                "a copy of a development case"),
+        }
+        for label, (n, edit, needle) in defects.items():
+            with self.subTest(defect=label):
+                original = self.files[n].read_bytes()
+                try:
+                    self._edit(n, edit)
+                    problems, _ = heldout.vet_cases(self.tmp / "cases", self.pin)
+                    mine = [p for p in problems if p.startswith(self.files[n].name + ":")]
+                    self.assertTrue(any(needle in p for p in mine), problems)
+                    self.assertFalse(any(secret in p for p in problems), problems)
+                finally:
+                    self.files[n].write_bytes(original)
+
+    def test_the_summary_publishes_counts_and_the_set_digest_only(self):
+        digests, summary = self.tmp / "d.json", self.tmp / "s.json"
+        r = _cli("digest", str(self.tmp / "cases"), "--canary", CANARY, "--out", str(digests),
+                 "--summary", str(summary), "--pin", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        doc = json.loads(summary.read_text(encoding="utf-8"))
+        self.assertEqual(set(doc), {"kind", "protocol", "set_sha256", "cases", "traps",
+                                    "valid_controls", "by_category", "authored_from",
+                                    "authored_to", "file_mtime_from", "file_mtime_to",
+                                    "nearest_development_case", "pinned_verifier"})
+        self.assertEqual(doc["nearest_development_case"]["copies"], 0)
+        self.assertGreater(doc["nearest_development_case"]["differing_leaves_min"], 0)
+        self.assertEqual(doc["set_sha256"], heldout.set_digest(heldout.load_digests(digests)))
+        self.assertEqual(doc["by_category"], {"check_commands": {"traps": 1, "valid_controls": 0},
+                                              "check_lighting": {"traps": 1, "valid_controls": 1}})
+        text = summary.read_text(encoding="utf-8") + r.stdout
+        for f in self.files:
+            self.assertNotIn(json.loads(f.read_text(encoding="utf-8"))["id"], text)
+        self.assertNotIn(CANARY, text)
+
+    def test_the_summary_needs_a_vetted_set_and_a_pin(self):
+        r = _cli("digest", str(self.tmp / "cases"), "--canary", CANARY, "--out",
+                 str(self.tmp / "d.json"), "--summary", str(self.tmp / "s.json"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self._edit(0, lambda c: c.pop("expect_reason"))
+        r = _cli("digest", str(self.tmp / "cases"), "--canary", CANARY, "--out",
+                 str(self.tmp / "d.json"), "--summary", str(self.tmp / "s.json"), "--pin", "HEAD")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertFalse((self.tmp / "s.json").exists())
+
+
+class PublishedFiguresAndEvaluationsBind(unittest.TestCase):
+    """validate binds what the protocol publishes to the digests file, the pin to git, and each
+    recorded evaluation to its report's bytes, commit and verify.py blob (#601)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        tmp = Path(cls._tmp.name)
+        cls.pin = heldout.resolve_pin(ROOT, "HEAD")
+        _vet_set(tmp / "cases", cls.pin)
+        cls.digests = tmp / "digests.json"
+        cls.summary = tmp / "summary.json"
+        r = _cli("digest", str(tmp / "cases"), "--canary", CANARY, "--out", str(cls.digests),
+                 "--summary", str(cls.summary), "--pin", "HEAD")
+        assert r.returncode == 0, r.stdout + r.stderr
+        s = json.loads(cls.summary.read_text(encoding="utf-8"))
+        cls.report = tmp / "report.json"
+        cls.report.write_text(json.dumps({
+            "schema": "vf-bench-replay@1", "protocol": {"split": "heldout"},
+            "revision": {"commit": cls.pin["commit"]},
+            "versions": {"blobs": {"runtime/scripts/verify.py": cls.pin["verify_blob"]}},
+            "heldout": {"set_sha256": s["set_sha256"]}, "verdict": {"ok": True}}), encoding="utf-8")
+        today = s["authored_to"][:10]
+        doc = _protocol()
+        doc["splits"]["heldout"].update(
+            published_digests=str(cls.digests),
+            **{k: s[k] for k in ("set_sha256", "cases", "traps", "valid_controls", "by_category",
+                                 "authored_from", "authored_to")})
+        doc["temporal"]["pinned_verifier"] = dict(cls.pin)
+        doc["evaluations"] = [{
+            "version": doc["splits"]["heldout"]["version"], "date": today,
+            "revision": cls.pin["commit"], "verify_blob": cls.pin["verify_blob"],
+            "report": str(cls.report),
+            "report_sha256": heldout.sha256(cls.report.read_bytes()), "complete": True}]
+        for m in doc["release_dates"]["milestones"]:
+            if m["id"] in ("digests-published", "evaluated"):
+                m.update(status="done", date=today, evidence="this test's synthetic set")
+        cls.doc = doc
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _errors(self, mutate=None):
+        doc = json.loads(json.dumps(self.doc))
+        if mutate:
+            mutate(doc)
+        return heldout.validate(doc)
+
+    def test_a_consistent_record_is_valid(self):
+        self.assertEqual(self._errors(), [])
+
+    def test_each_broken_binding_is_named(self):
+        def held(d):
+            return d["splits"]["heldout"]
+
+        def ev(d):
+            return d["evaluations"][0]
+        cases = {
+            "another set digest": (lambda d: held(d).update(set_sha256="0" * 64), "set_sha256"),
+            "another case count": (lambda d: held(d).update(cases=99), "heldout cases is 99"),
+            "categories that do not sum": (
+                lambda d: held(d)["by_category"]["check_commands"].update(traps=5), "does not sum"),
+            "no valid control": (lambda d: held(d).update(valid_controls=0, traps=3),
+                                 "no valid control"),
+            "authored before the pin": (
+                lambda d: held(d).update(authored_from="2020-01-01T00:00:00Z"), "temporal rule"),
+            "a pin git does not record": (
+                lambda d: d["temporal"]["pinned_verifier"].update(verify_blob="1" * 40),
+                "not what git records"),
+            "published with no holder": (
+                lambda d: d["holder"].update(assigned=None, state="unfilled"), "no holder is assigned"),
+            "a report edited after the run": (
+                lambda d: ev(d).update(report_sha256="0" * 64), "does not hash"),
+            "a revision git does not hold": (lambda d: ev(d).update(revision="2" * 40),
+                                             "git does not hold"),
+            "another verify.py blob": (lambda d: ev(d).update(verify_blob="3" * 40),
+                                       "not the pinned"),
+            "a completeness the report denies": (lambda d: ev(d).update(complete=False),
+                                                 "whose completeness is recorded"),
+            "an evaluation with no published set": (
+                lambda d: held(d).update(published_digests=None), "no held-out digests are published"),
+            "an evaluated milestone on another date": (
+                lambda d: next(m for m in d["release_dates"]["milestones"]
+                               if m["id"] == "evaluated").update(date="2099-01-01"),
+                "dated unlike every recorded evaluation"),
+        }
+        for label, (mutate, needle) in cases.items():
+            with self.subTest(binding=label):
+                errors = self._errors(mutate)
+                self.assertTrue(any(needle in e for e in errors), errors)
 
 
 if __name__ == "__main__":

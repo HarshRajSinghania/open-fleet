@@ -1,7 +1,7 @@
 {
   "protocol": "vf-bench-heldout@1",
   "issue": "#601",
-  "status": "held-out v1 in authoring: the holder (OpenAI Codex, an AI system) is assigned and the verifier revision is pinned; no held-out digests are published yet",
+  "status": "held-out v1 published: 89 cases authored and held by OpenAI Codex (an AI system) outside this repository; only their digests and counts are committed",
   "purpose": "The development traps below are public: anyone building or tuning a verifier can read them, so a score on them alone cannot rule out a verifier fitted to the corpus. The held-out split is evaluated only at a pinned verifier revision, by a holder who keeps its content outside this repository until that evaluation is done.",
   "splits": {
     "development": {
@@ -22,8 +22,114 @@
       "committed": false,
       "version": "vf-bench-heldout@1",
       "case_shape": "the development corpus's case schema, each case carrying the split's own canary GUID, and at least one valid control per fixture shape so false rejection is measured on this split too",
-      "published_digests": null,
-      "cases": null
+      "published_digests": "bench/vf-bench/heldout-v1-digests.json",
+      "cases": 89,
+      "set_sha256": "bc03442ee3bb9090a8af7e26d4ede904eb58fe9ff8a961d5740f5d8ab62b3f89",
+      "traps": 66,
+      "valid_controls": 23,
+      "by_category": {
+        "_read_artifact": {
+          "traps": 3,
+          "valid_controls": 0
+        },
+        "_resolve": {
+          "traps": 1,
+          "valid_controls": 1
+        },
+        "check_ancestry": {
+          "traps": 1,
+          "valid_controls": 1
+        },
+        "check_class_downgrade": {
+          "traps": 2,
+          "valid_controls": 1
+        },
+        "check_commands": {
+          "traps": 3,
+          "valid_controls": 1
+        },
+        "check_dispatch_provenance": {
+          "traps": 6,
+          "valid_controls": 2
+        },
+        "check_freshness": {
+          "traps": 1,
+          "valid_controls": 0
+        },
+        "check_intent": {
+          "traps": 1,
+          "valid_controls": 0
+        },
+        "check_lighting": {
+          "traps": 3,
+          "valid_controls": 0
+        },
+        "check_negative_control": {
+          "traps": 9,
+          "valid_controls": 2
+        },
+        "check_oracle_scope": {
+          "traps": 3,
+          "valid_controls": 0
+        },
+        "check_provenance": {
+          "traps": 1,
+          "valid_controls": 1
+        },
+        "check_real_commits": {
+          "traps": 2,
+          "valid_controls": 0
+        },
+        "check_redaction": {
+          "traps": 2,
+          "valid_controls": 0
+        },
+        "check_replay_request": {
+          "traps": 1,
+          "valid_controls": 0
+        },
+        "check_retention_receipt": {
+          "traps": 1,
+          "valid_controls": 0
+        },
+        "check_review": {
+          "traps": 7,
+          "valid_controls": 2
+        },
+        "check_reviewer_mode": {
+          "traps": 1,
+          "valid_controls": 0
+        },
+        "check_scope": {
+          "traps": 6,
+          "valid_controls": 3
+        },
+        "execute_negative_control": {
+          "traps": 5,
+          "valid_controls": 6
+        },
+        "review_ok": {
+          "traps": 4,
+          "valid_controls": 2
+        },
+        "verify": {
+          "traps": 3,
+          "valid_controls": 1
+        }
+      },
+      "category": "the verifier check a case samples, as the inventory in bench/vf-bench/README.md names it",
+      "authored_from": "2026-10-24T06:00:45Z",
+      "authored_to": "2026-10-24T06:00:46Z",
+      "file_mtime_from": "2026-10-24T06:00:45Z",
+      "file_mtime_to": "2026-10-24T06:00:46Z",
+      "nearest_development_case": {
+        "copies": 0,
+        "differing_leaves_min": 5,
+        "differing_leaves_median": 38,
+        "differing_leaves_max": 54,
+        "measured_by": "heldout.py vet, which refuses a copy, run on the holder's directory on 2026-10-24; counts only"
+      },
+      "set_digest_algorithm": "sha256 over the cases' raw sha256 digests, sorted, one per line (heldout.py set_digest)"
     }
   },
   "temporal": {
@@ -40,7 +146,7 @@
     "label": "Dates marked done happened, each with its evidence; dates marked planned are PLANNED, not commitments",
     "milestones": [
       {"id": "holder-assigned", "milestone": "holder assigned", "date": "2026-10-24", "status": "done", "evidence": "holder: OpenAI Codex, designated by the repository owner on 2026-10-24"},
-      {"id": "digests-published", "milestone": "held-out v1 digests published, content withheld", "date": "2027-01-15", "status": "planned"},
+      {"id": "digests-published", "milestone": "held-out v1 digests published, content withheld", "date": "2026-10-24", "status": "done", "evidence": "bench/vf-bench/heldout-v1-digests.json: 89 case digests, set bc03442ee3bb9090…"},
       {"id": "evaluated", "milestone": "held-out v1 evaluated at a pinned verifier revision", "date": "2027-02-15", "status": "planned"},
       {"id": "revealed", "milestone": "held-out v1 revealed and folded into the development split", "date": "2027-04-15", "status": "planned"}
     ]
@@ -80,7 +186,7 @@
     "assigned": "OpenAI Codex",
     "state": "assigned",
     "kind": "ai-system",
-    "model": "gpt-6.1-sol at reasoning effort xhigh, the client's configured default; the authoring run's own log header is recorded once it has run",
+    "model": "gpt-6.1-sol at reasoning effort xhigh, as the authoring run's log header reports (provider openai, sandbox workspace-write [workdir, /tmp, $TMPDIR], approval never)",
     "client": "codex-cli 0.163.0, signed in with the owner's ChatGPT account",
     "operated_by": "run non-interactively on the owner's machine (`codex exec`, workspace-write sandbox, no network) by the Claude-operated coordinating agent, at the owner's direction",
     "designated_by": "Ravindra Kumar, the repository owner",
@@ -100,6 +206,14 @@
       "the holder set each case's expected verdict from the evidence protocol without running the verifier, so a case it got wrong is a case defect, found only when the set is revealed"
     ],
     "holder_location": "~/of-live/heldout/v1 on the owner's machine, outside every git repository",
-    "note": "#601 assigned no person. The owner designated an AI system on 2026-10-24; every limit above is part of what this split's numbers mean."
+    "note": "#601 assigned no person. The owner designated an AI system on 2026-10-24; every limit above is part of what this split's numbers mean.",
+    "authoring_run": {
+      "started": "2026-10-24T05:57:14Z",
+      "finished": "2026-10-24T06:01:06Z",
+      "brief": "docs/runs/2026-10-24-vf-bench-heldout-v1/authoring-brief.md",
+      "repository_read": "a read-only clone at 234a21adc9 (the vet and digest tools, verify.py unchanged from the pin)",
+      "transcript": "not persisted (codex exec --ephemeral); the run's own log stays in the holder directory",
+      "final_message": "constrained by --output-schema to counts, two paths and the set digest"
+    }
   }
 }

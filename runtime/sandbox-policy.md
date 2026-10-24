@@ -1,27 +1,28 @@
 # Runtime policy — sandbox / danger profile
 
 Autonomy is the point: a worker that blocks on a permission prompt kills the run. So the write
-tiers use each agent's **fully-autonomous flag** (`src/shared/tui-agent-permissions.ts` — in
-[stablyai/orca](https://github.com/stablyai/orca), not this repo; the agent → flag map lives there,
-and its contents are re-witnessed, not remembered: pin-it). The sandboxed middle modes (claude
+tiers use each agent's **fully-autonomous flag** (`src/shared/tui-agent-permissions.ts` in
+[stablyai/orca](https://github.com/stablyai/orca), re-witnessed by pin-it, never remembered). The sandboxed middle modes (claude
 `acceptEdits`, codex `--sandbox workspace-write`, gemini `auto_edit`) are deliberately NOT used:
 they still prompt on shell and network, so a build worker running tests or `npm install` would
 block.
 
 **Say "by default" precisely.** What a `worker-start` launch actually appends is the host's
 `agentDefaultArgs` profile setting, not this map directly. Its MIGRATED DEFAULT is this map —
-`tui-agent-launch-defaults.ts:17` re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS` — but
-a host whose owner chose manual mode carries `''` instead. Two consequences, opposite in sign: on a
-default host a supervised `PROFILE=ro` launch would be silently upgraded to bypass (which is why ro
-never takes Orca's `worker-start`, dispatch-lifecycle.md); on a manual host, `worker-start` launches
-PROMPTING workers while the fleet believes they are autonomous, and the run blocks on invisible
-dialogs. Neither is knowable from source: read `launch.effective` off the start receipt and record
-the host's permission mode in the ledger header. Source-witnessed at v1.4.203 (the 2026-09-16 pin-it run — docs/runs/2026-09-16-pin-it-416/ — re-read the YOLO map and launch defaults at the build commit)
-(`tui-agent-launch-defaults.ts:17`); live probe owed — pin-it.
+`tui-agent-launch-defaults.ts:18-19` re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS` — but
+a host whose owner chose manual mode carries `''`, and from v1.4.238 one on the Auto switch carries
+claude `--permission-mode auto` / codex `--approve-for-me` (`AUTO_TUI_AGENT_ARGS`,
+`tui-agent-permissions.ts:6-10`). Two consequences, opposite in sign: on a default host a
+supervised `PROFILE=ro` launch would be silently upgraded to bypass (which is why ro never takes
+Orca's `worker-start`, dispatch-lifecycle.md); on a manual or Auto host, `worker-start` launches
+workers without the PROFILE's flag (a manual one PROMPTS on invisible dialogs) while the fleet
+believes they are autonomous — `spawn_worker.sh` exits 5 (LAUNCHED_UNUSABLE) on both. Neither is
+knowable from source: read `launch.effective` off the start receipt and record the host's
+permission mode in the ledger header. Live probe owed (pin-it).
 
 `spawn_worker.sh` maps each PROFILE per agent. **Orca has no read-only tier for ANY agent** — its
-maps are `YOLO_TUI_AGENT_ARGS` (`tui-agent-permissions.ts:7-33`) plus a small `YOLO_TUI_AGENT_ENV`
-env map: autonomous flags and nothing else. Every entry in the `ro` column below is that agent's
+maps are `YOLO_TUI_AGENT_ARGS` (`tui-agent-permissions.ts:12-45`), a small `YOLO_TUI_AGENT_ENV`
+and the Auto map above — none of them read-only. Every entry in the `ro` column below is that agent's
 OWN native flag, chosen here; the dashes are agents for which no such flag has been verified, not
 agents Orca singles out. The note used to read "(no RO in Orca)" beside two of them, which implied
 Orca supplied the others (#302).
@@ -32,10 +33,10 @@ Orca supplied the others (#302).
 | antigravity | — none verified → WORKER_CMD | `--dangerously-skip-permissions` (same flag as claude) |
 | codex  | `--sandbox read-only`    | `--dangerously-bypass-approvals-and-sandbox`    |
 | gemini | `--approval-mode plan`   | `--yolo`                                        |
-| cursor | — none verified → WORKER_CMD | `--yolo` (`tui-agent-permissions.ts:21`)     |
+| cursor | — none verified → WORKER_CMD | `--yolo` (`tui-agent-permissions.ts:30`)     |
 | grok   | — none verified → WORKER_CMD | `--permission-mode bypassPermissions`        |
 | droid  | WORKER_CMD               | `--auto high`                                   |
-| opencode / kilo | WORKER_CMD      | WORKER_CMD — Orca **strips** `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:12-15`) |
+| opencode / kilo | WORKER_CMD      | WORKER_CMD — Orca **strips** `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:13-16`) |
 | omp / pi | WORKER_CMD             | WORKER_CMD (not in Orca's autonomous-arg map)   |
 
 - **`ro`** is non-blocking because it cannot mutate — nothing to approve. It is the permission
@@ -76,7 +77,7 @@ how careful the prompt. The sanctioned home is a disposable per-workspace enviro
 pairing — at v1.4.229 supervised via `orca serve --supervise` or `orca serve service install|status|uninstall`,
 with PTY daemon diagnostics on `orca terminal-daemon status|restart --yes` and per-terminal OS containment
 via `ORCA_TERMINAL_PROCESS_CEILING`, `ORCA_TERMINAL_MEMORY_MAX`, and `ORCA_TERMINAL_MEMORY_SWAP_MAX`
-on Linux cgroup v2 / Windows Job objects, `terminal-host/containment/` — validated by
+on Linux cgroup v2 / Windows Job objects, `daemon/terminal-scopes.ts` — validated by
 `vm recipe doctor <recipe-id> --provision`; `--connect` is a synonym of `--provision`).
 
 Two rules the guide states and a lane will otherwise learn the expensive way:

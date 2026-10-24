@@ -106,7 +106,7 @@
 #          receipt carries it.  custom-argv lane: HANDLE=<h> STAGES=<csv>
 #
 # Agent × profile coverage (flags are Orca's own autonomous "yolo" args from
-# `tui-agent-permissions.ts:12-45` at v1.4.238, 6-39 at the v1.4.229 pin — the map itself is
+# `tui-agent-permissions.ts:12-45` at the v1.4.238 pin, 6-39 at v1.4.229 — the map itself is
 # unchanged across that range — so workers never block on a prompt; anything else fails closed
 # and needs WORKER_CMD):
 #   claude/codex/gemini → ro + rw + danger

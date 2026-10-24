@@ -41,7 +41,7 @@ silently deferred), `--reuse-session` / `--fresh-session` (existing-workspace au
 prefer `--fresh-session` for missions, since a reused session carries the last run's context into a
 run whose whole premise is independence), and `--host runtime:<environment-id>` to place the
 scheduled coordinator on a paired Orca server rather than the mortal desktop — pass the id from
-`orca environment list`, never the environment's name.
+`orca environment list` (v1.4.238 also takes a unique host name; a shared one is refused).
 
 `automations run <id>` fires one now (test a schedule without waiting for it); `automations runs
 [--id <id>] [--limit <n>] [--cursor <cursor>] [--json]` (`automations.ts:74-103` at v1.4.229) is the paginated run history, and it is the **cross-run anti-inflation input** the fleet currently

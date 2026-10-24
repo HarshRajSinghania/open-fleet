@@ -6,6 +6,12 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The drift workflow files every confirmed re-pin trigger, even when the other check errored**
+  (#661 review). GitHub adds `success()` to a step condition that names no status function, so a
+  `latest` that failed on the network skipped a reached `review-date` alert, and the reverse. The
+  alert steps now run under `!cancelled()`, build the issue from whichever check answered, and
+  the failure steps run last, so an error still fails the job and both errors are named.
+  `tests/test_upstream_probe.py` runs the workflow's own steps for (2,3), (3,2), (3,3), (0,0), (2,2).
 - **Orca v1.4.238 re-witnessed; the pin holds at v1.4.229 until #606 runs** (#508). The
   1040-commit tag range was diffed and every runtime policy (16) and script (44) given a verdict
   (`docs/runs/2026-10-24-pin-it-238.md`). Two claims drifted in docs the #606 ablation

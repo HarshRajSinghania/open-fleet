@@ -532,6 +532,23 @@ class TestTheRegisteredOrderIsKept(ReportOver):
         out = {r["run_id"]: r for r in self.report([later], results=tmp)["runs"]}
         self.assertFalse(out["wip1-b3r1-rep1"]["compliant"])
 
+    def test_a_lost_live_run_ends_at_its_last_ledger_activity_for_cooldown(self):
+        tmp = Path(tempfile.mkdtemp(prefix="wip-curve-order-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rid = "wip1-b1r1-rep1"
+        (tmp / "runs" / rid).mkdir(parents=True)  # killed: no run.json
+        budget = wip.Budget(tmp)
+        with mock.patch.object(wip, "now", side_effect=("2026-10-24T10:00:00+00:00",
+                                                        "2026-10-24T10:00:00+00:00")):
+            budget.start_run(rid, tmp / "gone", "live")
+            budget.note(f"{rid}/dispatch/activity", run=rid, state="launched", usd="0.25")
+        later = synthetic_run("wip1-b3r1-rep1", "b3r1", "1.0", started="2026-10-24T10:01:00+00:00")
+
+        run = {r["run_id"]: r for r in self.report([later], results=tmp)["runs"]}["wip1-b3r1-rep1"]
+
+        self.assertFalse(run["compliant"])
+        self.assertIn("started 60s after wip1-b1r1-rep1 ended; the cooldown is 600s", run["noncompliance"])
+
     def test_a_re_run_after_a_later_position_never_counts(self):
         first = synthetic_run("wip1-b1r1-rep1", "b1r1", "1.0", started=at_position("wip1-b1r1-rep1"))
         first.update(status="failed", compliant=False, noncompliance=["the run ended failed"])

@@ -2569,8 +2569,16 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
             run["compliant"] = False
             run.setdefault("noncompliance", []).append(
                 f"no evidence that position(s) {missing}, registered before it, ran")
-    for before, run in zip(live, live[1:], strict=False):
-        gap = (datetime.fromisoformat(run["started_at"]) - datetime.fromisoformat(before["finished_at"])).total_seconds()
+    cooldown_runs = [(datetime.fromisoformat(r["started_at"]), datetime.fromisoformat(r["finished_at"]), r)
+                     for r in live]
+    for run in runs:
+        if run["status"] == "lost" and run.get("lost_worker") == "live" and run.get("lost_start"):
+            ended = last_activity(ledger, run["run_id"])
+            if ended:
+                cooldown_runs.append((datetime.fromisoformat(run["lost_start"]), datetime.fromisoformat(ended), run))
+    cooldown_runs.sort(key=lambda item: item[0])
+    for (_, before_end, before), (run_start, _, run) in zip(cooldown_runs, cooldown_runs[1:], strict=False):
+        gap = (run_start - before_end).total_seconds()
         if gap < cooldown:
             run["compliant"] = False
             run.setdefault("noncompliance", []).append(

@@ -474,6 +474,9 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         # in raw HTML a tag left open is closed by what the renderer writes next (Codex at 075baf07c5)
         '- **Change**\n  <div>\n  <a href="../docs/ops.md"\n- **Next** entry\n',
         '- **Change**\n  <div>\n  <img src="../x.png"\n',
+        # Pandoc's GFM math takes "$x$" too, backticks and all (Codex at b897354b7b)
+        '- **Change** $x`y$ <a href="../docs/ops.md">ops</a> `\n',
+        '- **Change** $x`y$ <img src="../x.png"> `\n',
     )
 
     def errors(self, text):

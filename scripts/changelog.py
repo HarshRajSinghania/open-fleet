@@ -172,7 +172,7 @@ def html_link(text):
     only before any point where renderers may disagree about what follows: a line that may open
     raw HTML (past list or quote marks), a "<" that may begin raw HTML or an autolink and is not
     a plain one-line tag, a "[" that may begin a link, a bare URL, a "|" that may edge a table
-    cell, Pandoc's "$`" math, or a backtick run left open on its line. From there on, backticks and
+    cell, a "$" that may open Pandoc's math, or a backtick run left open on its line. From there on, backticks and
     escapes are text, and a link tag is read as loosely as a browser reads raw HTML. Fragments allow no blank line and run-index cells no newline, so what this
     reads as text more strictly than a renderer would is never needed. scripts/run_index.py keeps
     an identical copy: it is loaded alone, so it cannot import this one (tests/test_changelog.py
@@ -189,8 +189,8 @@ def _first_link(text):
     # "<" that may begin raw HTML or an autolink and is not a plain one-line tag, from the first
     # "[" (a link or image, whose text, destination or title may hold a backtick), from the first
     # bare URL (GFM links it), the first "|" (GFM splits a table row into cells before reading a
-    # span), the first "$`" (Pandoc's GFM math), and from the first backtick run left open on its
-    # line: past any of
+    # span), the first "$" (Pandoc's GFM math, $x$ or $`x`$), and from the first backtick run
+    # left open on its line: past any of
     # these, where a span or construct ends depends on the renderer, and a link tag is read as a
     # browser reads raw HTML (_loose_link).
     literal = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
@@ -201,8 +201,8 @@ def _first_link(text):
             i += 2
         elif inline and text[i] == "[":
             literal, i = i, i + 1  # a link's text, destination or title may hold a backtick (Codex at d16ff6e5cc)
-        elif inline and (_BARE_URL_RE.match(text, i) or text[i] == "|" or text.startswith("$`", i)):
-            literal, i = i, i + 1  # a bare URL, a table cell's edge, or Pandoc's $`math`$ (Codex at 737bef7213)
+        elif inline and (_BARE_URL_RE.match(text, i) or text[i] in "|$"):
+            literal, i = i, i + 1  # a bare URL, a table cell's edge, or Pandoc's $math$ (Codex at 737bef7213, b897354b7b)
         elif inline and text[i] == "`":
             line_end = lines[bisect.bisect_right(starts, i) - 1][1]
             run = len(text[i:line_end]) - len(text[i:line_end].lstrip("`"))

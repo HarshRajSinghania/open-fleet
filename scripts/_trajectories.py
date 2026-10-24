@@ -1620,13 +1620,23 @@ def live_git(workspace):
     return git
 
 
-def record_stream(stream_text, workspace, base_sha, git=None):
+class RecordingRefused(ValueError):
+    """The recording cannot say faithfully what the agent did (a commit it cannot attribute, or
+    a history the replay cannot commit in order): no recording is written, and the cell is an
+    ERROR rather than a grade of something that did not happen (#659 review)."""
+
+
+def record_stream(stream_text, workspace, base_sha, git=None, history=None):
     """The #602 events a live agent's stream-json shows, in order (see the module docstring).
 
     `workspace` is the git repository the agent ran in and `base_sha` the commit it started
     from, both as the harness left them after the agent exited: the recorder reads the agent's
-    commits from git, never from the commands' text."""
-    return LiveRecorder(workspace, base_sha, git or live_git(workspace)).record(stream_text)
+    commits from git, never from the commands' text. `history` is the harness's snapshots, one
+    per tool-result message as it streamed past: {"results": [tool_use_id, ...], "commits":
+    [every commit after the base at that moment]}. Every commit in the workspace's history is
+    attributed to the shell call that made it, by the `[branch sha]` line it printed or by the
+    snapshot it first appeared in; RecordingRefused when one cannot be (never dropped)."""
+    return LiveRecorder(workspace, base_sha, git or live_git(workspace), history).record(stream_text)
 
 
 def _stream_objects(text):
@@ -1810,14 +1820,15 @@ def _send_sink(segments):
 class LiveRecorder:
     """One live run's stream, mapped event by event (see record_stream)."""
 
-    def __init__(self, workspace, base_sha, git):
+    def __init__(self, workspace, base_sha, git, history=None):
         self.ws = Path(os.path.realpath(workspace))
-        self.git, self.base = git, base_sha
+        self.git, self.base, self.history = git, base_sha, history
         names = git("ls-tree", "-r", "-z", "--name-only", base_sha).decode("utf-8", "replace")
         self.base_files = {name for name in names.split("\0") if name}
         # The live working tree as the recorded events left it: what a commit is compared to.
         self.sim = {name: self.blob(base_sha, name) for name in self.base_files}
-        self.events, self.claimed = [], set()
+        self.events, self.attribution, self.current = [], {}, None
+        self.chain = self.live_history()
 
     def blob(self, sha, path):
         return self.git("cat-file", "blob", f"{sha}:{path}").decode("utf-8", "replace")
@@ -1857,8 +1868,11 @@ class LiveRecorder:
                 continue
             if not self.events:
                 self.emit("Read", path="@issue")  # the task prompt reached a running agent
+        live = {b.get("id"): self.live_status(b, results.get(b.get("id")), denied) for b in uses}
+        self.attribution = self.attribute(uses, results, live)
         for block in uses:
-            self.map(block, results.get(block.get("id")), denied)
+            self.current = block.get("id")
+            self.map(block, results.get(block.get("id")), live[block.get("id")])
         if final is not None:
             answer = final.get("result") if isinstance(final.get("result"), str) else ""
             found = _manifest_in_text(answer)
@@ -1867,16 +1881,19 @@ class LiveRecorder:
             self.emit("Final", text=answer)
         return self.events
 
-    def map(self, block, result, denied):
+    @staticmethod
+    def live_status(block, result, denied):
+        text = _result_text(result.get("content")) if result else ""
+        if block.get("id") in denied or (result and result.get("is_error") and _DENIAL.search(text)):
+            return "denied"
+        if result is None or result.get("is_error"):
+            return "error"  # failed, or never finished
+        return None
+
+    def map(self, block, result, live):
         name = block.get("name")
         args = block.get("input") if isinstance(block.get("input"), dict) else {}
         text = _result_text(result.get("content")) if result else ""
-        if block.get("id") in denied or (result and result.get("is_error") and _DENIAL.search(text)):
-            live = "denied"
-        elif result is None or result.get("is_error"):
-            live = "error"  # failed, or never finished
-        else:
-            live = None
         handler = {"Read": self.read, "Write": self.write, "Edit": self.edit,
                    "MultiEdit": self.edit, "Bash": self.bash,
                    **{tool: self.search for tool in SEARCH_TOOLS}}.get(name)
@@ -1956,7 +1973,7 @@ class LiveRecorder:
         if not isinstance(command, str) or not command.strip():
             return False
         segments = _shell_segments(command)
-        commits = self.live_commits(segments, command, text, live)
+        commits = self.attribution.get(self.current, [])
         # A command becomes a Commit, a DecisionsAppend or a Read in place of its Bash event
         # only in a strictly literal form; anything else keeps the Bash event, so the hook
         # judges the whole command and its payload is graded (#659 review).
@@ -1969,10 +1986,10 @@ class LiveRecorder:
             return True
         appends = [_decisions_args(s) for s in segments or []]
         single = segments is not None and len(segments) == 1 and _literal_command(command)
-        if single and appends[0] is not None:
+        if single and not commits and appends[0] is not None:
             self.emit("DecisionsAppend", args=appends[0], live=live)
             return True
-        if single and self.shell_read(segments[0], text, live):
+        if single and not commits and self.shell_read(segments[0], text, live):
             return True
         sink = _send_sink(segments or [])
         self.emit("Bash", command=command, live=live,
@@ -1998,29 +2015,82 @@ class LiveRecorder:
         return True
 
     # -- commits ----------------------------------------------------------------
-    def live_commits(self, segments, command, text, live):
-        """The live commits a command that runs `git commit` made, in order: named by the
-        summary line it printed, else (a quiet commit) the earliest commit after the base no
-        earlier command claimed. A command that only mentions a commit claims none."""
-        runs_commit = (any((_git_sub(s) or ("",))[0] == "commit" for s in segments)
-                       if segments is not None
-                       else re.search(r"\bgit\b.*\bcommit\b", command, re.S) is not None)
-        if live == "denied" or not runs_commit:
+    def live_history(self):
+        """Every commit after the base, oldest first, as one linear chain to HEAD; reflogs and
+        every ref included, so a commit amended, reset or branched away is still seen.
+        RecordingRefused when it is not one chain: the replay commits in order on one branch,
+        and could not show what the agent did (#659 review)."""
+        listed = self.git("rev-list", "--reverse", "--topo-order", "--all", "--reflog",
+                          f"^{self.base}").decode().split()
+        if not listed:
             return []
-        found = []
-        for short in _COMMIT_LINE.findall(text):
-            try:
-                sha = self.git("rev-parse", "--verify", "--quiet",
-                               f"{short}^{{commit}}").decode().strip()
-            except RuntimeError:
+        chain = self.git("rev-list", "--reverse", "HEAD", f"^{self.base}").decode().split()
+        try:
+            self.git("merge-base", "--is-ancestor", self.base, "HEAD")
+            merges = self.git("rev-list", "--merges", "--all", "--reflog",
+                              f"^{self.base}").decode().split()
+        except RuntimeError:
+            merges = ["(HEAD does not descend from the base)"]
+        if merges or set(listed) != set(chain):
+            off = sorted(set(listed) - set(chain))
+            raise RecordingRefused(
+                "the history after the base is not one linear chain the replay can commit in "
+                f"order: {len(off)} commit(s) off HEAD's line (amended, reset or branched away: "
+                f"{', '.join(c[:12] for c in off) or '-'}), merges {len(merges)}")
+        return chain
+
+    def resolve(self, short):
+        try:
+            return self.git("rev-parse", "--verify", "--quiet",
+                            f"{short}^{{commit}}").decode().strip()
+        except RuntimeError:
+            return None
+
+    def attribute(self, uses, results, live):
+        """{shell tool_use_id: [its commits, oldest first]} covering every commit in the chain.
+
+        A commit is the call's whose output names it (`[branch sha]`); a quiet one is the
+        shell call's whose result first showed it in the harness's snapshots. RecordingRefused
+        when a commit has no such call, two calls could have made it, or the calls' order does
+        not match the chain's (#659 review)."""
+        if not self.chain:
+            return {}
+        order = {b.get("id"): i for i, b in enumerate(uses)}
+        shells = {b.get("id") for b in uses
+                  if b.get("name") == "Bash" and live.get(b.get("id")) != "denied"}
+        on_chain, owner = set(self.chain), {}
+        for uid in sorted(shells, key=order.get):
+            text = _result_text((results.get(uid) or {}).get("content"))
+            for short in _COMMIT_LINE.findall(text):
+                sha = self.resolve(short)
+                if sha in on_chain and owner.setdefault(sha, uid) != uid:
+                    raise RecordingRefused(f"two calls print commit {sha[:12]}")
+        first_seen = {}
+        for snap in self.history or []:
+            for sha in snap.get("commits") or []:
+                first_seen.setdefault(sha, snap.get("results") or [])
+        for sha in self.chain:
+            if sha in owner:
                 continue
-            if sha not in self.claimed and sha not in found:
-                found.append(sha)
-        if not found and live is None:
-            later = self.git("rev-list", "--reverse", "--topo-order", "--all", f"^{self.base}")
-            found = [sha for sha in later.decode().split() if sha not in self.claimed][:1]
-        self.claimed.update(found)
-        return found
+            if self.history is None:
+                raise RecordingRefused(
+                    f"commit {sha[:12]} is named by no call's output, and without the harness's "
+                    "history snapshots a quiet commit cannot be attributed")
+            if sha not in first_seen:
+                raise RecordingRefused(f"commit {sha[:12]} appeared after the agent's last tool "
+                                       "call: no call to attribute it to")
+            candidates = [uid for uid in first_seen[sha] if uid in shells]
+            if len(candidates) != 1:
+                raise RecordingRefused(f"commit {sha[:12]} first appeared as {len(candidates)} "
+                                       "shell calls finished: no single call to attribute it to")
+            owner[sha] = candidates[0]
+        calls = [order[owner[sha]] for sha in self.chain]
+        if calls != sorted(calls):
+            raise RecordingRefused("the commits' order does not follow the calls that made them")
+        attribution = {}
+        for sha in self.chain:
+            attribution.setdefault(owner[sha], []).append(sha)
+        return attribution
 
     def commit_events(self, commits, command, segments, live):
         if commits:

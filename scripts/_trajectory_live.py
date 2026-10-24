@@ -447,7 +447,11 @@ def run_cell(ctx, cell):
     if killed or not recording.is_file():
         # A run that never completed, or left no recording, is not graded.
         row["verdict"] = "ERROR"
-        if not killed:
+        refused = Path(f"{recording}.refused")
+        if refused.is_file():
+            row["errors"].append("the recording was refused: "
+                                 + refused.read_text(encoding="utf-8").strip())
+        elif not killed:
             row["errors"].append("no recording: the harness wrote no trajectory.jsonl")
         return row
     result = ev.run_trajectory_eval(case_id=cell["case"], trajectory=recording)

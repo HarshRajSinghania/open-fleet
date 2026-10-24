@@ -13,12 +13,16 @@
    a cell's whole group on a timeout or an interrupt, and an agent that left it would outlive its
    call. stdin is inherited; stdout is passed through byte for byte (the runners read usage from
    it) and kept; stderr is inherited;
-3. once the agent exits, turns the kept Claude stream-json into #602 events
+3. as each tool-result line streams past, snapshots the workspace's commits (`git rev-list`
+   from the base, every ref and reflog), so a quiet or wrapped commit is attributed to the call
+   whose result first showed it;
+4. once the agent exits, turns the kept Claude stream-json into #602 events
    (scripts/_trajectories.py, record_stream) and writes them to $ABLATION_OUT/trajectory.jsonl,
    or to --trajectory-out when ABLATION_OUT is unset. A destination is required before the agent
    starts, and a stale recording there is removed first, so a run that records nothing leaves
-   nothing to be graded;
-4. exits with the agent's exit code (128+N when signal N ended it).
+   nothing to be graded. When the recorder refuses (a commit it cannot attribute, a history it
+   cannot replay in order), no recording is written and `<destination>.refused` says why;
+5. exits with the agent's exit code (128+N when signal N ended it).
 
 Git isolation. The agent's environment points GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM at the null
 device and drops every other GIT_* variable (GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT pairs
@@ -132,6 +136,29 @@ def _forward(fd, data, open_):
     return open_
 
 
+def commits_after(workspace, env, base):
+    """Every commit after the base, oldest first, across every ref and reflog; None when git
+    cannot say (the recorder then attributes only commits a call's output names)."""
+    try:
+        return _git(workspace, env, "rev-list", "--reverse", "--topo-order", "--all", "--reflog",
+                    f"^{base}").split()
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None
+
+
+def result_ids(line):
+    """The tool_use ids a stream line carries results for: a `user` message's tool_results."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return []
+    message = obj.get("message") if isinstance(obj, dict) and obj.get("type") == "user" else None
+    content = message.get("content") if isinstance(message, dict) else None
+    return [b["tool_use_id"] for b in content if isinstance(b, dict)
+            and b.get("type") == "tool_result" and isinstance(b.get("tool_use_id"), str)] \
+        if isinstance(content, list) else []
+
+
 def write_recording(dest, events):
     tmp = Path(f"{dest}.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -153,7 +180,9 @@ def main(argv=None):
               "or pass --trajectory-out)", file=sys.stderr)
         return EXIT_USAGE
     dest = dest.resolve()
+    refused = Path(f"{dest}.refused")
     dest.unlink(missing_ok=True)  # a stale recording must never be graded as this run's
+    refused.unlink(missing_ok=True)
     workspace = Path.cwd()
     gnupghome = Path(tempfile.mkdtemp(prefix="of-harness-gnupg-"))
     try:
@@ -170,7 +199,15 @@ def main(argv=None):
             return 127
         previous = {sig: signal.signal(sig, lambda signum, _frame: proc.send_signal(signum))
                     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
-        kept, open_ = bytearray(), True
+        kept, open_, partial, history = bytearray(), True, b"", []
+
+        def snapshot(lines):
+            # After a tool's result streams past and before the model can answer it, the
+            # workspace's history shows what that call committed.
+            for line in lines:
+                ids = result_ids(line) if b'"tool_result"' in line else []
+                if ids and history is not None:
+                    history.append({"results": ids, "commits": commits_after(workspace, env, base)})
         try:
             while True:
                 chunk = os.read(proc.stdout.fileno(), 65536)
@@ -178,13 +215,23 @@ def main(argv=None):
                     break
                 kept += chunk
                 open_ = _forward(sys.stdout.fileno(), chunk, open_)
+                *lines, partial = (partial + chunk).split(b"\n")
+                snapshot(lines)
+            snapshot([partial])
             code = proc.wait()
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
+        if any(snap["commits"] is None for snap in history):
+            history = None  # a snapshot git could not take: attribute named commits only
+        engine = _engine()
         try:
-            events = _engine().record_stream(bytes(kept).decode("utf-8", "replace"), workspace, base)
+            events = engine.record_stream(bytes(kept).decode("utf-8", "replace"), workspace, base,
+                                          history=history)
             write_recording(dest, events)
+        except engine.RecordingRefused as err:
+            refused.write_text(f"{err}\n", encoding="utf-8")
+            print(f"trajectory_harness: recording refused: {err}", file=sys.stderr)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as err:
             print(f"trajectory_harness: no recording written: {err}", file=sys.stderr)
         return code if code >= 0 else 128 - code

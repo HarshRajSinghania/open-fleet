@@ -175,8 +175,13 @@ class Workspace:
         out = git(self.dir, "-c", "commit.gpgsign=false", "commit", "-m", message)
         return out
 
-    def record(self, text):
-        return engine.record_stream(text, self.dir, self.base)
+    def record(self, text, history=None):
+        return engine.record_stream(text, self.dir, self.base, history=history)
+
+    def commits(self):
+        """Every commit after the base, oldest first: what a harness snapshot records."""
+        return git(self.dir, "rev-list", "--reverse", "--topo-order", "--all", "--reflog",
+                   f"^{self.base}").split()
 
     def grade(self, events):
         with tempfile.TemporaryDirectory(prefix="of-live-grade-") as scratch:
@@ -308,10 +313,26 @@ STAND_IN = textwrap.dedent(r'''
                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         call("Bash", {"command": "python3 -m unittest discover -s tests"}, r.stdout + r.stderr,
              r.returncode != 0)
-        git("add", "-A")
-        out, failed = git("commit", "-m", "fix: add() returns the sum")
-        call("Bash", {"command": "git add -A && git commit -m \"$(cat <<'EOF'\n"
-                                 "fix: add() returns the sum\nEOF\n)\""}, out, failed)
+        if mode == "quiet-twice":  # two quiet commits in one call: no summary line names them
+            git("commit", "-qam", "fix: add() returns the sum")
+            open(path("NOTES.md"), "w", encoding="utf-8").write("notes\n")
+            git("add", "NOTES.md")
+            out, failed = git("commit", "-qm", "docs: notes")
+            call("Bash", {"command": "git commit -qam 'fix: add() returns the sum' && git add "
+                                     "NOTES.md && git commit -qm 'docs: notes'"}, out, failed)
+        elif mode == "wrapped":  # a commit whose first word is not git
+            r = subprocess.run(["sh", "-c", "git commit -qam 'fix: add() returns the sum'"],
+                               cwd=ws, capture_output=True, text=True)
+            call("Bash", {"command": "sh -c 'git commit -qam \"fix: add() returns the sum\"'"},
+                 r.stdout + r.stderr, r.returncode != 0)
+        else:
+            git("add", "-A")
+            out, failed = git("commit", "-m", "fix: add() returns the sum")
+            call("Bash", {"command": "git add -A && git commit -m \"$(cat <<'EOF'\n"
+                                     "fix: add() returns the sum\nEOF\n)\""}, out, failed)
+            if mode == "amend":  # rewrites history: the first commit survives only in the reflog
+                out, failed = git("commit", "--amend", "-m", "fix: add (amended)")
+                call("Bash", {"command": "git commit --amend -m 'fix: add (amended)'"}, out, failed)
         raw = open(path("CONTRACT.json"), "rb").read()
         doc = json.loads(raw)
         manifest = {"unit": doc["id"],
@@ -496,10 +517,72 @@ class RecorderMapsTheStream(SafetyNet):
             use("t0", "Bash", {"command": "git log --oneline | grep -c commit"}),
             result_of("t0", "0"),
             use("t2", "Bash", {"command": "git commit -qam 'fix: quiet'"}), result_of("t2", ""),
-            final_line("done")))
+            final_line("done")), history=[{"results": ["t1"], "commits": []},
+                                          {"results": ["t0"], "commits": []},
+                                          {"results": ["t2"], "commits": ws.commits()}])
         self.assertEqual([e["message"] for e in events if e["tool"] == "Commit"], ["fix: quiet"],
                          "a command that only mentions a commit must not claim one")
         self.assertEqual(events[-2]["command"], "git commit -qam 'fix: quiet'")
+
+    def _two_quiet_commits(self, ws):
+        ws.edit("calc.py", "return a - b", "return a + b")
+        git(ws.dir, "-c", "commit.gpgsign=false", "commit", "-qam", "one")
+        (ws.dir / "notes.md").write_text("n\n", encoding="utf-8")
+        git(ws.dir, "add", "notes.md")
+        git(ws.dir, "-c", "commit.gpgsign=false", "commit", "-qm", "two")
+        return stream(init_line(ws.dir),
+                      use("t1", "Bash", {"command": "sh -c 'git commit -qam one && git add -A "
+                                                    "&& git commit -qm two'"}),
+                      result_of("t1", ""), use("t2", "Read", {"file_path": ws.path("calc.py")}),
+                      result_of("t2", "x"), final_line("done"))
+
+    def test_every_commit_is_attributed_from_the_history_snapshots(self):
+        """Two quiet commits in one wrapped call are both recorded, in order, each with the
+        call's command: none is dropped (#659 review, G1)."""
+        ws = Workspace(self, "CL-01")
+        text = self._two_quiet_commits(ws)
+        events = ws.record(text, history=[{"results": ["t1"], "commits": ws.commits()},
+                                          {"results": ["t2"], "commits": ws.commits()}])
+        commits = [e for e in events if e["tool"] == "Commit"]
+        self.assertEqual([c["message"] for c in commits], ["one", "two"])
+        self.assertTrue(all(c["command"].startswith("sh -c") for c in commits))
+        self.assertEqual(self.tools(events)[:3], ["Read", "Bash", "Write"])
+
+    def test_a_commit_that_cannot_be_attributed_refuses_the_recording(self):
+        ws = Workspace(self, "CL-01")
+        text = self._two_quiet_commits(ws)
+        both = ws.commits()
+        parallel = text.replace('"name": "Read", "input": {"file_path"',
+                                '"name": "Bash", "input": {"command": "true", "file_path"', 1)
+        summary = [f"[main {sha[:7]}] {msg}\n" for sha, msg in zip(both, ("one", "two"),
+                                                                  strict=True)]
+        backwards = stream(init_line(ws.dir),
+                           use("b1", "Bash", {"command": "git commit -am two"}),
+                           result_of("b1", summary[1]),
+                           use("b2", "Bash", {"command": "git commit -am one"}),
+                           result_of("b2", summary[0]), final_line("done"))
+        for label, recorded, history in (
+            ("no snapshots for a quiet commit", text, None),
+            ("made after the last call", text, [{"results": ["t1"], "commits": both[:1]},
+                                                {"results": ["t2"], "commits": both[:1]}]),
+            ("two shell calls finished together", parallel,
+             [{"results": ["t1", "t2"], "commits": both}]),
+            ("named out of call order", backwards, None),
+        ):
+            with self.subTest(case=label), self.assertRaises(engine.RecordingRefused):
+                ws.record(recorded, history=history)
+
+    def test_a_history_the_replay_cannot_commit_in_order_refuses_the_recording(self):
+        ws = Workspace(self, "CL-01")
+        ws.edit("calc.py", "return a - b", "return a + b")
+        out = ws.commit("first")
+        out += git(ws.dir, "-c", "commit.gpgsign=false", "commit", "--amend", "-m", "amended")
+        text = stream(init_line(ws.dir),
+                      use("t1", "Bash", {"command": "git commit -am first && git commit --amend "
+                                                    "-m amended"}),
+                      result_of("t1", out), final_line("done"))
+        with self.assertRaisesRegex(engine.RecordingRefused, "linear"):
+            ws.record(text, history=[{"results": ["t1"], "commits": ws.commits()}])
 
     def test_a_deleted_file_is_an_unmapped_delete(self):
         ws = Workspace(self, "CL-01")
@@ -931,6 +1014,32 @@ class HarnessContract(SafetyNet):
         self.assertEqual(row["verdict"], "PASS", row["failures"])
         self.assertTrue(row["landed"] and row["task_done"])
 
+    def test_every_commit_the_agent_made_is_recorded(self):
+        """Two quiet commits in one call, and a commit wrapped in `sh -c`: the harness's history
+        snapshots attribute each, and the replay commits all of them (#659 review, G1)."""
+        for mode, messages in (("quiet-twice", ["fix: add() returns the sum", "docs: notes"]),
+                               ("wrapped", ["fix: add() returns the sum"])):
+            with self.subTest(mode=mode):
+                ws = self.materialized()
+                code, _out, err = self.harness(self.agent(mode), ws,
+                                               env={"ABLATION_OUT": str(ws.parent)})
+                self.assertEqual(code, 0, err)
+                events = engine.load_events(ws.parent / "trajectory.jsonl")
+                self.assertEqual([e["message"] for e in events if e["tool"] == "Commit"], messages)
+                live = git(ws, "rev-list", "--count", "HEAD").strip()
+                self.assertEqual(int(live) - 1, len(messages), "every live commit is recorded")
+                row = eval_mod.run_trajectory_eval(
+                    case_id="CL-01", trajectory=ws.parent / "trajectory.jsonl")["rows"][0]
+                self.assertEqual(row["verdict"], "PASS", row["failures"])
+
+    def test_a_refused_recording_is_explained_and_never_written(self):
+        ws = self.materialized()
+        code, _out, err = self.harness(self.agent("amend"), ws, env={"ABLATION_OUT": str(ws.parent)})
+        self.assertEqual(code, 0, err)
+        self.assertFalse((ws.parent / "trajectory.jsonl").exists(),
+                         "an amended history was recorded as if it were linear")
+        self.assertIn("linear", (ws.parent / "trajectory.jsonl.refused").read_text())
+
     def test_the_flag_names_the_recording_when_ablation_out_is_unset(self):
         ws = self.materialized()
         dest = self.tmpdir() / "rec.jsonl"
@@ -1196,6 +1305,15 @@ class LiveRunner(SafetyNet):
         self.assertEqual(code, 2, err)
         self.assertIn("disagrees", err)
         self.assertFalse(log2.exists())
+
+    def test_a_refused_recording_makes_the_cell_an_error(self):
+        out = self.tmpdir() / "out"
+        argv, _log = self.live("amend", out)
+        code, _stdout, err = self.run_main(argv)
+        cell = self.results(out)["cells"][0]
+        self.assertEqual(cell["verdict"], "ERROR", cell)
+        self.assertIn("refused", " ".join(cell["errors"]))
+        self.assertEqual(code, 1, err)
 
     def test_a_call_above_its_reservation_stops_the_run(self):
         out = self.tmpdir() / "out"

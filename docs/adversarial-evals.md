@@ -275,7 +275,11 @@ the stream as follows:
   or execution cannot be proven read-only: any substitution, variable, glob, redirection,
   operator or escape, quoted or not;
 - each live commit is a `Commit` carrying its real message and its command, which the deny-hook
-  judges. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
+  judges. Every commit in the workspace's history (every ref and reflog) is attributed to the
+  shell call that made it: by the `[branch sha]` line it printed, or by the harness's snapshot
+  of the history after each tool result. A commit no single call can be shown to have made, or a
+  history that is not one linear chain (an amend, a reset, a branch), refuses the recording:
+  the harness writes `trajectory.jsonl.refused` instead, and the cell is `ERROR`. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
   the `Commit` alone; any other commit command keeps its `Bash` event too;
 - a manifest in the final message is `Manifest`, and so is a manifest-shaped write inside the
   workspace, emitted beside the `Write` or `Edit` it came from and riding that tool's grant. A

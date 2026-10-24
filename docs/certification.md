@@ -34,8 +34,9 @@ every cell (`matrix [--json]`) and renders the block below (`markdown`).
 
 ## Live-witnessed results
 
-Two cells are live. Both are on the Orca route with Claude Code, and both come from runs that
-bind in the [run archive](runs/README.md). A run that binds is not enough on its own: each live
+Six cells are live, all with Claude Code, all from runs that bind in the
+[run archive](runs/README.md). Two are on the Orca route, two on the posix route, and two are
+the claude harness cells the posix runs exercised. A run that binds is not enough on its own: each live
 group's `witnessed.route` quotes whole lines of that run's inventoried artifacts, read at the
 run's `inventory_at`. Those lines must name the provider, the profile beside the harness, and the
 recorded versions. A group that copies another route's witness is refused (#596 review):
@@ -55,18 +56,27 @@ recorded versions. A group that copies another route's witness is refused (#596 
   (`PROFILE="rw"`, `WORKER_CMD="claude --dangerously-skip-permissions"`) and its ledger
   (`orca-ide 1.4.224`, `Claude Code 2.1.296`).
 
-The Orca pin is now v1.4.229. That pin re-witnessed only the source delta. It carries these
+- `posix` `ro`/`claude` and `rw`/`claude`: Claude Code 2.1.304 (`claude-opus-5-5`), catalog
+  `b96d47e335`, 2026-10-24, in the [live first runs](runs/2026-10-24-review-it-first-run.md).
+  Each profile ran GO on two hosts: the dev Mac through an isolation wrapper, and a fresh
+  `ubuntu:24.04` container on the same Mac's OrbStack. Those are two hosts on one machine, not
+  separate hardware. Route: each receipt's `witness` line (`posix/setsid PROFILE=<p>
+  harness=claude version=2.1.304 (Claude Code) … catalog=b96d47e3…`).
+- `claude` `ro` and `rw` (the harness cells): base.py's claude line, run by those same posix runs.
+  The harness's `upstream.version` is `2.1.304`. Orca runs spawn_worker.sh's own rows, so an
+  Orca witness certifies no harness cell.
+
+The Orca pin is now v1.4.229. That pin re-witnessed only the source delta. It carries the Orca
 receipts through `pins.json` `live_receipts`, and the record is certified against that
-three-part fingerprint. No other provider, and no harness outside the Orca route, has a live
-witness.
+three-part fingerprint. No other provider and no other harness has a live witness.
 
 ## Fixture (mocked) results
 
 All other cells that are not refusals use fixtures. They show that the fleet's side of the route
 works. They do not show how the upstream build or the harness behaves:
 
-- **posix** (`ro` and `rw`, all 10 harnesses): `first_run.py` drives the whole route through the
-  public wrappers. An inert stand-in answers to each harness name, in that harness's own output
+- **posix** (`ro` and `rw`, the 9 harnesses other than `claude`, which is live):
+  `first_run.py` drives the whole route through the public wrappers. An inert stand-in answers to each harness name, in that harness's own output
   format as read from its source. Every combination runs in CI.
   `danger` uses a scripted fake `docker`. The provider is this repository's own code, so each CI
   run certifies the commit it runs at.
@@ -78,7 +88,7 @@ works. They do not show how the upstream build or the harness behaves:
   them.
 
 <!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->
-Record version 4 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
+Record version 5 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
 
 | Provider | Upstream certified against | live-witnessed | fixture-tested | source-only | unsupported | unavailable | stale |
 |---|---|---|---|---|---|---|---|
@@ -91,7 +101,7 @@ Record version 4 (2026-10-24). Counts are cells: one (provider, profile, harness
 | `orca` | v1.4.229 (a0cd1644f320) | 2 | 2 | 13 | 16 |  |  |
 | `overstory` | unknown |  | 9 |  | 5 |  |  |
 | `paperclip` | unknown |  | 3 |  | 1 |  |  |
-| `posix` | in-repo |  | 29 |  | 1 |  |  |
+| `posix` | in-repo | 2 | 27 |  | 1 |  |  |
 | `superset` | unknown |  | 14 |  |  |  |  |
 | `t3code` | unknown |  | 4 |  |  |  |  |
 | `vibe-kanban` | unknown |  | 7 |  | 5 |  |  |
@@ -100,7 +110,7 @@ Record version 4 (2026-10-24). Counts are cells: one (provider, profile, harness
 | Harness | Upstream version | live-witnessed | fixture-tested | source-only | unsupported | unavailable |
 |---|---|---|---|---|---|---|
 | `antigravity` | unknown |  |  |  | 2 |  |
-| `claude` | unknown |  | 2 |  |  |  |
+| `claude` | 2.1.304 | 2 |  |  |  |  |
 | `codex` | unknown |  | 2 |  |  |  |
 | `crush` | unknown |  | 2 |  |  |  |
 | `cursor` | unknown |  |  |  | 2 |  |
@@ -118,6 +128,10 @@ Live-witnessed cells (everything else is fixture, source or refusal evidence):
 
 - `orca` ro/claude: upstream orca-ide 1.4.224, Claude Code 2.1.296, Ubuntu 24.04.5 LTS arm64 (OrbStack VM), 2026-10-13 — [2026-10-13-review-it-linux.md](runs/2026-10-13-review-it-linux.md)
 - `orca` rw/claude: upstream orca-ide 1.4.224, Claude Code 2.1.296, Ubuntu 24.04.5 LTS arm64 (OrbStack VM), 2026-10-13 — [2026-10-13-ship-it-mdtoc.md](runs/2026-10-13-ship-it-mdtoc.md)
+- `posix` ro/claude: upstream b96d47e3354564e1593d34182a817ae04e54545d, 2.1.304 (Claude Code), macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack), 2026-10-24 — [2026-10-24-review-it-first-run.md](runs/2026-10-24-review-it-first-run.md)
+- `posix` rw/claude: upstream b96d47e3354564e1593d34182a817ae04e54545d, 2.1.304 (Claude Code), macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack), 2026-10-24 — [2026-10-24-review-it-first-run.md](runs/2026-10-24-review-it-first-run.md)
+- `claude` ro/claude: upstream b96d47e3354564e1593d34182a817ae04e54545d, 2.1.304 (Claude Code), macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack), 2026-10-24 — [2026-10-24-review-it-first-run.md](runs/2026-10-24-review-it-first-run.md)
+- `claude` rw/claude: upstream b96d47e3354564e1593d34182a817ae04e54545d, 2.1.304 (Claude Code), macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack), 2026-10-24 — [2026-10-24-review-it-first-run.md](runs/2026-10-24-review-it-first-run.md)
 <!-- END GENERATED: certification-matrix -->
 
 ### What the record surfaces
@@ -172,6 +186,18 @@ Version 4 closes the gaps the first live runs and the last review left. No tier 
   `witness` line. `check` refuses quotes of an inert run, refuses a live harness cell that only
   an Orca run witnessed, and checks a harness cell's version, an in-repo provider's catalog
   commit and the witness date. See [Recording a live first run](#recording-a-live-first-run).
+
+### What record version 5 changes
+
+The bound live first runs move four cells to `live-witnessed`: `posix` `ro`/`claude` and
+`rw`/`claude`, and the `claude` harness's `ro` and `rw`, whose `upstream.version` is now `2.1.304`.
+The other nine posix harnesses stay `fixture-tested`. The Orca `ro`/`claude` re-witness was
+attempted and refused at Claude Code's folder-trust prompt, so that cell keeps its re-witness
+limitation. The attempt also changed `spawn_worker.sh`:
+
+- a `new-child` or `new-top-level` selector on the Orca ro lane is now refused before any task is
+  created;
+- a prompt the agent is blocked on is now named in the failure (`blockedReason`).
 
 ## A refreshed pin voids cells
 
@@ -269,7 +295,7 @@ Each probe must refuse before any launch. The stand-in never runs and no dispatc
 
 Expected output: one `PROBE=<name> REFUSED` line per probe, then `PROBES=GO`.
 
-### 3. Live first run (one command per profile; not yet bound)
+### 3. Live first run (one command per profile)
 
 ```bash
 PATH="<harness-dir>:$PATH" python3 runtime/scripts/first_run.py --worker live --agent claude \
@@ -298,7 +324,10 @@ The first live runs were made on 2026-10-24 at `456051e3ec`, with Claude Code 2.
   and the inert stand-in is literal, so the fixture fails the way the live run did whenever an
   assignment omits that ask. The rw run is owed a re-run.
 
-Neither receipt is bound yet, so no `posix` cell is live.
+Re-run from the fixed catalog at `b96d47e335`, both profiles went GO on the dev Mac and in a
+fresh `ubuntu:24.04` container. Those four receipts are bound in the
+[2026-10-24 run report](runs/2026-10-24-review-it-first-run.md), and the `posix` and harness
+`claude` cells are now `live-witnessed`.
 
 ### The Orca path
 
@@ -309,15 +338,34 @@ follow [Getting started](getting-started.md#your-first-mission-a-review-it-dry-r
 installed.
 
 That witness predates the `--disallowedTools` set on Orca's claude `ro` row, so the route is owed
-a fresh one. Record the exact launch the run exercises before you dispatch, then run the review
-through the same wrapper with `PROFILE=ro` workers:
+a fresh one. A 2026-10-24 attempt is recorded in the
+[live first runs](runs/2026-10-24-review-it-first-run.md#orca-roclaude-re-witness-attempt-refused-certifies-nothing).
+The pane started the current row, then stopped at Claude Code's folder-trust prompt, and the spawn
+failed closed before injecting anything. Before re-running, meet these prerequisites:
+
+- **An existing Orca worktree.** The ro lane's `terminal create` cannot create one, so pass
+  `path:<abs>`, not `new-child`. For a scratch review unit, register its repository with
+  `orca repo add --path <dir>`, and remove it afterwards with `orca project setup-delete --setup <id>`.
+- **A folder Claude Code already trusts.** Open `claude` in it once and answer the trust prompt
+  yourself. Trust in a parent folder did not carry over. The wrapper never answers that prompt.
+- **A coordinator identity.** Create a coordinator terminal and Run
+  (`orca terminal create --worktree path:<dir>`, then `orca orchestration run-create --from
+  <handle>`), and pass `--run`/`--from`.
+
+Then record the launch the run exercises, and dispatch ONE `PROFILE=ro` worker through the same
+wrapper:
 
 ```bash
 ORCA_CLI_COMMAND=orca SW_PRINT_LAUNCH=1 PROFILE=ro \
   bash runtime/scripts/spawn_worker.sh task_x current witness claude > <run-dir>/launch.txt
 orca --version > <run-dir>/orca-version.txt; claude --version > <run-dir>/claude-version.txt
-PROFILE=ro SP=<scratch> bash runtime/scripts/spawn_worker.sh --spec "<the review unit>" new-child <title> claude
+PROFILE=ro SP=<scratch> bash runtime/scripts/spawn_worker.sh --mark-ready --run <run> --from <coord> \
+  --spec "<the review unit>" path:<dir> <title> claude
 ```
+
+The worker plans in plan mode. You approve its plan in the pane, and then `Write` and `Edit` stay
+denied. Ask it, after approval, to try each once and report what happened, so the run shows the
+set holding.
 
 `launch.txt` must read `LAUNCH=claude --permission-mode plan
 --disallowedTools=Edit,Write,MultiEdit,NotebookEdit`. Bind the run as the 2026-10-13 run was
@@ -371,6 +419,14 @@ regenerate the matrix with `certification.py markdown`, and run `certification.p
 
 ## Recording a clean-host first run
 
+**Recorded 2026-10-24**, in the [live first runs](runs/2026-10-24-review-it-first-run.md), with
+one limitation: the host is a fresh `ubuntu:24.04` container on the dev Mac's OrbStack, not
+separate hardware. A non-root user installed Claude Code 2.1.304 with the official installer,
+cloned the public repository at `b96d47e335`, and ran `ro` then `rw`, both GO. The steps took
+15 s for the OS prerequisites (git, curl, ca-certificates, python3, tmux), 14 s for the install,
+5 s for the clone, then 11 s and 16 s for the two runs: 61 s end to end. Nothing failed, so
+nothing needed recovery. The log, both receipts and the scripts are retained.
+
 A clean-host record counts only when it comes from a host that has not run open-fleet before.
 Record:
 
@@ -385,10 +441,8 @@ Record:
 
 ## Not certified yet
 
-- A live POSIX first run with a real agent, bound and recorded. Two live runs exist (see
-  [Live first run](#3-live-first-run-one-command-per-profile-not-yet-bound)): `ro` GO and `rw`
-  NO-GO on the assignment defect fixed since, owed a re-run.
-- A clean-host first-run record with measured setup and run times.
+- A clean-host record on separate hardware. The recorded one is a fresh container on the dev
+  Mac (see [Recording a clean-host first run](#recording-a-clean-host-first-run)).
 - A fresh live witness of Orca `ro`/`claude` on its current row, which carries
   `--disallowedTools`; the 2026-10-13 witness ran the row without it.
 - Live witnesses for every other provider, for Orca on macOS, and for any harness other than

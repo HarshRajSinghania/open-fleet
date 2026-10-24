@@ -1,7 +1,7 @@
 {
   "_about": "Versioned certification record for every advertised Runtime Provider Interface route (#596). Provider cells are capabilities.json's supported_profiles x supported_harnesses per provider; harness cells are base.py's launch table x {ro, rw}. Each route group names its tier, evidence paths, explicit limitations and, for a refusal, the typed refusal. An upstream version or commit that was never recorded stays null (rendered `unknown`) and is never guessed. A provider bound to a pin (`upstream.pin`) goes STALE — every one of its cells reads `stale`, never its recorded tier — as soon as the pin's commit, version or live_receipts.version differs from `certified_against`; recheck the cells, bump record_version, re-record. runtime/scripts/certification.py validates and renders this file; docs/certification.md explains it and carries the first-run guide.",
   "schema_version": "open-fleet-certification/v1",
-  "record_version": 4,
+  "record_version": 5,
   "recorded": "2026-10-24",
   "tiers": {
     "live-witnessed": "A real upstream build and a real harness ran this route end to end; the evidence is a docs/runs/ report whose RUN: header binds (verifier=GREEN, cited as a mission's proof_evidence) and whose own inventoried artifacts name this exact route, quoted in witnessed.route. Exact upstream and harness versions are recorded.",
@@ -194,7 +194,7 @@
       "routes": [
         {
           "profiles": ["ro", "rw"],
-          "harnesses": ["claude", "codex", "opencode", "omp", "pi", "jcode", "goose", "hermes", "crush", "gemini"],
+          "harnesses": ["codex", "opencode", "omp", "pi", "jcode", "goose", "hermes", "crush", "gemini"],
           "tier": "fixture-tested",
           "evidence": [
             "runtime/scripts/first_run.py",
@@ -208,7 +208,34 @@
             "The worker is an inert stand-in answering to each harness name: no real harness binary runs, and the launch flags themselves are source-read (see the harness cells).",
             "CI runs the setsid backend only; tmux is exercised by tests/test_posix_provider.py on hosts that have it, and cmux by no test.",
             "A ro worker has no tool to send mail. Where an exit monitor runs, its assignment names the line OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded|failed>, and when that line ends the harness's final answer (runtime/providers/transcript.py, the first-run report's reader) the monitor relays it as the worker's worker_done; the stand-in prints it in each harness's own output shape. A clean exit without the line is still worker_died (exit=0). Either way the coordinator takes the report from the transcript.",
-            "No live first run is recorded yet. Two ran on 2026-10-24 at 456051e3ec (Claude Code 2.1.304): ro GO, and rw NO-GO because the rw assignment never asked for the report as the final answer, which first_run.py now asks and its literal stand-in enforces. Neither receipt is bound, so these cells stay fixture-tested until a maintainer binds a run and records it (docs/certification.md, Recording a live first run)."
+            "No live first run of these harnesses: only claude ran live on this route (the group above). Their binaries were not run here."
+          ]
+        },
+        {
+          "profiles": ["ro", "rw"],
+          "harnesses": ["claude"],
+          "tier": "live-witnessed",
+          "witnessed": {
+            "upstream_version": "b96d47e3354564e1593d34182a817ae04e54545d",
+            "harness_version": "2.1.304 (Claude Code)",
+            "host": "macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack)",
+            "date": "2026-10-24",
+            "route": [
+              {"path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/receipt.json", "lines": ["\"witness\": \"posix/setsid PROFILE=ro harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]},
+              {"path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/receipt.json", "lines": ["\"witness\": \"posix/setsid PROFILE=rw harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]},
+              {"path": "docs/runs/2026-10-24-review-it-first-run/clean-host/receipt-ro.json", "lines": ["\"witness\": \"posix/setsid PROFILE=ro harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]},
+              {"path": "docs/runs/2026-10-24-review-it-first-run/clean-host/receipt-rw.json", "lines": ["\"witness\": \"posix/setsid PROFILE=rw harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]}
+            ]
+          },
+          "evidence": [
+            "docs/runs/2026-10-24-review-it-first-run.md",
+            "runtime/scripts/first_run.py",
+            "tests/test_certification.py::TestFirstRunFixture"
+          ],
+          "limitations": [
+            "Witnessed on two hosts of one machine: the dev Mac, through an isolation wrapper (pinned 2.1.304 binary; empty HOME and CLAUDE_CONFIG_DIR; --setting-sources project,local, --strict-mcp-config, --disable-slash-commands; allow-listed environment; CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0, since the scrub forces default permission mode and breaks rw bypass), and a fresh ubuntu:24.04 container on that Mac's OrbStack. Not separate hardware.",
+            "One model (claude-opus-5-5) and one run per profile per host, at catalog b96d47e335; setsid backend only. A later change to base.py's claude line or the posix provider is not re-witnessed automatically: harness cells have no pin.",
+            "The ro run settled through the relayed completion line, and its transcript lists no Write or Edit tool; the rw worker wrote its report through a Bash heredoc (the rw bypass), committed it, sent worker_done and printed the same report as its final answer."
           ]
         },
         {
@@ -573,21 +600,32 @@
   },
   "harnesses": {
     "claude": {
-      "upstream": {"product": "Claude Code", "binary": "claude", "version": null, "commit": null},
+      "upstream": {"product": "Claude Code", "binary": "claude", "version": "2.1.304", "commit": null},
       "routes": [
         {
           "profiles": ["ro", "rw"],
-          "tier": "fixture-tested",
+          "tier": "live-witnessed",
+          "witnessed": {
+            "upstream_version": "b96d47e3354564e1593d34182a817ae04e54545d",
+            "harness_version": "2.1.304 (Claude Code)",
+            "host": "macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack)",
+            "date": "2026-10-24",
+            "route": [
+              {"path": "docs/runs/2026-10-24-review-it-first-run/mac-ro/receipt.json", "lines": ["\"witness\": \"posix/setsid PROFILE=ro harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]},
+              {"path": "docs/runs/2026-10-24-review-it-first-run/mac-rw/receipt.json", "lines": ["\"witness\": \"posix/setsid PROFILE=rw harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]},
+              {"path": "docs/runs/2026-10-24-review-it-first-run/clean-host/receipt-ro.json", "lines": ["\"witness\": \"posix/setsid PROFILE=ro harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]},
+              {"path": "docs/runs/2026-10-24-review-it-first-run/clean-host/receipt-rw.json", "lines": ["\"witness\": \"posix/setsid PROFILE=rw harness=claude version=2.1.304 (Claude Code) worker=live tier=live-unreviewed catalog=b96d47e3354564e1593d34182a817ae04e54545d dirty=False verdict=GO\","]}
+            ]
+          },
           "evidence": [
+            "docs/runs/2026-10-24-review-it-first-run.md",
             "runtime/providers/base.py",
             "tests/test_certification.py::TestHarnessCellsMatchTheLaunchTable",
-            "tests/test_certification.py::TestFirstRunFixture",
-            "tests/test_spawn_worker.py::TestNonOrcaLaunchTableIsBasePy",
             "tests/test_claude_ro_launches.py::EveryClaudeRoLaunchCarriesTheSet"
           ],
           "limitations": [
-            "base.py's claude line ran against a real binary only in the unbound 2026-10-24 live first runs (Claude Code 2.1.304: ro GO, rw NO-GO on a first_run.py assignment defect since fixed); until a maintainer binds a run and records it, these cells stay fixture-tested and the version null. Claude Code 2.1.296 ran live on the Orca route's own rows, which certify no harness cell (see the orca cells).",
-            "The fixture's inert stand-in proves the argv shape delivers the task, not that the flags mean what base.py's audit says."
+            "base.py's claude line ran live through the posix route only (the bound 2026-10-24 first runs), at Claude Code 2.1.304 with claude-opus-5-5. Another version is not certified: harness cells have no pin, so an upgrade does not void this cell by itself.",
+            "Claude Code 2.1.304 warns that the deny rule MultiEdit matches no known tool; the other three disallowed tools apply. Claude Code 2.1.296 ran live on the Orca route's own rows, which certify no harness cell."
           ]
         }
       ]

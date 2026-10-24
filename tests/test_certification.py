@@ -1353,5 +1353,51 @@ class TestLiveRecordTakesTheFirstRun(unittest.TestCase):
         self.assertIn("off Orca", p.stderr)
 
 
+
+class TestTheBoundFirstRunsAreLive(unittest.TestCase):
+    """Record version 5 (#596): the 2026-10-24 live first runs, bound in a run report, certify
+    posix ro/rw with claude and the claude harness cells; the fields copied from their receipts
+    are what check holds them to."""
+
+    REPORT = "docs/runs/2026-10-24-review-it-first-run.md"
+    LIVE = {("posix", "ro", "claude"), ("posix", "rw", "claude"), ("claude", "ro", "claude"), ("claude", "rw", "claude")}
+
+    def check_with(self, fn):
+        record = json.loads(RECORD.read_text(encoding="utf-8"))
+        fn(record)
+        tmp = Path(tempfile.mkdtemp(prefix="of-cert-v5-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "record.json").write_text(json.dumps(record), encoding="utf-8")
+        return cert_main("check", "--record", str(tmp / "record.json"))
+
+    @staticmethod
+    def posix_live(rec):
+        return next(g for g in rec["providers"]["posix"]["routes"] if g["tier"] == "live-witnessed")
+
+    def test_the_shipped_record_binds_the_first_runs(self):
+        errors, _stale, cells = certification.validate(ROOT)
+        self.assertEqual(errors, [])
+        live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["effective"] == "live-witnessed"}
+        self.assertTrue(self.LIVE <= live, live)
+        rec = json.loads(RECORD.read_text(encoding="utf-8"))
+        self.assertIn(self.REPORT, self.posix_live(rec)["evidence"])
+        run_report = _load("run_report_for_v5", SCRIPTS / "run_report.py")
+        self.assertEqual(run_report.check_report(self.REPORT, "review-it", "external-run"), [])
+        self.assertEqual(rec["harnesses"]["claude"]["upstream"]["version"], "2.1.304")
+
+    def test_without_the_bound_report_the_cells_are_not_live(self):
+        def unbind(rec):
+            group = self.posix_live(rec)
+            group["evidence"] = [e for e in group["evidence"] if e != self.REPORT]
+        p = self.check_with(unbind)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("without a binding run report", p.stderr)
+
+    def test_a_harness_version_the_runs_did_not_report_is_refused(self):
+        p = self.check_with(lambda rec: rec["harnesses"]["claude"]["upstream"].update(version="2.1.305"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("is not the witnessed harness version", p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

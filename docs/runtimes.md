@@ -4,7 +4,7 @@
 
 `open-fleet` decouples mission outcomes, phase playbooks, and verification gates from any single orchestrator binary through the **Runtime Provider Interface (RPI)**. Every general mission runs unchanged across 14 orchestrator providers and dispatches workers across 10+ coding-agent harnesses under uniform least-privilege sandbox profiles (`ro`, `rw`, `danger`).
 
-> **Advertised is not certified.** Every provider, profile and harness listed below has an entry in [Provider and harness certification](certification.md). That page records how far each route is proven: live-witnessed, fixture-tested, source-only, refused, or unknown. It also gives the upstream version each route was checked against, and a first run you can reproduce. Today only Orca with Claude Code is live-witnessed.
+> **Advertised is not certified.** Every provider, profile and harness listed below has an entry in [Provider and harness certification](certification.md). That page records how far each route is proven: live-witnessed, fixture-tested, source-only, refused, or unknown. It also gives the upstream version each route was checked against, and a first run you can reproduce. Live-witnessed today: Claude Code on the Orca route (`ro`, `rw`) and on the posix route (`ro`, `rw`, first runs bound 2026-10-24).
 
 ---
 
@@ -299,7 +299,8 @@ PATH="<wrapper-dir>:$PATH" OPEN_FLEET_POSIX_BACKEND=setsid \
 
 `--profile rw` has the worker commit its report, send `worker_done`, and then print the same
 report as its final answer. The run checks both copies. A receipt reads `live-unreviewed` and
-certifies nothing until a maintainer binds it in a `docs/runs/` report and records the cells. The
+certifies nothing until a maintainer binds it in a `docs/runs/` report and records the cells, as
+the [2026-10-24 live first runs](runs/2026-10-24-review-it-first-run.md) were. The
 receipt carries what the record needs: its `witness` line, `facts.harness.version`,
 `host.catalog_commit`, `host.platform`, `started_at`, and, for Claude Code,
 `facts.harness_usage` (model, turns, cost). See

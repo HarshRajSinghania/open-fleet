@@ -18,7 +18,13 @@ truth is `.claude-plugin/plugin.json`.
   `spawn_worker.sh` launches the `openhands` agent on its runtime and refuses it elsewhere, so
   every claimed provider/harness pair launches with no exception. Every claude `ro` launch,
   Orca's row included, carries `--disallowedTools`; that Orca row is the live-witnessed route,
-  so it is owed a fresh witness.
+  so it is owed a fresh witness. Re-run at `b96d47e335`, both profiles went GO on the dev Mac and
+  in a fresh `ubuntu:24.04` container (a clean host on the same Mac's OrbStack). The four
+  receipts are bound in `docs/runs/2026-10-24-review-it-first-run.md`, and record version 5 makes
+  posix `ro`/`rw` with claude and the claude harness cells live-witnessed. The Orca `ro`
+  re-witness attempt stopped at Claude Code's folder-trust prompt before any injection, which
+  only the operator may answer. `spawn_worker.sh` now names that blocked prompt, and refuses a
+  `new-child` selector on the Orca ro lane before creating a task.
 - **The paired ablation's USD 750 cap is authorised** (#606). The owner authorised it on
   2026-10-24, and `ablation-prereg.json` records `status: AUTHORISED`, the amount, the owner and
   their instruction, quoted. The registered design and payloads are unchanged; only the md pin

@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1451,6 +1452,35 @@ class TestTheRunDeadlineIsKeptInsideAWave(Tmp):
         t5 = record["units"]["T5"]
         self.assertEqual((t5["final"], t5["park_class"]), ("parked", "stopped-time-limit"))
         self.assertLess(elapsed, 35, "the reviewer was waited for past the run's deadline")
+
+
+class TestTheDocumentedLiveCommandRuns(LiveWithAFakeHarness):
+    """PR #653 review (P2): the live command the protocol page prints must parse and start a run.
+    It is read from the page, its placeholders filled, and run against a fake harness."""
+
+    FILL = {"dir": None, "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
+
+    def test_the_documented_live_command_starts_a_run(self):
+        page = (ROOT / "docs" / "experiments" / "wip-curve-prereg.md").read_text(encoding="utf-8")
+        block = next(b for b in re.findall(r"```bash\n(.*?)```", page, re.S) if "--worker live" in b)
+        command = block.replace("\\\n", " ")
+        for placeholder in re.findall(r"<[^>]+>", command):
+            key = next((k for k in self.FILL if k in placeholder), None)
+            self.assertIsNotNone(key, f"an unknown placeholder {placeholder}")
+            command = command.replace(placeholder, str(self.tmp / "results") if key == "dir" else self.FILL[key])
+        argv = shlex.split(command)
+        self.assertEqual(argv[:2], ["python3", "scripts/wip_curve.py"])
+        env, trip_log = tripwired_env(self.tmp)
+        fake = self.tmp / "fake-bin"
+        install_fake_harness(fake)
+        env.update(PATH=os.pathsep.join([str(fake), env["PATH"]]), HOME=str(self.tmp / "home"))
+        (self.tmp / "home").mkdir(exist_ok=True)
+        with mock.patch.object(wip, "dirty_inputs", return_value=[]):
+            p = run_in_process(argv[2:], env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["tier"], record["status"]), ("live-unreviewed", "complete"))
+        self.assertFalse(trip_log.exists())
 
 
 class TestRelativePaths(unittest.TestCase):

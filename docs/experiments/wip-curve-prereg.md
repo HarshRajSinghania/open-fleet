@@ -289,7 +289,8 @@ reports. The synthetic cost is not a spend. It lets the cost cap be exercised.
 
 ```bash
 python3 scripts/wip_curve.py run --results <dir> --worker live --agent claude \
-  --model <pinned model id> --cost-cap-usd <the authorised cap> --next 1
+  --model <pinned model id> --cost-cap-usd <the authorised cap> \
+  --reservation-usd <the authorised reservation> --next 1
 ```
 
 Path arguments may be relative: the runner resolves every one of them to an absolute path before

@@ -8,9 +8,14 @@
   The arm's container shares only the broker's network namespace and holds no credential. Its
   `claude` sends every model call to the broker, which puts the token in place of a placeholder,
   forwards only the Messages API, and refuses any call whose worst case would pass `--cap-usd`.
+  It forwards only what it can price: a priced model, the fields it knows, the client's own tools,
+  and inline content its bytes bound. It refuses an image or document by URL or file id, a PDF,
+  an advisor or server-side tool, a service tier and an unpriced geography, and it prices US
+  inference at its 1.1x premium. The arm starts only once the broker answers.
   The broker settles each call as the API bills it and writes its ledger beside the receipt, out
   of the arm's reach. Every output flag of an arm must name a path under `/results`, and an arm
-  whose ledger defaults to a temp dir must name one. One launch runs at a time, under a lock. At
+  whose ledger defaults to a temp dir (`first_run`'s workdir included) must name one. A token file
+  inside the results or the checkout is refused. One launch runs at a time, under a lock. At
   its wall-clock limit the launcher kills and removes both containers and verifies by the
   launch's nonce that neither exists. A teardown step that fails or times out is recorded, and
   the receipt is always written. The output reaches a 0600 log through a redactor, so no byte of

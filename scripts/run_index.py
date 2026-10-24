@@ -44,10 +44,12 @@ _TAG_NAME_RE = re.compile(r"<[a-z][a-z0-9-]*", re.IGNORECASE)
 _TAG_ATTR_RE = re.compile(r"""\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?""",
                           re.IGNORECASE)
 _TAG_END_RE = re.compile(r"\s*/?>")
-# Where a Markdown block ends: a code span never crosses one (CommonMark: inlines are parsed
-# within a block). A blank line, or a line opening a list item, heading, quote or fence.
-_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|#{1,6}(?:[ \t]|$)|>|```|~~~)",
-                           re.MULTILINE)
+# Where a Markdown block may end: a code span never crosses one (CommonMark: inlines are parsed
+# within a block). A blank line, or a line whose first mark (after up to three spaces) can open or
+# close a block: a list item, a setext underline or thematic break, a heading, a quote, a table
+# row, an HTML block or a fence. It over-approximates on purpose (Codex at 8585b35789): a span
+# cut short can only reveal a tag, never hide one.
+_BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n {0,3}(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)

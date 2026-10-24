@@ -394,6 +394,12 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** an open `span\n\n<a href="../docs/ops.md">ops</a> then `.\n',
         '- **Change** an open `span\n## <a href="../docs/ops.md">ops</a> `\n',
         '- **Change** an open `span\n1. <a href="../docs/ops.md">ops</a> `\n',
+        # a setext underline, a thematic break, an HTML block or a table row ends it too (Codex at 8585b35789)
+        '- **Change** open `span\n  ---\n  <a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n  ===\n  <a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n***\n<a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n<div>\n<a href="../docs/ops.md">ops</a> closing `.\n',
+        '- **Change** open `span\n| a | b |\n<a href="../docs/ops.md">ops</a> closing `.\n',
     )
 
     def errors(self, text):

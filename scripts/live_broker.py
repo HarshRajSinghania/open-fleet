@@ -13,11 +13,17 @@ call it makes, through claude or around it, escapes the cap.
 The cap is a reservation ledger. A call starts only when the settled spend, the reservations of
 the calls still in flight and its own reservation fit under --cap-usd. Its reservation is its
 worst case at its model's highest list price: its body's bytes as input tokens (no token is
-shorter than a byte) plus FRAMING_TOKENS for the API's own framing, all priced as 1-hour cache
-writes, and its max_tokens as output. When it ends, the reservation is released and the usage the
-API reported is settled as the API bills it; a call that ends without a complete usage report
-settles its whole reservation. Nothing unpriced runs: a model with no price, a body that is not a JSON object with a
-positive max_tokens, and a server-side tool or MCP server (billed beyond tokens) are refused.
+shorter than a byte) plus FRAMING_TOKENS for the API's own framing and IMAGE_TOKENS for each
+inline image, all priced as 1-hour cache writes, and its max_tokens as output. When it ends, the
+reservation is released and the usage the API reported is settled as the API bills it; a call
+that ends without a complete usage report settles its whole reservation.
+
+Nothing unpriced runs (Codex at 8585b35789). A body is forwarded only when it is a JSON object
+with a priced model and a positive max_tokens, every field is one the broker prices (FIELDS), every
+tool is the client's own, and all content is inline and bounded by its bytes. So an image or
+document by URL or file id, a PDF, an advisor or other server-side tool, an MCP server,
+server-side compaction, a service tier, and an inference geography other than global or US are
+refused: each is billed beyond what the body's bytes bound.
 
 The ledger (--ledger, appended, mode 0600) is one JSON line per event: open, start, settle and
 refuse. It never holds the token, a request or a response. The launcher reads it after both
@@ -52,11 +58,18 @@ PRICES = {
 }
 TIERED = {"claude-haiku-5-5": (100_000, (0.50, 2.50, 0.05))}
 WRITE_5M, WRITE_1H, FAST = 1.25, 2.0, 2.0
+GEO = {None: 1.0, "global": 1.0, "us": 1.1}  # inference_geo "us" is billed at 1.1x every token category
+IMAGE_TOKENS = 4800  # above the most one image costs on any current model: 4,784 visual tokens at 2576 px
+COSTLIEST = "claude-fable-5-1"  # what an iteration naming an unpriced model is charged as
+# Every request field the broker can price. Any other is refused, so a pricing modifier the
+# broker does not know never reaches the API unpriced.
+FIELDS = {"model", "messages", "system", "max_tokens", "stream", "tools", "tool_choice", "metadata", "thinking",
+          "temperature", "top_p", "top_k", "stop_sequences", "output_config", "context_management", "speed",
+          "inference_geo", "service_tier"}
 FRAMING_TOKENS = 4096
 MAX_BODY = 64 << 20
 UPSTREAM_TIMEOUT_S = 900
 PRICED_PATH, FREE_PATH = "/v1/messages", "/v1/messages/count_tokens"
-SERVER_TOOL_RE = re.compile(r"^(web_search|web_fetch|code_execution)")
 DATED_RE = re.compile(r"-\d{8}$")
 # What the client sent that never reaches the API: its credential, and hop-by-hop headers.
 DROP = {"host", "authorization", "x-api-key", "content-length", "connection", "keep-alive", "proxy-authorization",
@@ -74,7 +87,7 @@ def model_key(model):
     return key if key in PRICES else None
 
 
-def priced(usage, model, fast=False):
+def priced(usage, model, mult=1.0):
     """USD for one call's reported usage, as the API bills it: each cache write at its TTL's rate
     (the 1-hour rate when the report does not split them), at the tier its prompt reached."""
     key = model_key(model)
@@ -89,34 +102,84 @@ def priced(usage, model, fast=False):
     write = w5 * WRITE_5M + w1 * WRITE_1H if split and w5 + w1 == written else written * WRITE_1H
     usd = (tokens("input_tokens") * inp + write * inp + tokens("cache_read_input_tokens") * read
            + tokens("output_tokens") * out) / 1e6
-    return usd * (FAST if fast else 1)
+    return usd * mult
 
 
-def reservation(body_len, max_tokens, model, fast=False):
+def settled(usage, model, mult=1.0):
+    """USD for a finished call: its usage, or the sum of the iterations the API reported (each at
+    its own model's price, an unpriced one at the costliest) when that sum is larger."""
+    usd = priced(usage, model, mult)
+    iterations = [it for it in usage.get("iterations") or [] if isinstance(it, dict)]
+    if iterations:
+        named = lambda it: it.get("model") if model_key(it.get("model")) else model if it.get("model") is None else COSTLIEST
+        usd = max(usd, sum(priced(it, named(it), mult) for it in iterations))
+    return usd
+
+
+def reservation(body_len, max_tokens, model, mult=1.0, images=0):
     """USD for one call's worst case: every byte of its body an input token written to the 1-hour
-    cache, plus the framing, and every token of max_tokens an output token, at its highest tier."""
+    cache, plus the framing and IMAGE_TOKENS for each image, and every token of max_tokens an
+    output token, at its model's highest tier."""
     key = model_key(model)
     inp, out, _read = TIERED[key][1] if key in TIERED else PRICES[key]
-    usd = ((body_len + FRAMING_TOKENS) * inp * WRITE_1H + max_tokens * out) / 1e6
-    return usd * (FAST if fast else 1)
+    usd = ((body_len + FRAMING_TOKENS + images * IMAGE_TOKENS) * inp * WRITE_1H + max_tokens * out) / 1e6
+    return usd * mult
 
 
-def why_unpriced(doc):
-    """Why a /v1/messages body cannot be priced, or None."""
+def content_problem(node, found):
+    """Why some content in `node` is not bounded by its bytes, or None; counts inline images."""
+    if isinstance(node, list):
+        for item in node:
+            if why := content_problem(item, found):
+                return why
+    elif isinstance(node, dict):
+        if "file_id" in node:
+            return "content by file id is billed by what the file holds, not by the request's bytes"
+        source = node.get("source")
+        if isinstance(source, dict):
+            kind, media = source.get("type"), str(source.get("media_type") or "")
+            if kind in ("url", "file"):
+                return f"content by {kind} is billed by what it fetches, not by the request's bytes"
+            if media == "application/pdf":
+                return "a PDF is billed per page, which its bytes do not bound"
+            if kind == "base64" and media.startswith("image/"):
+                found["images"] += 1
+        for value in node.values():
+            if why := content_problem(value, found):
+                return why
+    return None
+
+
+def terms(doc):
+    """(why the body cannot be priced or None, its price multiplier, its inline images)."""
     if not isinstance(doc, dict):
-        return "the body is not a JSON object"
+        return "the body is not a JSON object", 1.0, 0
+    if extra := sorted(set(doc) - FIELDS):
+        return f"a field the broker cannot price: {', '.join(extra)}", 1.0, 0
     if model_key(doc.get("model")) is None:
-        return f"no price for model {doc.get('model')!r}: the broker runs only {', '.join(sorted(PRICES))}"
+        return f"no price for model {doc.get('model')!r}: the broker runs only {', '.join(sorted(PRICES))}", 1.0, 0
     max_tokens = doc.get("max_tokens")
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
-        return "the body carries no positive integer max_tokens"
+        return "the body carries no positive integer max_tokens", 1.0, 0
     for tool in doc.get("tools") or []:
-        kind = tool.get("type") if isinstance(tool, dict) else None
-        if isinstance(kind, str) and SERVER_TOOL_RE.match(kind):
-            return f"a server-side tool ({kind}) is billed beyond its tokens"
-    if doc.get("mcp_servers") or doc.get("container"):
-        return "an MCP server or a container is billed beyond its tokens"
-    return None
+        kind = tool.get("type") if isinstance(tool, dict) else "malformed"
+        if kind not in (None, "custom"):
+            return f"a {kind} tool is not the client's own: it is billed beyond the request's tokens", 1.0, 0
+    for edit in (doc.get("context_management") or {}).get("edits") or []:
+        kind = edit.get("type") if isinstance(edit, dict) else "malformed"
+        if not (isinstance(kind, str) and kind.startswith("clear_")):
+            return f"a {kind} context edit runs inference beyond the request's tokens", 1.0, 0
+    if doc.get("service_tier", "standard_only") != "standard_only":
+        return f"service tier {doc['service_tier']!r} is not priced", 1.0, 0
+    if doc.get("speed") not in (None, "standard", "fast"):
+        return f"speed {doc['speed']!r} is not priced", 1.0, 0
+    geo = doc.get("inference_geo")
+    if geo not in GEO:
+        return f"inference geography {geo!r} is not priced", 1.0, 0
+    found = {"images": 0}
+    if why := content_problem([doc.get("system"), doc.get("messages")], found):
+        return why, 1.0, 0
+    return None, GEO[geo] * (FAST if doc.get("speed") == "fast" else 1.0), found["images"]
 
 
 def merged_usage(seen, usage):
@@ -127,6 +190,8 @@ def merged_usage(seen, usage):
             seen[key] = max(seen.get(key, 0), value)
         elif key == "cache_creation" and isinstance(value, dict):
             merged_usage(seen.setdefault(key, {}), value)
+        elif key == "iterations" and isinstance(value, list):
+            seen[key] = value
     return seen
 
 
@@ -138,7 +203,8 @@ class Ledger:
         self.lock = threading.Lock()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.fh = os.fdopen(fd, "a", encoding="utf-8")
-        self.write({"event": "open", "cap_usd": cap_usd, "prices_usd_per_mtok": PRICES, "tiered": TIERED,
+        self.write({"event": "open", "cap_usd": cap_usd, "prices_usd_per_mtok": PRICES, "tiered": TIERED, "geo": {str(k): v for k, v in GEO.items()},
+                    "image_tokens": IMAGE_TOKENS,
                     "framing_tokens": FRAMING_TOKENS, "pid": os.getpid()})
 
     def write(self, entry):
@@ -218,23 +284,22 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
         body = self.rfile.read(length)
         if path == FREE_PATH:
-            return self.relay(body, None, None, False)
+            return self.relay(body, None, None, 1.0)
         try:
             doc = json.loads(body)
         except ValueError:
             doc = None
-        why = why_unpriced(doc)
+        why, mult, images = terms(doc)
         model = doc.get("model") if isinstance(doc, dict) else None
         if why:
             self.ledger.refuse(why, model)
             return self.fail(400, "invalid_request_error", why)
-        fast = doc.get("speed") == "fast"
-        call = self.ledger.reserve(model, reservation(len(body), doc["max_tokens"], model, fast))
+        call = self.ledger.reserve(model, reservation(len(body), doc["max_tokens"], model, mult, images))
         if call is None:
             return self.fail(403, "permission_error", f"the spend cap (${self.ledger.cap:g}) would be passed")
-        self.relay(body, call, model, fast)
+        self.relay(body, call, model, mult)
 
-    def relay(self, body, call, model, fast):
+    def relay(self, body, call, model, mult):
         """Forward to the API and relay the answer as it arrives; settle the call's usage."""
         usage, complete, status, conn = {}, False, None, None
         try:
@@ -300,7 +365,7 @@ class Broker(BaseHTTPRequestHandler):
             if conn is not None:
                 conn.close()
             if call is not None:
-                self.ledger.settle(call, priced(usage, model, fast) if complete else None, status, usage, complete)
+                self.ledger.settle(call, settled(usage, model, mult) if complete else None, status, usage, complete)
 
 
 def read_token(path):

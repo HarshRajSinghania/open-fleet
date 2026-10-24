@@ -36,13 +36,18 @@ broker, then execs the pinned Claude Code with `ANTHROPIC_BASE_URL=http://127.0.
 placeholder credential, dropping any credential, endpoint or proxy the arm's environment carries.
 The broker forwards `POST /v1/messages` and `/v1/messages/count_tokens` to the API with the token
 in place of the placeholder. It refuses every other request. It also refuses any call it cannot
-price: an unlisted model, a body with no `max_tokens`, and a server-side tool or MCP server, which
-are billed beyond their tokens.
+price. A call passes only when its model is on the broker's price list, it carries a positive
+`max_tokens`, every field is one the broker prices, and every tool is the client's own. Its
+content must also be inline and bounded by its bytes. So the broker refuses an image or document
+by URL or file id, a PDF, an advisor or other server-side tool, an MCP server, server-side
+compaction, a service tier, and an inference geography other than global or US. Each is billed
+beyond what the request's bytes bound.
 
 **The cap.** A call starts only when the broker's settled spend, the reservations of the calls in
 flight and the call's own reservation fit under `--cap-usd`. A reservation is the call's worst
-case: every byte of its body as a 1-hour cache-write input token, plus 4,096 tokens of framing,
-and all of its `max_tokens` as output, at its model's highest list price. When the call ends, the
+case: every byte of its body as a 1-hour cache-write input token, plus 4,096 tokens of framing and
+4,800 for each inline image, and all of its `max_tokens` as output, at its model's highest list
+price, times 1.1 for US inference and 2 for fast mode. When the call ends, the
 broker settles the usage the API reported, at the price the API bills. A call that ends without a
 complete usage report settles its whole reservation. A refused call reaches the arm as an API
 error (`permission_error`, "the spend cap … would be passed"). Near the cap, reservations stop
@@ -61,7 +66,8 @@ The launcher starts both containers with these properties:
   (64 pids, 512 MB, one CPU);
 - each has no capability (`--cap-drop ALL`), `no-new-privileges`, no `--privileged`, no host
   namespace, no published port, no device and no docker socket;
-- the token reaches only the broker: your token file, mounted read-only at
+- the token reaches only the broker: your token file, which may not sit inside the results or
+  the checkout, since the arm's container mounts both, mounted read-only at
   `/run/secrets/claude_token`. It is never in either container's environment, so `docker inspect`
   does not show it. It is never on a command line, in the receipt or in the saved output either.
   The output passes a redactor before it reaches the disk, so any occurrence is replaced with
@@ -74,7 +80,8 @@ The launcher starts both containers with these properties:
   `/results`**: `--results` and `--out` for `wip_curve`, `--out` for `ablation`, `hint_replay` and
   `trajectories`, and `--workdir` for `first_run`. The launcher refuses any other path, and an
   abbreviation of one of those flags. `ablation`, `hint_replay` and `trajectories` must also
-  name an `--out`, because each one's default is a temp dir that dies with the container;
+  name an `--out`, and `first_run` a `--workdir`, because each one's default is a temp dir that
+  dies with the container;
 - the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line for each
   call it opens, starts, settles or refuses. It never holds the token, a request or a response;
 - the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
@@ -106,8 +113,8 @@ through the broker's cap.
 - **OrbStack** on macOS, or Docker Engine on Linux. On OrbStack, a bind mount shows its files as
   owned by the container's user, so uid 10001 can read your 0600 token file and write the results
   and ledger directories. On Docker Engine on Linux, uid 10001 must be able to do the same. A
-  0600 file you own is unreadable to it, and the broker exits with `cannot read the token`; the
-  arm's `claude` then refuses with `no credential broker answers`.
+  0600 file you own is unreadable to it, so the broker exits, and the launcher refuses with `the
+  broker never answered` before the arm starts.
 - A **clean checkout** at the commit you mean to run. `git status` must show nothing, untracked
   files included.
 - The arm's **authorised cap**, for `--cap-usd` and for the arm's own cap flags.
@@ -254,7 +261,10 @@ label=org.open-fleet.live-harness`), and 124 when the limit ended the run.
 | `the <arm> arm needs --out under /results` | Name an `--out` under `/results` |
 | `--out … is outside /results` | Write every output under `/results` |
 | `--cap-usd must be a positive number of dollars` | Pass the arm's authorised cap |
-| `claude (open-fleet live harness): no credential broker answers` | `claude` ran in a container this launcher did not start, or the broker could not start. On Linux, check that uid 10001 can read the token file (see [Before you start](#before-you-start)) |
+| `--token-file … is inside --results` (or the checkout) | Keep the token file outside both: the arm's container mounts them |
+| `the broker never answered` | The broker could not open the token file or its ledger. On Linux, check that uid 10001 can read and write them (see [Before you start](#before-you-start)) |
+| `claude (open-fleet live harness): no credential broker answers` | `claude` ran in a container this launcher did not start |
+| `open-fleet live broker: …is billed beyond…` (or `…not priced`) | The arm sent content, a tool or a field the broker cannot price. It refuses rather than spend unmetered |
 | `open-fleet live broker: the spend cap ($…) would be passed` | The arm reached `--cap-usd`. The receipt's `broker.spend` shows what it settled |
 | `open-fleet live broker: no price for model …` | Name a model the broker prices |
 | `--receipts … overlaps --results` | Put the receipts outside the results |

@@ -110,10 +110,11 @@ ARMS = {
 # container erased it).
 OUTPUTS = {"wip_curve": ("--results", "--out"), "ablation": ("--out",), "hint_replay": ("--out",),
            "trajectories": ("--out",), "first_run": ("--workdir",)}
-REQUIRED = {"ablation": "--out", "hint_replay": "--out", "trajectories": "--out"}
+REQUIRED = {"ablation": "--out", "hint_replay": "--out", "trajectories": "--out", "first_run": "--workdir"}
 LIMITS = {"pids": 4096, "memory": "8g", "cpus": "4"}
 BACKSTOP_S = 120  # the in-container `timeout`, past the launcher's limit: a dead launcher still ends it
 DESTROY_WAIT_S = 30
+BROKER_READY_S = 60  # the arm starts only once the broker answers /health inside its own container
 TEARDOWN_TIMEOUT_S = 60  # each docker call of a teardown
 REDACTED = b"[REDACTED]"
 RECEIPT_SCHEMA = "open-fleet.live-container-receipt/2"
@@ -297,6 +298,25 @@ def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation,
             "--workdir", RESULTS_IN, image_id, *cmd]
 
 
+def await_broker(broker_id, ledger_dir):
+    """Return once the broker answers /health inside its own container, or Refused: the arm never
+    starts beside a broker that could not open the token or its ledger (`docker exec`, the
+    container's own user, no credential on its command line)."""
+    probe = ["exec", broker_id, "python3", "-I", "-c",
+             f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{BROKER_PORT}/health', timeout=2)"]
+    deadline = time.monotonic() + BROKER_READY_S
+    while True:
+        try:
+            if docker(*probe, timeout=30).returncode == 0:
+                return
+        except subprocess.TimeoutExpired:
+            pass
+        if time.monotonic() > deadline:
+            raise Refused(f"the broker never answered within {BROKER_READY_S:g} s. On Docker Engine on Linux, uid "
+                          f"10001 must be able to read the token file and write {ledger_dir}")
+        time.sleep(0.5)
+
+
 def destroy(ids, nonce):
     """Kill and remove every container of this launch, then verify that none exists (`docker ps -a
     --filter label=LABEL=<nonce>`, which also finds one whose id the launcher never learned). A
@@ -432,6 +452,10 @@ def run(args):
     if inside(receipts, results) or inside(results, receipts):
         raise Refused(f"--receipts {receipts} overlaps --results {results}: the container writes to the "
                       "results, and the receipt must be out of its reach")
+    for what, mount in (("--results", results), ("the checkout", repo)):  # the arm sees both (Codex at 8585b35789)
+        if inside(Path(os.path.realpath(token_file)), mount) or inside(token_file, mount):
+            raise Refused(f"--token-file {token_file} is inside {what} {mount}, which the arm's container mounts: "
+                          "keep the token outside both")
     token = read_token(token_file)  # its value only to check the file and to redact the output
     commit = pinned_commit(repo)
     image = image_facts(args.image)
@@ -497,6 +521,7 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
         proc = docker("start", ids[0])
         if proc.returncode != 0:
             raise Refused(f"docker start of the broker failed: {proc.stderr.strip()[:300]}")
+        await_broker(ids[0], ledger_dir)
         receipt["started_at"], started = now(), time.monotonic()
         fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         redactor = Redactor(os.fdopen(fd, "wb"), token.encode())

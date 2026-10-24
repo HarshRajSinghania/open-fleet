@@ -113,6 +113,8 @@ elif argv[:1] == ["start"] and "--attach" in argv:
     sys.exit(scenario.get("exit", 0))
 elif argv[:1] == ["start"]:
     sys.exit(scenario.get("broker_start_exit", 0))
+elif argv[:1] == ["exec"]:  # the broker's /health, probed inside its container
+    sys.exit(scenario.get("broker_ready_exit", 0))
 elif argv[:1] == ["build"]:
     sys.exit(scenario.get("build_exit", 0))
 '''
@@ -230,6 +232,14 @@ class OneArmRunsAndBothContainersAreVerifiedDestroyed(Harness):
         for cid in (CID, BID):
             self.assertIn(["rm", "-f", cid], [c["argv"] for c in self.calls()])
 
+    def test_the_arm_starts_only_once_the_broker_answers_inside_its_container(self):
+        self.launch()
+        argvs = [c["argv"] for c in self.calls()]
+        probe = next(i for i, a in enumerate(argvs) if a[:2] == ["exec", BID])
+        self.assertEqual(argvs[probe][2:4], ["python3", "-I"])
+        self.assertIn(f"http://127.0.0.1:{lc.BROKER_PORT}/health", argvs[probe][-1])
+        self.assertLess(probe, argvs.index(["start", "--attach", CID]))
+
     def test_the_arm_runs_the_pinned_commit_read_only_and_writes_only_the_results(self):
         self.launch()
         create = self.create("arm")
@@ -268,12 +278,13 @@ class OneArmRunsAndBothContainersAreVerifiedDestroyed(Harness):
             with self.subTest(arm=arm):
                 shutil.rmtree(self.receipts, ignore_errors=True)
                 self.log.unlink(missing_ok=True)
-                rc, err = self.launch(arm=arm, arm_args=("--x", "1", "--out", "/results/o"), timeout="600")
+                outs = ("--out", "/results/o", "--workdir", "/results/w")
+                rc, err = self.launch(arm=arm, arm_args=("--x", "1", *outs), timeout="600")
                 self.assertEqual(rc, 0, err)
                 argv = self.create("arm")["argv"]
                 tail = argv[argv.index(IMAGE_ID) + 1:]
                 self.assertEqual(tail, ["timeout", "--kill-after=30", str(600 + lc.BACKSTOP_S), "python3",
-                                        f"/repo/{script}", *prefix, "--x", "1", "--out", "/results/o"])
+                                        f"/repo/{script}", *prefix, "--x", "1", *outs])
         self.assertEqual(sorted(lc.ARMS), ["ablation", "first_run", "hint_replay", "trajectories", "wip_curve"])
         self.assertEqual(sorted(lc.OUTPUTS), sorted(lc.ARMS))
 
@@ -367,6 +378,22 @@ class TheTokenStaysInTheBrokersContainer(Harness):
         self.assertNotIn(self.token, text)
         self.assertIn("[REDACTED]", text)
         self.assertEqual(r["token_redactions"], 1)
+
+    def test_a_token_file_the_arm_could_reach_is_refused(self):
+        # Codex at 8585b35789: a token file inside the results mount reached the arm as /results/<name>
+        self.results.mkdir()
+        inside_results = self.results / "sub" / "oauth-token"
+        inside_results.parent.mkdir()
+        shutil.copy2(self.token_file, inside_results)
+        alias = self.tmp / "alias"
+        alias.symlink_to(self.results / "sub")  # a symlinked ancestor reaches the same file
+        for token_file in (inside_results, alias / "oauth-token", self.repo / "oauth-token"):
+            with self.subTest(token_file=token_file):
+                self.token_file = token_file
+                rc, err = self.launch()
+                self.assertEqual(rc, 2, err)
+                self.assertIn("which the arm's container mounts", err)
+        self.assertEqual(self.calls(), [])
 
     def test_a_missing_token_file_is_refused_before_docker_is_called(self):
         self.token_file.unlink()
@@ -465,9 +492,10 @@ class OutputsStayUnderResults(Harness):
         self.assertEqual(self.calls(), [], "docker was called for a launch whose ledger would die with it")
 
     def test_an_arm_whose_ledger_defaults_to_a_temp_dir_must_name_one(self):
+        self.assertEqual(lc.REQUIRED["first_run"], "--workdir", "first_run's receipt.json dies in a temp workdir")
         for arm in sorted(lc.REQUIRED):
             with self.subTest(arm=arm):
-                self.refused(arm, ("run", "--tier", "live"), "needs --out under /results")
+                self.refused(arm, ("run", "--tier", "live"), f"needs {lc.REQUIRED[arm]} under /results")
 
     def test_an_output_outside_results_is_refused(self):
         cases = [("ablation", ("run", "--out", "/tmp/x")), ("ablation", ("run", "--out=../x")),
@@ -481,7 +509,7 @@ class OutputsStayUnderResults(Harness):
 
     def test_an_output_under_results_runs(self):
         for arm, arm_args in (("ablation", ("run", "--out", "out")), ("hint_replay", ("--out=/results/a/r.json",)),
-                              ("trajectories", ("--out", "/results")), ("first_run", ("run",))):
+                              ("trajectories", ("--out", "/results")), ("first_run", ("run", "--workdir", "w"))):
             with self.subTest(arm=arm, arm_args=arm_args):
                 shutil.rmtree(self.receipts, ignore_errors=True)
                 rc, err = self.launch(arm=arm, arm_args=arm_args)
@@ -585,6 +613,19 @@ class TeardownNeverLosesTheReceipt(Harness):
         r = self.receipt()
         self.assertIs(r["destroyed"]["verified"], True)
         self.assertIn("docker start of the broker failed", r["refused"])
+        self.assertNotIn(["start", "--attach"], [c["argv"][:2] for c in self.calls()])
+
+
+class ABrokerThatNeverAnswersStartsNoArm(Harness):
+    def test_it_is_destroyed_and_the_launch_refused(self):
+        self.scenario({"broker_ready_exit": 1})
+        with mock.patch.object(lc, "BROKER_READY_S", 0.3):
+            rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("the broker never answered", err)
+        r = self.receipt()
+        self.assertIs(r["destroyed"]["verified"], True)
+        self.assertIn("uid 10001 must be able to read the token file", r["refused"])
         self.assertNotIn(["start", "--attach"], [c["argv"][:2] for c in self.calls()])
 
 
@@ -777,7 +818,7 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertAlmostEqual(lb.priced(one_hour, "claude-opus-5-5"), 1000 * 4.0 * 2.0 / 1e6)
         self.assertAlmostEqual(lb.priced(unsplit, "claude-opus-5-5"), 1000 * 4.0 * 2.0 / 1e6, msg="unsplit is not the 1h rate")
         self.assertAlmostEqual(lb.priced({"input_tokens": 200_000}, "claude-haiku-5-5"), 200_000 * 0.50 / 1e6)
-        self.assertAlmostEqual(lb.priced({"output_tokens": 10}, "claude-opus-5-5", fast=True), 10 * 40.0 / 1e6)
+        self.assertAlmostEqual(lb.priced({"output_tokens": 10}, "claude-opus-5-5", lb.FAST), 10 * 40.0 / 1e6)
         self.assertAlmostEqual(lb.priced({"output_tokens": 10}, "claude-haiku-4-5-20251001"), 10 * 5.0 / 1e6)
         self.assertGreaterEqual(lb.reservation(100, 1000, "claude-haiku-5-5"),
                                 lb.priced({"input_tokens": 100 + lb.FRAMING_TOKENS, "output_tokens": 1000},
@@ -853,6 +894,79 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertEqual(conn.getresponse().status, 200)
         conn.close()
         self.assertEqual(self.api.requests[0]["path"], "/v1/messages?beta=true")
+
+    def test_content_its_bytes_do_not_bound_never_reaches_the_api(self):
+        # Codex at 8585b35789: an image by URL reserved its JSON bytes, not what the API bills for it
+        self.broker()
+        image = lambda source: {"role": "user", "content": [{"type": "image", "source": source}]}
+        bodies = {
+            "an image by URL": [image({"type": "url", "url": "https://x.invalid/a.png"})],
+            "an image by file": [image({"type": "file", "file_id": "file_1"})],
+            "a document by file id": [{"role": "user", "content": [{"type": "document", "source": {"type": "file",
+                                                                                                   "file_id": "f"}}]}],
+            "a PDF": [{"role": "user", "content": [{"type": "document", "source": {
+                "type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}}]}],
+            "a URL inside a tool result": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t",
+                                                                          "content": [{"type": "image", "source": {
+                                                                              "type": "url", "url": "https://x.invalid"}}]}]}],
+        }
+        for what, messages in bodies.items():
+            with self.subTest(what=what):
+                status, data = self.post(doc=self.body(messages=messages))
+                self.assertEqual(status, 400, data)
+        self.assertEqual(self.api.requests, [])
+
+    def test_an_inline_image_is_reserved_at_its_worst_case(self):
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+        why, mult, images = lb.terms(self.body(messages=[{"role": "user", "content": [img, img]}]))
+        self.assertEqual((why, mult, images), (None, 1.0, 2))
+        self.assertAlmostEqual(lb.reservation(100, 10, "claude-opus-5-5", 1.0, 2) - lb.reservation(100, 10, "claude-opus-5-5"),
+                               2 * lb.IMAGE_TOKENS * 4.0 * lb.WRITE_1H / 1e6)
+        self.assertGreaterEqual(lb.IMAGE_TOKENS, 4784, "below the most one image costs")
+
+    def test_only_the_clients_own_tools_and_the_fields_it_prices_pass(self):
+        # Codex at 8585b35789: an advisor tool passed, and its sub-inference was neither reserved nor settled
+        self.broker()
+        refused = {"an advisor tool": self.body(tools=[{"type": "advisor_20260301", "name": "advisor",
+                                                        "model": "claude-fable-5-1"}]),
+                   "an Anthropic-defined tool": self.body(tools=[{"type": "bash_20250124", "name": "bash"}]),
+                   "an unpriced field": self.body(betas=["x"]),
+                   "a container": self.body(container="c"),
+                   "a priority tier": self.body(service_tier="auto"),
+                   "an unpriced geography": self.body(inference_geo="eu"),
+                   "an unknown speed": self.body(speed="turbo"),
+                   "server-side compaction": self.body(context_management={"edits": [{"type": "compact_20260112"}]})}
+        for what, body in refused.items():
+            with self.subTest(what=what):
+                self.assertEqual(self.post(doc=body)[0], 400, what)
+        self.assertEqual(self.api.requests, [])
+        tool = {"name": "Bash", "description": "run", "input_schema": {"type": "object"}}
+        ok = self.body(tools=[tool, {**tool, "type": "custom"}], tool_choice={"type": "auto"}, metadata={"user_id": "u"},
+                       context_management={"edits": [{"type": "clear_tool_uses_20250919"}]},
+                       thinking={"type": "adaptive"}, system="s", output_config={"effort": "low"})
+        self.assertEqual(self.post(doc=ok)[0], 200)
+
+    def test_us_inference_is_reserved_and_settled_at_its_premium(self):
+        # Codex at 8585b35789: inference_geo "us" is billed at 1.1x every category
+        self.assertEqual(lb.terms(self.body(inference_geo="us"))[1], 1.1)
+        self.assertEqual(lb.terms(self.body(inference_geo="us", speed="fast"))[1], 1.1 * lb.FAST)
+        self.broker()
+        self.post(doc=self.body(inference_geo="us"))
+        start, settle = self.events()[1:]
+        usage = {**USAGE, "output_tokens": 4}
+        self.assertAlmostEqual(settle["cost_usd"], lb.priced(usage, "claude-haiku-5-5") * 1.1, 6)
+        self.assertAlmostEqual(start["reserved_usd"], lb.reservation(len(json.dumps(self.body(inference_geo="us"))),
+                                                                     1000, "claude-haiku-5-5") * 1.1, 4)
+
+    def test_iterations_settle_when_they_cost_more(self):
+        top = {"input_tokens": 10, "output_tokens": 10}
+        iterations = [{"input_tokens": 10, "output_tokens": 10},
+                      {"model": "claude-fable-5-1", "input_tokens": 1000, "output_tokens": 500},
+                      {"model": "claude-unknown", "input_tokens": 100}]
+        expected = (lb.priced(iterations[0], "claude-haiku-5-5") + lb.priced(iterations[1], "claude-fable-5-1")
+                    + lb.priced(iterations[2], lb.COSTLIEST))
+        self.assertAlmostEqual(lb.settled({**top, "iterations": iterations}, "claude-haiku-5-5"), expected)
+        self.assertEqual(lb.merged_usage({}, {"iterations": iterations})["iterations"], iterations)
 
     def test_count_tokens_is_forwarded_and_free(self):
         self.broker()

@@ -1819,14 +1819,15 @@ class LiveWithAFakeHarness(Tmp):
     """--worker live end to end, against a fake harness (never a real one: a tripwire answers
     for every other harness name, and HOME is private)."""
 
-    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25"):
+    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25", containment=None):
         env, self.trip_log = tripwired_env(self.tmp)
         fake = self.tmp / "fake-bin"
         install_fake_harness(fake, cost=cost, script=script)
         env.update(PATH=os.pathsep.join([str(fake), env["PATH"]]), HOME=str(self.tmp / "home"))
         (self.tmp / "home").mkdir(exist_ok=True)
         self.results = self.tmp / "results"
-        with mock.patch.object(wip, "dirty_inputs", return_value=[]):
+        with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
+                mock.patch.object(wip.contain, "containment_problem", return_value=containment):
             p = run_in_process(["run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"),
                                 "--worker", "live", "--agent", "claude", "--model", model, "--cost-cap-usd", "20",
                                 "--reservation-usd", cost, "--runs", run, *extra], env)
@@ -1961,7 +1962,8 @@ def documented_live_run():
         install_fake_harness(root / "fake-bin")
         env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
         (root / "home").mkdir()
-        with mock.patch.object(wip, "dirty_inputs", return_value=[]):
+        with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
+                mock.patch.object(wip.contain, "containment_problem", return_value=None):
             proc = run_in_process(argv[2:], env)
         _DOCUMENTED.update(run=(root / "results", proc), tmp=tmp, trip_log=trip_log)
     return _DOCUMENTED["run"]
@@ -2463,6 +2465,80 @@ class TestAStoredApprovalFromAFailedCallNeverBinds(DryRun):
         rebind(run_dir)
         problems = wip.build_report(results, basis="all")["runs"][0]["binding_problems"]
         self.assertTrue(any(reviewer in p and "did not finish successfully" in p for p in problems), problems)
+
+
+class TestNothingDetachedOutlivesItsRun(Tmp):
+    """Codex review of PR #668 (B1): a worker's child that left for a session of its own, its streams
+    redirected, escaped teardown, which tracked only the worker and monitor groups. Every process of
+    a run carries the run's OF_CALL_ID, and teardown sweeps by it with #606's helper. A survivor or
+    a failed discovery blocks settlement and the sandbox's removal: every call of the run is
+    charged its full hold, and the run stops orphan-alive."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.addCleanup(lambda: self.assertFalse(self.trip_log.exists(), "a harness name was reached"))
+
+    def run_b1(self, script, *extra):
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                   "--inert-script", json.dumps(script), *extra, env=self.env)
+        record = json.loads((self.tmp / "results" / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        return record, p
+
+    def test_a_detached_child_is_ended_before_the_run_settles(self):
+        pid_file = self.tmp / "detached.pid"
+        record, p = self.run_b1({"T5": {"builder": ["detach"]}, "_detached_pid": str(pid_file)})
+        child = int(pid_file.read_text())
+        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(child)], capture_output=True))
+        self.assertTrue(ended(child), f"a detached child outlived its run: {p.stdout + p.stderr}")
+        self.assertIs(record["teardown"]["contained"], True, record["teardown"])
+
+    def test_a_failed_discovery_blocks_settlement_and_the_sandboxs_removal(self):
+        real_finish, real_table, tearing = wip.Run.finish, wip.contain.process_table, []
+
+        def finish(run):
+            tearing.append(1)
+            return real_finish(run)
+
+        def table():
+            if tearing:
+                raise OSError("no ps")  # the process table cannot be read at teardown
+            return real_table()
+        with mock.patch.object(wip.Run, "finish", finish), mock.patch.object(wip.contain, "process_table", table):
+            record, p = self.run_b1({"_cost": {"builder": "0.10", "reviewer": "0.10"}})
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "orphan-alive"))
+        calls = wip.Budget.of_run(wip.Budget(self.tmp / "results").calls(), "wip1-b1r1-rep1")
+        charged = {c: v["usd"] for c, v in calls.items() if v["state"] == "charged"}
+        self.assertTrue(charged and all(Decimal(u) == Decimal("0.25") for u in charged.values()),
+                        f"not every call was charged its full hold: {charged}")
+        self.assertTrue((self.tmp / "wd" / "wip1-b1r1-rep1").is_dir(), "the sandbox was removed")
+
+    def test_no_next_run_starts_while_a_run_cannot_vouch_for_its_processes(self):
+        self.run_b1({})
+        tag = wip.Budget(self.tmp / "results").calls()["wip1-b1r1-rep1/run"]["call_tag"]
+        real = wip.contain.sweep
+
+        def sweep(*a, **kw):  # the earlier run's processes cannot be vouched for; every other sweep is real
+            return False if kw.get("tag") == tag else real(*a, **kw)
+        with mock.patch.object(wip.contain, "sweep", sweep):
+            p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--next",
+                       "1", "--cost-cap-usd", "5", "--inert-cost-usd", "0.25", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("ORPHAN_ALIVE", p.stderr)
+        self.assertEqual(sorted(d.name for d in (self.tmp / "results" / "runs").iterdir()), ["wip1-b1r1-rep1"])
+
+
+class TestALiveRunNeedsContainment(LiveWithAFakeHarness):
+    """A live run spends: it does not start where process discovery cannot contain a call (the
+    helper's host check), before anything is reserved."""
+
+    def test_a_host_that_hides_markers_refuses_a_live_run(self):
+        p, run_json = self.live(containment="the process table does not show a call's OF_CALL_ID marker")
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("process discovery cannot contain", p.stderr)
+        self.assertFalse(run_json.exists())
 
 
 class TestAKilledRunStillCounts(Tmp):

@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import hashlib
 import importlib.util
 import io
@@ -515,9 +516,10 @@ class Budget:
     def total(self) -> Decimal:
         return _committed(self.calls())
 
-    def start_run(self, run: str, sandbox: Path, worker: str) -> None:
+    def start_run(self, run: str, sandbox: Path, worker: str, call_tag: str | None = None) -> None:
+        """The run's start: its sandbox, its worker, and the OF_CALL_ID every process of it carries."""
         self._update(lambda calls: ([{"call": f"{run}/run", "run": run, "state": "run", "usd": "0",
-                                      "sandbox": str(sandbox), "worker": worker}], None))
+                                      "sandbox": str(sandbox), "worker": worker, "call_tag": call_tag}], None))
 
     def hold(self, entries, amount: Decimal, cap: Decimal) -> bool:
         """Hold `amount` for each (call, fields) at once, or none: False when the cap cannot cover
@@ -528,7 +530,8 @@ class Budget:
                 raise RunFailed(f"call identity reused: {reused}")
             if _committed(calls) + amount * len(entries) > cap:
                 return [], False
-            return [{"call": c, "state": "held", "usd": str(amount), **f} for c, f in entries], True
+            return [{"call": c, "state": "held", "usd": str(amount), "hold_usd": str(amount), **f}
+                    for c, f in entries], True
         return self._update(fn)
 
     def admit(self, call: str, cap: Decimal) -> bool:
@@ -560,6 +563,16 @@ class Budget:
             if not c:
                 rec["run"] = run
             return [rec], True
+        return self._update(fn)
+
+    def top_up(self, call: str, usd: Decimal) -> bool:
+        """Raise a charged call to `usd` (its full hold) when a process of its run may still be
+        spending (Codex review of PR #668): the charge never falls, and it is never added twice."""
+        def fn(calls):
+            c = calls.get(call)
+            if not c or c.get("state") != "charged" or Decimal(c["usd"]) >= usd:
+                return [], False
+            return [{"call": call, "state": "charged", "usd": str(usd), "measured": False, "topped_up": True}], True
         return self._update(fn)
 
     def release(self, call: str, launched_too: bool = False) -> bool:
@@ -680,7 +693,8 @@ def python_argv(*args: str) -> list[str]:
 ORACLE_TIMEOUT = 300  # seconds for one verification, every step together
 
 
-def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, timeout: float = ORACLE_TIMEOUT) -> dict:
+def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, timeout: float = ORACLE_TIMEOUT,
+               contained: bool = True) -> dict:
     """The visible tests plus each task's oracle, at `checkout`, with the oracles OUTSIDE it (a
     worker never receives them). {"exit": 0 pass | 2 fail | 1 could not run, ...}."""
     oracle_dir = workdir / f"oracle-{secrets.token_hex(4)}"
@@ -701,20 +715,25 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
     if tasks:
         commands.append(("oracle", python_argv("-m", "unittest", "discover", "-s", str(oracle_dir),
                                                "-t", str(oracle_dir))))
-    contained = True
+    vouched = True
     for name, argv in commands:
-        # Worker-written code runs here, under #606's watchdog: its streams go to files (nothing it
-        # leaves behind can hold a pipe of ours open), and every process it starts, in its group or
-        # in a session of its own, carries the call's OF_CALL_ID and is swept (Codex review of #668).
-        out_path = oracle_dir / f"{name}.out"
-        rc, killed, emptied = contain.contained_run(argv, timeout=max(end - time.monotonic(), 0.1), cwd=checkout,
-                                                    env=env, stdout_path=out_path)
-        out = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else ""
-        if killed:
-            rc, out = None, f"timed out after {timeout}s"
-        if not emptied:  # a process of it survived SIGKILL, or none could be seen: nothing is vouched for
-            contained, rc = False, None
-            out += "\na process it started survived, or the process table could not be read"
+        if contained:
+            # Worker-written code runs here, under #606's watchdog: its streams go to files (nothing it
+            # leaves behind can hold a pipe of ours open), and every process it starts, in its group or
+            # in a session of its own, carries the call's OF_CALL_ID and is swept (Codex review of #668).
+            out_path = oracle_dir / f"{name}.out"
+            rc, killed, emptied = contain.contained_run(argv, timeout=max(end - time.monotonic(), 0.1),
+                                                        cwd=checkout, env=env, stdout_path=out_path)
+            out = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else ""
+            if killed:
+                rc, out = None, f"timed out after {timeout}s"
+            if not emptied:  # a process of it survived SIGKILL, or none could be seen: nothing is vouched for
+                vouched, rc = False, None
+                out += "\na process it started survived, or the process table could not be read"
+        else:  # the registered code alone (check-prereg's seed and reference edits): its own group, bounded
+            proc = run_group(argv, cwd=checkout, env=env, timeout=max(end - time.monotonic(), 0.1))
+            rc = None if proc.returncode == 124 and b"its process group was killed" in proc.stderr else proc.returncode
+            out = f"timed out after {timeout}s" if rc is None else (proc.stdout + proc.stderr).decode("utf-8", "replace")
         steps.append({"name": name, "rc": rc})
         tail += [f"[{name}] {ln}" for ln in out.strip().splitlines()[-8:]]
         if rc is None:
@@ -722,7 +741,7 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
         elif rc != 0 and exit_code == 0:
             exit_code = 2
     shutil.rmtree(oracle_dir, ignore_errors=True)
-    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks], "contained": contained}
+    return {"exit": exit_code, "steps": steps, "tail": tail, "tasks": [t["id"] for t in tasks], "contained": vouched}
 
 
 def extract_tree(git_dir: Path, rev: str, dest: Path, env: dict | None = None) -> None:
@@ -824,7 +843,7 @@ def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=Tru
         if reg.get("seed_commit") != seed:
             errors.append(f"taskset.seed_commit is {reg.get('seed_commit')!r}; the seed builds {seed}")
         for task in tasks:
-            base = run_oracle(tmp / "seed", [task], taskset, tmp)
+            base = run_oracle(tmp / "seed", [task], taskset, tmp, contained=False)  # registered code only
             if base["steps"][0]["rc"] != 0:
                 errors.append(f"{task['id']}: the visible tests fail on the seed: {base['tail']}")
             if base["exit"] == 0:
@@ -836,7 +855,7 @@ def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=Tru
             except (ValueError, KeyError, OSError) as err:
                 errors.append(f"{task['id']}: the reference edit does not apply: {err}")
                 continue
-            ref = run_oracle(work, [task], taskset, tmp)
+            ref = run_oracle(work, [task], taskset, tmp, contained=False)
             if ref["exit"] != 0:
                 errors.append(f"{task['id']}: the oracle fails on the reference edit: {ref['tail']}")
         for label, ordered in (("forward", tasks), ("reverse", list(reversed(tasks)))):
@@ -848,7 +867,7 @@ def check_prereg(prereg: dict, taskset: dict, taskset_path: Path, *, oracles=Tru
             except (ValueError, KeyError, OSError) as err:
                 errors.append(f"the references do not compose in the {label} order: {err}")
                 continue
-            both = run_oracle(work, tasks, taskset, tmp)
+            both = run_oracle(work, tasks, taskset, tmp, contained=False)
             if both["exit"] != 0:
                 errors.append(f"the composed references fail an oracle ({label}): {both['tail']}")
     return errors
@@ -940,7 +959,7 @@ if role == "builder":
     if action == "die":
         answer("stand-in scripted to exit without reporting")
         sys.exit(1)
-    if action in ("solve", "miss", "regress", "plant", "link_review", "orphan", "solve_crash"):
+    if action in ("solve", "miss", "regress", "plant", "link_review", "orphan", "solve_crash", "detach"):
         spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
         runner = importlib.util.module_from_spec(spec_r)
         spec_r.loader.exec_module(runner)
@@ -955,6 +974,10 @@ if role == "builder":
         if action == "regress":  # passes its own oracle, breaks a landed task's: the merge gate fails
             changed += [f for f in runner.apply_edits(Path.cwd(), cfg["script"]["_regress"][task])
                         if f not in changed]
+        if action == "detach":  # a builder whose child leaves for a session of its own, streams redirected
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            Path(cfg["script"]["_detached_pid"]).write_text(str(child.pid), encoding="utf-8")
         if action == "orphan":  # a builder that leaves a background child in its process group
             child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
@@ -1018,6 +1041,14 @@ class Sandbox(first_run.Sandbox):
     def __init__(self, workdir: Path, worker: str, agent: str, inert_config: dict | None = None):
         self.inert_config = inert_config or {}
         super().__init__(workdir, worker, agent)
+        # Every process of the run carries the run's OF_CALL_ID (#606's marker), wherever it goes:
+        # the provider passes its environment to each monitor and worker, and a descendant that
+        # leaves its group for a session of its own keeps it, so teardown finds it (Codex, #668).
+        # A dedicated marker, not OPEN_FLEET_DISPATCH_ID: nothing in the fleet rewrites it (a nested
+        # dispatch rewrites the dispatch id), it exists before any launch is registered, and the
+        # helper's host check and sweep speak it.
+        self.call_tag = secrets.token_hex(16)
+        self.env[contain.CALL_MARKER] = self.call_tag
 
     def _install_inert(self) -> None:
         super()._install_inert()
@@ -1763,7 +1794,7 @@ class Run:
     def execute(self, sb: Sandbox):
         self.sb = sb
         self.commands = []
-        self.budget.start_run(self.rid, sb.dir, self.args.worker)  # first: every run directory has its start
+        self.budget.start_run(self.rid, sb.dir, self.args.worker, sb.call_tag)  # first: every run directory has its start
         self.dir.mkdir(parents=True)
         self.record.update(started_at=now(), sandbox=str(sb.dir))
         started = time.monotonic()
@@ -1827,9 +1858,11 @@ class Run:
             head = self.units[tid]["attempts"][-1].get("head") if self.units[tid]["attempts"] else None
             self.park(tid, f"stopped-{reason}", head)
 
-    def settle_launched(self) -> list[str]:
+    def settle_launched(self, charge_holds: bool = False) -> list[str]:
         """Reconcile every call of this run, after its workers were stopped. A launched call whose
         usage was never read is read now (no reported cost: its full reservation, PR #653 review).
+        `charge_holds`: a process of the run may still be spending, so every call is charged its
+        full hold, whatever its stream reported (Codex review of PR #668).
         A call the signal interrupted mid-spawn is found in the STORE by its task (#652's class)
         and charged the same way. A call that never launched is released. Each call is charged
         exactly once: the ledger reconciles a call already charged."""
@@ -1860,6 +1893,8 @@ class Run:
                 continue  # the ledger says it is settled, whatever this process remembers (Codex, C1)
             self.usage_seen.discard(disp)
             try:
+                if charge_holds:
+                    raise RunFailed("not vouched for: its full hold")
                 self.ingest_usage(disp, store_task, key, call=call)
             except (RunFailed, OSError, sqlite3.Error):
                 self.settle(key, None, dispatch=disp, call=call)
@@ -1870,6 +1905,10 @@ class Run:
                 self.budget.release(call, launched_too=True)  # never launched, or never registered: never ran
             elif v.get("state") in ("launching", "launched"):  # a call no dispatch above settled: its hold
                 self.budget.charge(call, Decimal(v["usd"]), False)
+        if charge_holds:
+            for call, v in Budget.of_run(self.budget.calls(), self.rid).items():
+                if v.get("state") == "charged":
+                    self.budget.top_up(call, Decimal(v.get("hold_usd") or self.reservation))
         self.held.clear()
         self.calls.clear()
         return settled
@@ -1878,13 +1917,20 @@ class Run:
         """Kill every child group, stop every worker, settle every launched call, retain the
         sources, write the run report and run.json last."""
         stop_all_groups()
-        # Every worker group torn down, finished dispatches included, BEFORE the run settles and
-        # releases anything (Codex review, C3): a child a worker left behind would spend on.
-        teardown = first_run.stop_workers(self.sb)
+        # Every process of the run torn down, finished dispatches and detached descendants included,
+        # BEFORE the run settles and releases anything (Codex review, C3; of #668, B1): its worker
+        # groups are reaped, then everything carrying the run's marker is swept until a fresh scan
+        # finds none. A survivor, a teardown error, or a table that cannot be read vouches for
+        # nothing: the run stops orphan-alive, every call is charged its full hold, and the sandbox
+        # is kept.
+        tag = getattr(self.sb, "call_tag", None)
+        teardown = first_run.stop_workers(self.sb, sweep=(lambda: contain.sweep(tag=tag)) if tag else None)
         self.record["teardown"] = teardown
-        if teardown["survivors"]:  # a group with a living leader may be a reused number: reported only
-            self.record.update(status="failed", error=f"worker processes outlived the run: {teardown}"[:1000])
-        self.record["settled_after_stop"] = self.settle_launched()
+        contained = teardown["contained"] is True and not teardown["survivors"] and not teardown["errors"]
+        if not contained:
+            self.record.update(status="stopped", stop_reason="orphan-alive",
+                               error=f"a process of the run may still be running: {teardown}"[:1000])
+        self.record["settled_after_stop"] = self.settle_launched(charge_holds=not contained)
         sb = self.sb
         rec = self.record
         rec["units"] = {t: {k: v for k, v in u.items()} for t, u in self.units.items()}
@@ -2022,7 +2068,9 @@ def recover(results: Path, registered=()) -> list[str]:
                 raise Refused(f"the ledger names {sandbox} as lost run {run}'s sandbox, and it is a symbolic "
                               "link: inspect it before any run starts")
             check_writable(sandbox, f"lost run {run}'s sandbox (from the ledger)", registered)
-            first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"))
+            tag = (calls.get(f"{run}/run") or {}).get("call_tag")
+            first_run.stop_workers(first_run.Sandbox(sandbox, "live", "claude"),
+                                   sweep=functools.partial(contain.sweep, tag=tag) if tag else None)
         rows, store_read = {}, False
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -2951,6 +2999,13 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
     recovered = recover(results, registered)  # the lock is ours: a run directory without run.json is lost
     if recovered:
         print(f"wip-curve: reconciled {len(recovered)} call(s) a lost run left live", file=sys.stderr)
+    # No run starts while an earlier one cannot vouch for its processes: every recorded marker is
+    # swept again first (Codex review of PR #668, B1; #606's ORPHAN_ALIVE).
+    for start in sorted((v for v in Budget(results).calls().values()
+                         if v.get("state") == "run" and v.get("call_tag")), key=lambda v: v["run"]):
+        if not contain.sweep(tag=start["call_tag"]):
+            raise Refused(f"ORPHAN_ALIVE: a process of {start['run']} survives, or the process table cannot be "
+                          "read: nothing starts until it is gone (inspect its sandbox and the ledger)")
     if args.workdir:
         check_writable(args.workdir, "--workdir", registered)
     sched = {e["run_id"]: e for e in schedule(prereg, taskset)}
@@ -2991,6 +3046,10 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
         dirty = dirty_inputs()
         if dirty:
             raise Refused(f"a live run needs committed experiment inputs; uncommitted: {dirty}")
+        why = contain.containment_problem(system_binary=True)  # #606's host check, before anything is reserved
+        if why:
+            raise Refused(f"process discovery cannot contain a call on this host ({why}): a live run's escaped "
+                          "processes could never be found or stopped, so it does not start")
     for base, attempt in wanted:  # every sandbox and run directory is checked before the first run starts
         rid = run_id_for(prereg, sched[base]["condition"]["id"], sched[base]["repetition"], attempt)
         check_writable(results / "runs" / rid, "the run directory", registered)  # a planted runs/ link too
@@ -3073,6 +3132,10 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
               + (f" ERROR={record['error'][:200]}" if record.get("error") else ""))
         if record["status"] == "failed":
             rc = EXIT_INCOMPLETE
+        if record["status"] == "stopped" and record["stop_reason"] == "orphan-alive":
+            print(f"wip-curve: ORPHAN_ALIVE in {record['run_id']}: its sandbox is kept, every call is charged "
+                  "its full hold, and no further run starts", file=sys.stderr)
+            return EXIT_INCOMPLETE
         if record["status"] == "stopped" and record["stop_reason"] == "cost-cap":
             print("wip-curve: the cost cap is reached; no further run starts", file=sys.stderr)
             return EXIT_INCOMPLETE

@@ -1331,6 +1331,31 @@ class ACallIsContainedAcrossSessions(SafetyNet):
         self.assertEqual(runner.call_processes(table, tag=other), {30})
 
 
+class TestTheContainmentProbeCoversASystemBinary(unittest.TestCase):
+    """PR #668 review sweep (B1): macOS's `ps -E` cannot read the environment of an Apple system
+    binary (/bin/sh, /bin/sleep), so a call's detached shell is invisible there, while a Python
+    process is not. A probe that launches only Python vouches for a table blind to exactly what a
+    worker's shell starts. Asked to (the WIP-curve runner does), the probe must also find its marker
+    on a system binary, or report the host as unable to contain a call."""
+
+    def test_a_table_blind_to_system_binaries_cannot_contain_a_call(self):
+        real, mark = runner.process_table, f"{runner.CALL_MARKER}="
+
+        def blind_but_to_python():
+            table = {}
+            for pid, (ppid, pgid, env) in real().items():
+                if any(tok.startswith(mark) for tok in env):
+                    comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True,
+                                          text=True).stdout
+                    if "python" not in comm.lower():
+                        env = tuple(tok for tok in env if not tok.startswith(mark))
+                table[pid] = (ppid, pgid, env)
+            return table
+        with mock.patch.object(runner, "process_table", blind_but_to_python):
+            self.assertIsNotNone(runner.containment_problem(system_binary=True),
+                                 "a table blind to system binaries was trusted")
+
+
 @contextlib.contextmanager
 def without_waitid():
     """os as macOS ships it before Python 3.13: no waitid (#657 review W2)."""

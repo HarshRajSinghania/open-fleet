@@ -232,8 +232,19 @@ as dropped. The live runs use the owner's isolation wrapper, outside the reposit
   before it settles anything. It then ends every process group a worker left behind, finished
   workers included, because the provider marks a dispatch completed once its foreground process
   exits. A group whose leader is gone but whose members remain is a worker's leftover. A group
-  with a living leader is never touched, because its number may have been reused. What it ended
-  is recorded as the run's `teardown`, and a member that survives SIGKILL fails the run.
+  with a living leader is never touched, because its number may have been reused. A process
+  group is only what stayed in it, though: a descendant that called `setsid()` leaves it. So
+  every process of a run carries the run's own `OF_CALL_ID` marker in its environment, and the
+  teardown then sweeps everything carrying it, using #606's helper (`scripts/_ablation_run.py`),
+  until a fresh scan finds none. Its record is the run's `teardown`. A survivor, a teardown
+  error, or a process table that cannot be read vouches for nothing. The run then stops
+  `orphan-alive`, every call is charged its full hold whatever its stream reported, the sandbox is
+  kept, and no further run starts. Before any later run starts, every recorded run's marker is
+  swept again, and a sweep that cannot vouch refuses it (`ORPHAN_ALIVE`).
+- A live run does not start where process discovery cannot contain a call: the helper's host
+  check must find its marker on a Python process and on a system binary. macOS's `ps -E` cannot
+  read the environment of an Apple system binary (`/bin/sh`, `/bin/sleep`), so on macOS a live
+  run is refused. An inert dry run spends nothing and still runs there.
 - An interrupted run (SIGTERM, SIGHUP or Ctrl-C) does the same first. It then charges every dispatch the store holds for the run whose
   usage was never read, including one whose launch the signal interrupted before the runner saw
   its id. Each is charged what its stream reports, or its full reservation if the stream reports

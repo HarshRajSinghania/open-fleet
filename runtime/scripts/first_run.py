@@ -1093,10 +1093,16 @@ def restore_signals(previous: dict) -> None:
 STOP_TIMEOUT_S = 120  # one worker listing or stop, at most: teardown never waits on a hung call
 
 
-def stop_workers(sb: Sandbox) -> dict:
+def stop_workers(sb: Sandbox, sweep=None) -> dict:
     """Fence anything still live in this sandbox's store before its directory goes away, then end
     whatever any of its workers left behind (reap_groups); the teardown it verified. Every call is
-    bounded (Codex review of PR #668): one that times out is a teardown error, never a hang."""
+    bounded (Codex review of PR #668): one that times out is a teardown error, never a hang.
+
+    A process group is only what stayed in it: a descendant that called setsid() leaves its worker's
+    group, and only a marker it carries can find it. `sweep`, when given, is the caller's marker
+    sweep (scripts/_ablation_run.py's, bound to the run's OF_CALL_ID): True once nothing carrying the
+    marker is left, False when one survives or the process table cannot be read. Its answer is
+    `contained`; without one, `contained` is None: the groups were reaped, nothing more is vouched."""
     errors = []
     try:
         proc = run_text(py("orca_cli.py", "orchestration", "worker-list", "--json"),
@@ -1113,7 +1119,14 @@ def stop_workers(sb: Sandbox) -> dict:
                          timeout=STOP_TIMEOUT_S)
             except subprocess.TimeoutExpired:
                 errors.append(f"worker_ops.py stop {w['dispatchId']} timed out after {STOP_TIMEOUT_S}s")
-    return {**reap_groups(sb), "errors": errors}
+    reaped = reap_groups(sb)
+    contained = None
+    if sweep is not None:
+        try:
+            contained = bool(sweep())
+        except Exception as err:  # a sweep that breaks vouches for nothing
+            contained, errors = False, errors + [f"the marker sweep failed: {err}"]
+    return {**reaped, "errors": errors, "contained": contained}
 
 
 def process_groups() -> dict[int, set[int]]:

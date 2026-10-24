@@ -510,18 +510,28 @@ def watchdog_main(argv):
     return status if status >= 0 else 128 - status
 
 
-def containment_problem():
+def containment_problem(system_binary=False):
     """Why process discovery cannot contain a call on this host, or None (#657 review W1). A probe
     in a session of its own, carrying a call marker, must show up in the process table by that
     marker. Checked before a paid run reserves anything: where a sandbox denies `ps`, or the table
     hides environments, a call's escaped processes could never be found."""
+    # With `system_binary`, a second probe: a system binary such as a worker's shell starts. macOS's
+    # `ps -E` cannot read an Apple system binary's environment (/bin/sh, /bin/sleep) while it reads
+    # a Python's, so the Python probe alone vouches for a table blind to a detached shell (PR #668
+    # review). The WIP-curve runner asks for it; this runner's own default is unchanged.
     tag = secrets.token_hex(16)
+    sleep = shutil.which("sleep", path="/bin:/usr/bin") if system_binary else None
+    argvs = [[sys.executable, "-c", "import time; time.sleep(60)"]] + ([[sleep, "60"]] if sleep else [])
+    probes = []
     try:
-        probe = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, env=dict(os.environ, **{CALL_MARKER: tag}),
-                                 start_new_session=True)
+        for argv in argvs:
+            probes.append(subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, env=dict(os.environ, **{CALL_MARKER: tag}),
+                                           start_new_session=True))
     except OSError as err:
+        for probe in probes:
+            probe.kill()
+            probe.wait()
         return f"a probe could not start: {err}"
     try:
         deadline = time.monotonic() + 3
@@ -530,14 +540,16 @@ def containment_problem():
                 found = call_processes(process_table(), tag=tag)
             except OSError as err:
                 return f"the process table cannot be read: {err}"
-            if found == {probe.pid}:
+            if found == {probe.pid for probe in probes}:
                 return None
             if time.monotonic() > deadline:
-                return f"the process table does not show a call's {CALL_MARKER} marker"
+                hidden = [Path(probe.args[0]).name for probe in probes if probe.pid not in found]
+                return f"the process table does not show a call's {CALL_MARKER} marker (on {', '.join(hidden)})"
             time.sleep(0.05)
     finally:
-        probe.kill()
-        probe.wait()
+        for probe in probes:
+            probe.kill()
+            probe.wait()
 
 
 def watchdog_argv(tag):

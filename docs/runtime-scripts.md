@@ -654,7 +654,11 @@ Its cleanup (`stop_workers`) stops every live worker, then ends every process gr
 the run's store left behind, finished workers included: posix marks a dispatch `completed` once
 its foreground process exits, without ending a background child it started. A group whose leader
 is gone but whose members remain is such a leftover. A group whose leader still lives is never
-touched, because its number may have been reused.
+touched, because its number may have been reused. A descendant that called `setsid()` has left
+its group, and only a marker it carries can find it. A caller that tags its workers passes its
+marker sweep as `stop_workers(sb, sweep=...)`, and the answer is the teardown's `contained`; the
+WIP-curve runner passes #606's. Without one, `contained` is `None`: the groups were reaped, and
+nothing more is vouched for.
 
 The run force-adds exactly the files it owns, by path and never by glob: `contract.md`,
 `change.diff` and, for `ro`, the report (`git add -f -- <path>`). The `rw` spec tells the
@@ -1155,6 +1159,10 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   Whatever discovery can see, the call's known process group is killed, and a watchdog whose
   own sweep fails kills its group with itself. A live run is refused before it reserves anything
   where a probe carrying a marker cannot be found by it (for example, a sandbox that denies `ps`).
+  The probe is a Python process. `containment_problem(system_binary=True)` also probes a system
+  binary (`sleep`), because macOS's `ps -E` cannot read an Apple system binary's environment
+  (`/bin/sh` and the rest), so a detached shell is invisible there. The WIP-curve runner asks for
+  that check; this runner's default does not.
   The limit: a process that re-executes itself with an emptied environment (`env -i`) after
   leaving the call's process tree is not found. Run the arm in a disposable sandbox.
 - **Results** (`hint-replay-live/v2`): per call `cost_usd` (`null` when unmeasured), `measured`,

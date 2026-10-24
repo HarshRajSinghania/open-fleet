@@ -136,7 +136,7 @@ def synthetic_run(run_id, cond, throughput, *, compliant=True, review_in=100, re
            "status": "complete", "started_at": started, "finished_at": finished,
            "inputs_sha256": inputs, "model_pin": model, "harness_version": harness, "attempt": 1,
            "agent": agent, "machine": {"clock": machine, "platform": "p", "machine": "m", "cpu_count": 8},
-           "repetition": int(re.search(r"-rep(\d+)", run_id).group(1)),
+           "repetition": int(re.search(r"-rep(\d+)", run_id).group(1)) if "-rep" in run_id else None,
            "task_order": wip.task_order(*wip.load_prereg(PREREG)[:2], run_id),
            "timeout_scale": 1.0, "compliant": compliant,
            "noncompliance": [] if compliant else ["excluded by the protocol"], "binding_problems": [],

@@ -2471,6 +2471,12 @@ class TestUnresolvedReadsFailClosed(ReviewHookBase):
         # PR #655 review: %.03s cuts at 3, not at an octal reading of 03.
         self.expect("deny", ['printf "%.03s push --force origin main" git | sh'])
 
+    def test_a_star_precision_is_read_as_a_signed_argument(self):
+        # PR #655 review: %.*s takes +3 as 3; an argument it cannot read for certain is unresolved.
+        self.expect("deny", ['printf "%.*s push --force origin main" +3 git | sh',
+                             'printf "%.*s push --force origin main" 010 git | sh'])
+        self.expect("allow", ['printf "%.*s\\n" 3 hello'])
+
     def test_a_name_past_the_cap_through_read_is_unresolved_too(self):
         # PR #655 review: read NAME sets values the same way NAME=value does.
         self.expect("deny", ["read c <<< a; read c <<< b; read c <<< c; read c <<< d; "

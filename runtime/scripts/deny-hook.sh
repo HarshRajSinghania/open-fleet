@@ -2445,15 +2445,29 @@ def _printf_text(fmt, args):
         text = text.strip()
         return int(text) if re.fullmatch(r"-?[0-9]+", text) else 0
 
+    def star(text):
+        # A * width or precision comes from an argument, which printf reads as a signed integer:
+        # +3 and -3 are plain. One the reader cannot read for certain (a leading zero, hex,
+        # junk) is unresolved rather than guessed (PR #655 review).
+        text = text.strip()
+        return int(text) if re.fullmatch(r"[+-]?(?:[1-9][0-9]*|0)", text) else None
+
     def fill(m):
         if m[1]:
             return "%"
         flags, width, prec, conv = m[2] or "", m[3] or "", m[4] or "", m[5]
+        unsure = False
         if width == "*":
-            width = str(decimal(take()))
+            got = star(take())
+            unsure = got is None
+            width = str(got or 0)
         if prec == ".*":
-            prec = "." + str(decimal(take()))
+            got = star(take())
+            unsure = unsure or got is None
+            prec = "." + str(got if got is not None else 0)
         arg = take()
+        if unsure:
+            return _UNRESOLVED
         if conv in "sbcq":
             text = _decode_escapes(arg, percent_b=True) if conv == "b" else arg
             if conv == "c":

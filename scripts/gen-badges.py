@@ -373,16 +373,20 @@ def last_release_badge_errors(root: Path = ROOT) -> list[str]:
     last = data["releases"][-1]
     rel = f"assets/badges/{TESTS_BADGE}"
     shown = subprocess.run(["git", "-C", str(root), "show", f"{last['commit']}:{rel}"],
-                           capture_output=True, text=True)
+                           capture_output=True)
     if shown.returncode:
         return [f"cannot read {last['tag']}'s {rel} at {last['commit'][:12]} (a shallow clone? "
-                f"fetch the release commit): {shown.stderr.strip()[:200]}"]
-    want = json.loads(shown.stdout)
-    have = json.loads((root / rel).read_text(encoding="utf-8"))
-    if have != want:
-        return [f"{rel} says {have.get('message')!r}, but the README labels it the last release's "
-                f"and {last['tag']} ({last['commit'][:12]}) says {want.get('message')!r} — restore "
-                f"it with: git show {last['commit']}:{rel} > {rel}"]
+                f"fetch the release commit): {shown.stderr.decode(errors='replace').strip()[:200]}"]
+    have = (root / rel).read_bytes()
+    if have != shown.stdout:  # bytes, not parsed JSON: a reformat or a reorder is a change too
+        def message(raw):
+            try:
+                return json.loads(raw).get("message")
+            except (ValueError, AttributeError):
+                return "unparseable"
+        return [f"{rel} is not byte for byte {last['tag']}'s ({last['commit'][:12]}): it says "
+                f"{message(have)!r} where the release says {message(shown.stdout)!r} — restore it "
+                f"with: git show {last['commit']}:{rel} > {rel}"]
     return []
 
 

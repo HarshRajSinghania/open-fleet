@@ -300,8 +300,6 @@ class TheCutFoldsTheBookkeeping(unittest.TestCase):
                     self.assertIn(f"D\tchangelog.d/{name}", gone)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
@@ -362,7 +360,26 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
     def test_the_committed_badge_is_the_last_releases(self):
         self.assertEqual(self.gb.last_release_badge_errors(ROOT), [])
 
+    def test_only_the_releases_own_bytes_pass(self):
+        # Greptile (PR #671): a reformatted or reordered badge parsed equal and passed.
+        path = self.root / "assets" / "badges" / "tests.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for label, text in {"reformatted": json.dumps(data) + "\n",
+                            "reordered": json.dumps(dict(reversed(list(data.items()))), indent=2) + "\n",
+                            "no final newline": path.read_text(encoding="utf-8").rstrip("\n")}.items():
+            with self.subTest(change=label):
+                original = path.read_bytes()
+                try:
+                    path.write_text(text, encoding="utf-8")
+                    self.assertTrue(self.gb.last_release_badge_errors(self.root), label)
+                finally:
+                    path.write_bytes(original)
+
     def test_ci_runs_it_in_the_checks_job(self):
         workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
         checks = workflow.split("\n  checks:\n", 1)[1].split("\n  gates:\n", 1)[0]
         self.assertIn("python3 scripts/gen-badges.py --check-last-release", checks)
+
+
+if __name__ == "__main__":
+    unittest.main()

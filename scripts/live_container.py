@@ -24,10 +24,11 @@ the final backstop for anything in-process containment misses, a process that cl
 environment included.
 
 What the container gets: the image's non-root user, --rm, a pids/memory/CPU limit, no capability,
-no-new-privileges, no privileged flag and no host namespace; the subscription token by NAME only
-(`--env CLAUDE_CODE_OAUTH_TOKEN`, its value read from the operator's token file into the docker
-client's environment, never onto a command line or into a log); a clean export of the checkout's
-HEAD, read-only (the launcher refuses a dirty tree, and nothing the container writes reaches the
+no-new-privileges, no privileged flag and no host namespace; the subscription token as a read-only
+file mount (SECRET) of the operator's 0600 token file, never in the container's environment, so
+`docker inspect` never shows it, nor any command line or log (inside, scripts/live_container_bin/
+claude, first on PATH, reads it and execs the pinned Claude Code with the token in that process's
+own environment); a clean export of the checkout's HEAD, read-only (the launcher refuses a dirty tree, and nothing the container writes reaches the
 checkout, its .git or its ignored files); one read-write results directory, so the spend ledger
 and the evidence outlive the container; and the attestation, read-only. A wall-clock limit ends
 it: the launcher kills and removes the container, then verifies with `docker ps -a --filter`
@@ -66,11 +67,15 @@ CLAUDE_CODE = "2.1.304"
 IMAGE = f"open-fleet-live:claude-{CLAUDE_CODE}"
 LABEL = "org.open-fleet.live-harness"  # every harness container carries it: its value is the nonce
 DOCKERFILE_LABEL = "org.open-fleet.dockerfile-sha256"
-TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"  # set by the in-container wrapper in claude's own process, nowhere else
 TOKEN_FILE = "~/of-live/oauth-token"
 RECEIPTS = "~/of-live/receipts"
 USER = "10001:10001"  # the image's `runner`, never root
 REPO_IN, RESULTS_IN = "/repo", "/results"
+SECRET = "/run/secrets/claude_token"  # the token: a read-only file mount, never the container's environment
+WRAPPER_DIR = "scripts/live_container_bin"  # its `claude` reads SECRET and execs the pinned Claude Code
+# The container's whole PATH: the wrapper first, and never ~/.local/bin, where the raw binary lies.
+CONTAINER_PATH = f"{REPO_IN}/{WRAPPER_DIR}:/usr/local/bin:/usr/bin:/bin"
 ARMS = {
     "wip_curve": ("scripts/wip_curve.py",),
     "ablation": ("scripts/ablation.py",),
@@ -115,13 +120,18 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def docker(*args, env=None, timeout=120):
+def docker_env():
+    """The launcher's environment for a docker client, without a token it may have inherited."""
+    return {k: v for k, v in os.environ.items() if k != TOKEN_ENV}
+
+
+def docker(*args, timeout=120):
     """`docker ARGS` (whatever `docker` PATH names), captured; never raises on a nonzero exit."""
     exe = shutil.which("docker")
     if not exe:
         raise Refused("no `docker` on PATH (OrbStack or Docker Engine)")
-    return subprocess.run([exe, *args], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                          errors="replace", timeout=timeout)
+    return subprocess.run([exe, *args], env=docker_env(), stdin=subprocess.DEVNULL, capture_output=True,
+                          text=True, errors="replace", timeout=timeout)
 
 
 def git(repo, *args, timeout=300):
@@ -198,19 +208,21 @@ def leftovers():
     return proc.stdout.split()
 
 
-def create_argv(image_id, nonce, arm, cmd, export, results, attestation, limits):
-    """`docker create` for one arm. The token is named, never valued: docker reads it from the
-    client's environment. No privileged flag, no host namespace, no capability, no device."""
+def create_argv(image_id, nonce, arm, cmd, export, results, attestation, token_file, limits):
+    """`docker create` for one arm. The token is a read-only file mount, never an environment
+    variable: the container's environment is the image's and PATH alone. No privileged flag, no
+    host namespace, no capability, no device."""
     mem = str(limits["memory"])
     return ["create", "--rm", "--init", "--user", USER,
             "--hostname", containment.HARNESS_HOSTNAME + nonce,
             "--label", f"{LABEL}={nonce}", "--label", f"org.open-fleet.arm={arm}",
             "--pids-limit", str(limits["pids"]), "--memory", mem, "--memory-swap", mem, "--cpus", str(limits["cpus"]),
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "none",
-            "--env", TOKEN_ENV,
+            "--env", f"PATH={CONTAINER_PATH}",
             "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
             "--mount", f"type=bind,src={results},dst={RESULTS_IN}",
             "--mount", f"type=bind,src={attestation},dst={containment.ATTESTATION},readonly",
+            "--mount", f"type=bind,src={token_file},dst={SECRET},readonly",
             "--workdir", RESULTS_IN, image_id, *cmd]
 
 
@@ -252,16 +264,18 @@ def run(args):
         raise Refused("--timeout must be a positive number of seconds")
     results = Path(args.results).expanduser().resolve()
     receipts = Path(args.receipts).expanduser().resolve()
+    token_file = Path(args.token_file).expanduser().absolute()
     repo = Path(REPO).resolve()
     for what, path in (("--results", results), ("--receipts", receipts)):
         if inside(path, repo) or inside(repo, path):
             raise Refused(f"{what} {path} overlaps the checkout {repo}")
+    for what, path in (("--results", results), ("--receipts", receipts), ("--token-file", token_file)):
         if "," in str(path):
             raise Refused(f"{what} {path} holds a comma, which a docker --mount cannot carry")
     if inside(receipts, results) or inside(results, receipts):
         raise Refused(f"--receipts {receipts} overlaps --results {results}: the container writes to the "
                       "results, and the receipt must be out of its reach")
-    token = read_token(args.token_file)
+    token = read_token(token_file)  # its value only to check the file and to redact the output
     commit = pinned_commit(repo)
     image = image_facts(args.image)
     if leftovers():
@@ -279,12 +293,13 @@ def run(args):
     receipt = {"schema": RECEIPT_SCHEMA, "arm": args.arm, "arm_args": args.arm_args, "argv": cmd,
                "commit": commit, "repo": str(repo), "image": image, "nonce": nonce,
                "hostname": containment.HARNESS_HOSTNAME + nonce,
-               "token": {"env": TOKEN_ENV, "file": str(Path(args.token_file).expanduser()),
-                         "passed": "by name (docker create --env NAME); the value only in the docker client's "
-                                   "environment"},
+               "token": {"env": TOKEN_ENV, "file": str(token_file), "mounted_at": SECRET,
+                         "passed": f"a read-only file mount; {WRAPPER_DIR}/claude sets {TOKEN_ENV} in the "
+                                   "pinned claude's own process alone"},
                "container": {"id": None, "user": USER, "limits": limits, "network": "default bridge",
                              "mounts": {REPO_IN: "the export of the commit, read-only", RESULTS_IN: str(results),
-                                        containment.ATTESTATION: "the attestation, read-only"}},
+                                        containment.ATTESTATION: "the attestation, read-only",
+                                        SECRET: "the token file, read-only"}, "path": CONTAINER_PATH},
                "wall_clock_limit_s": args.timeout, "started_at": None, "ended_at": None, "elapsed_s": None,
                "timed_out": False, "interrupted": None, "exit_status": None,
                "destroyed": {"verified": False, "check": None, "output": "no container was created"},
@@ -293,16 +308,17 @@ def run(args):
     try:
         export = staging / "repo"
         export_checkout(repo, commit, export)
-        if not (export / script).is_file():
-            raise Refused(f"{script} is not in commit {commit[:12]}")
+        for need in (script, f"{WRAPPER_DIR}/claude"):
+            if not (export / need).is_file():
+                raise Refused(f"{need} is not in commit {commit[:12]}")
         attestation = staging / "attestation.json"
         doc = {"schema": containment.ATTESTATION_SCHEMA, "nonce": nonce, "commit": commit, "arm": args.arm,
                "image": image["id"], "created_at": now()}
         write_new(attestation, (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode(), mode=0o644)
         results.mkdir(parents=True, exist_ok=True)
         receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
-        proc = docker(*create_argv(image["id"], nonce, args.arm, cmd, export, results, attestation, limits),
-                      env={**os.environ, TOKEN_ENV: token})
+        proc = docker(*create_argv(image["id"], nonce, args.arm, cmd, export, results, attestation, token_file,
+                                   limits))
         if proc.returncode != 0:
             raise Refused(f"docker create failed: {proc.stderr.strip()[:300]}")
         cid = proc.stdout.strip().splitlines()[-1]
@@ -310,8 +326,8 @@ def run(args):
         receipt["started_at"], started = now(), time.monotonic()
         exe = shutil.which("docker")
         with open(log_path, "xb") as log:
-            attach = subprocess.Popen([exe, "start", "--attach", cid], stdin=subprocess.DEVNULL, stdout=log,
-                                      stderr=subprocess.STDOUT)
+            attach = subprocess.Popen([exe, "start", "--attach", cid], env=docker_env(), stdin=subprocess.DEVNULL,
+                                      stdout=log, stderr=subprocess.STDOUT)
             try:
                 receipt["exit_status"] = attach.wait(timeout=args.timeout)
             except subprocess.TimeoutExpired:

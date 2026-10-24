@@ -28,10 +28,17 @@ The launcher starts each container with these properties:
   (no swap above it) and a CPU limit;
 - it has no capability (`--cap-drop ALL`), `no-new-privileges`, no `--privileged`, no host
   namespace, no device and no docker socket;
-- it receives the subscription token by name only (`--env CLAUDE_CODE_OAUTH_TOKEN`). The launcher
-  reads the token from your file into the docker client's environment. The token is never on a
-  command line, in the receipt or in the saved output: any occurrence in the output is replaced
-  with `[REDACTED]` and counted;
+- it receives the subscription token as a file: your token file, mounted read-only at
+  `/run/secrets/claude_token`. The token is never in the container's environment, so
+  `docker inspect` does not show it. It is never on a command line, in the receipt or in the saved
+  output either: any occurrence in the output is replaced with `[REDACTED]` and counted;
+- inside, `claude` on `PATH` is
+  [`scripts/live_container_bin/claude`](../../scripts/live_container_bin/claude). It reads that
+  file and execs the pinned Claude Code binary with `CLAUDE_CODE_OAUTH_TOKEN` set in that one
+  process's environment, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, so the agent's own Bash tool
+  does not inherit it. A version query needs no token. A missing, unreadable or malformed token
+  file makes it refuse, exit 2, naming the path and never the contents. The container's `PATH`
+  starts with the wrapper and leaves out `~/.local/bin`, where the raw binary is installed;
 - it sees `/repo`, a read-only, self-contained export of your checkout's `HEAD`. The launcher
   refuses a dirty tree, so the container runs a commit. Nothing it writes reaches your checkout,
   its `.git` or its ignored files, such as a `.env`;
@@ -58,8 +65,11 @@ the model API.
 
 ## Before you start
 
-- **OrbStack** on macOS, or Docker Engine on Linux. On Linux the results directory must be
-  writable by uid 10001. On OrbStack, files the container writes are owned by you.
+- **OrbStack** on macOS, or Docker Engine on Linux. On OrbStack, files the container writes are
+  owned by you, and the container's user can read your 0600 token file. On Docker Engine on
+  Linux, uid 10001 must be able to write the results directory and read the token file; a 0600
+  file you own is unreadable to it, and the wrapper refuses with `cannot read the subscription
+  token`.
 - A **clean checkout** at the commit you mean to run. `git status` must show nothing, untracked
   files included.
 - The arm's **authorised cap**. The harness does not replace any arm's own spend guard.
@@ -84,9 +94,10 @@ mkdir -p ~/of-live && claude setup-token    # copy the token it prints
 install -m 600 /dev/null ~/of-live/oauth-token && $EDITOR ~/of-live/oauth-token
 ```
 
-The file holds the token alone, on one line. The launcher refuses a file others can read, a
-symbolic link, and an empty file, and it never prints the file's contents. Use `--token-file` for
-another path.
+The file holds the token alone, on one line. The launcher refuses a missing file, a file others can
+read, a symbolic link, and an empty file, and it never prints the file's contents. Use
+`--token-file` for another path. The launcher mounts this file, read-only, into each container
+it starts; nothing copies it anywhere else.
 
 ## 3. Run one arm
 
@@ -176,7 +187,7 @@ beside it as `.log`. The receipt holds:
 | `started_at`, `ended_at`, `elapsed_s`, `wall_clock_limit_s` | When it ran, against the limit |
 | `timed_out`, `interrupted`, `exit_status` | How it ended: the limit, a signal, or the arm's own exit |
 | `destroyed` | `verified: true` only when `docker ps -a --filter id=<id>` lists nothing |
-| `token`, `token_redactions` | The token's variable name and file path (never its value), and how many times the output carried it |
+| `token`, `token_redactions` | The token file's path and where it was mounted (never its value), and how many times the output carried it |
 
 The receipt proves that one arm ran at that commit, in that image, in a container that no longer
 exists. It does not prove the arm's result. That is the arm's own evidence under `/results`, a
@@ -196,5 +207,7 @@ when the limit ended the run.
 | `no image …: build it first` | Run step 1 |
 | `a harness container already exists` | One arm runs at a time. Inspect the leftover, then `docker rm -f` it |
 | `the token file … is readable by others` | `chmod 600` the file |
+| `claude (open-fleet live harness): no subscription token at /run/secrets/claude_token` | `claude` ran in a container this launcher did not start. Run the arm through it |
+| `claude (open-fleet live harness): cannot read the subscription token` | On Linux, uid 10001 cannot read the token file (see [Before you start](#before-you-start)) |
 | `--receipts … overlaps --results` | Put the receipts outside the results |
 | `live runs are disabled outside the container-based live harness` | You ran an arm directly on the host. Run it through this launcher |

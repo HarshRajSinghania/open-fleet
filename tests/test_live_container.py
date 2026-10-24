@@ -3,15 +3,16 @@
 
 Every test drives the launcher against a STAND-IN `docker`, first on PATH, that records each call's
 argv (and what the call could see: the token in its environment, the export and the attestation
-it was asked to mount) and answers from a scenario. No test reaches the real docker, builds an
+it was asked to mount: the export, the attestation and the token's file) and answers from a scenario. No test reaches the real docker, builds an
 image or downloads anything. What is pinned is what a careless launcher gets wrong: a token on a
-command line or in a receipt, a container with a privileged flag or a host namespace, a dirty or
+command line, in an environment `docker inspect` shows, or in a receipt, a container with a privileged flag or a host namespace, a dirty or
 writable checkout, a container that outlives its limit, and a destroy nobody verified.
 
     python3 -m unittest tests.test_live_container -v
 """
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import io
 import contextlib
@@ -36,6 +37,8 @@ lc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lc)
 
 CID = "c0ffee" + "0" * 58
+SECRET = "/run/secrets/claude_token"  # where the container reads the token: a read-only file mount
+WRAPPER = ROOT / "scripts" / "live_container_bin" / "claude"  # the in-container `claude`, first on PATH
 IMAGE_ID = "sha256:" + "ab" * 32
 
 # The stand-in docker. It appends one JSON line per call to $FAKE_DOCKER_LOG and answers from the
@@ -61,6 +64,9 @@ if argv[:1] == ["create"]:
     att = mounts.get(scenario["attestation_path"], {}).get("src")
     if att:
         entry["attestation"] = json.load(open(att))
+    sec = mounts.get(scenario["secret_path"], {}).get("src")
+    if sec:
+        entry["secret"] = open(sec).read().strip()
 if argv[:1] == ["build"]:
     entry["context"] = sorted(os.listdir(argv[-1]))
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as fh:
@@ -101,6 +107,8 @@ class Harness(unittest.TestCase):
             path = self.repo / script
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("print('arm')\n", encoding="utf-8")
+        (self.repo / WRAPPER.parent.relative_to(ROOT)).mkdir(parents=True)
+        shutil.copy2(WRAPPER, self.repo / WRAPPER.relative_to(ROOT))
         git(self.repo.parent, "init", "-q", str(self.repo))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "fixture")
@@ -129,7 +137,7 @@ class Harness(unittest.TestCase):
     def scenario(self, overrides):
         doc = {"image": {"Id": IMAGE_ID, "RepoDigests": ["open-fleet-live@sha256:" + "cd" * 32],
                          "Config": {"Labels": {lc.DOCKERFILE_LABEL: lc.sha256_file(lc.DOCKERFILE)}}},
-               "cid": CID, "attestation_path": lc.containment.ATTESTATION, **overrides}
+               "cid": CID, "attestation_path": lc.containment.ATTESTATION, "secret_path": SECRET, **overrides}
         self.scenario_path.write_text(json.dumps(doc), encoding="utf-8")
 
     def launch(self, *extra, arm="wip_curve", arm_args=("run", "--results", "/results/wip"), timeout="600"):
@@ -191,7 +199,7 @@ class OneArmRunsAndItsContainerIsVerifiedDestroyed(Harness):
         self.assertEqual(create["repo_head"], self.commit)
         self.assertEqual(create["repo_status"], "", "the mounted export is not a clean checkout of the commit")
         mounts = create["mounts"]
-        self.assertEqual(sorted(mounts), sorted(["/repo", "/results", lc.containment.ATTESTATION]))
+        self.assertEqual(sorted(mounts), sorted(["/repo", "/results", lc.containment.ATTESTATION, SECRET]))
         self.assertIs(mounts["/repo"].get("readonly"), True)
         self.assertIs(mounts[lc.containment.ATTESTATION].get("readonly"), True)
         self.assertNotIn("readonly", mounts["/results"])
@@ -259,26 +267,41 @@ class TheContainerIsHardened(Harness):
         self.assertEqual(self.receipt()["container"]["limits"], {"pids": 64, "memory": "1g", "cpus": "1.5"})
 
 
-class TheTokenGoesByNameOnly(Harness):
-    def test_no_command_line_receipt_or_log_carries_it(self):
+class TheTokenGoesByAReadOnlyMountOnly(Harness):
+    """The coordinator's change: the token reaches the container as a read-only file mount at SECRET,
+    never as an environment variable, which `docker inspect` would show for the container's life."""
+
+    def test_no_command_line_environment_receipt_or_log_carries_it(self):
         self.scenario({"output": f"an arm that printed it: {self.token}\n"})
         rc, err = self.launch()
         self.assertEqual(rc, 0, err)
         for c in self.calls():
             self.assertFalse(any(self.token in a for a in c["argv"]), c["argv"][:2])
+            self.assertFalse(any(lc.TOKEN_ENV in a for a in c["argv"]), f"docker {c['argv'][0]} names the token")
+            self.assertIsNone(c["token"], f"docker {c['argv'][0]} ran with the token in its environment")
         create = self.call("create")
         argv = create["argv"]
-        self.assertEqual(argv[argv.index("--env") + 1], lc.TOKEN_ENV, "the token is passed by name")
-        self.assertEqual(argv.count("--env"), 1, "the container gets the token and nothing else from the host")
-        self.assertEqual(create["token"], self.token, "docker create could not resolve the name")
-        self.assertEqual([c["argv"][0] for c in self.calls() if c["token"]], ["create"])
+        envs = [argv[i + 1] for i, a in enumerate(argv) if a in ("--env", "-e")]
+        self.assertEqual(envs, [f"PATH={lc.CONTAINER_PATH}"], "the container's environment carries anything but PATH")
+        mount = create["mounts"][SECRET]
+        self.assertEqual(mount["src"], str(self.token_file))
+        self.assertIs(mount.get("readonly"), True)
+        self.assertEqual(create["secret"], self.token, "the mount does not carry the operator's token")
         r = self.receipt()
+        self.assertEqual(r["token"]["mounted_at"], SECRET)
         self.assertNotIn(self.token, json.dumps(r))
         self.assertNotIn(self.token, err)
         log = Path(r["log"]).read_text(encoding="utf-8")
         self.assertNotIn(self.token, log)
         self.assertIn("[REDACTED]", log)
         self.assertEqual(r["token_redactions"], 1)
+
+    def test_a_missing_token_file_is_refused_before_docker_is_called(self):
+        self.token_file.unlink()
+        rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("cannot be opened", err)
+        self.assertEqual(self.calls(), [])
 
     def test_a_token_file_others_can_read_a_link_or_an_empty_file_is_refused(self):
         def refused():
@@ -361,9 +384,11 @@ class TheWallClockLimitEndsIt(Harness):
 
         def interrupt():
             deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and not any(c["argv"][:1] == ["start"] for c in self.calls(partial=True)):
+            while time.monotonic() < deadline:
+                if any(c["argv"][:1] == ["start"] for c in self.calls(partial=True)):
+                    os.kill(os.getpid(), signal.SIGTERM)  # only while the launcher's handler is in place
+                    return
                 time.sleep(0.05)
-            os.kill(os.getpid(), signal.SIGTERM)
         thread = threading.Thread(target=interrupt)
         thread.start()
         try:
@@ -401,6 +426,112 @@ class TheImageIsBuiltFromTheCommittedDockerfile(Harness):
         at = next(i for i, ln in enumerate(lines) if install in ln)
         self.assertTrue(users and users[-1] < at and lines[users[-1]] == "USER runner", "installed as root")
         self.assertEqual(lc.IMAGE, f"open-fleet-live:claude-{lc.CLAUDE_CODE}")
+
+
+def load_wrapper():
+    """The in-container `claude` wrapper as a module (it has no .py suffix), writing no bytecode."""
+    loader = importlib.machinery.SourceFileLoader("live_container_claude_under_test", str(WRAPPER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    prior, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = prior
+    return mod
+
+
+class TheTokenReachesClaudeInItsOwnProcessOnly(unittest.TestCase):
+    """Inside the container `claude` on PATH is scripts/live_container_bin/claude. It reads the token
+    from the read-only mount and execs the pinned Claude Code with CLAUDE_CODE_OAUTH_TOKEN set in
+    that process's environment alone, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB keeping it out of the
+    agent's own Bash. A missing, unreadable or malformed secret refuses, naming the path, never
+    the contents."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="live-container-wrapper-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.wrapper = load_wrapper()
+        self.secret = self.tmp / "claude_token"
+        self.token = "fixture-oauth-token-" + os.urandom(8).hex()
+        self.secret.write_text(self.token + "\n", encoding="utf-8")
+        patch = mock.patch.object(self.wrapper, "SECRET", str(self.secret))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_wrapper(self, *argv):
+        execs = []
+
+        def execve(path, args, env):  # exec never returns
+            execs.append((path, list(args), dict(env)))
+            raise SystemExit(0)
+        err = io.StringIO()
+        with mock.patch.object(self.wrapper.os, "execve", execve), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/runner"}, clear=True):
+            try:
+                rc = self.wrapper.main(list(argv))
+            except SystemExit as exc:
+                rc = exc.code
+        return rc, execs, err.getvalue()
+
+    def test_the_token_is_in_the_execd_claudes_environment_alone(self):
+        rc, execs, err = self.run_wrapper("-p", "hello")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(execs), 1)
+        path, args, env = execs[0]
+        self.assertEqual(path, self.wrapper.REAL)
+        self.assertEqual(args, [self.wrapper.REAL, "-p", "hello"])
+        self.assertEqual(env[lc.TOKEN_ENV], self.token)
+        self.assertEqual(env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1")
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertNotIn(lc.TOKEN_ENV, os.environ, "the wrapper set the token in its caller's environment")
+        self.assertNotIn(self.token, err)
+
+    def test_a_missing_secret_refuses_clearly(self):
+        self.secret.unlink()
+        rc, execs, err = self.run_wrapper("-p", "hello")
+        self.assertEqual((rc, execs), (2, []), err)
+        self.assertIn(str(self.secret), err)
+        self.assertIn("live_container.py", err)
+
+    def test_an_unreadable_or_malformed_secret_refuses_without_echoing_it(self):
+        cases = {"a directory": lambda: (self.secret.unlink(), self.secret.mkdir()),
+                 "empty": lambda: self.secret.write_text("\n", encoding="utf-8"),
+                 "two lines": lambda: self.secret.write_text(f"{self.token}\n{self.token}\n", encoding="utf-8"),
+                 "not ASCII": lambda: self.secret.write_bytes(b"\xff\xfe" + self.token.encode())}
+        for what, plant in cases.items():
+            with self.subTest(what=what):
+                if self.secret.is_dir():
+                    self.secret.rmdir()
+                plant()
+                rc, execs, err = self.run_wrapper("-p", "hello")
+                self.assertEqual((rc, execs), (2, []), err)
+                self.assertIn(str(self.secret), err)
+                self.assertNotIn(self.token, err)
+
+    def test_a_version_query_needs_no_token(self):
+        self.secret.unlink()
+        rc, execs, err = self.run_wrapper("--version")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(execs[0][1], [self.wrapper.REAL, "--version"])
+        self.assertNotIn(lc.TOKEN_ENV, execs[0][2])
+
+    def test_as_its_own_process_on_a_host_with_no_secret_it_refuses(self):
+        self.assertFalse(Path(SECRET).exists(), "this host has a harness secret mounted")
+        proc = subprocess.run([sys.executable, "-I", str(WRAPPER), "-p", "hello"], capture_output=True, text=True,
+                              timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn(SECRET, proc.stderr)
+
+    def test_the_launcher_mounts_where_it_reads_and_puts_it_first_on_path(self):
+        fresh = load_wrapper()
+        self.assertEqual((lc.SECRET, fresh.SECRET), (SECRET, SECRET))
+        entries = lc.CONTAINER_PATH.split(":")
+        self.assertEqual(entries[0], f"{lc.REPO_IN}/{WRAPPER.parent.relative_to(ROOT)}")
+        self.assertNotIn("/home/runner/.local/bin", entries, "the raw claude, with no token, is on PATH")
+        self.assertTrue(os.access(WRAPPER, os.X_OK), "the wrapper is not executable")
+        self.assertIn(f"{fresh.REAL} --version", lc.DOCKERFILE.read_text(encoding="utf-8"),
+                      "the image does not verify the binary the wrapper execs")
 
 
 if __name__ == "__main__":

@@ -3,8 +3,9 @@
   Code 2.1.304 by its official installer as a non-root user. `run` starts ONE arm (`wip_curve`,
   `ablation`, `hint_replay`, `trajectories` or `first_run`) in a fresh container. The container
   runs non-root with `--rm`, pids, memory and CPU limits, no capability and no host namespace. It
-  gets the subscription token by name only, a read-only export of a clean `HEAD`, and one
-  read-write results directory. At its wall-clock limit the launcher kills and removes the
+  gets the subscription token as a read-only file mount, never in its environment or `docker
+  inspect`, a read-only export of a clean `HEAD`, and one read-write results directory. Inside,
+  a `claude` wrapper sets the token in the pinned Claude Code's own process alone. At its wall-clock limit the launcher kills and removes the
   container, and it verifies the container is gone with `docker ps -a --filter`. A JSON receipt,
   kept outside the container's reach, records the image, commit, arm, nonce, times, container id,
   exit status and that verified destroy. Inside, `containment.live_disabled()` lifts only with a

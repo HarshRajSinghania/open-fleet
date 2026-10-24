@@ -93,15 +93,31 @@ def _opens_html(line):
     return bool(_HTML_OPENER_RE.match(rest) or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest))
 
 
-# A block quote's marks at a line's start: a renderer strips them before reading what the quote
-# holds, so a tag split across quoted lines is whole once they go (Codex at b12df9e457).
-_QUOTE_MARKS_RE = re.compile(r"(?:[ \t]*>[ \t]?)+")
+# One block quote's mark at a line's start: a renderer strips a quote's marks before reading what
+# it holds, so a tag split across quoted lines is whole once they go (Codex at b12df9e457). Only
+# as many as the quote's depth go: a ">" after them is the content's own, perhaps a tag's end
+# (Codex at 52ef451db4), so each depth is read as its own view.
+_QUOTE_MARK_RE = re.compile(r"[ \t]*>[ \t]?")
 
 
-def _without_quote_marks(text):
-    """`text` with each line's leading block-quote marks removed."""
-    return "".join(_QUOTE_MARKS_RE.sub("", m.group(), count=1) if _QUOTE_MARKS_RE.match(m.group()) else m.group()
-                   for m in _LINE_RE.finditer(text))
+def _quote_views(text):
+    """`text` with up to 1, 2, ... leading block-quote marks removed from each line, one view per
+    depth, to the deepest any line has."""
+    lines = [m.group() for m in _LINE_RE.finditer(text)]
+
+    def depth(line):
+        n = 0
+        while (mark := _QUOTE_MARK_RE.match(line)) and n < 32:
+            line, n = line[mark.end():], n + 1
+        return n
+
+    def strip(line, k):
+        for _ in range(k):
+            if not (mark := _QUOTE_MARK_RE.match(line)):
+                break
+            line = line[mark.end():]
+        return line
+    return ["".join(strip(line, k) for line in lines) for k in range(1, max(map(depth, lines), default=0) + 1)]
 
 
 def _loose_link(text, i):
@@ -141,10 +157,10 @@ HEADER = ("| Date       | Mission     | Target                        | Ran as  
 
 def html_link(text):
     """The first HTML tag in Markdown `text` that carries an href or src attribute, or None: read
-    in one pass (and again with block-quote marks removed), skipping a tag only inside an escape or a one-line code span before any raw HTML
+    in one pass (and again at each depth of block-quote marks removed), skipping a tag only inside an escape or a one-line code span before any raw HTML
     line, unclear "<", "[", bare URL, "|", "$`" or open backtick run, and loosely after one. An identical copy of scripts/changelog.py's html_link
     (this script is loaded alone; tests/test_changelog.py holds the two equal)."""
-    return _first_link(text) or _first_link(_without_quote_marks(text))
+    return next((found for view in (text, *_quote_views(text)) if (found := _first_link(view))), None)
 
 
 def _first_link(text):

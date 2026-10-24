@@ -467,6 +467,8 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         # a renderer strips a block quote's marks before it reads the tag they split (Codex at b12df9e457)
         '- **Change**\n  > <a\n  > href="../docs/ops.md">ops</a>\n',
         '> > <img\n> > src="../x.png">\n',
+        # only the quote's own marks go: a ">" after them is the content's, here the tag's end (Codex at 52ef451db4)
+        '- **Change**\n  > <div>\n  > <a\n  > href="../docs/ops.md"\n  > >ops\n',
     )
 
     def errors(self, text):

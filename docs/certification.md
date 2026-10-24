@@ -51,10 +51,10 @@ recorded versions. A group that copies another route's witness is refused (#596 
   (`PROFILE="rw"`, `WORKER_CMD="claude --dangerously-skip-permissions"`) and its ledger
   (`orca-ide 1.4.224`, `Claude Code 2.1.296`).
 
-The Orca pin is now v1.4.229. That pin re-witnessed only the source delta. It carries these
-receipts through `pins.json` `live_receipts`, and the record is certified against that
-three-part fingerprint. No other provider, and no harness outside the Orca route, has a live
-witness.
+The Orca pin is now v1.4.238. That pin, like v1.4.229 before it, re-witnessed only the source
+delta. It carries these receipts through `pins.json` `live_receipts`, and the record is
+certified against that three-part fingerprint. No other provider, and no harness outside the
+Orca route, has a live witness.
 
 ## Fixture (mocked) results
 
@@ -74,7 +74,7 @@ works. They do not show how the upstream build or the harness behaves:
   them.
 
 <!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->
-Record version 3 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
+Record version 4 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
 
 | Provider | Upstream certified against | live-witnessed | fixture-tested | source-only | unsupported | unavailable | stale |
 |---|---|---|---|---|---|---|---|
@@ -84,7 +84,7 @@ Record version 3 (2026-10-24). Counts are cells: one (provider, profile, harness
 | `jcode-swarm` | unknown |  | 1 |  |  |  |  |
 | `multiclaude` | unknown |  | 2 |  |  |  |  |
 | `openhands` | unknown |  | 2 |  |  |  |  |
-| `orca` | v1.4.229 (a0cd1644f320) | 2 | 2 | 13 | 16 |  |  |
+| `orca` | v1.4.238 (e6f7fba58e8e) | 2 | 2 | 13 | 16 |  |  |
 | `overstory` | unknown |  | 9 |  | 5 |  |  |
 | `paperclip` | unknown |  | 3 |  | 1 |  |  |
 | `posix` | in-repo |  | 29 |  | 1 |  |  |

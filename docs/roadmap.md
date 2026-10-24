@@ -36,7 +36,7 @@ their original inspection snapshots.
 | External CI monitor (#528) | Implementation and manual drill exist; scheduled activation remains owed. Reuse this issue. |
 | Independent reviewer (#530) | CODEOWNERS configuration landed; H-10 acceptance and a real approving review remain owed. R02 tracks that distinct remainder. |
 | Trusted verdict gate (#452) | Workflow exists; required checks still name `verdict`, not the dedicated `verdict-gate` identity. R01 completes deployment. |
-| Runtime pin (#508) | Current record is Orca v1.4.229 witnessed 2026-10-17. Keep the existing December 28 / earlier-drift trigger and carried parks. |
+| Runtime pin (#508) | Current record is Orca v1.4.238 witnessed 2026-10-24. The weekly probe files the next re-pin: 2027-01-24 (`orca.next_review`), a minor, or ten patches behind; parks carried. |
 | Marketplace (#235) | Existing human action; copy should use the current proof status. No duplicate submission issue. |
 
 The September catalog-completion definition remains historical and frozen. The October 9

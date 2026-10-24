@@ -11,6 +11,7 @@ import importlib
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -769,10 +770,91 @@ esac
                                      f'case "$*" in\n  --version) echo {version_output!r} ;;', 1))
         stub.chmod(0o755)
 
+    # The drift-note tests below were written against the v1.4.229 pin and assert its literal
+    # versions. What they test is the comparator, so since the v1.4.238 bump (#508) they run
+    # on a copy of runtime/ that carries that frozen pin record, and a re-pin no longer rewrites
+    # them. The COMMITTED pin is covered by the `*_committed_pin*` tests further down, which read
+    # runtime/pins.json on every run.
+    FROZEN_PIN = {"orca": {
+        "version": "v1.4.229",
+        "witness_binary": "tag v1.4.229 source delta vs v1.4.224 + carried live receipts "
+                          "(installed Orca.app + CLI 1.4.224 macOS arm64 and orca-ide 1.4.224 "
+                          ".deb Linux arm64 serve)"}}
+
+    def _run_pinned(self, tmp, pins, args, env_extra=None):
+        """`_run` on a copy of runtime/ whose pins.json is `pins` — the script reads
+        `$HERE/../pins.json`, so the copy is the only way to hand it another record."""
+        root = Path(tmp) / "pinned-root"
+        if not root.exists():
+            shutil.copytree(ROOT / "runtime", root / "runtime",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        (root / "runtime" / "pins.json").write_text(json.dumps(pins))
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+               "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
+        env.update(env_extra or {})
+        return subprocess.run(["bash", str(root / "runtime" / "scripts" / "spawn_worker.sh"), *args],
+                              env=env, capture_output=True, text=True)
+
     def _notes(self, tmp, version_output):
+        self._stub_version(tmp, version_output)
+        p = self._run_pinned(tmp, self.FROZEN_PIN, self.ARGS, self.RW)
+        return [ln for ln in p.stderr.splitlines() if "pins.json" in ln], p
+
+    def _committed_notes(self, tmp, version_output):
+        """The same drift notes, against the real script and the committed runtime/pins.json."""
         self._stub_version(tmp, version_output)
         p = self._run(tmp, self.ARGS, self.RW)
         return [ln for ln in p.stderr.splitlines() if "pins.json" in ln], p
+
+    @staticmethod
+    def _committed_pin():
+        """(version, (major, minor, patch), orca entry) from runtime/pins.json."""
+        orca = json.loads((ROOT / "runtime" / "pins.json").read_text(encoding="utf-8"))["orca"]
+        parts = tuple(int(x) for x in orca["version"].lstrip("v").split("."))
+        return orca["version"], parts, orca
+
+    def test_the_committed_pin_on_path_is_silent(self):
+        # #508: these read the pin, so a re-pin moves them with it instead of rewriting them.
+        version, _parts, _orca = self._committed_pin()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            notes, p = self._committed_notes(tmp, f"orca {version}")
+            self.assertEqual(notes, [], "PATH running the committed pin must say nothing")
+            self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_a_path_behind_the_committed_pin_advises_the_update(self):
+        version, (major, minor, patch), _orca = self._committed_pin()
+        behind = f"{major}.{minor}.{patch - 1}" if patch else f"{major}.{minor - 1}.999"
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            notes, p = self._committed_notes(tmp, f"orca {behind}")
+            self.assertTrue(notes, "a PATH behind the committed pin produced no note")
+            self.assertIn(f"update Orca to {version}", notes[0])
+            self.assertNotIn("run pin-it to re-witness", notes[0])
+            self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_the_path_the_pin_recorded_gets_the_update_advice(self):
+        # onpath_at_witness is what PATH ran when the pin was witnessed; when it lags the pin,
+        # that host owes the update, and the note must say so rather than re-arm pin-it.
+        version, _parts, orca = self._committed_pin()
+        onpath = orca.get("onpath_at_witness", "")
+        if not onpath or onpath.lstrip("v") == version.lstrip("v"):
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            notes, _p = self._committed_notes(tmp, f"orca {onpath}")
+            self.assertTrue(notes, "the recorded on-PATH version produced no note")
+            self.assertIn(f"update Orca to {version}", notes[0])
+
+    def test_a_path_ahead_of_the_committed_pin_arms_pin_it(self):
+        version, (major, minor, patch), _orca = self._committed_pin()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            notes, p = self._committed_notes(tmp, f"orca {major}.{minor}.{patch + 1}")
+            self.assertTrue(notes, "a PATH ahead of the committed pin produced no note")
+            self.assertIn("run pin-it to re-witness", notes[0])
+            self.assertIn(version, notes[0], "the note must name the committed pin")
+            self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_a_drifted_runtime_arms_pin_it(self):
         """#301: runtime/pins.json records the Orca the catalog was witnessed against, and

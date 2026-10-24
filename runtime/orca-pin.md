@@ -14,62 +14,51 @@ holds its shape. The two never disagree — a run updates both or neither.
 | Field | Value |
 |---|---|
 | Upstream | `stablyai/orca` (`https://github.com/stablyai/orca`) |
-| Installed version | **v1.4.229** (tag `v1.4.229` source-delta re-witness from v1.4.224; live orchestration receipts carried from installed 1.4.224 macOS + Linux `orca-ide serve` witness) |
-| Build commit | `a0cd1644f320f1327f7495650a816111b495f3cd` (tag `v1.4.229` target commit, "release: v1.4.229"; upstream builds from release branches, so the tag IS the release source) |
-| Witnessed | 2026-10-17 (`source`: source-delta re-witness `v1.4.224..v1.4.229` across `skills/`, `skill-guides/`, `src/cli/specs/`, and `src/shared/`, plus carried 2026-10-13 live Linux/macOS receipts for unchanged orchestration paths) |
-| Upstream HEAD then | `38131048b1` (main, pulled 2026-10-17; newest tag + latest release both v1.4.229, 2026-10-17) |
-| Run record | docs/runs/2026-10-17-pin-it-229.md (ledger + park register) + docs/runs/2026-10-17-pin-it-229/ (delta inventory D229-1…7) + docs/runs/2026-10-12-pin-it-224/ (live receipts) |
-| Prior pin | v1.4.224 `2bb20586` (2026-10-13, docs/runs/2026-10-12-pin-it-224.md) |
-| Verdict | **PINNED-WITH-PARKED** — stale "no Jira CLI" claim in `linear-enumeration.md` patched; five additive v1.4.229 surfaces folded in (`orca jira`, `orca agent launch`, `orca reference`, `orca serve` OS containment env vars, `task_not_startable.failureCount`, `automations runs` paging); live v1.4.224 receipts carried for unchanged orchestration paths |
+| Installed version | **v1.4.238** (tag `v1.4.238` source-delta re-witness from v1.4.229; live orchestration receipts carried from installed 1.4.224 macOS + Linux `orca-ide serve` witness; PATH ran 1.4.229) |
+| Build commit | `e6f7fba58e8e47b45e4343f99101b3ca9e05a5da` (tag `v1.4.238` target commit, "release: v1.4.238"; upstream builds from release branches, so the tag IS the release source) |
+| Witnessed | 2026-10-24 (`source`: source-delta re-witness `v1.4.229..v1.4.238`, 1040 commits, across specs, guides, orchestration contracts and every cited upstream file, plus carried 2026-10-13 live Linux/macOS receipts for unchanged orchestration paths) |
+| Upstream HEAD then | `8fd32eccd7` (main, 2026-10-24; newest tag + latest release both v1.4.238, 2026-10-23) |
+| Run record | docs/runs/2026-10-24-pin-it-238.md (drift tables + park register) + docs/runs/2026-10-24-pin-it-238/ (delta inventory D238-1…10) + docs/runs/2026-10-24-pin-it-238-bump.md (the bump) + docs/runs/2026-10-12-pin-it-224/ (live receipts) |
+| Prior pin | v1.4.229 `a0cd1644` (2026-10-17, docs/runs/2026-10-17-pin-it-229.md) |
+| Verdict | **PINNED-WITH-PARKED** — two stale claims patched (`sandbox-policy.md`'s Auto host mode, `mission-scheduling.md`'s `--host` names) and eight stale citations re-anchored; additive v1.4.238 surfaces noted (`--surface`, `linear comment edit\|delete`, `terminal set-pane-title`); live v1.4.224 receipts carried for unchanged orchestration paths |
 
-## What moved since v1.4.215 & v1.4.224 (diff summary)
+## What moved since v1.4.224 (diff summary)
 
 Method: DELTA, not re-derivation — at v1.4.224 the guides, help root, and agent-context were
 re-dumped from the installed binary and replayed live on the Linux serve substrate (D224-1…10,
-`docs/runs/2026-10-12-pin-it-224/`); at v1.4.229 (`a0cd1644`) the 5-release source delta
-(`v1.4.224..v1.4.229`) was audited line-by-line (D229-1…7, `docs/runs/2026-10-17-pin-it-229/`).
+`docs/runs/2026-10-12-pin-it-224/`); at v1.4.229 and v1.4.238 the tag-range source delta was
+audited line by line (D229-1…7, D238-1…10, each run's directory).
 
-- **v1.4.229 delta (D229-1…7, PATCHED):**
-  1. **First-class `orca jira` CLI (19 commands) + `orca-jira` / `jira-tickets` skills (D229-1):**
-     `linear-enumeration.md` previously claimed no Jira CLI existed; now teaches `orca jira list` /
-     `jira search <jql> --site <id> --json`, named workflow transitions (`jira status list/set`),
-     single-attempt write verification, and JQL `--limit` bounding.
-  2. **`orca agent launch` + `worktree create --agent` flags (D229-2):** starts an agent in an
-     existing workspace (structured chat or terminal per settings) with `--model`, `--effort`,
-     `--retry-launch <operationId>`, and `--reference` / `--reference-site` on `worktree create`.
-  3. **`orca reference list|add|remove|find` (D229-3):** workspace link management and cross-workspace
-     agent/liveness lookup (`linked`, `liveness`, `terminal`, `mailbox`).
-  4. **`orca serve --supervise`, `serve service`, `terminal-daemon`, and OS terminal containment (D229-4):**
-     `ORCA_TERMINAL_PROCESS_CEILING` (≥64, Linux systemd scope / Windows Job object) and
-     `ORCA_TERMINAL_MEMORY_MAX` / `ORCA_TERMINAL_MEMORY_SWAP_MAX` (≥256M, Linux cgroup OOM containment)
-     folded into `sandbox-policy.md` and `threat-model.md`.
-  5. **Circuit-breaker `task_not_startable.failureCount` + failed `worker-start` cleanup (D229-5):**
-     failed `worker-start` attempts count across `--retry-of` (a worker's own `failed` report does not),
-     and a `--retry-of` replacement of a `failed` worker releases the terminal it owned (`dispatch-lifecycle.md`).
-  6. **`orca automations runs --limit --cursor` + sleeping finished automation terminals (D229-6):**
-     folded into `mission-scheduling.md`.
+- **v1.4.238 delta (D238):** a global Auto permission switch (`AUTO_TUI_AGENT_ARGS`: claude
+  `--permission-mode auto`, codex `--approve-for-me`) — `sandbox-policy.md` names it and
+  `spawn_worker.sh` refuses it (exit 5, test-pinned); `--host`/`--project` take the names
+  `host list`/`project list` print (`mission-scheduling.md`); `--surface chat|terminal` and
+  per-agent chat defaults (`dispatch-lifecycle.md`); `terminal set-pane-title` (parked in
+  `terminal_ops.py`); `linear comment edit|delete`; `speech openai-key`. Schema v43, the
+  orchestration guides, the orchestration CLI spec and the YOLO map are unchanged.
+- **v1.4.229 delta (D229-1…7, PATCHED then):** `orca jira`, `agent launch`, `reference`, `serve`
+  OS containment env vars, `task_not_startable.failureCount`, `automations runs` paging.
 - **v1.4.224 live receipts carried forward (`dispatch-probes.txt`):** conditional `--dispatch-capability`
   (D224-1); OMP/OpenCode `--model` (D224-3/9); task lifecycle (`task-update --result <text>`,
   `worker_identity_changed`, `consumer_fenced`, `worker-abandon`, `terminal stop` EXECUTES,
   `worker-list` projection, `no_active_sender_terminal`, `recipient_run_bound_redirect`, `vm recipe doctor`
-  verdict shapes); and Schema v43 (`orca_session_id:<id>` respell, unchanged through v1.4.229).
+  verdict shapes); and Schema v43 (`orca_session_id:<id>` respell, unchanged through v1.4.238).
 - **Still parked:** `caller.orcaSessionId` (D224-6), `P27` legacy-takeover live replay, agent-owned
-  abandon + send-side `consumer_fenced`, and live CLI replay of the new v1.4.229 `orca jira` /
-  `reference` / `agent launch` verbs against a connected Jira site.
+  abandon + send-side `consumer_fenced`, live replay of `orca jira` / `reference` / `agent launch`
+  and of v1.4.238's `--surface` receipts, an Auto host's `launch.effective`, and a v1.4.238
+  binary capture (none installed at the witness).
 
 ## Noted since the pin (inherited by the next re-pin)
 
-- **v1.4.238 re-witnessed 2026-10-24; the pin is HELD at v1.4.229** (tag `v1.4.238` →
-  `e6f7fba58e8e47b45e4343f99101b3ca9e05a5da`; docs/runs/2026-10-24-pin-it-238.md). Schema
-  v43, orchestration guides byte-identical. Two claims in #606-registered docs went stale
-  (`sandbox-policy.md` lacks the v1.4.238 Auto host mode; `mission-scheduling.md` still
-  refuses `--host` names), so the bump waits until #606 runs; the run record carries the
-  exact edits and the bump package (one-way floor waiver for the pin literals included).
+- PATH ran 1.4.229 at the v1.4.238 witness: the app update is owed, and `spawn_worker.sh`
+  NOTEs "update Orca to v1.4.238" until it lands (never "re-run pin-it").
+- The v1.4.238 re-witness ran while the #606 ablation was registered but unrun; the bump
+  re-registered it (version 2) because four of the docs it edits are in that payload.
 
 Both 2026-09-28 compass points (#513) shipped and were dispositioned at v1.4.224:
 `recipient_run_bound_redirect` (v1.4.217) replayed live — `dispatch-lifecycle.md`
 addressing now names it; `dsh` (v1.4.218) is upstream-available and deliberately not on
-the `spawn_worker.sh` roster (both zero-diff through v1.4.238). Notes carried at v1.4.229:
+the `spawn_worker.sh` roster (both zero-diff through v1.4.238). Notes carried:
 
 - The Linux witness's first `serve` logged `[agent-state-rules] download failed: HTTP 404`
   — witness-first-run noise to watch, not a doctrine claim (relates to #526).
@@ -90,7 +79,7 @@ A re-pin fires on whichever comes first:
 3. A `SPAWN=NOTE … run pin-it` sighting in the field, or any dispatch-doc drift report.
 
 Owner: the **pin-it** mission (its coordinator runs the loop; the weekly probe files the issue).
-Next trigger: **2026-12-28** (`pins.json` `orca.next_review`, the standing quarterly date) or
+Next trigger: **2027-01-24** (`pins.json` `orca.next_review`, a quarter after this witness) or
 the next minor / ten patches behind / drift sighting, whichever first. The weekly probe files
 triggers 1 and 2 itself — no issue to open; the successor run inherits the park register in
 docs/runs/2026-10-24-pin-it-238.md.

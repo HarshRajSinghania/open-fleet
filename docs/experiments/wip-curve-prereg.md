@@ -163,10 +163,16 @@ PYTHONPATH), and never with the coordinator's environment, where a harness API k
 - Dispatch timeouts are 30 minutes for a builder and 15 minutes for a reviewer. A live run refuses
   `--timeout-scale`, which only a dry run may use to shorten them. Every run records its scale,
   and a run with any other scale is not compliant.
+- Each dispatch's deadline (builder 30 minutes, reviewer 15) runs from its own launch. A dispatch
+  whose store end falls after its deadline timed out, however late the runner looked.
 - The run's wall-clock limit (180 minutes) is an absolute deadline, carried into every builder
-  wait, reviewer admission and reviewer wait. A call still running at the deadline is stopped,
-  and no call starts after it. Every unit not yet CLOSED is parked `stopped-time-limit`. A run
-  that finishes after its deadline ends `stopped` (`time-limit`), never `complete`.
+  wait, reviewer admission and reviewer wait. It is checked again immediately before every
+  launch, so a call admitted just before the deadline never launches after it. The oracle and
+  each merge-queue drain get only the run's remaining time. A call still running at the deadline
+  is stopped, and no call starts after it. A verification or a merge the deadline cuts short
+  gives no verdict. Every unit not yet CLOSED, including one the deadline stopped before its
+  launch, is parked `stopped-time-limit`. A run that finishes after its deadline ends `stopped`
+  (`time-limit`), never `complete`, and never `failed` because a launch was refused.
 - **Cost:** before each wave, the observed spend plus that wave's worst case must stay within the
   cap. The worst case is two dispatches per unit at the reservation. If the next wave does not
   fit, the run parks every unit still in flight as `stopped-cost-cap`, so the record still

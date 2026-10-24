@@ -120,6 +120,10 @@ class SourceError(Exception):
     """A bound source is missing, altered or unreadable (exit 3)."""
 
 
+class DeadlineReached(Exception):
+    """A bounded step ran into the run's deadline."""
+
+
 class RunFailed(Exception):
     """An infrastructure failure inside a run: the run is retained as failed."""
 
@@ -656,7 +660,10 @@ def python_argv(*args: str) -> list[str]:
     return [sys.executable, "-s", *args]
 
 
-def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, timeout: int = 300) -> dict:
+ORACLE_TIMEOUT = 300  # seconds for one verification, every step together
+
+
+def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, timeout: float = ORACLE_TIMEOUT) -> dict:
     """The visible tests plus each task's oracle, at `checkout`, with the oracles OUTSIDE it (a
     worker never receives them). {"exit": 0 pass | 2 fail | 1 could not run, ...}."""
     oracle_dir = workdir / f"oracle-{secrets.token_hex(4)}"
@@ -672,13 +679,14 @@ def run_oracle(checkout: Path, tasks: list[dict], taskset: dict, workdir: Path, 
            "TMPDIR": str(home / "tmp"), "LANG": "C.UTF-8", "PYTHONPATH": str(checkout),
            "PYTHONDONTWRITEBYTECODE": "1"}
     steps, tail, exit_code = [], [], 0
+    end = time.monotonic() + timeout  # the whole oracle, every step together
     commands = [("visible", python_argv(*taskset["visible_tests"]))]
     if tasks:
         commands.append(("oracle", python_argv("-m", "unittest", "discover", "-s", str(oracle_dir),
                                                "-t", str(oracle_dir))))
     for name, argv in commands:
         # Worker-written code runs here: its own group, killed whole when it is done or late.
-        proc = run_group(argv, cwd=checkout, env=env, timeout=timeout)
+        proc = run_group(argv, cwd=checkout, env=env, timeout=max(end - time.monotonic(), 0.1))
         rc = None if proc.returncode == 124 and b"its process group was killed" in proc.stderr else proc.returncode
         out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         if rc is None:
@@ -1149,12 +1157,13 @@ class Run:
             self.calls[key], self.held[key] = call, self.reservation
         return True
 
-    def release_hold(self, key) -> None:
-        """A held call that will not start: its hold goes back to the budget, unspent."""
+    def release_hold(self, key, launched_too: bool = False) -> None:
+        """A held call that will not start: its hold goes back to the budget, unspent
+        (`launched_too`: admitted, but refused before its launch)."""
         self.held.pop(key, None)
         call = self.calls.pop(key, None)
         if call:
-            self.budget.release(call)
+            self.budget.release(call, launched_too=launched_too)
 
     def remaining(self) -> float:
         """Seconds left before the run's deadline; 0 once it passed, which halts the run."""
@@ -1229,6 +1238,12 @@ class Run:
         env = {"PROFILE": profile}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
+        if key and (self.remaining() <= 0 or self.halt is not None):
+            # Codex review (C2): the deadline, or a halt, reached between admission and here (the
+            # review's preparation, the rest of a wave's launches): no call launches after it.
+            self.halt = self.halt or "time-limit"
+            self.release_hold(key, launched_too=True)
+            return None
         call = self.calls.get(key) if key else None
         if call:  # before the provider can register it: a recovery finds the call by its store task
             self.budget.note(call, store_task=store_task)
@@ -1288,11 +1303,16 @@ class Run:
         lines = [str(block.get("text") or "") for msg in messages for block in (msg.get("blocks") or [])]
         return first_run.TRANSCRIPT.final_answer(self.args.agent, lines)
 
-    def mq(self, *args, check=True):
+    def mq(self, *args, check=True, bounded=False):
+        """merge_queue.py; `bounded`: a step that may block (a drain runs the gate) gets only the run's
+        remaining time, and DeadlineReached when the deadline cut it (Codex review, C2)."""
+        timeout = min(600, max(self.remaining(), 0.1)) if bounded else 600
         proc = self.wrapper([sys.executable, str(SCRIPTS / "merge_queue.py"), "--db", str(self.sb.dir / "merge-queue.db"),
                              "--repo-dir", str(self.sb.target), *args],
                             env=git_env({**self.sb.env, "OPEN_FLEET_STATE_DIR": str(self.sb.dir / "mq-state")},
-                                        repo=self.sb.target))
+                                        repo=self.sb.target), timeout=timeout)
+        if bounded and proc.returncode == 124 and self.remaining() <= 0:
+            raise DeadlineReached(f"merge_queue.py {args[0]} ran into the run's deadline")
         try:
             out = json.loads(proc.stdout)
         except ValueError:
@@ -1367,20 +1387,23 @@ class Run:
             branch = f"wip/{self.rid}/{tid.lower()}-a{n}"
             wt = self.sb.dir / "wt" / f"{tid.lower()}-a{n}"
             git(self.sb.target, "worktree", "add", "-q", "-b", branch, str(wt), base, env=self.sb.env)
-            if not self.admit(f"{tid}:builder"):
-                raise RunFailed(f"{tid}: its builder's hold was not admitted")
+            # Each builder's deadline runs from its own launch (PR #653 review: a deadline shared from
+            # the wave's last launch gave the first builders that much more time).
+            t0, w0 = time.monotonic(), time.time()
             disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw", f"{tid}:builder",
-                              unit["nonce"])
+                              unit["nonce"]) if self.admit(f"{tid}:builder") else None
             attempt = {"wave": k, "n": n, "dispatch": disp, "branch": branch, "base": base, "head": None,
-                       "outcome": None}
+                       "outcome": None, "deadline": t0 + self.timeout_builder,
+                       "deadline_at": w0 + self.timeout_builder}
+            if disp is None:  # the deadline or a halt came first: this unit stops, the run goes on to its end
+                self.release_hold(f"{tid}:reviewer")
+                attempt["outcome"] = f"stopped-{self.halt}"
             unit["attempts"].append(attempt)
             attempts[tid] = attempt
-        # A builder is waited for until its own timeout or the run's deadline, whichever is first.
-        build_deadline = time.monotonic() + min(self.timeout_builder, self.remaining())
-        building = {a["dispatch"]: tid for tid, a in attempts.items()}
+        building = {a["dispatch"]: tid for tid, a in attempts.items() if a["dispatch"]}
         queue, live, done = [], {}, []
         while building or queue or live:
-            moved = self.poll_builders(building, attempts, base, build_deadline, queue, done)
+            moved = self.poll_builders(building, attempts, base, queue, done)
             if self.review_step(queue, live) or moved:
                 continue
             time.sleep(0.3)
@@ -1418,7 +1441,7 @@ class Run:
                 carry.append(tid)
         return carry
 
-    def poll_builders(self, building, attempts, base, deadline, queue, done) -> bool:
+    def poll_builders(self, building, attempts, base, queue, done) -> bool:
         """Settle every builder that finished, timed out, or reached the run's deadline: measure it
         (before any reviewer is admitted against its spend), then queue it for review in
         worker_done order, or release its reviewer's hold. True when any builder settled."""
@@ -1426,8 +1449,8 @@ class Run:
         for disp, tid in sorted(building.items()):
             state = self.state_of(disp)
             if state and state not in first_run.LIVE_STATES:
-                settled[disp] = state
-            elif self.remaining() <= 0 or time.monotonic() >= deadline:
+                settled[disp] = self.on_time(disp, state, attempts[tid]["deadline_at"])
+            elif self.remaining() <= 0 or time.monotonic() >= attempts[tid]["deadline"]:
                 self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
                 settled[disp] = "timeout"  # its own timeout, or the run's deadline
         if not settled:
@@ -1445,6 +1468,13 @@ class Run:
                 self.release_hold(f"{tid}:reviewer")  # no review: its hold goes back unspent
         queue.sort(key=lambda tid: (attempts[tid]["done_at"] or "", tid))  # arrival (worker_done) order
         return True
+
+    def on_time(self, disp, state, deadline_at) -> str:
+        """A dispatch that ended after its deadline timed out, whenever the runner looked: its end
+        is the store's, not the poll's (PR #653 review: a slow poll let a late builder succeed)."""
+        row = self.dispatch_row(disp)
+        ended = row["updated_at"] if row is not None else None
+        return "timeout" if isinstance(ended, (int, float)) and ended > deadline_at else state
 
     def classify(self, tid, a, state, base) -> bool:
         """A settled builder's outcome; True when its unit is done and goes to review."""
@@ -1492,18 +1522,22 @@ class Run:
             task_rel, diff_rel = f".wip-review/{tid}/task.md", f".wip-review/{tid}/change.diff"
             spec = self.review_spec(tid, nonce, a["base"], a["head"], task_rel, diff_rel)
             rtask = self.create_task(spec, f"wip-review-{tid.lower()}-a{a['n']}")
+            t0, w0 = time.monotonic(), time.time()  # its deadline runs from its launch, not after it
             disp = self.spawn(rtask, wt, f"wip-review-{tid.lower()}-a{a['n']}", "ro", f"{tid}:reviewer", nonce)
+            if disp is None:  # the deadline or a halt came while the review was prepared
+                a["outcome"] = f"stopped-{self.halt}"
+                continue
             self.emit("review.started", source_ref=f"wip_curve.py:review/{disp}", task=self.units[tid]["store_task"],
                       dispatch=disp, data={"head_sha": a["head"]})
             review = {"dispatch": disp, "store_task": rtask, "nonce": nonce, "head": a["head"],
-                      "attempt": a["n"], "verdict": None}
+                      "attempt": a["n"], "verdict": None, "deadline_at": w0 + self.timeout_reviewer}
             self.units[tid]["reviews"].append(review)
-            live[disp] = (tid, review, time.monotonic())
+            live[disp] = (tid, review, t0)
         settled = {}
-        for disp, (_tid, _review, since) in sorted(live.items()):
+        for disp, (_tid, review, since) in sorted(live.items()):
             state = self.state_of(disp)
             if state and state not in first_run.LIVE_STATES:
-                settled[disp] = state
+                settled[disp] = self.on_time(disp, state, review["deadline_at"])
             elif time.monotonic() - since > self.timeout_reviewer or self.remaining() <= 0:
                 self.wrapper(first_run.py("worker_ops.py", "stop", "--dispatch", disp))
                 settled[disp] = "timeout"  # its own timeout, or the run's deadline
@@ -1539,7 +1573,12 @@ class Run:
         ck = self.sb.dir / "ck" / f"{tid.lower()}-a{a['n']}"
         extract_tree(self.sb.target, a["head"], ck, env=self.sb.env)
         started = now()
-        result = run_oracle(ck, [self.tasks[tid]], self.taskset, self.sb.dir)
+        result = run_oracle(ck, [self.tasks[tid]], self.taskset, self.sb.dir,
+                            timeout=min(ORACLE_TIMEOUT, max(self.remaining(), 0.1)))
+        if result["exit"] != 0 and self.remaining() <= 0:  # the run's deadline cut it: no verdict
+            shutil.rmtree(ck, ignore_errors=True)
+            a["outcome"] = "stopped-time-limit"
+            return False
         doc = {"schema": ORACLE_SCHEMA, "run": self.rid, "task": tid, "head_sha": a["head"], "tree": a["tree"],
                "visible_tests": self.taskset["visible_tests"], "started_at": started, "finished_at": now(),
                **result}
@@ -1586,8 +1625,11 @@ class Run:
             by_unit[self.units[tid]["store_task"]] = tid
         self.mq("release", "--token", token)
         for _ in range(4 * len(passed) + 4):
-            rc, out = self.mq("drain", "--base", self.integration, "--holder", HOLDER, "--gate-cmd", gate,
-                              "--ack", "--takeover")
+            try:
+                rc, out = self.mq("drain", "--base", self.integration, "--holder", HOLDER, "--gate-cmd", gate,
+                                  "--ack", "--takeover", bounded=True)
+            except DeadlineReached:
+                break  # what landed is read below; the rest stays unlanded, stopped by the deadline
             steps = (out.get("steps") if rc == 0 else (out.get("data") or {}).get("drain", {}).get("steps")) or []
             for step in steps:
                 if "ack" in step and step["ack"].get("landed"):
@@ -1638,6 +1680,8 @@ class Run:
                 self.emit("unit.closed", source_ref=f"merge-queue:{entry['entry_id']}",
                           task=self.units[tid]["store_task"],
                           data={"head_sha": a["head"], "head_wtree": a["tree"]})
+            elif not entry.get("reason") and self.remaining() <= 0:
+                a["outcome"] = "stopped-time-limit"  # never drained: the deadline came first, not a failure
             else:
                 reason = (entry.get("reason") or "").split(" ", 1)[0] or entry["state"]
                 a["outcome"] = {MQ_CONFLICT: "merge-conflict", MQ_GATE_FAILED: "gate-failed"}.get(reason, f"merge-{reason}")

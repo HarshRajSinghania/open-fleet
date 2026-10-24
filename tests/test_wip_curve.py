@@ -1067,6 +1067,7 @@ class TestTheAssignmentReachesTheLaunch(Tmp):
         run = wip.Run.__new__(wip.Run)
         run.launched, run.launches, run.commands, run.rid = {}, {}, [], "wip1-b1r1-rep1"
         run.calls = {}  # no hold: these launches are about the assignment, not the spend
+        run.deadline, run.halt = float("inf"), None
         run.args = argparse.Namespace(agent="claude")
         run.guard = lambda _wt: None
         calls = []
@@ -2164,6 +2165,130 @@ class TestAnInterruptedIngestionIsStillCharged(Tmp):
         usage = [json.loads(line) for line in (run.dir / "events.jsonl").read_text().splitlines()
                  if json.loads(line)["kind"] == "model.usage"]
         self.assertEqual(len(usage), 1)
+
+
+def short_wall(minutes):
+    """The registration with a shorter run wall clock (its digest unchanged): a deadline a test can reach."""
+    real = wip.load_prereg
+
+    def patched(*a, **kw):
+        prereg, taskset, path, sha, taskset_path = real(*a, **kw)
+        prereg = copy.deepcopy(prereg)
+        prereg["stopping_rule"]["run_wall_clock_minutes"] = minutes
+        return prereg, taskset, path, sha, taskset_path
+    return mock.patch.object(wip, "load_prereg", patched)
+
+
+def slow_launches(profile, seconds, count):
+    """Run.spawn, with the first `count` launches of `profile` followed by `seconds` of the runner's
+    own work (the rest of a wave launching, a review being prepared)."""
+    real, done = wip.Run.spawn, []
+
+    def spawn(run, store_task, worktree, title, prof, key=None, nonce=None):
+        disp = real(run, store_task, worktree, title, prof, key, nonce)
+        if prof == profile and len(done) < count:
+            done.append(disp)
+            time.sleep(seconds)
+        return disp
+    return mock.patch.object(wip.Run, "spawn", spawn)
+
+
+class TestEveryDeadlineStartsAtItsLaunch(Tmp):
+    """PR #653 review (lia) and Codex (C2): a dispatch's registered deadline runs from its own
+    launch, a call never launches after the run's deadline, and every blocking step is bounded by
+    the time the run has left. --timeout-scale 0.01: builders 18 s, reviewers 9 s (inert only)."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.addCleanup(lambda: self.assertFalse(self.trip_log.exists(), "a harness name was reached"))
+
+    def run_record(self, run, *args):
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs", run,
+                   *args, env=self.env)
+        path = self.tmp / "results" / "runs" / run / "run.json"
+        self.assertTrue(path.is_file(), p.stdout + p.stderr)
+        return json.loads(path.read_text(encoding="utf-8")), p
+
+    def test_an_early_builder_is_held_to_its_own_deadline(self):
+        # T5 launches first and runs 25 s; the wave's other two launches take 8 s each after it
+        with slow_launches("rw", 8, 3):
+            record, p = self.run_record("wip1-b3r1-rep1", "--cost-cap-usd", "1.50", "--inert-cost-usd", "0.25",
+                                        "--timeout-scale", "0.01",
+                                        "--inert-script", json.dumps({"_sleep_task": {"T5": {"builder": 25}}}))
+        self.assertEqual(record["units"]["T5"]["attempts"][0]["outcome"], "builder-timeout", p.stdout + p.stderr)
+
+    def test_an_early_reviewer_is_held_to_its_own_deadline(self):
+        # the review runs 12 s of its 9; the runner spends 8 s after its launch before it waits
+        with slow_launches("ro", 8, 1):
+            record, p = self.run_record("wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                                        "--timeout-scale", "0.01", "--inert-script",
+                                        json.dumps({"_sleep": {"reviewer": 12}}))
+        self.assertEqual(record["units"]["T5"]["attempts"][0]["outcome"], "review-failed", p.stdout + p.stderr)
+
+    def test_a_builder_done_after_its_deadline_is_a_timeout_whenever_it_is_noticed(self):
+        # T5's builder ends at about 21 s of its 18; the runner is busy for 30 s before it looks again
+        real, busy = wip.Run.review_step, []
+
+        def slow_review_step(run, queue, live):
+            if not busy:
+                busy.append(1)
+                time.sleep(30)
+            return real(run, queue, live)
+        with mock.patch.object(wip.Run, "review_step", slow_review_step):
+            record, p = self.run_record("wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                                        "--timeout-scale", "0.01", "--inert-script",
+                                        json.dumps({"_sleep": {"builder": 20}}))
+        self.assertEqual(record["units"]["T5"]["attempts"][0]["outcome"], "builder-timeout", p.stdout + p.stderr)
+
+    def test_a_call_admitted_before_the_deadline_never_launches_after_it(self):
+        # Codex's probe: admitted at 99 of 100, launched at 103
+        run = bare_run(self.tmp)
+        launches = []
+
+        def wrapper(argv, env=None, cwd=None, timeout=600):
+            launches.append([str(a) for a in argv])
+            return subprocess.CompletedProcess(argv, 0, "DISPATCH=disp_late\nHANDLE=term_x\n", "")
+        run.wrapper, run.guard, run.delivered = wrapper, (lambda _wt: None), (lambda _out, _nonce: {})
+        run.args, run.launches, run.commands = argparse.Namespace(agent="claude"), {}, []
+        run.deadline = time.monotonic() + 60
+        self.assertTrue(run.hold_unit("T1") and run.admit("T1:reviewer"))
+        run.deadline = time.monotonic() - 3  # preparing the review ran past the deadline
+        disp = run.spawn("task_r", self.tmp, "t", "ro", "T1:reviewer", "WIP-NONCE:" + "a" * 16)
+        self.assertEqual([a for a in launches if any("spawn_worker.sh" in x for x in a)], [],
+                         "a call launched after the run's deadline")
+        self.assertEqual((disp, run.halt), (None, "time-limit"))
+        self.assertEqual(wip.Budget.of_run(run.budget.calls(), run.rid)["wip1-b1r1-rep1/T1/a1/reviewer"]["state"],
+                         "released")
+
+    def test_a_deadline_during_the_launches_stops_the_run_instead_of_failing_it(self):
+        # a 12 s run; each builder launch takes 8 s more: the third is admitted past the deadline
+        with short_wall(0.2), slow_launches("rw", 8, 3):
+            record, p = self.run_record("wip1-b3r1-rep1", "--cost-cap-usd", "0")
+        self.assertEqual((record["status"], record["stop_reason"]), ("stopped", "time-limit"), p.stdout + p.stderr)
+        t6 = record["units"]["T6"]
+        self.assertEqual((t6["attempts"][0]["dispatch"], t6["final"], t6["park_class"]),
+                         (None, "parked", "stopped-time-limit"))
+
+    def test_the_oracle_and_the_merge_are_bounded_by_the_run_deadline(self):
+        seen = {"oracle": [], "drain": []}
+        real_oracle, real_wrapper = wip.run_oracle, wip.Run.wrapper
+
+        def oracle(*a, **kw):  # the run's own verifications (a clean checkout under ck/), not the pre-run checks
+            if "/ck/" in str(a[0]):
+                seen["oracle"].append(kw.get("timeout", a[4] if len(a) > 4 else 300))
+            return real_oracle(*a, **kw)
+
+        def wrapper(run, argv, env=None, cwd=None, timeout=600):
+            if "drain" in argv:
+                seen["drain"].append(timeout)
+            return real_wrapper(run, argv, env=env, cwd=cwd, timeout=timeout)
+        with short_wall(1.0), mock.patch.object(wip, "run_oracle", oracle), \
+                mock.patch.object(wip.Run, "wrapper", wrapper):
+            record, p = self.run_record("wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25")
+        self.assertTrue(seen["oracle"] and seen["drain"], p.stdout + p.stderr)
+        for kind, timeouts in seen.items():
+            self.assertTrue(all(t <= 60 for t in timeouts), f"{kind} may outlive a 60 s run: {timeouts}")
 
 
 class TestAKilledRunStillCounts(Tmp):

@@ -510,16 +510,23 @@ def fixture_failures(export, traps, builders):
     failures = []
     for t in traps:
         if t.get("fixture") is not None:
-            if t["fixture"] not in builders:
+            if not isinstance(t["fixture"], str) or t["fixture"] not in builders:
                 failures.append({"kind": "fixture-builder-missing", "case": t["id"],
                                  "detail": f"names run-time fixture {t['fixture']!r}, which "
                                            f"vfbench.py at this revision does not build"})
             continue
         pins = {p: None for p in _named_fixture_paths(t)}
-        if t.get("contract_source"):
-            pins[t["contract_source"]] = t.get("contract_digest")
-        for art in (t.get("manifest") or {}).get("artifacts") or []:
-            if art.get("path") and art.get("sha256"):
+        if isinstance(t.get("contract_source"), str) and t["contract_source"]:
+            digest = t.get("contract_digest")
+            pins[t["contract_source"]] = digest if isinstance(digest, str) else None
+        # A manifest's own shape is verify.py's to judge: an artifacts[] that is not a list of
+        # {path, sha256} objects pins nothing here, and never crashes the preflight (#601: the
+        # first held-out v1 evaluation died on a non-object entry).
+        manifest = t.get("manifest") if isinstance(t.get("manifest"), dict) else {}
+        arts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), list) else []
+        for art in arts:
+            if (isinstance(art, dict) and isinstance(art.get("path"), str) and art["path"]
+                    and isinstance(art.get("sha256"), str) and art["sha256"]):
                 pins[art["path"]] = "sha256:" + art["sha256"]
         for path, digest in sorted(pins.items()):
             f = export / path
@@ -663,6 +670,15 @@ def verdict_class(case, rec):
             return "false-acceptance"
         return "refused-wrong-reason" if rec.get("reason_matched") is False else "refused"
     return "accepted" if rec["verdict"] == "GREEN" else "false-rejection"
+
+
+def reason_matches(reasons, case):
+    """Whether a gate's refusals include the one the case declares (`expect_reason`), or None
+    when the case declares no reason as text, which leaves the reason unjudged (#600, #601)."""
+    want = case.get("expect_reason")
+    if not (isinstance(want, str) and want):
+        return None
+    return any(want in r for r in reasons or [] if isinstance(r, str))
 
 
 def _sha256(data):
@@ -1054,10 +1070,10 @@ def _measure_run(export, env, gitbin, python, commit, tree, rev, runs, case_time
                         rec = {"status": "error",
                                "error": f"the case process exited {code} with no result: {err[-400:]}"}
                 if (rec["status"] == "scored" and rec.get("gives_reasons")
-                        and c["sound_expected"] == "RED" and rec["verdict"] == "RED"
-                        and c.get("expect_reason")):
-                    rec["reason_matched"] = any(c["expect_reason"] in r
-                                                for r in rec.get("reasons") or [])
+                        and c["sound_expected"] == "RED" and rec["verdict"] == "RED"):
+                    matched = reason_matches(rec.get("reasons"), c)
+                    if matched is not None:
+                        rec["reason_matched"] = matched
                 results[n][c["id"]].append(rec)
 
     try:

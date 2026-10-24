@@ -1528,6 +1528,30 @@ class AHeldOutReportWithholdsEveryDetail(_HeldOutBench):
         self.assertNotIn(MARK, json.dumps(r))
 
 
+class NoCaseShapeCrashesTheRunner(unittest.TestCase):
+    """#601: the first held-out v1 evaluation died in the fixture preflight, on a case whose
+    manifest lists a non-object in artifacts[]. Judging that shape is verify.py's job; the runner
+    must pin what it can read, skip what pins nothing, and score the case."""
+
+    def test_odd_artifact_and_contract_shapes_pin_nothing_and_raise_nothing(self):
+        with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:
+            cases = [{"id": "t-1", "manifest": {"artifacts": ["docs/x.txt", 3, None,
+                                                              {"path": 7, "sha256": "ab"},
+                                                              {"path": "docs/y.txt"}]}},
+                     {"id": "t-2", "manifest": {"artifacts": {"path": "docs/x.txt"}}},
+                     {"id": "t-3", "manifest": ["not", "an", "object"]},
+                     {"id": "t-4", "contract_source": ["a", "list"], "contract_digest": 5,
+                      "manifest": {}}]
+            self.assertEqual(replay.fixture_failures(Path(tmp), cases, set()), [])
+            odd = replay.fixture_failures(Path(tmp), [{"id": "t-5", "fixture": ["x"]}], set())
+            self.assertEqual([f["kind"] for f in odd], ["fixture-builder-missing"])
+
+    def test_a_declared_reason_that_is_not_text_is_never_matched(self):
+        self.assertIs(replay.reason_matches(["a refusal"], {"expect_reason": 3}), None)
+        self.assertIs(replay.reason_matches(["FAIL: a refusal"], {"expect_reason": "a refusal"}), True)
+        self.assertIs(replay.reason_matches(["FAIL: other"], {"expect_reason": "a refusal"}), False)
+
+
 class TheHeldOutCliRefusesAMismatchedReference(unittest.TestCase):
     def test_reproduce_needs_heldout_exactly_when_the_reference_is_held_out(self):
         with tempfile.TemporaryDirectory(prefix="vfbench-replay-test-") as tmp:

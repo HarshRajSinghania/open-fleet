@@ -6,6 +6,32 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **Instruction-load reductions can now be tested without spending, and without dropping a safety
+  obligation** (#606). The paired ablation is pre-registered, and everything short of the live runs
+  is built, so a run is one command away once the owner authorises a spend cap. The live runs and
+  the recommendation have not happened yet.
+  - [`docs/experiments/ablation-prereg.md`](docs/experiments/ablation-prereg.md) and its
+    [JSON](docs/experiments/ablation-prereg.json) register the experiment: the mission and task mix, the exact prompts, the model and harness
+    fields to fill at run time, the seeds and repeats, the deferred-read rules, the safety
+    obligations and the metrics. The page pins the JSON's bytes.
+  - The registration proposes a cost cap of USD 750, marked `PENDING OWNER AUTHORISATION`. The
+    live spend guard is pre-emptive: a cell starts only if the cap still covers the worst case of
+    its agent and grader calls, and each call carries its own `--max-budget-usd` limit.
+  - `scripts/ablation.py generate` writes a mission's reduced variant mechanically: registered
+    documents move behind `<name>.md at <PHASE>` cues, and their obligation lines are copied
+    verbatim into a minimal contract. The variant goes to an output directory, never over
+    `skills/`. Its token delta is `validate.py`'s own `transitive_load`.
+  - A static check fails any variant that drops an obligation or defers it past its phase.
+    Applicability is read off the baseline, so unloading a document cannot shrink the set of
+    obligations checked.
+  - `ablation.py run` pairs both arms through the routing, behavioral, #602 trajectory and #603
+    usage oracles, and reports per-mission effects with bootstrap intervals and McNemar p. A
+    cheaper prompt that misses an obligation is reported `REJECTED_OBLIGATION`.
+  - `--dry-run` drives the whole pipeline with an inert stand-in behind first_run.py's tripwires,
+    and is labelled not evidence. Every tier refuses to start without `--cost-cap-usd`. A live run
+    is also refused until the registration records an authorised cap.
+  - No mission, budget, cap or proof tier changes, and no 5,000-token target is set.
+
 - **Coordinator git reads neutralise repository-config command execution** (#629). Global and
   system config were already off, but a worker that can write its worktree's `.git/config` (and
   `.git/info/attributes`) could still get a command run on the COORDINATOR the next time a gate

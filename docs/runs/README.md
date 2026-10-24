@@ -17,16 +17,18 @@ test reruns at the exact head and verification against the frozen contract and r
 remain coordinator-owned. **no** means the recorded report does not satisfy these binding checks
 here — history, kept, supporting no proof-tier advance.
 
-Six reports in the archive read **yes** — the 2026-09-14 clean-sweep close, the 2026-09-16
-prove-it run, and the 2026-09-21 harden-it run (the tiers earned under the binding gate), the
-2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance, the
-2026-10-13 review-it Linux witness, filed at `doctrine-only` as #527 substrate evidence and
-re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier, and the
-2026-10-24 #605 live hint-replay run — an experiment, not a mission run, bound at
-`doctrine-only`, its verifier GREEN under a coordinator-signed dispatch record. Every other row reads **no**, and that
-re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier. The sixth, the
-2026-10-24 live first runs, binds the provider-certification evidence (#596); no mission's tier
-cites it. Every other row reads **no**, and that
+Seven reports in the archive read **yes**:
+- the 2026-09-14 clean-sweep close, the 2026-09-16 prove-it run and the 2026-09-21 harden-it run
+  (the tiers earned under the binding gate);
+- the 2026-10-13 ship-it mdtoc run, the catalog's first `external-run` tier advance;
+- the 2026-10-13 review-it Linux witness, filed at `doctrine-only` as #527 substrate evidence and
+  re-claimed at `external-run` on 2026-10-14 after it bound unchanged at that tier;
+- the 2026-10-24 live first runs, which bind the provider-certification evidence (#596); no
+  mission's tier cites them;
+- the 2026-10-24 #605 live hint-replay run, an experiment rather than a mission run, bound at
+  `doctrine-only` with its verifier GREEN under a coordinator-signed dispatch record.
+
+Every other row reads **no**, and that
 is the honest state, not a broken gate: three runs kept their artifacts outside this repository;
 one recorded no inventory block; one never recorded its verifier transcript; one pinned an
 inventory to a moved tree; three pin-it runs are bounded re-witnesses, not completed mission runs;

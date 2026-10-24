@@ -1028,11 +1028,21 @@ class PublishedFiguresAndEvaluationsBind(unittest.TestCase):
         assert r.returncode == 0, r.stdout + r.stderr
         s = json.loads(cls.summary.read_text(encoding="utf-8"))
         cls.report = tmp / "report.json"
-        cls.report.write_text(json.dumps({
-            "schema": "vf-bench-replay@1", "protocol": {"split": "heldout"},
+        # The shape a real held-out report has (#601, PR #665 review): the whole published set
+        # selected, every case scored in every run by the built-in gates.
+        run = {"false_acceptance": {"count": 0, "of": s["traps"]},
+               "false_rejection": {"count": 0, "of": s["valid_controls"]}}
+        cls.report_doc = {
+            "schema": "vf-bench-replay@1", "protocol": {"split": "heldout", "selection": None},
             "revision": {"commit": cls.pin["commit"]},
             "versions": {"blobs": {"runtime/scripts/verify.py": cls.pin["verify_blob"]}},
-            "heldout": {"set_sha256": s["set_sha256"]}, "verdict": {"ok": True}}), encoding="utf-8")
+            "corpus": {"total": s["cases"], "traps": s["traps"],
+                       "valid_controls": s["valid_controls"], "selected": s["cases"]},
+            "configurations": {
+                "open-fleet verify.py (sound)": {"tier": "measured", "runs": [run, run]},
+                "self-scoring (naive)": {"tier": "synthetic-baseline", "runs": [run, run]}},
+            "heldout": {"set_sha256": s["set_sha256"]}, "verdict": {"ok": True}}
+        cls.report.write_text(json.dumps(cls.report_doc), encoding="utf-8")
         today = s["authored_to"][:10]
         doc = _protocol()
         doc["splits"]["heldout"].update(
@@ -1102,6 +1112,71 @@ class PublishedFiguresAndEvaluationsBind(unittest.TestCase):
             with self.subTest(binding=label):
                 errors = self._errors(mutate)
                 self.assertTrue(any(needle in e for e in errors), errors)
+
+
+class APartialRunIsNeverACompleteEvaluation(unittest.TestCase):
+    """PR #665 review (P1, PRRT_kwDOTWxN9c6v2ijf): `replay.py run --heldout DIR --cases ID` checks
+    every published digest but scores only the cases selected, and its report carries the whole
+    set's digest, so a one-case run validated as a complete evaluation. A recorded evaluation is
+    now the whole published set, selected in full and, when complete, scored in full by every
+    built-in gate in every run, per split (#601)."""
+
+    # The same consistent record, without rerunning that class's own tests.
+    setUpClass = PublishedFiguresAndEvaluationsBind.__dict__["setUpClass"]
+    tearDownClass = PublishedFiguresAndEvaluationsBind.__dict__["tearDownClass"]
+    _errors = PublishedFiguresAndEvaluationsBind._errors
+
+    def _errors_with_report(self, edit):
+        report = json.loads(json.dumps(self.report_doc))
+        edit(report)
+        path = Path(self._tmp.name) / f"report-{self.id().rsplit('.', 1)[-1]}-{len(report)}.json"
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+        def point(doc):
+            doc["evaluations"][0].update(report=str(path),
+                                         report_sha256=heldout.sha256(path.read_bytes()))
+        return self._errors(point)
+
+    def test_the_full_shaped_record_is_valid(self):
+        self.assertEqual(self._errors_with_report(lambda r: None), [])
+
+    def test_each_partial_run_is_named(self):
+        sound = "open-fleet verify.py (sound)"
+
+        def one_case(r):
+            r["protocol"]["selection"] = ["hv1-001"]
+            r["corpus"]["selected"] = 1
+            for cfg in r["configurations"].values():
+                cfg["runs"] = [{"false_acceptance": {"count": 0, "of": 1},
+                                "false_rejection": {"count": 0, "of": 0}}] * 2
+
+        def short_scored(r):
+            r["configurations"][sound]["runs"][1] = {
+                "false_acceptance": {"count": 0, "of": 1}, "false_rejection": {"count": 0, "of": 1}}
+
+        def other_split(r):
+            r["corpus"].update(traps=r["corpus"]["traps"] + 1,
+                               valid_controls=r["corpus"]["valid_controls"] - 1)
+            for cfg in r["configurations"].values():
+                for run in cfg["runs"]:
+                    run["false_acceptance"]["of"] += 1
+                    run["false_rejection"]["of"] -= 1
+
+        partial = {
+            "a --cases subset run": (one_case, "is a subset run"),
+            "a run that scored fewer cases than it selected": (short_scored, "scored 1 trap(s)"),
+            "a report of another split": (other_split, "the published split is"),
+            "a complete report with no measured verifier": (
+                lambda r: r["configurations"].pop(sound), "no measured verifier"),
+            "a report with no case counts": (lambda r: r.pop("corpus"), "selected"),
+        }
+        for label, (edit, needle) in partial.items():
+            with self.subTest(report=label):
+                errors = self._errors_with_report(edit)
+                self.assertTrue(any(needle in e for e in errors), errors)
+
+    def test_the_recorded_v1_evaluation_still_binds(self):
+        self.assertEqual(heldout.validate(_protocol()), [])
 
 
 if __name__ == "__main__":

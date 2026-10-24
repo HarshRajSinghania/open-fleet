@@ -326,9 +326,9 @@ def _published_errors(protocol):
 
 def _evaluation_errors(protocol):
     """Each recorded evaluation binds: its report hashes to the recorded sha256, is a held-out
-    replay of the recorded commit, ran the pinned verify.py blob, scored the published set, and
-    git agrees the commit holds that blob (#601). A report edited after the run, or a run at
-    another revision, does not bind."""
+    replay of the recorded commit, ran the pinned verify.py blob, selected the WHOLE published
+    set and, when complete, scored all of it, and git agrees the commit holds that blob (#601). A
+    report edited after the run, a run at another revision, or a subset run does not bind."""
     evaluations = protocol.get("evaluations")
     if evaluations is None:
         return []
@@ -394,6 +394,54 @@ def _evaluation_errors(protocol):
         for fact, holds in facts.items():
             if not holds:
                 errors.append(f"{where}: report {ev['report']} is not {fact}")
+        errors += [f"{where}: report {ev['report']} {e}"
+                   for e in _whole_set_errors(report, held, ev["complete"])]
+    return errors
+
+
+# The gates a replay always runs on every case: they cannot decline one, so a complete held-out
+# evaluation shows each of them scoring the whole split in every run. An adapter may declare a
+# case UNSUPPORTED, so its counts do not decide completeness.
+_BUILT_IN_TIERS = ("measured", "synthetic-baseline")
+
+
+def _whole_set_errors(report, held, complete):
+    """Why a report is not an evaluation of the WHOLE published set (PR #665 review, P1): the
+    preflight checks every published digest even when `--cases` selects a few, and the report
+    carries the full set digest either way, so a one-case run looked complete. A recorded
+    evaluation selects the whole split, per split, and a complete one scores all of it."""
+    protocol, corpus = report.get("protocol"), report.get("corpus")
+    protocol = protocol if isinstance(protocol, dict) else {}
+    corpus = corpus if isinstance(corpus, dict) else {}
+    traps, controls, cases = held.get("traps"), held.get("valid_controls"), held.get("cases")
+    errors = []
+    if protocol.get("selection"):
+        errors.append("is a subset run (--cases): a subset of the set is not an evaluation of it")
+    selected = tuple(corpus.get(k) for k in ("selected", "total", "traps", "valid_controls"))
+    if selected != (cases, cases, traps, controls):
+        errors.append(f"selected {selected[0]!r} of {selected[1]!r} case(s) ({selected[2]!r} traps, "
+                      f"{selected[3]!r} valid controls); the published split is {cases!r} "
+                      f"({traps!r}, {controls!r})")
+    if not complete:
+        return errors
+    configs = report.get("configurations")
+    configs = configs if isinstance(configs, dict) else {}
+    built_in = {n: c for n, c in configs.items()
+                if isinstance(c, dict) and c.get("tier") in _BUILT_IN_TIERS}
+    if not any(c.get("tier") == "measured" for c in built_in.values()):
+        errors.append("is marked complete, but no measured verifier scored it")
+    for name, cfg in sorted(built_in.items()):
+        runs = cfg.get("runs") if isinstance(cfg.get("runs"), list) else []
+        if not runs:
+            errors.append(f"is marked complete, but {name} records no run")
+        for n, run in enumerate(runs, 1):
+            run = run if isinstance(run, dict) else {}
+            got = tuple((run.get(k) if isinstance(run.get(k), dict) else {}).get("of")
+                        for k in ("false_acceptance", "false_rejection"))
+            if got != (traps, controls):
+                errors.append(f"is marked complete, but {name} scored {got[0]!r} trap(s) and "
+                              f"{got[1]!r} valid control(s) in run {n}; the split publishes "
+                              f"{traps!r} and {controls!r}")
     return errors
 
 

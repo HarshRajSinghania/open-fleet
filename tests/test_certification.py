@@ -548,8 +548,11 @@ class TestFirstRunFixture(Tripwired):
         agent = next((h for h in CAPS["providers"]["posix"]["supported_harnesses"]
                       if not shutil.which(first_run.HARNESS_BINARIES.get(h, h), path=bare)), None)
         self.assertIsNotNone(agent, "every posix harness is installed system-wide; nothing safe to probe")
-        p = self.run_py("first_run.py", "--worker", "live", "--agent", agent, "--workdir", str(self.tmp / "live"),
-                        "--json", env={"PATH": bare})
+        # A proven host injected at the Python level: this test is about prerequisites, not this
+        # machine's process table (PR #668 review: the strong probe refuses a live run on macOS).
+        boot = TABLES.proven_host(sys.executable, SCRIPTS / "first_run.py", "mod.containment.containment_problem = proven")
+        p = subprocess.run([*boot, "--worker", "live", "--agent", agent, "--workdir", str(self.tmp / "live"), "--json"],
+                           env={**self.env, "PATH": bare}, cwd=str(ROOT), capture_output=True, text=True, timeout=300)
         receipt = json.loads(p.stdout)
         self.assertEqual(p.returncode, 1)
         self.assertEqual(receipt["tier"], "live-unreviewed")
@@ -1320,6 +1323,7 @@ class TestReceiptCarriesTheWitness(Tripwired):
         shadow.chmod(0o755)
         buf = io.StringIO()
         with mock.patch.object(first_run.sys, "executable", str(pybin / "python3")), \
+                mock.patch.object(first_run.containment, "containment_problem", return_value=None), \
                 mock.patch.dict(os.environ, dict(self.env), clear=True), contextlib.redirect_stdout(buf):
             rc = first_run.main(["--worker", "live", "--workdir", str(self.tmp / "shadowed"), "--json"])
         receipt = json.loads(buf.getvalue())

@@ -1,0 +1,17 @@
+{
+  "id": "5c6072cd-7dde-4513-a519-68b6bf1c70a8",
+  "ok": true,
+  "result": {
+    "wait": {
+      "handle": "term_987b5b99-0b2e-4611-a975-92c479a34367",
+      "condition": "tui-idle",
+      "satisfied": false,
+      "status": "running",
+      "exitCode": null,
+      "blockedReason": "agent-trust-workspace"
+    }
+  },
+  "_meta": {
+    "runtimeId": "8a6d8f46-c6cc-4526-ae74-70f8e7396886"
+  }
+}

@@ -1,0 +1,13 @@
+[2026-10-24T06:24:44Z +0s] host: Linux 7.2.12-orbstack-00394-gbecdd6130068 aarch64; image: Ubuntu 24.04.5 LTS
+[2026-10-24T06:24:44Z +0s] step 1: prerequisites as root (apt: git curl ca-certificates python3 tmux)
+debconf: delaying package configuration, since apt-utils is not installed
+[2026-10-24T06:24:59Z +15s]   git 2.43.0, python 3.12.3, tmux 3.4
+[2026-10-24T06:24:59Z +15s] step 2 (as fr): Claude Code via the official installer, pinned 2.1.304
+[2026-10-24T06:25:13Z +29s]   claude: /home/fr/.local/bin/claude 2.1.304 (Claude Code)
+[2026-10-24T06:25:13Z +29s] step 3: fresh clone of https://github.com/ravidsrk/open-fleet at claude/r03-cert-close
+[2026-10-24T06:25:18Z +34s]   catalog b96d47e3354564e1593d34182a817ae04e54545d
+[2026-10-24T06:25:18Z +34s] step 4-ro: first_run.py run --worker live --agent claude --profile ro
+[2026-10-24T06:25:29Z +45s]   rc=0 verdict=GO
+[2026-10-24T06:25:29Z +45s] step 4-rw: first_run.py run --worker live --agent claude --profile rw
+[2026-10-24T06:25:45Z +61s]   rc=0 verdict=GO
+[2026-10-24T06:25:45Z +61s] done (rc=0)

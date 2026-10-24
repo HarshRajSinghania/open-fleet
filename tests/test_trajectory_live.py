@@ -657,6 +657,33 @@ class RecorderMapsTheStream(SafetyNet):
         self.assertIsInstance(got, engine.RecordingRefused, got)
         self.assertIn("not UTF-8 text", str(got))
 
+    def test_work_the_agent_left_unstaged_refuses_the_recording(self):
+        """The replay's commit stages everything the events wrote. A file the agent wrote but
+        never staged, or an edit it left out of its commit, would land in the replay's tree and
+        not the agent's (#668 review, R1 sweep)."""
+        for label in ("unstaged new file", "unstaged edit"):
+            with self.subTest(case=label):
+                ws = Workspace(self, "CL-01")
+                if label == "unstaged new file":
+                    (ws.dir / "notes.md").write_text("scratch\n", encoding="utf-8")
+                    ws.edit("calc.py", "return a - b", "return a + b")
+                    git(ws.dir, "add", "calc.py")
+                    call = use("t1", "Write", {"file_path": ws.path("notes.md"),
+                                               "content": "scratch\n"})
+                else:
+                    ws.edit("calc.py", "return a - b", "return a + b")
+                    (ws.dir / "NOTES.md").write_text("n\n", encoding="utf-8")
+                    git(ws.dir, "add", "NOTES.md")
+                    call = use("t1", "Edit", {"file_path": ws.path("calc.py"),
+                                              "old_string": "return a - b",
+                                              "new_string": "return a + b"})
+                out = git(ws.dir, "-c", "commit.gpgsign=false", "commit", "-m", label)
+                text = stream(init_line(ws.dir), call, result_of("t1", "ok"),
+                              use("t2", "Bash", {"command": f"git commit -m '{label}'"}),
+                              result_of("t2", out), final_line("done"))
+                with self.assertRaisesRegex(engine.RecordingRefused, "unstaged"):
+                    ws.record(text)
+
     def test_a_committed_deletion_or_rename_refuses_the_recording(self):
         """The replay has no delete: a deleted file would stay in its tree, so a deleted
         CONTRACT.json or test would be graded as held. A rename is a deletion and an addition

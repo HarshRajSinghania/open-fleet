@@ -2147,7 +2147,8 @@ class LiveRecorder:
         anything else (a symlink, an executable, a submodule, any other mode) would be replayed
         as a different tree from the agent's and graded as if it were the agent's, so it
         refuses the recording instead (#668 review)."""
-        odd = sorted((path, mode) for path, (mode, kind) in self.live_tree(sha).items()
+        tree = self.live_tree(sha)
+        odd = sorted((path, mode) for path, (mode, kind) in tree.items()
                      if mode != "100644" or kind != "blob")
         if odd:
             raise RecordingRefused(
@@ -2177,5 +2178,16 @@ class LiveRecorder:
             if self.sim.get(path) != content:
                 self.emit("Write", path=rel, content=content, via="Bash")
                 self.sim[path] = content
+        # The replay's Commit stages everything the events wrote, so its tree must now be this
+        # commit's tree: a file or edit the agent left unstaged would land only in the replay's.
+        changed = {path for _status, path in changes}
+        extra = sorted(set(self.sim) - set(tree))
+        differ = sorted(path for path in tree if path not in changed
+                        and self.sim.get(path) != self.blob(sha, path))
+        if extra or differ:
+            raise RecordingRefused(
+                f"commit {sha[:12]} is not the tree the replay would commit: the agent left "
+                f"unstaged {', '.join((extra + differ)[:5])}, which the replay's commit would "
+                "include, grading a different tree from the agent's")
         message = self.git("log", "-1", "--format=%B", sha).decode("utf-8", "replace")
         self.emit("Commit", message=message.rstrip("\n"), command=command)

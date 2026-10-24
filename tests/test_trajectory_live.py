@@ -208,7 +208,7 @@ STAND_IN = textwrap.dedent(r'''
         ledger = opt("--ledger")
         keys = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
                 "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GNUPGHOME", "ABLATION_OUT", "SHELL",
-                "TRAJECTORY_CASE", "TRAJECTORY_SEED")
+                "TRAJECTORY_CASE", "TRAJECTORY_SEED", "PYTHONDONTWRITEBYTECODE")
         with open(os.path.join(log, "observed.json"), "w", encoding="utf-8") as fh:
             json.dump({"argv": sys.argv, "pid": os.getpid(), "pgid": os.getpgid(0), "cwd": ws,
                        "task": task, "env": {k: os.environ.get(k) for k in keys},
@@ -604,17 +604,110 @@ class RecorderMapsTheStream(SafetyNet):
         with self.assertRaisesRegex(engine.RecordingRefused, "linear"):
             ws.record(text, history=[{"results": ["t1"], "commits": ws.commits()}])
 
-    def test_a_deleted_file_is_an_unmapped_delete(self):
+    def _committed(self, ws, message, change):
+        """`change` the workspace, commit it (unless `change` committed, returning git's
+        output), and record the call that did: (events or the RecordingRefused it raised)."""
+        out = change() or ws.commit(message)
+        text = stream(init_line(ws.dir),
+                      use("t1", "Bash", {"command": f"git add -A && git commit -m '{message}'"}),
+                      result_of("t1", out), final_line("done"))
+        try:
+            return ws.record(text)
+        except engine.RecordingRefused as err:
+            return err
+
+    def test_a_commit_the_replay_cannot_write_refuses_the_recording(self):
+        """A symlink, an exec bit, a mode change or a submodule has no form in the replay's
+        Write: it would grade a different tree from the agent's, so the recording is refused
+        (#668 review, R1). Greptile's example: the solution moved to solution.py and calc.py a
+        link to it would have been replayed as a calc.py holding the text `solution.py`."""
+        def link():
+            (ws.dir / "solution.py").write_text("def add(a, b):\n    return a + b\n")
+            (ws.dir / "calc.py").unlink()
+            (ws.dir / "calc.py").symlink_to("solution.py")
+
+        def exec_bit():
+            (ws.dir / "calc.py").chmod(0o755)
+
+        def new_script():
+            (ws.dir / "run.sh").write_text("#!/bin/sh\npython3 -m unittest\n")
+            (ws.dir / "run.sh").chmod(0o755)
+
+        def submodule():  # a gitlink staged directly: `git add -A` would drop it again
+            git(ws.dir, "update-index", "--add", "--cacheinfo",
+                f"160000,{ws.base},vendor/lib")
+            return git(ws.dir, "-c", "commit.gpgsign=false", "commit", "-m", "submodule")
+
+        for label, change, needle in (("symlink", link, "symlink"),
+                                      ("mode change", exec_bit, "executable"),
+                                      ("new executable", new_script, "executable"),
+                                      ("submodule", submodule, "submodule")):
+            with self.subTest(change=label):
+                ws = Workspace(self, "CL-01")
+                got = self._committed(ws, label, change)
+                self.assertIsInstance(got, engine.RecordingRefused, got)
+                self.assertIn(needle, str(got))
+
+    def test_a_committed_file_that_is_not_text_refuses_the_recording(self):
+        """The replay writes text: a binary blob was decoded with replacement characters and
+        replayed as a different file (#668 review, R1 sweep)."""
         ws = Workspace(self, "CL-01")
-        git(ws.dir, "rm", "-q", "tests/test_calc.py")
-        out = ws.commit("test: drop it")
-        events = ws.record(stream(
-            init_line(ws.dir),
-            use("t1", "Bash", {"command": "git rm tests/test_calc.py && git commit -m 'test: drop it'"}),
-            result_of("t1", out), final_line("done")))
-        deletes = [e for e in events if e["tool"] == "Unmapped"]
-        self.assertEqual([(e["name"], e["path"]) for e in deletes],
-                         [("Delete", "tests/test_calc.py")])
+        got = self._committed(ws, "binary", lambda: (ws.dir / "logo.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\xff\xfe") and None)
+        self.assertIsInstance(got, engine.RecordingRefused, got)
+        self.assertIn("not UTF-8 text", str(got))
+
+    def test_work_the_agent_left_unstaged_refuses_the_recording(self):
+        """The replay's commit stages everything the events wrote. A file the agent wrote but
+        never staged, or an edit it left out of its commit, would land in the replay's tree and
+        not the agent's (#668 review, R1 sweep)."""
+        for label in ("unstaged new file", "unstaged edit"):
+            with self.subTest(case=label):
+                ws = Workspace(self, "CL-01")
+                if label == "unstaged new file":
+                    (ws.dir / "notes.md").write_text("scratch\n", encoding="utf-8")
+                    ws.edit("calc.py", "return a - b", "return a + b")
+                    git(ws.dir, "add", "calc.py")
+                    call = use("t1", "Write", {"file_path": ws.path("notes.md"),
+                                               "content": "scratch\n"})
+                else:
+                    ws.edit("calc.py", "return a - b", "return a + b")
+                    (ws.dir / "NOTES.md").write_text("n\n", encoding="utf-8")
+                    git(ws.dir, "add", "NOTES.md")
+                    call = use("t1", "Edit", {"file_path": ws.path("calc.py"),
+                                              "old_string": "return a - b",
+                                              "new_string": "return a + b"})
+                out = git(ws.dir, "-c", "commit.gpgsign=false", "commit", "-m", label)
+                text = stream(init_line(ws.dir), call, result_of("t1", "ok"),
+                              use("t2", "Bash", {"command": f"git commit -m '{label}'"}),
+                              result_of("t2", out), final_line("done"))
+                with self.assertRaisesRegex(engine.RecordingRefused, "unstaged"):
+                    ws.record(text)
+
+    def test_an_empty_commit_refuses_the_recording(self):
+        """The replay makes no empty commit, so its message, a canary in it included, would
+        never land in the replay's history (#668 review, R1 sweep)."""
+        ws = Workspace(self, "CN-01")
+        message = f"chore: token {eval_mod.OBEDIENCE_FIXTURE_SECRET}"
+        got = self._committed(ws, "empty", lambda: git(
+            ws.dir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", message))
+        self.assertIsInstance(got, engine.RecordingRefused, got)
+        self.assertIn("changes nothing", str(got))
+
+    def test_a_committed_deletion_or_rename_refuses_the_recording(self):
+        """The replay has no delete: a deleted file would stay in its tree, so a deleted
+        CONTRACT.json or test would be graded as held. A rename is a deletion and an addition
+        (#668 review, R1 sweep)."""
+        for label, change in (
+            ("deletion", lambda ws: git(ws.dir, "rm", "-q", "tests/test_calc.py")),
+            ("rename", lambda ws: git(ws.dir, "mv", "calc.py", "solution.py")),
+            ("contract", lambda ws: git(ws.dir, "rm", "-q", "CONTRACT.json")),
+        ):
+            with self.subTest(change=label):
+                ws = Workspace(self, "CL-01")
+                got = self._committed(ws, label, lambda ws=ws, change=change: change(ws) and None)
+                self.assertIsInstance(got, engine.RecordingRefused, got)
+                self.assertIn("deletes", str(got))
 
     def test_a_manifest_shaped_write_is_a_manifest_and_an_initial_file_stays_a_write(self):
         ws = Workspace(self, "HC-01")
@@ -1006,11 +1099,15 @@ class HarnessContract(SafetyNet):
                 out = ws.parent / "out"
                 out.mkdir()
                 code, _stdout, err = self.harness(self.agent(mode, "--log", str(out)), ws,
-                                                  env={**env, "ABLATION_OUT": str(out)})
+                                                  env={**env, "ABLATION_OUT": str(out),
+                                                       "PYTHONDONTWRITEBYTECODE": ""})
                 self.assertEqual(code, 0, err)
                 self.assertFalse(marker.exists(), "the operator's key was asked to sign")
                 self.assertNotIn("gpgsig", self.head_commit(ws))
                 seen = json.loads((out / "observed.json").read_text())["env"]
+                self.assertEqual(seen["PYTHONDONTWRITEBYTECODE"], "1",
+                                 "an agent's test run must not leave bytecode for git add -A to "
+                                 "commit: a binary blob refuses the recording")
                 self.assertEqual(seen["GIT_CONFIG_GLOBAL"], os.devnull)
                 self.assertIsNone(seen["GIT_CONFIG_PARAMETERS"])
                 self.assertIsNone(seen["GIT_CONFIG_COUNT"])

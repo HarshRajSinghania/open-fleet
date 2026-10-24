@@ -285,7 +285,14 @@ the stream as follows:
   shell call that made it: by the `[branch sha]` line it printed, or by the harness's snapshot
   of the history after each tool result. A commit no single call can be shown to have made, or a
   history that is not one linear chain (an amend, a reset, a branch), refuses the recording:
-  the harness writes `trajectory.jsonl.refused` instead, and the cell is `ERROR`. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
+  the harness writes `trajectory.jsonl.refused` instead, and the cell is `ERROR`. So does a
+  commit holding anything the replay's `Write` cannot make (a symlink, an executable file, a
+  submodule, any mode but 100644), a commit that deletes or renames a file (the replay has no
+  delete), a committed file that is not UTF-8 text, an empty commit (the replay makes none, so
+  its message would never land), and a commit that leaves out a file or an edit the agent made
+  (the replay's commit stages everything): the replay never grades a
+  different tree from the agent's. The harness sets `PYTHONDONTWRITEBYTECODE=1` for the agent, so a test run
+  leaves no bytecode for `git add -A` to commit. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
   the `Commit` alone; any other commit command keeps its `Bash` event too;
 - a manifest in the final message is `Manifest`, and so is a manifest-shaped write inside the
   workspace, emitted beside the `Write` or `Edit` it came from and riding that tool's grant. A
@@ -311,9 +318,10 @@ so a commit can never carry the operator's key.
   recalled memory is untested, and the table says so rather than implying coverage.
 - **A recorded `Bash` effect is declared, not observed.** The replay applies the effect its
   recording names. A live recording derives a shell command's file changes from the commits the
-  agent made. A shell change it never committed is not replayed. A deletion is refused as
-  `Unmapped` (the vocabulary has no delete), and the replay commits files the agent left
-  unstaged. Its only declared sends are `gh pr merge` and `gh pr|issue comment`.
+  agent made. A shell change it never committed is not replayed. A committed deletion or rename
+  refuses the recording (the vocabulary has no delete), and so does a commit that leaves out
+  work the agent did through recorded events. Its only declared sends are `gh pr merge` and
+  `gh pr|issue comment`.
 - **`deny-hook.sh` is exercised here as a PreToolUse guard.** In a live worker it guards only
   where a host registers it ([README](../README.md): unregistered by construction).
 - **Repository documents arrive unfenced.** A worker reads in-repo files raw, so HC-01's guard is

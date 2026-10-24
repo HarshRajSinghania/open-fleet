@@ -59,10 +59,13 @@ BASE_MESSAGE = "base: the cell's materialized initial state (trajectory_harness.
 
 def isolated_env(environ, gnupghome):
     """The agent's environment: the caller's, with git's global and system config gone, no
-    other GIT_* variable, and gpg pointed at an empty home."""
+    other GIT_* variable, gpg pointed at an empty home, and no Python bytecode written."""
     env = {k: v for k, v in environ.items() if not k.startswith("GIT_") and k not in _DROPPED}
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-               GIT_TERMINAL_PROMPT="0", GNUPGHOME=str(gnupghome))
+               GIT_TERMINAL_PROMPT="0", GNUPGHOME=str(gnupghome),
+               # No bytecode caches for `git add -A` to sweep into a commit: a binary blob
+               # refuses the recording, and an interpreter cache is not the agent's work.
+               PYTHONDONTWRITEBYTECODE="1")
     return env
 
 

@@ -1594,6 +1594,8 @@ _HEREDOC_MESSAGE = re.compile(r"\"\$\(cat <<'([A-Za-z_][A-Za-z0-9_]*)'\n(.*?)\n\
 # gh subcommands that send, as the sink names the fixtures use.
 SENDS = {("pr", "merge"): "pr-merge", ("pr", "comment"): "pr-comment",
          ("issue", "comment"): "pr-comment"}
+# Tree entries the replay's Write cannot make, as a refusal names them.
+_ENTRY_KINDS = {"100755": "an executable file", "120000": "a symlink", "160000": "a submodule"}
 _GIT_VALUE_OPTIONS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
 _GITEXEC = None
 
@@ -1833,7 +1835,13 @@ class LiveRecorder:
         self.chain = self.live_history()
 
     def blob(self, sha, path):
-        return self.git("cat-file", "blob", f"{sha}:{path}").decode("utf-8", "replace")
+        """A committed file's text. The replay writes text, so a file that is not UTF-8 would
+        be replayed as a different file: RecordingRefused (#668 review)."""
+        try:
+            return self.git("cat-file", "blob", f"{sha}:{path}").decode("utf-8")
+        except UnicodeDecodeError:
+            raise RecordingRefused(f"{path} at {sha[:12]} is not UTF-8 text: the replay writes "
+                                   "text, so it would grade a different file") from None
 
     def emit(self, tool, **fields):
         event = {"seq": len(self.events) + 1, "tool": tool}
@@ -2119,24 +2127,72 @@ class LiveRecorder:
             self.emit("Commit", message=_commit_message(segments) or "", command=command,
                       live=live or "error")  # the call made no commit: an attempt
 
+    def live_tree(self, sha):
+        """{path: (mode, type)} of every entry of a live commit's whole tree."""
+        tree = {}
+        for item in self.git("ls-tree", "-r", "-z", "--full-tree", sha).decode(
+                "utf-8", "replace").split("\0"):
+            if item:
+                meta, path = item.split("\t", 1)
+                mode, kind, _obj = meta.split()
+                tree[path] = (mode, kind)
+        return tree
+
     def commit(self, sha, command):
         """One live commit: a Write (via Bash) for each file it changed that the recorded
-        events had not left as it committed it, an Unmapped Delete for each it removed, then
-        the Commit with its real message and the command that made it."""
+        events had not left as it committed it, then the Commit with its real message and the
+        command that made it. A deletion (a rename included) refuses the recording.
+
+        The replay's Write makes a regular, non-executable text file. A commit that holds
+        anything else (a symlink, an executable, a submodule, any other mode) would be replayed
+        as a different tree from the agent's and graded as if it were the agent's, so it
+        refuses the recording instead (#668 review)."""
+        tree = self.live_tree(sha)
+        odd = sorted((path, mode) for path, (mode, kind) in tree.items()
+                     if mode != "100644" or kind != "blob")
+        if odd:
+            raise RecordingRefused(
+                f"commit {sha[:12]} holds what the replay cannot write: "
+                + ", ".join(f"{path} ({_ENTRY_KINDS.get(mode, 'mode ' + mode)})"
+                            for path, mode in odd[:5])
+                + ("" if len(odd) <= 5 else f" and {len(odd) - 5} more")
+                + "; replaying it would grade a different tree from the agent's")
         parents = self.git("rev-list", "--parents", "-n", "1", sha).decode().split()[1:]
         span = [parents[0], sha] if parents else ["--root", sha]
         raw = self.git("diff-tree", "-r", "-z", "--no-renames", "--no-commit-id",
                        "--name-status", *span).decode("utf-8", "replace")
         parts = raw.split("\0")[:-1]  # -z: every status and path ends in NUL
-        for status, path in zip(parts[0::2], parts[1::2], strict=True):
+        changes = list(zip(parts[0::2], parts[1::2], strict=True))
+        if not changes:
+            # The replay commits only a change, so an empty commit's message (a canary in it
+            # included) would never land in its history (#668 review).
+            raise RecordingRefused(f"commit {sha[:12]} changes nothing: the replay makes no "
+                                   "empty commit, so its message would never land")
+        gone = sorted(path for status, path in changes if not status.startswith(("A", "M")))
+        if gone:
+            # The replay has no delete: the file would stay in its tree, and a deleted contract
+            # or test would be graded as held. A rename deletes its old path (#668 review).
+            raise RecordingRefused(
+                f"commit {sha[:12]} deletes {', '.join(gone[:5])}"
+                + ("" if len(gone) <= 5 else f" and {len(gone) - 5} more")
+                + " (a rename deletes its old path): the replay has no delete, so its tree would "
+                "keep them and grade a different tree from the agent's")
+        for _status, path in changes:
             rel = "@git" if touches_git_internals(path) else path
-            if status.startswith("D"):
-                self.sim.pop(path, None)
-                self.emit("Unmapped", name="Delete", input={"path": path}, path=rel)
-                continue
             content = self.blob(sha, path)
             if self.sim.get(path) != content:
                 self.emit("Write", path=rel, content=content, via="Bash")
                 self.sim[path] = content
+        # The replay's Commit stages everything the events wrote, so its tree must now be this
+        # commit's tree: a file or edit the agent left unstaged would land only in the replay's.
+        changed = {path for _status, path in changes}
+        extra = sorted(set(self.sim) - set(tree))
+        differ = sorted(path for path in tree if path not in changed
+                        and self.sim.get(path) != self.blob(sha, path))
+        if extra or differ:
+            raise RecordingRefused(
+                f"commit {sha[:12]} is not the tree the replay would commit: the agent left "
+                f"unstaged {', '.join((extra + differ)[:5])}, which the replay's commit would "
+                "include, grading a different tree from the agent's")
         message = self.git("log", "-1", "--format=%B", sha).decode("utf-8", "replace")
         self.emit("Commit", message=message.rstrip("\n"), command=command)

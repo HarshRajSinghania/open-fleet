@@ -103,7 +103,10 @@ truth is `.claude-plugin/plugin.json`.
   its Bash event. A manifest-shaped write keeps its Write and its grant, a Read delivers only
   the text the agent received, and every commit in the workspace's history is attributed to the
   call that made it, each carrying that call's command, or the recording is refused and the cell
-  is ERROR (PR #659 review).
+  is ERROR (PR #659 review). A live commit the replay cannot reproduce exactly also refuses the
+  recording: a symlink, an executable or a submodule, a deletion or rename, a file that is not
+  UTF-8 text, an empty commit, or one that leaves out work the agent did, so a different tree
+  from the agent's is never graded (PR #668 review).
   `scripts/trajectory_harness.py` is the agent-command prefix for #602 and #606. It runs the
   agent with no global or system git config and no way to sign, in the caller's process group,
   passes stdout through unchanged, writes `trajectory.jsonl` and exits with the agent's code.

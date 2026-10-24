@@ -66,9 +66,43 @@ def tripwired_env(tmp: Path) -> tuple[dict, Path]:
     return env, log
 
 
-def runner(*args, env=None, timeout=600, cwd=ROOT):
-    return subprocess.run([sys.executable, str(RUNNER), *args], cwd=str(cwd), env=env,
-                          capture_output=True, text=True, timeout=timeout)
+class _Hung(Exception):
+    """An in-process run outlived its test timeout (SIGALRM)."""
+
+
+def run_in_process(argv, env, cwd=None, timeout=600):
+    """wip_curve.main() in this process, so coverage traces the runner itself, under `env` (a
+    tripwired PATH and SHELL=/bin/sh), with its output captured. An alarm stands in for the
+    subprocess timeout: it unwinds the run, which still settles and stops its workers."""
+    out, err = io.StringIO(), io.StringIO()
+    old_cwd = os.getcwd()
+
+    def hung(_signum, _frame):
+        raise _Hung(f"wip_curve.main{tuple(argv)[:4]} ran past {timeout}s")
+
+    previous = signal.signal(signal.SIGALRM, hung)
+    signal.alarm(int(timeout))
+    try:
+        with mock.patch.dict(os.environ, {k: v for k, v in (env or os.environ).items()}, clear=True), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                if cwd is not None:
+                    os.chdir(cwd)
+                try:
+                    rc = wip.main([str(a) for a in argv])
+                except SystemExit as exc:  # argparse, or a trapped signal
+                    rc = exc.code
+            finally:
+                os.chdir(old_cwd)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    return subprocess.CompletedProcess(argv, rc, out.getvalue(), err.getvalue())
+
+
+def runner(*args, env=None, timeout=600, cwd=None):
+    """The runner's CLI, in-process (see run_in_process)."""
+    return run_in_process(args, env, cwd=cwd, timeout=timeout)
 
 
 def rebind(run_dir: Path) -> None:
@@ -546,14 +580,14 @@ class TestGate(Tmp):
         landed = wip.git_out(repo, "rev-parse", "HEAD")
         landing = self.tmp / "landing.json"
         landing.write_text(json.dumps({"T3": [landed]}), encoding="utf-8")
-        gate = [sys.executable, str(RUNNER), "gate", "--taskset", str(TASKSET), "--landing", str(landing)]
-        ok = subprocess.run(gate, cwd=str(repo), capture_output=True, text=True)
+        gate = ["gate", "--taskset", str(TASKSET), "--landing", str(landing)]
+        ok = runner(*gate, cwd=repo)
         self.assertEqual(ok.returncode, 0, ok.stdout)
         self.assertIn("['T3']", ok.stdout)
         units = repo / "stocklib" / "units.py"
         units.write_text(units.read_text(encoding="utf-8").replace('    "lb": 453.59237,\n', ""), encoding="utf-8")
         wip.git(repo, "commit", "-qam", "a later unit drops pounds")
-        broken = subprocess.run(gate, cwd=str(repo), capture_output=True, text=True)
+        broken = runner(*gate, cwd=repo)
         self.assertEqual(broken.returncode, 1, broken.stdout)
 
 
@@ -985,7 +1019,7 @@ class TestSpendIsReservedBeforeEachDispatch(Tmp):
         run = wip.Run.__new__(wip.Run)
         run.cap, run.spent_before, run.reservation = Decimal(cap), Decimal(spent_before), Decimal("0.25")
         run.observed, run.reserved, run.held, run.usage_seen = Decimal(0), Decimal(0), {}, set()
-        run.halt = None
+        run.halt, run.deadline = None, float("inf")
         return run
 
     def test_the_exact_boundary_is_admitted_and_a_cent_over_is_not(self):
@@ -1345,24 +1379,6 @@ def install_fake_harness(bin_dir: Path, *, cost="0.25", script=None) -> Path:
     launcher.write_text(f'#!/bin/sh\nexec {sys.executable} -I {bin_dir / "worker.py"} claude "$@"\n', encoding="utf-8")
     launcher.chmod(0o755)
     return launcher
-
-
-def run_in_process(argv, env, cwd=None):
-    """wip_curve.main() in this process (so coverage traces it), under `env`, with output captured."""
-    out, err = io.StringIO(), io.StringIO()
-    old_cwd = os.getcwd()
-    with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out), \
-            contextlib.redirect_stderr(err):
-        try:
-            if cwd is not None:
-                os.chdir(cwd)
-            try:
-                rc = wip.main(list(argv))
-            except SystemExit as exc:  # argparse, or a trapped signal
-                rc = exc.code
-        finally:
-            os.chdir(old_cwd)
-    return subprocess.CompletedProcess(argv, rc, out.getvalue(), err.getvalue())
 
 
 class LiveWithAFakeHarness(Tmp):

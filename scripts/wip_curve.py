@@ -281,6 +281,22 @@ def experiment_inputs(registered=()) -> dict:
     return {"sha256": sha256_bytes(json.dumps(files, sort_keys=True).encode()), "files": dict(sorted(files.items()))}
 
 
+def write_output(path: Path, text: str, registered=()) -> None:
+    """Write a report file without ever following a link: an existing symlink there is refused,
+    the final path is held to check_writable, and the open itself refuses a link planted in
+    between (O_NOFOLLOW), so a report can never overwrite a source or a registered file."""
+    path = Path(path)
+    if path.is_symlink():
+        raise Refused(f"{path} is a symbolic link; the runner never writes through one")
+    check_writable(path, "a report file", registered)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    except OSError as err:
+        raise Refused(f"{path} cannot be written without following a link: {err}") from err
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def task_by_id(taskset: dict) -> dict:
     return {t["id"]: t for t in taskset["tasks"]}
 
@@ -2073,7 +2089,9 @@ def cmd_run(args) -> int:
         dirty = dirty_inputs()
         if dirty:
             raise Refused(f"a live run needs committed experiment inputs; uncommitted: {dirty}")
-    for base, attempt in wanted:  # every sandbox is checked before the first run starts
+    for base, attempt in wanted:  # every sandbox and run directory is checked before the first run starts
+        rid = run_id_for(prereg, sched[base]["condition"]["id"], sched[base]["repetition"], attempt)
+        check_writable(results / "runs" / rid, "the run directory", registered)  # a planted runs/ link too
         if not args.workdir:
             continue
         sandbox = Path(args.workdir) / run_id_for(prereg, sched[base]["condition"]["id"], sched[base]["repetition"],
@@ -2163,8 +2181,9 @@ def cmd_report(args) -> int:
     out = check_writable(args.out or args.results, "--out" if args.out else "--results", (path, taskset_path))
     report = build_report(results, args.prereg, args.basis)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (out / "report.md").write_text(render_markdown(report), encoding="utf-8")
+    registered = (path, taskset_path)
+    write_output(out / "report.json", json.dumps(report, indent=2, sort_keys=True) + "\n", registered)
+    write_output(out / "report.md", render_markdown(report), registered)
     print(f"wip-curve: report for {len(report['runs'])} run(s) ({len(report['compliant_runs'])} compliant) "
           f"-> {out / 'report.json'}, {out / 'report.md'}; recommendation {report['recommendation']['status']}")
     return EXIT_OK

@@ -945,8 +945,38 @@ class TestNoWriteTouchesTheRepository(Tmp):
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertFalse((ROOT / "docs" / "experiments" / "report.json").exists())
 
+    def test_a_report_file_that_is_a_link_into_the_sources_is_refused(self):
+        out = self.tmp / "out"
+        out.mkdir()
+        before = TASKSET.read_bytes()
+        (out / "report.json").symlink_to(TASKSET)
+        results = Path(dry_run(*B1_BOUNDARY)[0].name) / "results"
+        p = runner("report", "--results", str(results), "--out", str(out), "--basis", "all", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual(TASKSET.read_bytes(), before, "the report overwrote the registered task set")
+
+    def test_any_existing_link_as_a_report_file_is_refused(self):
+        out = self.tmp / "out"
+        out.mkdir()
+        elsewhere = self.tmp / "elsewhere.md"
+        elsewhere.write_text("not a report\n", encoding="utf-8")
+        (out / "report.md").symlink_to(elsewhere)
+        results = Path(dry_run(*B1_BOUNDARY)[0].name) / "results"
+        p = runner("report", "--results", str(results), "--out", str(out), "--basis", "all", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual(elsewhere.read_text(encoding="utf-8"), "not a report\n")
+
     def test_a_run_into_a_symlink_to_the_docs_is_refused_and_writes_nothing(self):
         results = self.link("results", ROOT / "docs")
+        p = runner("run", "--results", str(results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertFalse((ROOT / "docs" / "runs" / "wip1-b1r1-rep1").exists())
+
+    def test_a_runs_directory_linked_into_the_sources_is_refused(self):
+        results = self.tmp / "results"
+        results.mkdir()
+        (results / "runs").symlink_to(ROOT / "docs" / "runs")
         p = runner("run", "--results", str(results), "--workdir", str(self.tmp / "wd"), "--runs",
                    "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25", env=self.env)
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)

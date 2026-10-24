@@ -769,6 +769,15 @@ class HistoryTheCloneNeverFetchedIsNeverClean(unittest.TestCase):
                         self.assertRegex(job, r"fetch-depth:\s*0\b")
 
 
+class CiRunsTheLeakageCheckOnEveryPullRequest(unittest.TestCase):
+    def test_the_replay_job_scans_all_history_with_the_published_digests(self):
+        # The protocol says the digest scan runs on every PR once digests are published (#601).
+        workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        held = _protocol()["splits"]["heldout"]
+        self.assertIn(f"python3 bench/vf-bench/heldout.py check --digests "
+                      f"{held['published_digests']} --all-history", workflow)
+
+
 class AFilledHolderIsValidatedNotTakenOnTrust(unittest.TestCase):
     """#601: a name alone does not fill the role. An assigned holder records who designated it
     and when, why it is independent and where that independence stops; an AI system also names

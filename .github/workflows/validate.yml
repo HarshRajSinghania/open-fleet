@@ -334,6 +334,11 @@ jobs:
         run: python3 bench/vf-bench/replay.py drill --rev HEAD
       - name: The held-out protocol is complete and pinned to the shipped corpus
         run: python3 bench/vf-bench/heldout.py validate
+      - name: No commit carries a held-out v1 case or its canary
+        # #601: held-out v1's digests are published, so every PR proves the solver's history holds
+        # none of its cases (verbatim, reformatted, embedded) and not its canary. Full history:
+        # the checkout above is fetch-depth 0, and a shallow one would fail as UNSCANNED.
+        run: python3 bench/vf-bench/heldout.py check --digests bench/vf-bench/heldout-v1-digests.json --all-history
       - name: Publish the replay summary
         if: always()
         run: |

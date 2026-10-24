@@ -23,8 +23,10 @@ truth is `.claude-plugin/plugin.json`.
     worker's head in a clean checkout, and merges through `merge_queue.py`'s git lane. Every
     observation goes into the run's `events.py` record, and the run retains a git bundle, the
     store, the receipts, the transcripts and the streams, all bound by sha256. `run` refuses to
-    start without an explicit `--cost-cap-usd`. A live run also refuses a zero cap and refuses to
-    run without a model pin. `run` stops before a wave the cap cannot cover.
+    start without an explicit `--cost-cap-usd`, and a live run without an explicit
+    `--reservation-usd` or a model pin. Before a unit's builder starts, the runner holds the
+    worst case of every call the unit makes. Each dispatch starts only while measured spend and
+    every hold stay within the cap, so an overspent builder refuses its reviewer before it starts.
   - `report` derives throughput, verification latency, rework, freshness, conflicts, and tokens
     and cost from the retained sources alone. It gives each condition a t interval, gives rework
     a Wilson interval, and includes every failed, stopped or parked run. It re-checks every

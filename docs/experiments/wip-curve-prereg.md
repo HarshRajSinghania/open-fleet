@@ -147,15 +147,24 @@ worktree, branch, store or transcript is shared between runs.
 reservation per dispatch, which is also pending. Twelve runs of six tasks need 144 dispatches
 before retries (a builder and a reviewer per task). The runner never picks the spend:
 
-- `run` refuses to start without `--cost-cap-usd`. A live run also refuses a zero cap and refuses
-  to run without `--model`.
+- `run` refuses to start without `--cost-cap-usd`. A live run also refuses without
+  `--reservation-usd` (the reservation is never taken from the pending registration), refuses a
+  zero cap or reservation, and refuses to run without `--model`.
+- Before a unit's builder starts, the runner holds the worst case of every call the unit makes:
+  its builder and its reviewer, each at the reservation. No grader calls a model.
+- Each dispatch starts only while measured spend, the charges for unobserved dispatches and every
+  hold, its own included, stay within the cap. The exact boundary is admitted; a cent over is
+  not. A builder that spent past its hold therefore refuses its reviewer before the reviewer
+  starts, and the unit is parked `stopped-cost-cap`.
 - Spend is read from the harness's own result lines through `events.py ingest-usage`. A dispatch
   whose cost is not observed is charged the full reservation and is never treated as free.
 - The cap covers every run in one results directory.
 
-The cap is checked between waves, so one wave can overrun its reservation by whatever its
-dispatches spend beyond it. The dispatch timeouts bound that overrun in time, not in money.
-Choose the reservation with that in mind.
+No per-call limit reaches the harness: the posix launch table
+(`runtime/providers/base.py`) passes no budget flag to any harness. A dispatch that is already
+running can therefore overrun its reservation, and the dispatch timeouts bound that in time, not
+in money. Choose the reservation with that in mind. Each run records this as
+`cost.per_call_limit`.
 
 ## Metrics and uncertainty
 

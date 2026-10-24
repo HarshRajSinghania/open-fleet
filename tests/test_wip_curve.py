@@ -312,6 +312,10 @@ class TestRunRefusals(Tmp):
     def test_a_live_run_refuses_without_a_model_pin(self):
         self.refused("--worker", "live", "--cost-cap-usd", "5", text="--model")
 
+    def test_a_live_run_refuses_without_an_authorised_reservation(self):
+        # The per-dispatch reservation is PENDING OWNER AUTHORISATION too: never taken as given.
+        self.refused("--worker", "live", "--cost-cap-usd", "5", "--model", "m", text="--reservation-usd")
+
     def test_a_cap_must_be_an_amount(self):
         self.refused("--cost-cap-usd", "lots", text="not a decimal amount")
 
@@ -371,6 +375,11 @@ def dry_run(run: str, args: tuple):
 
 B3 = ("wip1-b3r1-rep1", ("--cost-cap-usd", "0"))
 B6_CAPPED = ("wip1-b6r2-rep1", ("--cost-cap-usd", "3.40", "--inert-cost-usd", "0.25"))
+# b1r1-rep1 builds T5 first. A cap of exactly one unit's worst case (a builder and a reviewer at
+# 0.25 each); in the second, the fake harness reports 0.40 for the builder, over its reservation.
+B1_BOUNDARY = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25"))
+B1_OVERSPEND = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                                   "--inert-script", json.dumps({"_cost": {"builder": "0.40"}})))
 
 
 def tearDownModule():
@@ -675,7 +684,7 @@ class TestCostCapStopsTheExperiment(DryRun):
 
     def test_an_unobserved_dispatch_is_charged_the_reservation(self):
         run = wip.Run.__new__(wip.Run)
-        run.usage_seen, run.observed, run.reserved = set(), Decimal(0), Decimal(0)
+        run.usage_seen, run.observed, run.reserved, run.held = set(), Decimal(0), Decimal(0), {}
         run.reservation, run.spent_before = Decimal("2.00"), Decimal("1.00")
         run.dispatch_row = lambda _d: {"lane_dir": None}  # no stream retained: nothing observed
         self.assertEqual(run.ingest_usage("disp_x", "task_x"), Decimal("2.00"))
@@ -729,6 +738,66 @@ class TestComplianceNeedsLiveBoundEvidence(unittest.TestCase):
         self.edit(B3[0], seed_commit="0" * 40)
         problems = self.runs()[B3[0]]["binding_problems"]
         self.assertTrue(any("not the registered seed commit" in p for p in problems), problems)
+
+
+class TestSpendIsReservedBeforeEachDispatch(Tmp):
+    """The ledger admits a dispatch only while measured spend, unobserved charges and every held
+    reservation, this dispatch's included, stay within the cap: the exact boundary is admitted,
+    a cent over is not."""
+
+    def ledger(self, cap, spent_before="0"):
+        run = wip.Run.__new__(wip.Run)
+        run.cap, run.spent_before, run.reservation = Decimal(cap), Decimal(spent_before), Decimal("0.25")
+        run.observed, run.reserved, run.held, run.usage_seen = Decimal(0), Decimal(0), {}, set()
+        return run
+
+    def test_the_exact_boundary_is_admitted_and_a_cent_over_is_not(self):
+        run = self.ledger("0.50")
+        self.assertTrue(run.hold_unit("T1"))  # builder + reviewer, 0.50 of 0.50
+        self.assertTrue(run.admit("T1:builder"))
+        self.assertFalse(self.ledger("0.49").hold_unit("T1"))
+
+    def test_a_measured_overspend_refuses_the_next_dispatch_before_it_starts(self):
+        run = self.ledger("0.50")
+        self.assertTrue(run.hold_unit("T1"))
+        run.settle("T1:builder", Decimal("0.40"))  # the builder spent past its 0.25 reservation
+        self.assertEqual(run.committed(), Decimal("0.65"))
+        self.assertFalse(run.admit("T1:reviewer"), "a reviewer may not start once the cap is passed")
+        self.assertEqual(run.committed(), Decimal("0.40"), "a refused dispatch releases its hold")
+
+    def test_spend_before_this_run_counts(self):
+        self.assertFalse(self.ledger("0.50", spent_before="0.01").hold_unit("T1"))
+
+
+class TestExactCapBoundary(DryRun):
+    RUN, ARGS = B1_BOUNDARY
+
+    def test_a_cap_that_exactly_covers_one_unit_runs_it_and_no_more(self):
+        self.assertEqual(self.record["status"], "stopped", self.proc.stdout + self.proc.stderr)
+        self.assertEqual(self.record["stop_reason"], "cost-cap")
+        t5 = self.record["units"]["T5"]
+        self.assertEqual((t5["final"], len(t5["attempts"]), len(t5["reviews"])), ("closed", 1, 1))
+        self.assertEqual(Decimal(self.record["cost"]["observed_usd"]), Decimal("0.50"))
+        self.assertEqual(sorted(self.record["not_run"]), ["T1", "T2", "T3", "T4", "T6"])
+
+
+class TestAnOverspentBuilderGetsNoReviewer(DryRun):
+    """A fake harness reports 0.40 for a builder reserved at 0.25: the reviewer that would take
+    the run to 0.65 of 0.50 is refused BEFORE it starts, so the cap is never passed."""
+
+    RUN, ARGS = B1_OVERSPEND
+
+    def test_the_reviewer_is_refused_and_the_unit_parked(self):
+        t5 = self.record["units"]["T5"]
+        self.assertEqual(t5["reviews"], [], "a reviewer was dispatched past the cap")
+        self.assertEqual(t5["attempts"][0]["outcome"], "stopped-cost-cap")
+        self.assertEqual((t5["final"], t5["park_class"]), ("parked", "stopped-cost-cap"))
+        spent = Decimal(self.record["cost"]["observed_usd"]) + Decimal(self.record["cost"]["reserved_unobserved_usd"])
+        self.assertEqual(spent, Decimal("0.40"))
+        self.assertLessEqual(spent, Decimal(self.record["cost"]["cap_usd"]))
+        rep = subprocess.run([sys.executable, str(EVENTS), "--log", str(self.run_dir / "events.jsonl"), "report"],
+                             capture_output=True, text=True)
+        self.assertNotIn("unavailable", rep.stdout.split("Derived by")[0], "the stopped run must stay derivable")
 
 
 if __name__ == "__main__":

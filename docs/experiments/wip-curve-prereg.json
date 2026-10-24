@@ -75,7 +75,7 @@
     "proposed_cap_usd": "150.00",
     "reservation_per_dispatch_usd": "2.00",
     "reservation_status": "PENDING OWNER AUTHORISATION",
-    "enforcement": "the runner refuses to start without an explicit --cost-cap-usd; a live run also refuses a zero cap. Spend is observed from the harness's own result lines (events.py ingest-usage); a dispatch whose cost is not observed is charged the reservation. The cap is checked between waves, so one wave can overrun its reservation by what its dispatches spend beyond it; the dispatch timeouts bound that in time, not in money",
+    "enforcement": "the runner refuses to start without an explicit --cost-cap-usd and, for a live run, an explicit --reservation-usd: the reservation is pending too, so it is never taken from this file; a live run also refuses a zero cap. Before a unit's builder starts, the runner holds the worst case of every call that unit makes (its builder and its reviewer, each at the reservation; no grader calls a model). Each dispatch starts only while measured spend, the charges for unobserved dispatches (the full reservation) and every hold, its own included, stay within the cap, so a dispatch that overspent its hold refuses the next one before it starts. Spend is measured from the harness's own result lines (events.py ingest-usage). No per-call limit reaches the harness: the posix launch table passes no budget flag to any harness, so a dispatch already running can overrun its reservation; the dispatch timeouts bound that in time, not in money",
     "estimate": "12 runs x 6 tasks x (builder + reviewer) is 144 dispatches before retries"
   },
   "metrics": {

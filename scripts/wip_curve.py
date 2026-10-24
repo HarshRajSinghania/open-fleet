@@ -82,6 +82,9 @@ T95 = {1: "12.706", 2: "4.303", 3: "3.182", 4: "2.776", 5: "2.571", 6: "2.447", 
        8: "2.306", 9: "2.262", 10: "2.228", 11: "2.201", 12: "2.179", 13: "2.160", 14: "2.145",
        15: "2.131", 16: "2.120", 17: "2.110", 18: "2.101", 19: "2.093", 20: "2.086"}
 Z95 = Decimal("1.959963984540054")
+# No harness in the posix launch table (runtime/providers/base.py) is given a per-call budget
+# flag, so a running dispatch can overrun its reservation; the guard refuses every NEXT dispatch.
+PER_CALL_LIMIT = "none passed: the posix launch table has no per-call budget flag for any harness"
 AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavailable'"
 
 
@@ -449,6 +452,7 @@ if role is None:
     sys.exit(3)
 plan = cfg["script"].get(task, {}).get(role, [])
 action = plan[attempt - 1] if attempt <= len(plan) else ("solve" if role == "builder" else "approve")
+cost = cfg["script"].get("_cost", {}).get(role, cfg["cost_usd"])  # a fake harness that reports costs
 
 
 def answer(text):
@@ -458,7 +462,7 @@ def answer(text):
     usage = {k: 0 for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
                             "cache_creation_input_tokens")}
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
-                      "usage": usage, "total_cost_usd": float(cfg["cost_usd"])}))
+                      "usage": usage, "total_cost_usd": float(cost)}))
 
 
 def sh(*args):
@@ -549,10 +553,11 @@ class Run:
         self.clock = "wip-runner@host-" + sha256_bytes((platform.node() or "host").encode())[:12]
         self.cap = args.cost_cap
         self.spent_before = spent_before
-        # What one dispatch can spend at worst: the pre-registered reservation for a live worker;
-        # for the inert stand-in, exactly the synthetic cost it is configured to report.
-        self.reservation = (money(args.inert_cost_usd) if args.worker == "inert"
-                            else money(prereg["cost"]["reservation_per_dispatch_usd"]))
+        # What one dispatch may spend: the reservation the owner authorised (--reservation-usd; for
+        # the inert stand-in it defaults to the synthetic cost the stand-in reports).
+        self.reservation = args.reservation
+        self.held: dict[str, Decimal] = {}  # "<task>:<role>" -> the reservation it holds
+        self.cap_hit = False
         self.observed = Decimal(0)
         self.reserved = Decimal(0)
         self.usage_seen: set[str] = set()
@@ -601,8 +606,8 @@ class Run:
         if proc.returncode not in (0, 1):
             raise RunFailed(f"events.py ingest-state rc={proc.returncode}: {proc.stderr.strip()[:300]}")
 
-    def ingest_usage(self, dispatch, store_task):
-        """Retain the dispatch's stream and record its usage; returns the cost charged."""
+    def ingest_usage(self, dispatch, store_task, key=None):
+        """Retain the dispatch's stream, record its usage, and settle its hold: the cost charged."""
         if dispatch in self.usage_seen:
             return Decimal(0)
         self.usage_seen.add(dispatch)
@@ -620,11 +625,8 @@ class Run:
                                       cwd=str(self.dir))
             if proc.returncode == 0:
                 cost = self.stream_cost(self.dir / rel)
-        if cost is None:  # unobserved: charge the reservation, never assume it was free
-            self.reserved += self.reservation
-            return self.reservation
-        self.observed += cost
-        return cost
+        self.settle(key, cost)
+        return self.reservation if cost is None else cost
 
     @staticmethod
     def stream_cost(path: Path):
@@ -641,6 +643,36 @@ class Run:
                 total += Decimal(str(value))
                 seen = True
         return total if seen else None
+
+    # --- the spend guard (#604; PR #652's class: spend is reserved BEFORE a dispatch starts) ---
+    def committed(self) -> Decimal:
+        """Spent before this run, measured here, charged for unobserved dispatches, and held."""
+        return self.spent_before + self.observed + self.reserved + sum(self.held.values(), Decimal(0))
+
+    def hold_unit(self, tid) -> bool:
+        """Before a unit's builder starts, hold the worst case of every call the unit makes: its
+        builder and its reviewer (no grader calls a model). False when the cap cannot cover it."""
+        if self.committed() + self.reservation * 2 > self.cap:
+            return False
+        self.held[f"{tid}:builder"] = self.held[f"{tid}:reviewer"] = self.reservation
+        return True
+
+    def admit(self, key) -> bool:
+        """A dispatch starts only on a hold, and only while everything committed, its own hold
+        included, is within the cap: a dispatch that overspent its hold refuses the next one."""
+        if key in self.held and self.committed() <= self.cap:
+            return True
+        self.held.pop(key, None)
+        return False
+
+    def settle(self, key, cost) -> None:
+        """Release a dispatch's hold and charge what it spent; unobserved, the reservation."""
+        if key is not None:
+            self.held.pop(key, None)
+        if cost is None:  # unobserved: charge the reservation, never assume it was free
+            self.reserved += self.reservation
+        else:
+            self.observed += cost
 
     def spent(self) -> Decimal:
         return self.spent_before + self.observed + self.reserved
@@ -808,6 +840,8 @@ class Run:
     def wave(self, k, planned):
         """Build, review, verify and merge the planned tasks; returns the tasks to carry."""
         base = self.integration_head()
+        if not all(self.hold_unit(tid) for tid in planned):  # over_budget() covered all of them
+            raise RunFailed("a planned unit's worst case no longer fits the cap at wave open")
         store_ids = [self.units[t]["store_task"] for t in planned]
         self.emit("wave.open", source_ref=f"wip_curve.py:wave/{k}",
                   data={"wave": k, "builders": self.cond["builders"], "reviewers": self.cond["reviewers"],
@@ -824,12 +858,16 @@ class Run:
             branch = f"wip/{self.rid}/{tid.lower()}-a{n}"
             wt = self.sb.dir / "wt" / f"{tid.lower()}-a{n}"
             git(self.sb.target, "worktree", "add", "-q", "-b", branch, str(wt), base, env=self.sb.env)
+            if not self.admit(f"{tid}:builder"):
+                raise RunFailed(f"{tid}: its builder's hold was not admitted")
             disp = self.spawn(unit["store_task"], wt, f"wip-{tid.lower()}-a{n}", "rw")
             attempt = {"wave": k, "n": n, "dispatch": disp, "branch": branch, "base": base, "head": None,
                        "outcome": None}
             unit["attempts"].append(attempt)
             attempts[tid] = attempt
         states = self.wait([a["dispatch"] for a in attempts.values()], self.timeout_builder)
+        for tid, a in attempts.items():  # measured before any reviewer is admitted
+            self.ingest_usage(a["dispatch"], self.units[tid]["store_task"], f"{tid}:builder")
         self.ingest_state()
         done = []
         for tid, a in attempts.items():
@@ -846,18 +884,24 @@ class Run:
                 a["head"] = head
                 a["tree"] = git_out(self.sb.target, "rev-parse", f"{head}^{{tree}}", env=self.sb.env)
                 done.append(tid)
+        for tid in planned:
+            if tid not in done:
+                self.held.pop(f"{tid}:reviewer", None)  # no review: its hold is released unspent
         # Done units wait for a reviewer, and board the merge queue, in worker_done order.
         done.sort(key=lambda tid: (attempts[tid]["done_at"], tid))
         self.review(done)
         passed = [tid for tid in done if attempts[tid]["outcome"] is None and self.oracle(tid, attempts[tid])]
         self.merge(passed, attempts)
-        for tid in planned:
-            self.ingest_usage(attempts[tid]["dispatch"], self.units[tid]["store_task"])
         self.ingest_state()
+        if self.held:
+            raise RunFailed(f"holds outlived their wave: {sorted(self.held)}")
         carry = []
         for tid in planned:
             a = attempts[tid]
             if a["outcome"] == "landed":
+                continue
+            if a["outcome"] == "stopped-cost-cap":
+                self.park(tid, "stopped-cost-cap", a.get("head"))
                 continue
             if len(self.units[tid]["attempts"]) >= self.max_attempts:
                 self.park(tid, "attempts-exhausted", a.get("head"))
@@ -873,6 +917,10 @@ class Run:
             while queue and len(live) < self.cond["reviewers"]:
                 tid = queue.pop(0)
                 a = self.units[tid]["attempts"][-1]
+                if not self.admit(f"{tid}:reviewer"):
+                    a["outcome"] = "stopped-cost-cap"  # refused before it starts, never detected after
+                    self.cap_hit = True
+                    continue
                 nonce = f"WIP-NONCE:{secrets.token_hex(8)}"
                 n = len(self.units[tid]["reviews"]) + 1
                 wt = self.sb.dir / "rv" / f"{tid.lower()}-a{a['n']}-r{n}"
@@ -926,7 +974,7 @@ class Run:
                             "reviewed_wtree": a["tree"]})
             if review["verdict"] == "changes":
                 a["outcome"] = "changes-requested"
-        self.ingest_usage(review["dispatch"], review["store_task"])
+        self.ingest_usage(review["dispatch"], review["store_task"], f"{tid}:reviewer")
 
     def oracle(self, tid, a) -> bool:
         """The coordinator's verification: the visible tests and the task's oracle at the worker's
@@ -1077,7 +1125,7 @@ class Run:
                 nxt = (carry + queue)[:builders]  # a wave holds at most `builders`, carried first
                 # The stopping rule is applied BEFORE this wave closes: a unit it parks belongs to
                 # this wave, so the record still derives every cell (#604).
-                reason = ("cost-cap" if nxt and self.over_budget(nxt) else
+                reason = ("cost-cap" if self.cap_hit or (nxt and self.over_budget(nxt)) else
                           "time-limit" if nxt and time.monotonic() - started > self.wall_limit else None)
                 if reason:
                     self.stop(reason, carry)
@@ -1095,7 +1143,7 @@ class Run:
     def over_budget(self, planned) -> bool:
         """Observed spend plus the next wave's worst case (a builder and a reviewer per unit, each
         at the reservation) would pass the cap."""
-        return self.spent() + self.reservation * 2 * len(planned) > self.cap
+        return self.committed() + self.reservation * 2 * len(planned) > self.cap
 
     def stop(self, reason, carry):
         """The stopping rule: park every unit still in flight, so the record stays derivable."""
@@ -1116,7 +1164,8 @@ class Run:
         rec["commands"] = self.commands
         rec["cost"] = {"cap_usd": str(self.cap), "spent_before_usd": str(self.spent_before),
                        "observed_usd": str(self.observed), "reserved_unobserved_usd": str(self.reserved),
-                       "reservation_per_dispatch_usd": str(self.reservation)}
+                       "reservation_per_dispatch_usd": str(self.reservation),
+                       "per_call_limit": PER_CALL_LIMIT}
         try:
             if sb.target.is_dir():
                 head = git(sb.target, "rev-parse", f"refs/heads/{self.integration}", env=sb.env, check=False)
@@ -1740,6 +1789,12 @@ def cmd_run(args) -> int:
             raise Refused("a live run needs a cost cap above zero: a zero cap cannot dispatch a worker")
         if not args.model:
             raise Refused("a live run needs --model: the pin every observed model must equal")
+        if args.reservation_usd is None:
+            raise Refused("a live run needs --reservation-usd: the per-dispatch reservation is "
+                          f"{prereg['cost']['reservation_status']!r} and the runner never picks it")
+    args.reservation = money(args.reservation_usd if args.reservation_usd is not None else args.inert_cost_usd)
+    if args.worker == "live" and args.reservation <= 0:
+        raise Refused("a live run needs a reservation above zero")
     elif args.agent not in INERT_AGENTS:
         raise Refused(f"the inert stand-in answers as {INERT_AGENTS}; --agent {args.agent} needs --worker live")
     if args.agent not in first_run.posix_harnesses():
@@ -1769,8 +1824,7 @@ def cmd_run(args) -> int:
                           "takes the next attempt id (e.g. <run>-a2)")
         spent = spent_in(results)
         first_wave = min(entry["condition"]["builders"], len(entry["task_order"]))
-        worst = (money(args.inert_cost_usd) if args.worker == "inert"
-                 else money(prereg["cost"]["reservation_per_dispatch_usd"])) * 2 * first_wave
+        worst = args.reservation * 2 * first_wave
         if spent + worst > args.cost_cap:
             # The experiment-level stopping rule: once the cap cannot cover a first wave, no run starts.
             print(f"wip-curve: {entry['run_id']} not started: {spent} USD spent in {results} plus its first "
@@ -1928,6 +1982,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--keep", action="store_true", help="keep a complete run's sandbox")
     r.add_argument("--timeout-scale", type=float, default=1.0, dest="timeout_scale",
                    help="scale the pre-registered dispatch timeouts (a dry run may shorten them)")
+    r.add_argument("--reservation-usd", default=None, dest="reservation_usd",
+                   help="the per-dispatch reservation the owner authorised (required for --worker live; "
+                        "inert default: --inert-cost-usd)")
     r.add_argument("--inert-script", default=None, dest="inert_script",
                    help="dry run only: the stand-in's per-task script as JSON (default: one miss, one changes)")
     r.add_argument("--inert-cost-usd", default="0", dest="inert_cost_usd",

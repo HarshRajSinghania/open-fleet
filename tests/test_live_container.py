@@ -89,6 +89,9 @@ if argv[:1] == ["build"]:
     entry["context"] = sorted(os.listdir(argv[-1]))
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as fh:
     fh.write(json.dumps(entry) + "\n")
+if argv[:1] == ["kill"] and "kill" in scenario.get("fail", []):
+    sys.stderr.write("Error response from daemon: cannot kill container\n")
+    sys.exit(1)
 if argv[:1] in (["kill"], ["rm"], ["create"]) and argv[0] in scenario.get("hang", []):
     time.sleep(scenario.get("hang_s", 5))  # a create that hangs has already made its container: `orphan`
 if argv[:2] == ["image", "inspect"]:
@@ -598,6 +601,16 @@ class TeardownNeverLosesTheReceipt(Harness):
         self.assertIn("docker kill", " ".join(r["destroyed"]["errors"]))
         self.assertIn(["rm", "-f", CID], [c["argv"] for c in self.calls(partial=True)])
 
+    def test_a_teardown_step_that_fails_is_recorded_in_the_receipt(self):
+        # Codex at 0116e8ae34: a nonzero kill vanished from a receipt that read verified, no errors
+        self.scenario({"fail": ["kill"]})
+        rc, err = self.launch()
+        self.assertEqual(rc, 0, err)
+        destroyed = self.receipt()["destroyed"]
+        self.assertIs(destroyed["verified"], True)
+        self.assertIn(f"docker kill {CID}: exit 1: Error response from daemon: cannot kill container",
+                      destroyed["nonzero"])
+
     def test_a_verification_that_keeps_timing_out_fails_closed_with_a_receipt(self):
         self.scenario({"hang": ["verify"], "hang_s": 5})
         with mock.patch.object(lc, "TEARDOWN_TIMEOUT_S", 0.5), mock.patch.object(lc, "DESTROY_WAIT_S", 0.5):
@@ -971,6 +984,29 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
                        context_management={"edits": [{"type": "clear_tool_uses_20250919"}]},
                        thinking={"type": "adaptive"}, system="s", output_config={"effort": "low"})
         self.assertEqual(self.post(doc=ok)[0], 200)
+
+    def test_a_tool_defined_inside_the_content_is_held_to_the_same_rule(self):
+        # Codex at 0116e8ae34: with inline-tools, a system message's tool_addition defined web_search
+        self.broker()
+        addition = lambda definition: {"role": "system", "content": [{"type": "tool_addition",
+                                                                      "tool_definition": definition}]}
+        user = {"role": "user", "content": "hi"}
+        inline = self.body(messages=[user, addition({"type": "web_search_20250305", "name": "web_search"})])
+        status, data = self.post(doc=inline, headers={"anthropic-beta": "inline-tools-2026-09-15"})
+        self.assertEqual(status, 400, data)
+        listed = self.body(messages=[user, addition([{"type": "advisor_20260301", "name": "advisor"}])])
+        self.assertEqual(self.post(doc=listed)[0], 400)
+        stray = self.body(messages=[{"role": "user", "content": [{"type": "code_execution_20260521", "name": "x"}]}])
+        self.assertEqual(self.post(doc=stray)[0], 400)
+        self.assertEqual(self.api.requests, [])
+        own = self.body(messages=[user, addition({"name": "Lookup", "input_schema": {"type": "object"}})])
+        self.assertEqual(self.post(doc=own)[0], 200, "the client's own inline tool was refused")
+
+    def test_a_reported_web_search_is_charged(self):
+        self.assertAlmostEqual(lb.settled({"server_tool_use": {"web_search_requests": 12}}, "claude-haiku-5-5"),
+                               12 * lb.SEARCH_USD)
+        merged = lb.merged_usage({}, {"server_tool_use": {"web_search_requests": 2, "web_fetch_requests": 1}})
+        self.assertEqual(merged["server_tool_use"], {"web_search_requests": 2, "web_fetch_requests": 1})
 
     def test_us_inference_is_reserved_and_settled_at_its_premium(self):
         # Codex at 8585b35789: inference_geo "us" is billed at 1.1x every category

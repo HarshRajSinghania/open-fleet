@@ -50,6 +50,21 @@ _TAG_END_RE = re.compile(r"\s*/?>")
 # break, a heading, a quote, a table row, an HTML block or a fence. It over-approximates on
 # purpose (Codex at 8585b35789 and 3c01b90b5e): a span cut short can only reveal a tag, never
 # hide one.
+# A line that may open a raw HTML block, where backticks are literal: its first mark is `<`.
+_HTML_LINE_RE = re.compile(r"(?m)^[ \t]*<")
+
+
+def _block_start(text, i):
+    """Where the block holding position `i` may start: just after the last blank line before it."""
+    end = text.rfind("\n", 0, i)  # the newline that ends the line above i's
+    while end >= 0:
+        above = text.rfind("\n", 0, end)
+        if not text[above + 1:end].strip():
+            return end + 1
+        end = above
+    return 0
+
+
 _BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n[ \t]*(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
 BEGIN = "<!-- BEGIN GENERATED: run-index — scripts/run_index.py -->"
 END = "<!-- END GENERATED: run-index -->"
@@ -67,6 +82,8 @@ def html_link(text):
     while i < len(text):
         if text[i] == "\\":
             i += 2
+        elif text[i] == "`" and _HTML_LINE_RE.search(text, _block_start(text, i), i):
+            i += 1  # inside a raw HTML block a backtick is text (Codex at 0116e8ae34): no code span hides a tag
         elif text[i] == "`":
             run = len(text) - i - len(text[i:].lstrip("`"))
             block = _BLOCK_END_RE.search(text, i + run)

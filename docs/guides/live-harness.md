@@ -37,8 +37,9 @@ placeholder credential, dropping any credential, endpoint or proxy the arm's env
 The broker forwards `POST /v1/messages` and `/v1/messages/count_tokens` to the API with the token
 in place of the placeholder. It refuses every other request. It also refuses any call it cannot
 price. A call passes only when its model is on the broker's price list, it carries a positive
-`max_tokens`, every field is one the broker prices, and every tool is the client's own. Its
-content must also be inline and bounded by its bytes. So the broker refuses an image or document
+`max_tokens`, every field is one the broker prices, and every tool is the client's own, wherever
+it is defined: in `tools`, or inside a message. Its content must also be inline and bounded by its
+bytes. So the broker refuses an image or document
 by URL or file id, a PDF, an advisor or other server-side tool, an MCP server, server-side
 compaction, a service tier, and an inference geography other than global or US. Each is billed
 beyond what the request's bytes bound.
@@ -239,7 +240,7 @@ output as `.log` and the broker's ledger in `.broker/spend.jsonl`. The receipt h
 | `broker` | The broker's container, its cap, and `spend`: calls started, refused and settled, the settled USD, and any call still open when it was destroyed with its reservation |
 | `started_at`, `ended_at`, `elapsed_s`, `wall_clock_limit_s` | When it ran, against the limit |
 | `timed_out`, `interrupted`, `refused`, `exit_status` | How it ended: the limit, a signal, a refused start after a container was created, or the arm's own exit |
-| `destroyed` | `verified: true` only when `docker ps -a --filter label=…=<nonce>` lists nothing; `errors` lists every teardown step that failed or timed out |
+| `destroyed` | `verified: true` only when `docker ps -a --filter label=…=<nonce>` lists nothing; `errors` lists every teardown step that failed to run or timed out, and `nonzero` every one that exited nonzero (a container `--rm` already removed answers that way too) |
 | `token`, `token_redactions` | The token file's path and where the broker mounted it (never its value), and how many times the output carried it |
 
 The receipt proves that one arm ran at that commit, in that image, in containers that no longer

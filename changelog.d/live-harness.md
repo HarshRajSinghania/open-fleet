@@ -8,8 +8,8 @@
   The arm's container shares only the broker's network namespace and holds no credential. Its
   `claude` sends every model call to the broker, which puts the token in place of a placeholder,
   forwards only the Messages API, and refuses any call whose worst case would pass `--cap-usd`.
-  It forwards only what it can price: a priced model, the fields it knows, the client's own tools,
-  and inline content its bytes bound. It refuses an image or document by URL or file id, a PDF,
+  It forwards only what it can price: a priced model, the fields it knows, the client's own tools
+  wherever one is defined, and inline content its bytes bound. It refuses an image or document by URL or file id, a PDF,
   an advisor or server-side tool, a service tier and an unpriced geography. It reserves US
   inference, and a request that names no geography, at the 1.1x premium, and settles each call at
   the geography the API reports. The broker runs as the operator, never root; the arm runs as

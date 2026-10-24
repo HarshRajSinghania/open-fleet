@@ -402,6 +402,9 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** open `span\n| a | b |\n<a href="../docs/ops.md">ops</a> closing `.\n',
         # at any indentation: a list item's own blocks sit deeper (Codex at 3c01b90b5e)
         '- **Change** open `span\n    ---\n    <a href="../docs/ops.md">ops</a> closing `.\n',
+        # inside a raw HTML block backticks are text, so no code span hides a tag (Codex at 0116e8ae34)
+        '- **Change** see below.\n<div>\n`<a href="../docs/ops.md">ops</a>`\n</div>\n',
+        '- **Change** see below.\n\n<div>`<img src="../x.png">`</div>\n',
     )
 
     def errors(self, text):

@@ -333,14 +333,18 @@ def destroy(ids, nonce):
     --filter label=LABEL=<nonce>`, which also finds one whose id the launcher never learned). A
     docker call that fails or times out is recorded and the rest still run: this never raises, so
     the receipt is always written (Codex and Greptile at 47e0616eac)."""
-    errors = []
+    errors, nonzero = [], []
 
     def attempt(*args):
         try:
-            return docker(*args, timeout=TEARDOWN_TIMEOUT_S)
+            proc = docker(*args, timeout=TEARDOWN_TIMEOUT_S)
         except (subprocess.TimeoutExpired, OSError, Refused) as err:
             errors.append(f"docker {' '.join(args[:2])}: {type(err).__name__}")
             return None
+        if proc.returncode != 0:  # recorded, not fatal: a container --rm already removed answers this way too
+            why = (proc.stderr.strip().splitlines() or [""])[0][:160]
+            nonzero.append(f"docker {' '.join(args[:2])}: exit {proc.returncode}: {why}")
+        return proc
     for cid in reversed(ids):  # the arm first: the broker settles what it left in flight, then goes
         attempt("kill", cid)
     for cid in reversed(ids):
@@ -351,10 +355,11 @@ def destroy(ids, nonce):
         proc = attempt(*check)
         listed = proc.stdout.split() if proc is not None and proc.returncode == 0 else None
         if listed == []:
-            return {"verified": True, "check": ["docker", *check], "output": "", "errors": errors}
+            return {"verified": True, "check": ["docker", *check], "output": "", "errors": errors, "nonzero": nonzero}
         if time.monotonic() > deadline:
             output = (proc.stdout + proc.stderr).strip()[:300] if proc is not None else "; ".join(errors)[-300:]
-            return {"verified": False, "check": ["docker", *check], "output": output, "errors": errors}
+            return {"verified": False, "check": ["docker", *check], "output": output, "errors": errors,
+                    "nonzero": nonzero}
         for cid in dict.fromkeys([*ids, *(listed or [])]):  # --rm removes asynchronously; ask again
             attempt("rm", "-f", cid)
         time.sleep(0.5)

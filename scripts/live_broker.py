@@ -20,7 +20,8 @@ that ends without a complete usage report settles its whole reservation.
 
 Nothing unpriced runs (Codex at 8585b35789). A body is forwarded only when it is a JSON object
 with a priced model and a positive max_tokens, every field is one the broker prices (FIELDS), every
-tool is the client's own, and all content is inline and bounded by its bytes. So an image or
+tool is the client's own wherever it is defined (in `tools` or inside the content), and all content is inline and
+bounded by its bytes. So an image or
 document by URL or file id, a PDF, an advisor or other server-side tool, an MCP server,
 server-side compaction, a service tier, and an inference geography other than global or US are
 refused: each is billed beyond what the body's bytes bound. A call that names no geography
@@ -67,6 +68,10 @@ GEO = {"global": 1.0, "us": 1.1}
 GEO_WORST = max(GEO.values())
 IMAGE_TOKENS = 4800  # above the most one image costs on any current model: 4,784 visual tokens at 2576 px
 COSTLIEST = "claude-fable-5-1"  # what an iteration naming an unpriced model is charged as
+SEARCH_USD = 0.01  # each web search the API reports: refused tools never run one, but any reported is charged
+# An Anthropic-defined tool's type carries its version date (web_search_20250305, bash_20250124):
+# one anywhere in the content is a tool definition, which only the client's own tools may be.
+DATED_TYPE_RE = re.compile(r"_\d{8}$")
 # Every request field the broker can price. Any other is refused, so a pricing modifier the
 # broker does not know never reaches the API unpriced.
 FIELDS = {"model", "messages", "system", "max_tokens", "stream", "tools", "tool_choice", "metadata", "thinking",
@@ -119,7 +124,8 @@ def settled(usage, model, mult=1.0):
     if iterations:
         named = lambda it: it.get("model") if model_key(it.get("model")) else model if it.get("model") is None else COSTLIEST
         usd = max(usd, sum(priced(it, named(it), mult) for it in iterations))
-    return usd
+    searches = (usage.get("server_tool_use") or {}).get("web_search_requests") or 0
+    return usd + max(int(searches), 0) * SEARCH_USD
 
 
 def reservation(body_len, max_tokens, model, mult=1.0, images=0):
@@ -141,6 +147,15 @@ def content_problem(node, found):
     elif isinstance(node, dict):
         if "file_id" in node:
             return "content by file id is billed by what the file holds, not by the request's bytes"
+        # A tool can be defined inside the content too, not only in `tools` (a system message's
+        # tool_addition, Codex at 0116e8ae34): the same rule holds wherever one is defined.
+        definitions = node.get("tool_definition")
+        for tool in definitions if isinstance(definitions, list) else [definitions] if definitions is not None else []:
+            kind = tool.get("type") if isinstance(tool, dict) else "malformed"
+            if kind not in (None, "custom"):
+                return f"a {kind} tool is not the client's own: it is billed beyond the request's tokens"
+        if isinstance(node.get("type"), str) and DATED_TYPE_RE.search(node["type"]):
+            return f"a {node['type']} tool is not the client's own: it is billed beyond the request's tokens"
         source = node.get("source")
         if isinstance(source, dict):
             kind, media = source.get("type"), str(source.get("media_type") or "")
@@ -196,11 +211,11 @@ def settle_mult(usage, fast):
 
 def merged_usage(seen, usage):
     """The API reports usage at message_start and (cumulatively) at message_delta: keep each
-    count's largest value, the cache-write split's included."""
+    count's largest value, the cache-write split's and the server tools' included."""
     for key, value in (usage or {}).items():
         if isinstance(value, int) and not isinstance(value, bool):
             seen[key] = max(seen.get(key, 0), value)
-        elif key == "cache_creation" and isinstance(value, dict):
+        elif key in ("cache_creation", "server_tool_use") and isinstance(value, dict):
             merged_usage(seen.setdefault(key, {}), value)
         elif key == "iterations" and isinstance(value, list):
             seen[key] = value

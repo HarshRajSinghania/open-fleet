@@ -74,7 +74,8 @@ it was never merged. The read-backs are in
 1. Its own job named `verdict-gate` and a `verdict-gate` status posted with `GITHUB_TOKEN`
    (both from app 15368) left it BLOCKED, with every other required check green and no open thread.
 2. A GO review at its head made the app post `verdict-gate` success, and the PR turned CLEAN.
-3. A content-changing push left the new head without the app's status, and it was BLOCKED again
+3. After a content-changing push, the app posted `verdict-gate` failure because no GO bound the
+   new head ("GO verdicts exist but none binds the current head"), and the PR was BLOCKED again
    until a fresh review.
 
 Branch protection matches a required check by name, and a fork PR can add a workflow job named

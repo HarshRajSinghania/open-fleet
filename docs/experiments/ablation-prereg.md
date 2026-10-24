@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `edec15c27cfde5ec0f9e498bfb58e90008ea4c73991df5b8e949fcff9022f244`.
+Registration: **version 1**, `docs/experiments/ablation-prereg.json` sha256 `dd14f95e880450cd6a497ded6623d7a33d431ec8a4b52e760e5e3da5b7aa83b6`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no
@@ -124,7 +124,10 @@ arrivals, and the JSON records why for each case.
 **Repositories:** each cell rebuilds its repository from committed fixtures. Behavioral cells use
 the case's `files[]`. Trajectory cells use the suite's `base_state`, the case files and
 `CONTRACT.json`. Both arms of a pair start from identical bytes. No external repository is in
-the mix.
+the mix. The registration pins a digest of every task input per mission in `registered_payloads`:
+the mission's `evals.json`, any fixture file a registered case names, the #602 suite, its frozen
+contract and the registered cases' recordings. An edit to any of them makes the registration
+stale, and a stale registration cannot spend.
 
 **Exact prompt** (identical shape in both arms; only `{payload}` differs):
 

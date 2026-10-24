@@ -493,6 +493,59 @@ class OutputNeverOverlapsTheSources(unittest.TestCase):
         self.assertTrue((self.tmp / "ok" / "review-it" / "variant.json").is_file())
 
 
+class RegisteredTasksArePinned(unittest.TestCase):
+    """#652 review, P2: the freshness check pinned activation text but not the tasks, so editing a
+    mission's evals.json, a fixture it names or the trajectory contract changed the experiment
+    while registration_status still said `current` and allowed live spend. Run on a repo copy."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="of-ablation-tasks-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root, self.mod = repo_copy(self.tmp)
+
+    def pin_and_status(self, edit):
+        self.mod.refresh()
+        self.assertEqual(set(self.mod.registration_status(self.mod.load_prereg()).values()), {"current"})
+        edit()
+        return self.mod.registration_status(self.mod.load_prereg())
+
+    def edit_json(self, rel, change):
+        path = self.root / rel
+        data = json.loads(path.read_text())
+        change(data)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def test_an_edited_evals_json_makes_its_mission_stale(self):
+        def edit():
+            self.edit_json("skills/review-it/evals/evals.json",
+                           lambda d: d["evals"][3].update(prompt=d["evals"][3]["prompt"] + " Quickly."))
+        status = self.pin_and_status(edit)
+        self.assertEqual(status["review-it"], "stale: task_inputs_sha256 moved since registration")
+        self.assertEqual(status["ship-it"], "current")
+
+    def test_an_edited_trajectory_contract_makes_every_mission_stale(self):
+        contract = self.root / "evals" / "trajectories" / "contract.json"
+        status = self.pin_and_status(lambda: contract.write_text(contract.read_text() + "\n"))
+        self.assertEqual(set(status.values()), {"stale: task_inputs_sha256 moved since registration"})
+
+    def test_a_fixture_a_registered_case_names_is_pinned(self):
+        fixture = self.root / "skills" / "review-it" / "evals" / "fixtures" / "NOTES.md"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("notes\n", encoding="utf-8")
+        self.edit_json("skills/review-it/evals/evals.json", lambda d: d["evals"][3]["files"].append("NOTES.md"))
+        inputs = self.mod.task_inputs("review-it", self.mod.load_prereg())
+        self.assertIn("skills/review-it/evals/fixtures/NOTES.md", inputs)
+        status = self.pin_and_status(lambda: fixture.write_text("changed\n", encoding="utf-8"))
+        self.assertEqual(status["review-it"], "stale: task_inputs_sha256 moved since registration")
+
+    def test_a_missing_task_input_is_pinned_as_missing(self):
+        inputs = self.mod.task_inputs("review-it", self.mod.load_prereg())
+        self.assertIn("evals/trajectories/contract.json", inputs)
+        (self.root / "evals" / "trajectories" / "CL-01.fixes.jsonl").unlink()
+        self.assertEqual(self.mod.task_inputs("review-it", self.mod.load_prereg())
+                         ["evals/trajectories/CL-01.fixes.jsonl"], "missing")
+
+
 class Parsing(unittest.TestCase):
     def test_cues_are_read_alike_in_both_arms(self):
         ship = ablation.deferred_cues((ROOT / "skills" / "ship-it" / "SKILL.md").read_text())

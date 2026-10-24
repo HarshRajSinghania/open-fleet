@@ -655,7 +655,8 @@
       "baseline_tokens": 33999,
       "reduced_tokens": 4579,
       "delta_tokens": -29420,
-      "obligations_held": true
+      "obligations_held": true,
+      "task_inputs_sha256": "ea245b872d6744332a30c1e64a7e5d3643513b754698e3ffc07dff759adb64a6"
     },
     "clean-sweep": {
       "baseline_sha256": "4a54fba8e3771493d2de591f2bce81574f0b5254045eb1f0fc932f77f6c2b053",
@@ -663,7 +664,8 @@
       "baseline_tokens": 32653,
       "reduced_tokens": 4546,
       "delta_tokens": -28107,
-      "obligations_held": true
+      "obligations_held": true,
+      "task_inputs_sha256": "979147165c398fd91574caa39289d4c3f0046e742e5434e80a23514f6ee7aaeb"
     },
     "review-it": {
       "baseline_sha256": "2b6c5bd3f8a93b2a05e75b17438dc96214f97b4dc830cd7a92e2961e0694936f",
@@ -671,7 +673,8 @@
       "baseline_tokens": 24475,
       "reduced_tokens": 3715,
       "delta_tokens": -20760,
-      "obligations_held": true
+      "obligations_held": true,
+      "task_inputs_sha256": "bbb8fc107e6b9e8e9cdc89fce22263566b71e04ae7384bc9e78337e80794ed48"
     },
     "root-cause": {
       "baseline_sha256": "9cd5b6e97dae6cb2ae487bfabe5f6813f333320341e42c4a85a674e570364df5",
@@ -679,7 +682,8 @@
       "baseline_tokens": 19254,
       "reduced_tokens": 6716,
       "delta_tokens": -12538,
-      "obligations_held": true
+      "obligations_held": true,
+      "task_inputs_sha256": "b2ecbb3be9a15553e6f22719fc73b408021d345b90e7ce8efdda424b501b5aa5"
     }
   }
 }

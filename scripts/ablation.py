@@ -659,6 +659,35 @@ def prereg_sha256(prereg):
     return sha256_text(json.dumps(prereg, sort_keys=True, ensure_ascii=False))
 
 
+def task_inputs(mission, prereg):
+    """{repo path: sha256 | "missing"} of every input the mission's registered tasks start from:
+    its evals.json, each fixture file a registered behavioral case names, the #602 suite with its
+    frozen contract, and the recordings of the registered trajectory cases (#652 review: an edit
+    to any of these changes the experiment, so it must make the registration stale)."""
+    paths = {f"skills/{mission}/evals/evals.json", "evals/adversarial-trajectories.json"}
+    try:
+        evals = json.loads(read(ROOT / f"skills/{mission}/evals/evals.json")).get("evals") or []
+    except (OSError, ValueError):
+        evals = []
+    cases = set((prereg.get("tasks") or {}).get("behavioral", {}).get("cases") or [])
+    for ev in evals:
+        if isinstance(ev, dict) and ev.get("id") in cases:
+            paths |= {f"skills/{mission}/evals/fixtures/{entry}" for entry in ev.get("files") or []
+                      if isinstance(entry, str)}
+    try:
+        suite = json.loads(read(ROOT / "evals" / "adversarial-trajectories.json"))
+    except (OSError, ValueError):
+        suite = {}
+    if isinstance((suite.get("contract") or {}).get("path"), str):
+        paths.add(suite["contract"]["path"])
+    registered = set((prereg.get("tasks") or {}).get("trajectories", {}).get("cases") or [])
+    for case in suite.get("cases") or []:
+        if case.get("id") in registered:
+            paths |= {f"evals/trajectories/{rec['file']}" for rec in case.get("trajectories") or []}
+    return {rel: file_sha256(ROOT / rel) if (ROOT / rel).is_file() else "missing"
+            for rel in sorted(paths)}
+
+
 def measure(prereg, missions=None):
     """{mission: payload digests and loads} for the catalog as it is now."""
     out = {}
@@ -672,12 +701,15 @@ def measure(prereg, missions=None):
                 "reduced_tokens": rec["reduced"]["tokens"],
                 "delta_tokens": rec["delta_tokens"],
                 "obligations_held": rec["obligation_check"]["passed"],
+                "task_inputs_sha256": sha256_text(json.dumps(task_inputs(mission, prereg),
+                                                             sort_keys=True)),
             }
     return out
 
 
 def registration_status(prereg):
-    """{mission: "current" | "stale: ..." | "unregistered"} against the catalog now."""
+    """{mission: "current" | "stale: ..." | "unregistered"} against the catalog and the registered
+    tasks' inputs now."""
     pinned = prereg.get("registered_payloads") or {}
     status = {}
     for mission, now in measure(prereg).items():

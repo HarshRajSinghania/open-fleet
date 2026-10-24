@@ -87,6 +87,7 @@ WEIGHTS = {
     "test_floor_guard": 9.7,
     "test_gastown_worktrunk_providers": 1.6,
     "test_gate_batch": 0.5,
+    "test_gitexec_config_commands": 15.4,
     "test_gen_badges_isolation": 3.8,
     "test_governance_commands": 1.6,
     "test_guard_text": 3.7,

@@ -168,15 +168,22 @@ class ScopeError(Exception):
 GIT = shutil.which("git") or "git"
 
 
-def _git_env():
+def _git_env(blanks=()):
+    """gitexec.env's floor, inlined; ``blanks`` (_driver_blanks pairs) ride as further env
+    pairs, so a driver name holding `=` or a non-UTF-8 byte reaches git exactly (PR #649)."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
            and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT")}
     pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"), ("safe.directory", "*"),
+             # #629: the repo-config command channels a fixed key can close — hooks (post-checkout
+             # on a worktree read) and the global external-diff program.
+             ("core.hooksPath", os.devnull), ("diff.external", ""),
              # floor_guard's DIFF_RENDERING pins: inert for -z --name-only, kept for parity.
              ("diff.noprefix", "false"), ("diff.mnemonicPrefix", "false"), ("diff.srcPrefix", "a/"),
-             ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"))
-    env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+             ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"),
+             *blanks)
+    env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_COUNT": str(len(pairs))})
     for i, (k, v) in enumerate(pairs):
@@ -184,13 +191,64 @@ def _git_env():
     return env
 
 
-def git(repo, *args, tolerate=False):
+# gitexec.driver_blanks, inlined (verify.py loads this file by path; see the module note on
+# _git_env). Blanks every filter/diff driver command the repo DECLARES — the attribute-selected
+# exec channel a fixed -c cannot name (#629). Bytes in, os.fsdecode'd keys out, and each declared
+# filter neutralised whole — commands blank AND required=false, or git dies on it (PR #649). A
+# merge.<driver>.driver (selected when merge-tree 3-way-merges a path) is overridden to `exit 1`,
+# a shell builtin that fails the merge closed and runs no repository command (PR #649 review).
+_FILTER_KEY_RE = re.compile(rb"\Afilter\.(.+)\.[^.]+\Z", re.S)
+_DIFF_COMMAND_KEY_RE = re.compile(rb"\Adiff\.(?:.+)\.(?:textconv|command)\Z", re.S)
+_MERGE_KEY_RE = re.compile(rb"\Amerge\.(.+)\.[^.]+\Z", re.S)
+_FILTER_BLANKS = ((b"clean", ""), (b"smudge", ""), (b"process", ""), (b"required", "false"))
+_MERGE_DRIVER = "exit 1"
+
+
+def _driver_blanks(repo):
+    """gitexec.driver_blanks's pairs. [] means exactly "no driver declared" (git answers an empty
+    valid config with exit 0 and no output); a query that errors, times out, exits non-zero or
+    prints output that is not NUL-terminated keys raises ScopeError(diff_failed) — never [],
+    which would run the diff with every planted driver live (PR #649 review)."""
+    try:
+        r = subprocess.run([GIT, "-C", str(repo), "config", "--list", "-z", "--name-only"],
+                           capture_output=True, timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as err:
+        raise ScopeError(f"cannot read {repo}'s driver config: {err}", kind="diff_failed") from err
+    if r.returncode != 0:
+        why = r.stderr.decode("utf-8", "replace").strip()[:200]
+        raise ScopeError(f"cannot read {repo}'s driver config (git config exited {r.returncode}: "
+                         f"{why})", kind="diff_failed")
+    if r.stdout and not r.stdout.endswith(b"\0"):
+        raise ScopeError(f"{repo}'s driver config listing is not NUL-terminated keys",
+                         kind="diff_failed")
+    keys = r.stdout.split(b"\0")[:-1] if r.stdout else []
+    if any(not key for key in keys):
+        raise ScopeError(f"{repo}'s driver config listing holds an empty key", kind="diff_failed")
+    pairs, filt_seen, merge_seen = [], set(), set()
+    for key in keys:
+        filt = _FILTER_KEY_RE.match(key)
+        merge = _MERGE_KEY_RE.match(key)
+        if filt:
+            if filt.group(1) not in filt_seen:
+                filt_seen.add(filt.group(1))
+                pairs += [(os.fsdecode(b"filter." + filt.group(1) + b"." + var), value)
+                          for var, value in _FILTER_BLANKS]
+        elif merge:
+            if merge.group(1) not in merge_seen:
+                merge_seen.add(merge.group(1))
+                pairs.append((os.fsdecode(b"merge." + merge.group(1) + b".driver"), _MERGE_DRIVER))
+        elif _DIFF_COMMAND_KEY_RE.match(key):
+            pairs.append((os.fsdecode(key), ""))
+    return pairs
+
+
+def git(repo, *args, tolerate=False, blanks=()):
     try:
         # surrogateescape: a non-UTF-8 path round-trips instead of raising
         # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
         r = subprocess.run([GIT, "-C", str(repo), *args], capture_output=True, text=True,
                            encoding="utf-8", errors="surrogateescape",
-                           timeout=60, env=_git_env())
+                           timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 and not tolerate:
@@ -229,9 +287,13 @@ def changed_files(repo, base):
     # --no-renames: a rename is its delete AND its add, so a file moved OUT of db/migrate/
     # or away from session_guard.py still earns the lens its old path did (P2-9).
     options = ("--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-only")
-    absorb(git(repo, "diff", *options, f"{base}...HEAD", "--"), "committed diff")
+    # The working-tree diff materialises tracked files, which runs a repo-config clean/smudge
+    # filter a .gitattributes selects — the one channel --no-ext-diff/--no-textconv leave open
+    # (#629). Blank every declared driver command first.
+    blanks = _driver_blanks(repo)
+    absorb(git(repo, "diff", *options, f"{base}...HEAD", "--", blanks=blanks), "committed diff")
     # Working tree (staged + unstaged); fails on a repo with no commits.
-    absorb(git(repo, "diff", *options, "HEAD", "--"), "working-tree diff")
+    absorb(git(repo, "diff", *options, "HEAD", "--", blanks=blanks), "working-tree diff")
     # Untracked: the new migration/component is untracked right up until commit.
     absorb(git(repo, "ls-files", "-z", "--others", "--exclude-standard"), "untracked enumeration")
     return sorted(names)
@@ -405,12 +467,18 @@ def predict_merge(repo, base, branch):
                 repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}") is None:
             raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo}",
                              kind="no_base")
+    # #629 (PR #649 review): merge-tree 3-way-merges the two commits, running a repo-config merge
+    # driver a `merge=<driver>` attribute selects. Neutralise every declared driver, read in
+    # `repo` itself immediately before the call (same directory, same ref state) — and read
+    # OUTSIDE the subprocess-error catch below: an unreadable driver list raises diff_failed,
+    # never a merge-tree that "could not run" quietly read as no drivers (PR #649 review).
+    blanks = _driver_blanks(repo)
     try:
         r = subprocess.run(
             [GIT, "-C", str(repo), "-c", "core.quotePath=false",
              "merge-tree", "--write-tree", base, branch],
             capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
-            timeout=60, env=_git_env(),
+            timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         r = None

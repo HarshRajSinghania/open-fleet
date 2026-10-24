@@ -444,9 +444,9 @@ def watchdog_main(argv):
     return status if status >= 0 else 128 - status
 
 
-def containment_problem(system_binary=False):
-    """containment.containment_problem (#657 review W1; the system-binary probe, PR #668 review),
-    reading this module's process_table at call time."""
+def containment_problem(system_binary=True):
+    """containment.containment_problem, the strong probe by default (#657 review W1; PR #668 review:
+    a system binary too), reading this module's process_table at call time."""
     return containment.containment_problem(system_binary, table=lambda: process_table())
 
 

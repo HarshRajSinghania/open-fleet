@@ -255,7 +255,10 @@ The spend guard is #606's, reused from [`scripts/_ablation_run.py`](../scripts/_
 - each call runs under #657's watchdog, tagged `OF_CALL_ID`: a timeout, an interrupt or the
   runner's own death kills the whole call, and a call something of which survives is never
   settled (it stays charged in full and the run stops);
-- a run refuses to start where process discovery cannot contain a call.
+- a run refuses to start where process discovery cannot contain a call. The strong host check
+  must find a call's marker on a Python process and on a system binary. On macOS that check fails,
+  so a live run goes in a disposable Linux container
+  ([`containment.py`](runtime-scripts.md#containmentpy)).
 
 #606's paired runner uses the same harness as its agent-command prefix. It writes
 `$ABLATION_OUT/trajectory.jsonl` for each trajectory cell:

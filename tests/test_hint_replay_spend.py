@@ -48,6 +48,18 @@ def _load(name, rel):
 
 replay_mod = _load("hint_replay_spend", "scripts/hint_replay.py")
 SAFETY = {}
+# The host probe, as the replay's spend guard has it. setUpModule injects a proven host in its place
+# (Python-level, never an environment variable or flag); the refusal tests put the real one back.
+REAL_PROBE, REAL_TABLE = replay_mod.spend.containment_problem, replay_mod.spend.process_table
+
+def _fixture(name):
+    spec = importlib.util.spec_from_file_location(f"fixture_{name}", ROOT / "tests" / "fixtures" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+TABLES = _fixture("containment_tables")  # a process table blind to system binaries (PR #668 review)
 SCENARIO = "pitfall-rounding"  # one live_task scenario: three calls (off/unchecked/checked) per attempt
 
 
@@ -60,9 +72,12 @@ def setUpModule():
     SAFETY.update(bindir=bindir, log=log, path=os.environ.get("PATH", ""), shell=os.environ.get("SHELL"))
     os.environ["PATH"] = f"{bindir}{os.pathsep}{SAFETY['path']}"
     os.environ["SHELL"] = "/bin/sh"
+    SAFETY["probe"] = mock.patch.object(replay_mod.spend, "containment_problem", lambda system_binary=True: None)
+    SAFETY["probe"].start()
 
 
 def tearDownModule():
+    SAFETY["probe"].stop()
     os.environ["PATH"] = SAFETY["path"]
     if SAFETY["shell"] is None:
         os.environ.pop("SHELL", None)
@@ -209,7 +224,8 @@ class StandInRun(unittest.TestCase):
     def spawn(self, argv):
         """The runner as its own process, for the signals a test process cannot take in-process."""
         env = {**os.environ, "SHELL": "/bin/sh"}
-        proc = subprocess.Popen([sys.executable, str(SCRIPT), *argv], env=env,
+        proc = subprocess.Popen([*TABLES.proven_host(sys.executable, SCRIPT, "mod.spend.containment_problem = proven"),
+                                 *argv], env=env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         return proc
@@ -242,6 +258,13 @@ class ALiveRunNeedsAnExplicitCapAndPerCallLimit(StandInRun):
         self.assertIn(needle, err)
         self.assertEqual(self.calls(), [], "a refused run started a worker")
         self.assertEqual(list(self.out.parent.iterdir()), [], "a refused run wrote beside its results")
+
+    def test_a_host_blind_to_system_binaries_runs_nothing(self):
+        # Python visible, system binaries hidden (macOS's view): the strong probe refuses (PR #668).
+        spend = replay_mod.spend
+        with mock.patch.object(spend, "containment_problem", REAL_PROBE), \
+                mock.patch.object(spend, "process_table", TABLES.blind_to_system_binaries(REAL_TABLE)):
+            self.refused(self.live(), "process discovery cannot contain")
 
     def test_no_per_call_reservation_no_run(self):
         self.refused(self.live(per_call=None), "per-call reservation")
@@ -627,7 +650,8 @@ class DiscoveryFailureNeverLeavesACallRunning(StandInRun):
     mid-run still kills the call's known process group, keeps the call charged and stops the run."""
 
     def test_a_live_run_is_refused_where_discovery_is_unavailable(self):
-        with mock.patch.object(replay_mod.spend, "process_table", side_effect=OSError("no ps")):
+        with mock.patch.object(replay_mod.spend, "containment_problem", REAL_PROBE), \
+                mock.patch.object(replay_mod.spend, "process_table", side_effect=OSError("no ps")):
             code, _out, err = self.main(self.live())
         self.assertEqual(code, 2, err)
         self.assertIn("process discovery", err)

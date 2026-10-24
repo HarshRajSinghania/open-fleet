@@ -127,17 +127,21 @@ def sweep(roots=(), groups=(), exclude=(), wait_s=10.0, tag=None, table=None, ma
         time.sleep(0.02)
 
 
-def containment_problem(system_binary=False, table=None):
-    """Why process discovery cannot contain a call on this host, or None (#657 review W1). A probe
-    in a session of its own, carrying a call marker, must show up in the process table by that
+def containment_problem(system_binary=True, table=None):
+    """Why process discovery cannot contain a call on this host, or None (#657 review W1). Probes
+    in sessions of their own, carrying a call marker, must show up in the process table by that
     marker. Checked before a paid run reserves anything: where a sandbox denies `ps`, or the table
-    hides environments, a call's escaped processes could never be found."""
-    # With `system_binary`, a second probe: a system binary such as a worker's shell starts. macOS's
-    # `ps -E` cannot read an Apple system binary's environment (/bin/sh, /bin/sleep) while it reads
-    # a Python's, so the Python probe alone vouches for a table blind to a detached shell (PR #668
-    # review). The WIP-curve runner asks for it; this runner's own default is unchanged.
+    hides environments, a call's escaped processes could never be found. `table` is the
+    process-table reader, injected by a caller or a test."""
+    # The strong probe, every paid runner's default (PR #668 review): a system binary such as a
+    # worker's shell starts must be discoverable too. macOS's `ps -E` cannot read an Apple system
+    # binary's environment (/bin/sh, /bin/sleep) while it reads a Python's, so a Python probe alone
+    # vouches for a table blind to a detached shell. With no system binary to probe with, nothing is
+    # proven. `system_binary=False` (the Python probe alone) is for tests of the probe itself.
     tag = secrets.token_hex(16)
     sleep = shutil.which("sleep", path="/bin:/usr/bin") if system_binary else None
+    if system_binary and not sleep:
+        return "no system binary (sleep) to probe with: containment of a detached shell cannot be proven"
     argvs = [[sys.executable, "-c", "import time; time.sleep(60)"]] + ([[sleep, "60"]] if sleep else [])
     probes = []
     try:

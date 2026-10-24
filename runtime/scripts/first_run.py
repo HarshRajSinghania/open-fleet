@@ -1055,6 +1055,15 @@ def emit(receipt: dict, path: Path, as_json: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.worker == "live" and args.mode != "probes":
+        # A live worker spends: it starts only where containment is proven, a detached system
+        # binary included, before anything is created (PR #668 review: the strong probe).
+        why = containment.containment_problem()
+        if why:
+            print(f"first_run.py: refused: process discovery cannot contain a call on this host ({why}): a "
+                  "live worker's escaped processes could never be found or stopped, so a live run does not "
+                  "start (run it in a disposable Linux container)", file=sys.stderr)
+            return 2
     workdir = make_workdir(args.workdir)
     agent = "claude" if args.mode == "probes" else args.agent
     sb = Sandbox(workdir, "inert" if args.mode == "probes" else args.worker, agent)

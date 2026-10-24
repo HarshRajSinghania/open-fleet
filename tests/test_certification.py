@@ -61,6 +61,7 @@ def _load(name: str, path: Path):
 
 certification = _load("certification_under_test", SCRIPTS / "certification.py")
 first_run = _load("first_run_under_test", SCRIPTS / "first_run.py")
+TABLES = _load("fixture_containment_tables", ROOT / "tests" / "fixtures" / "containment_tables.py")  # PR #668
 
 LEAKY = ("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", "OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME",
          "OPEN_FLEET_STATE_DB", "OPEN_FLEET_STATE_DIR", "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE",
@@ -692,6 +693,23 @@ class TestAStandaloneFirstRunVouchesForItsTeardown(Tripwired):
         with mock.patch.object(first_run.containment, "process_table", side_effect=OSError("no ps")):
             rc, receipt = self.first_run_in_process(self.tmp / "fr")
         self.assertEqual((rc, receipt["verdict"], (receipt["failure"] or {}).get("step")), (1, "NO-GO", "teardown"))
+
+
+class TestALiveFirstRunNeedsProvenContainment(Tripwired):
+    """PR #668 review (C-c): a live worker spends, so `--worker live` starts only where the strong
+    probe proves containment: Python visible and system binaries visible. A table that hides a
+    system binary's marker (macOS's view) refuses it before anything is created."""
+
+    def test_a_host_blind_to_system_binaries_refuses_a_live_first_run(self):
+        err, wd = io.StringIO(), self.tmp / "fr"
+        blind = TABLES.blind_to_system_binaries(first_run.containment.process_table)
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(first_run.containment, "process_table", blind), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = first_run.main(["--worker", "live", "--profile", "ro", "--workdir", str(wd), "--json"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("process discovery cannot contain", err.getvalue())
+        self.assertFalse(wd.exists(), "a refused live run created its sandbox")
 
 
 class TestDocsCarryTheGeneratedMatrix(unittest.TestCase):

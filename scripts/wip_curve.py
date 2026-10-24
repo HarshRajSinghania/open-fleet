@@ -3097,7 +3097,7 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
         dirty = dirty_inputs()
         if dirty:
             raise Refused(f"a live run needs committed experiment inputs; uncommitted: {dirty}")
-        why = contain.containment_problem(system_binary=True)  # #606's host check, before anything is reserved
+        why = contain.containment_problem()  # the strong host check, before anything is reserved
         if why:
             raise Refused(f"process discovery cannot contain a call on this host ({why}): a live run's escaped "
                           "processes could never be found or stopped, so it does not start")

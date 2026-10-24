@@ -78,9 +78,15 @@ def setUpModule():
                   shell=os.environ.get("SHELL"))
     os.environ["PATH"] = f"{bindir}{os.pathsep}{SAFETY['path']}"
     os.environ["SHELL"] = "/bin/sh"
+    SAFETY["probe"] = mock.patch.object(live_mod.guard(), "containment_problem", lambda system_binary=True: None)
+    SAFETY["probe"].start()
+    SAFETY["live"] = mock.patch.object(eval_mod, "_trajectory_live", lambda: live_mod)  # eval reaches the same guard
+    SAFETY["live"].start()
 
 
 def tearDownModule():
+    SAFETY["live"].stop()
+    SAFETY["probe"].stop()
     os.environ["PATH"] = SAFETY["path"]
     if SAFETY["shell"] is None:
         os.environ.pop("SHELL", None)
@@ -1225,6 +1231,10 @@ class HarnessContract(SafetyNet):
 # the live runner: eval.py run --suite trajectories --tier live
 # ---------------------------------------------------------------------------
 live_mod = _load("trajectory_live_under_test", "scripts/_trajectory_live.py")
+# The host probe, as the live runner's guard has it. setUpModule injects a proven host in its place
+# (Python-level, never an environment variable or flag); the refusal tests put the real one back.
+REAL_PROBE, REAL_TABLE = live_mod.guard().containment_problem, live_mod.guard().process_table
+TABLES = _load("fixture_containment_tables", "tests/fixtures/containment_tables.py")  # PR #668 review
 
 
 def alive(pid):
@@ -1468,7 +1478,9 @@ class LiveRunner(SafetyNet):
         self.assertEqual(cell["charged_usd"], self.RESERVE, "a killed call is charged in full")
 
     def _runner(self, argv):
-        return subprocess.Popen([sys.executable, str(ROOT / "scripts" / "eval.py"), *argv],
+        inject = ("live = mod._trajectory_live(); live.guard().containment_problem = proven; "
+                  "mod._trajectory_live = lambda: live")
+        return subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "eval.py", inject), *argv],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def _wait_for(self, path, proc, seconds=60.0):
@@ -1551,6 +1563,18 @@ class LiveRunner(SafetyNet):
                     repeats=1, seed=602, timeout=60, out=str(out), json=False)
         args.update(over)
         return argparse.Namespace(**args)
+
+    def test_a_host_blind_to_system_binaries_runs_nothing(self):
+        # Python visible, system binaries hidden (macOS's view): the strong probe refuses (PR #668).
+        out, log = self.tmpdir() / "out", self.tmpdir() / "log"
+        args = self.namespace(out, self.agent("clean", "--log", str(log)))
+        g = live_mod.guard()
+        with mock.patch.object(g, "containment_problem", REAL_PROBE), \
+                mock.patch.object(g, "process_table", TABLES.blind_to_system_binaries(REAL_TABLE)), \
+                self.assertRaisesRegex(g.Refused, "process discovery"):
+            live_mod.run_live(args)
+        self.assertFalse(out.exists(), "a refused run wrote its output directory")
+        self.assertFalse(log.exists(), "a refused run started the agent")
 
     def test_a_host_where_discovery_cannot_contain_a_call_runs_nothing(self):
         """#657's live preflight: where a call's escaped processes could never be found, no

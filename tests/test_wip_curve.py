@@ -63,6 +63,12 @@ def bare_run(tmp: Path, cap="10", reservation="0.25", rid="wip1-b1r1-rep1"):
     return run
 
 
+_tables_spec = importlib.util.spec_from_file_location("fixture_containment_tables",
+                                                      ROOT / "tests" / "fixtures" / "containment_tables.py")
+TABLES = importlib.util.module_from_spec(_tables_spec)  # a process table blind to system binaries (PR #668)
+_tables_spec.loader.exec_module(TABLES)
+
+
 def tripwired_env(tmp: Path) -> tuple[dict, Path]:
     """SHELL=/bin/sh and a tripwire for every harness name first on PATH (test_certification.py)."""
     trip = tmp / "tripwire"
@@ -2582,6 +2588,23 @@ class TestEachDispatchIsContainedBeforeItSettles(Tmp):
 class TestALiveRunNeedsContainment(LiveWithAFakeHarness):
     """A live run spends: it does not start where process discovery cannot contain a call (the
     helper's host check), before anything is reserved."""
+
+    def test_a_host_blind_to_system_binaries_refuses_a_live_run(self):
+        # Python visible, system binaries hidden (macOS's view): the strong probe, the default (PR #668).
+        env, self.trip_log = tripwired_env(self.tmp)
+        fake = self.tmp / "fake-bin"
+        install_fake_harness(fake)
+        env.update(PATH=os.pathsep.join([str(fake), env["PATH"]]), HOME=str(self.tmp / "home"))
+        (self.tmp / "home").mkdir(exist_ok=True)
+        blind = TABLES.blind_to_system_binaries(wip.contain.process_table)
+        with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
+                mock.patch.object(wip.contain, "process_table", blind):
+            p = run_in_process(["run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"),
+                                "--worker", "live", "--agent", "claude", "--model", "m", "--cost-cap-usd", "20",
+                                "--reservation-usd", "0.25", "--runs", "wip1-b1r1-rep1"], env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("process discovery cannot contain", p.stderr)
+        self.assertFalse((self.tmp / "results" / "runs").exists())
 
     def test_a_host_that_hides_markers_refuses_a_live_run(self):
         p, run_json = self.live(containment="the process table does not show a call's OF_CALL_ID marker")

@@ -45,6 +45,19 @@ ablation = _load("ablation_for_runner_tests", "scripts/ablation.py")
 runner = ablation._runner()
 PREREG = ablation.load_prereg()
 SAFETY = {}
+# The host probe, as the runner has it. setUpModule injects a proven host in its place (Python-level,
+# never an environment variable or flag): these tests are about the runner, not this machine. The
+# probe's own tests, and the refusal tests, put the real one back (PR #668 review).
+REAL_PROBE, REAL_TABLE = runner.containment_problem, runner.process_table
+
+def _fixture(name):
+    spec = importlib.util.spec_from_file_location(f"fixture_{name}", ROOT / "tests" / "fixtures" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+TABLES = _fixture("containment_tables")  # a process table blind to system binaries (PR #668 review)
 
 
 def setUpModule():
@@ -57,9 +70,12 @@ def setUpModule():
                   shell=os.environ.get("SHELL"))
     os.environ["PATH"] = f"{bindir}{os.pathsep}{SAFETY['path']}"
     os.environ["SHELL"] = "/bin/sh"
+    SAFETY["probe"] = mock.patch.object(runner, "containment_problem", lambda system_binary=True: None)
+    SAFETY["probe"].start()
 
 
 def tearDownModule():
+    SAFETY["probe"].stop()
     os.environ["PATH"] = SAFETY["path"]
     if SAFETY["shell"] is None:
         os.environ.pop("SHELL", None)
@@ -246,6 +262,12 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         prereg = copy.deepcopy(PREREG)
         prereg["cost_cap"].update(status=ablation.PENDING, authorised_usd=None, authorised_by=None)
         return prereg
+
+    def test_a_host_blind_to_system_binaries_refuses_a_live_run(self):
+        # Python visible, system binaries hidden (macOS's view): the strong probe refuses (PR #668).
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", TABLES.blind_to_system_binaries(REAL_TABLE)):
+            self.refused(self.live("--cost-cap-usd", "5"), "process discovery cannot contain", self.authorised())
 
     def test_a_live_run_needs_the_owners_recorded_authorisation(self):
         self.refused(self.live("--cost-cap-usd", "5"), "PENDING OWNER AUTHORISATION", self.pending())
@@ -758,7 +780,8 @@ class InterruptedSpendIsRecorded(SafetyNet):
 
     def test_a_real_sigterm_mid_agent_records_the_reservation_durably(self):
         env = {**os.environ, "SHELL": "/bin/sh"}
-        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"),
+        proc = subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                                     "mod._runner().containment_problem = proven"),
                                  *self.live(20, "--timeout", "60", agent="hang")],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(self.out) if pid_alive(p)])
@@ -1172,7 +1195,8 @@ class TheWatchdogCleansUpBeforeItLetsGo(SafetyNet):
 
     def spawn(self, argv):
         env = {**os.environ, "SHELL": "/bin/sh"}
-        proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "ablation.py"), *argv],
+        proc = subprocess.Popen([*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                                     "mod._runner().containment_problem = proven"), *argv],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         return proc
@@ -1351,7 +1375,8 @@ class TestTheContainmentProbeCoversASystemBinary(unittest.TestCase):
                         env = tuple(tok for tok in env if not tok.startswith(mark))
                 table[pid] = (ppid, pgid, env)
             return table
-        with mock.patch.object(runner, "process_table", blind_but_to_python):
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", blind_but_to_python):
             self.assertIsNotNone(runner.containment_problem(system_binary=True),
                                  "a table blind to system binaries was trusted")
 
@@ -1556,7 +1581,8 @@ class DiscoveryFailureNeverLeavesACallRunning(SafetyNet):
 
     def test_a_live_run_is_refused_where_discovery_is_unavailable(self):
         out = self.out_dir()
-        with mock.patch.object(runner, "process_table", side_effect=OSError("no ps")):
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", side_effect=OSError("no ps")):
             code, _stdout, err = run_main(self.live(out))
         self.assertEqual(code, 2, err)
         self.assertIn("process discovery", err)
@@ -1568,7 +1594,8 @@ class DiscoveryFailureNeverLeavesACallRunning(SafetyNet):
 
         def no_environments():
             return {pid: (ppid, pgid, ()) for pid, (ppid, pgid, _env) in real().items()}
-        with mock.patch.object(runner, "process_table", no_environments):
+        with mock.patch.object(runner, "containment_problem", REAL_PROBE), \
+                mock.patch.object(runner, "process_table", no_environments):
             code, _stdout, err = run_main(self.live(out))
         self.assertEqual(code, 2, err)
         self.assertIn("process discovery", err)

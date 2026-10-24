@@ -718,6 +718,18 @@ Discovery is only as good as the table. Linux reads `/proc/<pid>/environ`, which
 process the user owns. Elsewhere it uses `ps -E`; on macOS that cannot read an Apple system
 binary's environment (`/bin/sh`, `/bin/sleep`), so a detached shell is invisible there.
 
+**The rule for paid live runs.** A paid live run starts only on a host where containment is
+proven. The strong probe must pass, so that every descendant is discoverable, a system binary
+included. Otherwise the run refuses before it reserves anything. The probe is every paid runner's
+default: #606's ablation runner, hint replay, the trajectory live arm, the WIP-curve runner and
+`first_run.py --worker live`. No environment variable or flag skips it. Tests inject the probe and
+the process table as Python arguments.
+
+On macOS the strong probe fails, so a live run refuses there, as intended. Run live arms in a
+disposable Linux container (OrbStack provides one on macOS). There, `/proc/<pid>/environ` shows
+every process the user owns, and destroying the container is the final backstop for anything a
+sweep could not reach.
+
 ## `events.py`
 
 Append-only lifecycle event record, and the WIP-curve rows derived from it (#603). One
@@ -1185,10 +1197,10 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   Whatever discovery can see, the call's known process group is killed, and a watchdog whose
   own sweep fails kills its group with itself. A live run is refused before it reserves anything
   where a probe carrying a marker cannot be found by it (for example, a sandbox that denies `ps`).
-  The probe is a Python process. `containment_problem(system_binary=True)` also probes a system
-  binary (`sleep`), because macOS's `ps -E` cannot read an Apple system binary's environment
-  (`/bin/sh` and the rest), so a detached shell is invisible there. The WIP-curve runner asks for
-  that check; this runner's default does not.
+  The probe is the strong one: a Python process and a system binary (`sleep`), because macOS's
+  `ps -E` cannot read an Apple system binary's environment (`/bin/sh` and the rest), so a detached
+  shell would be invisible there. On macOS a live run is therefore refused; run it in a disposable
+  Linux container ([`containment.py`](#containmentpy)).
   The limit: a process that re-executes itself with an emptied environment (`env -i`) after
   leaving the call's process tree is not found. Run the arm in a disposable sandbox.
 - **Results** (`hint-replay-live/v2`): per call `cost_usd` (`null` when unmeasured), `measured`,

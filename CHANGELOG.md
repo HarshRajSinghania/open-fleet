@@ -82,8 +82,12 @@ truth is `.claude-plugin/plugin.json`.
       cleanup sweeps it with the shared `runtime/scripts/containment.py` (moved there from #606's
       runner, which imports it), so a descendant that left for a session of its own is ended
       too. A standalone first run says GO only on a verified teardown. One it cannot vouch for stops the run `orphan-alive`, charges every call its
-      full hold, keeps the sandbox, and blocks the next run. A live run needs that containment,
-      and its host check also probes a system binary, so on macOS a live WIP run is refused.
+      full hold, keeps the sandbox, and blocks the next run. Each dispatch also carries its own
+      marker and is contained before its call settles or its result counts.
+    - Every paid live run (ablation, hint replay, the trajectory live arm, WIP and
+      `first_run.py --worker live`) starts only where the strong host check proves containment, a
+      system binary included. It fails on macOS, so live arms run in a disposable Linux
+      container.
     - Coordinator and merge-queue git goes through `gitexec.py`.
     - Worker code under the oracle gets a minimal environment, and runs under #606's call
       watchdog: what it detaches is swept, and no output drain waits on it.

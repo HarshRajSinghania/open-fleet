@@ -248,10 +248,13 @@ as dropped. The live runs use the owner's isolation wrapper, outside the reposit
   review is `review-failed`. Its call is charged its full hold, because what it left may have spent.
   A dispatch that cannot be vouched for halts the run `orphan-alive` at once, every running
   dispatch is stopped, and no further call starts.
-- A live run does not start where process discovery cannot contain a call: the helper's host
-  check must find its marker on a Python process and on a system binary. macOS's `ps -E` cannot
-  read the environment of an Apple system binary (`/bin/sh`, `/bin/sleep`), so on macOS a live
-  run is refused. An inert dry run spends nothing and still runs there.
+- A live run does not start where process discovery cannot contain a call: the shared host check
+  (`runtime/scripts/containment.py`) must find its marker on a Python process and on a system
+  binary. macOS's `ps -E` cannot read the environment of an Apple system binary (`/bin/sh`,
+  `/bin/sleep`), so on macOS a live run is refused, as intended. Live runs go in a disposable
+  Linux container (OrbStack on macOS). There, `/proc/<pid>/environ` shows every process the user
+  owns, and destroying the container is the final backstop. An inert dry run spends nothing and
+  still runs on macOS.
 - An interrupted run (SIGTERM, SIGHUP or Ctrl-C) does the same first. It then charges every dispatch the store holds for the run whose
   usage was never read, including one whose launch the signal interrupted before the runner saw
   its id. Each is charged what its stream reports, or its full reservation if the stream reports

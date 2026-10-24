@@ -219,11 +219,21 @@ def _emit(obj):
     sys.stdout.flush()
 
 
-def driver_probe(bench):
+def _load_bench(bench, traps=None):
+    """The pinned vfbench.py, reading its cases from `traps` when a held-out set is evaluated
+    (#601): the held-out cases run through the pinned bench's own gates and fixture builders,
+    while its committed corpus stays the development split."""
+    vf = _load(bench / "vfbench.py", "vfbench_replayed")
+    if traps:
+        vf.TRAPS = Path(traps)
+    return vf
+
+
+def driver_probe(bench, traps=None):
     """Everything the replay needs to know about the pinned bench before it scores anything: the
     corpus, each case's skip reason, the gates, the revision's own corpus pin and the git its
     signed-dispatch cases will run under (the bench's own custody probe, never a reimplementation)."""
-    vf = _load(bench / "vfbench.py", "vfbench_replayed")
+    vf = _load_bench(bench, traps)
     out = {"gates": list(vf.GATES), "fixtures": sorted(getattr(vf, "FIXTURES", {}) or {})}
     version = (bench / "VERSION").read_text(encoding="utf-8") if (bench / "VERSION").exists() else ""
     canary = (bench / "CANARY").read_text(encoding="utf-8") if (bench / "CANARY").exists() else ""
@@ -245,6 +255,7 @@ def driver_probe(bench):
     out["system_custody_git_dir"] = probe() if probe else None
     out["cases"] = [{"id": t["id"], "class": t["class"], "sound_expected": t["sound_expected"],
                      "expect_reason": t.get("expect_reason"), "fixture": t.get("fixture"),
+                     "inventory_site": t.get("inventory_site"),
                      "skip": _skip(vf, t)} for t in vf.load_traps()]
     _emit(out)
 
@@ -421,10 +432,10 @@ def run_adapter(vf, trap, adapter, timeout):
         shutil.rmtree(holder, ignore_errors=True)
 
 
-def driver_case(bench, case_id, adapters, adapter_timeout):
+def driver_case(bench, case_id, adapters, adapter_timeout, traps=None):
     """Every configuration for ONE case, in order, one JSON line as each starts and finishes — so
     when the replay kills a case that ran out of time, it knows which configuration was running."""
-    vf = _load(bench / "vfbench.py", "vfbench_replayed")
+    vf = _load_bench(bench, traps)
     trap = next(t for t in vf.load_traps() if t["id"] == case_id)
     for name, gate in vf.GATES.items():
         _emit({"start": name})
@@ -461,7 +472,8 @@ def driver_main(args):
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, _exit)
     try:
-        driver_case(Path(args.bench), args.case, json.loads(args.adapters), args.adapter_timeout)
+        driver_case(Path(args.bench), args.case, json.loads(args.adapters), args.adapter_timeout,
+                    args.traps)
     finally:
         kill_groups(list(_ADAPTER_GROUPS))
         _ADAPTER_GROUPS.clear()
@@ -593,7 +605,28 @@ def _coverage(rows, scored_classes):
             "checks": len(checks), "checks_sampled": len({c for r in sampled for c in r["checks"]})}
 
 
-def score_run(cases, results, rows):
+def _coverage_by_site(rows, traps):
+    """Coverage for a held-out set (#601): its traps name no development class, so each samples
+    the inventory row its category (`class`, a verifier check) and `inventory_site` name. A trap
+    that names no single row is counted as unmapped, never as a sampled row."""
+    if rows is None or isinstance(rows, str):
+        return _coverage(rows, set())
+    hit = [inventory_row_for(rows, c["class"], c.get("inventory_site")) for c in traps]
+    sampled = sorted({i for i in hit if i is not None})
+    by_status, sampled_by_status = {}, {}
+    for r in rows:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+    for i in sampled:
+        sampled_by_status[rows[i]["status"]] = sampled_by_status.get(rows[i]["status"], 0) + 1
+    return {"inventory_rows": len(rows), "by_status": by_status, "sampled_rows": len(sampled),
+            "sampled_by_status": sampled_by_status,
+            "rate": round(len(sampled) / len(rows), 4) if rows else None,
+            "checks": len({c for r in rows for c in r["checks"]}),
+            "checks_sampled": len({c for i in sampled for c in rows[i]["checks"]}),
+            "unmapped_traps": sum(1 for i in hit if i is None)}
+
+
+def score_run(cases, results, rows, by_site=False):
     """One configuration's metrics for one run. Only SCORED cases count; every other status is
     listed by kind, so a configuration that answered fewer cases cannot look the same."""
     scored = [c for c in cases if results[c["id"]]["status"] == "scored"]
@@ -612,8 +645,109 @@ def score_run(cases, results, rows):
             "false_rejection": _ratio(fr, len(controls)),
             "wrong_reason": _ratio(wrong, len(judged)) if judged else None,
             "not_scored": statuses,
-            "coverage": _coverage(rows, {c["class"] for c in scored}),
+            "coverage": (_coverage_by_site(rows, traps) if by_site
+                         else _coverage(rows, {c["class"] for c in scored})),
             "wall_seconds": round(sum(results[c["id"]].get("wall_seconds", 0.0) for c in cases), 3)}
+
+
+def verdict_class(case, rec):
+    """What one configuration's answer on one case amounts to, in words a report can carry
+    without the case (#601): a trap is refused, refused for the wrong reason or falsely accepted;
+    a valid control is accepted or falsely rejected; anything else was not scored, and says so."""
+    if rec["status"] == "unsupported":
+        return "unsupported"
+    if rec["status"] != "scored":
+        return f"unscored:{rec['status']}"
+    if case["sound_expected"] == "RED":
+        if rec["verdict"] == "GREEN":
+            return "false-acceptance"
+        return "refused-wrong-reason" if rec.get("reason_matched") is False else "refused"
+    return "accepted" if rec["verdict"] == "GREEN" else "false-rejection"
+
+
+def _sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def heldout_preflight(export, cases_dir):
+    """(facts, failures) for a held-out evaluation (#601). The set handed in must be exactly the
+    one whose digests the PINNED revision publishes: every case file's raw sha256 is in its
+    digests file, none is missing, and the set digest equals the protocol's. An unpublished set,
+    or a case edited after its digest was published, is never scored as held-out v1. The facts
+    are counts and digests only."""
+    files = sorted(cases_dir.glob("*.json"))
+    raw = [_sha256(f.read_bytes()) for f in files]
+    facts = {"split": "heldout", "cases": len(files),
+             "set_sha256": _sha256("".join(f"{h}\n" for h in sorted(raw)).encode("ascii")),
+             "matches_published": False}
+    try:
+        protocol = json.loads((export / BENCH / "heldout-protocol.json").read_text(encoding="utf-8"))
+        split = protocol["splits"]["heldout"]
+    except (OSError, ValueError, RecursionError, KeyError, TypeError):
+        return facts, [{"kind": "heldout-protocol-unreadable", "case": None,
+                        "detail": "the pinned revision's held-out protocol cannot be read"}]
+    published = split.get("published_digests")
+    facts.update(version=split.get("version"), published_digests=published,
+                 published_set_sha256=split.get("set_sha256"))
+    if not published:
+        return facts, [{"kind": "heldout-unpublished", "case": None,
+                        "detail": "the pinned revision publishes no held-out digests: a set whose "
+                                  "digests were never published is not a protocol evaluation"}]
+    target = (export / str(published)).resolve()
+    try:
+        if not target.is_relative_to(export.resolve()):
+            raise ValueError("outside the export")
+        pub = [c["raw_sha256"] for c in json.loads(target.read_text(encoding="utf-8"))["cases"]]
+    except (OSError, ValueError, RecursionError, KeyError, TypeError):
+        return facts, [{"kind": "heldout-digests-unreadable", "case": None,
+                        "detail": f"the published digests {published} cannot be read at the pinned revision"}]
+    failures = []
+    extra = sum(1 for h in raw if h not in set(pub))
+    missing = len(set(pub) - set(raw))
+    if extra or missing or len(raw) != len(pub):
+        failures.append({"kind": "heldout-drift", "case": None,
+                         "detail": f"{extra} case file(s) not in the published digests, {missing} "
+                                   f"published case(s) absent ({len(raw)} handed in, {len(pub)} published)"})
+    if split.get("set_sha256") != facts["set_sha256"]:
+        failures.append({"kind": "heldout-drift", "case": None,
+                         "detail": "the set digest of the cases handed in is not the protocol's"})
+    facts["matches_published"] = not failures
+    return facts, failures
+
+
+# Preflight kinds whose detail names no held-out content: the development corpus's pins, and the
+# held-out preflight's own counts. Every other detail concerns a held-out case and is withheld.
+_PUBLIC_PREFLIGHT = {"corpus-drift", "corpus-unreadable", "not-a-vf-bench-revision",
+                     "heldout-protocol-unreadable", "heldout-unpublished", "heldout-digests-unreadable",
+                     "heldout-drift", "heldout-case-unreadable"}
+
+
+def _skip_kind(reason):
+    if str(reason).startswith("shallow clone"):
+        return "a commit the case pins is not in the export"
+    if str(reason).startswith("no system-custody git"):
+        return "no system-custody git on this host"
+    return "the skip check failed (detail withheld)"
+
+
+def redact_heldout(report):
+    """The held-out report carries metrics, ids, verdicts and verdict classes, never content
+    (#601): no case class, declared reason, refusal text, adapter reason, fixture detail or skip
+    detail. The verdict is recomputed from what is left, so no failure line quotes a case."""
+    if report.get("corpus"):
+        report["corpus"]["cases"] = [{"id": c["id"]} for c in report["corpus"]["cases"]]
+    report["preflight"]["failures"] = [
+        f if f["kind"] in _PUBLIC_PREFLIGHT else
+        {"kind": f["kind"], "case": f.get("case"), "detail": "withheld: it concerns a held-out case"}
+        for f in report["preflight"]["failures"]]
+    report["skipped"] = [{"id": s["id"], "reason": _skip_kind(s["reason"])} for s in report["skipped"]]
+    report["unsupported"] = [{k: v for k, v in u.items() if k != "reasons"}
+                             for u in report["unsupported"]]
+    report["diagnostics"] = {}
+    report["redaction"] = ("held-out evaluation: case content, categories, declared reasons, "
+                           "refusal text, adapter reasons and fixture and skip details are withheld; "
+                           "ids, verdicts, verdict classes and metrics are reported")
+    return _finish(report)
 
 
 def _spread(values):
@@ -716,11 +850,21 @@ def check_adapter_names(adapters, gates):
 
 def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
            adapter_timeout=DEFAULT_ADAPTER_TIMEOUT, adapters=(), selection=None, git=None,
-           python=None, keep=None):
-    """Run the replay and return the report (a dict). Raises ReplayError on usage problems."""
+           python=None, keep=None, heldout=None):
+    """Run the replay and return the report (a dict). Raises ReplayError on usage problems.
+
+    `heldout` is a directory OUTSIDE the repository holding a held-out set (#601). Its cases run
+    through the pinned bench in place of the development corpus, after the preflight proves they
+    are the set the pinned revision publishes digests for; the report is then redacted to
+    metrics, ids and verdict classes. The cases are copied into the replay's own temporary
+    directory first, so the bytes digested are the bytes scored, and removed with it."""
     if runs < 1:
         raise ReplayError("--runs must be at least 1")
     check_adapter_names(adapters, BUILTIN)
+    if heldout is not None:
+        heldout = Path(heldout).resolve()
+        if not heldout.is_dir() or not any(heldout.glob("*.json")):
+            raise ReplayError(f"--heldout {heldout} is not a directory of *.json cases")
     source = Path(source).resolve()
     commit, tree = resolve_revision(source, rev)
     git = choose_git(git)
@@ -737,8 +881,14 @@ def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
         gitbin = str(run_dir / "bin" / "git")
         export = run_dir / "export"
         export_revision(source, commit, export, env, gitbin)
+        hdir = None
+        if heldout is not None:
+            hdir = run_dir / "heldout"
+            hdir.mkdir()
+            for f in sorted(heldout.glob("*.json")):
+                shutil.copyfile(f, hdir / f.name)
         report = _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
-                          adapter_timeout, list(adapters), selection)
+                          adapter_timeout, list(adapters), selection, hdir)
         report["environment"].update({
             "git": _home_relative(git),
             "git_version": _git(["--version"], env=env, git=gitbin),
@@ -761,8 +911,16 @@ def replay(source, rev, runs=DEFAULT_RUNS, case_timeout=DEFAULT_CASE_TIMEOUT,
 
 
 def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout, adapter_timeout,
-             adapters, selection):
+             adapters, selection, hdir=None):
+    report = _measure_run(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
+                          adapter_timeout, adapters, selection, hdir)
+    return redact_heldout(report) if hdir else report
+
+
+def _measure_run(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
+                 adapter_timeout, adapters, selection, hdir):
     bench = export / BENCH
+    traps_arg = ["--traps", str(hdir)] if hdir else []
     report = {
         "schema": SCHEMA,
         "revision": {"commit": commit, "tree": tree},
@@ -783,12 +941,16 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         # in the reproducing environment pin the same commit.
         "environment": {"requested_revision": rev}, "diagnostics": {},
     }
+    if hdir:
+        # Only a held-out report carries the key, so a development replay is byte-for-byte the
+        # report it was before (#601): the published reference still reproduces.
+        report["protocol"]["split"] = "heldout"
     if not (bench / "vfbench.py").is_file():
         report["preflight"] = {"ok": False, "failures": [
             {"kind": "not-a-vf-bench-revision", "case": None,
              "detail": "the exported revision has no bench/vf-bench/vfbench.py"}]}
         return _finish(report)
-    records, timed_out, code, err = _run_driver(python, ["probe", "--bench", str(bench)],
+    records, timed_out, code, err = _run_driver(python, ["probe", "--bench", str(bench), *traps_arg],
                                                 export, env, case_timeout)
     if timed_out or code != 0 or not records:
         report["preflight"] = {"ok": False, "failures": [
@@ -830,13 +992,15 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         "cases": [{k: c[k] for k in ("id", "class", "sound_expected", "expect_reason")}
                   for c in cases]}
     traps, failures = [], []
-    for path in sorted((bench / "traps").glob("*.json")):
+    for path in sorted((hdir or bench / "traps").glob("*.json")):
         try:
             traps.append(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError, RecursionError) as exc:
             # The pinned bench loaded it, this reader cannot: named, and every other case is
-            # still checked (PR #645 review).
-            failures.append({"kind": "corpus-unreadable", "case": None,
+            # still checked (PR #645 review). A held-out case is named by file only (#601).
+            failures.append({"kind": "heldout-case-unreadable", "case": None,
+                             "detail": f"{path.name}: {type(exc).__name__}"} if hdir else
+                            {"kind": "corpus-unreadable", "case": None,
                              "detail": f"{path.name}: {type(exc).__name__}: {exc}"[:300]})
     failures += [{"kind": "corpus-drift", "case": None, "detail": e} for e in probe["corpus_errors"]]
     failures += fixture_failures(export, [t for t in traps if not selection or t["id"] in selection],
@@ -854,6 +1018,10 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
     else:
         report["heldout"] = {"protocol": None, "status": "no held-out protocol at this revision",
                              "holder": None}
+    if hdir:
+        facts, held_failures = heldout_preflight(export, hdir)
+        report["heldout"] = {**(report["heldout"] or {}), **facts}
+        failures += held_failures
     if failures:
         report["preflight"] = {"ok": False, "failures": failures}
         return _finish(report)
@@ -869,8 +1037,8 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         for c in live:
             records, timed_out, code, err = _run_driver(
                 python, ["case", "--bench", str(bench), "--case", c["id"], "--adapters", spec,
-                         "--adapter-timeout", str(adapter_timeout)], export, env, budget,
-                pgid_file=export.parent / "adapter-groups")
+                         "--adapter-timeout", str(adapter_timeout), *traps_arg], export, env,
+                budget, pgid_file=export.parent / "adapter-groups")
             started = {r["start"] for r in records if "start" in r}
             done = {r["done"]: r for r in records if "done" in r}
             for n in names:
@@ -901,7 +1069,8 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
         rows = f"the README's verifier-check inventory is unreadable ({type(exc).__name__})"
     for cfg in configs:
         n = cfg["name"]
-        per_run = [score_run(live, {cid: results[n][cid][i] for cid in results[n]}, rows)
+        per_run = [score_run(live, {cid: results[n][cid][i] for cid in results[n]}, rows,
+                             by_site=bool(hdir))
                    for i in range(runs)]
         case_view, unstable = {}, []
         for c in live:
@@ -910,6 +1079,8 @@ def _measure(export, env, gitbin, python, commit, tree, rev, runs, case_timeout,
                     "verdicts": [r.get("verdict") for r in recs]}
             if any("reason_matched" in r for r in recs):
                 view["reason_matched"] = [r.get("reason_matched") for r in recs]
+            if hdir:
+                view["verdict_classes"] = [verdict_class(c, r) for r in recs]
             case_view[c["id"]] = view
             if len({(r["status"], r.get("verdict"), r.get("reason_matched")) for r in recs}) > 1:
                 unstable.append({"id": c["id"], "statuses": view["statuses"],
@@ -1005,6 +1176,9 @@ def render_summary(report):
     corpus = report.get("corpus") or {}
     scope = ("full corpus" if not proto.get("selection") else
              f"SUBSET of {len(proto['selection'])} case(s) — not a full-corpus replay")
+    if proto.get("split") == "heldout":
+        scope = ("HELD-OUT set, content withheld" if not proto.get("selection") else
+                 f"SUBSET of {len(proto['selection'])} HELD-OUT case(s), content withheld")
     lines.append(f"protocol: {proto['runs']} run(s) · case timeout {proto['case_timeout_seconds']} s · "
                  f"{scope} ({corpus.get('total', '?')} cases: {corpus.get('traps', '?')} traps, "
                  f"{corpus.get('valid_controls', '?')} valid controls) · clean export, built env")
@@ -1040,6 +1214,9 @@ def render_summary(report):
     if held:
         lines.append(f"held-out split: {held.get('status')}"
                      + (f" (holder: {held['holder']})" if held.get("holder") else ""))
+    if held.get("split") == "heldout":
+        lines.append(f"held-out set {str(held.get('set_sha256'))[:12]}… ({held.get('cases')} case "
+                     f"file(s)): {'= the published digests' if held.get('matches_published') else 'NOT the published set'}")
     for key, label in (("skipped", "skipped"), ("unsupported", "unsupported"),
                        ("timeouts", "timeouts"), ("unscored", "unscored")):
         items = report.get(key) or []
@@ -1212,9 +1389,10 @@ def main(argv=None):
         ap.add_argument("--adapters", default="[]")
         ap.add_argument("--adapter-timeout", type=float, default=DEFAULT_ADAPTER_TIMEOUT)
         ap.add_argument("--pgid-file")
+        ap.add_argument("--traps", help="a held-out set's case directory (#601)")
         a = ap.parse_args(argv[1:])
         if a.mode == "probe":
-            driver_probe(Path(a.bench))
+            driver_probe(Path(a.bench), a.traps)
             return 0
         return driver_main(a)
 
@@ -1231,6 +1409,9 @@ def main(argv=None):
                        help="an external verifier behind the adapter contract (operator-declared)")
         p.add_argument("--fixture-adapter", action="append", default=[], metavar="NAME=COMMAND",
                        help="a fake or reference adapter; scored, labelled never a product score")
+        p.add_argument("--heldout", metavar="DIR",
+                       help="evaluate the held-out set in DIR (outside the repository) instead of "
+                            "the development corpus; the report carries no case content (#601)")
     p_run = sub.add_parser("run", help="replay a pinned revision in a clean environment")
     p_run.add_argument("--rev", default="HEAD", help="the revision to pin (default: HEAD)")
     p_run.add_argument("--runs", type=int, default=DEFAULT_RUNS)
@@ -1275,11 +1456,16 @@ def main(argv=None):
             selection = [c for c in (a.cases or "").split(",") if c] or None
             report = replay(a.repo, a.rev, runs=a.runs, case_timeout=a.case_timeout,
                             adapter_timeout=a.adapter_timeout, adapters=adapters,
-                            selection=selection, git=a.git, python=a.python, keep=a.keep)
+                            selection=selection, git=a.git, python=a.python, keep=a.keep,
+                            heldout=a.heldout)
             _write(report, a.out, a.summary)
             return 0 if report["verdict"]["ok"] else 1
         reference = load_report(a.reference)
         proto = reference["protocol"]
+        if (proto.get("split") == "heldout") != bool(a.heldout):
+            raise ReplayError("the reference is a held-out evaluation: pass --heldout DIR"
+                              if proto.get("split") == "heldout" else
+                              "the reference is a development replay: --heldout does not apply")
         wanted = [c["name"] for c in proto.get("configurations", [])
                   if c["tier"] in ("fixture-adapter", "external-adapter")]
         if sorted(wanted) != sorted(x["name"] for x in adapters):
@@ -1288,7 +1474,8 @@ def main(argv=None):
         report = replay(a.repo, reference["revision"]["commit"], runs=proto["runs"],
                         case_timeout=proto["case_timeout_seconds"],
                         adapter_timeout=proto["adapter_timeout_seconds"], adapters=adapters,
-                        selection=proto.get("selection"), git=a.git, python=a.python)
+                        selection=proto.get("selection"), git=a.git, python=a.python,
+                        heldout=a.heldout)
         _write(report, a.out, a.summary)
         mismatches = compare(reference, report)
         for m in mismatches[:60]:

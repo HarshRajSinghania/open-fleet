@@ -940,7 +940,7 @@ if role == "builder":
     if action == "die":
         answer("stand-in scripted to exit without reporting")
         sys.exit(1)
-    if action in ("solve", "miss", "regress", "plant", "link_review", "orphan"):
+    if action in ("solve", "miss", "regress", "plant", "link_review", "orphan", "solve_crash"):
         spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
         runner = importlib.util.module_from_spec(spec_r)
         spec_r.loader.exec_module(runner)
@@ -991,7 +991,7 @@ if role == "builder":
                          "--subject", f"worker_done:{dispatch}",
                          "--payload", json.dumps({"head": head})]).returncode
     answer(f"WIP-BUILD-DONE {nonce} {head} {outcome}")
-    sys.exit(rc)
+    sys.exit(3 if action == "solve_crash" else rc)  # solve_crash: reports success, then exits nonzero
 
 nonce, head = review.group(1), review.group(3)
 diff = Path(review.group(4)).read_text(encoding="utf-8", errors="replace")
@@ -1001,6 +1001,8 @@ done = re.search(r"OPEN_FLEET_WORKER_DONE (disp_[0-9a-f]+) <outcome>", spec)
 if done:
     text += f"OPEN_FLEET_WORKER_DONE {done.group(1)} succeeded\n"
 answer(text)
+if action == "approve_crash":  # a valid approval printed, then a nonzero exit
+    sys.exit(3)
 '''
 
 # The dry run's default script: one scripted miss (an oracle bounce) and one review that asks
@@ -1243,6 +1245,23 @@ class Run:
             return conn.execute("SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch,)).fetchone()
         finally:
             conn.close()
+
+    def exit_of(self, dispatch):
+        """The dispatch's exit status from the provider's own exit record (the lane's exit.json),
+        retained as exits/<dispatch>.json so a saved run binds it too; None when there is none. A
+        call's printed answer is trusted only when this is 0 (PR #668 review)."""
+        row = self.dispatch_row(dispatch)
+        src = Path(row["lane_dir"]) / "exit.json" if row is not None and row["lane_dir"] else None
+        try:
+            doc = json.loads(src.read_text(encoding="utf-8")) if src else None
+        except (OSError, ValueError):
+            doc = None
+        if not isinstance(doc, dict):
+            return None
+        (self.dir / "exits").mkdir(exist_ok=True)
+        (self.dir / "exits" / f"{dispatch}.json").write_text(json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8")
+        rc = doc.get("rc")
+        return rc if isinstance(rc, int) and not isinstance(rc, bool) else None
 
     def worker_done(self, dispatch):
         """(outcome, store time) of the dispatch's worker_done, read from the store read-only, or
@@ -1517,7 +1536,8 @@ class Run:
         a["state"] = state
         if state == "timeout" and self.halt == "time-limit":
             a["outcome"] = "stopped-time-limit"  # stopped at the run's deadline, not a builder failure
-        elif state != "completed" or outcome != "succeeded" or head == base:
+        elif state != "completed" or outcome != "succeeded" or head == base \
+                or self.exit_of(a["dispatch"]) != 0:  # reported success, then a nonzero exit: failed
             a["outcome"] = "builder-failed" if state != "timeout" else "builder-timeout"
         elif row is not None and row["head_sha"] and row["head_sha"] != head:
             a["outcome"] = "builder-claim-mismatch"  # the store's head is not what git holds
@@ -1587,7 +1607,13 @@ class Run:
         (self.dir / rel).write_text(answer, encoding="utf-8")
         hits = [m for m in REVIEW_LINE.finditer(answer) if m.group(1) == review["nonce"]]
         review["state"] = state
-        if not hits or hits[-1].group(2) != review["head"]:
+        review["exit"] = self.exit_of(review["dispatch"]) if state != "timeout" else None
+        if state != "completed" or review["exit"] != 0:
+            # A call that did not finish successfully (died, killed, timed out, a nonzero exit) gives
+            # no verdict, whatever it printed (PR #668 review): it never reaches review.verdict.
+            a["outcome"] = "review-failed"
+            review["verdict"] = None
+        elif not hits or hits[-1].group(2) != review["head"]:
             a["outcome"] = "review-failed"
             review["verdict"] = None
         else:
@@ -2096,6 +2122,26 @@ class Bound:
         return self.dir / rel
 
 
+def call_failure(bound: Bound, dispatch: str):
+    """Why a retained run's dispatch did not finish successfully, from its bound store and exit
+    record, or None: completed in the store, and exit status 0 (PR #668 review)."""
+    db = bound.path("state.db")
+    if not db.is_file():
+        return "no retained store"
+    conn = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)  # a bound source: nothing written beside it
+    try:
+        row = conn.execute("SELECT state FROM dispatches WHERE dispatch_id = ?", (dispatch,)).fetchone()
+    finally:
+        conn.close()
+    if row is None or row[0] != "completed":
+        return f"the store says {row[0] if row else 'nothing'}"
+    try:
+        rc = json.loads(bound.path(f"exits/{dispatch}.json").read_text(encoding="utf-8")).get("rc")
+    except (OSError, ValueError, AttributeError):
+        return "no retained exit status"
+    return None if rc == 0 else f"exit status {rc}"
+
+
 def bind_outcomes(bound: Bound, derived: dict, raw_events: list, prereg: dict, taskset: dict) -> list[str]:
     """Every terminal outcome re-checked against git and review authority, from the retained
     bundle and artifacts alone (#604 Verification): [] when all bind."""
@@ -2138,6 +2184,10 @@ def bind_outcomes(bound: Bound, derived: dict, raw_events: list, prereg: dict, t
                              and e["data"]["reviewed_sha"] == head and e["dispatch"] not in builders]
                 if not approving:
                     problems.append(f"{what}: no approving review of that head by another dispatch")
+                for disp in sorted({e["dispatch"] for e in approving} | builders):
+                    why = call_failure(bound, disp)
+                    if why:  # a stored answer from a call that did not finish successfully never binds
+                        problems.append(f"{what}: {disp} did not finish successfully ({why})")
                 for e in approving:
                     rel = e["source"]["ref"]
                     path = bound.path(rel)

@@ -111,7 +111,12 @@ text each builder and reviewer receives is registered in the JSON's `contracts`,
 the runner, so the registration's digest pins it. The line
 may be wrapped in markdown, but it must carry the review's nonce and the reviewed head. A review
 with no such line ends the attempt `review-failed`, and the unit is rebuilt like any other bounced
-unit. No human reviewer sits in the measured loop. Human review capacity is a separate experiment.
+unit. So does a review whose call did not finish successfully, whatever it printed: it died, was
+stopped, timed out, or exited nonzero. Such a review never records a verdict. A builder that
+reported success and then exited nonzero is `builder-failed`. Each call's exit status is read from
+the provider's exit record and retained with the run. A saved run binds an approval, and the build
+it approved, only if the store records the call completed and its exit status is 0. No human
+reviewer sits in the measured loop. Human review capacity is a separate experiment.
 
 ## Repetitions, order and isolation
 

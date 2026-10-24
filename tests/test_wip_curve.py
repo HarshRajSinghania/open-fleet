@@ -2420,6 +2420,51 @@ class TestAnUncontainedOracleStopsTheRun(Tmp):
         self.assertFalse(trip_log.exists())
 
 
+class TestOnlyASuccessfulCallIsTrusted(Tmp):
+    """PR #668 review (Greptile PRRT_kwDOTWxN9c6v2-i3): a reviewer can print a valid approval and exit
+    nonzero, and a builder can report success and exit nonzero. A call that did not finish
+    successfully (a nonzero exit, died, killed, timed out) is never trusted, whatever it printed."""
+
+    def run_record(self, script):
+        env, trip_log = tripwired_env(self.tmp)
+        p = runner("run", "--results", str(self.tmp / "results"), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1", "--cost-cap-usd", "0.50", "--inert-cost-usd", "0.25",
+                   "--inert-script", json.dumps(script), env=env)
+        self.assertFalse(trip_log.exists())
+        run_dir = self.tmp / "results" / "runs" / "wip1-b1r1-rep1"
+        events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+        return json.loads((run_dir / "run.json").read_text(encoding="utf-8")), events, p
+
+    def test_an_approval_from_a_reviewer_that_exited_nonzero_is_a_failed_review(self):
+        record, events, p = self.run_record({"T5": {"reviewer": ["approve_crash"]}})
+        t5 = record["units"]["T5"]
+        self.assertEqual(t5["attempts"][0]["outcome"], "review-failed", p.stdout + p.stderr)
+        self.assertEqual([e for e in events if e["kind"] == "review.verdict"], [], "a failed call's verdict was recorded")
+
+    def test_a_builder_that_reported_success_and_exited_nonzero_is_a_failed_builder(self):
+        record, _events, p = self.run_record({"T5": {"builder": ["solve_crash"]}})
+        self.assertEqual(record["units"]["T5"]["attempts"][0]["outcome"], "builder-failed", p.stdout + p.stderr)
+
+
+class TestAStoredApprovalFromAFailedCallNeverBinds(DryRun):
+    """The same, read back: a saved run whose approving reviewer did not finish successfully, its
+    record re-hashed by a careful tamperer, does not bind."""
+
+    def test_an_approval_whose_reviewer_died_does_not_bind(self):
+        results = self.copy()
+        run_dir = results / "runs" / self.RUN
+        events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+        reviewer = next(e["dispatch"] for e in events
+                        if e["kind"] == "review.verdict" and e["data"]["verdict"] == "approve")
+        conn = sqlite3.connect(run_dir / "state.db")
+        conn.execute("UPDATE dispatches SET state = 'died' WHERE dispatch_id = ?", (reviewer,))
+        conn.commit()
+        conn.close()
+        rebind(run_dir)
+        problems = wip.build_report(results, basis="all")["runs"][0]["binding_problems"]
+        self.assertTrue(any(reviewer in p and "did not finish successfully" in p for p in problems), problems)
+
+
 class TestAKilledRunStillCounts(Tmp):
     """Adversarial pass (unavailable read as 0): a runner killed outright (SIGKILL, power loss)
     writes no run.json. Its calls in the shared ledger still count against the cap until the next

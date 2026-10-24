@@ -135,7 +135,7 @@ class TestRecordValidates(Tripwired):
     def test_only_bound_run_reports_carry_live_witnessed(self):
         _errors, _stale, cells = certification.validate(ROOT)
         live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["tier"] == "live-witnessed"}
-        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude")})
+        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude"), ("posix", "ro", "claude"), ("posix", "rw", "claude"), ("claude", "ro", "claude"), ("claude", "rw", "claude")})
         unknown = [c for c in cells if c["kind"] == "provider" and c["name"] not in ("orca", "posix")]
         self.assertTrue(unknown and all(certification.version_label(c["upstream"]) == "unknown" for c in unknown),
                         "an external adapter's upstream version was never recorded: it must read unknown")
@@ -224,7 +224,7 @@ class TestPinRefreshInvalidatesCells(Tripwired):
                 _p, cells = self.matrix("--pins", str(pins))
                 orca = {k: v for k, v in cells.items() if k[0] == "orca"}
                 self.assertEqual(set(orca.values()), {"stale"}, "a cell kept its tier after the pin moved")
-                self.assertEqual(cells[("posix", "ro", "claude")], "fixture-tested", "staleness is per provider")
+                self.assertEqual(cells[("posix", "ro", "claude")], "live-witnessed", "staleness is per provider")
 
     def test_rechecking_and_re_recording_makes_the_cells_fresh_again(self):
         pins = self.pins(lambda e: e.update(commit="e" * 40, version="v1.4.240"))
@@ -1081,7 +1081,7 @@ class TestLiveRouteIsIdentified(Tripwired):
         self.assertEqual(p.returncode, 0, p.stderr)
         _errors, _stale, cells = certification.validate(ROOT)
         live = {(c["name"], c["profile"], c["harness"]) for c in cells if c["effective"] == "live-witnessed"}
-        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude")})
+        self.assertEqual(live, {("orca", "ro", "claude"), ("orca", "rw", "claude"), ("posix", "ro", "claude"), ("posix", "rw", "claude"), ("claude", "ro", "claude"), ("claude", "rw", "claude")})
 
 
 class TargetRepo(Tripwired):

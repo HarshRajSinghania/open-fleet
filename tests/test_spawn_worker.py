@@ -1355,7 +1355,7 @@ class TestRuntimeNameIsCaseInsensitive(unittest.TestCase):
                     p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                        env=env, capture_output=True, text=True)
                     self.assertEqual(p.returncode, 0, p.stderr)
-                    self.assertIn("LAUNCH=claude --permission-mode plan\n", p.stdout)
+                    self.assertIn("LAUNCH=claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit\n", p.stdout)
 
     def test_any_spelling_of_a_provider_selects_it(self):
         rc, launch, err = run_launch("codex", "ro", {"OPEN_FLEET_RUNTIME": "POSIX"})

@@ -24,7 +24,11 @@ truth is `.claude-plugin/plugin.json`.
   posix `ro`/`rw` with claude and the claude harness cells live-witnessed. The Orca `ro`
   re-witness attempt stopped at Claude Code's folder-trust prompt before any injection, which
   only the operator may answer. `spawn_worker.sh` now names that blocked prompt, and refuses a
-  `new-child` selector on the Orca ro lane before creating a task.
+  `new-child` selector on the Orca ro lane before creating a task. A refused ro-lane inject now
+  keeps its code and `nextSteps` and exits 2. A second attempt, in a worktree that inherits
+  trust, was refused by Orca 1.4.229's agent detection, which never reads launch arguments: a
+  native Claude Code install runs as `versions/2.1.304`, a process name Orca does not recognize.
+  The Orca ro cell keeps its re-witness limitation.
 - **The hint-replay live arm observes and caps its spend** (#605). `scripts/hint_replay.py
   --live` recorded `--budget-usd` but never enforced it, discarded each worker's output, and
   killed only the top process on timeout. It now uses #606's spend guard and ledger. A `live` tier

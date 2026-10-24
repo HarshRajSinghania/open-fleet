@@ -1054,5 +1054,27 @@ class CellMechanics(unittest.TestCase):
         self.assertEqual((graded["approval_violations"], graded["scope_violations"]), (1, 0))
 
 
+class TheRegisteredLimitIsPositiveAndWithinItsReservation(SafetyNet):
+    """#657 review K1, swept into #606's runner: a reservation registered below USD 0.0125 handed its
+    call `--max-budget-usd 0.00`, and one below USD 0.025 could round its limit ABOVE the
+    reservation. A live run refuses both before anything is written or run."""
+
+    def test_a_reservation_too_small_for_a_positive_limit_within_it_is_refused(self):
+        for key, value in (("max_cost_per_agent_run_usd", 0.001), ("grader_reserve_usd", 0.007)):
+            with self.subTest(key=key, value=value):
+                prereg = small_live_prereg()
+                prereg["cost_cap"][key] = value
+                path = self.tmpdir() / "prereg.json"
+                path.write_text(json.dumps(prereg), encoding="utf-8")
+                out = self.tmpdir() / "out"
+                code, _stdout, err = run_main(
+                    ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                     "--harness-cmd", self.stub_cmd("plain"), "--grader-cmd", self.stub_cmd("grader-json"),
+                     "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+                self.assertEqual(code, 2, err)
+                self.assertIn("per-call limit", err)
+                self.assertFalse(out.exists(), "a refused run wrote its results directory")
+
+
 if __name__ == "__main__":
     unittest.main()

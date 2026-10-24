@@ -964,6 +964,15 @@ def preflight(args, api, prereg):
                       "(--agent-limit-flag / --grader-limit-flag, or the registration's harness "
                       "fields): without one a call's worst case is unbounded, so no cap can be "
                       "enforced before the spend")
+    # A registered reservation too small for a cent of limit handed its call `--max-budget-usd 0.00`,
+    # and below USD 0.025 the rounded limit could sit ABOVE the reservation (#657 review K1).
+    model = spend_model(prereg, tier)
+    for call in ("agent", "grader"):
+        reserve, limit = model[f"{call}_reserve_usd"], model[f"{call}_limit_usd"]
+        if not 0 < limit <= reserve:
+            raise Refused(f"the registered {call} reservation (USD {reserve:g}) leaves a per-call limit "
+                          f"of USD {limit:.2f}: every call needs a positive limit within its "
+                          "reservation, or its worst case is unbounded")
     stale = {m: s for m, s in api.registration_status(prereg).items() if s != "current"}
     if stale:
         raise Refused(f"the registered payloads no longer match the catalog: {stale} — check out "

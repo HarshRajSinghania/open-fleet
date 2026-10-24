@@ -65,6 +65,7 @@ import sys
 import tempfile
 import threading
 import time
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -440,6 +441,23 @@ def reported_cost(text):
     return cost, sorted(models)
 
 
+def call_limit(reserve):
+    """The limit handed to a call: LIMIT_FRACTION of its reservation, floored to the cent, so it is
+    never above the reservation (rounding could lift it there below USD 0.025) (#657 review K1)."""
+    return float((Decimal(str(reserve)) * Decimal(str(LIMIT_FRACTION))).quantize(
+        Decimal("0.01"), rounding=ROUND_FLOOR))
+
+
+def limit_error(per_call):
+    """Why a `per_call` reservation cannot hand its call a usable limit, or None. A limit of USD 0.00
+    used to drop the flag, so the worker ran with no limit at all (#657 review K1)."""
+    limit = call_limit(per_call)
+    if 0 < limit <= per_call:
+        return None
+    return (f"--per-call-usd {per_call:g} leaves a per-call limit of USD {limit:.2f}: every call needs "
+            f"a positive limit within its reservation, so reserve at least USD {0.01 / LIMIT_FRACTION:g}")
+
+
 def call_charge(cost, killed, reserve, tier):
     """_ablation_run.agent_charge: measured where there is a measure; a killed or unmeasured live
     call is charged its whole reservation (a killed one at least that, whatever it reported)."""
@@ -541,6 +559,12 @@ def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, b
     planned = len(tasks) * len(ARMS) * attempts
     if planned > max_runs:
         raise CorpusError(f"{planned} agent runs planned, --max-runs allows {max_runs}")
+    live = tier == "live"
+    limit = call_limit(per_call_usd) if per_call_usd is not None and limit_flag else None
+    why = limit_error(per_call_usd) if limit is not None else None
+    if why or (live and limit is None):  # a live call never starts without a positive limit (K1)
+        raise CorpusError(why or "a live run hands every call its own per-call limit: it needs "
+                          "--per-call-usd and --agent-limit-flag")
     # Nothing is written before this line; everything below is recorded.
     out = Path(out).resolve() if out else Path(tempfile.mkdtemp(prefix="hint-replay-live-")) / "results.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -551,14 +575,12 @@ def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, b
     except spend.Refused as exc:  # an unreadable ledger: spend already made cannot be counted
         raise CorpusError(str(exc)) from exc
     prior = float(ledger.total())
-    live = tier == "live"
     reserve = float(per_call_usd) if live else 0.0  # a stub is never paid: it reserves nothing
-    limit = round(per_call_usd * LIMIT_FRACTION, 2) if per_call_usd and limit_flag else None
     cap = float(budget_usd) if budget_usd is not None else 0.0
     ctx = {"ledger": ledger, "reserve": reserve, "tier": tier, "out": out, "timeout": timeout_s,
            "calls_dir": out.parent / f"{out.stem}.calls" / run_id,
            # Every path absolute (the worker's cwd is the fixture), then its own limit.
-           "argv": spend.absolute_argv(list(agent_argv)) + ([limit_flag, f"{limit:.2f}"] if limit else []),
+           "argv": spend.absolute_argv(list(agent_argv)) + ([limit_flag, f"{limit:.2f}"] if limit is not None else []),
            # No login-shell rc file may run (~/.zshenv can reorder PATH): the stub-claude rule.
            "env": dict(os.environ, SHELL="/bin/sh")}
     plan = [(s, arm, k) for s in tasks for arm in ARMS for k in range(1, attempts + 1)]
@@ -649,6 +671,8 @@ def preflight_live(args):
         if not args.agent_limit_flag:
             raise CorpusError("a live run hands every call its own per-call limit (--agent-limit-flag, "
                               "Claude's --max-budget-usd): without one a call's worst case is unbounded")
+        if limit_error(per_call):
+            raise CorpusError(limit_error(per_call))
         if not args.out:
             raise CorpusError("a live run needs --out: its spend ledger sits beside the results, so a "
                               "later run into the same --out counts what this one spent")
@@ -656,6 +680,8 @@ def preflight_live(args):
     for flag, value in (("--budget-usd", budget), ("--per-call-usd", per_call)):
         if value is not None and (not math.isfinite(value) or value < 0):
             raise CorpusError(f"{flag} must be a finite, non-negative number")
+    if per_call is not None and args.agent_limit_flag and limit_error(per_call):
+        raise CorpusError(limit_error(per_call))
 
 
 def build_parser():

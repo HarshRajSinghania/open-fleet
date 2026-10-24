@@ -1100,9 +1100,10 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   within the cap: the worst case one call is held to), a per-call limit flag
   (`--agent-limit-flag`, default Claude's `--max-budget-usd`; `''` is refused) and `--out`.
 - **Pre-emptive reservation.** Every call carries its own limit: the flag at 0.8 of its
-  reservation, appended to the worker's argv (a harness limit can be overshot, so it sits below
-  the reservation). A call starts only if the spend so far plus its reservation fits in the cap;
-  otherwise the run stops `CAP_REACHED`.
+  reservation floored to the cent, always appended to the worker's argv (a harness limit can be
+  overshot, so it sits below the reservation). A reservation whose limit would be USD 0.00 (below
+  USD 0.0125) is refused, never run without a limit. A call starts only if the spend so far plus
+  its reservation fits in the cap; otherwise the run stops `CAP_REACHED`.
 - **Observed and charged.** Each call's packet, stdout, stderr and oracle output are saved under
   `<stem>.calls/<run id>/<scenario>.<arm>.a<k>/` beside `--out`, and its `total_cost_usd` is read
   from Claude's `--output-format json` (or `stream-json`) and charged. An unmeasured call is

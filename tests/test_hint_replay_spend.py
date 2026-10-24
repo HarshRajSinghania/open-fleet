@@ -444,5 +444,32 @@ class NoProcessOutlivesItsCall(StandInRun):
         self.assertAllDead(at_least=2)
 
 
+class EveryCallGetsAPositiveLimitWithinItsReservation(StandInRun):
+    """#657 review K1: `round(r * 0.8, 2)` was 0.00 for a sub-cent reservation, and the flag was then
+    dropped, so the worker ran with no limit at all; below USD 0.025 the rounding could also land
+    ABOVE the reservation. The limit is floored to the cent, must be positive, and is always passed."""
+
+    def test_a_reservation_whose_limit_is_not_positive_and_within_it_is_refused(self):
+        for per_call in ("0.001", "0.007", "0.012"):
+            with self.subTest(per_call=per_call):
+                code, _out, err = self.main(self.live(cap="0.05", per_call=per_call))
+                self.assertEqual(code, 2, err)
+                self.assertIn("per-call limit", err)
+                self.assertEqual(self.calls(), [], "a worker started without a positive limit")
+                self.assertEqual(list(self.out.parent.iterdir()), [])
+
+    def test_the_smallest_reservation_with_a_cent_of_limit_hands_it_to_every_call(self):
+        code, _out, err = self.main(self.live(cap="0.05", per_call="0.0125", agent=self.agent(cost=0.01)))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["argv"][-2:] for c in self.calls()], [["--max-budget-usd", "0.01"]] * 3)
+
+    def test_the_library_entry_refuses_it_too(self):
+        with self.assertRaises(replay_mod.CorpusError):
+            replay_mod.live_replay(replay_mod.DEFAULT_CORPUS, shlex.split(self.agent()), "live", 1, 3,
+                                   model="stand-in-not-a-model", budget_usd=1.0, only={SCENARIO},
+                                   per_call_usd=0.001, out=str(self.out))
+        self.assertEqual(self.calls(), [], "a worker started without a positive limit")
+
+
 if __name__ == "__main__":
     unittest.main()

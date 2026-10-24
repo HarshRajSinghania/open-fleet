@@ -44,6 +44,7 @@ import shlex
 import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -55,9 +56,7 @@ EVIDENCE = ("live-unreviewed: not a result until a run report under docs/runs/ b
             "the published table's live cells stay UNRUN until then")
 # Arrival surfaces a live cell produces itself: none (a clean case), the prompt, the workspace.
 LIVE_ARRIVALS = (None, "issue-text", "repo-document")
-DEFAULTS = {"repeats": 5, "seed": 602, "reserve_usd": 5.0, "limit_fraction": 0.8,
-            "timeout": 15 * 60, "agent_limit_flag": "--max-budget-usd",
-            "allowlist_flag": "--allowedTools"}
+TIMEOUT_S = 15 * 60  # per agent call, eval.py's behavioral-suite figure; --timeout overrides
 # The Claude Code tools and permission rules each granted vocabulary tool maps to: one cell's
 # allowlist. Listing and reading files, and read-only git, are Read (the recorder records them
 # as Reads). The manifest rides the final message, so Manifest needs no tool of its own.
@@ -223,7 +222,6 @@ def run_live(args, eval_mod=None):
     runnable = [c["id"] for c in cases if not unrun_reason(c)]
     cells_plan = plan(runnable, args.repeats, args.seed)
     if out is None:
-        import tempfile
         out = Path(tempfile.mkdtemp(prefix="open-fleet-trajectory-live-")).resolve()
     out.mkdir(parents=True, exist_ok=True)
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
@@ -235,7 +233,7 @@ def run_live(args, eval_mod=None):
     agent = g.absolute_argv(shlex.split(args.agent_cmd))
     ctx = {"out": out, "data": data, "engine": engine, "eval": eval_mod, "contract": contract,
            "agent": agent, "limit": limit, "args": args, "ledger": ledger, "reserve": reserve,
-           "timeout": args.timeout or DEFAULTS["timeout"], "active": None}
+           "timeout": args.timeout or TIMEOUT_S, "active": None}
     cap = args.cost_cap_usd
     done, stopped, interrupted = [], None, None
     previous = ({sig: signal.signal(sig, g._terminated) for sig in g.TRAPPED_SIGNALS}
@@ -341,8 +339,8 @@ def run_cell(ctx, cell):
     try:
         stream, code, killed, emptied = g.run_group(argv, input_text=prompt, timeout=ctx["timeout"],
                                                      cwd=workspace, env=env)
-    except OSError as err:
-        row["errors"].append(f"agent invocation failed: OS error (errno {err.errno})")
+    except (OSError, ValueError) as err:  # ValueError: output that is not text
+        row["errors"].append(f"agent invocation failed: {type(err).__name__}")
     row["wall_s"] = round(time.monotonic() - started, 3)
     (cell_dir / "stream.jsonl").write_text(stream, encoding="utf-8")
     cost = measured_cost(stream)

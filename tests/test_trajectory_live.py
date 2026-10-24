@@ -1064,6 +1064,19 @@ class LiveRunner(SafetyNet):
         self.assertIn("| TT-01 |", report)
         self.assertIn("UNRUN", report)
 
+    def test_a_case_live_cannot_reach_is_unrun_never_graded(self):
+        out = self.tmpdir() / "out"
+        argv, log = self.live("clean", out, case="TT-01")
+        code, stdout, _err = self.run_main(argv)
+        result = self.results(out)
+        self.assertEqual(code, 1, "nothing ran: that is not a pass")
+        self.assertEqual(result["cells"], [])
+        self.assertEqual([u["case"] for u in result["unrun"]], ["TT-01"])
+        self.assertIn("tool-output", result["unrun"][0]["reason"])
+        self.assertIn("UNRUN", stdout)
+        self.assertFalse(log.exists(), "an UNRUN case reached the agent")
+        self.assertFalse((out / "spend.jsonl").exists() and self.ledger(out), "nothing was spent")
+
     def test_a_live_grant_attempt_is_graded_attempted_and_held(self):
         out = self.tmpdir() / "out"
         argv, _log = self.live("grant", out, case="FA-01")

@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -93,8 +94,9 @@ def synthetic_run(run_id, cond, throughput, *, compliant=True, review_in=100, re
         "cost_per_verified_closed_usd": "0.1667", "parked": {}, "tasks": {}, "models": [model],
         "derivable": True,
     }
+    finished = (datetime.fromisoformat(started) + timedelta(hours=1)).isoformat()
     run = {"run_id": run_id, "condition": cond, "builders": builders, "reviewers": reviewers, "tier": tier,
-           "status": "complete", "started_at": started, "finished_at": started.replace("T10", "T11"),
+           "status": "complete", "started_at": started, "finished_at": finished,
            "inputs_sha256": inputs, "model_pin": model, "harness_version": harness, "attempt": 1,
            "timeout_scale": 1.0, "compliant": compliant,
            "noncompliance": [] if compliant else ["excluded by the protocol"], "binding_problems": [],
@@ -349,6 +351,35 @@ class TestIncomparableRunsAreNeverPooled(ReportOver):
         self.assertTrue(any("model pin" in w for w in out["wip1-b6r1-rep1"]["noncompliance"]),
                         out["wip1-b6r1-rep1"]["noncompliance"])
         self.assertEqual(self.report(runs)["compliant_runs"], ["wip1-b1r1-rep1"])
+
+
+def series(cond, values, start_hour, **kw):
+    """Synthetic runs of one condition, two hours apart (the cooldown always kept)."""
+    base = datetime.fromisoformat("2026-10-24T00:00:00+00:00")
+    return [synthetic_run(f"wip1-{cond}-rep{i + 1}", cond, v,
+                          started=(base + timedelta(hours=start_hour + 2 * i)).isoformat(), **kw)
+            for i, v in enumerate(values)]
+
+
+class TestOnlyCompliantRunsDecide(ReportOver):
+    """PR #653 review: whatever --basis shows, the recommendation is computed from compliant runs
+    alone. Six fast b6r1 fixture runs must not turn a 'keep' into a 'raise'."""
+
+    def runs(self):
+        compliant = (series("b1r1", ["1.00", "1.02"], 0) + series("b3r1", ["1.00", "1.02"], 4)
+                     + series("b6r1", ["1.00", "1.02"], 8))
+        excluded = [synthetic_run(f"wip1-b6r1-rep{i}", "b6r1", "3.00", compliant=False, tier="fixture-tested",
+                                  started=f"2026-10-25T{10 + i:02d}:00:00+00:00") for i in range(3, 9)]
+        return compliant + excluded
+
+    def test_the_basis_never_moves_the_recommendation(self):
+        shown_all = self.report(self.runs(), basis="all")
+        compliant_only = self.report(self.runs(), basis="compliant")
+        self.assertEqual(compliant_only["recommendation"]["status"], "keep")
+        self.assertEqual(shown_all["recommendation"]["status"], "keep",
+                         "excluded runs swayed the recommendation")
+        b6 = next(c for c in shown_all["conditions"] if c["condition"] == "b6r1")
+        self.assertEqual(b6["throughput_per_h"]["n"], 8, "--basis all still shows every run's row")
 
 
 class TestDecisionRule(unittest.TestCase):

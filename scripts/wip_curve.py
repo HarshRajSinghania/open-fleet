@@ -2043,7 +2043,10 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
         "missing": [e["run_id"] for e in sched if e["run_id"] not in present],
         "runs": runs, "conditions": [blocks[c["id"]] for c in prereg["conditions"]],
         "compliant_runs": [r["run_id"] for r in compliant],
-        "recommendation": recommend(prereg, blocks, compliant),
+        # The rows show `basis`; the decision is the compliant runs' alone, whatever is shown, so
+        # an excluded run can never sway it (PR #653 review).
+        "recommendation": recommend(prereg, {c["id"]: condition_block(c, [r for r in compliant if r["condition"] == c["id"]])
+                                             for c in prereg["conditions"]}, compliant),
         "generalization_limits": prereg["generalization_limits"],
     }
 
@@ -2165,6 +2168,8 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- `{r['run_id']}` error: {r['error']}")
     rec = report["recommendation"]
     lines += ["", "## Recommendation", "", f"Status: **{rec['status']}** — {rec['why']}.", "",
+              f"Computed from the {len(report['compliant_runs'])} protocol-compliant run(s) alone, whatever the "
+              "basis of the rows above.", "",
               f"Authority: {rec['authority']}.", "", "## Limits on generalizing", ""]
     lines += [f"- {x}" for x in report["generalization_limits"]]
     return "\n".join(lines) + "\n"

@@ -248,7 +248,8 @@ The decision rule is fixed in the JSON:
 - **Keep:** otherwise, including every null or negative result.
 - **Not issued:** fewer than three compliant runs, or compliant runs at fewer than three settings.
 
-A recommendation is never a change. Changing a cap is its own human-reviewed policy change, and it
+The rule reads compliant runs only. `report --basis all` shows every run's rows, but the
+recommendation is still computed from the compliant runs alone. A recommendation is never a change. Changing a cap is its own human-reviewed policy change, and it
 must cite the report.
 
 ## Running it

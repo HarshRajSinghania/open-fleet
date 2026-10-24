@@ -188,9 +188,10 @@ before retries (a builder and a reviewer per task). The runner never picks the s
   whose cost is not observed is charged the full reservation and is never treated as free.
 - The cap covers every run in one results directory.
 - An interrupted run (SIGTERM, SIGHUP or Ctrl-C) first kills every child process group it
-  started and stops every worker. It then charges each launched dispatch whose usage was never
-  read: what the dispatch's stream reports, or its full reservation if the stream reports no
-  cost. Only then does it exit 128+N, with the run retained as `interrupted`. A later run
+  started and stops every worker. It then charges every dispatch the store holds for the run whose
+  usage was never read, including one whose launch the signal interrupted before the runner saw
+  its id. Each is charged what its stream reports, or its full reservation if the stream reports
+  no cost. Only then does it exit 128+N, with the run retained as `interrupted`. A later run
   therefore cannot spend that budget again.
 - A runner killed outright (SIGKILL, power loss) writes no `run.json`. While it runs, though, it
   rewrites a spend ledger, `spend.json`, at its start, at every launch and at every settlement.

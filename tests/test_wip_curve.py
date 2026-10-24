@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1633,6 +1634,33 @@ class TestTheDocumentedLiveCommandRuns(unittest.TestCase):
         record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((record["tier"], record["status"]), ("live-unreviewed", "complete"))
         self.assertFalse(_DOCUMENTED["trip_log"].exists())
+
+
+class TestACallMidSpawnIsCharged(Tmp):
+    """Adversarial pass (interrupted spend, #652's latest class): a signal can land while
+    spawn_worker.sh is still running, after the provider registered the dispatch and before the
+    runner read its id. Every dispatch the STORE holds for the run is settled on the way out, so
+    that call is charged its reservation too, never lost."""
+
+    def test_a_dispatch_the_runner_never_saw_is_charged(self):
+        db = self.tmp / "runtime.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE dispatches (dispatch_id TEXT, task_id TEXT, run_id TEXT, lane_dir TEXT)")
+        conn.executemany("INSERT INTO dispatches VALUES (?, ?, ?, ?)", [
+            ("disp_seen", "task_a", "wip1-b1r1-rep1", None), ("disp_midspawn", "task_b", "wip1-b1r1-rep1", None),
+            ("disp_other_run", "task_c", "another-run", None)])
+        conn.commit()
+        conn.close()
+        run = wip.Run.__new__(wip.Run)
+        run.rid, run.sb = "wip1-b1r1-rep1", argparse.Namespace(state_db=db)
+        run.usage_seen, run.observed, run.reserved = set(), Decimal(0), Decimal(0)
+        run.reservation, run.spent_before, run.model_pin, run.halt = Decimal("0.25"), Decimal(0), None, None
+        run.launched = {"disp_seen": ("task_a", "T1:builder")}
+        run.held = {"T1:builder": Decimal("0.25"), "T2:builder": Decimal("0.25")}  # T2's spawn was interrupted
+        settled = run.settle_launched()
+        self.assertEqual(sorted(settled), ["disp_midspawn", "disp_seen"])
+        self.assertEqual(run.reserved, Decimal("0.50"), "the call mid-spawn was not charged")
+        self.assertEqual(run.held, {})
 
 
 class TestAKilledRunStillCounts(Tmp):

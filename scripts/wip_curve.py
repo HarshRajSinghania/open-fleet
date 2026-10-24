@@ -1496,6 +1496,20 @@ class Run:
         stopped; one with no reported cost is charged its full reservation (PR #653 review: an
         interrupted call is spent). Holds of calls that never launched are released unspent."""
         settled = []
+        # Every dispatch the STORE holds for this run, not only the ones whose id the runner read:
+        # a signal can land inside spawn_worker.sh after the provider registered the dispatch and
+        # before DISPATCH= reached the runner (#652's class). Such a call is charged too.
+        try:
+            conn = sqlite3.connect(f"file:{self.sb.state_db}?mode=ro", uri=True)
+            try:
+                rows = conn.execute("SELECT dispatch_id, task_id FROM dispatches WHERE run_id = ?",
+                                    (self.rid,)).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, AttributeError):
+            rows = []
+        for disp, store_task in rows:
+            self.launched.setdefault(disp, (store_task, None))
         for disp, (store_task, key) in sorted(self.launched.items()):
             if disp not in self.usage_seen:
                 try:

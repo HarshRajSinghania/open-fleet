@@ -60,9 +60,11 @@ _TAG_END_RE = re.compile(r"\s*/?>")
 _BLOCK_END_RE = re.compile(r"\n[ \t]*(?:\n|$)|\n[ \t]*(?:[-*+_=#>|<]|\d{1,9}[.)]|```|~~~)", re.MULTILINE)
 # Raw HTML blocks (CommonMark 0.31, "HTML blocks"), where tags are real and backticks are text.
 # Types 1-5 open on their own marks and end at their own end mark, past blank lines; types 6 and
-# 7 end at a blank line. Types 1-6 may interrupt a paragraph; type 7, any other complete tag
-# alone on its line, may not. Recognised at any indentation, since a list item's blocks sit
-# deeper: missing one could hide a tag, finding a spurious one only reveals more.
+# 7 end at a blank line. Type 7 is any other complete tag alone on its line. CommonMark lets it
+# open a block only where no paragraph runs on; the scanner opens one wherever such a line
+# stands, since tracking where every paragraph ends kept missing a container (Codex at dde9cbedf9
+# and 0b09543855). All are recognised at any indentation, since a list item's blocks sit deeper:
+# missing one could hide a tag, while a spurious one only reveals more.
 _HTML_BLOCK_ENDING = (
     (re.compile(r"<(?:script|pre|style|textarea)(?:[\s>]|$)", re.IGNORECASE),
      re.compile(r"</(?:script|pre|style|textarea)>", re.IGNORECASE)),
@@ -85,10 +87,6 @@ _FENCE_RE = re.compile(r"([ \t]*)(`{3,}|~{3,})([^\n]*)")
 # A line, ending at a CommonMark line ending only (\n, \r\n or \r): str.splitlines would also split
 # at U+2028 and friends, inventing lines, and fences, that a renderer never sees (Codex at dde9cbedf9).
 _LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
-# A line that ends a paragraph rather than continuing it: a setext underline, a thematic break, an
-# ATX heading or a table row. After one, a lone tag opens a type 7 HTML block (Codex at
-# dde9cbedf9). Counting a line here when CommonMark would not only reveals more.
-_PARA_BREAK_RE = re.compile(r"(?:=+|-+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|#{1,6}(?:[ \t].*)?|\|.*)[ \t]*")
 
 
 def _regions(text):
@@ -97,7 +95,7 @@ def _regions(text):
     A line inside an HTML block opens no fence (Greptile at 1fad2a56e8), so HTML is checked first.
     A fence ends at its closing fence or at the first later line indented less than it, where the
     list item holding it ends, so no tag after that item is hidden."""
-    out, state, para = [], None, False
+    out, state = [], None
     for match in _LINE_RE.finditer(text):
         line, start, pos = match.group(), match.start(), match.end()
         rest = line.lstrip(" \t").rstrip("\r\n")
@@ -111,27 +109,25 @@ def _regions(text):
                 continue
         if state and state[0] == "html":
             if state[1] is None and not rest:  # types 6 and 7 end at a blank line
-                state, para = None, False
+                state = None
                 out.append(("text", start, pos))
             else:
                 out.append(("html", start, pos))
                 state = None if state[1] is not None and state[1].search(rest) else state
             continue
         opened = next(((m, ends) for opens, ends in _HTML_BLOCK_ENDING if (m := opens.match(rest))), None)
-        if opened or _HTML_BLOCK6_RE.match(rest) or (not para and _HTML_BLOCK7_RE.match(rest)):
+        if opened or _HTML_BLOCK6_RE.match(rest) or _HTML_BLOCK7_RE.match(rest):
             ends = opened[1] if opened else None
             out.append(("html", start, pos))
-            state, para = (None if ends is not None and ends.search(rest, opened[0].end()) else ("html", ends)), False
+            state = None if ends is not None and ends.search(rest, opened[0].end()) else ("html", ends)
             continue
         fence = _FENCE_RE.match(line)
         if fence and not (fence.group(2)[0] == "`" and "`" in fence.group(3)):
             mark = fence.group(2)
             state = ("fence", indent, re.compile(rf"{re.escape(mark[0])}{{{len(mark)},}}[ \t]*"))
             out.append(("fence", start, pos))
-            para = False
             continue
         out.append(("text", start, pos))
-        para = bool(rest) and not _PARA_BREAK_RE.fullmatch(rest)
     merged = []
     for kind, start, end in out:  # adjacent lines of a kind form one run: a span may cross a soft break
         if merged and merged[-1][0] == kind:

@@ -387,8 +387,6 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** an example:\n\n~~~~\n# not a heading\n<img src="../x.png">\n~~~~\n',
         # an inline tag at a line's start opens no HTML block: the code span after it stays code (#673)
         '- **Change** text\n  <span>inline</span> then `<a href="../x.md">example</a>`.\n',
-        # a lone tag that would interrupt a paragraph cannot: it is inline, and the span is code (#673)
-        '- **Change** text\n<span>\n`<a href="../x.md">example</a>`\n',
     )
     REFUSED = (
         '- **Change** <a\n  title="x"\n  href="../docs/ops.md">ops</a>.\n',
@@ -428,6 +426,8 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         '- **Change** x\n## heading\n<span>\n`<a href="../docs/ops.md">ops</a>`\n',
         # U+2028 is no line ending: no fence opens on it (Codex at dde9cbedf9)
         '- **Change** x\u2028~~~\u2028<a href="../docs/ops.md">ops</a>\u2028~~~\n',
+        # an empty block quote ends the paragraph too; a lone tag opens a block wherever it stands (Codex at 0b09543855)
+        '- **Change** x\n  >\n  <span>\n  `<a href="../docs/ops.md">ops</a>`\n  </span>\n',
     )
 
     def errors(self, text):

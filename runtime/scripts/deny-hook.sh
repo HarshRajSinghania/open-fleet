@@ -1959,6 +1959,9 @@ _CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmo
                           r"|rmSync|>|open[^)]*[\x22\x27][rbt]*[wax+]")
 # Heads a command built from an expansion is judged as when its value cannot be read (#598).
 _REFUSED_HEADS = ("gh", "git", "rm", "orca")
+# What the reader writes for text it cannot resolve (#654): it reads as an expansion, so a head
+# holding it takes the refused-head fallback in _head_bodies rather than passing as complete.
+_UNRESOLVED = "${__OPEN_FLEET_UNRESOLVED__}"
 _ASSIGNED = {}   # NAME -> the literal values this command line assigns it, anywhere (#598)
 _SIMPLE_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly")
@@ -2039,7 +2042,10 @@ def _code_commands(code):
     out = []
     for m in _EXEC_CALL.finditer(code):
         argtext = _call_args(code, m.end() - 1)
-        for lm in re.finditer(r"\[([^\[\]]*)\]", argtext):
+        # A tuple is an argv as much as a list is: run((git, push, ...)) with literals (#654).
+        # A word that ends the command has its closing parens peeled as a subshell close, so a
+        # tuple may reach here unclosed: it then runs to the end of the text.
+        for lm in re.finditer(r"[\[(]([^\[\]()]*)(?:[\])]|$)", argtext):
             items = [a or b for a, b in _CODE_LITERAL.findall(lm[1])]
             if len(items) > 1:
                 out.append(shlex.join(items))
@@ -2059,8 +2065,16 @@ def _note_assigns(assigns, ws):
         words.append(ws[2] + "=" + _printf_text(ws[3], ws[4:]).replace(chr(10), " "))
     for w in words:
         m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", w, re.DOTALL)
-        if m and len(_ASSIGNED.get(m[1], ())) < 8:
-            _ASSIGNED.setdefault(m[1], set()).add(m[2].replace(_QNL, " "))
+        if not m:
+            continue
+        seen = _ASSIGNED.setdefault(m[1], set())
+        value = m[2].replace(_QNL, " ")
+        if len(seen) < 8 or value in seen:
+            seen.add(value)
+        else:
+            # Past the cap a value is not dropped: the name is marked unresolved, so a head built
+            # from it falls back to every refused head instead of reading as complete (#654).
+            seen.add(_UNRESOLVED)
 
 
 def _head_bodies(ws):
@@ -2089,7 +2103,9 @@ def _head_bodies(ws):
                 continue
             changed = True
             nxt += [h[:m.start()] + v + h[m.end():] for v in sorted(_ASSIGNED[name])]
-        heads = nxt[:16]
+        # Views past the cap are not dropped silently: an unresolved head stands in for them,
+        # so the refused-head fallback below still runs (#654).
+        heads = nxt[:16] + ([_UNRESOLVED] if len(nxt) > 16 else [])
         if not changed:
             break
     rest = (" " + shlex.join(ws[1:])) if len(ws) > 1 else ""
@@ -2400,18 +2416,53 @@ def _printf_text(fmt, args):
     # What printf FORMAT ARGS writes, conversions filled in order and the format reused while
     # arguments remain: printf "%s%s" gh " issue close 34" prints one command (#598 corpus).
     # The format escapes are decoded, and so is a %b argument (PR #648 review).
+    # Each conversion is modelled as bash and dash print it (#654): %c is one character, .N cuts
+    # a string, * takes the width or precision from the next argument. A conversion the reader
+    # does not model reads as unresolved, never as its argument.
     out, state = [], {"next": 0, "used": 0}
 
-    def fill(m):
-        if m[0] == "%%":
-            return "%"
+    def take():
         state["used"] += 1
         state["next"] += 1
-        arg = args[state["next"] - 1] if state["next"] <= len(args) else ""
-        return _decode_escapes(arg, percent_b=True) if m[0].endswith("b") else arg
+        return args[state["next"] - 1] if state["next"] <= len(args) else ""
+
+    def number(text):
+        text = text.strip()
+        if text[:1] in (SQ, DQ) and len(text) > 1:
+            return ord(text[1])   # a leading quote: printf %d prints the code of the next char
+        try:
+            return int(text, 0)
+        except ValueError:
+            return 0
+
+    def fill(m):
+        if m[1]:
+            return "%"
+        flags, width, prec, conv = m[2] or "", m[3] or "", m[4] or "", m[5]
+        if width == "*":
+            width = str(number(take()))
+        if prec == ".*":
+            prec = "." + str(number(take()))
+        arg = take()
+        if conv in "sbcq":
+            text = _decode_escapes(arg, percent_b=True) if conv == "b" else arg
+            if conv == "c":
+                text = text[:1]
+            elif prec:
+                text = text[:max(number(prec[1:] or "0"), 0)]
+        elif conv in "diu":
+            text = str(number(arg))
+        elif conv in "xXo":
+            n = number(arg)
+            text = format(n, {"x": "x", "X": "X", "o": "o"}[conv]) if n >= 0 else _UNRESOLVED
+        else:
+            return _UNRESOLVED
+        pad = min(abs(number(width)) if width else 0, 4096)
+        return text.ljust(pad) if "-" in flags or width.startswith("-") else text.rjust(pad)
+    pattern = r"%(?:(%)|([-+ #0]*)(-?[0-9]+|\*)?(\.(?:[0-9]*|\*))?([A-Za-z]))"
     while True:
         state["used"] = 0
-        out.append(re.sub(r"%(%|[-+ #0]*[0-9*]*(\.[0-9*]*)?[A-Za-z])", fill, _decode_escapes(fmt)))
+        out.append(re.sub(pattern, fill, _decode_escapes(fmt)))
         if not state["used"] or state["next"] >= len(args):
             return "".join(out)
 
@@ -2486,15 +2537,28 @@ def _redirs(seg):
     return words, redirs
 
 
+def _write_file(written, word, texts, append):
+    """Record what a command writes to a file: > (and tee) replaces what the file held, >> (and
+    tee -a) adds to it, in order, so a file built across several writes is read whole (#654)."""
+    key = os.path.normpath(word)
+    if append:
+        written.setdefault(key, []).extend(texts)
+    else:
+        written[key] = list(texts)
+
+
 def _file_texts(word, written):
     """[(text, armable)] a file operand holds when the line shows it: a process substitution
     <(...) holds what its body prints (read while it runs, like a pipe); a file this line wrote
-    holds what was written there (a separate command, so a receipt never arms it)."""
+    holds what was written there, all its writes joined in order (a separate command, so a
+    receipt never arms it). Each write is offered alone too, which only adds views."""
     m = re.fullmatch(_SUB_MARK + r"([0-9]+)_", word)
     if m:
         out = _flow_output(_SUB_TEXTS[int(m[1])]) if int(m[1]) < len(_SUB_TEXTS) else None
         return [(out, True)] if out else []
-    return [(t, False) for t in written.get(os.path.normpath(word), [])]
+    chunks = written.get(os.path.normpath(word), [])
+    whole = "".join(chunks)
+    return ([(whole, False)] if whole else []) + [(t, False) for t in chunks if t != whole]
 
 
 def _reader_kind(ws):
@@ -2611,7 +2675,7 @@ def _flow(surface, docs, inherit=(), written=None):
                     src = list(fds.get(int(target), []))
                 else:
                     if fd in (1, "&") and target != "-" and not target.isdigit():
-                        writes.append(target)
+                        writes.append((target, op))
                     continue
                 fds.setdefault(fd, []).extend(src)
             own = (prev["out"] if prev else []) + fds.get(0, [])   # zsh order: the pipe first
@@ -2629,15 +2693,16 @@ def _flow(surface, docs, inherit=(), written=None):
             elif head in _PASS_THROUGH:
                 ops = [a for a in ws[1:] if not a.startswith("-")]
                 out = list(stdin)
+                append = any(a in ("-a", "--append") for a in ws[1:])
                 for f in ops:
                     if head == "tee":
-                        local.setdefault(os.path.normpath(f), []).extend(t for t, _a in stdin)
+                        _write_file(local, f, [t for t, _a in stdin], append)
                     else:
                         out += _file_texts(f, local)
             else:
                 out = []
-            for f in writes:
-                local.setdefault(os.path.normpath(f), []).extend(t for t, _a in out)
+            for f, op in writes:
+                _write_file(local, f, [t for t, _a in out], op in (">>", "&>>"))
             kind, feeds = _reader_kind(ws), []
             if kind:
                 feeds += [(kind, t, a) for t, a in stdin]

@@ -6,6 +6,13 @@ truth is `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+- **The deny-hook reader fails closed where it cannot resolve what runs** (#654, from the PR #648
+  review). A file built across `>` and `>>` writes is judged whole when it is run; a name
+  reassigned past the reader's cap reads as unresolved, so its use as a command takes the
+  refused-head fallback; printf conversions are modelled as printed (`%c` is one character, `.N`
+  cuts, `*` takes an argument) and an unmodelled one reads as unresolved; and a literal tuple
+  passed to an exec-shaped call is an argv like a list. `TestUnresolvedReadsFailClosed` pins each
+  review example (refused) and its benign twin (allowed).
 - **The deny-hook starts on Linux again** (#598, PR #648 review). Its ~135 KB payload reader
   was passed as one `python3 -c` argument, past Linux's 128 KiB cap on a single argv string
   (MAX_ARG_STRLEN), so python3 never started and every hooked tool call was refused as an

@@ -2428,5 +2428,35 @@ class TestThreatModelStatesWhatTheHookDoes(unittest.TestCase):
         self.assertIn("the deny-hook never reads it", text)
 
 
+class TestUnresolvedReadsFailClosed(ReviewHookBase):
+    """#654 (found in the PR #648 review): four forms the payload reader resolved incompletely,
+    so it ALLOWED what it refuses written plainly. Each review example is now refused, and the
+    benign twin of each stays allowed. JSON decision fixtures only; nothing here executes."""
+
+    def test_a_script_assembled_across_writes_is_read_whole(self):
+        self.expect("deny", ['printf %s git > s.sh; printf %s " push --force origin main" >> s.sh; '
+                             'sh s.sh'])
+        self.expect("allow", ['printf %s "ls" > s.sh; printf %s " -la" >> s.sh; sh s.sh',
+                              # > replaces: the refused text is gone before the file is read
+                              'printf %s "git push --force origin main" > s.sh; '
+                              'printf %s "ls" > s.sh; cat s.sh'])
+
+    def test_a_name_past_the_assignment_cap_is_unresolved_not_complete(self):
+        self.expect("deny", ["c=a; c=b; c=c; c=d; c=e; c=f; c=h; c=i; c=git; "
+                             "$c push --force origin main"])
+        self.expect("allow", ["c=a; c=b; c=c; c=d; c=e; c=f; c=h; c=i; c=j; echo $c"])
+
+    def test_printf_conversions_are_modelled_as_printed(self):
+        self.expect("deny", ['printf "%c%c%c push --force origin main" git item tree | sh'])
+        self.expect("allow", ['printf "%c%c status" g x | cat',
+                              'printf "%05d %x %.2s\\n" 42 255 hello'])
+
+    def test_a_literal_tuple_is_an_argv_like_a_list(self):
+        self.expect("deny", ["python3 -c \"import subprocess; "
+                             "subprocess.run(('git', 'push', '--force', 'origin', 'main'))\""])
+        self.expect("allow", ["python3 -c \"import subprocess; subprocess.run(('git', 'status'))\"",
+                              "python3 -c \"print(len(('a', 'b')))\""])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

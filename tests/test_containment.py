@@ -52,8 +52,11 @@ class Detached(unittest.TestCase):
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
         deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:  # the table shows a process once it has exec'd
-            if proc.pid in containment.process_table():
+        # Its marker shows once it has exec'd: on Linux the pid is in the table from the fork, with
+        # the parent's environment, so waiting for the pid alone raced the exec (#675). A host blind
+        # to it never shows the marker, and the wait ends at the deadline.
+        while time.monotonic() < deadline:
+            if proc.pid in containment.call_processes(containment.process_table(), tag=tag, marker=marker):
                 break
             time.sleep(0.02)
         return tag, proc.pid

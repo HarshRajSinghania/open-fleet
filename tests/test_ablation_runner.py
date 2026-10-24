@@ -20,11 +20,13 @@ import io
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -82,6 +84,18 @@ STUB = textwrap.dedent(r'''
         return args[args.index(name) + 1] if name in args else default
     mode = opt("--mode")
     task = sys.stdin.read()
+    def spawn_sleeper(pids_file):
+        """A grandchild that sleeps (and holds no pipe), recorded with its parent: the process
+        tree a timeout or an interrupt must take down whole."""
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        with open(pids_file, "w", encoding="utf-8") as fh:
+            json.dump([os.getpid(), child.pid], fh)
+    if mode == "grader-hang":
+        spawn_sleeper(os.environ["ABLATION_GRADER_USAGE"] + ".pids")
+        import time
+        time.sleep(60)
     if mode.startswith("grader"):
         sink = os.environ.get("ABLATION_GRADER_USAGE")
         if sink:
@@ -94,8 +108,25 @@ STUB = textwrap.dedent(r'''
             print("not json")
         sys.exit(0)
     out = os.environ["ABLATION_OUT"]
+    from pathlib import Path
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    # Every process an EARLIER cell recorded that is still alive as this cell starts.
+    earlier = [pid for f in Path(out).parents[3].rglob("*.pids") for pid in json.loads(f.read_text())]
     with open(os.path.join(out, "stub-env.json"), "w", encoding="utf-8") as fh:
-        json.dump({"argv": sys.argv, "out": out, "catalog": os.environ["ABLATION_CATALOG"]}, fh)
+        json.dump({"argv": sys.argv, "out": out, "catalog": os.environ["ABLATION_CATALOG"],
+                   "alive_at_start": [pid for pid in earlier if alive(pid)]}, fh)
+    if mode == "hang":
+        spawn_sleeper(os.path.join(out, "agent.pids"))
+        print(json.dumps({"type": "system", "subtype": "init", "model": "stub"}), flush=True)
+        import time
+        time.sleep(60)
+    if mode == "orphan":
+        spawn_sleeper(os.path.join(out, "agent.pids"))
     cues = re.findall(r"([A-Za-z0-9-]+)\.md at ([A-Z][A-Z0-9_-]*)", "\n".join(
         p for p in task.split("\n\n") if p.startswith("DEFERRED READS")))
     catalog = os.environ["ABLATION_CATALOG"]
@@ -507,6 +538,131 @@ class TheLiveSpendGuardIsPreEmptive(SafetyNet):
             grader_argv = json.loads((cell / "grader-usage.json.argv.json").read_text())
             self.assertEqual(agent_argv[-2:], ["--max-budget-usd", f"{self.AGENT * limit:.2f}"])
             self.assertEqual(grader_argv[-2:], ["--max-budget-usd", f"{self.GRADER * limit:.2f}"])
+
+
+def recorded_pids(root):
+    return [pid for f in Path(root).rglob("*.pids") for pid in json.loads(f.read_text())]
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+class NoChildOutlivesItsCall(SafetyNet):
+    """#652 review, P1: on timeout `_grade_trace` killed the meter, and the grader it had started
+    kept running (and could keep spending) while later cells ran. Every agent and grader call now
+    runs in its own process group, killed whole on timeout, on a leader that exits leaving children
+    behind, and on SIGTERM/SIGHUP/Ctrl-C; a killed call is charged its full reservation. The fakes
+    sleep and spawn a sleeping grandchild; nothing calls a model."""
+
+    def out_dir(self):
+        out = self.tmpdir() / "out"
+
+        def reap():  # never leak a sleeper, even when the code under test does (RED runs)
+            for pid in recorded_pids(out) if out.exists() else []:
+                if pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        self.addCleanup(reap)
+        return out
+
+    def assertAllDead(self, out, at_least):
+        pids = recorded_pids(out)
+        self.assertGreaterEqual(len(pids), at_least, "the fakes did not record their process tree")
+        deadline = time.monotonic() + 5
+        while any(pid_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([p for p in pids if pid_alive(p)], [], "a process outlived its call")
+
+    def started_clean(self, out):
+        envs = [json.loads(f.read_text()) for f in sorted(Path(out).rglob("stub-env.json"))]
+        self.assertTrue(envs)
+        return [e["alive_at_start"] for e in envs]
+
+    def test_a_hung_grader_and_its_grandchild_die_with_the_meter_timeout(self):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.out_dir()
+        with mock.patch.object(runner.eval_mod(), "GRADER_TIMEOUT_S", 3):
+            code, _stdout, err = run_main(
+                ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20",
+                 "--harness-cmd", self.stub_cmd("plain", "--cost", "1.0"),
+                 "--grader-cmd", self.stub_cmd("grader-hang"),
+                 "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 2, err)
+        self.assertAllDead(out, at_least=4)
+        self.assertEqual(self.started_clean(out), [[], []], "a cell started while a grader lived")
+        for cell in results["cells"]:
+            self.assertTrue(cell["grader_killed"], cell["cell"])
+            self.assertEqual(cell["charged_usd"], 1.0 + PREREG["cost_cap"]["grader_reserve_usd"])
+
+    def run_stub(self, mode, out, *extra):
+        return run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd(mode), "--cost-cap-usd", "0",
+                         "--mission", "review-it", "--task", "behavioral-4", "--repeats", "1",
+                         "--out", str(out), *extra])
+
+    def test_a_timed_out_agent_dies_with_its_whole_group(self):
+        out = self.out_dir()
+        code, _stdout, err = self.run_stub("hang", out, "--timeout", "2")
+        results = json.loads((out / "results.json").read_text())
+        self.assertEqual(len(results["cells"]), 2, err)
+        self.assertAllDead(out, at_least=4)
+        self.assertEqual(self.started_clean(out), [[], []], "a cell started while an agent lived")
+        for cell in results["cells"]:
+            self.assertTrue(cell["agent_killed"])
+            self.assertFalse(cell["grader_called"], "a run that never finished is not graded")
+            self.assertIn("timed out", " ".join(cell["errors"]))
+
+    def test_what_a_finished_agent_leaves_behind_is_killed(self):
+        out = self.out_dir()
+        code, _stdout, err = self.run_stub("orphan", out)
+        self.assertEqual(code, 0, err)
+        self.assertAllDead(out, at_least=4)
+        self.assertEqual(self.started_clean(out), [[], []])
+
+    def test_a_killed_live_agent_is_charged_its_full_reservation(self):
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.out_dir()
+        code, _stdout, err = run_main(
+            ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "20", "--timeout", "2",
+             "--harness-cmd", self.stub_cmd("hang"), "--grader-cmd", self.stub_cmd("grader-json"),
+             "--model", "stub-not-a-model", "--harness-version", "0", "--out", str(out)])
+        results = json.loads((out / "results.json").read_text())
+        cell = results["cells"][0]
+        self.assertTrue(cell["agent_killed"], err)
+        self.assertEqual(cell["charged_usd"], PREREG["cost_cap"]["max_cost_per_agent_run_usd"])
+        self.assertAllDead(out, at_least=2)
+
+    def test_an_interrupted_runner_kills_every_live_group_first(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            with self.subTest(signal=sig.name):
+                out = self.out_dir()
+                env = {**os.environ, "SHELL": "/bin/sh"}
+                proc = subprocess.Popen(
+                    [sys.executable, str(ROOT / "scripts" / "ablation.py"), "run", "--tier", "stub",
+                     "--harness-cmd", self.stub_cmd("hang"), "--cost-cap-usd", "0", "--mission", "review-it",
+                     "--task", "behavioral-4", "--repeats", "1", "--timeout", "60", "--out", str(out)],
+                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                deadline = time.monotonic() + 30
+                while not list(out.rglob("agent.pids")) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(list(out.rglob("agent.pids")), "the hanging agent never started")
+                time.sleep(0.2)
+                proc.send_signal(sig)
+                try:
+                    _out, err = proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    _out, err = proc.communicate()
+                self.assertEqual(proc.returncode, 128 + sig, err[-2000:])
+                self.assertAllDead(out, at_least=2)
+                results = json.loads((out / "results.json").read_text())
+                self.assertTrue(results["stopped"].startswith("INTERRUPTED"), results["stopped"])
 
 
 class TheLiveGateEnforcesTheCap(SafetyNet):

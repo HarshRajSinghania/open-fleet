@@ -233,6 +233,14 @@ reservation because Claude Code documents that spend can pass that flag. The gra
 reservation. Two things stop the run: a measured call above its reservation (the harness limit
 did not hold), and an agent run that reports no usage.
 
+**No call outlives its limit or the run.** The agent and the grader each run in their own
+process group, and on a timeout the whole group is killed and reaped. A group the leader leaves
+behind is killed too. The grader's meter has a timeout shorter than `eval.py`'s, so the meter
+stops its grader before the outer timeout could orphan it. The next cell starts only once
+every group is empty. SIGTERM, SIGHUP and Ctrl-C kill every live group before the runner exits,
+as first_run.py does. A killed call is charged its full reservation, and an agent run that never
+completed is not sent to the grader.
+
 ## Run it
 
 ```bash

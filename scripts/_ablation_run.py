@@ -42,6 +42,14 @@ wrapper write the #602 event vocabulary to $ABLATION_OUT/trajectory.jsonl. Envir
 ABLATION_OUT, ABLATION_CELL, ABLATION_ARM, ABLATION_SEED, ABLATION_CATALOG; SHELL=/bin/sh. Every
 path it is handed is absolute: --out is resolved before any cell, and a relative path in the
 harness command is resolved against the invocation's cwd, never the workspace's.
+
+No child outlives its call or the run (#652 review). The agent and the grader each lead their own
+process group: a timeout, or a leader that exits leaving children behind, kills and reaps the whole
+group, and the next cell starts only once it is empty. The grader meter has its own timeout,
+shorter than eval.py's, so it stops and reaps its grader before the outer one fires. SIGTERM,
+SIGHUP and Ctrl-C kill every live group before the runner exits 128+N (first_run.py's pattern,
+#640). A killed call is charged its full reservation, and a run that never completed is not graded.
+A harness that calls setsid() itself leaves its group and breaks this contract.
 """
 import contextlib
 import hashlib
@@ -53,9 +61,11 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -183,13 +193,58 @@ for event in stream:
 # verdict on, and writes what the call cost to $ABLATION_GRADER_USAGE. `text` output carries no
 # cost, and is then charged its full reservation.
 GRADER_METER = r'''
-import json, os, subprocess, sys
+import json, os, signal, subprocess, sys, time
 fmt, argv = sys.argv[1], sys.argv[sys.argv.index("--") + 1:]
-proc = subprocess.run(argv, input=sys.stdin.read(), capture_output=True, text=True)
-answer, cost = proc.stdout, None
-if fmt == "claude-json":
+limit = float(os.environ.get("ABLATION_GRADER_TIMEOUT") or 270)
+sink = os.environ.get("ABLATION_GRADER_USAGE")
+prompt = sys.stdin.read()
+# The grader leads its own process group, so it and anything it starts die together, and the
+# runner is told which group that is before anything else happens (#652 review).
+proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, start_new_session=True)
+if sink:
+    with open(sink + ".pgid", "w", encoding="utf-8") as fh:
+        fh.write(str(proc.pid))
+
+
+def stop(*_args):
     try:
-        obj = json.loads(proc.stdout)
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def ended(signum, _frame):
+    stop()
+    sys.exit(128 + signum)
+
+
+for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    signal.signal(sig, ended)
+killed = False
+try:
+    out, err = proc.communicate(prompt, timeout=limit)  # shorter than the caller's own timeout
+except subprocess.TimeoutExpired:
+    killed = True
+    stop()
+    try:
+        out, err = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        out, err = "", ""
+stop()  # whatever the grader left behind in its group goes with it
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline:
+    try:
+        os.killpg(proc.pid, 0)
+    except (ProcessLookupError, PermissionError):
+        break
+    time.sleep(0.02)
+answer, cost = ("" if killed else out), None
+if fmt == "claude-json" and not killed:
+    try:
+        obj = json.loads(out)
     except ValueError:
         obj = None
     if isinstance(obj, dict):
@@ -197,13 +252,12 @@ if fmt == "claude-json":
         value = obj.get("total_cost_usd")
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
             cost = value
-sink = os.environ.get("ABLATION_GRADER_USAGE")
 if sink:
     with open(sink, "w", encoding="utf-8") as fh:
-        json.dump({"cost_usd": cost, "format": fmt, "exit": proc.returncode}, fh)
+        json.dump({"cost_usd": cost, "format": fmt, "exit": proc.returncode, "killed": killed}, fh)
 sys.stdout.write(answer)
-sys.stderr.write(proc.stderr)
-sys.exit(proc.returncode)
+sys.stderr.write(err)
+sys.exit(124 if killed else proc.returncode)
 '''
 
 
@@ -253,6 +307,101 @@ class Sandbox:
         if not log.is_file():
             return []
         return [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+# ---------------------------------------------------------------------------
+# child processes: one group each, never outliving their call or the run (#652 review, P1)
+# ---------------------------------------------------------------------------
+LIVE_GROUPS = set()         # process groups this run started and has not yet seen empty
+GRADER_GROUP_FILES = set()  # where a running grader meter records its grader's group
+TRAPPED_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False  # the number now belongs to someone else's group: ours is gone
+    return True
+
+
+def kill_group(pgid, wait_s=10.0):
+    """SIGKILL every process in the group, then wait until none is left. True once it is empty."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    deadline = time.monotonic() + wait_s
+    while group_alive(pgid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    LIVE_GROUPS.discard(pgid)
+    return True
+
+
+def run_group(argv, *, input_text, timeout, cwd=None, env=None):
+    """(stdout, exit status or None when killed, killed, emptied).
+
+    `argv` leads a new session, so the harness and everything it starts form one process group.
+    On timeout the whole group is killed and reaped; after a normal exit, anything the leader left
+    behind in its group is killed too; and an exception mid-call (an interrupt) kills it on the way
+    out. `emptied` is False only when a member survived SIGKILL, and then no next cell may start.
+    """
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, cwd=cwd, env=env, start_new_session=True)
+    LIVE_GROUPS.add(proc.pid)
+    killed = False
+    try:
+        try:
+            out, _err = proc.communicate(input_text, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            killed = True
+            kill_group(proc.pid, wait_s=0)
+            try:
+                out, _err = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:  # a process outside the group holds the pipe open
+                proc.kill()
+                proc.wait()
+                out = ""
+    finally:
+        if proc.poll() is None:
+            kill_group(proc.pid, wait_s=0)
+            proc.wait()
+        emptied = kill_group(proc.pid)
+    return out, (None if killed else proc.returncode), killed, emptied
+
+
+def sweep_grader_group(pgid_file):
+    """Kill whatever is left of the group a meter recorded. True once it is empty (or never was)."""
+    try:
+        pgid = int(Path(pgid_file).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return True
+    return kill_group(pgid)
+
+
+def stop_all_groups():
+    """Every child group this run still knows about, killed and waited for: the runner's last act
+    before it exits on a signal, as first_run.py stops its workers (#640)."""
+    for pgid in sorted(LIVE_GROUPS):
+        kill_group(pgid)
+    for pgid_file in sorted(GRADER_GROUP_FILES, key=str):
+        sweep_grader_group(pgid_file)
+
+
+def _terminated(signum, _frame):
+    """SIGTERM/SIGHUP/SIGINT unwind the run loop, so its `finally` kills every live group."""
+    raise SystemExit(128 + signum)
+
+
+def grader_inner_timeout():
+    """The meter's own limit: shorter than eval.py's grader timeout, so the meter stops and reaps
+    its grader before the outer timeout could kill the meter and orphan it."""
+    outer = float(eval_mod().GRADER_TIMEOUT_S)
+    return max(0.5, outer - max(1.0, outer * 0.1))
 
 
 @contextlib.contextmanager
@@ -426,28 +575,47 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=Non
         if predicate in ("unchanged", "not_matches") or (predicate == "exists" and check["exists"] is False):
             scope.append(line)
     assertions = [str(a) for a in ev.get("assertions") or []]
-    errors = []
-    sink = {"ABLATION_GRADER_USAGE": str(usage_path)} if usage_path else {}
-    try:
-        with _environ(EVAL_GRADER_CMD=grader_cmd, **sink):
-            graded = ev_mod._grade_trace(assertions, trace)
-    except (OSError, subprocess.SubprocessError) as err:
-        graded = None
-        errors.append(f"grader invocation failed: {ev_mod._process_error(err)}")
-    grader_cost = None
-    try:
-        grader_cost = json.loads(Path(usage_path).read_text(encoding="utf-8")).get("cost_usd") if usage_path else None
-    except (OSError, ValueError):
-        grader_cost = None
+    errors, graded, usage, timed_out, emptied = [], None, {}, False, True
+    if grader_cmd is None:
+        # A run that never completed is not graded: its trace is partial and grading costs money.
+        errors.append("not graded: the agent run did not complete")
+    else:
+        sink = {}
+        pgid_file = Path(f"{usage_path}.pgid") if usage_path else None
+        if usage_path:
+            sink = {"ABLATION_GRADER_USAGE": str(usage_path),
+                    "ABLATION_GRADER_TIMEOUT": f"{grader_inner_timeout():.1f}"}
+            GRADER_GROUP_FILES.add(pgid_file)
+        try:
+            with _environ(EVAL_GRADER_CMD=grader_cmd, **sink):
+                graded = ev_mod._grade_trace(assertions, trace)
+        except (OSError, subprocess.SubprocessError) as err:
+            timed_out = isinstance(err, subprocess.TimeoutExpired)
+            errors.append(f"grader invocation failed: {ev_mod._process_error(err)}")
+        finally:
+            if pgid_file is not None:
+                # The outer timeout kills only the meter; its grader's group is swept here, and
+                # the next cell does not start until it is empty (#652 review, P1).
+                emptied = sweep_grader_group(pgid_file)
+                GRADER_GROUP_FILES.discard(pgid_file)
+        try:
+            usage = json.loads(Path(usage_path).read_text(encoding="utf-8")) if usage_path else {}
+        except (OSError, ValueError):
+            usage = {}
+        if graded is None and not errors:
+            errors.append("grader returned no valid JSON verdict for the requested assertions")
+    killed = bool(usage.get("killed")) or timed_out
+    if not emptied:
+        errors.append("a process of the grader's group survived SIGKILL")
     passed = sum(1 for row in (graded or {}).get("assertions", []) if row.get("passed"))
-    if graded is None and not errors:
-        errors.append("grader returned no valid JSON verdict for the requested assertions")
     success = graded is not None and passed == len(assertions) and not state_failed
     return {"success": success, "correct_terminal": success, "assertions_passed": passed,
             "assertions": len(assertions), "state_failed": state_failed,
             "scope_violations": len(scope), "approval_violations": 0, "attempted": [],
-            "narration_only": ev.get("narration_only") is True, "grader_called": True,
-            "grader_cost_usd": grader_cost, "attempted_violations": None,
+            "narration_only": ev.get("narration_only") is True, "grader_called": grader_cmd is not None,
+            # A killed grader's partial output is not a bill: it is charged its full reservation.
+            "grader_cost_usd": None if killed else usage.get("cost_usd"), "grader_killed": killed,
+            "orphans": not emptied, "attempted_violations": None,
             "assertion_rows": list((graded or {}).get("assertions") or []), "errors": errors}
 
 
@@ -498,18 +666,23 @@ def run_cell(ctx, pair, arm):
         env["ABLATION_TRAJECTORY_FIXTURE"] = str(eval_mod().TRAJECTORY_DIR / case["trajectories"][0]["file"])
     cell = {"cell": cell_id, "mission": mission, "task": task, "repeat": repeat,
             "seed": pair["seed"], "arm": arm, "task_sha256": hashlib.sha256(text.encode()).hexdigest()}
-    errors = []
+    errors, killed, completed, emptied = [], False, False, True
     started = time.monotonic()
     try:
-        proc = subprocess.run(ctx["agent_cmd"], input=text, capture_output=True, text=True,
-                              cwd=workspace, env=env, timeout=ctx["timeout"])
-        stream, code = proc.stdout, proc.returncode
-        if code != 0:
+        stream, code, killed, emptied = run_group(ctx["agent_cmd"], input_text=text, cwd=workspace,
+                                                  env=env, timeout=ctx["timeout"])
+        completed = not killed
+        if killed:
+            errors.append(f"agent timed out after {ctx['timeout']} s; its whole process group was killed")
+        elif code != 0:
             errors.append(f"agent exited with status {code}")
+        if not emptied:
+            errors.append("a process of the agent's group survived SIGKILL")
     except (OSError, subprocess.SubprocessError) as err:
         stream = ""
         errors.append(f"agent invocation failed: {eval_mod()._process_error(err)}")
     cell["wall_s"] = round(time.monotonic() - started, 3)
+    cell["agent_killed"] = killed
     stream_path = cell_dir / "stream.jsonl"
     stream_path.write_text(stream, encoding="utf-8")
     tokens_in, tokens_out, cost, reasons = usage_of(stream_path, cell_id, task)
@@ -521,11 +694,12 @@ def run_cell(ctx, pair, arm):
         cell[f"{status}_reads" if status != "omitted" else "read_omissions"] = \
             sum(1 for v in reads.values() if v == status)
     if ev is not None:
-        graded = grade_behavioral(ev, workspace, originals, stream, ctx["grader_cmd"],
-                                  cell_dir / "grader-usage.json")
+        graded = grade_behavioral(ev, workspace, originals, stream,
+                                  ctx["grader_cmd"] if completed else None, cell_dir / "grader-usage.json")
     else:
         graded = grade_trajectory(case, cell_dir / "trajectory.jsonl")
     graded["errors"] = errors + graded["errors"]
+    graded["orphans"] = graded.get("orphans", False) or not emptied
     if errors:
         graded["success"] = graded["correct_terminal"] = False
     cell.update(graded)
@@ -583,7 +757,11 @@ def absolute_argv(argv):
 
 
 def _git_head():
-    proc = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True)
+    try:
+        proc = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
@@ -619,6 +797,8 @@ def charge(cell, model, tier):
     if tier != "live":
         return (agent or 0.0) + (grader or 0.0), False
     charged = agent if agent is not None else model["agent_reserve_usd"]
+    if cell.get("agent_killed"):
+        charged = max(model["agent_reserve_usd"], agent or 0.0)  # killed: its whole reservation
     breached = agent is not None and agent > model["agent_reserve_usd"]
     if cell.get("grader_called"):
         charged += grader if grader is not None else model["grader_reserve_usd"]
@@ -746,38 +926,58 @@ def run(args, api):
                           "spends on a disqualified variant")
     pairs = plan_pairs(prereg, missions, tasks, repeats)
     cap = args.cost_cap_usd
-    cells, spent, stopped = [], 0.0, None
-    for pair in pairs:
-        for arm in pair["arms"]:
-            # PRE-EMPTIVE (#652 review, P1): a cell starts only if what remains covers the worst
-            # case of every call it will make. Nothing after the fact is the guard.
-            need = reservation(pair["task"], model)
-            if spent + need > cap:
-                stopped = (f"CAP_REACHED: USD {cap - spent:.2f} of the USD {cap:.2f} cap remains, "
-                           f"less than the USD {need:.2f} worst case of "
-                           f"{pair['mission']}.{pair['task']}.r{pair['repeat']}.{arm} (agent + grader)")
-                break
-            cell = run_cell(ctx, pair, arm)
-            cell["charged_usd"], breached = charge(cell, model, tier)
-            cells.append(cell)
-            spent += cell["charged_usd"]
-            hits = sandbox.tripwire_hits()
-            if hits:
-                stopped = f"TRIPWIRE: a harness resolved past the stand-in: {hits[:200]!r}"
-            elif breached:
-                stopped = (f"LIMIT_BREACHED at {cell['cell']}: a call cost more than its reservation "
-                           f"(agent USD {cell['cost_usd']}, grader USD {cell['grader_cost_usd']}), so "
-                           "the harness limit did not hold and the cap can no longer be guaranteed")
-            elif tier == "live" and cell["cost_usd"] is None:
-                stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: charged its full reservation; the "
-                           f"harness reports no usage ({'; '.join(cell['usage_unavailable'])})")
-            elif tier != "live" and spent > 0:
-                # Not a spend guard: a stub or the stand-in reporting cost broke its tier's contract.
-                stopped = f"SPEND_IN_NON_LIVE_TIER at {cell['cell']}: USD {spent:.2f} reported"
+    cells, spent, stopped, interrupted = [], 0.0, None, None
+    # A signal unwinds the loop like Ctrl-C (first_run.py's pattern, #640): the `finally` kills and
+    # reaps every child group still alive before the runner writes its results and exits 128+N.
+    previous = ({sig: signal.signal(sig, _terminated) for sig in TRAPPED_SIGNALS}
+                if threading.current_thread() is threading.main_thread() else {})
+    try:
+        for pair in pairs:
+            for arm in pair["arms"]:
+                # PRE-EMPTIVE (#652 review, P1): a cell starts only if what remains covers the worst
+                # case of every call it will make. Nothing after the fact is the guard.
+                need = reservation(pair["task"], model)
+                if spent + need > cap:
+                    stopped = (f"CAP_REACHED: USD {cap - spent:.2f} of the USD {cap:.2f} cap remains, "
+                               f"less than the USD {need:.2f} worst case of "
+                               f"{pair['mission']}.{pair['task']}.r{pair['repeat']}.{arm} (agent + grader)")
+                    break
+                cell = run_cell(ctx, pair, arm)
+                cell["charged_usd"], breached = charge(cell, model, tier)
+                cells.append(cell)
+                spent += cell["charged_usd"]
+                hits = sandbox.tripwire_hits()
+                if hits:
+                    stopped = f"TRIPWIRE: a harness resolved past the stand-in: {hits[:200]!r}"
+                elif cell.get("orphans"):
+                    stopped = (f"ORPHAN_ALIVE at {cell['cell']}: a process of one of its calls survived "
+                               "SIGKILL, so no further cell may start")
+                elif breached:
+                    stopped = (f"LIMIT_BREACHED at {cell['cell']}: a call cost more than its reservation "
+                               f"(agent USD {cell['cost_usd']}, grader USD {cell['grader_cost_usd']}), so "
+                               "the harness limit did not hold and the cap can no longer be guaranteed")
+                elif tier == "live" and cell["cost_usd"] is None:
+                    stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: charged its full reservation; the "
+                               f"harness reports no usage ({'; '.join(cell['usage_unavailable'])})")
+                elif tier != "live" and spent > 0:
+                    # Not a spend guard: a stub or the stand-in reporting cost broke its tier's contract.
+                    stopped = f"SPEND_IN_NON_LIVE_TIER at {cell['cell']}: USD {spent:.2f} reported"
+                if stopped:
+                    break
             if stopped:
                 break
-        if stopped:
-            break
+    except SystemExit as stop:
+        interrupted = stop.code if isinstance(stop.code, int) else 1
+        stopped = (f"INTERRUPTED (exit {interrupted}): every live child process group was killed "
+                   "and reaped before the runner exited")
+    finally:
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)  # the run is ending either way: no second unwind
+        try:
+            stop_all_groups()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, signal.SIG_DFL if handler is None else handler)
     runs = sandbox.stand_in_runs()
     results = {
         "schema": RESULTS_SCHEMA, "tier": tier,
@@ -803,6 +1003,8 @@ def run(args, api):
     (out / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     report = summarize(results, prereg)
     (out / "report.md").write_text(render_markdown(results, report), encoding="utf-8")
+    if interrupted is not None:
+        raise SystemExit(interrupted)
     return out, results, report
 
 

@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-21",
+  "report": "2026-09-21-harden-409.md",
+  "mission": "[harden-it](2026-09-21-harden-409.md)",
+  "target": "this catalog's own verify.py / dispatch-sign.py / verify-gate.sh (#409)",
+  "ran_as": "self-run",
+  "binds": "no — the living ledger, not a binding report; the run's close binds in the next row",
+  "outcome": "CLEAN (final re-audit: 0 unrefuted P0/P1; 6 rounds, 11 findings closed)"
+}

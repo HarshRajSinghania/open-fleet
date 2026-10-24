@@ -2,7 +2,9 @@
 
 All notable changes to open-fleet are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version source of
-truth is `.claude-plugin/plugin.json`.
+truth is `.claude-plugin/plugin.json`. A change not yet released is one file in
+[`changelog.d/`](changelog.d/README.md) until the release cut folds it in here; the
+`[Unreleased]` entries below were written before that and are folded in with them.
 
 ## [Unreleased]
 

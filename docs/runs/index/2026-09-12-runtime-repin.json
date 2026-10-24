@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-12",
+  "report": "2026-09-12-runtime-repin/",
+  "mission": "[pin-it](2026-09-12-runtime-repin/)",
+  "target": "this catalog's runtime doctrine against Orca 1.4.200 (#266)",
+  "ran_as": "self-run",
+  "binds": "no — the report states it is not a completed independent mission run",
+  "outcome": "PARTIAL-WITNESS (doctrine repair prepared for review; `pins.json` stays at v1.4.199, all 21 missions stay `doctrine-only`)"
+}

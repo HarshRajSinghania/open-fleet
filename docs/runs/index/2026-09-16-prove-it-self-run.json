@@ -1,0 +1,10 @@
+{
+  "date": "2026-09-16",
+  "report": "2026-09-16-prove-it-self-run.md",
+  "mission": "[prove-it](2026-09-16-prove-it-self-run.md)",
+  "target": "this catalog (verify.py kind gate, PF-2)",
+  "ran_as": "self-run",
+  "binds": "yes",
+  "outcome": "COVERED (PF-2; 4/4 mutants killed)",
+  "summary": "the 2026-09-16 prove-it run, a tier earned under the binding gate"
+}

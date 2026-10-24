@@ -1,0 +1,11 @@
+{
+  "date": "2026-10-24",
+  "report": "2026-10-24-review-it-first-run.md",
+  "order": 5,
+  "mission": "[review-it](2026-10-24-review-it-first-run.md)",
+  "target": "two-commit repositories the first run synthesizes (posix route, `first_run.py --worker live`, Claude Code 2.1.304) on the dev Mac and a fresh `ubuntu:24.04` container; plus a refused Orca ro re-witness attempt (#596)",
+  "ran_as": "external-run",
+  "binds": "yes — binds the certification record's live posix and claude harness cells; review-it's own tier does not cite it",
+  "outcome": "GO ×4 (posix ro and rw on two hosts); Orca ro attempt refused at Claude Code's folder-trust prompt before any injection",
+  "summary": "the 2026-10-24 live first runs, which bind the provider-certification evidence (#596); no mission's tier cites them"
+}

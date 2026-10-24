@@ -13,3 +13,6 @@ contract changed, show its convergence proof before and after. -->
 - [ ] `python3 -m unittest discover -s tests` is green (a few minutes; it builds real git repos)
 - [ ] Docs that state a number now read it from a generator or a test binds it (CONTRIBUTING.md)
 - [ ] No `Co-authored-by` or tool-attribution trailers in the commits (CONTRIBUTING.md)
+- [ ] Bookkeeping is one file per change: a `changelog.d/<slug>.md` entry, a weight file per new
+      test module, a `docs/runs/index/` row per new run; no edit to `CHANGELOG.md`, the tests
+      badge or the run-index table (CONTRIBUTING.md)

@@ -1,0 +1,11 @@
+{
+  "date": "2026-10-24",
+  "report": "2026-10-24-hint-replay-605-live.md",
+  "order": 3,
+  "mission": "[hint-replay](2026-10-24-hint-replay-605-live.md) (experiment, not a mission)",
+  "target": "this catalog's episodic hints — #605's live arm: 2 scenarios × 3 arms (off / unchecked / checked) × 3 attempts, `claude-opus-5-5`",
+  "ran_as": "self-run",
+  "binds": "yes — at `doctrine-only`, advancing no tier; verifier GREEN under a coordinator-signed dispatch record (two earlier RED runs recorded)",
+  "outcome": "NULL at a ceiling (every arm 6/6, 0 repeated failures; USD 1.22 notional of a USD 40 cap)",
+  "summary": "the 2026-10-24 #605 live hint-replay run, an experiment rather than a mission run, bound at `doctrine-only` with its verifier GREEN under a coordinator-signed dispatch record"
+}

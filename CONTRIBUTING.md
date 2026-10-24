@@ -135,6 +135,19 @@ fail-closed exits documented in the header comment.
 - Keep generated callouts and historical run artifacts faithful to their source. Use
   [the generator commands](docs/development.md#generated-content) for computed values.
 
+## Bookkeeping files: add yours, never edit a shared one
+
+Four records used to take a line from every PR, so with strict up-to-date branches every merge
+put every other open PR into conflict. Each is now one file per change, which only your PR
+touches; the release cut ([ops guide](docs/ops.md#release-cut)) folds them in.
+
+| You are… | Add | Never edit |
+|---|---|---|
+| making a change worth a release note | `changelog.d/<slug>.md`, the entry text ([format](changelog.d/README.md)) | `CHANGELOG.md` — CI fails a new `[Unreleased]` entry |
+| adding a test module `tests/test_<name>.py` | `tests/shard-weights/test_<name>.json` (`python3 scripts/shard-tests.py --measure test_<name> --scale 2`) | another module's weight file, unless your PR is a rebalance |
+| filing a run report under `docs/runs/` | `docs/runs/index/<run>.json`, its index row ([format](scripts/run_index.py)) | the table or the yes-count in `docs/runs/README.md` — the cut renders them |
+| changing the test count | nothing | `assets/badges/tests.json` — it is the count at the last release, and the README badge says so |
+
 ## Before you open the PR
 
 ```bash

@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-20",
+  "report": "2026-09-20-sign-386.md",
+  "mission": "[sign-386](2026-09-20-sign-386.md)",
+  "target": "this repo (#386: signed manifests + retention)",
+  "ran_as": "self-run",
+  "binds": "no — the living ledger, not a binding report; binds, or does not, if a later promotion files one",
+  "outcome": "CLOSED with evidence (U-SIG-1 648fcf77 + U-SIG-2 552f4af3, two full review rounds each; #386 closed; promotion PR #491)"
+}

@@ -1,0 +1,10 @@
+{
+  "date": "2026-09-21",
+  "report": "2026-09-21-harden-it-self-run.md",
+  "mission": "[harden-it](2026-09-21-harden-it-self-run.md)",
+  "target": "this catalog (#409 close: verify.py / dispatch-sign.py / verify-gate.sh; 10 waves)",
+  "ran_as": "self-run",
+  "binds": "yes",
+  "outcome": "CLEAN (zero unrefuted P0/P1; 3 P0 + 1 CI-caught P0-class + 1 P1 + residual classes closed; gitleaks control held)",
+  "summary": "the 2026-09-21 harden-it run, a tier earned under the binding gate"
+}

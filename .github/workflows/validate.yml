@@ -144,6 +144,16 @@ jobs:
         run: python3 scripts/check_trailers.py --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA"
       - name: Validate missions, playbooks, and evals
         run: python3 scripts/validate.py
+      - name: CHANGELOG entries arrive as fragments, not as edits to the shared file
+        # Every PR used to add its entry at the top of CHANGELOG.md's [Unreleased], so every merge
+        # put every open PR into conflict (CI speed and bookkeeping change). An entry is now one
+        # changelog.d/<slug>.md per change, which the release cut folds in. This fails a PR that
+        # adds a top-level [Unreleased] entry to the shared file; the fragments' own shape is
+        # checked by validate.py above, on every event.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/changelog.py check --base "$PR_BASE_SHA"
       - name: Routing eval gate (description-based router)
         # #260: this is the gate, not the summary step below. It scores every
         # prompt in evals/routing.json against the REAL frontmatter descriptions

@@ -1,0 +1,9 @@
+{
+  "date": "2026-08-28",
+  "report": "2026-08-28-ship-it-self-run.md",
+  "mission": "[ship-it](2026-08-28-ship-it-self-run.md)",
+  "target": "this repo (proof-status slice)",
+  "ran_as": "self-run",
+  "binds": "no — 5/5 hashes re-derive at `748b328`, but the verifier transcript was never recorded",
+  "outcome": "PROMOTION_READY (BUILT + promotion PR open)"
+}

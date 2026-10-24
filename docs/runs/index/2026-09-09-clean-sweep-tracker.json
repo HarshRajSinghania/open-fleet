@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-09",
+  "report": "2026-09-09-clean-sweep-tracker.md",
+  "mission": "[clean-sweep](2026-09-09-clean-sweep-tracker.md)",
+  "target": "this repo (tracker, 6 issues)",
+  "ran_as": "self-run",
+  "binds": "no — inventory pinned to a moved tree",
+  "outcome": "DRY-WITH-PARKED (5 closed, 1 needs-human)"
+}

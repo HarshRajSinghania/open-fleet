@@ -1,0 +1,9 @@
+{
+  "date": "2026-10-17",
+  "report": "2026-10-17-pin-it-229.md",
+  "mission": "[pin-it](2026-10-17-pin-it-229.md)",
+  "target": "this catalog's runtime doctrine against Orca v1.4.229 (`a0cd1644`, source-delta re-witness vs v1.4.224 + carried live receipts; [delta inventory](2026-10-17-pin-it-229/delta-inventory-2026-10-17.md))",
+  "ran_as": "self-run",
+  "binds": "no — the living ledger, not a binding report; binds, or does not, if a later promotion files one",
+  "outcome": "PINNED-WITH-PARKED (1 stale Jira claim patched; 5 additive surfaces folded in: `orca jira`, `agent launch`, `reference`, `serve` containment, `task_not_startable.failureCount`, `automations runs` paging; parks carried)"
+}

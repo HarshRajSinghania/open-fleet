@@ -550,7 +550,8 @@ python3 bench/vf-bench/replay.py run --rev COMMIT --heldout CASE_DIR --runs 3 --
 
 `vet` is the holder's lint. It checks every case the way the replay will run it against the
 pinned verifier, without running the verifier, and names each problem by file without quoting the
-case: only fields the replay reads; an opaque id equal to the file name; a category that is a
+case. The fixture builders, the development corpus and any contract a static case names are read
+from the pinned commit's objects, never from the checkout running the vet (PR #665 review): only fields the replay reads; an opaque id equal to the file name; a category that is a
 check in the pinned inventory; for a trap, the declared refusal and the ONE inventory row it
 samples (`inventory_site`, the row's development class or one of its `Sites:` stems); an
 `authored_at` after the pin and a `verifier_pin` equal to it; each run-time fixture built and

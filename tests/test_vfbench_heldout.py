@@ -1179,5 +1179,131 @@ class APartialRunIsNeverACompleteEvaluation(unittest.TestCase):
         self.assertEqual(heldout.validate(_protocol()), [])
 
 
+# A pinned bench whose fixture builders are not the checkout's (PR #665 review): one builder this
+# checkout's vfbench.py lacks, and none of the ones it has.
+PINNED_VFBENCH = """import hashlib
+import json
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+
+
+def _render(obj, facts):
+    if isinstance(obj, str):
+        for key, value in facts.items():
+            obj = obj.replace("{{" + key + "}}", str(value))
+        return obj
+    if isinstance(obj, list):
+        return [_render(x, facts) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _render(v, facts) for k, v in obj.items()}
+    return obj
+
+
+def _build(repo):
+    repo.mkdir(parents=True)
+    (repo / "contract.md").write_text("- AC-1: x\\n", encoding="utf-8")
+    return {"contract_digest": "sha256:" + hashlib.sha256(b"- AC-1: x\\n").hexdigest(),
+            "pinned_fact": "only the pinned builder supplies this"}
+
+
+FIXTURES = {"pinned-only": _build}
+
+
+def fixture_command(trap, facts, repo, holder):
+    (repo / "vf-manifest.json").write_text(json.dumps(_render(trap["manifest"], facts)),
+                                           encoding="utf-8")
+    return ["true"], {}
+"""
+PINNED_README = """# pinned bench
+
+## Verifier check inventory
+
+| Check | Guard | Status | Corpus case, or why not |
+|---|---|---|---|
+| `check_a` | refuses a. Sites: `a refused`. | trap | `planted` |
+"""
+
+
+class TheVetJudgesAgainstThePinnedRevision(unittest.TestCase):
+    """PR #665 review (P2, PRRT_kwDOTWxN9c6v2ZCr): `vet --pin` read the pinned README but built
+    fixtures with the CHECKOUT's vfbench.py, and compared against the checkout's development
+    corpus, so it could pass a case the pinned replay cannot run, or refuse one it can. The
+    builders, the corpus and every repository path a case names now come from the pin (#601)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="vfbench-heldout-test-")
+        self.tmp = Path(self._tmp.name)
+        self.repo = self.tmp / "repo"
+        bench = self.repo / "bench" / "vf-bench"
+        (bench / "traps").mkdir(parents=True)
+        (self.repo / "runtime" / "scripts").mkdir(parents=True)
+        (self.repo / "runtime" / "scripts" / "verify.py").write_text("# a stand-in\n",
+                                                                    encoding="utf-8")
+        (bench / "vfbench.py").write_text(PINNED_VFBENCH, encoding="utf-8")
+        (bench / "README.md").write_text(PINNED_README, encoding="utf-8")
+        (bench / "traps" / "pinned-trap.json").write_text(json.dumps(self._move()), encoding="utf-8")
+        _git(self.repo, "init", "-q", "-b", "main")
+        _git(self.repo, "add", "-A")
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=vf", "-c",
+                        "user.email=vf@vf.invalid", "-c", "commit.gpgsign=false", "commit", "-qm",
+                        "the pin", "--no-verify"], check=True, capture_output=True,
+                       env={**__import__("os").environ, "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+                            "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"})
+        self.pin = heldout.resolve_pin(self.repo, "HEAD")
+        # After the pin, the checkout's working tree moves on: what it holds now is not the pin.
+        (bench / "fixtures").mkdir()
+        (bench / "fixtures" / "added-later.md").write_text("- AC-1: x\n", encoding="utf-8")
+        (bench / "traps" / "pinned-trap.json").unlink()
+        self.cases = self.tmp / "cases"
+        self.cases.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _move(**extra):
+        return {"sound_expected": "RED", "expect_reason": "a refused",
+                "fixture": "pinned-only", "manifest": {"note": "{{pinned_fact}}"}, **extra}
+
+    def _case(self, n, **extra):
+        now = heldout.datetime.now(heldout.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        case = {"id": f"hv1-{n:03d}", "class": "check_a", "inventory_site": "planted",
+                "canary": CANARY, "authored_at": now,
+                "verifier_pin": {"commit": self.pin["commit"],
+                                 "verify_blob": self.pin["verify_blob"]},
+                **self._move(manifest={"note": "{{pinned_fact}}", "n": n}), **extra}
+        case = {k: v for k, v in case.items() if v is not None}
+        (self.cases / f"hv1-{n:03d}.json").write_text(json.dumps(case), encoding="utf-8")
+
+    def _problems(self):
+        problems, _ = heldout.vet_cases(self.cases, self.pin, self.repo)
+        return problems
+
+    def test_a_builder_only_the_pin_has_builds_and_renders(self):
+        self._case(1)
+        self.assertEqual(self._problems(), [])
+
+    def test_a_builder_only_the_checkout_has_is_refused(self):
+        self._case(1, fixture="mutation-revert")
+        self.assertTrue(any("no run-time builder" in p for p in self._problems()))
+
+    def test_a_copy_of_a_trap_the_pin_holds_is_refused(self):
+        # Deleted from the checkout after the pin; still the pinned development corpus.
+        case = {"id": "hv1-001", "class": "check_a", "inventory_site": "planted",
+                "canary": CANARY, "verifier_pin": {"commit": self.pin["commit"],
+                                                   "verify_blob": self.pin["verify_blob"]},
+                "authored_at": heldout.datetime.now(heldout.timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"), **self._move()}
+        (self.cases / "hv1-001.json").write_text(json.dumps(case), encoding="utf-8")
+        self.assertTrue(any("a copy of a development case" in p for p in self._problems()))
+
+    def test_a_static_contract_the_pin_lacks_is_refused(self):
+        self._case(1, fixture=None, contract_source="bench/vf-bench/fixtures/added-later.md",
+                   manifest={"n": 1})
+        self.assertTrue(any("contract_source is not a file" in p for p in self._problems()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

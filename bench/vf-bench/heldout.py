@@ -27,6 +27,7 @@ Exit 0: valid / clean. Exit 1: invalid protocol, a leak, a case without its cana
 that fails the vet. Exit 2: usage (unreadable digests, unknown revision).
 """
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -36,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -539,11 +540,66 @@ def digest_cases(case_dir, canary):
     return doc, problems
 
 
-def _sibling(name, alias):
-    spec = importlib.util.spec_from_file_location(alias, HERE / name)
+def _sibling(name, alias, where=HERE):
+    spec = importlib.util.spec_from_file_location(alias, Path(where) / name)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+# What the pinned bench's fixture builders load: vfbench.py itself, its corpus, and the coordinator
+# tools it plays (dispatch signing, Ed25519, verify.py's own custody probe).
+PINNED_PATHS = ("bench/vf-bench", "runtime/scripts")
+
+
+@contextlib.contextmanager
+def pinned_bench(repo, commit):
+    """The PINNED revision's bench/vf-bench and runtime/scripts, written from git's objects into a
+    temporary directory (PR #665 review, P2): `vet --pin` read the pinned README but built and
+    compared cases with this checkout's code, so it could pass a case the pinned replay cannot
+    run. The replay scores the pinned revision's export; the vet now judges against the same
+    files. Plumbing only: no checkout, no index, no hook runs."""
+    with tempfile.TemporaryDirectory(prefix="vfbench-heldout-pin-") as tmp:
+        root = Path(tmp).resolve()
+        entries = []
+        for entry in _git(repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--",
+                          *PINNED_PATHS).split(b"\0"):
+            if entry:
+                meta, path = entry.split(b"\t", 1)
+                mode, kind, sha = meta.decode().split()
+                if kind == "blob":
+                    entries.append((mode, sha, os.fsdecode(path)))
+        blobs = read_blobs(repo, sorted({sha for _, sha, _ in entries}))
+        for mode, sha, path in entries:
+            target = (root / path).resolve() if mode != "120000" else root / path
+            if not target.is_relative_to(root) or blobs.get(sha) is None:
+                raise UsageError(f"{commit}: {path} cannot be written from this repository's objects")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if mode == "120000":
+                target.symlink_to(os.fsdecode(blobs[sha]))
+            else:
+                target.write_bytes(blobs[sha])
+                target.chmod(0o755 if mode == "100755" else 0o644)
+        bench = root / "bench" / "vf-bench"
+        if not (bench / "vfbench.py").is_file():
+            raise UsageError(f"{commit} holds no bench/vf-bench/vfbench.py to vet against")
+        yield bench
+
+
+def _pinned_file(repo, commit, path):
+    """The bytes of `path` at `commit`, or None when it is not a file there or is no plain
+    repository-relative path: a static case's contract is judged at the pin, as the replay's
+    export holds it, never in this checkout's working tree (PR #665 review)."""
+    rel = PurePosixPath(path) if isinstance(path, str) and path and "\0" not in path else None
+    if rel is None or rel.is_absolute() or ".." in rel.parts:
+        return None
+    try:
+        sha = _git(repo, "rev-parse", "--verify", "--quiet", f"{commit}:{rel.as_posix()}").decode().strip()
+        if _git(repo, "cat-file", "-t", sha).decode().strip() != "blob":
+            return None
+    except UsageError:
+        return None
+    return read_blobs(repo, [sha]).get(sha)
 
 
 def _read_case(f):
@@ -613,9 +669,17 @@ def vet_cases(case_dir, pin, repo=ROOT):
     (`inventory_site`: a development trap class or a refusal stem of that row) and the refusal it
     earns (`expect_reason`); records `authored_at` after the pin and `verifier_pin` equal to it;
     and, for a run-time fixture, builds and renders with no placeholder left over."""
-    readme = _git(repo, "show", f"{pin['commit']}:bench/vf-bench/README.md").decode("utf-8", "replace")
+    with pinned_bench(repo, pin["commit"]) as bench:
+        return _vet_against(case_dir, pin, repo, bench)
+
+
+def _vet_against(case_dir, pin, repo, bench):
+    """vet_cases, with the pinned bench written out at `bench`. The inventory PARSER is this
+    runner's, as the replay parses the exported README with its own; everything it parses, and
+    every builder, corpus case and repository path a case names, is the pin's."""
+    readme = (bench / "README.md").read_text(encoding="utf-8", errors="replace")
     replay = _sibling("replay.py", "vfbench_replay_for_heldout")
-    vf = _sibling("vfbench.py", "vfbench_for_heldout")
+    vf = _sibling("vfbench.py", "vfbench_for_heldout_pinned", bench)
     rows = replay.inventory_rows(readme) or []
     checks = {c for r in rows for c in r["checks"]}
     pinned_at, now = _when(pin["committed_at"]), datetime.now(timezone.utc)
@@ -634,7 +698,7 @@ def vet_cases(case_dir, pin, repo=ROOT):
         problems.append(f"{name}: {why}")
 
     ids = [c.get("id") for c in cases.values()]
-    public = {json.dumps(m, sort_keys=True) for m in development_moves()}
+    public = {json.dumps(m, sort_keys=True) for m in development_moves(bench / "traps")}
     for name, c in cases.items():
         if json.dumps(_move(c), sort_keys=True) in public:
             bad(name, "a copy of a development case once the held-out fields are dropped: it "
@@ -677,11 +741,10 @@ def vet_cases(case_dir, pin, repo=ROOT):
                 bad(name, f"a static case carries {len(carried)} field(s) only a run-time fixture reads")
             src = c.get("contract_source")
             if src is not None:
-                target = (repo / str(src)).resolve()
-                if not (target.is_relative_to(repo.resolve()) and target.is_file()):
-                    bad(name, "contract_source is not a file in the repository")
-                elif c.get("contract_digest") and c["contract_digest"] != (
-                        "sha256:" + sha256(target.read_bytes())):
+                data = _pinned_file(repo, pin["commit"], src)
+                if data is None:
+                    bad(name, "contract_source is not a file in the repository at the pin")
+                elif c.get("contract_digest") and c["contract_digest"] != "sha256:" + sha256(data):
                     bad(name, "contract_digest does not hash its contract_source")
         elif c["fixture"] not in vf.FIXTURES:
             bad(name, "fixture names no run-time builder of the pinned bench")
@@ -718,7 +781,7 @@ def _vet_rendering(vf, cases, bad):
                 bad(name, f"the fixture could not be built or rendered ({type(exc).__name__})")
 
 
-def summarize(cases, digests, pin, files):
+def summarize(cases, digests, pin, files, dev_moves=None):
     """The figures a holder publishes beside the digests (#601): the set digest, the counts per
     category (the verifier check a case samples), the authoring window and the pin. Counts and
     timestamps only: no id, class name per case, field or value."""
@@ -738,7 +801,8 @@ def summarize(cases, digests, pin, files):
             "by_category": dict(sorted(by_cat.items())),
             "authored_from": iso(stamps[0]), "authored_to": iso(stamps[-1]),
             "file_mtime_from": iso(mtimes[0]), "file_mtime_to": iso(mtimes[-1]),
-            "nearest_development_case": novelty(cases, development_moves()),
+            "nearest_development_case": novelty(
+                cases, development_moves() if dev_moves is None else dev_moves),
             "pinned_verifier": pin}
 
 
@@ -1023,7 +1087,8 @@ def main(argv=None):
             for p in problems:
                 print(f"REFUSED: {p}")
             traps = sum(1 for c in cases.values() if c.get("sound_expected") == "RED")
-            near = novelty(cases, development_moves())
+            with pinned_bench(Path(a.repo), pin["commit"]) as bench:
+                near = novelty(cases, development_moves(bench / "traps"))
             if near:
                 print(f"nearest development case: {near['copies']} copies; differing leaves min "
                       f"{near['differing_leaves_min']}, median {near['differing_leaves_median']}, "
@@ -1050,7 +1115,9 @@ def main(argv=None):
             Path(a.out).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
             print(f"{len(doc['cases'])} case digest(s) written to {a.out}; no case content included")
             if a.summary:
-                summary = summarize(cases, doc, pin, sorted(Path(a.case_dir).glob("*.json")))
+                with pinned_bench(Path(a.repo), pin["commit"]) as bench:
+                    summary = summarize(cases, doc, pin, sorted(Path(a.case_dir).glob("*.json")),
+                                        development_moves(bench / "traps"))
                 Path(a.summary).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
                 print(f"set {summary['set_sha256']}: {summary['cases']} case(s), "
                       f"{summary['traps']} trap(s), {summary['valid_controls']} valid control(s) in "

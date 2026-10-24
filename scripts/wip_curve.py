@@ -1678,14 +1678,23 @@ def review_queue(raw: list, rid: str) -> dict:
             "reviews": len(values), "median_exact_s": str(events._median(values)), "max_exact_s": str(max(values))}
 
 
+def tokens_per_review(review_usage: dict):
+    """(input + output tokens) per review, or None when either count is unobserved (a partial
+    sum is not the reviewers' usage, and never a TypeError, PR #653 review)."""
+    tin, tout, n = (review_usage.get(k) for k in ("input_tokens", "output_tokens", "reviews"))
+    if tin is None or tout is None or not n:
+        return None
+    return Fraction(tin + tout, n)
+
+
 def registered_run(run: dict) -> dict:
     """The registered per-run metrics, flat; None where the record cannot say (never 0)."""
     m = run.get("metrics")
     if not m:
         return {f: (run.get("status") if f == "status" else None) for f in REPORTED_RUN}
-    usage, rv = m["usage"], m["review_usage"]
-    reviews_tokens = (fmt(Fraction(rv["input_tokens"] + rv["output_tokens"], rv["reviews"]))
-                      if rv["input_tokens"] is not None and rv["reviews"] else None)
+    usage = m["usage"]
+    per_review = tokens_per_review(m["review_usage"])
+    reviews_tokens = fmt(per_review) if per_review is not None else None
     return {
         "status": run.get("status"), "throughput_per_h": m["throughput"].get("value"),
         "latency_median_min": m["latency"].get("median_min"), "latency_max_min": m["latency"].get("max_min"),
@@ -1718,10 +1727,9 @@ def condition_block(cond: dict, runs: list[dict]) -> dict:
         values = [r["metrics"][key] for r in runs if r.get("metrics")]
         block[key] = ({"values": values, "total": sum(values)} if values and None not in values
                       else {"values": values, "total": None})
-    per_review = [Fraction(r["metrics"]["review_usage"]["input_tokens"] + r["metrics"]["review_usage"]["output_tokens"],
-                           r["metrics"]["review_usage"]["reviews"])
-                  for r in runs if r.get("metrics") and r["metrics"]["review_usage"]["input_tokens"] is not None]
     usable = [r for r in runs if r.get("metrics")]
+    per_review = [tokens_per_review(r["metrics"]["review_usage"]) for r in usable]
+    per_review = [] if None in per_review else per_review  # one unobserved run voids the mean
     block["review_tokens_per_review"] = (describe(per_review) if usable and len(per_review) == len(usable)
                                          else {"n": len(usable), "unavailable": "a run's review usage was not "
                                                "fully observed; never 0"})

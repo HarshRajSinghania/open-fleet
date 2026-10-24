@@ -75,6 +75,32 @@ def rebind(run_dir: Path) -> None:
     (run_dir / "run.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def synthetic_run(run_id, cond, throughput, *, compliant=True, review_in=100, review_out=20, tier="live-unreviewed",
+                  model="m-1", harness="h-1", inputs="i" * 64, started="2026-10-24T10:00:00+00:00"):
+    """A run summary in summarize_run()'s shape, for report logic that needs no real run."""
+    builders, reviewers = {"b1r1": (1, 1), "b3r1": (3, 1), "b6r1": (6, 1), "b6r2": (6, 2)}[cond]
+    tp = Fraction(str(throughput))
+    metrics = {
+        "throughput": {"value": f"{throughput}/h", "exact": str(tp), "verified_closed": 6, "wall_clock_s": "3600"},
+        "latency": {"median_min": "1.00", "max_min": "2.00", "units": 6, "median_exact_s": "60", "max_exact_s": "120"},
+        "rework": {"bounced": 1, "units": 6}, "freshness": 0, "retries": 1, "conflicts": 0, "gate_failures": 0,
+        "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 0, "cost_usd": "1.00"},
+        "review_usage": {"reviews": 6, "observed": 6, "input_tokens": review_in, "output_tokens": review_out},
+        "review_queue": {"median_min": "0.50", "max_min": "1.00", "median_exact_s": "30", "max_exact_s": "60"},
+        "cost_per_verified_closed_usd": "0.1667", "parked": {}, "tasks": {}, "models": [model],
+        "derivable": True,
+    }
+    run = {"run_id": run_id, "condition": cond, "builders": builders, "reviewers": reviewers, "tier": tier,
+           "status": "complete", "started_at": started, "finished_at": started.replace("T10", "T11"),
+           "inputs_sha256": inputs, "model_pin": model, "harness_version": harness, "attempt": 1,
+           "timeout_scale": 1.0, "compliant": compliant,
+           "noncompliance": [] if compliant else ["excluded by the protocol"], "binding_problems": [],
+           "metrics": metrics}
+    run["registered"] = wip.registered_run(run)
+    return run
+
+
 class Tmp(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="wip-curve-test-")
@@ -278,6 +304,22 @@ class TestUncertainty(unittest.TestCase):
         got = wip.wilson(k, n)
         self.assertEqual(got["ci95"], [f"{center - half:.3f}", f"{center + half:.3f}"])
         self.assertEqual(wip.wilson(0, 0)["p"], None)
+
+
+class TestPartialUsage(unittest.TestCase):
+    """A usage observation may report input tokens and not output tokens (or the reverse): the
+    reviewer-effort metric is then unavailable, never a TypeError and never a partial sum."""
+
+    def test_a_run_missing_one_token_count_reports_review_tokens_unavailable(self):
+        for review_in, review_out in ((100, None), (None, 20)):
+            run = synthetic_run("r1", "b3r1", "1.0", review_in=review_in, review_out=review_out)
+            self.assertIsNone(run["registered"]["review_tokens_per_review"])
+            block = wip.condition_block({"id": "b3r1", "builders": 3, "reviewers": 1, "role": "x"}, [run])
+            self.assertIn("unavailable", block["review_tokens_per_review"])
+
+    def test_complete_counts_still_give_tokens_per_review(self):
+        run = synthetic_run("r1", "b3r1", "1.0")
+        self.assertEqual(run["registered"]["review_tokens_per_review"], "20.00")
 
 
 class TestDecisionRule(unittest.TestCase):

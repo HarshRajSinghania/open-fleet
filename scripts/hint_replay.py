@@ -18,38 +18,85 @@ cannot tell the checks from their absence).
 
 The effect on REPEATED TASK FAILURES needs a worker: ``--live`` runs every scenario that carries
 a ``live_task`` through an agent command per arm and attempt, then the scenario's oracle, and
-counts attempts that fail with the recorded pitfall. It never runs unless asked, refuses a ``live``
-tier without a declared model and budget, refuses more runs than ``--max-runs``, and labels its
-report with the tier the operator declared -- a stub agent is tier ``stub``, never ``live``.
+counts attempts that fail with the recorded pitfall. It never runs unless asked, refuses more runs
+than ``--max-runs``, and labels its report with the tier the operator declared -- a stub agent is
+tier ``stub``, never ``live``.
+
+A ``live`` tier spends model budget, under the spend guard #606's runner uses
+(scripts/_ablation_run.py, whose ledger it shares). It is refused without a declared model, an
+explicit finite cap (``--budget-usd``), a per-call reservation (``--per-call-usd``, the worst case
+one call is held to), the flag that hands each call its own limit at a fraction of that
+reservation (``--agent-limit-flag``, Claude's ``--max-budget-usd``), and ``--out``. The guard is
+PRE-EMPTIVE: a call starts only if the spend so far plus its reservation fits in the cap. Each
+call's whole output is saved beside the results and its ``total_cost_usd`` (Claude
+``--output-format json`` or ``stream-json``) charged; an unmeasured call is charged its full
+reservation (a killed one at least that), and a finished call that reports no cost, or a measured
+call above its reservation, stops the run.
+Every call is entered in an fsynced ledger beside ``--out`` at its full reservation before it
+starts and settled after, so a call the runner never settled (a SIGKILL) stays charged, and a
+later run into the same ``--out`` counts it against its own cap. No call outlives the runner: each
+leads its own process group, killed whole on timeout, after its leader exits, on SIGTERM/SIGHUP/
+Ctrl-C, and -- through a watchdog leader -- when the runner itself is SIGKILLed. A worker that
+calls setsid() itself leaves its group and breaks this contract: run it in a disposable sandbox.
 
     python3 scripts/hint_replay.py --check                  # fixture tier, deterministic, free
-    python3 scripts/hint_replay.py --live --tier live --model <id> --budget-usd 5 --max-runs 18 \\
-        --attempts 3 --agent-cmd 'claude -p --model <id>' --out hint-replay-live.json
+    python3 scripts/hint_replay.py --live --tier live --model sonnet \\
+        --agent-cmd 'claude -p --model sonnet --output-format json --permission-mode acceptEdits' \\
+        --budget-usd 40 --per-call-usd 2 --agent-limit-flag=--max-budget-usd \\
+        --max-runs 18 --attempts 3 --out hint-replay-605-live/results.json
 
-Exit: 0 ok · 1 --check failed / live run failed · 2 usage or corpus error.
+Exit: 0 ok · 1 --check failed / live run failed or stopped · 2 usage, refusal or corpus error ·
+128+N interrupted by signal N (results and ledger written first).
 """
 import argparse
+import contextlib
 import copy
 import hashlib
+import importlib.util
 import json
+import math
 import os
 import re
+import secrets
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "runtime" / "scripts"))
 import search_sessions  # runtime/scripts is on the path first
 
+
+def _load_spend_guard():
+    """#606's runner, loaded by path as ablation.py loads it: its SpendLedger, process-group
+    killer and durable writer are the repo's spend conventions, so they are shared, not copied."""
+    spec = importlib.util.spec_from_file_location("of_hint_replay_spend", ROOT / "scripts" / "_ablation_run.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+spend = _load_spend_guard()
 hp = search_sessions.hp  # the provenance module the hint itself uses (mutation tests patch it)
 DEFAULT_CORPUS = ROOT / "tests" / "fixtures" / "hint-replay.json"
 ARMS = ("off", "unchecked", "checked")
 CLASSES = ("useful", "unknown", "stale", "poison", "benign")
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 FIXED_EPOCH = 1767225600  # 2026-01-01T00:00:00Z: commit dates are part of the fixture
+LIVE_SCHEMA = "hint-replay-live/v2"  # v2: spend guard, per-call cost, ledger, stop reason (#605)
+# A call is handed its own limit at this fraction of its reservation: Claude's --max-budget-usd
+# stops a run once its estimated spend reaches the amount and can pass it, so the limit sits below
+# the reservation (#606's registered harness_limit_fraction).
+LIMIT_FRACTION = 0.8
+DEFAULT_LIMIT_FLAG = "--max-budget-usd"
+ORACLE_TIMEOUT_S = 300
+LIVE_EVIDENCE = "live-unreviewed: becomes evidence only once bound into a run report under docs/runs/"
+STUB_EVIDENCE = "NOT EVIDENCE: a stub worker exercises the pipeline only; no model ran"
 
 
 class CorpusError(Exception):
@@ -301,10 +348,192 @@ def check(report):
 
 # --- live arm: repeated task failures with hints on/off (needs a worker; REMAINING by default) ----
 
+# The leader of every call's process group (#605). It starts the worker as its own child (so in
+# its group), passes the call's stdin/stdout/stderr straight through, and kills the whole group
+# the moment the runner is gone: a SIGKILL nothing can trap would otherwise leave a paid worker
+# running with no one to stop it. Exit 127: the worker could not be started at all.
+WATCHDOG = r'''
+import os, signal, subprocess, sys
+runner = int(sys.argv[1])
+try:
+    proc = subprocess.Popen(sys.argv[2:])
+except OSError as err:
+    sys.stderr.write("hint_replay watchdog: cannot start %r: %s\n" % (sys.argv[2], err))
+    sys.exit(127)
+while True:
+    try:
+        rc = proc.wait(timeout=0.2)
+        break
+    except subprocess.TimeoutExpired:
+        if os.getppid() != runner:
+            os.killpg(0, signal.SIGKILL)
+sys.exit(rc if rc >= 0 else 128 - rc)
+'''
+
+
+def run_group(argv, *, cwd, env, timeout, stdout_path, stdin_path=None, stderr_path=None):
+    """(exit status or None when killed, killed, emptied): _ablation_run.run_group's contract
+    (#652 review), with the streams going straight to files, so a call's output outlives the
+    runner, and a watchdog leader, so the group also dies with a runner that is SIGKILLed.
+
+    The watchdog leads a new session, so it, the worker and everything the worker starts form
+    one process group. On timeout the whole group is killed and reaped; after a normal exit,
+    anything left behind in the group is killed too; and an exception mid-call (an interrupt)
+    kills it on the way out. `emptied` is False only when a member survived SIGKILL, and then no
+    next call may start. No `stderr_path` merges stderr into stdout.
+    """
+    with contextlib.ExitStack() as files:
+        fin = files.enter_context(open(stdin_path, "rb")) if stdin_path else subprocess.DEVNULL
+        fout = files.enter_context(open(stdout_path, "wb"))
+        ferr = files.enter_context(open(stderr_path, "wb")) if stderr_path else subprocess.STDOUT
+        proc = subprocess.Popen([sys.executable, "-I", "-c", WATCHDOG, str(os.getpid()), *argv],
+                                stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
+                                start_new_session=True)
+    spend.LIVE_GROUPS.add(proc.pid)
+    killed = False
+    try:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            killed = True
+    finally:
+        if proc.poll() is None:  # timed out, or an interrupt unwound the wait: the leader still runs
+            spend.kill_group(proc.pid, wait_s=0)
+            proc.wait()
+        emptied = spend.kill_group(proc.pid)
+    return (None if killed else proc.returncode), killed, emptied
+
+
+def _usd(value):
+    """A cost a result can report: a finite, non-negative number (never a bool)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def reported_cost(text):
+    """(USD or None, models) from what a Claude worker printed. `--output-format json` prints one
+    result object (a list of messages under --verbose); stream-json prints one object per line,
+    ending in a result line. Every result must carry a valid total_cost_usd, and several are
+    summed (over-counting is safe, under-counting is not). No result, or one without a cost, is
+    UNMEASURED (None): the caller charges it its full reservation."""
+    try:
+        whole = json.loads(text)
+    except ValueError:
+        whole = None
+    if isinstance(whole, (dict, list)):
+        objs = whole if isinstance(whole, list) else [whole]
+    else:
+        objs = []
+        for line in text.splitlines():
+            with contextlib.suppress(ValueError):
+                objs.append(json.loads(line))
+    objs = [o for o in objs if isinstance(o, dict)]
+    models = set()
+    for obj in objs:
+        if obj.get("type") == "system" and obj.get("subtype") == "init" and isinstance(obj.get("model"), str):
+            models.add(obj["model"])
+        if obj.get("type") == "result" and isinstance(obj.get("modelUsage"), dict):
+            models.update(k for k in obj["modelUsage"] if isinstance(k, str))
+    costs = [_usd(obj.get("total_cost_usd")) for obj in objs if obj.get("type") == "result"]
+    cost = round(sum(costs), 6) if costs and None not in costs else None
+    return cost, sorted(models)
+
+
+def call_charge(cost, killed, reserve, tier):
+    """_ablation_run.agent_charge: measured where there is a measure; a killed or unmeasured live
+    call is charged its whole reservation (a killed one at least that, whatever it reported)."""
+    if tier != "live":
+        return cost or 0.0
+    if killed:
+        return max(reserve, cost or 0.0)
+    return cost if cost is not None else reserve
+
+
+def stop_reason(row, reserve, tier, spent):
+    """Why no further call may start after `row`, or None. A killed call is charged its whole
+    reservation and the run goes on: its spend is held by the same per-call limit as any call's."""
+    call, cost = row["call"], row["cost_usd"]
+    if row["orphans"]:
+        return (f"ORPHAN_ALIVE at {call}: a process of its group survived SIGKILL, so no further "
+                "call may start")
+    if tier == "live" and cost is not None and cost > reserve:
+        return (f"LIMIT_BREACHED at {call}: it cost USD {cost} against its USD {reserve:.2f} "
+                "reservation, so the per-call limit did not hold and the cap can no longer be guaranteed")
+    if tier == "live" and cost is None and not row["agent_killed"]:
+        return (f"USAGE_UNAVAILABLE at {call}: charged its full USD {reserve:.2f} reservation; the "
+                f"worker printed no total_cost_usd ({row['output']['stdout']})")
+    if tier != "live" and spent > 0:
+        # Not a spend guard: a stub reporting cost broke its tier's contract.
+        return f"SPEND_IN_NON_LIVE_TIER at {call}: USD {spent:.2f} reported"
+    return None
+
+
+def _terminated(signum, _frame):
+    """SIGTERM/SIGHUP/SIGINT unwind the run loop, so its `finally` kills every live group."""
+    raise SystemExit(128 + signum)
+
+
+def _live_call(ctx, scenario, arm, attempt, call):
+    """One agent call under the guard, then the oracle. Its packet, output and the oracle's are
+    kept under the run's calls directory, beside the results."""
+    task, ledger, reserve = scenario["live_task"], ctx["ledger"], ctx["reserve"]
+    call_dir = ctx["calls_dir"] / call
+    call_dir.mkdir(parents=True)
+    paths = {"packet": call_dir / "packet.md", "stdout": call_dir / "agent.stdout",
+             "stderr": call_dir / "agent.stderr", "oracle": call_dir / "oracle.txt"}
+    with tempfile.TemporaryDirectory(prefix="hint-replay-live-") as tmp:
+        repo = Path(tmp) / "repo"
+        shas = build_repo(scenario, repo)
+        runs_dir = build_archive(scenario, Path(tmp) / "archive", shas)
+        hint = _arm_selection(arm, scenario, runs_dir, repo)["lines"]
+        packet = task["prompt"] + ("\n\n" + "\n".join(hint) if hint else "") + "\n"
+        packet_path = Path(tmp) / "PACKET.md"
+        packet_path.write_text(packet, encoding="utf-8")
+        paths["packet"].write_text(packet, encoding="utf-8")
+        env = dict(ctx["env"], HINT_REPLAY_PACKET=str(packet_path))
+        ledger.start(call, "agent", reserve)  # on disk at its full reservation BEFORE the call starts
+        code, killed, emptied = run_group(ctx["argv"], cwd=repo, env=env, timeout=ctx["timeout"],
+                                          stdin_path=packet_path, stdout_path=paths["stdout"],
+                                          stderr_path=paths["stderr"])
+        cost, models = reported_cost(paths["stdout"].read_text(encoding="utf-8", errors="replace"))
+        ledger.settle(call, "agent", call_charge(cost, killed, reserve, ctx["tier"]), cost, killed)
+        oracle_code, oracle_killed, oracle_emptied = run_group(
+            task["oracle"], cwd=repo, env=ctx["env"], timeout=ORACLE_TIMEOUT_S, stdout_path=paths["oracle"])
+        output = paths["oracle"].read_text(encoding="utf-8", errors="replace")
+    oracle_exit = "timeout" if oracle_killed else oracle_code
+    return {"scenario": scenario["id"], "arm": arm, "attempt": attempt, "call": call,
+            "agent_exit": "timeout" if killed else code, "agent_killed": killed,
+            "oracle_exit": oracle_exit,
+            "repeated_failure": oracle_exit != 0 and bool(re.search(task["pitfall"], output)),
+            "reserve_usd": reserve, "cost_usd": cost, "measured": cost is not None,
+            "charged_usd": ledger.total(ledger.run, call), "models": models,
+            "orphans": not (emptied and oracle_emptied),
+            "output": {k: os.path.relpath(v, ctx["out"].parent) for k, v in paths.items()}}
+
+
+def _interrupted_row(active, ledger, code):
+    """The call a signal cut short, kept in the results with what the ledger charged it."""
+    scenario_id, arm, attempt, call = active
+    calls = {key[2]: value for key, value in ledger.calls(ledger.run, call).items()}
+    settle = next((r for r in reversed(ledger.records) if r["run"] == ledger.run and r["cell"] == call
+                   and r["event"] == "settle"), None)
+    cost = settle.get("measured_usd") if settle else None
+    return {"scenario": scenario_id, "arm": arm, "attempt": attempt, "call": call, "interrupted": True,
+            "agent_exit": None, "oracle_exit": None, "repeated_failure": False,
+            "cost_usd": cost, "measured": cost is not None,
+            "open_calls": sorted(c for c, (_charged, settled) in calls.items() if not settled),
+            "charged_usd": ledger.total(ledger.run, call),
+            "errors": [f"interrupted (exit {code}) mid-call: a call it started is charged, an "
+                       "unsettled one at its full reservation"]}
+
+
 def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, budget_usd=None,
-                timeout_s=900, only=None):
+                timeout_s=900, only=None, per_call_usd=None, limit_flag=DEFAULT_LIMIT_FLAG, out=None):
     """Per live_task scenario x arm x attempt: fresh fixture, packet (task + hint for the arm),
-    agent run, then the oracle. A repeated failure is an oracle failure matching the pitfall."""
+    agent call under the spend guard, then the oracle. A repeated failure is an oracle failure
+    matching the pitfall. The results go to `out` (default: a new temp dir) durably, also when a
+    signal cuts the run short, and then SystemExit(128+N) follows. Callers run preflight_live()."""
     corpus, digest = load_corpus(corpus_path)
     tasks = [s for s in corpus["scenarios"] if s.get("live_task") and (not only or s["id"] in only)]
     if not tasks:
@@ -312,41 +541,121 @@ def live_replay(corpus_path, agent_argv, tier, attempts, max_runs, model=None, b
     planned = len(tasks) * len(ARMS) * attempts
     if planned > max_runs:
         raise CorpusError(f"{planned} agent runs planned, --max-runs allows {max_runs}")
-    results = []
-    for scenario in tasks:
-        task = scenario["live_task"]
-        pitfall = re.compile(task["pitfall"])
-        for arm in ARMS:
-            for attempt in range(1, attempts + 1):
-                with tempfile.TemporaryDirectory(prefix="hint-replay-live-") as tmp:
-                    repo = Path(tmp) / "repo"
-                    shas = build_repo(scenario, repo)
-                    runs_dir = build_archive(scenario, Path(tmp) / "archive", shas)
-                    hint = _arm_selection(arm, scenario, runs_dir, repo)["lines"]
-                    packet = task["prompt"] + ("\n\n" + "\n".join(hint) if hint else "") + "\n"
-                    packet_path = Path(tmp) / "PACKET.md"
-                    packet_path.write_text(packet, encoding="utf-8")
-                    env = dict(os.environ, HINT_REPLAY_PACKET=str(packet_path))
-                    try:
-                        agent = subprocess.run(agent_argv, cwd=repo, input=packet, env=env, text=True,
-                                               capture_output=True, timeout=timeout_s, check=False)
-                        agent_rc = agent.returncode
-                    except subprocess.TimeoutExpired:
-                        agent_rc = "timeout"
-                    oracle = subprocess.run(task["oracle"], cwd=repo, capture_output=True, text=True,
-                                            timeout=300, check=False)
-                    output = oracle.stdout + oracle.stderr
-                    results.append({"scenario": scenario["id"], "arm": arm, "attempt": attempt,
-                                    "agent_exit": agent_rc, "oracle_exit": oracle.returncode,
-                                    "repeated_failure": oracle.returncode != 0 and bool(pitfall.search(output))})
+    # Nothing is written before this line; everything below is recorded.
+    out = Path(out).resolve() if out else Path(tempfile.mkdtemp(prefix="hint-replay-live-")) / "results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Unique per invocation (two runs in one second and one process stay apart in the ledger).
+    run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{os.getpid()}-{secrets.token_hex(4)}"
+    try:
+        ledger = spend.SpendLedger(out.parent / f"{out.stem}.spend.jsonl", run_id)
+    except spend.Refused as exc:  # an unreadable ledger: spend already made cannot be counted
+        raise CorpusError(str(exc)) from exc
+    prior = float(ledger.total())
+    live = tier == "live"
+    reserve = float(per_call_usd) if live else 0.0  # a stub is never paid: it reserves nothing
+    limit = round(per_call_usd * LIMIT_FRACTION, 2) if per_call_usd and limit_flag else None
+    cap = float(budget_usd) if budget_usd is not None else 0.0
+    ctx = {"ledger": ledger, "reserve": reserve, "tier": tier, "out": out, "timeout": timeout_s,
+           "calls_dir": out.parent / f"{out.stem}.calls" / run_id,
+           # Every path absolute (the worker's cwd is the fixture), then its own limit.
+           "argv": spend.absolute_argv(list(agent_argv)) + ([limit_flag, f"{limit:.2f}"] if limit else []),
+           # No login-shell rc file may run (~/.zshenv can reorder PATH): the stub-claude rule.
+           "env": dict(os.environ, SHELL="/bin/sh")}
+    plan = [(s, arm, k) for s in tasks for arm in ARMS for k in range(1, attempts + 1)]
+    results, stopped, interrupted, active = [], None, None, None
+    # A signal unwinds the loop like Ctrl-C (first_run.py's pattern, #640): the `finally` kills and
+    # reaps every child group still alive before the results are written and the runner exits.
+    previous = ({sig: signal.signal(sig, _terminated) for sig in spend.TRAPPED_SIGNALS}
+                if threading.current_thread() is threading.main_thread() else {})
+    try:
+        for scenario, arm, attempt in plan:
+            call = f"{scenario['id']}.{arm}.a{attempt}"
+            # PRE-EMPTIVE: a call starts only if what the cap has left covers its whole
+            # reservation, counting every earlier run into this --out. Nothing after it is the guard.
+            counted = ledger.total()
+            if counted + reserve > cap:
+                stopped = (f"CAP_REACHED: USD {cap - counted:.2f} of the USD {cap:.2f} cap remains, "
+                           f"less than the USD {reserve:.2f} reservation of {call}")
+                break
+            active = (scenario["id"], arm, attempt, call)
+            try:
+                row = _live_call(ctx, scenario, arm, attempt, call)
+            except CorpusError as exc:
+                stopped = f"CORPUS_ERROR at {call}: {exc}"
+                break
+            results.append(row)
+            active = None
+            stopped = stop_reason(row, reserve, tier, ledger.total(run_id))
+            if stopped:
+                break
+    except SystemExit as stop:
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)  # nothing may cut the record of what was spent short
+        interrupted = stop.code if isinstance(stop.code, int) else 1
+        if active:
+            results.append(_interrupted_row(active, ledger, interrupted))
+        stopped = (f"INTERRUPTED (exit {interrupted}): every live child process group was killed "
+                   "and reaped before the runner exited")
+    finally:
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)  # the run is ending either way: no second unwind
+        try:
+            spend.stop_all_groups()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+    done = [r for r in results if not r.get("interrupted")]
     arms = {}
     for arm in ARMS:
-        mine = [r for r in results if r["arm"] == arm]
+        mine = [r for r in done if r["arm"] == arm]
         arms[arm] = {"runs": len(mine), "passed": sum(r["oracle_exit"] == 0 for r in mine),
                      "repeated_failures": sum(r["repeated_failure"] for r in mine)}
-    return {"schema": "hint-replay-live/v1", "tier": tier, "model": model, "budget_usd": budget_usd,
-            "agent": os.path.basename(agent_argv[0]), "planned_runs": planned, "attempts": attempts,
-            "corpus": {"path": str(corpus_path), "sha256": digest}, "arms": arms, "results": results}
+    report = {"schema": LIVE_SCHEMA, "tier": tier, "evidence": LIVE_EVIDENCE if live else STUB_EVIDENCE,
+              "model": model, "budget_usd": budget_usd, "agent": os.path.basename(agent_argv[0]),
+              "agent_cmd": ctx["argv"], "planned_runs": planned, "attempts": attempts, "run_id": run_id,
+              "corpus": {"path": str(corpus_path), "sha256": digest}, "arms": arms,
+              "cost": {"cap_usd": cap, "reserve_per_call_usd": reserve, "limit_flag": limit_flag or None,
+                       "limit_usd": limit, "limit_fraction": LIMIT_FRACTION,
+                       "worst_case_usd": round(planned * reserve, 6),
+                       "spent_usd": float(ledger.total(run_id)), "prior_spent_usd": prior,
+                       "counted_against_cap_usd": float(ledger.total()), "ledger": str(ledger.path),
+                       "measured_calls": [r["call"] for r in results if r["measured"]],
+                       "unmeasured_calls": [r["call"] for r in results if not r["measured"]]},
+              "results_path": str(out), "calls_dir": str(ctx["calls_dir"]), "stopped": stopped,
+              "complete": stopped is None and len(done) == planned, "results": results}
+    spend.write_durably(out, json.dumps(report, indent=2) + "\n")
+    if interrupted is not None:
+        raise SystemExit(interrupted)
+    return report
+
+
+def preflight_live(args):
+    """Every --live refusal, before anything is written or run: a live tier spends real money."""
+    if args.tier is None or not args.agent_cmd or args.max_runs is None or args.attempts < 1:
+        raise CorpusError("--live needs --tier, --agent-cmd, --max-runs and --attempts >= 1")
+    if args.timeout_s <= 0:
+        raise CorpusError("--timeout-s must be positive")
+    budget, per_call = args.budget_usd, args.per_call_usd
+    if args.tier == "live":
+        if not args.model or budget is None or not math.isfinite(budget) or budget <= 0:
+            raise CorpusError("a live tier needs a declared --model and a positive --budget-usd: an "
+                              "explicit, finite cap")
+        if per_call is None or not math.isfinite(per_call) or per_call <= 0:
+            raise CorpusError("a live run needs a per-call reservation (--per-call-usd > 0, the worst "
+                              "case one call is held to): without one no cap can be enforced before the spend")
+        if per_call > budget:
+            raise CorpusError(f"--per-call-usd {per_call:g} exceeds the --budget-usd {budget:g} cap: "
+                              "no call could ever start")
+        if not args.agent_limit_flag:
+            raise CorpusError("a live run hands every call its own per-call limit (--agent-limit-flag, "
+                              "Claude's --max-budget-usd): without one a call's worst case is unbounded")
+        if not args.out:
+            raise CorpusError("a live run needs --out: its spend ledger sits beside the results, so a "
+                              "later run into the same --out counts what this one spent")
+        return
+    for flag, value in (("--budget-usd", budget), ("--per-call-usd", per_call)):
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise CorpusError(f"{flag} must be a finite, non-negative number")
 
 
 def build_parser():
@@ -355,14 +664,22 @@ def build_parser():
     p.add_argument("--scenario", action="append", default=[], help="limit to these scenario ids")
     p.add_argument("--check", action="store_true", help="exit 1 unless the corpus gate holds")
     p.add_argument("--json", action="store_true", help="print the full report")
-    p.add_argument("--out", default=None, help="also write the report here")
+    p.add_argument("--out", default=None, help="also write the report here; for --live, its spend "
+                   "ledger (<stem>.spend.jsonl) and every call's output (<stem>.calls/) sit beside it")
     p.add_argument("--live", action="store_true", help="run the agent arm (spends model budget)")
     p.add_argument("--tier", choices=("stub", "live"), default=None,
                    help="what --agent-cmd IS: a deterministic stub, or a real model worker")
     p.add_argument("--agent-cmd", default=None, help="worker argv (shlex-split, no shell); packet on stdin "
                    "and at $HINT_REPLAY_PACKET; runs with cwd = the fixture repo")
     p.add_argument("--model", default=None)
-    p.add_argument("--budget-usd", type=float, default=None)
+    p.add_argument("--budget-usd", type=float, default=None,
+                   help="the spend cap; REQUIRED for a live tier (counts earlier runs into the same --out)")
+    p.add_argument("--per-call-usd", type=float, default=None,
+                   help="each call's reservation, its worst case; REQUIRED for a live tier")
+    p.add_argument("--agent-limit-flag", default=DEFAULT_LIMIT_FLAG,
+                   help=f"the worker's own per-call spend-limit flag, appended to every call at "
+                   f"{LIMIT_FRACTION:g} of its reservation (default {DEFAULT_LIMIT_FLAG}; '' = none, "
+                   "refused for a live tier)")
     p.add_argument("--max-runs", type=int, default=None)
     p.add_argument("--attempts", type=int, default=1)
     p.add_argument("--timeout-s", type=int, default=900)
@@ -373,21 +690,19 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         if args.live:
-            if args.tier is None or not args.agent_cmd or args.max_runs is None or args.attempts < 1:
-                raise CorpusError("--live needs --tier, --agent-cmd, --max-runs and --attempts >= 1")
-            if args.tier == "live" and (not args.model or not args.budget_usd or args.budget_usd <= 0):
-                raise CorpusError("a live tier needs a declared --model and a positive --budget-usd")
+            preflight_live(args)
             report = live_replay(args.corpus, shlex.split(args.agent_cmd), args.tier, args.attempts,
                                  args.max_runs, args.model, args.budget_usd, args.timeout_s,
-                                 set(args.scenario) or None)
-            failures = []
+                                 set(args.scenario) or None, per_call_usd=args.per_call_usd,
+                                 limit_flag=args.agent_limit_flag, out=args.out)
+            failures = [report["stopped"]] if report["stopped"] else []
         else:
             report = replay(args.corpus, set(args.scenario) or None)
             failures = check(report) if args.check else []
     except CorpusError as exc:
         print(f"hint_replay: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    if args.out:
+    if args.out and not args.live:  # a live run wrote its results durably itself
         Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if args.json:
         print(json.dumps(report, indent=2))
@@ -395,6 +710,12 @@ def main(argv=None):
         print(f"tier={report['tier']} corpus_sha256={report['corpus']['sha256'][:16]}")
         for arm, metrics in report["arms"].items():
             print(f"{arm}: " + " ".join(f"{k}={v}" for k, v in metrics.items()))
+        if args.live:
+            cost = report["cost"]
+            print(f"cost: spent_usd={cost['spent_usd']} prior_spent_usd={cost['prior_spent_usd']} "
+                  f"cap_usd={cost['cap_usd']} measured={len(cost['measured_calls'])} "
+                  f"unmeasured={len(cost['unmeasured_calls'])}")
+            print(f"results: {report['results_path']}")
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
     return EXIT_FAILED if failures else EXIT_OK

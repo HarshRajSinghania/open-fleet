@@ -1138,6 +1138,35 @@ class TestAFailedMergeGateIsReported(DryRun):
         self.assertEqual(report["runs"][0]["binding_problems"], [])
 
 
+_PLANT_MARKER = Path(tempfile.gettempdir()) / f"wip-curve-plant-{os.getpid()}.log"
+# T5's builder solves its task, then plants diff.external, a textconv and a smudge driver selected
+# by a committed .gitattributes, core.fsmonitor and a hooks directory in the SHARED repository
+# config: commands only someone else's git would run. The coordinator diffs it, checks it out for
+# review, pushes it, merges it through the queue and keeps building next to it.
+B1_PLANT = ("wip1-b1r1-rep1", ("--cost-cap-usd", "0", "--inert-script", json.dumps(
+    {"T5": {"builder": ["plant"]}, "_plant": str(_PLANT_MARKER)})))
+
+
+class TestWorkerGitConfigNeverRunsOnTheCoordinator(DryRun):
+    """PR #653 review: every coordinator git call over the target repository goes through
+    gitexec's hardened environment with the repository's declared drivers blanked."""
+
+    RUN, ARGS = B1_PLANT
+
+    def test_no_planted_command_ran_on_the_coordinator(self):
+        for path in (_PLANT_MARKER, Path(f"{_PLANT_MARKER}.sh"), Path(f"{_PLANT_MARKER}.hooks")):
+            self.addCleanup(shutil.rmtree if path.suffix == ".hooks" else Path.unlink, *(
+                (path, True) if path.suffix == ".hooks" else (path,)))
+        ran = _PLANT_MARKER.read_text(encoding="utf-8").splitlines() if _PLANT_MARKER.exists() else []
+        # Later builders share the config, so their OWN git runs it (worker=<their dispatch>): that
+        # stays inside a guarded worker session. Nothing may run with no worker (the coordinator).
+        self.assertEqual([ln for ln in ran if "worker=none" in ln], [],
+                         "a worker-planted git command ran on the coordinator")
+        self.assertTrue(ran, "the plant never armed: later builders' own git should have run it")
+        self.assertEqual(self.record["status"], "complete", self.proc.stdout + self.proc.stderr)
+        self.assertEqual(self.record["units"]["T5"]["final"], "closed")
+
+
 class TestRelativePaths(unittest.TestCase):
     """--results, --workdir and --prereg given relative to another working directory: the run,
     the report and the verifier resolve them once, before anything changes directory (git reads

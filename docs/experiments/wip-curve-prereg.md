@@ -76,6 +76,11 @@ These fields are filled at run time and recorded in every run's `run.json`:
 Builders run with `PROFILE=rw`. Reviewers run with `PROFILE=ro` on the same harness and model.
 After every spawn, the runner checks that the deny hook the provider installed in the worker's
 tree is armed, as `first_run.py` does. If it is not, the runner stops the worker and the run fails.
+A builder can write the git config its worktree shares with the coordinator's clone. So every git
+call the runner makes, and every git call of the merge queue it drives, goes through
+`gitexec.py` (#629). That means the hardened environment, with the repository's declared filter,
+diff and merge drivers blanked, `--no-ext-diff --no-textconv` on diffs, and no inherited stdin. A
+planted `diff.external`, driver, fsmonitor or hook therefore runs only in builders' own git.
 
 ## WIP settings and reviewer availability
 

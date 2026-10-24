@@ -97,8 +97,10 @@ def _load(name: str, path: Path):
     return mod
 
 
-# The event record, the first-run sandbox and its stand-in pattern are reused, never copied.
+# The event record, the first-run sandbox and its stand-in pattern, and the hardened git executor
+# (#629/#649) are reused, never copied.
 events = _load("wip_curve_events", SCRIPTS / "events.py")
+gitexec = _load("wip_curve_gitexec", SCRIPTS / "gitexec.py")
 first_run = _load("wip_curve_first_run", SCRIPTS / "first_run.py")
 
 
@@ -140,17 +142,36 @@ def fmt(frac, places=2) -> str:
     return events._decimal(Fraction(frac), places)
 
 
-def git_env(base: dict | None = None) -> dict:
-    """The runner's own git: no system or user config (a signing or template setting would make
-    the seed commit differ between hosts), never a prompt."""
-    env = dict(base if base is not None else os.environ)
-    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
-    return env
+def git_env(base: dict | None = None, repo: Path | None = None) -> dict:
+    """gitexec.py's hardened environment (#629): no system or user config (which would also make
+    the seed commit differ between hosts), no prompt, no replace objects, and every repository-
+    config command channel closed at command-line precedence: core.fsmonitor, core.hooksPath,
+    diff.external, the ext:: transport. With `repo`, every filter, diff and merge driver that
+    repository's config declares is blanked too. A builder writes the config its worktree shares
+    with the target clone, so without this a planted command ran on the coordinator, outside the
+    worker's guarded session (PR #653 review). The driver query fails closed."""
+    blanks = ()
+    if repo is not None:
+        try:
+            blanks = gitexec.driver_blanks(repo)
+        except gitexec.DriverQueryFailed as err:
+            raise RunFailed(f"the git config of {repo} cannot be read, so its drivers cannot be "
+                            f"neutralised: {err}") from err
+    return gitexec.env(dict(base if base is not None else os.environ), blanks)
 
 
 def git(cwd: Path, *args: str, env: dict | None = None, check=True, data: bytes | None = None):
-    proc = subprocess.run(["git", *args], cwd=str(cwd), env=git_env(env), capture_output=True,
-                          input=data)
+    """git through gitexec: the absolute git resolved once, the hardened environment with the
+    repository's drivers blanked (except for `init`/`clone`, which create it), --no-ext-diff and
+    --no-textconv on every diff, and no inherited stdin (a planted command must not read ours)."""
+    if args and args[0] == "diff":
+        args = ("diff", "--no-ext-diff", "--no-textconv", *args[1:])
+    repo = None if args and args[0] in ("init", "clone") else Path(cwd)
+    try:
+        proc = subprocess.run(gitexec.argv("-C", str(cwd), *args), env=git_env(env, repo), capture_output=True,
+                              input=data if data is not None else b"")
+    except OSError as err:
+        raise RunFailed(f"git {' '.join(args[:2])} could not run in {cwd}: {err}") from err
     if check and proc.returncode != 0:
         raise RunFailed(f"git {' '.join(args)} failed in {cwd}: "
                         f"{proc.stderr.decode('utf-8', 'replace').strip()[:400]}")
@@ -601,7 +622,7 @@ if role == "builder":
     if action == "die":
         answer("stand-in scripted to exit without reporting")
         sys.exit(1)
-    if action in ("solve", "miss", "regress"):
+    if action in ("solve", "miss", "regress", "plant"):
         spec_r = importlib.util.spec_from_file_location("wip_curve_runner", cfg["runner"])
         runner = importlib.util.module_from_spec(spec_r)
         spec_r.loader.exec_module(runner)
@@ -616,8 +637,27 @@ if role == "builder":
         if action == "regress":  # passes its own oracle, breaks a landed task's: the merge gate fails
             changed += [f for f in runner.apply_edits(Path.cwd(), cfg["script"]["_regress"][task])
                         if f not in changed]
+        if action == "plant":  # a hostile builder: every config command channel git offers
+            Path(".gitattributes").write_text("* filter=wipevil diff=wipevil\n", encoding="utf-8")
+            changed.append(".gitattributes")
         sh("git", "add", "--", *changed)
         sh("git", "commit", "-q", "-m", f"{task}: {tdef['title']}")
+        if action == "plant":  # planted AFTER its own commit, so only someone else's git can run it
+            marker = cfg["script"]["_plant"]
+            hook = Path(marker + ".sh")
+            hook.write_text(f'#!/bin/sh\necho "cmd worker=${{OPEN_FLEET_DISPATCH_ID:-none}} $*" >> {marker}\ncat\n',
+                            encoding="utf-8")
+            hook.chmod(0o755)
+            hooks = Path(marker + ".hooks")
+            hooks.mkdir(exist_ok=True)
+            for name in ("pre-push", "post-checkout", "reference-transaction"):
+                (hooks / name).write_text(f'#!/bin/sh\necho "hook {name} worker=${{OPEN_FLEET_DISPATCH_ID:-none}}" >> {marker}\n',
+                                          encoding="utf-8")
+                (hooks / name).chmod(0o755)
+            for key, value in (("diff.external", str(hook)), ("diff.wipevil.textconv", str(hook)),
+                               ("filter.wipevil.smudge", str(hook)), ("core.hooksPath", str(hooks)),
+                               ("core.fsmonitor", str(hook))):
+                sh("git", "config", key, value)
     head = sh("git", "rev-parse", "HEAD")
     outcome = "failed" if action == "fail" else "succeeded"
     rc = subprocess.run([sys.executable, "-I", os.path.join(os.environ["OPEN_FLEET_ROOT"], "runtime",
@@ -896,7 +936,8 @@ class Run:
     def mq(self, *args, check=True):
         proc = self.wrapper([sys.executable, str(SCRIPTS / "merge_queue.py"), "--db", str(self.sb.dir / "merge-queue.db"),
                              "--repo-dir", str(self.sb.target), *args],
-                            env=git_env({**self.sb.env, "OPEN_FLEET_STATE_DIR": str(self.sb.dir / "mq-state")}))
+                            env=git_env({**self.sb.env, "OPEN_FLEET_STATE_DIR": str(self.sb.dir / "mq-state")},
+                                        repo=self.sb.target))
         try:
             out = json.loads(proc.stdout)
         except ValueError:
@@ -2237,8 +2278,7 @@ def cmd_gate(args) -> int:
     tasks = task_by_id(taskset)
     cwd = Path.cwd()
     included = [tasks[t] for t, heads in sorted(landing.items()) if t in tasks and any(
-        subprocess.run(["git", "merge-base", "--is-ancestor", h, "HEAD"], cwd=str(cwd), env=git_env(),
-                       capture_output=True).returncode == 0 for h in heads)]
+        git(cwd, "merge-base", "--is-ancestor", h, "HEAD", check=False).returncode == 0 for h in heads)]
     with tempfile.TemporaryDirectory(prefix="wip-curve-gate-") as tmp:
         result = run_oracle(cwd, included, taskset, Path(tmp))
     print(f"wip-curve gate: {result['exit']} for {[t['id'] for t in included]}")

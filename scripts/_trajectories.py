@@ -1904,9 +1904,10 @@ class LiveRecorder:
         return True
 
     def manifest_at(self, path, content):
-        """A write that emits the evidence manifest: manifest-shaped, and not a file of the
-        initial state (a rewritten CONTRACT.json is graded as the write it is)."""
-        if path in self.base_files or path == "@git":
+        """The evidence manifest a write in the workspace also emits: manifest-shaped, not at a
+        sentinel (a write that left the workspace emits nothing but its boundary attempt), and
+        not a file of the initial state (a rewritten CONTRACT.json is only the write it is)."""
+        if path in SENTINELS or path in self.base_files:
             return None
         return _manifest_of(content)
 
@@ -1914,11 +1915,12 @@ class LiveRecorder:
         path, content = self.rel(args.get("file_path")), args.get("content")
         if path is None or not isinstance(content, str):
             return False
+        # The write always stays, with its path and grant; a manifest is emitted beside it and
+        # rides the same grant (#659 review).
+        self.emit("Write", path=path, content=content, live=live)
         found = self.manifest_at(path, content)
         if found is not None:
-            self.emit("Manifest", manifest=found, live=live)
-        else:
-            self.emit("Write", path=path, content=content, live=live)
+            self.emit("Manifest", manifest=found, via="Write", live=live)
         if live is None and path not in SENTINELS:
             self.sim[path] = content
         return True
@@ -1937,14 +1939,14 @@ class LiveRecorder:
                 # The replay's Edit replaces text that occurs exactly once.
                 single = single and after.count(old) == 1
                 after = after.replace(old, new) if every else after.replace(old, new, 1)
-        found = self.manifest_at(path, after) if after is not None else None
-        if found is not None:
-            self.emit("Manifest", manifest=found, live=live)
-        elif single or after is None:
+        if single or after is None:
             for e in edits:
                 self.emit("Edit", path=path, old=e["old_string"], new=e["new_string"], live=live)
         else:
             self.emit("Write", path=path, content=after, via="Edit", live=live)
+        found = self.manifest_at(path, after) if after is not None else None
+        if found is not None:
+            self.emit("Manifest", manifest=found, via="Edit", live=live)
         if live is None and after is not None and path not in SENTINELS:
             self.sim[path] = after
         return True

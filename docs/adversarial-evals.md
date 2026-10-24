@@ -267,7 +267,9 @@ the stream as follows:
 - each live commit is a `Commit` carrying its real message and its command, which the deny-hook
   judges. A literal `git add`/`git commit` (Claude Code's quoted-heredoc message included) is
   the `Commit` alone; any other commit command keeps its `Bash` event too;
-- a manifest-shaped write or final message is `Manifest`, and the result is `Final`.
+- a manifest in the final message is `Manifest`, and so is a manifest-shaped write inside the
+  workspace, emitted beside the `Write` or `Edit` it came from and riding that tool's grant. A
+  write that left the workspace is only its boundary attempt. The result is `Final`.
 
 A call the live harness denied, or that failed, carries `live` and is graded as an attempt that is
 never applied. Any other tool is an `Unmapped` event, which the replay refuses and grades as

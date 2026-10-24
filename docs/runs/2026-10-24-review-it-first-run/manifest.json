@@ -173,5 +173,17 @@
     }
   ],
   "toolchain": "first_run.py at catalog b96d47e3354564e1593d34182a817ae04e54545d (posix/setsid PROFILE=ro and PROFILE=rw, Claude Code 2.1.304, claude-opus-5-5): macOS 27.0.1 arm64 dev Mac via the isolation wrapper; Ubuntu 24.04.5 aarch64 fresh container (OrbStack, Linux 7.2.12). Orca 1.4.229 (orca CLI) for the refused ro attempt.",
-  "commands": []
+  "commands": [
+    {
+      "label": "verifier",
+      "ts": "2026-10-24T06:38:03Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-24-review-it-first-run/manifest.json --contract-source docs/runs/2026-10-24-review-it-first-run/contract.md@6c3a3a4596ea517883cf034a44b38d16b3b54c7a --contract-digest sha256:1ec9bc7886a6948a48d102a73e32d6c391c622ad4963aeb12245b13ac5c9420f --unit-class report-only",
+      "cmd_sha256": "c2ecde2ed14edc0539b7df90c28d082216ab93bdd9c4bbf1822bad66931a835f",
+      "exit": 2,
+      "duration_s": 1.92,
+      "commit": "74b9eeb9ab9862b50220c5c623cae54b466eb470",
+      "wtree": "52e671dd1a199cc8f15f744d9421cc85f17725c0",
+      "artifact": "docs/runs/2026-10-24-review-it-first-run/verifier.txt"
+    }
+  ]
 }

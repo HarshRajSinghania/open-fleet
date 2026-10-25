@@ -97,7 +97,7 @@ Instead, copy installers require a published `dist/` bundle where every mission 
 
 ```bash
 python3 scripts/bundle.py           # Generates dist/skills/<name>/ with playbooks & runtime vendored under references/
-python3 scripts/bundle.py --check   # Verifies every mission in dist/ is self-contained with zero escaping links
+python3 scripts/bundle.py --check   # Builds and verifies a temporary bundle; does not inspect existing dist/
 ```
 
 - **Automated `dist` branch:** On every `v*` release tag, `.github/workflows/publish-dist.yml` runs `python3 scripts/bundle.py` and publishes the self-contained tree to the **`dist` branch** alongside `DIST-PROVENANCE.txt` ([first published at `v0.7.0`](https://github.com/ravidsrk/open-fleet/releases/tag/v0.7.0), [workflow run](https://github.com/ravidsrk/open-fleet/actions/runs/36700658706)).

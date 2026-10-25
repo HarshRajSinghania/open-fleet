@@ -30,7 +30,7 @@ export OPEN_FLEET_RUNTIME=superset   # superset-sh/superset CLI adapter
 
 ### Neutral environment variables
 
-All runtime scripts accept `OPEN_FLEET_*` variables alongside legacy `ORCA_*` aliases (conflicting values between the two fail closed with exit `2`):
+Runtime scripts accept `OPEN_FLEET_*` variables alongside legacy `ORCA_*` aliases. Shared provider helpers prefer a non-empty `OPEN_FLEET_*` value; conflict rejection is helper-specific, not a blanket guarantee:
 
 | Primary (`open-fleet`) | Legacy alias | Purpose |
 |---|---|---|

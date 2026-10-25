@@ -109,7 +109,7 @@ In enterprise environments where `allowManagedHooksOnly` disables user or plugin
 ### Signed dispatch — what it binds, and where the key comes from (#135)
 
 > [!NOTE]
-> **Implemented mechanism, dormant by default:** The Ed25519 signing mechanisms below are implemented in `runtime/scripts/dispatch-sign.py`, `verify.py`, and `run_report.py`. Today, no mission or playbook signs a dispatch by default, and the **signed verifier transcript** flow is exercised by no real run yet. **Committing `.orca/dispatch-pubkey` is the enforcement switch for both**: once committed on the default branch, `verify-gate.sh` requires a valid signed dispatch record and `run_report.py` requires a signed verifier transcript for commits descending from that key.
+> **Implemented mechanism, dormant by default:** The Ed25519 signing mechanisms below are implemented in `runtime/scripts/dispatch-sign.py`, `verify.py`, and `run_report.py`. Today, no mission or playbook signs a dispatch by default, and the **signed verifier transcript** flow is exercised by no real run yet. **Committing `.orca/dispatch-pubkey` is the enforcement switch for both**: once committed on the default branch, `verify-gate.sh` requires a valid signed dispatch record. For `run_report.py`, a report pin already in the grading branch's history reads the key at that pin, so a pin from before the key landed retains the unsigned path. A pin outside that history reads the key at the current grading branch instead, so an older fork does not avoid the signed-transcript requirement.
 
 When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispatch record (`runtime/scripts/dispatch-sign.py`) binding:
 - **Core fields:** `manifest_id`, `contract_digest`, `unit_class`, `lighting`, `profile`, `parent_profile`, and optional lane flags (`no_gh`, `lane`, `execute_nc`).
@@ -120,11 +120,23 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
 2. `.orca/dispatch-pubkey` read from `refs/remotes/origin/HEAD` in the target repository.
 3. `.orca/dispatch-pubkey` in the target repository's working tree.
 
-**Operational setup when enabling signed dispatch:**
+**Operational setup when enabling signed dispatch and signed verifier transcripts:**
 1. **Generate keypair (off-worker):** `python3 runtime/scripts/dispatch-sign.py gen-key --out <secret>` and commit `<secret>.pub` as `.orca/dispatch-pubkey` on the default branch.
 2. **Sign per dispatch (coordinator):**
    ```bash
    python3 runtime/scripts/dispatch-sign.py sign --key <secret> \
      --manifest-id <unit-id> --contract-digest <sha256> --unit-class mutation --lighting lit
    ```
-3. **Verify at gate:** `verify.py` validates the Ed25519 signature (via vendored RFC 8032 `runtime/scripts/ed25519.py`) and fails closed on any field substitution, replay across units, or missing signature.
+3. **Verify at gate and emit a signed verifier transcript:** `verify.py` validates the Ed25519 dispatch signature (via vendored RFC 8032 `runtime/scripts/ed25519.py`) and fails closed on any field substitution, replay across units, or missing signature. Once `.orca/dispatch-pubkey` is committed, `run_report.py` also requires a signed verifier transcript (`transcript=<path>` in the report's `RUN:` header) binding the manifest digest, exit code, and argument tuple:
+   - **Without `--execute-nc`:** Pass `--transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
+   - **With `--execute-nc` (recommended two-process flow):** Because `--execute-nc` executes repository tests under the current user ID, `verify.py` refuses `--transcript-key` alongside `--execute-nc` so the private seed is never loaded into the test-execution process. Instead, write an unsigned verdict first and sign it in a separate process (which re-hashes `toolchain.files` against its sibling scripts before signing):
+     ```bash
+     python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
+       --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
+       --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:-main}" \
+       --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci \
+       --transcript-out /tmp/verdict-unsigned.json
+
+     python3 runtime/scripts/dispatch-sign.py sign-transcript --key <secret> \
+       --transcript /tmp/verdict-unsigned.json --out docs/runs/<run>/verifier-transcript.json
+     ```

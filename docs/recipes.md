@@ -233,7 +233,7 @@ When a goal spans multiple outcomes, declare a sequential chain per [`runtime/mi
 
 ```text
 Run a sequential mission chain on src/payments/:
-1. harden-it (require terminal state: HARDENED)
+1. harden-it (require terminal state: CLEAN)
 2. prove-it (require terminal state: COVERED)
 3. ship-it (package the release and stop at PROMOTION_READY)
 Halt the chain for my approval if any stage finishes in a degraded (-WITH-PARKED / -WITH-OPEN-ITEMS) state.

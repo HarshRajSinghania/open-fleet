@@ -65,6 +65,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import posixpath
 import secrets
 import shutil
@@ -525,8 +526,11 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
             if not (export / need).is_file():
                 raise Refused(f"{need} is not in commit {commit[:12]}")
         attestation = staging / "attestation.json"
+        # host_sha256: the host machine's name, hashed, so a run inside names the machine it ran on,
+        # not the container, whose name changes with every launch (#604's machine identity).
         doc = {"schema": containment.ATTESTATION_SCHEMA, "nonce": nonce, "commit": commit, "arm": args.arm,
-               "image": image["id"], "created_at": now()}
+               "image": image["id"], "created_at": now(),
+               "host_sha256": hashlib.sha256((platform.node() or "host").encode()).hexdigest()}
         write_new(attestation, (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode(), mode=0o644)
         settings = None
         if args.per_call_usd is not None:  # every claude call the arm makes carries this --max-budget-usd

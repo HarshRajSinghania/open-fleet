@@ -337,6 +337,58 @@ class TestPreregistration(Tmp):
         self.assertEqual(seed, json.loads(PREREG.read_text(encoding="utf-8"))["taskset"]["seed_commit"])
 
 
+PREREG_V2 = ROOT / "docs" / "experiments" / "wip-curve-prereg-v2.json"
+
+
+class TestVersionTwo(unittest.TestCase):
+    """Version 2 re-registers the experiment after its first two live runs: a changed stopping rule
+    is a new version, with new run ids and a new results directory. Nothing else changes."""
+
+    def test_it_checks_clean_and_schedules_new_run_ids(self):
+        p = runner("--prereg", str(PREREG_V2), "check-prereg")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pre-registration OK", p.stdout)
+        ids = [e["run_id"] for e in wip.schedule(*wip.load_prereg(PREREG_V2)[:2])]
+        self.assertEqual(len(ids), 12)
+        self.assertTrue(all(i.startswith("wip2-") for i in ids), ids)
+
+    def test_only_the_stopping_rule_changed(self):
+        v1 = json.loads(PREREG.read_text(encoding="utf-8"))
+        v2 = json.loads(PREREG_V2.read_text(encoding="utf-8"))
+        self.assertEqual({k for k in v1 if v1[k] != v2[k]}, {"version", "registered", "status", "stopping_rule"})
+        self.assertEqual({k for k in v1["stopping_rule"] if v1["stopping_rule"][k] != v2["stopping_rule"][k]},
+                         {"experiment"})
+        self.assertTrue(v2["stopping_rule"]["experiment"].startswith(v1["stopping_rule"]["experiment"]))
+        self.assertEqual((v2["version"], v2["supersedes"]["version"]), (2, 1))
+        self.assertEqual(set(v2["supersedes"]["version_1_runs"]), {"wip1-b1r1-rep1", "wip1-b3r1-rep1"})
+
+
+class TestTheMachineIsTheHostInsideTheHarness(Tmp):
+    """Version 2: inside the container live harness the container's name changes with every
+    launch, so every run after the first read as another machine. The launcher's attestation names
+    the host; outside the harness there is none, and the host name is used as before."""
+
+    def label(self, doc=None, node="a-host"):
+        att = self.tmp / "attestation.json"
+        if doc is not None:
+            att.write_text(json.dumps(doc), encoding="utf-8")
+        with mock.patch.object(wip.contain.containment, "ATTESTATION", str(att)), \
+                mock.patch.object(wip.platform, "node", return_value=node):
+            return wip.host_label()
+
+    def test_the_attestation_names_the_machine(self):
+        host = hashlib.sha256(b"the-operators-mac").hexdigest()
+        self.assertEqual(self.label({"host_sha256": host}, node="container-1"), host[:12])
+        self.assertEqual(self.label({"host_sha256": host}, node="container-2"), host[:12])
+
+    def test_without_one_the_host_name_does(self):
+        self.assertEqual(self.label(), hashlib.sha256(b"a-host").hexdigest()[:12])
+
+    def test_an_attestation_that_names_no_host_is_not_read_as_one(self):
+        for doc in ({}, {"host_sha256": "not-hex"}, {"host_sha256": "A" * 64}, ["x"]):
+            self.assertEqual(self.label(doc), hashlib.sha256(b"a-host").hexdigest()[:12], doc)
+
+
 # ---------------------------------------------------------------------------- schedule
 
 class TestSchedule(unittest.TestCase):
@@ -503,6 +555,15 @@ class TestOnlyOneRetryAfterAFailure(ReportOver):
                                                    self.attempt(3, hour=14)])["runs"]}
         self.assertTrue(out["wip1-b1r1-rep1-a2"]["compliant"], out["wip1-b1r1-rep1-a2"]["noncompliance"])
         self.assertFalse(out["wip1-b1r1-rep1-a3"]["compliant"])
+
+    def test_a_retry_of_a_run_every_call_of_which_was_refused_counts(self):
+        # version 2: wip1-b3r1-rep1 read `complete`, yet the API refused its every call
+        first = self.attempt(1)
+        why = "the API refused all 18 of its model calls for the credential"
+        first.update(infrastructure=why, compliant=False, noncompliance=[f"an infrastructure failure: {why}"])
+        out = {r["run_id"]: r for r in self.report([first, self.attempt(2, hour=12)])["runs"]}
+        self.assertFalse(out["wip1-b1r1-rep1"]["compliant"])
+        self.assertTrue(out["wip1-b1r1-rep1-a2"]["compliant"], out["wip1-b1r1-rep1-a2"]["noncompliance"])
 
 
 class TestTheRegisteredOrderIsKept(ReportOver):
@@ -2898,6 +2959,120 @@ class TestAKilledRunStillCounts(Tmp):
         cost = record["cost"]
         self.assertEqual(charged, Decimal("0.50"))
         self.assertEqual(charged, Decimal(cost["observed_usd"]) + Decimal(cost["reserved_unobserved_usd"]))
+
+
+# ---------------------------------------------------------------------------- a refused credential (version 2)
+# #604's wip1-b3r1-rep1 began 24 hours after its subscription token was written: the API refused all 18
+# of its calls (HTTP 401), every unit parked, and the run read `complete`, so the re-run the stopping
+# rule allows after an infrastructure failure was refused. refused_stream() is that run's stream.
+
+REFUSED_USAGE = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0,
+                 "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard"}
+
+
+def refused_stream(text="Not logged in · Please run /login", usage=None, is_error=True, model="claude-sonnet-5-5"):
+    """A dispatch's stream as Claude Code wrote it for a refused credential (wip1-b3r1-rep1)."""
+    lines = [{"type": "turn_started", "dispatchId": "disp_0123456789", "monitorPid": 1},
+             {"type": "system", "subtype": "init", "model": model, "apiKeySource": "none"},
+             {"type": "result", "subtype": "success", "is_error": is_error, "result": text,
+              "usage": REFUSED_USAGE if usage is None else usage, "total_cost_usd": 0, "num_turns": 1}]
+    return "".join(json.dumps(line) + "\n" for line in lines)
+
+
+class TestARefusedCredentialIsAnInfrastructureFailure(Tmp):
+    def stream(self, name="disp_a.jsonl", **kw):
+        path = self.tmp / "streams" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(refused_stream(**kw), encoding="utf-8")
+        return path
+
+    def test_the_harness_error_for_a_refused_credential_is_recognised(self):
+        for text in ("Not logged in · Please run /login", "OAuth token has expired. Please obtain a new token",
+                     'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}', "Invalid API key"):
+            self.assertTrue(wip.credential_rejected(self.stream(text=text)), text)
+
+    def test_an_error_that_used_tokens_or_names_no_credential_is_not(self):
+        self.assertFalse(wip.credential_rejected(self.stream(usage={**REFUSED_USAGE, "input_tokens": 12})))
+        self.assertFalse(wip.credential_rejected(self.stream(text="API Error: 529 overloaded")))
+        self.assertFalse(wip.credential_rejected(self.stream(is_error=False)))
+        bare = self.tmp / "streams" / "disp_b.jsonl"
+        bare.write_text(refused_stream().splitlines()[1] + "\n", encoding="utf-8")  # no result line
+        self.assertFalse(wip.credential_rejected(bare))
+
+    def test_a_run_whose_every_call_was_refused_failed_for_an_infrastructure_reason(self):
+        for name in ("disp_a.jsonl", "disp_b.jsonl", "disp_c.jsonl"):
+            self.stream(name)
+        self.assertEqual(wip.infrastructure_failure(self.tmp, "complete"),
+                         "the API refused all 3 of its model calls for the credential")
+        self.stream("disp_d.jsonl", text="WIP-BUILD-DONE", is_error=False)
+        self.assertIsNone(wip.infrastructure_failure(self.tmp, "complete"), "a call was answered: a result")
+        self.assertEqual(wip.infrastructure_failure(self.tmp, "failed"), "it ended failed")
+        self.assertIsNone(wip.infrastructure_failure(self.tmp / "absent", "complete"), "no call is not a refusal")
+
+
+class TestARunEveryCallOfWhichWasRefusedMayBeReRunOnce(Tmp):
+    """The -a2 rule reads the record: wip1-b3r1-rep1's run.json says `complete`, its streams say
+    the API refused every call. Either way the decision is made before anything launches."""
+
+    def setUp(self):
+        super().setUp()
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.results = self.tmp / "results"
+        _prereg, _taskset, _path, prereg_sha, taskset_path = wip.load_prereg(PREREG)
+        self.run_dir = self.results / "runs" / "wip1-b1r1-rep1"
+        (self.run_dir / "streams").mkdir(parents=True)
+        (self.run_dir / "run.json").write_text(json.dumps(
+            {"status": "complete", "stop_reason": None, "prereg": {"sha256": prereg_sha},
+             "taskset": {"sha256": wip.sha256_file(taskset_path)}}), encoding="utf-8")
+        for k in range(3):
+            (self.run_dir / "streams" / f"disp_{k}.jsonl").write_text(refused_stream(), encoding="utf-8")
+
+    def rerun(self):
+        # -a2 passes the retry rule when the bogus second id is the refusal reached
+        return runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                      "wip1-b1r1-rep1-a2,wip1-b9r9-rep1", "--cost-cap-usd", "0", env=self.env)
+
+    def test_it_may_be_re_run_once(self):
+        p = self.rerun()
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("not a scheduled run", p.stderr)
+        self.assertFalse(self.trip_log.exists())
+
+    def test_one_answered_call_makes_it_a_result_that_is_never_re_run(self):
+        (self.run_dir / "streams" / "disp_9.jsonl").write_text(refused_stream(text="done", is_error=False),
+                                                                encoding="utf-8")
+        p = self.rerun()
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("infrastructure failure", p.stderr)
+
+
+class TestARefusedCredentialHaltsTheRun(LiveWithAFakeHarness):
+    """A harness that answers every call with the refused-credential error: the first answer halts
+    the run, no further call starts, and the run ends `failed`, the re-runnable status."""
+
+    def live(self, *extra, **kw):
+        install = install_fake_harness
+
+        def refusing(bin_dir, **fake_kw):
+            launcher = install(bin_dir, **fake_kw)
+            answer = bin_dir / "refused.jsonl"
+            answer.write_text("".join(refused_stream(model="wip-fake-model").splitlines(keepends=True)[1:]),
+                              encoding="utf-8")
+            launcher.write_text(f'#!/bin/sh\n[ "$1" = --version ] && exec {sys.executable} -I {bin_dir / "worker.py"} '
+                                f'claude --version\ncat {answer}\nexit 1\n', encoding="utf-8")
+            return launcher
+        with mock.patch.dict(globals(), install_fake_harness=refusing):
+            return super().live(*extra, **kw)
+
+    def test_the_first_refusal_ends_the_run_failed(self):
+        p, run_json = self.live()
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertEqual((record["status"], record["stop_reason"]), ("failed", wip.CREDENTIAL_REJECTED),
+                         p.stdout + p.stderr)
+        self.assertEqual(len(list((run_json.parent / "streams").glob("*.jsonl"))), 1, "a second call started")
+        run = wip.build_report(self.results, basis="all")["runs"][0]
+        self.assertFalse(run["compliant"])
+        self.assertEqual(run["infrastructure"], "it ended failed")
 
 
 class TestRelativePaths(unittest.TestCase):

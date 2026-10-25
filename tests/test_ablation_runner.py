@@ -105,7 +105,9 @@ STUB = textwrap.dedent(r'''
     import json, os, re, subprocess, sys
     args = sys.argv[1:]
     def opt(name, default=None):
-        return args[args.index(name) + 1] if name in args else default
+        if name in args:
+            return args[args.index(name) + 1]
+        return next((a.split("=", 1)[1] for a in args if a.startswith(name + "=")), default)
     mode = opt("--mode")
     task = sys.stdin.read()
     def spawn_sleeper(pids_file):
@@ -137,7 +139,8 @@ STUB = textwrap.dedent(r'''
                 json.dump(sys.argv, fh)
         if mode == "grader-json":
             print(json.dumps({"type": "result", "result": "not a verdict",
-                              "total_cost_usd": float(opt("--cost", "0"))}))
+                              "total_cost_usd": float(opt("--cost", "0")),
+                              "modelUsage": {opt("--usage-model", opt("--model", "stub")): {}}}))
         else:
             print("not json")
         sys.exit(0)
@@ -191,10 +194,12 @@ STUB = textwrap.dedent(r'''
         subprocess.run(["claude", "-p", "hello"], input="", capture_output=True)
     cost = float(opt("--cost", "1.0" if mode == "spend" else "0"))
     if mode != "no-usage":
-        print(json.dumps({"type": "result", "result": "done", "total_cost_usd": cost,
-                          "usage": {"input_tokens": len(task) // 4, "output_tokens": 1,
-                                    "cache_read_input_tokens": 0,
-                                    "cache_creation_input_tokens": 0}}))
+        result = {"type": "result", "result": "done", "total_cost_usd": cost,
+                  "usage": {"input_tokens": len(task) // 4, "output_tokens": 1,
+                            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
+        if opt("--usage-model"):
+            result["modelUsage"] = {opt("--usage-model"): {}}
+        print(json.dumps(result))
 ''')
 
 
@@ -338,6 +343,35 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         registered["harness"]["grader_cmd_default"] = f"{grader} --model stub-model-b"
         self.refused(base + ["--harness-cmd", agent],
                      "disagrees with the grader command's --model stub-model-b", registered)
+
+    def test_a_command_with_an_option_terminator_is_refused(self):
+        # #688 review: --model and the spend-limit flag are appended, so after `--` they would be
+        # prompt text and the call would run its default model with no limit.
+        prereg = small_live_prereg()
+        agent, grader = self.stub_cmd("plain"), self.stub_cmd("grader-json")
+        base = ["run", "--tier", "live", "--cost-cap-usd", "20", "--model", "stub-model-a",
+                "--harness-version", "0"]
+        for argv, needle in (
+                (["--harness-cmd", f"{agent} --", "--grader-cmd", grader],
+                 "the agent command holds an option terminator (--)"),
+                (["--harness-cmd", agent, "--grader-cmd", f"{grader} --"],
+                 "the grader command holds an option terminator (--)")):
+            with self.subTest(needle=needle):
+                self.refused(base + argv, needle, prereg)
+
+    def test_a_fallback_model_is_refused(self):
+        # #688 review: a fallback lets the call switch off the requested model mid-run.
+        prereg = small_live_prereg()
+        agent, grader = self.stub_cmd("plain"), self.stub_cmd("grader-json")
+        base = ["run", "--tier", "live", "--cost-cap-usd", "20", "--model", "stub-model-a",
+                "--harness-version", "0"]
+        for argv, needle in (
+                (["--harness-cmd", f"{agent} --fallback-model stub-model-b", "--grader-cmd", grader],
+                 "the agent command names --fallback-model stub-model-b"),
+                (["--harness-cmd", agent, "--grader-cmd", f"{grader} --fallback-model=stub-model-b"],
+                 "the grader command names --fallback-model stub-model-b")):
+            with self.subTest(needle=needle):
+                self.refused(base + argv, needle, prereg)
 
 
 class TheDryRunExercisesThePipeline(SafetyNet):
@@ -971,6 +1005,32 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
             self.assertIsNone(cell["model"], cell["cell"])
             self.assertIn("the agent reported no model (no system/init line naming one)", cell["errors"])
             self.assertFalse(cell["success"], cell["cell"])
+
+    def test_a_model_switch_seen_only_in_the_result_fails_and_stops_the_run(self):
+        # #688 review: the init line names the requested model, but the result bills another, as a
+        # --fallback-model switch would show. The init line alone would pass this cell.
+        results, _out = self.run_live(agent_extra=("--usage-model", "stub-model-b"), trajectory=True,
+                                      code_expected=1)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        cell = results["cells"][0]
+        self.assertEqual(cell["model"], self.MODEL, "the init line names the requested model")
+        self.assertEqual(cell["models"], [self.MODEL, "stub-model-b"])
+        self.assertIn(f"the agent ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
+        self.assertFalse(cell["success"])
+        self.assertIn("stub-model-b", results["models_observed"])
+
+    def test_a_grader_on_another_model_fails_its_cell_and_stops_the_run(self):
+        # #688 review: the grader's model was never checked. Its JSON result's modelUsage now is.
+        results, out = self.run_live(grader_extra=("--usage-model", "stub-model-b"), code_expected=1)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        cell = results["cells"][0]
+        self.assertTrue(cell["grader_called"], cell["cell"])
+        self.assertEqual(cell["grader_models"], ["stub-model-b"])
+        self.assertIn(f"the grader ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
+        self.assertFalse(cell["success"])
+        self.assertIn("stub-model-b", results["models_observed"])
 
     def test_the_stub_tier_is_handed_no_model(self):
         out = self.tmpdir() / "out"

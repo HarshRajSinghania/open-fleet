@@ -1,0 +1,27 @@
+{
+  "unit": "ablation-606-live",
+  "issue": "#606 (paired instruction-load ablation: the live run of the registered design)",
+  "written": "2026-10-25, at binding time, from the coordinator's binding brief. NOT a pre-registration: the run's design was fixed before it ran by docs/experiments/ablation-prereg.json (version 2) and .md, the paired runner and the container harness, all at c220067e9cbffc4f34d6363a92153e45402bdfe4, which this contract checks the run against.",
+  "criterion_ids": [
+    "AB-1",
+    "AB-2",
+    "AB-3",
+    "AB-4",
+    "AB-5",
+    "AB-6",
+    "AB-7",
+    "AB-8",
+    "AB-9"
+  ],
+  "criteria": {
+    "AB-1": "Fixed point: the run ran commit c220067e9c in the container harness from an image built from that commit's Dockerfile, with the registered design, claude-sonnet-5-5 on Claude Code 2.1.304 and --model in both the agent and grader commands. The registration re-hashes to the one the run used and every mission was current. Both arms' payloads and the reduced SKILL.md regenerate byte for byte, the obligation check passes, and report.md re-renders from results.json through the runner's own analysis. The re-derivation runs the run commit's own code and data, extracted from c220067e9c with git archive.",
+    "AB-2": "Spend observed and capped on both ledgers. In the arm's ledger, in results order, every agent call, and every behavioral cell's grader call, starts at its registered reservation and settles at its measured charge before the next starts, and replayed with every open reservation counted the cap held at every start. In the broker's ledger every call is claude-sonnet-5-5, starts and settles once and none is refused; each completed call's charge re-derives at the listed price, a call that got no response settled at its whole reservation, and the cap held at every start. Totals re-derive.",
+    "AB-3": "The design is the registered one: 4 missions x 9 tasks x 5 repeats, 180 pairs, both arms, in each seed's shuffled order and arm order; every cell's task text rebuilds from the registration, its arm's payload and its task and hashes to its recorded task_sha256.",
+    "AB-4": "Grades re-derive: the #602 replay grader re-grades every trajectory recording to its recorded fields; every behavioral verdict is one eval.py accepts (one boolean row per registered assertion, each passing excerpt found verbatim in the agent's stream), its passed count and success agree with it, and every behavioral-4 workspace-state check, and the scope violations it implies, re-derives from the retained workspace.",
+    "AB-5": "Deferred reads re-derive from each stream and its arm's cues, and the report states what reached the agent: whether any attempt to read the catalog the run protocol points at succeeded.",
+    "AB-6": "Usage re-derives: every cell's tokens and cost from its stream through events.py (#603).",
+    "AB-7": "What the decision rule rests on is stated and checked: task success in each arm, why the tasks could not succeed (refused tool calls under the registered agent command), the behavioral grader's verdicts, landing, violations and deferred-read omissions.",
+    "AB-8": "Containment, retention and hygiene: the token passed only as a read-only mount into the broker's container, zero redactions, both containers verified destroyed, no timeout or signal. The superseded launch (no --model in either command, every call claude-opus-5-5) and the zero-cost dry run are kept and checked. Every retained file is pinned by sha256; what is left out is inventoried by sha256; no pinned file holds a credential shape, the fixture canary or the subscription token.",
+    "AB-9": "An honest reading: the report states the pre-registered verdicts and why they cannot support adopting the reduced activation, the recommendation (keep the current activation), a separate follow-up design, the spend of every launch under the USD 750 authorisation, and every deviation."
+  }
+}

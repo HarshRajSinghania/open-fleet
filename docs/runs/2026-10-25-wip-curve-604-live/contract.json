@@ -1,0 +1,23 @@
+{
+  "unit": "wip-curve-604-live",
+  "issue": "#604 (measure the WIP throughput curve before changing fleet concurrency defaults), version 2 of its pre-registration",
+  "written": "2026-10-25, at binding time. NOT a pre-registration: the experiment's design was fixed before any data by docs/experiments/wip-curve-prereg-v2.json (sha256 c30c2c15890d565af64c126dd456de4a09310c757ad33975a310e170412e1aa8) at bacb5f8dd81df7181790738f7901bbb53f2fa6ec, which this contract checks the run against.",
+  "criterion_ids": [
+    "WC-1",
+    "WC-2",
+    "WC-3",
+    "WC-4",
+    "WC-5",
+    "WC-6",
+    "WC-7"
+  ],
+  "criteria": {
+    "WC-1": "Fixed point: every retained run is one of the 12 scheduled wip2-* runs, ran under version 2's registration and task set (by sha256), on the live tier with claude-sonnet-5-5 on Claude Code 2.1.304, completed on attempt 1 with the registered dispatch deadlines, and names one machine. The runner, its call helper, events.py, the registration and the task set are byte-identical to the run commit bacb5f8dd8's.",
+    "WC-2": "The launches: 12 container-harness launches at bacb5f8dd8, one per scheduled run, each with the documented command (--prereg v2, --worker live, --model claude-sonnet-5-5, --cost-cap-usd 150, --reservation-usd 2.00, --next 1) and a USD 1.60 per-call limit, each from an image built from the committed Dockerfile, each verified destroyed with no token in its output, each run complete, in the registered order. The report and verify launches ran at the same commit inside the harness: the report found 12 of 12 runs compliant and recommends keep; verify recomputed it from the runs' bound sources and re-checked every terminal outcome against git, with 0 binding problems.",
+    "WC-3": "The report re-derives: the runner's own build_report over the retained runs reproduces report.json field for field, with the oracle re-runs (worker-written code, refused outside the harness) replaced by the bound transcripts' recorded passes, and report.md re-renders from it. The recommendation is keep, from 12 compliant runs.",
+    "WC-4": "Spend on both ledgers. In each launch's broker ledger every call starts and settles with HTTP 200 and none is left open; the refused requests are counted; the settled totals sum to the receipts'. #604's broker spend across versions 1 and 2 is within the USD 150 authorised. In the arm's ledger every call is charged or released, and the charges equal the runs' observed cost and are within the arm's USD 150 cap; the difference between the two ledgers is stated.",
+    "WC-5": "Version 1, superseded: its two live runs are retained under version-1/; wip1-b1r1-rep1 completed; every one of wip1-b3r1-rep1's 18 model calls is the refused-credential shape, and version 2's rule reads it from its bound record as an infrastructure failure. Version 1's broker ledgers show the refused credential (HTTP 401) and the interrupted third launch.",
+    "WC-6": "Retention and hygiene: every retained file is pinned by sha256 in the manifest; no retained file holds a credential shape or the subscription token; every launch passed the token only as a read-only mount into the broker's container.",
+    "WC-7": "An honest reading: the report states what the run shows and what it does not (a synthetic six-task package, one host, one model, agent reviewers only, three runs per condition), that the recommendation is keep and that a cap change would be its own human-reviewed policy change, the broker's refused requests and the version 1 history, and that the USD figures are notional on a subscription."
+  }
+}

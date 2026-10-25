@@ -1,0 +1,12 @@
+The change does what T3 asks and nothing it forbids.
+
+- **New units:** `FACTORS` now has `lb` = 453.59237 and `oz` = 28.349523125, the exact gram values the task specifies.
+- **Directions and pairs:** `convert` computes `value * FACTORS[from_unit] / FACTORS[to_unit]`. That works in either direction and between any two supported units, including `lb` to `oz`.
+- **Unknown units:** a missing key still raises `KeyError`, which `convert` re-raises as `ValueError`.
+- **Scope:** the diff touches only the two new `FACTORS` entries.
+
+I did not run any code. Floating-point rounding is possible, for example in `lb` to `oz`, but the task doesn't require bit-exact results.
+
+WIP-REVIEW WIP-NONCE:7c44fbc3c324e181 cbe9efe28816dc1eea0989a7b8332b96ba6f77b1 approve
+
+OPEN_FLEET_WORKER_DONE disp_f8818e7dc2 succeeded

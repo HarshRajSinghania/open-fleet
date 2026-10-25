@@ -1,0 +1,10 @@
+The change does what T5 asks and nothing it forbids.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` as their last step, after validation and the stock update. A call that raises therefore leaves no entry, and entries stay in call order.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list doesn't change the ledger.
+- **Scope:** The diff touches only `stocklib/ledger.py`, adds no other mutation paths, and leaves existing behaviour unchanged.
+
+I only read the task statement and the diff. I didn't run any code or tests, and the diff includes no tests for `history()`.
+
+WIP-REVIEW WIP-NONCE:b6a1193d68e3d5d5 c2c066e24094b19569aed491dbafb0e339593666 approve
+OPEN_FLEET_WORKER_DONE disp_7e179c2738 succeeded

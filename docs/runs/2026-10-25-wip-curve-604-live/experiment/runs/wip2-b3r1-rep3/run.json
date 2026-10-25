@@ -1,0 +1,2981 @@
+{
+  "agent": "claude",
+  "attempt": 1,
+  "clock": "wip-runner@host-759062081265",
+  "commands": [
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "init",
+        "--base",
+        "wip-integration",
+        "--default",
+        "main",
+        "--consent",
+        "wip-curve run wip2-b3r1-rep3 (#604): merges only to wip-integration",
+        "--mode",
+        "git"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:0893bfd318d9ac1b task=T5\nTask T5: Ledger keeps an audit hi",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-t5"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:ad9c2f248a996a56 task=T6\nTask T6: summary ends with a TOTA",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-t6"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:132f922eab9aa563 task=T1\nTask T1: slugify transliterates a",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-t1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:8f763d383cb312db task=T4\nTask T4: report.to_csv exports th",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-t4"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:f6d5672a77d911fa task=T2\nTask T2: Ledger.remove refuses to",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-t2"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:91d2be3859d9c437 task=T3\nTask T3: convert supports pounds ",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-t3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_2810b9db65",
+        "path:/results/sandboxes/wip2-b3r1-rep3/wt/t5-a1",
+        "wip-t5-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_5f96411516",
+        "path:/results/sandboxes/wip2-b3r1-rep3/wt/t6-a1",
+        "wip-t6-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_4106ddbcb1",
+        "path:/results/sandboxes/wip2-b3r1-rep3/wt/t1-a1",
+        "wip-t1-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_3a2288e455"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST WIP-NONCE:b7ee32c291da63e8 task=T5 head=4bf466e1bf3f3137a4cb",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-review-t5-a1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_8c752a607f",
+        "path:/results/sandboxes/wip2-b3r1-rep3/rv/t5-a1-r1",
+        "wip-review-t5-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8a82b9c13d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f0672c6272"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_668ef8b203"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_668ef8b203",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST WIP-NONCE:90c5da5ace23bc8a task=T6 head=efef113d5e76bb07c8af",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-review-t6-a1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_a74599ac93",
+        "path:/results/sandboxes/wip2-b3r1-rep3/rv/t6-a1-r1",
+        "wip-review-t6-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f328eb889f"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_f328eb889f",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST WIP-NONCE:fa9ad2d4cdd3d35a task=T1 head=d67ac215cac2dbb19f1e",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-review-t1-a1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_7b42cc17b3",
+        "path:/results/sandboxes/wip2-b3r1-rep3/rv/t1-a1-r1",
+        "wip-review-t1-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_fcdafa2dca"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_fcdafa2dca",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "acquire",
+        "--base",
+        "wip-integration",
+        "--holder",
+        "wip-runner",
+        "--takeover"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "enqueue",
+        "--token",
+        "4836f4ee8f4e48d6ba8efb897d49e029",
+        "--payload",
+        "{\"unit\": \"task_2810b9db65\", \"branch\": \"wip/wip2-b3r1-rep3/t5-a1\", \"base\": \"wip-integration\", \"reviewed_sha\": \"4bf466e1bf",
+        "--run",
+        "wip2-b3r1-rep3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "enqueue",
+        "--token",
+        "4836f4ee8f4e48d6ba8efb897d49e029",
+        "--payload",
+        "{\"unit\": \"task_5f96411516\", \"branch\": \"wip/wip2-b3r1-rep3/t6-a1\", \"base\": \"wip-integration\", \"reviewed_sha\": \"efef113d5e",
+        "--run",
+        "wip2-b3r1-rep3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "enqueue",
+        "--token",
+        "4836f4ee8f4e48d6ba8efb897d49e029",
+        "--payload",
+        "{\"unit\": \"task_4106ddbcb1\", \"branch\": \"wip/wip2-b3r1-rep3/t1-a1\", \"base\": \"wip-integration\", \"reviewed_sha\": \"d67ac215ca",
+        "--run",
+        "wip2-b3r1-rep3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "release",
+        "--token",
+        "4836f4ee8f4e48d6ba8efb897d49e029"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "drain",
+        "--base",
+        "wip-integration",
+        "--holder",
+        "wip-runner",
+        "--gate-cmd",
+        "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --land",
+        "--ack",
+        "--takeover"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "status",
+        "--base",
+        "wip-integration"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_a9a3ea52df",
+        "path:/results/sandboxes/wip2-b3r1-rep3/wt/t4-a1",
+        "wip-t4-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_eb9e24ab31",
+        "path:/results/sandboxes/wip2-b3r1-rep3/wt/t2-a1",
+        "wip-t2-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_b922cd5bb5",
+        "path:/results/sandboxes/wip2-b3r1-rep3/wt/t3-a1",
+        "wip-t3-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_83fce759b0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST WIP-NONCE:9c63780fb9a17679 task=T4 head=6a5154102bc84ecae854",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-review-t4-a1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_b5f2965f1f",
+        "path:/results/sandboxes/wip2-b3r1-rep3/rv/t4-a1-r1",
+        "wip-review-t4-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_53b2e87795"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b915c4f60d"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_bdafba82c0"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_bdafba82c0",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST WIP-NONCE:bf36c119ef1ef6cf task=T2 head=cfc0b35e69088c86edfe",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-review-t2-a1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_d1f7de79f5",
+        "path:/results/sandboxes/wip2-b3r1-rep3/rv/t2-a1-r1",
+        "wip-review-t2-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b06e00c477"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_b06e00c477",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST WIP-NONCE:c2c512007c42f682 task=T3 head=ebabc89e58c069cfca3b",
+        "--run",
+        "wip2-b3r1-rep3",
+        "--task-title",
+        "wip-review-t3-a1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip2-b3r1-rep3",
+        "task_db2d7a9707",
+        "path:/results/sandboxes/wip2-b3r1-rep3/rv/t3-a1-r1",
+        "wip-review-t3-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_0e7f78626b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/orca_cli.py",
+        "orchestration",
+        "worker-read",
+        "--dispatch",
+        "disp_0e7f78626b",
+        "--limit",
+        "100000",
+        "--json"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "acquire",
+        "--base",
+        "wip-integration",
+        "--holder",
+        "wip-runner",
+        "--takeover"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "enqueue",
+        "--token",
+        "a0bf3858375f4297b6701112aabc10d3",
+        "--payload",
+        "{\"unit\": \"task_a9a3ea52df\", \"branch\": \"wip/wip2-b3r1-rep3/t4-a1\", \"base\": \"wip-integration\", \"reviewed_sha\": \"6a5154102b",
+        "--run",
+        "wip2-b3r1-rep3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "enqueue",
+        "--token",
+        "a0bf3858375f4297b6701112aabc10d3",
+        "--payload",
+        "{\"unit\": \"task_eb9e24ab31\", \"branch\": \"wip/wip2-b3r1-rep3/t2-a1\", \"base\": \"wip-integration\", \"reviewed_sha\": \"cfc0b35e69",
+        "--run",
+        "wip2-b3r1-rep3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "enqueue",
+        "--token",
+        "a0bf3858375f4297b6701112aabc10d3",
+        "--payload",
+        "{\"unit\": \"task_b922cd5bb5\", \"branch\": \"wip/wip2-b3r1-rep3/t3-a1\", \"base\": \"wip-integration\", \"reviewed_sha\": \"ebabc89e58",
+        "--run",
+        "wip2-b3r1-rep3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "release",
+        "--token",
+        "a0bf3858375f4297b6701112aabc10d3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "drain",
+        "--base",
+        "wip-integration",
+        "--holder",
+        "wip-runner",
+        "--gate-cmd",
+        "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --land",
+        "--ack",
+        "--takeover"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "status",
+        "--base",
+        "wip-integration"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip2-b3r1-rep3/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip2-b3r1-rep3/target",
+        "receipts",
+        "--base",
+        "wip-integration"
+      ],
+      "rc": 0
+    }
+  ],
+  "condition": {
+    "builders": 3,
+    "id": "b3r1",
+    "reviewers": 1,
+    "role": "the current asserted default cap"
+  },
+  "cost": {
+    "calls": 12,
+    "cap_usd": "150",
+    "experiment_committed_usd": "4.946002000000000133",
+    "ledger": "budget.jsonl",
+    "observed_usd": "0.400319800000000013",
+    "per_call_limit": "none passed: the posix launch table has no per-call budget flag for any harness",
+    "reservation_per_dispatch_usd": "2.00",
+    "reserved_unobserved_usd": "0"
+  },
+  "dispatch_tags": {
+    "disp_0e7f78626b": "0c57badea511df4aee6a87724eed823a",
+    "disp_3a2288e455": "0074b148e60b95126586b073f45efaaa",
+    "disp_53b2e87795": "1f67c4fd8148437c2732885d6972a086",
+    "disp_668ef8b203": "9166f66ee5ae3ee9409900f963002bcd",
+    "disp_83fce759b0": "a5faf42d304559dec0fa4c5a6b7fb89b",
+    "disp_8a82b9c13d": "dce2b33111ef29f057dca581205bb11f",
+    "disp_b06e00c477": "d849139d9164bbd7f357c8a99bf0d87b",
+    "disp_b915c4f60d": "c9d21a26d2521b377095dcff91e94687",
+    "disp_bdafba82c0": "fdc1fd96ac917d88a79d30621a5936a5",
+    "disp_f0672c6272": "f0e6b2dd12d1d980873f3a5a9d293d66",
+    "disp_f328eb889f": "d6d28bf714218b52f5fa0b563801291f",
+    "disp_fcdafa2dca": "55e5e04896526f0617cfa93544224e51"
+  },
+  "epoch": 1,
+  "events_head": "9c14d9bd3c8615cd14c00ec0159cade51fd061baa10980a60b2b99712d07acfe",
+  "finished_at": "2026-10-25T09:31:26.525562+00:00",
+  "gate_tags": [
+    "35b66eada147a5d0183ee174e4258ba8",
+    "df8f9dbb75c3bcd4f3a1c7b4fd07b7d8",
+    "625edceb2db999b9757eaf3c273d0b03",
+    "6170eea44a87baadce31a598bb3b393c",
+    "0e3ca430d3f4a61fd5525b79a74d32f0",
+    "765f9aa07e53a76a031ed329bb6c03cb",
+    "6ba194a557dabda5368e7bc1b01f3aa3",
+    "11990d7a751d8d120760909ccf5b2950",
+    "916e2acb06dfd98de431ac9f40a7f32c",
+    "aeb2b15c1382866aaae88dbdccd35448",
+    "ac7ffda3bd665646901c69f4fc5dfe58",
+    "8d6f98fdeb9ffc3668f83899f6e56880"
+  ],
+  "harness": {
+    "path": "/repo/scripts/live_container_bin/claude",
+    "version": "2.1.304 (Claude Code)"
+  },
+  "host": {
+    "bash": "GNU bash, version 5.2.37(1)-release (aarch64-unknown-linux-gnu)",
+    "catalog_commit": "bacb5f8dd81df7181790738f7901bbb53f2fa6ec",
+    "catalog_dirty": false,
+    "cpu_count": 18,
+    "git": "git version 2.47.3",
+    "machine": "aarch64",
+    "platform": "Linux-7.2.12-orbstack-00394-gbecdd6130068-aarch64-with-glibc2.41",
+    "python": "3.13.15"
+  },
+  "inert_script": null,
+  "inputs": {
+    "files": {
+      "docs/experiments/ablation-prereg.json": "9050682917bc8c95b6eb2e187a1ea2eb550a7cc0c9f066d265b9203775338bec",
+      "docs/experiments/ablation-prereg.md": "bd1dfec6a451fea6a029957689756032259128da4008a646d932bd3f1d9699e0",
+      "docs/experiments/wip-curve-prereg-v2.json": "c30c2c15890d565af64c126dd456de4a09310c757ad33975a310e170412e1aa8",
+      "docs/experiments/wip-curve-prereg.json": "54d4a283c680d8859cea46ca88f4212b8e9c270f0cfd5a5ba11e50e0c720a058",
+      "docs/experiments/wip-curve-prereg.md": "69612e17417b5967baa63a652757d093c0d4f800f5dc5defe25f4a1f3eeb8436",
+      "docs/experiments/wip-curve-taskset.json": "4ea82a93f093372d169f845e0dd6631b7fc3ae62bafb89b5d8efafd83a95f5e4",
+      "runtime/attention-budget.md": "8abafb5e852e17c0c98f992284285a9e658e0c7c033f8adc051d3f7f9b50c52d",
+      "runtime/conductor-close.md": "dc5bb8ca73121f679f1eed2a527ba2255150ca2322ef226e815a82b27c2cc179",
+      "runtime/dispatch-lifecycle.md": "6a0167d5e8c4b0362e98f3b9d395ff5713f98be58764589eab939936efbaab61",
+      "runtime/evidence-manifest.md": "1fa4670edb303a20f288bc2c0a1eaa2e5cf25154e7c2cf55ad0d53e9895121ce",
+      "runtime/gate-classification.md": "d0d20540b972cb1a0cc6a9da49d76cb0d465049988e99720df711e503204befc",
+      "runtime/ledger-contract.md": "e854cc792dc397431aa66ae8619829e488424cae0722f937825805b1573a74d3",
+      "runtime/liveness-resume.md": "b672e621272e3f5fce11f55e76261505d767a56681e8291950f335d63a8adcb5",
+      "runtime/merge-serialization.md": "d16bae998ef456b765ca3974bc7d010f7300c206b464af14c931571802bf3a33",
+      "runtime/mission-chaining.md": "6cad5e5c479c8ba7e6edc57289672b857e0e34e44faec2faab4dd4662f1afb5e",
+      "runtime/mission-scheduling.md": "325203cc6c87f963eddd994feca843d0e5befd1d2384088733e5b3146f36f971",
+      "runtime/one-way-doors.json": "b0fff7f9af61f5aa011df7698a9773144f0f8ae409dddc3dc6dcd85821790351",
+      "runtime/orca-dag-semantics.md": "e38e1b06aac74a77905ce0c2e42bb67f05fd045d5d29f96bdbc55c0e32f7d07b",
+      "runtime/orca-pin.md": "e60db880651e6ff51b4ab0b3f2ddd1392d83422a29132b0b9eda87dfecc372e3",
+      "runtime/pins.json": "4084c53e97cb908964756a03650a29625e465530f202710d53d180dc88573c97",
+      "runtime/providers/__init__.py": "c2e423d7b65608fd860357c5850e1fdebc6227a18c7de039b47183053636030e",
+      "runtime/providers/_external.py": "6101874165e16b700d06b57e8955a030da636d48180f33973c822f89cabcc342",
+      "runtime/providers/ao.py": "cadb77d02cc1b7498a59b2910560f7b76020a3d40820e3259359a8faf53d1221",
+      "runtime/providers/base.py": "ed85890b1b99391fa9a46e7e24ef0e56e152dd11888ae6f09e8048e8b534bf72",
+      "runtime/providers/capabilities.json": "6bf5f764de1a03253028769acbbd6c43c171f4df71b1a818fbeef39ce421342f",
+      "runtime/providers/certification.json": "0bbaae3ed0fac3d4c5d44d542a049f382ff1bcc9fd4385f8c7d69501a4376d84",
+      "runtime/providers/emdash.py": "64d41aedbb640735f3da12e21beb760a7fa6c1abd1821c8650058c9bf3eb90cc",
+      "runtime/providers/gastown.py": "3f154639c425b18a6dc585a3fc128fc0e969b1aaac53fffa3ff838df3e9c4e94",
+      "runtime/providers/jcode_swarm.py": "13953d6b79c4538a74036623001c549f2d874fef2f1f3177952538969f708ece",
+      "runtime/providers/local_state.py": "d541391535ac6df299108554600df86accc100571075328952b22d5fd050d099",
+      "runtime/providers/multiclaude.py": "94993c408feb1d7c8c362099936fe3a2db5d46554e175cdb9a610076d1a0c597",
+      "runtime/providers/openhands.py": "9e9bde37641158ecdea38430788690749edc006b63eea7e8d1278b57997e28ce",
+      "runtime/providers/orca.py": "e090d190663587701059f77b651f1c9e634e2dc94bd8d677344ec12d2b97a087",
+      "runtime/providers/overstory.py": "21b3c797a12a75830e483e5b08d45e7c72e007e599f7931fe490cf97ebd1a31f",
+      "runtime/providers/paperclip.py": "d9ab5e20f1e2cc915113ebc5a8a7845fc30911a85b9585911166e42c61b069ce",
+      "runtime/providers/posix.py": "a7466f6e04e52633a5a2132203039910fdadecb12511beb7b62e0e676080322f",
+      "runtime/providers/superset.py": "dd0e211edf5ca2c33cbfec55ae99bc9bd308b6b32adddfcf4e9cfa97e14c318d",
+      "runtime/providers/t3code.py": "ccebd9e37fc0eacaf5f367e9a0b946ebd22ea8cc30a6ddf1e764bb723e8f469f",
+      "runtime/providers/transcript.py": "8734443bd28bc56ae36360633b3db70123834937b979b986f4a2f5817854f720",
+      "runtime/providers/vibe_kanban.py": "19eedc47ed47d8e5369e8b337fede67157440d14d3ec649353b723e93b6c8789",
+      "runtime/providers/worktrunk.py": "910be6451fa2c576adbf968141edf57a69d8439c3797b46b36fd8f39e9588e48",
+      "runtime/quarantine.json": "6bc70c957980f6cfde5e369c59ad3a5e8ac83ab41ea603f0f7aebc55e7cc13c2",
+      "runtime/reviewed-sha-freshness.md": "60d52b2e80fbcbb6db05a47e244ee80bafe305a447aa79f077e1943de55747b7",
+      "runtime/sandbox-policy.md": "57e98199d01b5bd12edef5127dad668a64de299caa9a919197799dd653262e1d",
+      "runtime/schemas/gate-batch.schema.json": "2602529a386f114d8a08610a6cf19639180f787c4ce4de3e93cbac9d4271cd62",
+      "runtime/scripts/_catalog_grammar.py": "4a7a1c5aa8b5579f7ce6d22fdd69e70fd7179ddb0c204e20a00476197d5ba034",
+      "runtime/scripts/_verify_sig.py": "6d0850e1c7809b7f5377b7df3e2b88baf7ebf97b47b9d8cf2ee693339065ccb3",
+      "runtime/scripts/certification.py": "85c6f792ad9cf84ac6cf3f233f33795b1a27cb05a8d4cf81dce9d657a3aff0f3",
+      "runtime/scripts/chain_check.py": "1da6f4d25181af7d9d6e1313351f073900d990b4ebdfc8940ce8989ed298de63",
+      "runtime/scripts/check_reply.py": "7193c7c746a6d008c6c5519f7544b0bc34817c7eab7ed520085aba0e7c3f9924",
+      "runtime/scripts/containment.py": "d2e4a3874edffa433279c93e9838a929f00f23a7d7fc8649748943a9c6253ce1",
+      "runtime/scripts/decisions.py": "e0cfc9306ae8200c8f2d64463d0f257a1c41b4a9d6f88b45188733c192a28f13",
+      "runtime/scripts/deny-hook.sh": "9558fd5c8302c0045345c0cb51878d6cef1b00bd87f5b3a4378df1f10b953dbf",
+      "runtime/scripts/diff_scope.py": "65fa53fc1b450f94a1bc3cc088ea7f8aab1817a39d4d8b2b6893802111b619ef",
+      "runtime/scripts/diffparse.py": "471915394ffebb7269ad38c288e74652b2c67b8e9058815c9481f0ca039548e4",
+      "runtime/scripts/dispatch-sign.py": "1413901e452fa9f63752dd47ce7c0ab78446d11c4b10bd0db95916e0c2fecfaf",
+      "runtime/scripts/ed25519.py": "fb7da8b4a64d00a8d06abed88358e4be2894e2f8a036f779530c600f28a59709",
+      "runtime/scripts/egress.py": "8ad9948c25f3c9d36ba0b057291d2ced2fc3dcbe99b6f6cf960957679f870565",
+      "runtime/scripts/events.py": "0008076b9d26bf8d8e9706ffa73f5ea4adb12fe27931de5e1db2c372dd2a5c01",
+      "runtime/scripts/evidence-run.py": "323c7cf836e9ec73409b40148d52e761e8c929671e1a67d3b39cddc8b2c385fa",
+      "runtime/scripts/first_run.py": "22e436dd87791f797c0a8e0e82d026086ecd4166fd1d3f07c18da14b4caec8fb",
+      "runtime/scripts/floor_guard.py": "607f5768fb2223346f65b374f568ec0a4dc80a0a73e51574af9013f81dc6f725",
+      "runtime/scripts/gate-batch.py": "9de951643748a770014d05e5961e7724d0086d26c74b1ec21ff1d79e39ed0d2d",
+      "runtime/scripts/gitexec.py": "15d14f20f6de6489ea751539f996aedd6dc2d0186a2e9afe696f725e6d7898d8",
+      "runtime/scripts/guard_text.py": "926e82dcdb0adbb321a87f9cd9a305d48f9b8133a20aa266ac2360903381d7c8",
+      "runtime/scripts/hint_provenance.py": "0cc88c2737a2bcbef22a4dbcc75f905ea10a284459f2c4c08f50c4b0ff98e092",
+      "runtime/scripts/hitl-loop.template.sh": "b6839001de44d0ff4c385c167ca75f38fc8c62fc1fd231c50a416c2c7dae3d35",
+      "runtime/scripts/hitl_ask.py": "eb4d2896c2cb4c08bd43c40a8c20d18fe624819acadad9f7a6fb0bc8e6771120",
+      "runtime/scripts/inventory.py": "a0ebaa507653a1caeeec6610efd8d96b4f91871cf6720e9a1274bd3c01439e88",
+      "runtime/scripts/merge_queue.py": "4f6cca3170174002ea817a4aeef36f009a3373dfd7730975ca94bdba1999b9c2",
+      "runtime/scripts/orca_cli.py": "f6fb1d4572cf5f57b73b818d432a1fe47bd62644ca5d12af568a72fc5d0d569d",
+      "runtime/scripts/pin_review.py": "b3e0b5c149b8042d521b3198f11e61e1b93119f7ae9bfca45fb571b6f77aeda0",
+      "runtime/scripts/pm.py": "722674674879f3259ec1aef6a0620422736637990b51c1bcf45d8d3777cd5415",
+      "runtime/scripts/preflight.py": "9c2c60447dfe5d1d2947034579d250cc87ee508b73a7b04656d651c8a6964419",
+      "runtime/scripts/proof_status.py": "17ba2a927dff6f39ac8ae7d47bda70cf6535018c2dfacf747e837f854b515b7d",
+      "runtime/scripts/quarantine_check.py": "b4a63bddf29af74fd5a9faacb3a921e1d35313ae9ce0b5d175a7d554157cb3b0",
+      "runtime/scripts/run_report.py": "496338e8a8405323c6af093da425194e9eca6a2eed1e0e6b3bcbbafebc91cf97",
+      "runtime/scripts/sandbox_doctor.py": "f9d1ed4db1027dacbf93601c7393186ba0c962112b78792783743f1517fc24bb",
+      "runtime/scripts/search_sessions.py": "5883f0d158d3ff17cec4cdbd765b698735078e8388bd743390964fbc011e8082",
+      "runtime/scripts/send_msg.py": "20e43941a550f70e05be64db788165084d7550046697d56eba25f899f98c2dcf",
+      "runtime/scripts/spawn_worker.sh": "53a18b50181deb509f89979955f3a745dc57330da07dddd2427bf77f5ddfcfab",
+      "runtime/scripts/task_ops.py": "09562e0d6a585bc5c81f38aafbafc08dfbda0303ec2e770ec56b2aad9d7b44ef",
+      "runtime/scripts/terminal_ops.py": "56fa0b67d5b60f7f4f659bd4c7190f169602345e5f05de6a2939218d248fe708",
+      "runtime/scripts/upstream_probe.py": "39b0dd66001b393bd8bc108c4ea9f464dfb0a9240748a4c19864627b5ce1ded3",
+      "runtime/scripts/verify-gate.sh": "67e0589322936dbaa1adbdca01e66b57d89a1300673f5b6c61b471a8c1616be6",
+      "runtime/scripts/verify.py": "e40a6d4f1b7da544d342305a69b5ea32215cc0b12d98e1dfada62277d7522788",
+      "runtime/scripts/watchdog.py": "01973b7c215c809837a3a17e16edb61dcb9a9c41ec3b9fa95412ec215d3479ca",
+      "runtime/scripts/worker_ops.py": "9cd5b86714f607675325eee8fd6178d7eab31b3a7c34d298db9c5a6ae3e31cc3",
+      "runtime/scripts/worktree_ops.py": "65a565f8603913598fa63ac29d8270eafeca64ac5c9fc692f2a0ed9d62791e00",
+      "runtime/scripts/wtree.sh": "5c4e75693b9fa5f15b7afd5fd2ffc5e7e7e3593282ab62423e59e5dccd92669c",
+      "runtime/threat-model.md": "7e363448152bb0f8309edb220152f2999febd03b498c5b981e0dbb22ce856f3c",
+      "runtime/watchdog.json": "0c0810c9949aa78dada13d175af0b8941d065585b5efec3121e3cda3d3422eb6",
+      "runtime/worker-supervision.md": "4ae2ef8f2eda91852943be8962c3fb861637f5c3c4156fa95dbec1b9ce0014fc",
+      "scripts/_ablation_run.py": "81ae946f9047bb337d92c7a5ba4ec3a15286988efd381329d0b09196379d45a4",
+      "scripts/wip_curve.py": "ba3f922c9e4e8605b39d89e8f729676b11bfc0dd38ff3b16a2db136d3559c1ac"
+    },
+    "sha256": "eb44c39fcb395020fed64419c09eb9c55a8386d661f51516aec73b766872dcfa"
+  },
+  "integration": {
+    "branch": "wip-integration",
+    "head": "9016a2b61332cb6dca9c3d84c5a44365d62ca3c3"
+  },
+  "launched_models": {
+    "disp_0e7f78626b": "claude-sonnet-5-5",
+    "disp_3a2288e455": "claude-sonnet-5-5",
+    "disp_53b2e87795": "claude-sonnet-5-5",
+    "disp_668ef8b203": "claude-sonnet-5-5",
+    "disp_83fce759b0": "claude-sonnet-5-5",
+    "disp_8a82b9c13d": "claude-sonnet-5-5",
+    "disp_b06e00c477": "claude-sonnet-5-5",
+    "disp_b915c4f60d": "claude-sonnet-5-5",
+    "disp_bdafba82c0": "claude-sonnet-5-5",
+    "disp_f0672c6272": "claude-sonnet-5-5",
+    "disp_f328eb889f": "claude-sonnet-5-5",
+    "disp_fcdafa2dca": "claude-sonnet-5-5"
+  },
+  "launches": {
+    "disp_0e7f78626b": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command_sha256": "2643bed973fc5cdd034ba61c1ec0ae427cc25db864ca654525ce4b07ef2db099"
+    },
+    "disp_3a2288e455": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "180e372426e45e5651d8ef622063c153aae6ba8ed506e5558cd81fc48fa51b1c"
+    },
+    "disp_53b2e87795": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "ee2779406f25a337aff6e407ed3abb0687765d285e198bf59389c3c95f6a7f00"
+    },
+    "disp_668ef8b203": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command_sha256": "c70607e8b91e49a368a47ca39e4d98699e667648d7b45b0310ab1d118feddc15"
+    },
+    "disp_83fce759b0": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "1a8997e0d46db9ee8fb890e7b3462416619621f967091c56f3efb55bf73cd650"
+    },
+    "disp_8a82b9c13d": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "d6cf0ff4b25d8395e17c629fd36658f40c9877909674868d8c2b438c6dd899f4"
+    },
+    "disp_b06e00c477": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command_sha256": "92d55a39b026a5f858f63f51609ba8e5b3cc3b64bcb8a2cf519bb0327490703f"
+    },
+    "disp_b915c4f60d": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "d8832bb36fd8558ccb5d44376ccda6a645908e85833809e60275053221bf5e3d"
+    },
+    "disp_bdafba82c0": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command_sha256": "d13fd2190a9612b64fb1cf9e7811b4d6d17682f6f15f644fa1cdb83eaa60919e"
+    },
+    "disp_f0672c6272": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "1d87f215b270c319bf0dbc7e7e9a340da68d1ffeb05b5ce74736c2fe9ef12525"
+    },
+    "disp_f328eb889f": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command_sha256": "43fc32e9de6853a790384ed54050dc413799464c9b7a6f15fbb510b9459496bc"
+    },
+    "disp_fcdafa2dca": {
+      "agent": "claude",
+      "args": "--permission-mode plan",
+      "command_sha256": "f3ff2c676029eedfcfa1943dbcb60b8f8be0a74ec34ad8e4f9e6f4d7df618eb4"
+    }
+  },
+  "merges": [
+    {
+      "entry": "mq_56d29da6d315",
+      "merge_sha": "93fb264f6c313c071115ad851c821a146942f7ca",
+      "result": "landed"
+    },
+    {
+      "entry": "mq_332d5bd56cfd",
+      "merge_sha": "fb404fe14f2c7d38111d26ba9bf0a8180f07f4a0",
+      "result": "landed"
+    },
+    {
+      "entry": "mq_00d8f1b99fb0",
+      "merge_sha": "f503579882bfad431338c4884668f458ddeb2f35",
+      "result": "landed"
+    },
+    {
+      "entry": "mq_b4fc8a8b1ed1",
+      "merge_sha": "be68232c407277337bb3fa82fa0a58694ecde66f",
+      "result": "landed"
+    },
+    {
+      "entry": "mq_6391a9bf7e7e",
+      "merge_sha": "57102296c215ea527b515ba041ca160c37c73a9e",
+      "result": "landed"
+    },
+    {
+      "entry": "mq_ba1df3859e59",
+      "merge_sha": "9016a2b61332cb6dca9c3d84c5a44365d62ca3c3",
+      "result": "landed"
+    }
+  ],
+  "model_pin": "claude-sonnet-5-5",
+  "not_run": [],
+  "oracle_tags": [
+    "11b793dd4f59ef5e4a630f1801d9a485",
+    "de8f029a674f311bc986937fe185bcc3",
+    "83635c9b1cafc078ad2fd60c38e39d5d",
+    "85c7ff96abf169e45be9f31064a464e6",
+    "d17e7644a45ff01c0b8573eb751081d0",
+    "86abaa3772e790102b71aeb43ff9b9a2",
+    "dacf77f91fd6ca864918b41aa8062b03",
+    "e791ff1bd9bc7faf7085ce8d0e3da876",
+    "8cb63bacd9dca944550fb7d3d6a73780",
+    "9123ceb593ea80a820450ca3495dab88",
+    "8ff510c9fda8139fcb10459f6e5118c3",
+    "b4764ab235ce261feed7cef42415c494"
+  ],
+  "position": 11,
+  "prereg": {
+    "path": "/repo/docs/experiments/wip-curve-prereg-v2.json",
+    "sha256": "c30c2c15890d565af64c126dd456de4a09310c757ad33975a310e170412e1aa8"
+  },
+  "repetition": 3,
+  "run_id": "wip2-b3r1-rep3",
+  "sandbox": "/results/sandboxes/wip2-b3r1-rep3",
+  "schema": "open-fleet.wip-curve-run/1",
+  "seed_commit": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+  "settled_after_stop": [],
+  "sources": {
+    "calls.json": "b85306116b37ae304969b26541fea61945651bdf0f91873b4fce71ca176101ed",
+    "events.jsonl": "49771bb05712a20dc18acf550305c3c46f5fd38b47c083fc2e55aca720462fbc",
+    "exits/disp_0e7f78626b.json": "46505c4834cce32c92ef8737cccca907d45e5ee64cce0501062dae84f7c4d576",
+    "exits/disp_3a2288e455.json": "b8adc02d4203ba65a2c58b6a533bfbee2c04d3276c67cd5d60cd64b4af4f2205",
+    "exits/disp_53b2e87795.json": "47af6321a6d6dac2f939945f8b8ff112b15e9d49c8898dd3941ceb2b5c8c4b1a",
+    "exits/disp_668ef8b203.json": "ac5a0ec3487c0f5bf3290e39d24d3e3e1ac9cb657964a875c8b2de152547707a",
+    "exits/disp_83fce759b0.json": "1eacf55350fdf336071721406c3ce14e36f53eba0350be8becb38e0a8b8d79f2",
+    "exits/disp_8a82b9c13d.json": "06b3598d6af5df1a9b00c1f7a57c92de136ab9f527981e00ac6120f80a8b4b4d",
+    "exits/disp_b06e00c477.json": "a90b65c7afa5a19a52cd2bc6e014a9477734299a8f36d7fe3642ab5f60fe625a",
+    "exits/disp_b915c4f60d.json": "eba50e449f92e39e721a1884389df1f89b60b7fd5adfc96913b7ab8a885922a1",
+    "exits/disp_bdafba82c0.json": "64c0d8ad96a65b47e551bd2e73a2944ad3eb4970a6f1561df2c24676c99ca23e",
+    "exits/disp_f0672c6272.json": "40a66571302bceef47f44ddbbad57c9a0cc2840898d61f31080599e3c61de5b0",
+    "exits/disp_f328eb889f.json": "5c2651cb2da3e39741a01c22dc0d4aa119f8d303032898b373c9438eb3209db5",
+    "exits/disp_fcdafa2dca.json": "d7de692a9a53046b0d025f2041f0e888bd4d542288c84fdd442faebca53dd8c6",
+    "merge-receipts.json": "be7480cdfc7db66efa2b4ec83273225bb41e2b7fe69505adee925b19edb12538",
+    "oracle/t1-a1.json": "6d5d3c501ef5e8a21bc9fe8f31f9617aacbe6aff50ebf8afe42f49dff3bd8ef2",
+    "oracle/t2-a1.json": "da9244a8b580f7a9db723d4a44c200a8c17276f8bb3afdf943bfb6917ab2cb64",
+    "oracle/t3-a1.json": "f46bd405133f9c17aa6f54f776ad6d6ad559127e1658e5cead0ab0fe9bda3ef8",
+    "oracle/t4-a1.json": "8f5f8d243ddbeb96e0728faac832b470fe663733c9a5a2523bbf3288e33ff2ee",
+    "oracle/t5-a1.json": "d82b356a4ef72ea9048c3b3753f8cb75d5b025b088cb94d80e375fababe7ceb5",
+    "oracle/t6-a1.json": "1e4ce9c7296ad767625b04852c904d7c6612cf028f7297768995453203c728c2",
+    "reviews/disp_0e7f78626b.txt": "9013d83c92bd50e4dd5fc636ead30570ad4fc7ab57beb3dbb23c8acd15b187e3",
+    "reviews/disp_668ef8b203.txt": "d726286133d01c24f80ac7665d1c8d5df5300029898f6c02d74de2e398d4a7da",
+    "reviews/disp_b06e00c477.txt": "15b3cc804c239c3ea628b975135c1d39a059dfd7f0b5df06830702e372c89205",
+    "reviews/disp_bdafba82c0.txt": "2eee6c1d4c4a7ef98a72396d23b28dec64f2778252ae0f9a9c0a6cb9b6ba5d21",
+    "reviews/disp_f328eb889f.txt": "e174d9b3fd027bb72a80558aabafc101e8de08f773ba06e19a1f8d9b71f727f8",
+    "reviews/disp_fcdafa2dca.txt": "2fd9e7da83ebf6bb6c47de7482df0ad2298ee6a10c0b30354cbfc8aa6ce193e6",
+    "run-report.md": "111858cc5f51faa03b62a6c27b071704ad58eb2461c9dab74915f92fc60607c2",
+    "state.db": "08787af1ade9f04a5c3c782cb1e4bdb508e5eee02ba222fc02a09934a5033984",
+    "streams/disp_0e7f78626b.jsonl": "5b7646382294695b5541c35447f3ae2b962c07228247497198799648d98a4370",
+    "streams/disp_3a2288e455.jsonl": "831dea4fb5a882754fa742160d489d350bf03883a9da7356764e00235f935971",
+    "streams/disp_53b2e87795.jsonl": "9a4299cad288dfce76e66f42309bbf63b93d2f1ebf48e8459a028ed3c6ebc8c8",
+    "streams/disp_668ef8b203.jsonl": "1375e8b8a5bc3f3d3fd6c2a0cbc8b8459fe7525aacfb4bfcf30648554e75de4f",
+    "streams/disp_83fce759b0.jsonl": "1406cafa5ecd915c3239b89964280c07889dd853e98619612ef2dc4de7d2ae45",
+    "streams/disp_8a82b9c13d.jsonl": "9fbc4c48d9f43f42963e617982b58ce5839b6144593078b9608cf6c1514f8b32",
+    "streams/disp_b06e00c477.jsonl": "8032863ef7a85ab34f00fbd4682edfb0273a33e1539b7b14a2986115631f9b3e",
+    "streams/disp_b915c4f60d.jsonl": "11874cb6f7a7e5f0ccf8cb9b4fd4c89c08bace9a3dc5e647846281604708c686",
+    "streams/disp_bdafba82c0.jsonl": "bef33230db1e9fee6ef1a7d2a350b5d32747d353cf5a4329e8472f7a5e2a11be",
+    "streams/disp_f0672c6272.jsonl": "084358add03e5898a04d85166931a7b8f8aba21188f597427795613cbdecb4c6",
+    "streams/disp_f328eb889f.jsonl": "6c6b99f9a02f2367be99a5a6f224930ed56650d0f53a44b6c823c80d08a522b2",
+    "streams/disp_fcdafa2dca.jsonl": "51b8e5330d9a2a8a5bb97e1aac79060054ad291c9ca34c8f1ed6547c95ac2b77",
+    "target.bundle": "f7fa2afbd91a71605466022f36b590a7a29465b8e12bca5659853cd4bb8a009e"
+  },
+  "started_at": "2026-10-25T09:29:49.944267+00:00",
+  "status": "complete",
+  "stop_reason": null,
+  "task_order": [
+    "T5",
+    "T6",
+    "T1",
+    "T4",
+    "T2",
+    "T3"
+  ],
+  "taskset": {
+    "path": "docs/experiments/wip-curve-taskset.json",
+    "sha256": "4ea82a93f093372d169f845e0dd6631b7fc3ae62bafb89b5d8efafd83a95f5e4"
+  },
+  "teardown": {
+    "contained": true,
+    "ended": [],
+    "errors": [],
+    "leaders_alive": [],
+    "survivors": []
+  },
+  "tier": "live-unreviewed",
+  "timeout_scale": 1.0,
+  "units": {
+    "T1": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip2-b3r1-rep3/t1-a1",
+          "deadline": 145462.917180238,
+          "deadline_at": 1792922394.6981976,
+          "dispatch": "disp_f0672c6272",
+          "done_at": 1792920604.7578769,
+          "head": "d67ac215cac2dbb19f1ea0635fdd23ff1480ca77",
+          "merge_sha": "f503579882bfad431338c4884668f458ddeb2f35",
+          "n": 1,
+          "oracle": 0,
+          "outcome": "landed",
+          "state": "completed",
+          "tree": "b56948f5b4a4ae3843abfdefa6d37f9edcaae636",
+          "wave": 1
+        }
+      ],
+      "final": "closed",
+      "nonce": "WIP-NONCE:132f922eab9aa563",
+      "park_class": null,
+      "reviews": [
+        {
+          "attempt": 1,
+          "deadline_at": 1792921523.261854,
+          "dispatch": "disp_fcdafa2dca",
+          "exit": 0,
+          "head": "d67ac215cac2dbb19f1ea0635fdd23ff1480ca77",
+          "nonce": "WIP-NONCE:fa9ad2d4cdd3d35a",
+          "state": "completed",
+          "store_task": "task_7b42cc17b3",
+          "verdict": "approve"
+        }
+      ],
+      "store_task": "task_4106ddbcb1"
+    },
+    "T2": {
+      "attempts": [
+        {
+          "base": "f503579882bfad431338c4884668f458ddeb2f35",
+          "branch": "wip/wip2-b3r1-rep3/t2-a1",
+          "deadline": 145507.759191597,
+          "deadline_at": 1792922439.540209,
+          "dispatch": "disp_53b2e87795",
+          "done_at": 1792920647.9818687,
+          "head": "cfc0b35e69088c86edfef12837ce2d6fb75987fc",
+          "merge_sha": "57102296c215ea527b515ba041ca160c37c73a9e",
+          "n": 1,
+          "oracle": 0,
+          "outcome": "landed",
+          "state": "completed",
+          "tree": "468a727207061000dda02ae43553aabfb0d58e9d",
+          "wave": 2
+        }
+      ],
+      "final": "closed",
+      "nonce": "WIP-NONCE:f6d5672a77d911fa",
+      "park_class": null,
+      "reviews": [
+        {
+          "attempt": 1,
+          "deadline_at": 1792921562.3378541,
+          "dispatch": "disp_b06e00c477",
+          "exit": 0,
+          "head": "cfc0b35e69088c86edfef12837ce2d6fb75987fc",
+          "nonce": "WIP-NONCE:bf36c119ef1ef6cf",
+          "state": "completed",
+          "store_task": "task_d1f7de79f5",
+          "verdict": "approve"
+        }
+      ],
+      "store_task": "task_eb9e24ab31"
+    },
+    "T3": {
+      "attempts": [
+        {
+          "base": "f503579882bfad431338c4884668f458ddeb2f35",
+          "branch": "wip/wip2-b3r1-rep3/t3-a1",
+          "deadline": 145509.485038838,
+          "deadline_at": 1792922441.2660558,
+          "dispatch": "disp_b915c4f60d",
+          "done_at": 1792920650.9001894,
+          "head": "ebabc89e58c069cfca3bab626388b27dec8d8f2a",
+          "merge_sha": "9016a2b61332cb6dca9c3d84c5a44365d62ca3c3",
+          "n": 1,
+          "oracle": 0,
+          "outcome": "landed",
+          "state": "completed",
+          "tree": "495b40d5d4509cea72d7b1f769b99b256074a84a",
+          "wave": 2
+        }
+      ],
+      "final": "closed",
+      "nonce": "WIP-NONCE:91d2be3859d9c437",
+      "park_class": null,
+      "reviews": [
+        {
+          "attempt": 1,
+          "deadline_at": 1792921572.106582,
+          "dispatch": "disp_0e7f78626b",
+          "exit": 0,
+          "head": "ebabc89e58c069cfca3bab626388b27dec8d8f2a",
+          "nonce": "WIP-NONCE:c2c512007c42f682",
+          "state": "completed",
+          "store_task": "task_db2d7a9707",
+          "verdict": "approve"
+        }
+      ],
+      "store_task": "task_b922cd5bb5"
+    },
+    "T4": {
+      "attempts": [
+        {
+          "base": "f503579882bfad431338c4884668f458ddeb2f35",
+          "branch": "wip/wip2-b3r1-rep3/t4-a1",
+          "deadline": 145505.997937034,
+          "deadline_at": 1792922437.7789543,
+          "dispatch": "disp_83fce759b0",
+          "done_at": 1792920647.7624643,
+          "head": "6a5154102bc84ecae85418b2ac542adcca7bc3d3",
+          "merge_sha": "be68232c407277337bb3fa82fa0a58694ecde66f",
+          "n": 1,
+          "oracle": 0,
+          "outcome": "landed",
+          "state": "completed",
+          "tree": "cee40a9db812c60c62dd516035293fe389d2b4fe",
+          "wave": 2
+        }
+      ],
+      "final": "closed",
+      "nonce": "WIP-NONCE:8f763d383cb312db",
+      "park_class": null,
+      "reviews": [
+        {
+          "attempt": 1,
+          "deadline_at": 1792921552.264154,
+          "dispatch": "disp_bdafba82c0",
+          "exit": 0,
+          "head": "6a5154102bc84ecae85418b2ac542adcca7bc3d3",
+          "nonce": "WIP-NONCE:9c63780fb9a17679",
+          "state": "completed",
+          "store_task": "task_b5f2965f1f",
+          "verdict": "approve"
+        }
+      ],
+      "store_task": "task_a9a3ea52df"
+    },
+    "T5": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip2-b3r1-rep3/t5-a1",
+          "deadline": 145459.537027803,
+          "deadline_at": 1792922391.318045,
+          "dispatch": "disp_3a2288e455",
+          "done_at": 1792920600.533956,
+          "head": "4bf466e1bf3f3137a4cbe98865e648a2f1021ae1",
+          "merge_sha": "93fb264f6c313c071115ad851c821a146942f7ca",
+          "n": 1,
+          "oracle": 0,
+          "outcome": "landed",
+          "state": "completed",
+          "tree": "d6e844cebb649fe25c92581ffb4f7b47a275b459",
+          "wave": 1
+        }
+      ],
+      "final": "closed",
+      "nonce": "WIP-NONCE:0893bfd318d9ac1b",
+      "park_class": null,
+      "reviews": [
+        {
+          "attempt": 1,
+          "deadline_at": 1792921504.8876622,
+          "dispatch": "disp_668ef8b203",
+          "exit": 0,
+          "head": "4bf466e1bf3f3137a4cbe98865e648a2f1021ae1",
+          "nonce": "WIP-NONCE:b7ee32c291da63e8",
+          "state": "completed",
+          "store_task": "task_8c752a607f",
+          "verdict": "approve"
+        }
+      ],
+      "store_task": "task_2810b9db65"
+    },
+    "T6": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip2-b3r1-rep3/t6-a1",
+          "deadline": 145461.236967356,
+          "deadline_at": 1792922393.0179846,
+          "dispatch": "disp_8a82b9c13d",
+          "done_at": 1792920602.5789533,
+          "head": "efef113d5e76bb07c8afe20202cf7c36790baf75",
+          "merge_sha": "fb404fe14f2c7d38111d26ba9bf0a8180f07f4a0",
+          "n": 1,
+          "oracle": 0,
+          "outcome": "landed",
+          "state": "completed",
+          "tree": "6b7a4054721729c31c3deeb51fab006317dfdce7",
+          "wave": 1
+        }
+      ],
+      "final": "closed",
+      "nonce": "WIP-NONCE:ad9c2f248a996a56",
+      "park_class": null,
+      "reviews": [
+        {
+          "attempt": 1,
+          "deadline_at": 1792921513.5259755,
+          "dispatch": "disp_f328eb889f",
+          "exit": 0,
+          "head": "efef113d5e76bb07c8afe20202cf7c36790baf75",
+          "nonce": "WIP-NONCE:90c5da5ace23bc8a",
+          "state": "completed",
+          "store_task": "task_a74599ac93",
+          "verdict": "approve"
+        }
+      ],
+      "store_task": "task_5f96411516"
+    }
+  },
+  "worker": "live"
+}

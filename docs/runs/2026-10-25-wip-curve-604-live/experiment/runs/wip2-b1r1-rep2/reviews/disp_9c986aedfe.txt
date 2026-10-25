@@ -1,0 +1,13 @@
+`to_csv` does what T4 asks and nothing it forbids.
+
+- **Header and rows:** it writes the `sku,quantity` header, then one row per SKU.
+- **Sort order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** `lineterminator="\n"` makes every line end in `\n`, including the last.
+- **Quoting:** it uses the `csv` module with default quoting, so a SKU containing a comma is quoted per RFC 4180.
+- **Empty ledger:** it returns only the header line.
+- **Scope:** the diff touches only `stocklib/report.py`. The existing `summary` function is unchanged.
+
+I read the code and the diff but did not run anything, so this rests on reading alone.
+
+WIP-REVIEW WIP-NONCE:d2cfa94cf1ef01be d9ecb3df60750708306f8f4c231432be1a91d37c approve
+OPEN_FLEET_WORKER_DONE disp_9c986aedfe succeeded

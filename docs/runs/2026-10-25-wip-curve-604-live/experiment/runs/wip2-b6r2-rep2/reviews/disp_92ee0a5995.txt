@@ -1,0 +1,11 @@
+The change meets the task.
+
+- **`totals(ledger)`:** It sums `ledger.quantity(sku)` over `ledger.skus()` and returns an `int`.
+- **`summary(ledger)`:** It keeps the existing per-SKU lines unchanged and appends `TOTAL <n>` as the last line.
+- **Empty ledger:** I ran `summary` on an empty `Ledger`, and it returns exactly `'TOTAL 0'`. With no SKU lines, the join produces just the TOTAL line, with no stray newline.
+- **Scope:** The diff only touches `stocklib/report.py`, and nothing in the task forbids what it does.
+
+I didn't run a ledger with several SKUs, only the empty case.
+
+WIP-REVIEW WIP-NONCE:08c6f9586fbfd2f3 f3281686604add5bec03488f47a4d023fcef2264 approve
+OPEN_FLEET_WORKER_DONE disp_92ee0a5995 succeeded

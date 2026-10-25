@@ -1,0 +1,11 @@
+The change does what T6 asks and nothing it forbids, so I'm approving it. I didn't run the tests; I checked by reading the code.
+
+- **`totals(ledger)`:** it sums `ledger.quantity(sku)` over `ledger.skus()` and returns an `int`.
+- **`summary(ledger)`:** it appends `TOTAL <n>` as the last line, and the existing per-SKU lines are untouched.
+- **Empty ledger:** `lines` contains only the TOTAL line, so the summary is exactly `TOTAL 0`.
+- **Existing test:** `test_summary_lists_each_sku` uses `assertIn`, so the extra line doesn't break it.
+
+I made no edits, since this was a read-only review.
+
+WIP-REVIEW WIP-NONCE:6d252881c026fe96 c43d2fdf84489d9e3fe4b74d790f629a353f85a7 approve
+OPEN_FLEET_WORKER_DONE disp_bb028041c3 succeeded

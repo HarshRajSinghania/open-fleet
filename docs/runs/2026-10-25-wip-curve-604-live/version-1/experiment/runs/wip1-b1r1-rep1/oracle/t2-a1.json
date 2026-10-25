@@ -1,0 +1,50 @@
+{
+  "call_tags": [
+    "11b9039d11446dcf56ab459ef1c419e5",
+    "4e26e6b62d38348f7016a6fbc8529799"
+  ],
+  "contained": true,
+  "exit": 0,
+  "finished_at": "2026-10-25T05:35:35.277221+00:00",
+  "head_sha": "03eec19abb7d7b3ea0ac8c4bc98bf3170bb0ba98",
+  "kept": null,
+  "run": "wip1-b1r1-rep1",
+  "schema": "open-fleet.wip-curve-oracle/1",
+  "started_at": "2026-10-25T05:35:34.707764+00:00",
+  "steps": [
+    {
+      "name": "visible",
+      "rc": 0
+    },
+    {
+      "name": "oracle",
+      "rc": 0
+    }
+  ],
+  "tail": [
+    "[visible] ......",
+    "[visible] ----------------------------------------------------------------------",
+    "[visible] Ran 6 tests in 0.000s",
+    "[visible] ",
+    "[visible] OK",
+    "[oracle] ...",
+    "[oracle] ----------------------------------------------------------------------",
+    "[oracle] Ran 3 tests in 0.000s",
+    "[oracle] ",
+    "[oracle] OK"
+  ],
+  "task": "T2",
+  "tasks": [
+    "T2"
+  ],
+  "tree": "a664eb0e8a1005a51bc6e57a46da53861f4adfc7",
+  "visible_tests": [
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-t",
+    "."
+  ]
+}

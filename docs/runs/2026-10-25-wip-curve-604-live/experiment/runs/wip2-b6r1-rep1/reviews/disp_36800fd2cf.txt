@@ -1,0 +1,11 @@
+The change meets the task, and I found nothing it adds that the task forbids.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` as their last step. Every raising path (`qty <= 0`) throws before the append, so a failed call is never recorded. Entries stay in call order.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list doesn't change the ledger. The tuples inside are immutable.
+- **Scope:** Only `stocklib/ledger.py` changes. Existing behavior is untouched.
+
+The diff adds no tests, but the task doesn't ask for any. I only read the diff and the file. I didn't run anything.
+
+WIP-REVIEW WIP-NONCE:c59df8800ea3b83a ebb0bbaaa5e45c8a18c36207459e2e91e0671b1d approve
+
+OPEN_FLEET_WORKER_DONE disp_36800fd2cf succeeded

@@ -1,0 +1,11 @@
+The change meets the task. I read the diff and `stocklib/ledger.py` but didn't run any tests, and the diff adds none.
+
+- **`totals(ledger)`:** it sums `ledger.quantity(sku)` over `ledger.skus()` and returns an `int`, as the task asks.
+- **`summary(ledger)`:** it appends `TOTAL <n>` as the last line, and the existing per-SKU lines are unchanged.
+- **Empty ledger:** `lines` holds only the TOTAL entry, so the summary is exactly `TOTAL 0`.
+- **Scope:** only `stocklib/report.py` changed, with 5 lines added.
+
+Negative quantities are possible, because `remove` can drive a quantity below zero. The total just sums them, which is a reasonable reading of "sum of all quantities".
+
+WIP-REVIEW WIP-NONCE:82a2e2c6f6059ffa 4025122e43d38484fa437e8bd09b3e242f898c83 approve
+OPEN_FLEET_WORKER_DONE disp_652ba0c38b succeeded

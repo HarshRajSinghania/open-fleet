@@ -1,0 +1,11 @@
+The change does what T3 asks and nothing it forbids.
+
+- **New units:** `lb` is 453.59237 g and `oz` is 28.349523125 g in `FACTORS`, matching the task's exact values.
+- **Directions and pairs:** `convert` computes `value * FACTORS[from_unit] / FACTORS[to_unit]`. Both new units therefore work in either direction and between any two supported units.
+- **Unknown units:** a missing key still raises `KeyError`, which `convert` turns into `ValueError`. That behavior is unchanged.
+- **Scope:** the diff touches only the `FACTORS` table, so there is no unrelated change.
+
+I did not run any code or tests. This is a read-through of `stocklib/units.py` and the diff. The change adds no tests, but the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:0e8cb86033aefc4d 02814d52d9e4d4d1b9fd24c2a38f0deb9be7abed approve
+OPEN_FLEET_WORKER_DONE disp_0f74c19feb succeeded

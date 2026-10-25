@@ -1,0 +1,37 @@
+{"at": "2026-10-25T05:38:24+00:00", "cap_usd": 149.54, "event": "open", "framing_tokens": 4096, "geo": {"global": 1.0, "us": 1.1}, "image_tokens": 4800, "pid": 7, "prices_usd_per_mtok": {"claude-fable-5": [10.0, 50.0, 1.0], "claude-fable-5-1": [10.0, 50.0, 0.25], "claude-haiku-4-5": [1.0, 5.0, 0.1], "claude-haiku-5-5": [0.1, 0.5, 0.01], "claude-opus-4-7": [5.0, 25.0, 0.5], "claude-opus-4-8": [5.0, 25.0, 0.5], "claude-opus-5": [5.0, 25.0, 0.5], "claude-opus-5-5": [4.0, 20.0, 0.2], "claude-sonnet-5": [2.0, 10.0, 0.2], "claude-sonnet-5-5": [2.0, 10.0, 0.2]}, "tiered": {"claude-haiku-5-5": [100000, [0.5, 2.5, 0.05]]}}
+{"at": "2026-10-25T05:46:06+00:00", "call": 1, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631542}
+{"at": "2026-10-25T05:46:07+00:00", "call": 1, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:08+00:00", "call": 2, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631335}
+{"at": "2026-10-25T05:46:08+00:00", "call": 2, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:09+00:00", "call": 3, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631344}
+{"at": "2026-10-25T05:46:10+00:00", "call": 3, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:13+00:00", "call": 4, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631542}
+{"at": "2026-10-25T05:46:14+00:00", "call": 4, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:15+00:00", "call": 5, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631335}
+{"at": "2026-10-25T05:46:15+00:00", "call": 5, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:17+00:00", "call": 6, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631344}
+{"at": "2026-10-25T05:46:17+00:00", "call": 6, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:21+00:00", "call": 7, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631542}
+{"at": "2026-10-25T05:46:21+00:00", "call": 7, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:23+00:00", "call": 8, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631335}
+{"at": "2026-10-25T05:46:23+00:00", "call": 8, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:25+00:00", "call": 9, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631344}
+{"at": "2026-10-25T05:46:25+00:00", "call": 9, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:28+00:00", "call": 10, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631568}
+{"at": "2026-10-25T05:46:29+00:00", "call": 10, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:30+00:00", "call": 11, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631511}
+{"at": "2026-10-25T05:46:31+00:00", "call": 11, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:32+00:00", "call": 12, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631106}
+{"at": "2026-10-25T05:46:32+00:00", "call": 12, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:36+00:00", "call": 13, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631568}
+{"at": "2026-10-25T05:46:36+00:00", "call": 13, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:38+00:00", "call": 14, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631511}
+{"at": "2026-10-25T05:46:38+00:00", "call": 14, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:40+00:00", "call": 15, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631106}
+{"at": "2026-10-25T05:46:40+00:00", "call": 15, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:43+00:00", "call": 16, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631568}
+{"at": "2026-10-25T05:46:44+00:00", "call": 16, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:45+00:00", "call": 17, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631511}
+{"at": "2026-10-25T05:46:46+00:00", "call": 17, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}
+{"at": "2026-10-25T05:46:47+00:00", "call": 18, "event": "start", "model": "claude-sonnet-5-5", "reserved_usd": 1.631106}
+{"at": "2026-10-25T05:46:47+00:00", "call": 18, "complete": true, "cost_usd": 0.0, "event": "settle", "settled_usd": 0.0, "status": 401, "usage": {}}

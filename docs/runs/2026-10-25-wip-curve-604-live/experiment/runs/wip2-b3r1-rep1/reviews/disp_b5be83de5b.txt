@@ -1,0 +1,9 @@
+The change meets the task. I only read the task statement and the diff, and ran no tests.
+
+- **`history()` return value:** `Ledger.history()` returns `list(self._history)`, so it is a copy. Mutating the returned list doesn't change the ledger.
+- **Entry format:** Each entry is an `("add" | "remove", sku, qty)` tuple, appended in call order.
+- **Failed calls:** The append comes after the validation `raise` and after the stock update. A call that raises on `qty <= 0` records nothing.
+- **Scope:** Only `stocklib/ledger.py` changes, and there is no unrelated behaviour change. `remove` still doesn't reject removals that exceed stock. That behaviour existed before this change, and the task doesn't ask to change it.
+
+WIP-REVIEW WIP-NONCE:81b36ad9f4eb0c39 f9904752eda414bc3388fea3603b6d0a06f53d21 approve
+OPEN_FLEET_WORKER_DONE disp_b5be83de5b succeeded

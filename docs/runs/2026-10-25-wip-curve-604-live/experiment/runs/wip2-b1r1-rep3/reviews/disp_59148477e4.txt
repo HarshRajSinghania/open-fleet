@@ -1,0 +1,11 @@
+The change does what T6 asks and nothing it forbids.
+
+- **`totals(ledger)`:** it sums `ledger.quantity(sku)` over `ledger.skus()` and returns an `int`. Negative quantities, which `Ledger.remove` can produce, are summed correctly.
+- **`summary(ledger)`:** it appends `TOTAL <n>` as the last line, using `totals`. An empty ledger gives an empty list of SKU lines, so the summary is exactly `TOTAL 0`.
+- **Existing lines:** the per-SKU lines `"{sku}: {qty}"` are unchanged.
+
+I read the task and diff and checked `stocklib/ledger.py`. I did not run the tests or add any, and I modified nothing.
+
+WIP-REVIEW WIP-NONCE:0bf4395932f53231 9f42987cd5200a6b5f31df829ec3276fd10fb414 approve
+
+OPEN_FLEET_WORKER_DONE disp_59148477e4 succeeded

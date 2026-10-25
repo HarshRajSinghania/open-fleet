@@ -1,0 +1,11 @@
+I approve the change. It does what T6 asks and nothing it forbids. I read the task and the diff and checked `stocklib/report.py`, but I didn't run any tests.
+
+- **`totals(ledger)`:** it sums `ledger.quantity(sku)` over all SKUs and returns an `int`, as the task asks.
+- **`summary(ledger)`:** it keeps the existing per-SKU lines unchanged and appends `TOTAL <n>` as the last line.
+- **Empty ledger:** the per-SKU list is empty, so the output is exactly `TOTAL 0`.
+- **Other code:** `to_csv` and the ledger are untouched. The existing test only uses `assertIn`, so the extra line doesn't break it.
+
+The change adds no tests for the new behaviour, but the task doesn't require any.
+
+WIP-REVIEW WIP-NONCE:45eabcabab1a316e a75c725c28885b20a60102acf7d59c98244c3c1d approve
+OPEN_FLEET_WORKER_DONE disp_52f0225227 succeeded

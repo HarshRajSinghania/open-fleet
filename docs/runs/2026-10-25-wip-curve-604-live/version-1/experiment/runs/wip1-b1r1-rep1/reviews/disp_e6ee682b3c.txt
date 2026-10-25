@@ -1,0 +1,12 @@
+`to_csv` does what the task asks and nothing it forbids.
+
+- **Header and rows:** it writes the `sku,quantity` header, then one row per SKU.
+- **Order:** `ledger.skus()` returns `sorted(self._stock)` (`stocklib/ledger.py:25`), so rows come out in sorted SKU order.
+- **Line endings:** the writer uses `lineterminator="\n"`, so every line ends in `\n`, including the last.
+- **Quoting:** it uses the `csv` module, which quotes a SKU containing a comma per RFC 4180.
+- **Empty ledger:** it yields only the header line.
+
+The diff touches only `stocklib/report.py`. I didn't run the code or any tests.
+
+WIP-REVIEW WIP-NONCE:892138f1ce09bbee fa60732b57c412bf48377af3912bab171d2959e1 approve
+OPEN_FLEET_WORKER_DONE disp_e6ee682b3c succeeded

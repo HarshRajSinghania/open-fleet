@@ -1,8 +1,0 @@
-{
-  "record": {
-    "manifest_id": "trajectories-602-adapters",
-    "contract_digest": "sha256:9753c5486d0652023e633a892adee7607a6da98ae7944e0b311ec96de2aa4721",
-    "unit_class": "report-only"
-  },
-  "sig_b64": "60rcEMH5c3zJRFPhWynAIt3FIDGkwQ0tIXG8opCBxU2/EVmFFVzJeoiCQvBlDdNiTiTMlDBTRRQCRhykr0q5Dg=="
-}

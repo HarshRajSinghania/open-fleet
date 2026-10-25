@@ -100,6 +100,11 @@ PER_CALL_LIMIT = "none passed: the posix launch table has no per-call budget fla
 MQ_CONFLICT, MQ_GATE_FAILED = "conflict", "gate_failed"
 # A run that ended this way may be re-run once (-a2): an infrastructure failure, not a result.
 RETRYABLE = ("failed", "interrupted", "lost")
+# A call the API refused for its credential (an expired token: #604's 2026-10-25 run, every call
+# HTTP 401) is an infrastructure failure: the run halts and ends `failed`, never a measurement.
+CREDENTIAL_REJECTED = "credential-rejected"
+_AUTH_FAILURE_RE = re.compile(r"not logged in|/login|invalid api key|authentication|oauth token has expired|\b401\b",
+                              re.IGNORECASE)
 AGREED_UNAVAILABLE = "the record cannot derive it, yet the report claims 'unavailable'"
 
 
@@ -1148,6 +1153,20 @@ def first_line(argv, env=None) -> str | None:
     return text.splitlines()[0][:200] if text else None
 
 
+def host_label() -> str:
+    """The 12-hex label that names this run's machine: the host name's hash, or inside the container
+    live harness the host's, which the launcher records in its attestation. The container's own
+    name changes with every launch, so every run read as another machine and none pooled (#604)."""
+    try:
+        doc = json.loads(Path(contain.containment.ATTESTATION).read_text(encoding="utf-8"))
+        host = doc.get("host_sha256") if isinstance(doc, dict) else None
+        if isinstance(host, str) and re.fullmatch(r"[0-9a-f]{64}", host):
+            return host[:12]
+    except (OSError, ValueError):
+        pass
+    return sha256_bytes((platform.node() or "host").encode())[:12]
+
+
 def host_facts() -> dict:
     """The machine a run ran on. The catalog clone is read through the hardened git like every
     other repository (adversarial pass: a command planted in its config never runs)."""
@@ -1173,8 +1192,8 @@ class Run:
         self.dir = results / "runs" / self.rid
         self.log = self.dir / "events.jsonl"
         # One clock per host (events.py intervals need one); the label hashes the host name, so a
-        # published record names the machine without carrying its name.
-        self.clock = "wip-runner@host-" + sha256_bytes((platform.node() or "host").encode())[:12]
+        # published record names the machine without carrying its name (host_label).
+        self.clock = "wip-runner@host-" + host_label()
         self.cap = args.cost_cap
         self.budget = Budget(results)  # the experiment's one budget, shared with every other run
         self.calls: dict[str, str] = {}  # "<task>:<role>" -> the call identity it holds
@@ -1258,6 +1277,8 @@ class Run:
             self.launched_models[dispatch] = model
             if self.model_pin and model != self.model_pin and self.halt is None:
                 self.halt = "model-mismatch"  # the harness did not run the pin: no further call starts
+            if credential_rejected(self.dir / rel) and self.halt != "orphan-alive":
+                self.halt = CREDENTIAL_REJECTED  # an infrastructure failure: no further call starts
             at = (self.budget.calls().get(call) or {}).get("usage_at")
             if at is None:  # kept before the record, so a retry records the same observation
                 at = now()
@@ -2028,8 +2049,9 @@ class Run:
         return self.committed() + self.reservation * 2 * len(planned) > self.cap
 
     def stop(self, reason, carry):
-        """The stopping rule: park every unit still in flight, so the record stays derivable."""
-        self.record.update(status="stopped", stop_reason=reason)
+        """The stopping rule: park every unit still in flight, so the record stays derivable. A
+        refused credential ends the run `failed`, an infrastructure failure it may be re-run for."""
+        self.record.update(status="failed" if reason == CREDENTIAL_REJECTED else "stopped", stop_reason=reason)
         for tid in carry:
             head = self.units[tid]["attempts"][-1].get("head") if self.units[tid]["attempts"] else None
             self.park(tid, f"stopped-{reason}", head)
@@ -2545,7 +2567,8 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
            "machine": {"clock": rec.get("clock"), **{k: (rec.get("host") or {}).get(k)
                                                      for k in ("platform", "machine", "cpu_count")}},
            "attempt": rec.get("attempt", 1), "timeout_scale": rec.get("timeout_scale"),
-           "run_json_sha256": sha256_file(run_dir / "run.json")}
+           "run_json_sha256": sha256_file(run_dir / "run.json"),
+           "infrastructure": infrastructure_failure(run_dir, rec.get("status"))}
     reasons = []
     if not bound.path("events.jsonl").is_file():
         out.update(metrics=None, compliant=False, noncompliance=["no event record was retained"])
@@ -2676,6 +2699,8 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
         reasons.append(f"{len(out['binding_problems'])} terminal outcome(s) do not bind")
     if rec.get("status") != "complete":
         reasons.append(f"the run ended {rec.get('status')}" + (f" ({rec['stop_reason']})" if rec.get("stop_reason") else ""))
+    if out["infrastructure"] and rec.get("status") not in RETRYABLE:
+        reasons.append(f"an infrastructure failure: {out['infrastructure']}")
     out["compliant"] = not reasons
     out["noncompliance"] = reasons
     return out
@@ -2734,6 +2759,104 @@ def launched_model(stream: Path):
             continue
         if isinstance(obj, dict) and obj.get("type") == "system" and obj.get("subtype") == "init":
             return obj.get("model") if isinstance(obj.get("model"), str) else None
+    return None
+
+
+_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+# A refusal line's own non-zero numbers, at its top level only: its wall time, its one turn, its
+# HTTP status and its place in the stream. Every other number it carries counts work, so is zero.
+_REFUSAL_NUMBERS = frozenset({"duration_ms", "num_turns", "api_error_status", "result_index"})
+
+
+def _no_work(value) -> bool:
+    """True when no number in `value`, at any depth, is non-zero (Codex at 616217810a: a nested
+    count, server_tool_use or iterations or modelUsage, is work too)."""
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, dict):
+        return all(_no_work(v) for v in value.values())
+    return isinstance(value, list) and all(_no_work(v) for v in value)
+
+
+def _zero_usage(line: dict, usage) -> bool:
+    """True only for a line whose usage reports zero in every token count (a count it does not
+    carry is unknown, never zero) and that carries no other non-zero number anywhere."""
+    return isinstance(usage, dict) and all(type(usage.get(k)) is int and usage[k] == 0 for k in _TOKEN_FIELDS) \
+        and all(_no_work(v) for k, v in line.items() if k not in _REFUSAL_NUMBERS)
+
+
+def credential_rejected(stream: Path) -> bool:
+    """True when a dispatch's stream is the harness's refusal of its credential and nothing else,
+    wip1-b3r1-rep1's shape: the monitor's turn_started, the harness's init and notices, assistant
+    turns of text alone, and results that are each an error with a reported zero cost, the last
+    carrying an authentication message ("Not logged in", a 401); every line reports zero tokens
+    and carries no other non-zero number but its timing, turn count and HTTP status. Any other line
+    (a tool result, a thinking count, a tool call), a count a line does not report, a nested count
+    (server tools, iterations, per-model usage), or one answered or paid result, and it is not
+    (Codex at a61f3e660a, a8068b5cd5 and 616217810a)."""
+    results = []
+    for line in Path(stream).read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            return False
+        kind = obj.get("type") if isinstance(obj, dict) else None
+        if kind == "turn_started" or (kind == "system" and obj.get("subtype") in ("init", "informational")):
+            continue
+        if kind == "assistant":
+            message = obj.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list) or not _zero_usage(obj, message.get("usage")) \
+                    or not all(isinstance(block, dict) and block.get("type") == "text" for block in content):
+                return False
+            continue
+        cost = obj.get("total_cost_usd") if kind == "result" else None
+        if kind != "result" or obj.get("is_error") is not True or not _zero_usage(obj, obj.get("usage")) \
+                or type(cost) not in (int, float) or cost != 0:
+            return False
+        results.append(obj)
+    return bool(results) and bool(_AUTH_FAILURE_RE.search(str(results[-1].get("result") or "")))
+
+
+def recorded_dispatches(rec: dict) -> set:
+    """Every dispatch a run record names: its builders' and reviewers' attempts, and every
+    dispatch whose launched model it recorded."""
+    found = set(rec.get("launched_models") or {})
+    for unit in (rec.get("units") or {}).values():
+        if isinstance(unit, dict):
+            for entry in list(unit.get("attempts") or []) + list(unit.get("reviews") or []):
+                if isinstance(entry, dict) and isinstance(entry.get("dispatch"), str):
+                    found.add(entry["dispatch"])
+    return found
+
+
+def infrastructure_failure(run_dir: Path, status=None):
+    """Why a recorded run failed for an infrastructure reason, or None: it ended failed,
+    interrupted or lost, or the API refused every model call it made for the credential. A run of
+    the second kind may still read `complete`, every unit parked, as #604's wip1-b3r1-rep1 did, so
+    that claim is read from the run's bound evidence alone: every retained source unaltered and
+    nothing unbound (Bound), at least one recorded dispatch, and exactly one bound stream per
+    recorded dispatch, each a refused credential. A removed, altered or unbound stream never
+    authorises a paid re-run (Codex at a61f3e660a)."""
+    if status in RETRYABLE:
+        return f"it ended {status}"
+    try:
+        bound = Bound(run_dir)
+    except SourceError:
+        return None
+    dispatches = recorded_dispatches(bound.record)
+    streams = {rel[len("streams/"):-len(".jsonl")] for rel in bound.record.get("sources") or {}
+               if rel.startswith("streams/") and rel.endswith(".jsonl")}
+    if not dispatches or streams != dispatches:
+        return None
+    if all(credential_rejected(bound.path(f"streams/{d}.jsonl")) for d in sorted(dispatches)):
+        return f"the API refused all {len(dispatches)} of its model calls for the credential"
     return None
 
 
@@ -2960,7 +3083,8 @@ def build_report(results: Path, prereg_path: Path | None = None, basis: str = "c
             why = None
             if n > 2:
                 why = f"attempt {n}: the registration allows one re-run (-a2), no more"
-            elif n == 2 and (by_n.get(1) or {}).get("status") not in RETRYABLE:
+            elif n == 2 and (by_n.get(1) or {}).get("status") not in RETRYABLE \
+                    and not (by_n.get(1) or {}).get("infrastructure"):
                 why = (f"attempt 2 re-runs a run that did not fail for an infrastructure reason (attempt 1 "
                        f"{'ended ' + str(by_n[1].get('status')) if 1 in by_n else 'is absent'})")
             if why:
@@ -3258,7 +3382,7 @@ def _run_locked(args, prereg, taskset, path, prereg_sha, taskset_path, results, 
                 first = results / "runs" / m.group(1) / "run.json"
                 status = (json.loads(first.read_text(encoding="utf-8")).get("status") if first.is_file()
                           else "lost" if first.parent.is_dir() else None)
-                if status not in RETRYABLE:
+                if status is None or not infrastructure_failure(first.parent, status):
                     raise Refused(f"{rid}: a re-run is allowed only after an infrastructure failure of "
                                   f"{m.group(1)}, which {'ended ' + str(status) if status else 'never ran'}")
             wanted.append((m.group(1), attempt))

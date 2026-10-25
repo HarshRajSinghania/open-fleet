@@ -337,6 +337,75 @@ class TestPreregistration(Tmp):
         self.assertEqual(seed, json.loads(PREREG.read_text(encoding="utf-8"))["taskset"]["seed_commit"])
 
 
+PREREG_V2 = ROOT / "docs" / "experiments" / "wip-curve-prereg-v2.json"
+
+
+class TestVersionTwo(unittest.TestCase):
+    """Version 2 re-registers the experiment after its first two live runs: a changed stopping rule
+    is a new version, with new run ids and a new results directory. Nothing else changes."""
+
+    def test_it_checks_clean_and_schedules_new_run_ids(self):
+        p = runner("--prereg", str(PREREG_V2), "check-prereg")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pre-registration OK", p.stdout)
+        ids = [e["run_id"] for e in wip.schedule(*wip.load_prereg(PREREG_V2)[:2])]
+        self.assertEqual(len(ids), 12)
+        self.assertTrue(all(i.startswith("wip2-") for i in ids), ids)
+
+    def test_only_the_stopping_rule_changed(self):
+        v1 = json.loads(PREREG.read_text(encoding="utf-8"))
+        v2 = json.loads(PREREG_V2.read_text(encoding="utf-8"))
+        self.assertEqual({k for k in v1 if v1[k] != v2[k]}, {"version", "registered", "status", "stopping_rule"})
+        self.assertEqual({k for k in v1["stopping_rule"] if v1["stopping_rule"][k] != v2["stopping_rule"][k]},
+                         {"experiment"})
+        self.assertTrue(v2["stopping_rule"]["experiment"].startswith(v1["stopping_rule"]["experiment"]))
+        self.assertEqual((v2["version"], v2["supersedes"]["version"]), (2, 1))
+        self.assertEqual(set(v2["supersedes"]["version_1_runs"]), {"wip1-b1r1-rep1", "wip1-b3r1-rep1"})
+
+
+class TestTheMachineIsTheHostInsideTheHarness(Tmp):
+    """Version 2: inside the container live harness the container's name changes with every
+    launch, so every run after the first read as another machine. The launcher's attestation names
+    the host; outside the harness there is none, and the host name is used as before."""
+
+    def label(self, doc=None, node="a-host"):
+        att = self.tmp / "attestation.json"
+        if doc is not None:
+            att.write_text(json.dumps(doc), encoding="utf-8")
+        with mock.patch.object(wip.contain.containment, "ATTESTATION", str(att)), \
+                mock.patch.object(wip.platform, "node", return_value=node):
+            return wip.host_label()
+
+    def test_the_attestation_names_the_machine(self):
+        host = hashlib.sha256(b"the-operators-mac").hexdigest()
+        self.assertEqual(self.label({"host_sha256": host}, node="container-1"), host[:12])
+        self.assertEqual(self.label({"host_sha256": host}, node="container-2"), host[:12])
+
+    def test_without_one_the_host_name_does(self):
+        self.assertEqual(self.label(), hashlib.sha256(b"a-host").hexdigest()[:12])
+
+    def test_an_attestation_that_names_no_host_is_not_read_as_one(self):
+        for doc in ({}, {"host_sha256": "not-hex"}, {"host_sha256": "A" * 64}, ["x"]):
+            self.assertEqual(self.label(doc), hashlib.sha256(b"a-host").hexdigest()[:12], doc)
+
+    def test_every_launch_of_a_run_on_one_host_keeps_one_clock(self):
+        # Codex at b1c1469595: the label alone passed with Run still hashing the container's name
+        prereg, taskset, path, sha, taskset_path = wip.load_prereg(PREREG_V2)
+        entry = wip.schedule(prereg, taskset)[0]
+        args = argparse.Namespace(cost_cap=Decimal("1"), reservation=Decimal("0.25"), model="m", worker="live",
+                                  timeout_scale=1.0)
+        host = hashlib.sha256(b"the-operators-mac").hexdigest()
+        (self.tmp / "attestation.json").write_text(json.dumps({"host_sha256": host}), encoding="utf-8")
+
+        def clock(node, attestation="attestation.json"):
+            with mock.patch.object(wip.contain.containment, "ATTESTATION", str(self.tmp / attestation)), \
+                    mock.patch.object(wip.platform, "node", return_value=node):
+                return wip.Run(args, prereg, taskset, (path, sha, taskset_path), entry, self.tmp / "results").clock
+
+        self.assertEqual({clock("of-live-1"), clock("of-live-2")}, {f"wip-runner@host-{host[:12]}"})
+        self.assertNotEqual(clock("host-a", "absent.json"), clock("host-b", "absent.json"))
+
+
 # ---------------------------------------------------------------------------- schedule
 
 class TestSchedule(unittest.TestCase):
@@ -503,6 +572,15 @@ class TestOnlyOneRetryAfterAFailure(ReportOver):
                                                    self.attempt(3, hour=14)])["runs"]}
         self.assertTrue(out["wip1-b1r1-rep1-a2"]["compliant"], out["wip1-b1r1-rep1-a2"]["noncompliance"])
         self.assertFalse(out["wip1-b1r1-rep1-a3"]["compliant"])
+
+    def test_a_retry_of_a_run_every_call_of_which_was_refused_counts(self):
+        # version 2: wip1-b3r1-rep1 read `complete`, yet the API refused its every call
+        first = self.attempt(1)
+        why = "the API refused all 18 of its model calls for the credential"
+        first.update(infrastructure=why, compliant=False, noncompliance=[f"an infrastructure failure: {why}"])
+        out = {r["run_id"]: r for r in self.report([first, self.attempt(2, hour=12)])["runs"]}
+        self.assertFalse(out["wip1-b1r1-rep1"]["compliant"])
+        self.assertTrue(out["wip1-b1r1-rep1-a2"]["compliant"], out["wip1-b1r1-rep1-a2"]["noncompliance"])
 
 
 class TestTheRegisteredOrderIsKept(ReportOver):
@@ -906,6 +984,8 @@ def tearDownModule():
         tmp.cleanup()
     if "tmp" in _DOCUMENTED:
         _DOCUMENTED["tmp"].cleanup()
+    for _results, _proc, tmp, *_rest in _DOCUMENTED.get("under", {}).values():
+        tmp.cleanup()
 
 
 class DryRun(unittest.TestCase):
@@ -1953,7 +2033,7 @@ class TestLiveRunsTakeTheRegisteredOrder(LiveWithAFakeHarness):
         self.assertEqual(wip.live_positions(self.tmp, positions), {1, 3})
 
     def test_a_skipped_position_is_refused(self):
-        results, _p = documented_live_run()  # position 1 ran live
+        results, _p = documented_live_run(PREREG)  # position 1 ran live (the rule is the same in every version)
         shutil.copytree(results, self.tmp / "results")
         self.assertEqual(self.refused("wip1-b6r2-rep1", "[2]"), ["wip1-b1r1-rep1"])
 
@@ -1964,11 +2044,11 @@ class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
 
     def test_the_pinned_model_is_the_model_every_call_launched(self):
         results, p = documented_live_run()  # the page's own live command, against a fake claude
-        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        record = json.loads((results / "runs" / documented_run_id(1) / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["status"], "complete", p.stdout + p.stderr)
         self.assertTrue(record["launched_models"])
         self.assertEqual(set(record["launched_models"].values()), {"wip-fake-model"})
-        report = wip.build_report(results, basis="all")
+        report = wip.build_report(results, _DOCUMENTED["prereg"], basis="all")
         self.assertEqual(report["runs"][0]["metrics"]["models"], ["wip-fake-model"])
         self.assertTrue(report["runs"][0]["compliant"], report["runs"][0]["noncompliance"])
 
@@ -2031,33 +2111,56 @@ class TestTheRunDeadlineIsKeptInsideAWave(Tmp):
 _DOCUMENTED: dict = {}
 
 
-def documented_live_run():
+def documented_live_run(prereg=None):
     """(results, process) of the protocol page's live command, placeholders filled, run once per
-    module against a fake claude: a live-tier run that every check in this module can read."""
+    module against a fake claude: a live-tier run that every check in this module can read. With
+    `prereg`, the same command under that registration instead of the one the page names."""
+    if prereg is not None:
+        if str(prereg) not in _DOCUMENTED.setdefault("under", {}):
+            _DOCUMENTED["under"][str(prereg)] = _documented_run(prereg)
+        return _DOCUMENTED["under"][str(prereg)][:2]
     if "run" not in _DOCUMENTED:
-        tmp = tempfile.TemporaryDirectory(prefix="wip-curve-documented-")
-        root = Path(tmp.name).resolve()
-        page = (ROOT / "docs" / "experiments" / "wip-curve-prereg.md").read_text(encoding="utf-8")
-        block = next(b for b in re.findall(r"```bash\n(.*?)```", page, re.S) if "--worker live" in b)
-        command = block.replace("\\\n", " ")
-        fill = {"dir": str(root / "results"), "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
-        for placeholder in re.findall(r"<[^>]+>", command):
-            key = next((k for k in fill if k in placeholder), None)
-            if key is None:
-                raise AssertionError(f"an unknown placeholder {placeholder} in the documented live command")
-            command = command.replace(placeholder, fill[key])
-        argv = shlex.split(command)
-        if argv[:2] != ["python3", "scripts/wip_curve.py"]:
-            raise AssertionError(f"the documented live command is not the runner: {argv[:2]}")
-        env, trip_log = tripwired_env(root)
-        install_fake_harness(root / "fake-bin")
-        env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
-        (root / "home").mkdir()
-        with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
-                mock.patch.object(wip.contain, "containment_problem", return_value=None):
-            proc = run_in_process(argv[2:], env)
-        _DOCUMENTED.update(run=(root / "results", proc), tmp=tmp, trip_log=trip_log)
+        results, proc, tmp, trip_log, named = _documented_run(None)
+        _DOCUMENTED.update(run=(results, proc), tmp=tmp, trip_log=trip_log, prereg=named)
     return _DOCUMENTED["run"]
+
+
+def _documented_run(override):
+    """One run of the page's live command: (results, process, tmp, tripwire log, registration)."""
+    tmp = tempfile.TemporaryDirectory(prefix="wip-curve-documented-")
+    root = Path(tmp.name).resolve()
+    page = (ROOT / "docs" / "experiments" / "wip-curve-prereg.md").read_text(encoding="utf-8")
+    block = next(b for b in re.findall(r"```bash\n(.*?)```", page, re.S) if "--worker live" in b)
+    command = block.replace("\\\n", " ")
+    fill = {"dir": str(root / "results"), "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
+    for placeholder in re.findall(r"<[^>]+>", command):
+        key = next((k for k in fill if k in placeholder), None)
+        if key is None:
+            raise AssertionError(f"an unknown placeholder {placeholder} in the documented live command")
+        command = command.replace(placeholder, fill[key])
+    argv = shlex.split(command)
+    if argv[:2] != ["python3", "scripts/wip_curve.py"]:
+        raise AssertionError(f"the documented live command is not the runner: {argv[:2]}")
+    # the registration the command names (version 2 since #604's re-registration), from the checkout
+    prereg = ROOT / argv[argv.index("--prereg") + 1] if "--prereg" in argv else PREREG
+    if override is not None:
+        argv = [a for i, a in enumerate(argv) if a != "--prereg" and (i == 0 or argv[i - 1] != "--prereg")]
+        argv[2:2], prereg = ["--prereg", str(override)], override
+    env, trip_log = tripwired_env(root)
+    install_fake_harness(root / "fake-bin")
+    env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
+    (root / "home").mkdir()
+    with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
+            mock.patch.object(wip.contain, "containment_problem", return_value=None):
+        proc = run_in_process(argv[2:], env, cwd=str(ROOT))
+    return root / "results", proc, tmp, trip_log, prereg
+
+
+def documented_run_id(position: int) -> str:
+    """The run id at `position` in the schedule of the registration the documented command names."""
+    documented_live_run()
+    return next(e["run_id"] for e in wip.schedule(*wip.load_prereg(_DOCUMENTED["prereg"])[:2])
+                if e["position"] == position)
 
 
 class TestTheDocumentedLiveCommandRuns(unittest.TestCase):
@@ -2067,7 +2170,9 @@ class TestTheDocumentedLiveCommandRuns(unittest.TestCase):
     def test_the_documented_live_command_starts_a_run(self):
         results, p = documented_live_run()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(_DOCUMENTED["prereg"], PREREG_V2, "the page's live command runs the current registration")
+        record = json.loads((results / "runs" / documented_run_id(1) / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["run_id"], "wip2-b1r1-rep1")
         self.assertEqual((record["tier"], record["status"]), ("live-unreviewed", "complete"))
         self.assertFalse(_DOCUMENTED["trip_log"].exists())
 
@@ -2898,6 +3003,255 @@ class TestAKilledRunStillCounts(Tmp):
         cost = record["cost"]
         self.assertEqual(charged, Decimal("0.50"))
         self.assertEqual(charged, Decimal(cost["observed_usd"]) + Decimal(cost["reserved_unobserved_usd"]))
+
+
+# ---------------------------------------------------------------------------- a refused credential (version 2)
+# #604's wip1-b3r1-rep1 began 24 hours after its subscription token was written: the API refused all 18
+# of its calls (HTTP 401), every unit parked, and the run read `complete`, so the re-run the stopping
+# rule allows after an infrastructure failure was refused. refused_stream() is that run's stream.
+
+REFUSED_USAGE = {"output_tokens_details": {"thinking_tokens": 0}, "input_tokens": 0, "cache_creation_input_tokens": 0,
+                 "cache_read_input_tokens": 0, "output_tokens": 0,
+                 "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard",
+                 "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+                 "inference_geo": "", "iterations": [], "speed": "standard", "fallback_credit": None}
+
+
+def refused_stream(text="Not logged in · Please run /login", usage=None, is_error=True, model="claude-sonnet-5-5"):
+    """A dispatch's stream as Claude Code wrote it for a refused credential (wip1-b3r1-rep1)."""
+    lines = [{"type": "turn_started", "dispatchId": "disp_0123456789", "monitorPid": 1},
+             {"type": "system", "subtype": "init", "model": model, "apiKeySource": "none"},
+             {"type": "assistant", "message": {"model": "<synthetic>", "role": "assistant", "usage": REFUSED_USAGE,
+                                               "content": [{"type": "text", "text": text}]},
+              "error": "authentication_failed", "is_api_error_message": True, "api_error_status": 401},
+             {"type": "result", "subtype": "success", "is_error": is_error, "result": text, "duration_ms": 514,
+              "duration_api_ms": 0, "api_error_status": 401, "terminal_reason": "api_error", "modelUsage": {},
+              "subagent_stats": {"spawned": 0, "completed": 0}, "result_index": 0,
+              "usage": REFUSED_USAGE if usage is None else usage, "total_cost_usd": 0, "num_turns": 1}]
+    return "".join(json.dumps(line) + "\n" for line in lines)
+
+
+ANSWERED = refused_stream(text="WIP-BUILD-DONE", is_error=False,
+                          usage={**REFUSED_USAGE, "input_tokens": 12, "output_tokens": 4})
+
+
+def retained_run(run_dir: Path, streams: dict, *, dispatches=None, **fields) -> Path:
+    """A retained run in run.json's shape: one builder attempt per recorded dispatch, every stream
+    bound by its digest, as wip1-b3r1-rep1 retained them."""
+    dispatches = list(streams) if dispatches is None else dispatches
+    (run_dir / "streams").mkdir(parents=True, exist_ok=True)
+    for dispatch, text in streams.items():
+        (run_dir / "streams" / f"{dispatch}.jsonl").write_text(text, encoding="utf-8")
+    rec = {"run_id": run_dir.name, "status": "complete", "stop_reason": None,
+           "units": {"T1": {"attempts": [{"n": n, "dispatch": d} for n, d in enumerate(dispatches, 1)], "reviews": []}},
+           "launched_models": {d: "claude-sonnet-5-5" for d in streams}, **fields}
+    (run_dir / "run.json").write_text(json.dumps(rec), encoding="utf-8")
+    rebind(run_dir)
+    return run_dir
+
+
+class TestARefusedCredentialIsAnInfrastructureFailure(Tmp):
+    def stream(self, text):
+        path = self.tmp / "streams" / "disp_a.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_the_harness_error_for_a_refused_credential_is_recognised(self):
+        for text in ("Not logged in · Please run /login", "OAuth token has expired. Please obtain a new token",
+                     'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}', "Invalid API key"):
+            self.assertTrue(wip.credential_rejected(self.stream(refused_stream(text=text))), text)
+
+    def test_an_error_that_used_tokens_or_names_no_credential_is_not(self):
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(usage={**REFUSED_USAGE, "input_tokens": 12}))))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(text="API Error: 529 overloaded"))))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(is_error=False))))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream().splitlines()[1] + "\n")), "no result line")
+
+    def test_an_earlier_paid_result_makes_it_a_result(self):
+        # Codex at a61f3e660a: only the last result was read, so real work before a refusal was discarded
+        self.assertFalse(wip.credential_rejected(self.stream(ANSWERED + refused_stream())))
+        assistant = {"type": "assistant", "message": {"model": "claude-sonnet-5-5", "usage": {**REFUSED_USAGE, "output_tokens": 9}}}
+        self.assertFalse(wip.credential_rejected(self.stream(json.dumps(assistant) + "\n" + refused_stream())))
+        paid = json.loads(refused_stream().splitlines()[3])
+        paid["total_cost_usd"] = 0.02
+        self.assertFalse(wip.credential_rejected(self.stream(json.dumps(paid) + "\n")))
+
+    def test_any_line_but_the_refusal_makes_it_a_result(self):
+        # Codex at a8068b5cd5: an assistant turn with no usage was skipped, so earlier work read as a refusal
+        lines = refused_stream().splitlines(keepends=True)
+        turn = json.loads(lines[2])
+        for usage in (None, "absent"):
+            earlier = copy.deepcopy(turn)
+            if usage == "absent":
+                del earlier["message"]["usage"]
+            else:
+                earlier["message"]["usage"] = None
+            self.assertFalse(wip.credential_rejected(self.stream(json.dumps(earlier) + "\n" + "".join(lines))), usage)
+        tool = copy.deepcopy(turn)
+        tool["message"]["content"] = [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]
+        for extra in (tool, {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result"}]}},
+                      {"type": "system", "subtype": "thinking_tokens", "tokens": 40}, {"type": "assistant", "message": None}):
+            self.assertFalse(wip.credential_rejected(self.stream(json.dumps(extra) + "\n" + "".join(lines))), extra)
+        self.assertFalse(wip.credential_rejected(self.stream("not json\n" + "".join(lines))))
+        result = json.loads(lines[3])
+        del result["total_cost_usd"]
+        self.assertFalse(wip.credential_rejected(self.stream("".join(lines[:3]) + json.dumps(result) + "\n")),
+                         "a cost the result does not report")
+
+    def test_a_nested_count_is_work(self):
+        # Codex at 616217810a: only the four top-level token counts were read
+        lines = refused_stream().splitlines(keepends=True)
+
+        def result_with(**changes):
+            result = json.loads(lines[3])
+            for path, value in changes.items():
+                *parents, leaf = path.split(".")
+                node = result
+                for name in parents:
+                    node = node[name]
+                node[leaf] = value
+            return "".join(lines[:3]) + json.dumps(result) + "\n"
+
+        for change in ({"usage.server_tool_use.web_search_requests": 1},
+                       {"usage.iterations": [{"input_tokens": 12, "output_tokens": 4}]},
+                       {"usage.output_tokens_details.thinking_tokens": 7},
+                       {"usage.cache_creation.ephemeral_5m_input_tokens": 5160},
+                       {"modelUsage": {"claude-sonnet-5-5": {"inputTokens": 12, "costUSD": 0.01}}},
+                       {"subagent_stats.spawned": 1}, {"duration_api_ms": 900}):
+            self.assertFalse(wip.credential_rejected(self.stream(result_with(**change))), change)
+        turn = json.loads(lines[2])
+        turn["message"]["usage"] = {**REFUSED_USAGE, "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 1}}
+        self.assertFalse(wip.credential_rejected(self.stream(lines[0] + lines[1] + json.dumps(turn) + "\n" + lines[3])))
+
+    def test_the_report_reads_it_from_the_same_bound_evidence(self):
+        prereg, taskset, _path, prereg_sha, taskset_path = wip.load_prereg(PREREG)
+        cond = {"condition": {"id": "b1r1", "builders": 1, "reviewers": 1}}
+        refused = retained_run(self.tmp / "wip1-b1r1-rep1", {f"disp_{k}": refused_stream() for k in range(3)}, **cond)
+        nested = json.loads(refused_stream().splitlines()[3])
+        nested["usage"]["iterations"] = [{"input_tokens": 12, "output_tokens": 4}]
+        worked = retained_run(self.tmp / "wip1-b3r1-rep1", {"disp_0": refused_stream(),
+                                                            "disp_1": json.dumps(nested) + "\n"}, **cond)
+        args = (prereg, prereg_sha, taskset, wip.sha256_file(taskset_path))
+        self.assertEqual(wip.summarize_run(refused, *args)["infrastructure"],
+                         "the API refused all 3 of its model calls for the credential")
+        self.assertIsNone(wip.summarize_run(worked, *args)["infrastructure"])
+
+    def test_a_usage_it_does_not_report_is_not_zero(self):
+        missing = {k: v for k, v in REFUSED_USAGE.items() if k != "output_tokens"}
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(usage=missing))))
+        result = json.loads(refused_stream().splitlines()[3])
+        del result["usage"]
+        self.assertFalse(wip.credential_rejected(self.stream(json.dumps(result) + "\n")))
+
+    def test_a_run_whose_every_recorded_call_was_refused_failed_for_an_infrastructure_reason(self):
+        run = retained_run(self.tmp / "all", {f"disp_{k}": refused_stream() for k in range(3)})
+        self.assertEqual(wip.infrastructure_failure(run, "complete"),
+                         "the API refused all 3 of its model calls for the credential")
+        self.assertEqual(wip.infrastructure_failure(self.tmp / "absent", "failed"), "it ended failed")
+
+    def test_an_answered_unbound_or_unrecorded_call_is_not(self):
+        streams = {f"disp_{k}": refused_stream() for k in range(3)}
+        self.assertIsNone(wip.infrastructure_failure(retained_run(self.tmp / "a", {**streams, "disp_9": ANSWERED}),
+                                                     "complete"), "one call was answered")
+        self.assertIsNone(wip.infrastructure_failure(retained_run(self.tmp / "b", streams,
+                                                                  dispatches=[*streams, "disp_9"]), "complete"),
+                          "a recorded dispatch has no stream")
+        self.assertIsNone(wip.infrastructure_failure(retained_run(self.tmp / "c", {}), "complete"), "no call at all")
+        unbound = retained_run(self.tmp / "d", streams)
+        (unbound / "streams" / "disp_8.jsonl").write_text(refused_stream(), encoding="utf-8")
+        self.assertIsNone(wip.infrastructure_failure(unbound, "complete"), "an unbound stream")
+
+
+class TestARunEveryCallOfWhichWasRefusedMayBeReRunOnce(Tmp):
+    """The -a2 rule reads the bound record: wip1-b3r1-rep1's run.json says `complete`, its streams
+    say the API refused every call. Either way the decision is made before anything launches."""
+
+    def retained(self, streams):
+        self.env, self.trip_log = tripwired_env(self.tmp)
+        self.results = self.tmp / "results"
+        _prereg, _taskset, _path, prereg_sha, taskset_path = wip.load_prereg(PREREG)
+        return retained_run(self.results / "runs" / "wip1-b1r1-rep1", streams, prereg={"sha256": prereg_sha},
+                            taskset={"sha256": wip.sha256_file(taskset_path)})
+
+    def rerun(self, expect):
+        # -a2 passes the retry rule when the bogus second id is the refusal reached
+        p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1-a2,wip1-b9r9-rep1", "--cost-cap-usd", "0", env=self.env)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn(expect, p.stderr)
+        self.assertFalse(self.trip_log.exists())
+
+    def test_it_may_be_re_run_once(self):
+        self.retained({f"disp_{k}": refused_stream() for k in range(3)})
+        self.rerun("not a scheduled run")
+
+    def test_one_answered_call_makes_it_a_result_that_is_never_re_run(self):
+        self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": ANSWERED})
+        self.rerun("infrastructure failure")
+
+    def test_earlier_work_with_no_reported_usage_is_never_re_run(self):
+        # Codex at a8068b5cd5: bound, complete, and read as refused because the turn's usage was absent
+        turn = json.loads(refused_stream().splitlines()[2])
+        del turn["message"]["usage"]
+        self.retained({**{f"disp_{k}": refused_stream() for k in range(3)},
+                       "disp_9": json.dumps(turn) + "\n" + refused_stream()})
+        self.rerun("infrastructure failure")
+
+    def test_a_nested_count_is_never_re_run(self):
+        # Codex at 616217810a: a bound, complete run whose call reported its tokens only in iterations
+        nested = json.loads(refused_stream().splitlines()[3])
+        nested["usage"]["iterations"] = [{"input_tokens": 12, "output_tokens": 4}]
+        self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": json.dumps(nested) + "\n"})
+        self.rerun("infrastructure failure")
+
+    def test_removing_or_altering_the_answered_stream_never_authorises_a_re_run(self):
+        # Codex at a61f3e660a: the gate read whatever streams were present, unchecked against run.json
+        run = self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": ANSWERED})
+        (run / "streams" / "disp_9.jsonl").write_text(refused_stream(), encoding="utf-8")
+        self.rerun("infrastructure failure")
+        (run / "streams" / "disp_9.jsonl").unlink()
+        self.rerun("infrastructure failure")
+
+
+class TestARefusedCredentialHaltsTheRun(LiveWithAFakeHarness):
+    """A harness that answers every call with the refused-credential error: the first answer halts
+    the run, no further call starts, and the run ends `failed`, the re-runnable status."""
+
+    def live(self, *extra, answer_lines=None, **kw):
+        install = install_fake_harness
+        lines = answer_lines or refused_stream(model="wip-fake-model").splitlines(keepends=True)[1:]
+
+        def refusing(bin_dir, **fake_kw):
+            launcher = install(bin_dir, **fake_kw)
+            answer = bin_dir / "refused.jsonl"
+            answer.write_text("".join(lines), encoding="utf-8")
+            launcher.write_text(f'#!/bin/sh\n[ "$1" = --version ] && exec {sys.executable} -I {bin_dir / "worker.py"} '
+                                f'claude --version\ncat {answer}\nexit 1\n', encoding="utf-8")
+            return launcher
+        with mock.patch.dict(globals(), install_fake_harness=refusing):
+            return super().live(*extra, **kw)
+
+    def test_the_first_refusal_ends_the_run_failed(self):
+        p, run_json = self.live()
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertEqual((record["status"], record["stop_reason"]), ("failed", wip.CREDENTIAL_REJECTED),
+                         p.stdout + p.stderr)
+        self.assertEqual(len(list((run_json.parent / "streams").glob("*.jsonl"))), 1, "a second call started")
+        run = wip.build_report(self.results, basis="all")["runs"][0]
+        self.assertFalse(run["compliant"])
+        self.assertEqual(run["infrastructure"], "it ended failed")
+
+    def test_earlier_work_with_no_reported_usage_never_halts_it(self):
+        # Codex at a8068b5cd5: the same predicate halts the run at ingestion
+        lines = refused_stream(model="wip-fake-model").splitlines(keepends=True)[1:]
+        turn = json.loads(lines[1])
+        del turn["message"]["usage"]
+        p, run_json = self.live(answer_lines=[lines[0], json.dumps(turn) + "\n", *lines[1:]])
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertNotEqual(record["stop_reason"], wip.CREDENTIAL_REJECTED, p.stdout + p.stderr)
+        self.assertNotEqual(record["status"], "failed")
+        self.assertGreater(len(list((run_json.parent / "streams").glob("*.jsonl"))), 1)
 
 
 class TestRelativePaths(unittest.TestCase):

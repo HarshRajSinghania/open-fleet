@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import http.client
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -275,6 +277,9 @@ class OneArmRunsAndBothContainersAreVerifiedDestroyed(Harness):
         self.assertNotIn("--hostname", arm["argv"])
         hostname = broker["argv"][broker["argv"].index("--hostname") + 1]
         self.assertEqual(arm["attestation"]["nonce"], r["nonce"])
+        # the host's name, hashed, so a run inside names one machine across launches (#604)
+        self.assertEqual(arm["attestation"]["host_sha256"],
+                         hashlib.sha256((platform.node() or "host").encode()).hexdigest())
         self.assertEqual(arm["attestation"]["commit"], self.commit)
         self.assertEqual(hostname, lc.containment.HARNESS_HOSTNAME + r["nonce"])
         for create in (arm, broker):

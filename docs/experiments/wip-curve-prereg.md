@@ -9,8 +9,10 @@ concurrent builders. This page pre-registers that measurement (issue
 [#604](https://github.com/ravidsrk/open-fleet/issues/604), roadmap package R11) and describes the
 tooling that runs it. The design is fixed here before any live run, so no result can reshape it.
 
-The machine-readable registration, [`wip-curve-prereg.json`](wip-curve-prereg.json), is
-authoritative. It binds the task set, [`wip-curve-taskset.json`](wip-curve-taskset.json), by
+The machine-readable registration is authoritative. The current one is version 2,
+[`wip-curve-prereg-v2.json`](wip-curve-prereg-v2.json); version 1,
+[`wip-curve-prereg.json`](wip-curve-prereg.json), stays as the record its two live runs were made
+under (see [Version 2](#version-2)). Each binds the task set, [`wip-curve-taskset.json`](wip-curve-taskset.json), by
 sha256 and binds the seed commit that the task set builds. Where this page and the JSON disagree,
 the JSON wins.
 [`scripts/wip_curve.py`](../../scripts/wip_curve.py) checks the registration, runs it, and reports
@@ -27,7 +29,7 @@ on it. Its tests are in [`tests/test_wip_curve.py`](../../tests/test_wip_curve.p
 | Verification: independent recomputation, git and review authority for every terminal outcome, and detection of an altered metric row | **Implemented** and pinned by tamper tests. |
 | Dry run of the whole pipeline with an inert stand-in | **Implemented.** All 12 scheduled runs complete and verify (fixture tier: no evidence). |
 | Cost cap | **AUTHORISED.** The owner authorised 150.00 USD on 2026-10-24, billed to their Claude subscription. The runner still refuses to start without an explicit cap. |
-| At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **REMAINING.** The owner authorised the spend on 2026-10-24; no live run is retained yet. The live tier runs only inside the container-based live harness (PR #668; see [Running it](#running-it)). |
+| At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **REMAINING.** The owner authorised the spend on 2026-10-24. Version 1 made two live runs on 2026-10-25, and version 2 supersedes both (see [Version 2](#version-2)); no version-2 live run is retained yet. The live tier runs only inside the container-based live harness (PR #668; see [Running it](#running-it)). |
 | A published recommendation to keep or change the caps, with evidence links | **REMAINING.** It follows the live runs. A cap change is a separate human-reviewed policy change. |
 
 Until the live runs are retained, the caps in `attention-budget.md` stay ASSERTED.
@@ -193,10 +195,19 @@ next run. An uncontained gate oracle halts the run as soon as its merge returns.
   cap. The worst case is two dispatches per unit at the reservation. If the next wave does not
   fit, the run parks every unit still in flight as `stopped-cost-cap`, so the record still
   derives every metric, and no further run starts.
+- **Credential (version 2):** a call the API refuses for its credential (an error result, no
+  token used, and an authentication message such as "Not logged in" or a 401) halts the run. No
+  further call starts, every unit still in flight is parked `stopped-credential-rejected`, and the
+  run ends `failed`: an infrastructure failure, never a measurement.
 - **Experiment:** run exactly the scheduled runs, then stop. No run is added, dropped or repeated
   because of its results. A run that fails for an infrastructure reason may be re-run once under
   a new attempt id (`<run>-a2`), and both runs are reported. `run` refuses `-a2` unless attempt 1
-  ended `failed` or `interrupted`, and refuses `-a3` and later. The report holds every other
+  ended `failed`, `interrupted` or `lost`, or the API refused every model call it made for the
+  credential, whatever its status (version 2). That last claim is read only from the run's bound
+  record: every retained source unaltered and none unbound, and exactly one stream per recorded
+  dispatch, each the harness's refusal and nothing else: text-only assistant turns and error
+  results, every number they carry zero but their timing, turn count and HTTP status, nested
+  counts and per-model usage included. It refuses `-a3` and later. The report holds every other
   attempt non-compliant. A null or negative result completes
   the experiment.
 
@@ -330,7 +341,8 @@ A run counts toward the curve only if all of the following hold:
 - It used this registration and this task set.
 - It started at the seed commit.
 - It recorded a model pin and a harness version, and observed only the pinned model.
-- Its machine (the hashed host, platform and CPU count), harness, harness version, model pin and
+- Its machine (the hashed host, platform and CPU count; inside the container live harness, the
+  host as the launcher's attestation names it, never the container), harness, harness version, model pin and
   experiment inputs equal the first live run's, so a change in any of them is never read as an
   effect of WIP.
 - It is a scheduled run, under its scheduled condition, repetition and task order, and every wave
@@ -364,9 +376,11 @@ must cite the report.
 Check the registration and print the schedule:
 
 ```bash
-python3 scripts/wip_curve.py check-prereg
-python3 scripts/wip_curve.py plan
+python3 scripts/wip_curve.py --prereg docs/experiments/wip-curve-prereg-v2.json check-prereg
+python3 scripts/wip_curve.py --prereg docs/experiments/wip-curve-prereg-v2.json plan
 ```
+
+Without `--prereg` the runner reads version 1, which the dry run below and the tests still use.
 
 The dry run uses the inert stand-in. It calls no model and spends nothing, and its runs are
 labelled `fixture-tested`:
@@ -393,7 +407,8 @@ runs it inside a fresh container, with every path under `/results`. It spends; t
 authorised the cap on 2026-10-24 (see [Cost cap](#cost-cap)):
 
 ```bash
-python3 scripts/wip_curve.py run --results <dir> --worker live --agent claude \
+python3 scripts/wip_curve.py --prereg docs/experiments/wip-curve-prereg-v2.json \
+  run --results <dir> --worker live --agent claude \
   --model <pinned model id> --cost-cap-usd <the authorised cap> \
   --reservation-usd <the authorised reservation> --next 1
 ```
@@ -484,3 +499,30 @@ Everything the measurement depends on is pinned:
 After the first live run, any change to the task set, the contracts, the conditions, the order,
 the stopping rule or the analysis is therefore a new `version`, with new run ids and a new
 results directory.
+
+## Version 2
+
+Version 1's first two live runs, on 2026-10-25 inside the container live harness (PR #672),
+showed two runner defects. The rule above makes either one a new version:
+
+- `wip1-b3r1-rep1` began 24 hours after the subscription token was written for the harness
+  (2026-10-24 05:45 UTC). The API refused all 18 of its model calls (HTTP 401), every unit parked
+  `attempts-exhausted`, and the run still read
+  `complete`, so `run` refused the re-run the stopping rule allows after an infrastructure failure.
+- Inside the harness the runner named the machine by the container's own host name, which changes
+  with every launch. Every run after the first read as another machine, so none could be pooled.
+
+Version 2 changes the stopping rule and the machine identity, and nothing else:
+
+- A call the API refuses for its credential halts the run, which ends `failed`
+  (`credential-rejected`). A recorded run whose every model call was refused that way is an
+  infrastructure failure too, whatever its status, so it may be re-run once and the report accepts
+  the re-run.
+- The launcher records the host's name, hashed, in its attestation (`host_sha256`), and inside the
+  harness the runner names the machine by it.
+
+The task set, conditions, order, repetitions, contracts, isolation, confounds, cost cap, metrics
+and analysis are unchanged. Version 2's runs are `wip2-*`, in a new results directory. Version 1's
+two runs stay retained under version 1 and are never pooled with version 2's. The owner authorised
+the change on 2026-10-25. The spend stays within the USD 150 authorised on 2026-10-24: version 1's
+two runs settled USD 0.46 at the broker, and version 2's broker cap is the rest.

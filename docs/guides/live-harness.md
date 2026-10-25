@@ -89,8 +89,9 @@ The launcher starts both containers with these properties:
 - the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line for each
   call it opens, starts, settles or refuses. It never holds the token, a request or a response;
 - the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
-  commit, the arm and the image. The broker's container is named `of-live-<nonce>`, and the arm's
-  container inherits that hostname with the network namespace. The receipt records the same nonce;
+  commit, the arm, the image and the host's name, hashed (`host_sha256`), which names the machine
+  across launches. The broker's container is named `of-live-<nonce>`, and the arm's container
+  inherits that hostname with the network namespace. The receipt records the same nonce;
 - one launch runs at a time. A launch holds `~/of-live/live-harness.lock` from its check for
   leftover containers until its receipt is written;
 - it runs under a wall-clock limit. At the limit the launcher kills and removes both containers,
@@ -165,17 +166,22 @@ the broker prices (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, o
 Code resolves to one).
 
 **wip_curve** (#604, [pre-registration](../experiments/wip-curve-prereg.md)). Run one scheduled run
-per launch, then report inside the harness as well. The report re-runs worker-written oracles:
+per launch, then report inside the harness as well. The report re-runs worker-written oracles.
+Both name the current registration, version 2, by its path in the container; a version has its own
+results directory:
 
 ```bash
-python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-curve --timeout 14400 --cap-usd <authorised> \
-  --per-call-usd 1.60 -- \
+python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-curve-v2 --timeout 14400 --cap-usd <authorised> \
+  --per-call-usd 1.60 -- --prereg /repo/docs/experiments/wip-curve-prereg-v2.json \
   run --results /results/experiment --workdir /results/sandboxes --worker live --agent claude \
   --model <pinned model id> --cost-cap-usd <the authorised cap> \
   --reservation-usd <the authorised reservation> --next 1
-python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-curve --timeout 3600 --cap-usd <authorised> -- \
-  report --results /results/experiment
+python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-curve-v2 --timeout 3600 --cap-usd <authorised> -- \
+  --prereg /repo/docs/experiments/wip-curve-prereg-v2.json report --results /results/experiment
 ```
+
+A run the API refused a call of for its credential (an expired token) ends `failed`
+(`credential-rejected`). Replace the token file, then re-run it once as `<run id>-a2` with `--runs`.
 
 `--per-call-usd 1.60` is the registration's per-call limit: every `claude` call the arm makes
 carries `--max-budget-usd 1.60`, as the owner's isolation wrapper passed it on the host. The

@@ -1,0 +1,249 @@
+{
+  "schema": "open-fleet.wip-curve-prereg/1",
+  "experiment": "wip-curve",
+  "version": 2,
+  "issue": 604,
+  "registered": "2026-10-25",
+  "status": "pre-registered (version 2); no version-2 live run retained; cost cap authorised (USD 150.00, 2026-10-24), less what version 1 spent",
+  "question": "How does verified-CLOSED throughput, and what it costs in verification latency, rework, review freshness, merge conflicts and model spend, change with the number of concurrent builders when review capacity is held fixed?",
+  "protocol": "runtime/attention-budget.md, The WIP-curve protocol: one row per dispatch wave, derived by runtime/scripts/events.py report from the run's append-only event record (#603)",
+  "taskset": {
+    "path": "docs/experiments/wip-curve-taskset.json",
+    "sha256": "4ea82a93f093372d169f845e0dd6631b7fc3ae62bafb89b5d8efafd83a95f5e4",
+    "seed_commit": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+    "integration_branch": "wip-integration",
+    "default_branch": "main"
+  },
+  "runtime": {
+    "provider": "posix",
+    "backend": "setsid",
+    "machine": "FILL AT RUN TIME: the runner records the host facts (platform, CPU count, Python, git) in every run.json",
+    "harness": "FILL AT RUN TIME: --agent; the runner records the harness binary's --version in every run.json",
+    "model": "FILL AT RUN TIME: --model is required for a live run; every model the usage record observes must equal it",
+    "harness_effort": "the harness default: the runner passes no effort flag; every dispatch's effective launch (agent, flags, command digest) is recorded, and a launch that does not carry its assignment fails the run",
+    "builder_profile": "rw",
+    "reviewer_profile": "ro"
+  },
+  "conditions": [
+    {
+      "id": "b1r1",
+      "builders": 1,
+      "reviewers": 1,
+      "role": "serial baseline (builders=1)"
+    },
+    {
+      "id": "b3r1",
+      "builders": 3,
+      "reviewers": 1,
+      "role": "the current asserted default cap"
+    },
+    {
+      "id": "b6r1",
+      "builders": 6,
+      "reviewers": 1,
+      "role": "wider parallelism, review capacity unchanged"
+    },
+    {
+      "id": "b6r2",
+      "builders": 6,
+      "reviewers": 2,
+      "role": "reviewer-capacity control: the cap's 1 reviewer per 3 builders"
+    }
+  ],
+  "reviewer_availability": {
+    "definition": "reviewers=<n> is the number of build-blind review units in flight at once; a done unit waits in arrival (worker_done) order for a free reviewer slot",
+    "reviewer": "an agent reviewer dispatched with PROFILE=ro on the same harness and model as the builders, one fresh dispatch per review",
+    "rubric": "fixed: the reviewer gets the task statement and the diff, and answers approve or changes on one WIP-REVIEW line; the same text in every condition",
+    "human_reviewers": "none in the measured loop; a human reviewer would be a different experiment"
+  },
+  "contracts": {
+    "builder": [
+      "open-fleet WIP-curve builder unit (#604). WIP-BUILD {nonce} task={task}",
+      "Task {task}: {title}",
+      "{statement}",
+      "This worktree is a git checkout of the stocklib package. Run its tests with: python3 -m unittest discover -s tests -t .",
+      "Change only what the task needs. Commit your change on the current branch: git add the files you changed, then git commit.",
+      "Then report completion with:",
+      "  python3 \"$OPEN_FLEET_ROOT/runtime/scripts/send_msg.py\" --type worker_done --outcome succeeded --run \"$OPEN_FLEET_RUN_ID\" --subject \"worker_done:$OPEN_FLEET_DISPATCH_ID\" --payload '{\"head\": \"<the commit sha>\"}'",
+      "If you cannot complete the task, send the same message with --outcome failed."
+    ],
+    "reviewer": [
+      "open-fleet WIP-curve review unit (#604). WIP-REVIEW-REQUEST {nonce} task={task} head={head} diff={diff_file}",
+      "You are a build-blind reviewer. Review the change {base}..{head} for task {task}. The task statement is in {task_file} and the change's diff in {diff_file}, both in your working tree: read both to the end. Do not modify anything.",
+      "Approve only if the change does what the task statement asks and nothing it forbids; otherwise ask for changes.",
+      "End your answer with exactly one line: WIP-REVIEW {nonce} {head} approve   or   WIP-REVIEW {nonce} {head} changes"
+    ],
+    "verdict_line": "WIP-REVIEW {nonce} {head} {verdict}",
+    "verdicts": [
+      "approve",
+      "changes"
+    ],
+    "note": "the exact text every builder and reviewer receives; {name} fields are filled per unit. Editing a contract changes this file's digest, which blocks a run in a results directory made under the old one"
+  },
+  "repetitions": 3,
+  "order": {
+    "seed": "open-fleet-604-wip-curve-v1",
+    "conditions": "Williams balanced Latin square for four conditions; repetition r runs the conditions in row r",
+    "rows": [
+      [
+        "b1r1",
+        "b3r1",
+        "b6r2",
+        "b6r1"
+      ],
+      [
+        "b3r1",
+        "b6r1",
+        "b1r1",
+        "b6r2"
+      ],
+      [
+        "b6r1",
+        "b6r2",
+        "b3r1",
+        "b1r1"
+      ],
+      [
+        "b6r2",
+        "b1r1",
+        "b6r1",
+        "b3r1"
+      ]
+    ],
+    "tasks": "per run, the task ids sorted by sha256('<seed>:<run id>:<task id>'); recomputable by anyone from this file",
+    "position_balance": "three repetitions use rows 1-3, so each condition takes three of the four positions; the fourth row is used only if a fourth repetition is authorised"
+  },
+  "isolation": {
+    "per_run": "a new sandbox directory: a fresh local-state store, a fresh merge-queue store, a fresh bare origin and clone built from the task set's seed with fixed author, committer and date, so every run starts at the same seed commit (recorded and re-checked); no worktree, branch or transcript is shared between runs",
+    "task_state": "every task starts from the integration head at the moment its wave opens; a bounced task is rebuilt from scratch from the then-current integration head",
+    "oracle": "the oracle tests live in the catalog clone, never in the target repository; workers are not given them",
+    "cooldown_minutes": 10
+  },
+  "confounds": {
+    "cache_warmup": "counterbalanced condition order (rows above), a cooldown of at least cooldown_minutes between live runs (longer than the default prompt-cache lifetime), a fresh sandbox per run; cache-read tokens are reported per run so a residual cache effect is visible rather than assumed away",
+    "task_difficulty": "the same six tasks in every run, with nominal difficulty labels; task order randomised per run by the order seed; per-task outcomes and latencies are reported by condition so a difficulty effect can be read within task",
+    "model_changes": "one pinned model and one harness version for the whole experiment; a run whose observed models differ from the pin, or whose harness version differs from the first live run's, is not protocol-compliant and is reported, never pooled",
+    "reviewer_effort": "fixed reviewer rubric, profile and model; reviewer capacity is the only review variable and is varied in one arm only (b6r1 against b6r2); reviewer tokens per review are reported by condition"
+  },
+  "stopping_rule": {
+    "run_complete": "every task is CLOSED (verified, reviewed, merged by the merge queue) or parked",
+    "max_attempts_per_task": 3,
+    "attempts": "a task bounced max_attempts_per_task times (failed oracle, a review that asks for changes or gives no verdict, merge conflict, failed merge gate, builder failure) is parked attempts-exhausted",
+    "dispatch_timeout_minutes": {
+      "builder": 30,
+      "reviewer": 15
+    },
+    "run_wall_clock_minutes": 180,
+    "cost": "before each wave, observed spend plus the reservation for the wave's worst case (two dispatches per unit) must stay within the cap given to the runner; otherwise the run stops, every unit still in flight is parked stopped-cost-cap so the record stays derivable, and no further run starts",
+    "experiment": "run exactly the scheduled runs, then stop; no run is added, dropped or repeated because of its results; a run that fails for an infrastructure reason may be re-run once under a new attempt id and both are reported; a null or negative result completes the experiment. A call the API refuses for its credential (an error result, no token used, an authentication message) halts the run, which ends failed (credential-rejected); a recorded run whose every model call was refused that way is an infrastructure failure too, whatever its status."
+  },
+  "cost": {
+    "cap_usd": "150.00",
+    "proposed_cap_usd": "150.00",
+    "reservation_per_dispatch_usd": "2.00",
+    "reservation_status": "AUTHORISED",
+    "authorised_by": "Ravindra Kumar (@ravidsrk)",
+    "authorised_on": "2026-10-24",
+    "authorised_via": "the owner's chat instruction in the coordinating session, replying to a list that named \"#604 needs up to $150\": \"Authorising you on everything. Go ahead and complete it.\"",
+    "billing": "the owner's Claude subscription, through CLAUDE_CODE_OAUTH_TOKEN: the USD cap bounds the total_cost_usd the harness reports, which is notional on a subscription; a rate-limit window may fail a cell, and such a run counts as failed or parked, never as dropped",
+    "enforcement": "the runner refuses to start without an explicit --cost-cap-usd and, for a live run, an explicit --reservation-usd: the runner never picks the spend, so neither is taken from this file; a live run also refuses a zero cap. Before a unit's builder starts, the runner holds the worst case of every call that unit makes (its builder and its reviewer, each at the reservation; no grader calls a model). Each dispatch starts only while measured spend, the charges for unobserved dispatches (the full reservation) and every hold, its own included, stay within the cap, so a dispatch that overspent its hold refuses the next one before it starts. Spend is measured from the harness's own result lines (events.py ingest-usage). The runner passes no per-call limit: the posix launch table has no budget flag for any harness, so a dispatch already running can overrun its reservation, and the dispatch timeouts bound that in time, not in money. For the authorised live runs, the owner's isolation wrapper (outside the repository) passes claude --max-budget-usd 1.60 on each call",
+    "estimate": "12 runs x 6 tasks x (builder + reviewer) is 144 dispatches before retries"
+  },
+  "metrics": {
+    "primary": "verified-CLOSED throughput per run: units CLOSED at a head a passing oracle verdict named, per hour of summed wave wall-clock",
+    "secondary": [
+      "verification latency, median and max: worker_done to the passing verdict at that head (or to the park)",
+      "rework: share of unit-waves bounced (oracle exit 2, SUSPECT, or a re-dispatch)",
+      "freshness violations: approving reviews voided because the unit closed at another head",
+      "merge conflicts and merge-gate failures: the merge queue's failed receipts, each re-derived from git",
+      "retries and review queue time",
+      "model tokens and cost per run and per verified-CLOSED unit, never 0 when unobserved"
+    ],
+    "report_fields": {
+      "run": [
+        "status",
+        "throughput_per_h",
+        "latency_median_min",
+        "latency_max_min",
+        "rework",
+        "freshness",
+        "conflicts",
+        "gate_failures",
+        "retries",
+        "review_queue_median_min",
+        "review_queue_max_min",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "cost_usd",
+        "cost_per_verified_closed_usd",
+        "review_tokens_per_review",
+        "parked"
+      ],
+      "condition": [
+        "role",
+        "throughput_per_h",
+        "latency_median_min",
+        "latency_max_min",
+        "rework",
+        "freshness",
+        "conflicts",
+        "gate_failures",
+        "retries",
+        "review_queue_median_min",
+        "review_queue_max_min",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "cost_usd",
+        "cost_per_verified_closed_usd",
+        "review_tokens_per_review",
+        "tasks"
+      ]
+    },
+    "uncertainty": "per condition: mean, sample standard deviation and a two-sided 95% Student-t interval over its runs, with every run's value listed; rework as a pooled proportion with a 95% Wilson interval. With three runs per condition the intervals are wide; the report says so rather than narrowing them"
+  },
+  "compliance": [
+    "a live worker (never the inert stand-in)",
+    "the prereg and task-set digests the runner bound equal this file's, and its experiment inputs (the runner, this registration, the task set and runtime/) hash to the same digest as the first live run's, none of them uncommitted",
+    "the run started at the pre-registered seed commit",
+    "the model pin and harness version recorded, both equal to the first live run's; every observed model equals the pin",
+    "events.py derives every WIP-curve cell (report complete)",
+    "every terminal outcome binds: each CLOSED head is on the integration branch in the retained bundle, carries an approving review by another dispatch and a passing oracle transcript, and re-passes the oracle",
+    "the run finished complete, not stopped or failed, under the registered dispatch deadlines (no --timeout-scale), as attempt 1 or as the one re-run allowed after an infrastructure failure",
+    "the cooldown before it was kept"
+  ],
+  "analysis": {
+    "curve": "throughput, latency, rework, freshness and conflicts against builders at reviewers=1 (b1r1, b3r1, b6r1); b6r1 against b6r2 reads the effect of reviewer capacity",
+    "decision_rule": {
+      "raise": "a condition above the current cap (b6r1 or b6r2) has a 95% interval for throughput whose lower bound exceeds b3r1's upper bound, with pooled rework no more than 0.10 above b3r1's and mean freshness violations per run no more than 1 above b3r1's",
+      "lower": "b1r1's 95% interval for throughput has a lower bound above b3r1's upper bound",
+      "keep": "otherwise, including every null or negative result",
+      "not_issued": "fewer than three protocol-compliant runs, or compliant runs at fewer than three differing WIP settings",
+      "authority": "the rule yields a recommendation only; changing a cap is its own human-reviewed policy change citing the report"
+    }
+  },
+  "generalization_limits": [
+    "one synthetic, six-task, stdlib-only Python package; larger tasks, other languages and real repositories may bend the curve differently",
+    "one host, the posix provider, one harness and one model; Orca and other providers schedule and isolate differently",
+    "agent reviewers only; human review capacity, the real serial bottleneck the attention budget names, is not measured",
+    "three runs per condition: enough to see a large effect, not to rule out a small one"
+  ],
+  "supersedes": {
+    "version": 1,
+    "path": "docs/experiments/wip-curve-prereg.json",
+    "why": "Version 1's first two live runs, inside the container live harness (PR #672), showed two runner defects that change the stopping rule and the machine identity. (1) wip1-b3r1-rep1 began 24 hours after the subscription token was written for the harness (2026-10-24 05:45 UTC); the API refused all 18 of its model calls (HTTP 401), every unit parked attempts-exhausted, and the run still read `complete`, so the re-run the stopping rule allows after an infrastructure failure was refused. (2) Inside the harness the runner named the machine by the container's own host name, which changes with every launch, so every run after the first read as another machine and none could be pooled. The registration's own rule makes either change a new version.",
+    "changes": [
+      "a call the API refuses for its credential halts the run, which ends `failed` (stop_reason credential-rejected), an infrastructure failure that may be re-run once; a recorded run whose every model call was refused that way counts as one too, whatever its status",
+      "inside the container live harness the machine is named by the host's name (hashed), which the launcher records in its attestation, not by the container's"
+    ],
+    "unchanged": "the task set, conditions, order, repetitions, contracts, isolation, confounds, cost cap, metrics and analysis",
+    "version_1_runs": {
+      "wip1-b1r1-rep1": "complete, retained, superseded",
+      "wip1-b3r1-rep1": "every model call refused for the expired credential, retained, superseded"
+    },
+    "authorised_by": "Ravindra Kumar (@ravidsrk), 2026-10-25, replying 'Do it' to the recommendation to treat wip1-b3r1-rep1 as an infrastructure failure and make the runner recognise it"
+  }
+}

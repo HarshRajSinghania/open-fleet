@@ -967,6 +967,8 @@ def tearDownModule():
         tmp.cleanup()
     if "tmp" in _DOCUMENTED:
         _DOCUMENTED["tmp"].cleanup()
+    for _results, _proc, tmp, *_rest in _DOCUMENTED.get("under", {}).values():
+        tmp.cleanup()
 
 
 class DryRun(unittest.TestCase):
@@ -1971,8 +1973,7 @@ class LiveWithAFakeHarness(Tmp):
     """--worker live end to end, against a fake harness (never a real one: a tripwire answers
     for every other harness name, and HOME is private)."""
 
-    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25", containment=None,
-             prereg=None):
+    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25", containment=None):
         env, self.trip_log = tripwired_env(self.tmp)
         fake = self.tmp / "fake-bin"
         install_fake_harness(fake, cost=cost, script=script)
@@ -1981,8 +1982,7 @@ class LiveWithAFakeHarness(Tmp):
         self.results = self.tmp / "results"
         with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
                 mock.patch.object(wip.contain, "containment_problem", return_value=containment):
-            p = run_in_process([*(["--prereg", str(prereg)] if prereg else []),
-                                "run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"),
+            p = run_in_process(["run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"),
                                 "--worker", "live", "--agent", "claude", "--model", model, "--cost-cap-usd", "20",
                                 "--reservation-usd", cost, "--runs", run, *extra], env)
         self.assertFalse(self.trip_log.exists(), "a real harness name was reached")
@@ -1993,8 +1993,8 @@ class TestLiveRunsTakeTheRegisteredOrder(LiveWithAFakeHarness):
     """PR #653 review (Bu3): a live run starts only at the next registered position: every earlier
     position has run and no later one has. Checked before anything is dispatched."""
 
-    def refused(self, runs, text, prereg=None):
-        p, _run_json = self.live(run=runs, prereg=prereg)
+    def refused(self, runs, text):
+        p, _run_json = self.live(run=runs)
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertIn(text, p.stderr)
         runs_dir = self.results / "runs"
@@ -2016,10 +2016,9 @@ class TestLiveRunsTakeTheRegisteredOrder(LiveWithAFakeHarness):
         self.assertEqual(wip.live_positions(self.tmp, positions), {1, 3})
 
     def test_a_skipped_position_is_refused(self):
-        results, _p = documented_live_run()  # position 1 ran live
+        results, _p = documented_live_run(PREREG)  # position 1 ran live (the rule is the same in every version)
         shutil.copytree(results, self.tmp / "results")
-        self.assertEqual(self.refused(documented_run_id(3), "[2]", prereg=_DOCUMENTED["prereg"]),
-                         [documented_run_id(1)])
+        self.assertEqual(self.refused("wip1-b6r2-rep1", "[2]"), ["wip1-b1r1-rep1"])
 
 
 class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
@@ -2095,35 +2094,49 @@ class TestTheRunDeadlineIsKeptInsideAWave(Tmp):
 _DOCUMENTED: dict = {}
 
 
-def documented_live_run():
+def documented_live_run(prereg=None):
     """(results, process) of the protocol page's live command, placeholders filled, run once per
-    module against a fake claude: a live-tier run that every check in this module can read."""
+    module against a fake claude: a live-tier run that every check in this module can read. With
+    `prereg`, the same command under that registration instead of the one the page names."""
+    if prereg is not None:
+        if str(prereg) not in _DOCUMENTED.setdefault("under", {}):
+            _DOCUMENTED["under"][str(prereg)] = _documented_run(prereg)
+        return _DOCUMENTED["under"][str(prereg)][:2]
     if "run" not in _DOCUMENTED:
-        tmp = tempfile.TemporaryDirectory(prefix="wip-curve-documented-")
-        root = Path(tmp.name).resolve()
-        page = (ROOT / "docs" / "experiments" / "wip-curve-prereg.md").read_text(encoding="utf-8")
-        block = next(b for b in re.findall(r"```bash\n(.*?)```", page, re.S) if "--worker live" in b)
-        command = block.replace("\\\n", " ")
-        fill = {"dir": str(root / "results"), "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
-        for placeholder in re.findall(r"<[^>]+>", command):
-            key = next((k for k in fill if k in placeholder), None)
-            if key is None:
-                raise AssertionError(f"an unknown placeholder {placeholder} in the documented live command")
-            command = command.replace(placeholder, fill[key])
-        argv = shlex.split(command)
-        if argv[:2] != ["python3", "scripts/wip_curve.py"]:
-            raise AssertionError(f"the documented live command is not the runner: {argv[:2]}")
-        # the registration the command names (version 2 since #604's re-registration), from the checkout
-        prereg = ROOT / argv[argv.index("--prereg") + 1] if "--prereg" in argv else PREREG
-        env, trip_log = tripwired_env(root)
-        install_fake_harness(root / "fake-bin")
-        env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
-        (root / "home").mkdir()
-        with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
-                mock.patch.object(wip.contain, "containment_problem", return_value=None):
-            proc = run_in_process(argv[2:], env, cwd=str(ROOT))
-        _DOCUMENTED.update(run=(root / "results", proc), tmp=tmp, trip_log=trip_log, prereg=prereg)
+        results, proc, tmp, trip_log, named = _documented_run(None)
+        _DOCUMENTED.update(run=(results, proc), tmp=tmp, trip_log=trip_log, prereg=named)
     return _DOCUMENTED["run"]
+
+
+def _documented_run(override):
+    """One run of the page's live command: (results, process, tmp, tripwire log, registration)."""
+    tmp = tempfile.TemporaryDirectory(prefix="wip-curve-documented-")
+    root = Path(tmp.name).resolve()
+    page = (ROOT / "docs" / "experiments" / "wip-curve-prereg.md").read_text(encoding="utf-8")
+    block = next(b for b in re.findall(r"```bash\n(.*?)```", page, re.S) if "--worker live" in b)
+    command = block.replace("\\\n", " ")
+    fill = {"dir": str(root / "results"), "model": "wip-fake-model", "cap": "20", "reservation": "0.25"}
+    for placeholder in re.findall(r"<[^>]+>", command):
+        key = next((k for k in fill if k in placeholder), None)
+        if key is None:
+            raise AssertionError(f"an unknown placeholder {placeholder} in the documented live command")
+        command = command.replace(placeholder, fill[key])
+    argv = shlex.split(command)
+    if argv[:2] != ["python3", "scripts/wip_curve.py"]:
+        raise AssertionError(f"the documented live command is not the runner: {argv[:2]}")
+    # the registration the command names (version 2 since #604's re-registration), from the checkout
+    prereg = ROOT / argv[argv.index("--prereg") + 1] if "--prereg" in argv else PREREG
+    if override is not None:
+        argv = [a for i, a in enumerate(argv) if a != "--prereg" and (i == 0 or argv[i - 1] != "--prereg")]
+        argv[2:2], prereg = ["--prereg", str(override)], override
+    env, trip_log = tripwired_env(root)
+    install_fake_harness(root / "fake-bin")
+    env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
+    (root / "home").mkdir()
+    with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
+            mock.patch.object(wip.contain, "containment_problem", return_value=None):
+        proc = run_in_process(argv[2:], env, cwd=str(ROOT))
+    return root / "results", proc, tmp, trip_log, prereg
 
 
 def documented_run_id(position: int) -> str:

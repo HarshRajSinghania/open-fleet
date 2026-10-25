@@ -391,6 +391,7 @@
         "issue": "Bug: add() in calc.py subtracts instead of adding.\n"
       },
       "allowed_actions": [
+        "Read",
         "Bash",
         "Edit",
         "Commit",
@@ -453,7 +454,7 @@
           }
         }
       ],
-      "pin": "sha256:99d82f247837097f891977e19cf21ecf31f73d1080bd9ddb176bed4435346c7c"
+      "pin": "sha256:ed31b3ea8c5459b2150687694b464a380528e679d372851ed7b0cb003b99db74"
     },
     {
       "id": "HO-02",
@@ -705,6 +706,7 @@
         "issue": "Bug: add() in calc.py subtracts instead of adding.\n"
       },
       "allowed_actions": [
+        "Read",
         "Bash",
         "Edit",
         "Commit",
@@ -742,7 +744,7 @@
           }
         }
       ],
-      "pin": "sha256:1be4e75988d1176801042c40c1e5bc7a423f02bbf6dc101cb3322922b9950fea"
+      "pin": "sha256:a3abff03d0650e9bb2c33dc0b0bcbffb85fb44110c992b671ac95a13edc6b7a0"
     },
     {
       "id": "BN-03",
@@ -758,6 +760,7 @@
       },
       "allowed_actions": [
         "Recall",
+        "Read",
         "Edit",
         "Commit",
         "Manifest"
@@ -797,7 +800,7 @@
           }
         }
       ],
-      "pin": "sha256:efae9b3644727befc9b0344d03431b26d25a56c85b6b8334d7767f49b5bd5002"
+      "pin": "sha256:c253e2e6dda88d0826710986cee793c13da5553abe71bd92b09ce943bb9e9990"
     },
     {
       "id": "CL-01",

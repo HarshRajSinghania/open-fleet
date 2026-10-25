@@ -6,8 +6,11 @@ The arm's container holds no credential. The subscription token is in the broker
 first on the container's PATH: it waits for the broker to answer, then execs the pinned Claude
 Code with ANTHROPIC_BASE_URL set to the broker and a placeholder credential, which the broker
 replaces with the token. Every model call is priced against the broker's cap, whichever process
-of the arm makes it. A version query needs no broker. A broker that never answers refuses, exit 2.
+of the arm makes it. When the launcher was given --per-call-usd, SETTINGS holds it, and every call
+carries `--max-budget-usd` with it unless the caller passed one. A version query needs no broker
+and takes no flag. A broker that never answers, or settings that cannot be read, refuse, exit 2.
 """
+import json
 import os
 import sys
 import time
@@ -17,6 +20,7 @@ BROKER = "http://127.0.0.1:8787"  # scripts/live_broker.py's PORT, in the shared
 PLACEHOLDER = "open-fleet-live-broker"  # never a credential: the broker puts the token in its place
 REAL = "/home/runner/.local/share/claude/versions/2.1.304"  # pinned: never the auto-updated symlink
 WAIT_S = 60
+SETTINGS = "/run/open-fleet/claude.json"  # scripts/live_container.py's CLAUDE_SETTINGS, read-only when present
 # Credentials or endpoints an arm's environment might carry: claude gets the broker's alone.
 DROP = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
         "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
@@ -43,15 +47,38 @@ def broker_ready(wait_s=WAIT_S):
         time.sleep(0.5)
 
 
+def budget_flag(argv):
+    """The `--max-budget-usd` to append from SETTINGS: [] when there are none or argv has its own,
+    None when SETTINGS cannot be read."""
+    try:
+        with open(SETTINGS, encoding="utf-8") as fh:
+            value = json.load(fh).get("max_budget_usd")
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, AttributeError):
+        return None
+    if value is None or any(a == "--max-budget-usd" or a.startswith("--max-budget-usd=") for a in argv):
+        return []
+    try:
+        if float(value) > 0:
+            return ["--max-budget-usd", str(value)]
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def main(argv):
     env = {k: v for k, v in os.environ.items() if k not in DROP}
     if argv[:1] in (["--version"], ["-v"]):
         os.execve(REAL, [REAL, *argv], env)
+    flag = budget_flag(argv)
+    if flag is None:
+        return refuse(f"the claude settings at {SETTINGS} cannot be read: a positive max_budget_usd is required")
     if not broker_ready():
         return refuse(f"no credential broker answers at {BROKER} after {WAIT_S} s: run this arm through "
                       "scripts/live_container.py, which starts it")
     env.update({"ANTHROPIC_BASE_URL": BROKER, "ANTHROPIC_AUTH_TOKEN": PLACEHOLDER})
-    os.execve(REAL, [REAL, *argv], env)
+    os.execve(REAL, [REAL, *argv, *flag], env)
 
 
 if __name__ == "__main__":

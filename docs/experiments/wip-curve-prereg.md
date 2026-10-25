@@ -32,7 +32,7 @@ on it. Its tests are in [`tests/test_wip_curve.py`](../../tests/test_wip_curve.p
 | At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **DONE.** Version 2's 12 scheduled runs, all complete and compliant, ran on 2026-10-25 in the container live harness and are retained and bound in [the run report](../runs/2026-10-25-wip-curve-604-live.md). Version 1's two runs are retained there too, superseded (see [Version 2](#version-2)). |
 | A published recommendation to keep or change the caps, with evidence links | **DONE: keep.** No pre-registered criterion for a change is met ([the run report](../runs/2026-10-25-wip-curve-604-live.md#result)). A cap change would be a separate human-reviewed policy change. |
 
-`attention-budget.md` records this measurement after #606's live run, since #606's registration pins that file's bytes.
+`attention-budget.md` records this measurement: its caps are MEASURED, and kept.
 
 ## The question
 

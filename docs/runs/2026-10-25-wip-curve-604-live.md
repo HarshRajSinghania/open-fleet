@@ -171,7 +171,12 @@ Commits on `claude/run-report-604-live`, forked from origin/main `6f02e410da`:
 An earlier binding on this branch (`9ebdb656dd` to `651e286562`) was superseded after review found the call off the pin: the contract now requires the broker's model reconciliation and the decision with that run excluded, so the evidence was re-bound and re-signed. The run itself ran at `bacb5f8dd8`. `rederive.py` checks that the runner, its call helper,
 `events.py`, the registration and the task set are byte-identical there and on this branch.
 
-Re-derivation, recorded through `evidence-run.py` on `08151bdea7`'s tree, exit 0, 66 checks:
+Re-derivation, recorded through `evidence-run.py` at `08151bdea7`, exit 0, 66 checks. The tree it
+recorded, `3077c7f8a3e2…`, is not `08151bdea7`'s (`721ed659054b…`). It differs in two files.
+`manifest.json` already had `head_sha` and `contract.source` filled in, and this report
+(`docs/runs/2026-10-25-wip-curve-604-live.md`) had uncommitted edits in progress. `rederive.py` reads neither file: it reads the run directory's
+`experiment/`, `receipts/`, `report/` and `version-1/`, and the runner inputs at the run's commit.
+Codex found the same mismatch in #602's adapted report (#685, at `b259962ac9`).
 
 `python3 runtime/scripts/evidence-run.py --label rederive --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --artifact docs/runs/2026-10-25-wip-curve-604-live/rederive.txt -- python3 docs/runs/2026-10-25-wip-curve-604-live/rederive.py`
 

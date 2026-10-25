@@ -531,7 +531,8 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
         settings = None
         if args.per_call_usd is not None:  # every claude call the arm makes carries this --max-budget-usd
             settings = staging / "claude.json"
-            write_new(settings, (json.dumps({"max_budget_usd": f"{args.per_call_usd:.2f}"}) + "\n").encode(), mode=0o644)
+            limit = repr(args.per_call_usd)  # the validated amount itself, never rounded (Codex at cb51f73bb2)
+            write_new(settings, (json.dumps({"max_budget_usd": limit}) + "\n").encode(), mode=0o644)
             receipt["container"]["mounts"][CLAUDE_SETTINGS] = "the claude settings, read-only"
         results.mkdir(parents=True, exist_ok=True)
         receipts.mkdir(parents=True, exist_ok=True, mode=0o700)

@@ -673,7 +673,7 @@ class APerCallLimitReachesEveryClaudeCall(Harness):
         self.assertEqual(rc, 0, err)
         arm = self.create("arm")
         self.assertIs(arm["mounts"][lc.CLAUDE_SETTINGS].get("readonly"), True)
-        self.assertEqual(arm["claude_settings"], {"max_budget_usd": "1.60"})
+        self.assertEqual(arm["claude_settings"], {"max_budget_usd": "1.6"})
         self.assertNotIn(lc.CLAUDE_SETTINGS, self.create("broker")["mounts"])
         r = self.receipt()
         self.assertEqual(r["per_call_usd"], 1.6)
@@ -683,6 +683,16 @@ class APerCallLimitReachesEveryClaudeCall(Harness):
         self.launch()
         self.assertNotIn(lc.CLAUDE_SETTINGS, self.create("arm")["mounts"])
         self.assertIsNone(self.receipt()["per_call_usd"])
+
+    def test_the_limit_is_written_as_given_never_rounded(self):
+        # Codex at cb51f73bb2: 0.001 became 0.00 and 1.606 became 1.61
+        for limit, written in (("0.001", "0.001"), ("1.606", "1.606")):
+            with self.subTest(limit=limit):
+                shutil.rmtree(self.receipts, ignore_errors=True)
+                self.log.unlink(missing_ok=True)
+                rc, err = self.launch("--per-call-usd", limit)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(self.create("arm")["claude_settings"], {"max_budget_usd": written})
 
     def test_a_limit_that_is_not_positive_or_passes_the_cap_is_refused(self):
         for limit in ("0", "-1", "60"):
@@ -1213,7 +1223,16 @@ class TheArmsClaudeTalksToTheBroker(unittest.TestCase):
         self.settings('{"max_budget_usd": "1.60"}')
         rc, execs, err = self.run_wrapper("-p", "hello")
         self.assertEqual(rc, 0, err)
-        self.assertEqual(execs[0][1], [self.wrapper.REAL, "-p", "hello", "--max-budget-usd", "1.60"])
+        self.assertEqual(execs[0][1], [self.wrapper.REAL, "--max-budget-usd", "1.60", "-p", "hello"])
+
+    def test_the_limit_comes_before_a_double_dash(self):
+        # Codex at cb51f73bb2: appended after "--" the limit was a prompt, and prompt text after "--"
+        # that looked like a limit was taken for the caller's own
+        self.settings('{"max_budget_usd": "1.60"}')
+        for argv in (("-p", "--", "hello"), ("-p", "--", "--max-budget-usd", "9")):
+            with self.subTest(argv=argv):
+                rc, execs, err = self.run_wrapper(*argv)
+                self.assertEqual(execs[0][1], [self.wrapper.REAL, "--max-budget-usd", "1.60", *argv])
 
     def test_a_callers_own_limit_is_left_alone(self):
         self.settings('{"max_budget_usd": "1.60"}')

@@ -180,7 +180,7 @@ python3 scripts/live_container.py run --arm wip_curve --results ~/of-live/wip-cu
 `--per-call-usd 1.60` is the registration's per-call limit: every `claude` call the arm makes
 carries `--max-budget-usd 1.60`, as the owner's isolation wrapper passed it on the host. The
 launcher writes it to a read-only settings file in the arm's container, and the in-container
-`claude` appends it to each call that does not pass its own. Any arm can take `--per-call-usd`;
+`claude` puts it before the arguments of each call that does not pass its own. Any arm can take `--per-call-usd`;
 `hint_replay` passes its own limit with `--agent-limit-flag`, which the wrapper leaves alone.
 
 **ablation** (#606, [pre-registration](../experiments/ablation-prereg.md)):
@@ -248,7 +248,7 @@ output as `.log` and the broker's ledger in `.broker/spend.jsonl`. The receipt h
 | `started_at`, `ended_at`, `elapsed_s`, `wall_clock_limit_s` | When it ran, against the limit |
 | `timed_out`, `interrupted`, `refused`, `exit_status` | How it ended: the limit, a signal, a refused start after a container was created, or the arm's own exit |
 | `destroyed` | `verified: true` only when `docker ps -a --filter label=…=<nonce>` lists nothing; `errors` lists every teardown step that failed to run or timed out, and `nonzero` every one that exited nonzero (a container `--rm` already removed answers that way too) |
-| `per_call_usd` | The per-call limit every `claude` call carried, or null |
+| `per_call_usd` | The per-call limit configured for the arm's `claude` calls, or null. A call that passes its own `--max-budget-usd` keeps that one |
 | `token`, `token_redactions` | The token file's path and where the broker mounted it (never its value), and how many times the output carried it |
 
 The receipt proves that one arm ran at that commit, in that image, in containers that no longer

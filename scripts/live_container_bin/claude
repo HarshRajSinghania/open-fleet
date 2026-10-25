@@ -7,7 +7,8 @@ first on the container's PATH: it waits for the broker to answer, then execs the
 Code with ANTHROPIC_BASE_URL set to the broker and a placeholder credential, which the broker
 replaces with the token. Every model call is priced against the broker's cap, whichever process
 of the arm makes it. When the launcher was given --per-call-usd, SETTINGS holds it, and every call
-carries `--max-budget-usd` with it unless the caller passed one. A version query needs no broker
+carries `--max-budget-usd` with it, placed before the caller's arguments (after a `--` it would
+be a prompt, not an option), unless the caller passed one of its own before any `--`. A version query needs no broker
 and takes no flag. A broker that never answers, or settings that cannot be read, refuse, exit 2.
 """
 import json
@@ -57,7 +58,8 @@ def budget_flag(argv):
         return []
     except (OSError, ValueError, AttributeError):
         return None
-    if value is None or any(a == "--max-budget-usd" or a.startswith("--max-budget-usd=") for a in argv):
+    options = argv[:argv.index("--")] if "--" in argv else argv  # after "--" everything is a prompt
+    if value is None or any(a == "--max-budget-usd" or a.startswith("--max-budget-usd=") for a in options):
         return []
     try:
         if float(value) > 0:
@@ -78,7 +80,7 @@ def main(argv):
         return refuse(f"no credential broker answers at {BROKER} after {WAIT_S} s: run this arm through "
                       "scripts/live_container.py, which starts it")
     env.update({"ANTHROPIC_BASE_URL": BROKER, "ANTHROPIC_AUTH_TOKEN": PLACEHOLDER})
-    os.execve(REAL, [REAL, *argv, *flag], env)
+    os.execve(REAL, [REAL, *flag, *argv], env)  # first: never after a "--" (Codex at cb51f73bb2)
 
 
 if __name__ == "__main__":

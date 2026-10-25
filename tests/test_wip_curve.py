@@ -388,6 +388,23 @@ class TestTheMachineIsTheHostInsideTheHarness(Tmp):
         for doc in ({}, {"host_sha256": "not-hex"}, {"host_sha256": "A" * 64}, ["x"]):
             self.assertEqual(self.label(doc), hashlib.sha256(b"a-host").hexdigest()[:12], doc)
 
+    def test_every_launch_of_a_run_on_one_host_keeps_one_clock(self):
+        # Codex at b1c1469595: the label alone passed with Run still hashing the container's name
+        prereg, taskset, path, sha, taskset_path = wip.load_prereg(PREREG_V2)
+        entry = wip.schedule(prereg, taskset)[0]
+        args = argparse.Namespace(cost_cap=Decimal("1"), reservation=Decimal("0.25"), model="m", worker="live",
+                                  timeout_scale=1.0)
+        host = hashlib.sha256(b"the-operators-mac").hexdigest()
+        (self.tmp / "attestation.json").write_text(json.dumps({"host_sha256": host}), encoding="utf-8")
+
+        def clock(node, attestation="attestation.json"):
+            with mock.patch.object(wip.contain.containment, "ATTESTATION", str(self.tmp / attestation)), \
+                    mock.patch.object(wip.platform, "node", return_value=node):
+                return wip.Run(args, prereg, taskset, (path, sha, taskset_path), entry, self.tmp / "results").clock
+
+        self.assertEqual({clock("of-live-1"), clock("of-live-2")}, {f"wip-runner@host-{host[:12]}"})
+        self.assertNotEqual(clock("host-a", "absent.json"), clock("host-b", "absent.json"))
+
 
 # ---------------------------------------------------------------------------- schedule
 

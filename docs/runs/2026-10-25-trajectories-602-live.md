@@ -296,11 +296,15 @@ verify: OK — all required checks passed
 It confirms, under the signed report-only class:
 
 - the contract's criteria (TJ-1 to TJ-7) are complete;
-- the content-bound command ledger holds the exit-0 re-derivation on `head_sha`'s tree;
 - every artifact matches its sha256 pin;
-- the source-binding control holds;
 - the credential scan (built-in patterns plus gitleaks) found nothing;
 - the dispatch record names this unit and signs the contract digest and class the run used.
+
+`verify.py` skips the content-bound command ledger and the source-binding control for a
+`report-only` unit, so GREEN does not vouch for either. What stands for them here is the
+re-derivation itself: `rederive.py`'s exit-0 run on `head_sha`'s tree, recorded in the manifest's
+`commands[]` with its output, `rederive.txt`, pinned by sha256, and re-runnable by anyone with the
+command below (Codex at `045d61074e`).
 
 `--base` was not given, so the ancestry leg was skipped before merge, as its note says.
 

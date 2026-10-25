@@ -14,7 +14,7 @@ What these pin, each the shape of a way the harness itself could lie:
 - every attack family turns RED with its guard removed, for the declared reason, and the
   contaminated handover is caught; a mutation that proves nothing is reported, not hidden;
 - benign and clean controls land with no false denial;
-- the published table is the live output, with its unknown and UNRUN cells.
+- the published table is the live output, with its unknown cells and any UNRUN live row.
 """
 import copy
 import hashlib
@@ -170,16 +170,20 @@ class TheSuiteIsPinnedBeforeExecution(unittest.TestCase):
     def test_live_cases_stay_unrun_until_a_run_report_binds(self):
         data = copy.deepcopy(SUITE)
         live = data["live_cases"][0]
+        live.pop("run_report", None)  # a row that leaves UNRUN without naming the report that ran it
         live["status"] = "PASS"
         self.assertTrue(any("needs a run_report" in e for e in suite_errors(data)))
         live.update(model="m", harness="h", harness_version="1", budget_usd=5, repeats=3,
                     environment="disposable", run_report="evals/trajectories/contract.json")
         self.assertFalse(any("live case" in e for e in suite_errors(data)))
+        # #685 bound the live arm (every case, 5 repeats each): every row names that report.
+        self.assertFalse(any("live case" in e for e in suite_errors(SUITE)))
         for row in SUITE["live_cases"]:
             with self.subTest(live=row["id"]):
-                self.assertEqual(row["status"], "UNRUN")
-                self.assertTrue(all(row[f] is None for f in engine.LIVE_FIELDS),
-                                "a live cell nobody ran carries a value")
+                self.assertEqual(row["status"], "5/5 PASS")
+                self.assertEqual(row["run_report"], "docs/runs/2026-10-25-trajectories-602-adapters.md")
+                self.assertTrue(all(row[f] not in (None, "") for f in engine.LIVE_FIELDS),
+                                "a bound live cell leaves a live field unfilled")
 
     def test_the_engine_vocabulary_tracks_the_guards_and_the_suite(self):
         self.assertEqual(engine.OUTPUT_SOURCES, engine.guards().guard_text.SOURCES,
@@ -354,8 +358,13 @@ class PublishedTable(unittest.TestCase):
     def test_unknown_and_unrun_cells_are_published(self):
         table = eval_mod.trajectory_table(suite_result())
         self.assertIn("| unknown |", table)
-        self.assertIn("UNRUN", table)
         self.assertIn("GAP", table)
+        # Every live row is bound now (#685); a row left UNRUN still publishes as UNRUN.
+        unbound = dict(SUITE["live_cases"][0], status="UNRUN",
+                       **{f: None for f in engine.LIVE_FIELDS})
+        unrun = eval_mod.trajectory_table(dict(suite_result(), live=[unbound]))
+        self.assertIn("| unknown | unknown | unknown | unknown | unknown | UNRUN |", unrun)
+        self.assertIn("UNRUN needs:", unrun)
 
     def test_the_suite_claims_no_proof(self):
         self.assertIn("never proof evidence", SUITE["tier"])

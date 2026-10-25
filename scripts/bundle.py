@@ -112,12 +112,19 @@ REQUIRED_RUNTIME = tuple(f"runtime/scripts/{name}" for name in (
 SUPPORT_DOCS = ("docs/runs/TEMPLATE.md",)
 # The bundle doubles as the installable lean plugin, so its manifests are build inputs too.
 PLUGIN_MANIFESTS = (".claude-plugin/plugin.json", "hooks/hooks.json")
+# What the directory listing reads (#235), source -> out-relative destination. The developer
+# portal blocks a plugin folder with no README of at least 40 words or no license, and takes
+# .claude-plugin/icon.png as the listing icon, once, at the first save. The repository README links
+# into docs/, which the bundle does not ship, so the bundle carries its own; the license and the
+# notices it names ship in every build, not only the published one (PR #681 review).
+PLUGIN_LISTING = {".claude-plugin/bundle-README.md": "README.md", ".claude-plugin/icon.png": ".claude-plugin/icon.png",
+                  "LICENSE": "LICENSE", "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"}
 
 
 def missing_inputs(protocols):
     """Check declared requirements before discovered files can define the inventory."""
     problems = [f"missing required source: {name}"
-                for name in (*REQUIRED_RUNTIME, *SUPPORT_DOCS, *PLUGIN_MANIFESTS)
+                for name in (*REQUIRED_RUNTIME, *SUPPORT_DOCS, *PLUGIN_MANIFESTS, *PLUGIN_LISTING)
                 if not (ROOT / name).is_file()]
     for path in [*SKILLS_DIR.glob("*/SKILL.md"), *(ROOT / "playbooks").glob("*.md"),
                  *(ROOT / "runtime").glob("*.md")]:
@@ -273,14 +280,17 @@ def runtime_files():
 
 
 def plugin_files():
-    """Root files that make the bundle tree itself an installable lean plugin.
+    """(source, out-relative destination) of the root files that make the bundle tree itself an
+    installable lean plugin.
 
     The bundle doubles as the plugin distribution (announcement gate 3): pointing the
     marketplace at this tree ships skills/ + hooks + the gate runtime without the source
     repo's receipt trees. The hook commands resolve under the plugin root, so a root
-    runtime/ must ride along — the same runtime_files() set the missions vendor."""
-    files = [ROOT / ".claude-plugin" / "plugin.json", ROOT / "hooks" / "hooks.json"]
-    files.extend(runtime_files())
+    runtime/ must ride along — the same runtime_files() set the missions vendor. The
+    listing's README and icon ride along too (PLUGIN_LISTING)."""
+    files = [(ROOT / name, name) for name in PLUGIN_MANIFESTS]
+    files += [(ROOT / source, destination) for source, destination in PLUGIN_LISTING.items()]
+    files += [(path, path.relative_to(ROOT).as_posix()) for path in runtime_files()]
     return files
 
 
@@ -334,9 +344,10 @@ def _owned(out):
     return set(files)
 
 
-def _claim(out, planned):
+def _claim(out, planned, files=frozenset()):
     """Delete what a previous build wrote, or refuse: `planned` are the out-relative paths this
-    build writes (files, or mission directories written whole)."""
+    build writes (files, or mission directories written whole); `files` are the ones that are
+    single files."""
     if out.exists() and not out.is_dir():
         raise BundleRefused(f"--out {out} is not a directory")
     owned = _owned(out)
@@ -351,6 +362,9 @@ def _claim(out, planned):
     for rel in planned:
         foreign += [entry for entry in _entries_under(out / rel)
                     if entry.relative_to(out).as_posix() not in owned or entry.is_symlink()]
+    # A directory where a file goes, even an empty one _entries_under cannot see, would take the
+    # copy inside it: README.md/bundle-README.md, and no README (Codex at db5023703c).
+    foreign += [out / rel for rel in files if (out / rel).is_dir() and not (out / rel).is_symlink()]
     if foreign:
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
         raise BundleRefused(
@@ -392,9 +406,9 @@ def build(out_dir):
     out = Path(out_dir)
     missions = [d for d in sorted(SKILLS_DIR.iterdir())
                 if d.is_dir() and not d.name.startswith((".", "_")) and (d / "SKILL.md").is_file()]
-    planned = sorted({source.relative_to(ROOT).as_posix() for source in plugin_files()}
-                     | {f"skills/{d.name}" for d in missions})
-    _claim(out, planned)
+    files = {destination for _source, destination in plugin_files()}
+    planned = sorted(files | {f"skills/{d.name}" for d in missions})
+    _claim(out, planned, files)
     out.mkdir(parents=True, exist_ok=True)
     try:
         return _build_into(out, missions, protocols)
@@ -403,8 +417,8 @@ def build(out_dir):
 
 
 def _build_into(out, missions, protocols):
-    for source in plugin_files():
-        destination = out / source.relative_to(ROOT)
+    for source, relative in plugin_files():
+        destination = out / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
     skills_out = out / "skills"

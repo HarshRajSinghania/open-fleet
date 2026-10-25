@@ -219,8 +219,28 @@ Shared lead for every listing (the `proof:` framing; live index re-checked 2026-
 **anthropics/claude-plugins-official** — the [official submission link](https://clau.de/plugin-directory-submission)
 now redirects to [Publish to the directory](https://claude.com/docs/directory/publish)
 (rechecked 2026-09-30). Use the signed-in [developer portal](https://claude.ai/directory/manage),
-choose **Plugin bundle**, and submit the public repository's root folder. The older Console
-submission form is no longer supported. A submission still needs Anthropic's validation,
+choose **Plugin bundle**, enter repository `ravidsrk/open-fleet` and, under *Plugin in a subfolder
+or on another branch?*, branch `dist`: the lean bundle the marketplace already installs, which the
+directory then follows for new versions. Validating `main` timed out twice on 2026-10-25, and it
+would ship every receipt tree to each install. The older Console submission form is no longer
+supported.
+
+Validation of `dist` at `f14253f` (v0.8.0) on 2026-10-25 reported:
+- **1 blocking:** *README missing*. The bundle had no README in the plugin folder.
+  `scripts/bundle.py` now ships `.claude-plugin/bundle-README.md` there as `README.md`, so the
+  next release's `dist` clears it. Re-validate after that cut, before submitting.
+- **13 policy holds** for a reviewer:
+  - *Uses a credential from the user's machine*: `upstream_probe.py` sends `GITHUB_TOKEN` to
+    `api.github.com`; `deny-hook.sh` pairs `$PWD` with its `probe.invalid` self-test string; and
+    `offload-it`'s `GH_TOKEN` is read beside a negative-control `nc` the scanner took for netcat;
+  - the file count;
+  - `verify-gate.sh` running other files.
+
+  The bundle README discloses each one. None blocks.
+- **26 warnings:** download-and-run commands, which in shipped code are the guard hook's own deny
+  patterns, and *No icon*. The bundle now ships `.claude-plugin/icon.png` (1024 px, square, the
+  orcas from `assets/hero-dark.jpg`). The portal takes the icon **once, at the first save or
+  submission**, so never save a draft from a `dist` older than the cut that adds it. A submission still needs Anthropic's validation,
 security scan and human review before a listing goes live; submission is not approval. The catalog is already a conforming marketplace repo
 (`.claude-plugin/marketplace.json` + `plugin.json` at the root); the entry to offer:
 
@@ -235,15 +255,16 @@ security scan and human review before a listing goes live; submission is not app
 }
 ```
 
-**claudemarketplace.net** — email chekkutech@gmail.com (or their message button) with their
-requested fields, filled:
+**claudemarketplace.net** — their [submit page](https://www.claudemarketplace.net/submit)
+(rechecked 2026-10-25) takes listings by email to chekkutech@gmail.com, or by WhatsApp, and
+reviews each by hand, usually within two business days. Their requested fields, filled:
 
 - Name: open-fleet
 - One-line summary: Outcome-named autonomous fleets for Orca — evidence-backed done, never narration.
 - Longer description: the shared lead above + the README link.
 - Install: `/plugin marketplace add ravidsrk/open-fleet` (Claude Code plugin system).
 - Repository: https://github.com/ravidsrk/open-fleet · Docs: same, `docs/`.
-- Logo: `assets/social-preview.jpg` (1200px; crop to 128px+ as needed).
+- Logo: https://raw.githubusercontent.com/ravidsrk/open-fleet/main/.claude-plugin/icon.png (1024 px, square PNG).
 - Suggested category: Developer Tools / Agent Skills.
 
 **buildwithclaude** — auto-indexed; the stale blurb is from an old scrape (the repo

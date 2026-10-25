@@ -29,6 +29,7 @@ PREREG = ROOT / "docs" / "experiments" / "wip-curve-prereg-v2.json"
 PREREG_SHA = "c30c2c15890d565af64c126dd456de4a09310c757ad33975a310e170412e1aa8"
 MODEL, HARNESS = "claude-sonnet-5-5", "2.1.304 (Claude Code)"
 AUTHORISED = Decimal("150")
+ODD_RUN, ODD_MODEL = "wip2-b6r2-rep2", "claude-sonnet-5"  # the one broker call off the pin (WC-4)
 RUNNER_INPUTS = ("scripts/wip_curve.py", "scripts/_ablation_run.py", "runtime/scripts/events.py",
                  "docs/experiments/wip-curve-prereg-v2.json", "docs/experiments/wip-curve-taskset.json")
 failures = []
@@ -77,6 +78,16 @@ for rid, rec in sorted(runs.items()):
               rec["timeout_scale"])
     want = (PREREG_SHA, taskset_sha, "live-unreviewed", "live", MODEL, HARNESS, "complete", 1, 1.0)
     check("WC-1", fields == want, f"{rid}: registration, live tier, {MODEL}, {HARNESS}, complete, attempt 1")
+usage_models = set()
+for path in glob.glob(str(HERE / "experiment" / "runs" / "*" / "streams" / "*.jsonl")):
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            usage_models |= set(obj.get("modelUsage") or {})
+check("WC-1", usage_models == {MODEL}, f"every model the runs' usage records observe is the pin ({sorted(usage_models)})")
 clocks = {rec["clock"] for rec in runs.values()}
 check("WC-1", len(clocks) == 1, f"one machine label across all 12 runs ({next(iter(clocks))})")
 
@@ -134,6 +145,14 @@ check("WC-3", wip.render_markdown(derived).rstrip("\n") == md.rstrip("\n"),
       "report.md re-renders from the re-derived report (report.json is written with sorted keys)")
 check("WC-3", kept["recommendation"]["status"] == "keep" and len(kept["compliant_runs"]) == 12,
       "the decision rule's recommendation is keep, from 12 compliant runs")
+minus = [r for r in derived["runs"] if r["compliant"] and r["run_id"] != ODD_RUN]
+blocks = {c["id"]: wip.condition_block(c, [r for r in minus if r["condition"] == c["id"]]) for c in prereg["conditions"]}
+sensitivity = wip.recommend(prereg, blocks, minus)
+b6r2 = blocks["b6r2"]["throughput_per_h"]
+check("WC-3", sensitivity["status"] == "keep",
+      f"excluding {ODD_RUN}, the decision rule still yields keep (b6r2 over {b6r2['n']} runs: "
+      f"{b6r2['mean']}/h [{b6r2['ci95'][0]}, {b6r2['ci95'][1]}] against b3r1's upper bound "
+      f"{blocks['b3r1']['throughput_per_h']['ci95'][1]})")
 for row in kept["conditions"]:
     print(f"     {row['condition']}: throughput {row['throughput_per_h']['mean']}/h, "
           f"rework {row['rework']['k']}/{row['rework']['n']}, conflicts {row['conflicts']['total']}")
@@ -153,6 +172,20 @@ for r in sorted(launches + tail, key=lambda r: r["started_at"]):
           f"{Path(r['log']).stem}: {len(settles)} calls, every one settled 200, USD {settled} settled, "
           f"{sum(1 for e in events if e['event'] == 'refuse')} refused, none left open")
     broker_total += settled
+off_pin = []
+for r in launches:
+    log = (HERE / "receipts" / Path(r["log"]).name).read_text(encoding="utf-8", errors="replace")
+    rid = re.search(r"WIP_RUN=(\S+)", log).group(1)
+    events = jsonl(HERE / "receipts" / (Path(r["log"]).stem + ".broker") / "spend.jsonl")
+    for e in events:
+        if e["event"] == "start" and e["model"] != MODEL:
+            settle = next(x for x in events if x["event"] == "settle" and x["call"] == e["call"])
+            off_pin.append((rid, e["call"], e["model"], {k: v for k, v in settle["usage"].items()
+                                                         if isinstance(v, int) and v}))
+calls_total = sum(sum(1 for e in jsonl(HERE / "receipts" / (Path(r["log"]).stem + ".broker") / "spend.jsonl")
+                      if e["event"] == "start") for r in launches)
+check("WC-4", [(rid, model) for rid, _call, model, _u in off_pin] == [(ODD_RUN, ODD_MODEL)],
+      f"every broker call is on the pin but one of {calls_total}: {off_pin}")
 v1 = [json.loads(Path(p).read_text(encoding="utf-8")) for p in sorted(glob.glob(str(HERE / "version-1" / "receipts" / "*.json")))]
 v1_total = sum((Decimal(str((r["broker"]["spend"] or {}).get("settled_usd") or 0)) for r in v1), Decimal(0))
 check("WC-4", broker_total + v1_total <= AUTHORISED,

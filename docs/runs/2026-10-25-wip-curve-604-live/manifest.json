@@ -1,11 +1,11 @@
 {
  "unit": "wip-curve-604-live",
- "claim": "#604 version 2, run in full in the container harness at bacb5f8dd8 under the owner's USD 150 authorisation: the 12 scheduled runs (4 WIP conditions x 3 repetitions) with claude-sonnet-5-5 on Claude Code 2.1.304, every one complete and protocol-compliant; throughput per hour b1r1 119.64, b3r1 202.71, b6r1 194.08, b6r2 247.16, with rework and conflicts rising with WIP. The pre-registered decision rule recommends keep (no criterion for a change met). The report re-derives field for field from the retained runs; the in-harness verify found 0 binding problems. Broker-settled USD 6.290480 for version 2 (USD 0.455626 for version 1, superseded), notional on a subscription.",
+ "claim": "#604 version 2, run in full in the container harness at bacb5f8dd8 under the owner's USD 150 authorisation: the 12 scheduled runs (4 WIP conditions x 3 repetitions) with claude-sonnet-5-5 on Claude Code 2.1.304, every one complete and protocol-compliant as registered (the broker saw one side call, 7 output tokens, on claude-sonnet-5 in wip2-b6r2-rep2; without that run the decision is the same); throughput per hour b1r1 119.64, b3r1 202.71, b6r1 194.08, b6r2 247.16, with rework and conflicts rising with WIP. The pre-registered decision rule recommends keep (no criterion for a change met). The report re-derives field for field from the retained runs; the in-harness verify found 0 binding problems. Broker-settled USD 6.290480 for version 2 (USD 0.455626 for version 1, superseded), notional on a subscription.",
  "base_sha": "6f02e410dab2219966e297590f48592c8764c831",
- "head_sha": "9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
+ "head_sha": "",
  "contract": {
-  "source": "docs/runs/2026-10-25-wip-curve-604-live/contract.json@9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
-  "digest": "sha256:96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5",
+  "source": "",
+  "digest": "sha256:c80c0ae3dbdd81391acbe8df50c171af772f377ce600dfae85c350956cedb14a",
   "criterion_ids": [
    "WC-1",
    "WC-2",
@@ -19,7 +19,7 @@
  "criteria": [
   {
    "id": "WC-1",
-   "text": "Fixed point: every retained run is one of the 12 scheduled wip2-* runs, ran under version 2's registration and task set (by sha256), on the live tier with claude-sonnet-5-5 on Claude Code 2.1.304, completed on attempt 1 with the registered dispatch deadlines, and names one machine. The runner, its call helper, events.py, the registration and the task set are byte-identical to the run commit bacb5f8dd8's.",
+   "text": "Fixed point: every retained run is one of the 12 scheduled wip2-* runs, ran under version 2's registration and task set (by sha256), on the live tier with claude-sonnet-5-5 on Claude Code 2.1.304, completed on attempt 1 with the registered dispatch deadlines, and names one machine. The runner, its call helper, events.py, the registration and the task set are byte-identical to the run commit bacb5f8dd8's. Every model each run's usage record observes (each stream's result line, modelUsage) is the pin, which is how the registration defines a protocol-compliant model.",
    "addressed": true
   },
   {
@@ -29,12 +29,12 @@
   },
   {
    "id": "WC-3",
-   "text": "The report re-derives: the runner's own build_report over the retained runs reproduces report.json field for field, with the oracle re-runs (worker-written code, refused outside the harness) replaced by the bound transcripts' recorded passes, and report.md re-renders from it. The recommendation is keep, from 12 compliant runs.",
+   "text": "The report re-derives: the runner's own build_report over the retained runs reproduces report.json field for field, with the oracle re-runs (worker-written code, refused outside the harness) replaced by the bound transcripts' recorded passes, and report.md re-renders from it. The recommendation is keep, from 12 compliant runs. With wip2-b6r2-rep2 excluded (its broker ledger shows one call on another model, WC-4), the decision rule over the remaining compliant runs still yields keep.",
    "addressed": true
   },
   {
    "id": "WC-4",
-   "text": "Spend on both ledgers. In each launch's broker ledger every call starts and settles with HTTP 200 and none is left open; the refused requests are counted; the settled totals sum to the receipts'. #604's broker spend across versions 1 and 2 is within the USD 150 authorised. In the arm's ledger every call is charged or released, and the charges equal the runs' observed cost and are within the arm's USD 150 cap; the difference between the two ledgers is stated.",
+   "text": "Spend on both ledgers. In each launch's broker ledger every call starts and settles with HTTP 200 and none is left open; the refused requests are counted; the settled totals sum to the receipts'. #604's broker spend across versions 1 and 2 is within the USD 150 authorised. In the arm's ledger every call is charged or released, and the charges equal the runs' observed cost and are within the arm's USD 150 cap; the difference between the two ledgers is stated. The broker ledgers' model for every call reconciles: every call is on the pin except one, call 32 of wip2-b6r2-rep2's launch, on claude-sonnet-5 (158 input, 47,709 cache-creation and 7 output tokens), which no stream's usage record reports.",
    "addressed": true
   },
   {
@@ -49,7 +49,7 @@
   },
   {
    "id": "WC-7",
-   "text": "An honest reading: the report states what the run shows and what it does not (a synthetic six-task package, one host, one model, agent reviewers only, three runs per condition), that the recommendation is keep and that a cap change would be its own human-reviewed policy change, the broker's refused requests and the version 1 history, and that the USD figures are notional on a subscription.",
+   "text": "An honest reading: the report states what the run shows and what it does not (a synthetic six-task package, one host, one model, agent reviewers only, three runs per condition), that the recommendation is keep and that a cap change would be its own human-reviewed policy change, the broker's refused requests, the one call on another model and the decision with its run excluded, and the version 1 history, and that the USD figures are notional on a subscription.",
    "addressed": true
   }
  ],
@@ -58,13 +58,13 @@
   "did": "re-derived every figure the report states from the retained bytes alone: the runner's own build_report over the retained runs (oracle re-runs substituted by their bound transcripts), both spend ledgers, every launch receipt, and version 1's refused credential",
   "command": "python3 docs/runs/2026-10-25-wip-curve-604-live/rederive.py",
   "artifact": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt",
-  "result": "rederive.py exit 0: 63 checks ok, 0 FAIL, on the content of head_sha"
+  "result": ""
  },
  "toolchain": "python 3.13.15 (macOS arm64) for the binding; the run: python 3.13.15-slim and Claude Code 2.1.304 in open-fleet-live:claude-2.1.304 (sha256:59c37b04d715)",
  "artifacts": [
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/contract.json",
-   "sha256": "96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5"
+   "sha256": "c80c0ae3dbdd81391acbe8df50c171af772f377ce600dfae85c350956cedb14a"
   },
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/experiment/budget.jsonl",
@@ -2516,7 +2516,7 @@
   },
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/rederive.py",
-   "sha256": "29b3ab174099cfd7580b4c3a6b24f58f024933528e7d6a9090a83577c3e0fc68"
+   "sha256": "27b8b18c31f4e199696cca5f23d905ee0d78214c2bc4effeefaedbc3254201ab"
   },
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/report/report.json",
@@ -2837,46 +2837,7 @@
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/version-1/receipts/20261025T054651Z-wip_curve-99eecc14.log",
    "sha256": "6411cde4c1781f1da42283f6253e9d492bd0a536bed8cd0f46bf06648d8d1dfb"
-  },
-  {
-   "path": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt",
-   "sha256": "8788be2c3a397b6ee99fc552336e8c1ff6e58f73e81e29b98439f4dc8cd2880e"
-  },
-  {
-   "path": "docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json",
-   "sha256": "9fc1c3ce8d9b92e3d12cce57becde18ec8760172fabe70cc802255d3327ef144"
-  },
-  {
-   "path": "docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex",
-   "sha256": "1f4d5db594495b1c4b0a15ec8ccc7008b6be1079b498ad2109da1530b70cdcaa"
-  },
-  {
-   "path": "docs/runs/2026-10-25-wip-curve-604-live/verifier.txt",
-   "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
   }
  ],
- "commands": [
-  {
-   "label": "rederive",
-   "ts": "2026-10-25T09:51:50Z",
-   "cmd": "python3 docs/runs/2026-10-25-wip-curve-604-live/rederive.py",
-   "cmd_sha256": "12166288354f2569a8da7d6e13799b0221659a9851a22fe08877e593f3c5550e",
-   "exit": 0,
-   "duration_s": 4.23,
-   "commit": "9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
-   "wtree": "7af5e70576955453e86dc2f852b0f82bf7a98d74",
-   "artifact": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt"
-  },
-  {
-   "label": "verifier",
-   "ts": "2026-10-25T09:52:51Z",
-   "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --contract-source docs/runs/2026-10-25-wip-curve-604-live/contract.json@9ebdb656dd86dcc6ac58e395146667f8c1b4512d --contract-digest sha256:96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5 --unit-class report-only --dispatch-record docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json@56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02 --dispatch-pubkey docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex@56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02",
-   "cmd_sha256": "638253571baafe6c14ad696e044a9f31af2fb4a80bbee401aff1a10f4532de37",
-   "exit": 0,
-   "duration_s": 36.754,
-   "commit": "56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02",
-   "wtree": "5dc05f4e3c6be4aa3b67e17b6eaeb781cd357f1a",
-   "artifact": "docs/runs/2026-10-25-wip-curve-604-live/verifier.txt"
-  }
- ]
+ "commands": []
 }

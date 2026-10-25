@@ -28,6 +28,9 @@ Tiers, and what each may run
             operator's real harness and grader, refused unless the registration records an
             AUTHORISED cap, `--cost-cap-usd` is explicit and within it, the registered payloads
             are current, nothing is filtered, and every variant passed the obligation check.
+            Both commands are handed `--model` unless they already name it (one naming another
+            model is refused), and a cell fails when its agent's system/init line names no model
+            once its run completes, or names another.
 
 Every tier needs an explicit `--cost-cap-usd`. The live spend guard is PRE-EMPTIVE (#652 review):
 before a cell starts, the worst case of every call it will make (the agent's reservation, plus
@@ -690,6 +693,19 @@ def stream_sequence(stream_text):
     return seq
 
 
+def stream_model(stream_text):
+    """The model the stream's first system/init line names, or None: where Claude Code says which
+    model it runs (#602's live runner reads it the same way, scripts/_trajectory_live.py)."""
+    for line in stream_text.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "system" and obj.get("subtype") == "init":
+            return obj["model"] if isinstance(obj.get("model"), str) else None
+    return None
+
+
 def deferred_reads(stream_text, cues):
     """Per phase-keyed deferred document: not-entered | omitted | early | on-time | late."""
     seq = stream_sequence(stream_text)
@@ -874,6 +890,14 @@ def run_cell(ctx, pair, arm):
         errors.append(f"agent invocation failed: {eval_mod()._process_error(err)}")
     cell["wall_s"] = round(time.monotonic() - started, 3)
     cell["agent_killed"] = killed
+    # The model the agent's own stream names, never just the one asked for. In the live tier a
+    # completed run that names none, or another, is a failed cell (#602's live runner's rule).
+    cell["model"] = ran = stream_model(stream)
+    if tier == "live":
+        if completed and ran is None:
+            errors.append("the agent reported no model (no system/init line naming one)")
+        elif ran is not None and ran != ctx["model_requested"]:
+            errors.append(f"the agent ran model {ran!r}, not the requested {ctx['model_requested']!r}")
     stream_path = cell_dir / "stream.jsonl"
     stream_path.write_text(stream, encoding="utf-8")
     tokens_in, tokens_out, cost, reasons = usage_of(stream_path, cell_id, task)
@@ -953,6 +977,31 @@ def absolute_argv(argv):
             token = str(Path(token).resolve())
         out.append(token)
     return out
+
+
+def model_flags(argv):
+    """Every --model value a command names (`--model X` or `--model=X`), in order: #602's live
+    runner's model_flag (scripts/_trajectory_live.py), but all of them, so a second --model cannot
+    hide behind a first that agrees. A trailing `--model` with no value names ""."""
+    named = []
+    for i, token in enumerate(argv):
+        if token == "--model":
+            named.append(argv[i + 1] if i + 1 < len(argv) else "")
+        elif token.startswith("--model="):
+            named.append(token.split("=", 1)[1])
+    return named
+
+
+def with_model(argv, model):
+    """`argv` told to run `model`: as it is when it already names one (preflight refused any other),
+    else with `--model <model>` appended. A live run once recorded one model while Claude Code ran
+    its own default, because `--model` reached neither command (2026-10-25)."""
+    return argv if model_flags(argv) else [*argv, "--model", model]
+
+
+def grader_command(args, prereg):
+    """The live grader's command line as given: --grader-cmd, else the registration's default."""
+    return args.grader_cmd or prereg["harness"]["grader_cmd_default"]
 
 
 def _git_head():
@@ -1158,6 +1207,16 @@ def preflight(args, api, prereg):
                                                                     args.harness_version)) if not value]
     if missing:
         raise Refused(f"a live run records {', '.join(missing)}")
+    # The model the results name is the one every call is told to run: a command naming another is
+    # refused here, and one naming none is handed --model (_run_holding).
+    for what, command in (("agent", args.harness_cmd), ("grader", grader_command(args, prereg))):
+        try:
+            wrong = sorted({named for named in model_flags(shlex.split(command)) if named != args.model})
+        except ValueError as err:
+            raise Refused(f"the {what} command cannot be parsed: {err}") from err
+        if wrong:
+            raise Refused(f"--model {args.model} disagrees with the {what} command's --model "
+                          f"{', '.join(wrong)}: the results would name a model the call was not asked for")
     if cap["status"] != api.AUTHORISED:
         raise Refused(f"the registration's cost cap is {cap['status']!r}: a live run needs the "
                       "owner to record an AUTHORISED amount in the registration first")
@@ -1239,7 +1298,8 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
            "ledger": ledger, "active": None,
            "guard": lambda path: api.safe_output(path, prereg),
            "timeout": args.timeout or TIMEOUTS[tier], "payloads": {}, "cues": {},
-           "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)})}
+           "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)}),
+           "model_requested": args.model}
     model = ctx["model"] = spend_model(prereg, tier)
     agent_flag, grader_flag = limit_flags(args, prereg)
     # Every call carries its own limit, whatever the tier, so both arms and every tier see the same
@@ -1249,9 +1309,11 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
     if tier == "fixture":
         ctx["agent_cmd"] = [str(sandbox.stand_in), "-p", "--output-format", "stream-json"] + agent_limit
     else:
-        ctx["agent_cmd"] = absolute_argv(shlex.split(args.harness_cmd)) + agent_limit
+        agent = absolute_argv(shlex.split(args.harness_cmd))
+        # A live call is told the model the results name, before its limit flags; so is the grader.
+        ctx["agent_cmd"] = (with_model(agent, args.model) if tier == "live" else agent) + agent_limit
     if tier == "live":
-        grader = absolute_argv(shlex.split(args.grader_cmd or prereg["harness"]["grader_cmd_default"]))
+        grader = with_model(absolute_argv(shlex.split(grader_command(args, prereg))), args.model)
         grader_output = args.grader_output or prereg["harness"]["grader_output"]
     else:
         grader, grader_output = [str(sandbox.stand_in), "-p", "--output-format", "json"], "claude-json"
@@ -1351,6 +1413,8 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
                    "sha256": api.prereg_sha256(prereg),
                    "registration": api.registration_status(prereg)},
         "model": args.model if tier == "live" else ("inert-stand-in" if tier == "fixture" else "stub"),
+        # What each cell's agent stream named (system/init), never just the model asked for.
+        "models_observed": sorted({c["model"] for c in cells if c.get("model")}),
         "harness": ctx["agent_cmd"][0] if tier != "fixture" else "inert stand-in (no model)",
         "harness_version": args.harness_version, "agent_cmd": ctx["agent_cmd"],
         "grader_cmd": ctx["grader_cmd"], "catalog_head": _git_head(),
@@ -1614,7 +1678,9 @@ def add_run_arguments(sub):
                    help="the harness's per-call spend-limit flag (default: registered; '' = none)")
     r.add_argument("--grader-limit-flag", default=None,
                    help="the grader's per-call spend-limit flag (default: registered; '' = none)")
-    r.add_argument("--model", default=None)
+    r.add_argument("--model", default=None,
+                   help="live: the model id the agent and grader are handed, checked against each "
+                        "agent stream's system/init line")
     r.add_argument("--harness-version", default=None)
     r.add_argument("--mission", action="append", default=None, help="fixture/stub only: a subset")
     r.add_argument("--task", action="append", default=None,

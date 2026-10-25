@@ -141,6 +141,9 @@ STUB = textwrap.dedent(r'''
         else:
             print("not json")
         sys.exit(0)
+    # Claude Code's system/init line names the model it runs: the --model it was handed (the live
+    # tier appends one), else its own default. --init-model makes it name another; --no-init, none.
+    init = {"type": "system", "subtype": "init", "model": opt("--init-model", opt("--model", "stub"))}
     out = os.environ["ABLATION_OUT"]
     from pathlib import Path
     def alive(pid):
@@ -156,7 +159,7 @@ STUB = textwrap.dedent(r'''
                    "alive_at_start": [pid for pid in earlier if alive(pid)]}, fh)
     if mode == "hang":
         spawn_sleeper(os.path.join(out, "agent.pids"))
-        print(json.dumps({"type": "system", "subtype": "init", "model": "stub"}), flush=True)
+        print(json.dumps(init), flush=True)
         import time
         time.sleep(60)
     if mode == "orphan":
@@ -171,7 +174,11 @@ STUB = textwrap.dedent(r'''
     def read(name):
         return {"type": "tool_use", "name": "Read",
                 "input": {"file_path": f"{catalog}/runtime/{name}.md"}}
-    print(json.dumps({"type": "system", "subtype": "init", "model": "stub"}))
+    if "--no-init" not in args:
+        print(json.dumps(init))
+    if opt("--recording"):  # a pinned #602 recording, handed on as this cell's own
+        import shutil
+        shutil.copyfile(opt("--recording"), os.path.join(out, "trajectory.jsonl"))
     phases = list(dict.fromkeys(p for _n, p in cues))
     if mode == "skip-reads":
         say([{"type": "text", "text": f"PHASE: {p}"} for p in phases])
@@ -313,6 +320,25 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         prereg["registered_payloads"]["ship-it"]["reduced_sha256"] = "0" * 64
         self.refused(self.live("--cost-cap-usd", "5"), "no longer match the catalog", prereg)
 
+    def test_a_command_naming_another_model_is_refused(self):
+        # 2026-10-25: the results named one model while every call ran another. A command that
+        # names a --model other than the run's would do the same, so nothing starts.
+        prereg = small_live_prereg()
+        agent, grader = self.stub_cmd("plain"), self.stub_cmd("grader-json")
+        base = ["run", "--tier", "live", "--cost-cap-usd", "20", "--model", "stub-model-a",
+                "--harness-version", "0"]
+        for argv, needle in (
+                (["--harness-cmd", f"{agent} --model stub-model-b", "--grader-cmd", grader],
+                 "disagrees with the agent command's --model stub-model-b"),
+                (["--harness-cmd", agent, "--grader-cmd", f"{grader} --model=stub-model-b"],
+                 "disagrees with the grader command's --model stub-model-b")):
+            with self.subTest(needle=needle):
+                self.refused(base + argv, needle, prereg)
+        registered = copy.deepcopy(prereg)
+        registered["harness"]["grader_cmd_default"] = f"{grader} --model stub-model-b"
+        self.refused(base + ["--harness-cmd", agent],
+                     "disagrees with the grader command's --model stub-model-b", registered)
+
 
 class TheDryRunExercisesThePipeline(SafetyNet):
     """One fixture-tier run: review-it, one behavioral and one trajectory task, one repeat."""
@@ -424,6 +450,12 @@ class TheDryRunExercisesThePipeline(SafetyNet):
         self.assertFalse(report["review-it"]["evidence"])
         self.assertIn("SUCCESSFUL_REDUCTION [fixture tier: pipeline check, NOT EVIDENCE]", text)
         self.assertNotIn("SUCCESSFUL_REDUCTION\n", text)
+
+    def test_the_model_each_cell_ran_is_recorded(self):
+        # Read off each cell's own system/init line in every tier; only the live tier checks it.
+        self.assertEqual(self.results["models_observed"], ["inert-stand-in"])
+        for cell in self.results["cells"]:
+            self.assertEqual(cell["model"], "inert-stand-in", cell["cell"])
 
 
 class TheStubTierMeasuresWhatTheHarnessDid(SafetyNet):
@@ -838,6 +870,112 @@ class TheLiveGateEnforcesTheCap(SafetyNet):
         self.assertTrue(results["stopped"].startswith("USAGE_UNAVAILABLE"), results["stopped"])
         report = runner.summarize(results, PREREG)
         self.assertEqual({r["verdict"] for r in report.values()}, {"INCOMPLETE"})
+
+
+class TheLiveTierRunsTheModelItRecords(SafetyNet):
+    """2026-10-25: a live launch recorded `--model claude-sonnet-5-5` while the spend broker billed
+    all 38 calls as claude-opus-5-5. `--model` was recorded but never handed to the agent or the
+    grader, so Claude Code ran its own default. The live tier now hands it to both commands, and
+    reads the model each cell's agent ran off its stream's system/init line, as #602's live runner
+    does. A stub plays Claude Code: its init line names the --model it was handed. No model runs."""
+
+    MODEL = "stub-model-a"
+    AGENT, GRADER = 5.0, 1.0  # the registration's per-call reservations
+
+    def run_live(self, agent_extra=(), grader_extra=(), trajectory=False):
+        prereg = small_live_prereg()
+        if trajectory:  # CL-01's pinned recording grades PASS, so only the model can fail its cell
+            prereg["tasks"]["trajectories"]["cases"] = ["CL-01"]
+            prereg["registered_payloads"] = ablation.measure(prereg)
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(prereg), encoding="utf-8")
+        case = runner._trajectory_case("CL-01")[1]
+        recording = runner.eval_mod().TRAJECTORY_DIR / case["trajectories"][0]["file"]
+        out = self.tmpdir() / "out"
+        code, _stdout, err = run_main(
+            ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "50",
+             "--harness-cmd", self.stub_cmd("plain", "--recording", str(recording), *agent_extra),
+             "--grader-cmd", self.stub_cmd("grader-json", *grader_extra),
+             "--model", self.MODEL, "--harness-version", "0", "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        return json.loads((out / "results.json").read_text()), out
+
+    def argvs(self, out, arm):
+        cell = out / "cells" / "review-it" / "behavioral-4" / "r0" / arm
+        return (json.loads((cell / "stub-env.json").read_text())["argv"],
+                json.loads((cell / "grader-usage.json.argv.json").read_text()))
+
+    def test_the_model_is_handed_to_both_commands_before_their_limits(self):
+        results, out = self.run_live()
+        fraction = PREREG["cost_cap"]["harness_limit_fraction"]
+        agent_tail = ["--model", self.MODEL, "--max-budget-usd", f"{self.AGENT * fraction:.2f}"]
+        grader_tail = ["--model", self.MODEL, "--max-budget-usd", f"{self.GRADER * fraction:.2f}"]
+        for arm in ("baseline", "reduced"):
+            agent, grader = self.argvs(out, arm)
+            self.assertEqual(agent[-4:], agent_tail, arm)
+            self.assertEqual(grader[-4:], grader_tail, arm)
+        # What the results record is what ran.
+        self.assertEqual(results["agent_cmd"][-4:], agent_tail)
+        self.assertTrue(results["grader_cmd"].endswith(" " + " ".join(grader_tail)), results["grader_cmd"])
+
+    def test_a_command_that_already_names_the_model_is_left_as_is(self):
+        results, out = self.run_live(agent_extra=("--model", self.MODEL),
+                                     grader_extra=(f"--model={self.MODEL}",))
+        for arm in ("baseline", "reduced"):
+            agent, grader = self.argvs(out, arm)
+            self.assertEqual([t for t in agent if t.startswith("--model")], ["--model"], agent)
+            self.assertEqual([t for t in grader if t.startswith("--model")], [f"--model={self.MODEL}"], grader)
+        self.assertEqual([t for t in results["agent_cmd"] if t.startswith("--model")], ["--model"])
+        self.assertEqual(results["grader_cmd"].count("--model"), 1, results["grader_cmd"])
+        self.assertEqual(results["models_observed"], [self.MODEL])
+
+    def test_the_model_each_cell_ran_is_recorded(self):
+        results, _out = self.run_live(trajectory=True)
+        self.assertEqual(results["model"], self.MODEL)
+        self.assertEqual(results["models_observed"], [self.MODEL])
+        for cell in results["cells"]:
+            self.assertEqual(cell["model"], self.MODEL, cell["cell"])
+            self.assertFalse([e for e in cell["errors"] if "model" in e], cell["errors"])
+        trajectory = [c for c in results["cells"] if c["task"] == "trajectory-CL-01"]
+        self.assertEqual(len(trajectory), 2)
+        for cell in trajectory:  # the control: the same cells pass when the model is the one asked for
+            self.assertEqual(cell["errors"], [], cell["cell"])
+            self.assertTrue(cell["success"], cell["cell"])
+
+    def test_a_cell_whose_agent_ran_another_model_fails(self):
+        results, _out = self.run_live(agent_extra=("--init-model", "stub-model-b"), trajectory=True)
+        self.assertEqual(results["model"], self.MODEL, "the requested model stays recorded as such")
+        self.assertEqual(results["models_observed"], ["stub-model-b"])
+        self.assertEqual(len(results["cells"]), 4)
+        for cell in results["cells"]:
+            self.assertEqual(cell["model"], "stub-model-b", cell["cell"])
+            self.assertIn(f"the agent ran model 'stub-model-b', not the requested '{self.MODEL}'",
+                          cell["errors"])
+            self.assertFalse(cell["success"], cell["cell"])
+            self.assertFalse(cell["correct_terminal"], cell["cell"])
+        report = runner.summarize(results, PREREG)
+        self.assertIn("the agent ran model 'stub-model-b'", " ".join(
+            w for f in report["review-it"]["failures"] for w in f["what"]))
+
+    def test_a_completed_cell_whose_stream_names_no_model_fails(self):
+        results, _out = self.run_live(agent_extra=("--no-init",), trajectory=True)
+        self.assertEqual(results["models_observed"], [])
+        for cell in results["cells"]:
+            self.assertIsNone(cell["model"], cell["cell"])
+            self.assertIn("the agent reported no model (no system/init line naming one)", cell["errors"])
+            self.assertFalse(cell["success"], cell["cell"])
+
+    def test_the_stub_tier_is_handed_no_model(self):
+        out = self.tmpdir() / "out"
+        code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("plain"),
+                                       "--cost-cap-usd", "0", "--mission", "review-it", "--task", "behavioral-4",
+                                       "--repeats", "1", "--model", self.MODEL, "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        results = json.loads((out / "results.json").read_text())
+        self.assertNotIn("--model", results["agent_cmd"])
+        self.assertEqual(results["models_observed"], ["stub"])
+        for cell in results["cells"]:
+            self.assertFalse([e for e in cell["errors"] if "model" in e], cell["errors"])
 
 
 def cell(task, repeat, arm, success=True, tokens=100.0, violations=0, errors=()):

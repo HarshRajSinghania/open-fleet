@@ -196,7 +196,7 @@ Use **[migrate-it](missions/migrate-it.md)** for staged expand → backfill → 
 
 ```text
 Migrate the users.billing_address text column to the normalized addresses table.
-Execute phase by phase (EXPAND → DUAL-WRITE → BACKFILL → SWITCH READS → ZERO READERS → CONTRACT),
+Execute phase by phase (EXPAND → DUAL-WRITE → BACKFILL → SWITCH READS → ZERO READERS → RETIRE-WRITES → ZERO-WRITERS → CONTRACT),
 verifying down-migrations and row-parity probes and pausing for my deploy grant at each phase.
 ```
 

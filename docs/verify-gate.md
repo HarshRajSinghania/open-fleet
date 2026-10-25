@@ -125,15 +125,17 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
 2. **Sign per dispatch (coordinator):**
    ```bash
    python3 runtime/scripts/dispatch-sign.py sign --key <secret> \
-     --manifest-id <unit-id> --contract-digest <sha256> --unit-class mutation --lighting lit
+     --manifest-id <unit-id> --contract-digest <sha256> --unit-class mutation --lighting lit \
+     > /tmp/dispatch-record.json
    ```
-3. **Verify at gate and emit a signed verifier transcript:** `verify.py` validates the Ed25519 dispatch signature (via vendored RFC 8032 `runtime/scripts/ed25519.py`) and fails closed on any field substitution, replay across units, or missing signature. Once `.orca/dispatch-pubkey` is committed, `run_report.py` also requires a signed verifier transcript (`transcript=<path>` in the report's `RUN:` header) binding the manifest digest, exit code, and argument tuple:
-   - **Without `--execute-nc`:** Pass `--transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
+3. **Verify at gate and emit a signed verifier transcript:** `verify.py` validates the Ed25519 dispatch signature (via vendored RFC 8032 `runtime/scripts/ed25519.py`) and fails closed on any field substitution, replay across units, or missing signature (`verify-gate.sh` forwards `ORCA_DISPATCH_RECORD` and the discovered `.orca/dispatch-pubkey`; when invoking `verify.py` directly, pass `--dispatch-record` and `--dispatch-pubkey` explicitly). Once `.orca/dispatch-pubkey` is committed, `run_report.py` also requires a signed verifier transcript (`transcript=<path>` in the report's `RUN:` header) binding the manifest digest, exit code, and argument tuple:
+   - **Without `--execute-nc`:** Pass `--dispatch-record /tmp/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey --transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
    - **With `--execute-nc` (recommended two-process flow):** Because `--execute-nc` executes repository tests under the current user ID, `verify.py` refuses `--transcript-key` alongside `--execute-nc` so the private seed is never loaded into the test-execution process. Instead, write an unsigned verdict first and sign it in a separate process (which re-hashes `toolchain.files` against its sibling scripts before signing):
      ```bash
      python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
        --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
        --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:?set ORCA_BASE to the integration branch}" \
+       --dispatch-record /tmp/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey \
        --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci \
        --transcript-out /tmp/verdict-unsigned.json
 

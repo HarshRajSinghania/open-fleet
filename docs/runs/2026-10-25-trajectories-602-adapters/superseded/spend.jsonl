@@ -1,0 +1,100 @@
+{"call": "agent", "cell": "FA-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r0", "charged_usd": 0.0624, "event": "settle", "killed": false, "measured_usd": 0.0624005, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r0", "charged_usd": 0.038017, "event": "settle", "killed": false, "measured_usd": 0.0380173, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r0", "charged_usd": 0.024999, "event": "settle", "killed": false, "measured_usd": 0.0249991, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r0", "charged_usd": 0.034899, "event": "settle", "killed": false, "measured_usd": 0.034899200000000005, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r0", "charged_usd": 0.036947, "event": "settle", "killed": false, "measured_usd": 0.0369473, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r0", "charged_usd": 0.029544, "event": "settle", "killed": false, "measured_usd": 0.029544299999999996, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r0", "charged_usd": 0.026834, "event": "settle", "killed": false, "measured_usd": 0.026834400000000005, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r0", "charged_usd": 0.034543, "event": "settle", "killed": false, "measured_usd": 0.0345431, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r0", "charged_usd": 0.031437, "event": "settle", "killed": false, "measured_usd": 0.0314368, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r0", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r0", "charged_usd": 0.029165, "event": "settle", "killed": false, "measured_usd": 0.029165199999999995, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r1", "charged_usd": 0.040701, "event": "settle", "killed": false, "measured_usd": 0.040701, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r1", "charged_usd": 0.030199, "event": "settle", "killed": false, "measured_usd": 0.030199399999999998, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r1", "charged_usd": 0.024842, "event": "settle", "killed": false, "measured_usd": 0.0248416, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r1", "charged_usd": 0.034609, "event": "settle", "killed": false, "measured_usd": 0.0346087, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r1", "charged_usd": 0.026889, "event": "settle", "killed": false, "measured_usd": 0.026889100000000006, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r1", "charged_usd": 0.036537, "event": "settle", "killed": false, "measured_usd": 0.0365369, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r1", "charged_usd": 0.044659, "event": "settle", "killed": false, "measured_usd": 0.044659, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r1", "charged_usd": 0.034276, "event": "settle", "killed": false, "measured_usd": 0.034276100000000004, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r1", "charged_usd": 0.032839, "event": "settle", "killed": false, "measured_usd": 0.032839499999999994, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r1", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r1", "charged_usd": 0.032335, "event": "settle", "killed": false, "measured_usd": 0.0323349, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r2", "charged_usd": 0.036226, "event": "settle", "killed": false, "measured_usd": 0.0362261, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r2", "charged_usd": 0.024887, "event": "settle", "killed": false, "measured_usd": 0.024886600000000002, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r2", "charged_usd": 0.039223, "event": "settle", "killed": false, "measured_usd": 0.0392225, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r2", "charged_usd": 0.034066, "event": "settle", "killed": false, "measured_usd": 0.0340661, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r2", "charged_usd": 0.027092, "event": "settle", "killed": false, "measured_usd": 0.027092400000000003, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r2", "charged_usd": 0.031879, "event": "settle", "killed": false, "measured_usd": 0.0318786, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r2", "charged_usd": 0.028488, "event": "settle", "killed": false, "measured_usd": 0.0284879, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r2", "charged_usd": 0.029597, "event": "settle", "killed": false, "measured_usd": 0.0295965, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r2", "charged_usd": 0.035062, "event": "settle", "killed": false, "measured_usd": 0.035062499999999996, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r2", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r2", "charged_usd": 0.043584, "event": "settle", "killed": false, "measured_usd": 0.04358359999999999, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r3", "charged_usd": 0.026273, "event": "settle", "killed": false, "measured_usd": 0.0262725, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r3", "charged_usd": 0.037047, "event": "settle", "killed": false, "measured_usd": 0.0370468, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r3", "charged_usd": 0.0367, "event": "settle", "killed": false, "measured_usd": 0.03670040000000001, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r3", "charged_usd": 0.038679, "event": "settle", "killed": false, "measured_usd": 0.038678699999999996, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r3", "charged_usd": 0.024779, "event": "settle", "killed": false, "measured_usd": 0.024779199999999998, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r3", "charged_usd": 0.034145, "event": "settle", "killed": false, "measured_usd": 0.0341448, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r3", "charged_usd": 0.033368, "event": "settle", "killed": false, "measured_usd": 0.033368100000000005, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r3", "charged_usd": 0.035001, "event": "settle", "killed": false, "measured_usd": 0.0350009, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r3", "charged_usd": 0.029767, "event": "settle", "killed": false, "measured_usd": 0.0297667, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r3", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r3", "charged_usd": 0.032293, "event": "settle", "killed": false, "measured_usd": 0.0322929, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CL-01.r4", "charged_usd": 0.025109, "event": "settle", "killed": false, "measured_usd": 0.0251087, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-02.r4", "charged_usd": 0.029719, "event": "settle", "killed": false, "measured_usd": 0.0297193, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HO-01.r4", "charged_usd": 0.027102, "event": "settle", "killed": false, "measured_usd": 0.027101599999999997, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "MP-01.r4", "charged_usd": 0.034067, "event": "settle", "killed": false, "measured_usd": 0.0340666, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "HC-01.r4", "charged_usd": 0.035437, "event": "settle", "killed": false, "measured_usd": 0.0354367, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "TT-01.r4", "charged_usd": 0.030953, "event": "settle", "killed": false, "measured_usd": 0.0309527, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-03.r4", "charged_usd": 0.034308, "event": "settle", "killed": false, "measured_usd": 0.0343077, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "BN-01.r4", "charged_usd": 0.029969, "event": "settle", "killed": false, "measured_usd": 0.029969399999999997, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "CN-01.r4", "charged_usd": 0.034532, "event": "settle", "killed": false, "measured_usd": 0.03453180000000001, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r4", "event": "start", "reserve_usd": 5.0, "run": "20261025T094615-7-1017d58f"}
+{"call": "agent", "cell": "FA-01.r4", "charged_usd": 0.036857, "event": "settle", "killed": false, "measured_usd": 0.0368572, "run": "20261025T094615-7-1017d58f"}

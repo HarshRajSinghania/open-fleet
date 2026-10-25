@@ -1,0 +1,13 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `Ledger.remove` now raises `ValueError` when `qty` is greater than the stock for that SKU.
+- **Unknown SKU:** an unknown SKU counts as 0 in stock, so any positive removal raises. The `self._stock[sku] -= qty` line is never reached for a missing key, so there is no `KeyError`.
+- **Refused removal:** the check runs before the mutation, so the stock is unchanged.
+- **Exact removal:** removing exactly the quantity in stock passes the check and leaves 0.
+- **Existing guard:** the `qty <= 0` check is unchanged.
+- **Scope:** only `stocklib/ledger.py` is touched.
+- **Tests:** the diff adds none, but the task doesn't ask for any. I read the diff and task statement and didn't run any code.
+
+WIP-REVIEW WIP-NONCE:06d5121b9dd8519d adb62f4389079a5d12305b2e394d91d074e8d638 approve
+
+OPEN_FLEET_WORKER_DONE disp_9ef5d0fc20 succeeded

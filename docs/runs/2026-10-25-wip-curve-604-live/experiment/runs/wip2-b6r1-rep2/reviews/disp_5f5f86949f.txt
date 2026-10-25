@@ -1,0 +1,11 @@
+The change meets the task. I read the diff and the resulting `stocklib/ledger.py`, and I did not run any tests.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` to `self._history` as their last step, so entries are in call order.
+- **Failed calls:** every `raise ValueError` comes before the append, so a call that raises is not recorded.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list leaves the ledger unchanged.
+- **Scope:** only `stocklib/ledger.py` changed, and nothing the task forbids was touched.
+
+There is one cosmetic nit: two blank lines before `history()` inside the class. It is harmless.
+
+WIP-REVIEW WIP-NONCE:56b8a13798433427 e8150a2431c882027e5ab979751c8301d6e9a526 approve
+OPEN_FLEET_WORKER_DONE disp_5f5f86949f succeeded

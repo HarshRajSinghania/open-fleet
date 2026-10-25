@@ -1,0 +1,9 @@
+The change does what T5 asks and nothing it forbids. I read the task, the diff and the full `stocklib/ledger.py`. I didn't run any tests.
+
+- **History and ordering:** `Ledger` now keeps a `_history` list. `add` and `remove` append `("add", sku, qty)` or `("remove", sku, qty)` in call order.
+- **Failed calls:** each append comes after the validation and the stock update. A call that raises `ValueError` leaves nothing in the history.
+- **Copy:** `history()` returns `list(self._history)`, so changing the returned list doesn't change the ledger. The entries are tuples, so they can't be changed either.
+- **Scope:** the only edits are in `ledger.py`, and the existing behaviour is untouched.
+
+OPEN_FLEET_WORKER_DONE disp_1a3c50a42d succeeded
+WIP-REVIEW WIP-NONCE:8452473339031684 54a30534d077f894ee3155a7f484e79e9da038d1 approve

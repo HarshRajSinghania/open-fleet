@@ -1,0 +1,12 @@
+The change meets the T5 task statement and does nothing it forbids. I checked it by reading the diff and did not run any tests.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` to `_history`, in call order.
+- **Failed calls:** The append is the last statement in each method, after the validation raises and after the stock update. A call that raises is therefore never recorded.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list leaves the ledger unchanged. The entries are immutable tuples, so a shallow copy is enough.
+- **Scope:** Only `stocklib/ledger.py` changed. Existing behaviour and the other methods are untouched.
+
+The diff adds no tests. The task statement doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:335b0dfd78e04b3d 6779d9f0cb6bb0e8de8103610acd551eac74b061 approve
+
+OPEN_FLEET_WORKER_DONE disp_50cf049b8b succeeded

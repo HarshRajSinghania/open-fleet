@@ -1,0 +1,11 @@
+The change does what the task asks and nothing it forbids.
+
+- **Decomposition:** it applies `unicodedata.normalize("NFKD", text)` and then drops combining marks with `unicodedata.combining`, as specified.
+- **Examples:** 'Crème Brûlée' decomposes to 'Creme Brulee' and slugs to `creme-brulee`. 'Ångström units' becomes 'Angstrom units' and slugs to `angstrom-units`.
+- **ASCII input:** NFKD leaves ASCII unchanged and ASCII has no combining marks, so the rest of the function sees the same input as before.
+- **Scope:** the diff touches only `stocklib/textutil.py`, adding one import and two lines.
+
+I read the diff and task statement only. I did not run the code or any tests.
+
+WIP-REVIEW WIP-NONCE:c9ad6b441ec32597 c1ab38f7e58b6b9eef8c0737ab3cbb64a6519efa approve
+OPEN_FLEET_WORKER_DONE disp_5cf12f7bd6 succeeded

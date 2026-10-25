@@ -1,0 +1,12 @@
+The change meets the task as written, and I found nothing it forbids.
+
+- **History:** `Ledger` keeps a `_history` list and `history()` returns `list(self._history)`, which is a copy.
+- **Order and operation names:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` in call order.
+- **Failed calls:** the `ValueError` checks on `qty <= 0` come before both the stock update and the append, so a call that raises is not recorded.
+- **Scope:** `remove` does not reject removals that exceed stock, but that is existing behavior and the task doesn't ask for it.
+
+I read the task and the diff only. I did not run any tests.
+
+WIP-REVIEW WIP-NONCE:16de236870cd9b27 5342aac7045361c2aeca66f3c6c122791ac5a70f approve
+
+OPEN_FLEET_WORKER_DONE disp_d256542fba succeeded

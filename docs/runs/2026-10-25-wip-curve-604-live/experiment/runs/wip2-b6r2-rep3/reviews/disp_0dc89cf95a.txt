@@ -1,0 +1,11 @@
+The change meets the task and does nothing it forbids. I only read the diff and task statement; I didn't run any code or tests.
+
+- **Overdraw:** `Ledger.remove` now raises `ValueError` when `qty` is greater than `self._stock.get(sku, 0)`. An unknown SKU counts as 0 in stock, so any positive removal of it raises.
+- **Unchanged on refusal:** the check runs before any mutation, so a refused removal leaves the stock as it was.
+- **Exact removal:** removing exactly the quantity in stock passes the check and leaves 0.
+- **Safe subtraction:** `self._stock[sku] -= qty` can't hit a missing key. Reaching it means `qty > 0` and `qty <= stock`, so the SKU must already exist.
+- **Existing behaviour:** the existing `qty <= 0` check is untouched.
+- **Scope:** the diff touches only `Ledger.remove` in `stocklib/ledger.py`.
+
+WIP-REVIEW WIP-NONCE:3a4b4dd384f37769 c37b42961c58552c535d528eefec60effbcdd3bb approve
+OPEN_FLEET_WORKER_DONE disp_0dc89cf95a succeeded

@@ -1,0 +1,11 @@
+The change meets the task and nothing in it is out of scope. I read the task and the diff but did not run any code.
+
+- **Overdraw:** `Ledger.remove` now raises `ValueError` when `qty` is greater than the stock for that SKU. An unknown SKU counts as 0, so any positive removal from it raises.
+- **Unchanged on refusal:** the check runs before the mutation, so a refused removal leaves the stock as it was.
+- **Exact removal:** removing exactly the quantity in stock passes the check and leaves 0.
+- **No `KeyError`:** `self._stock[sku] -= qty` is only reached when `qty` is positive and no greater than the stock. The SKU therefore already has an entry.
+- **Scope:** the existing `qty <= 0` check is kept, and the diff touches nothing else.
+
+WIP-REVIEW WIP-NONCE:86c00f51721f3108 02fabeb040979af797e96fbca0222492e36dc005 approve
+
+OPEN_FLEET_WORKER_DONE disp_b376112302 succeeded

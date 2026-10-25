@@ -1,0 +1,11 @@
+The change adds a check in `Ledger.remove` that raises `ValueError` when `qty` is greater than the stock for that SKU. I only read the task statement and the diff; I didn't run any tests.
+
+- **Unknown SKU:** `self._stock.get(sku, 0)` returns 0, so any positive removal is refused, as the task requires.
+- **Stock unchanged on refusal:** the check comes before the stock update and the history append, so a refused removal changes nothing.
+- **Exact removal:** `qty == stock` doesn't trigger the check. The stock goes to 0 and the SKU stays in the dict, as the task allows.
+- **Scope:** the diff touches only `remove`, and the existing `qty <= 0` check is unchanged.
+
+Approving.
+
+WIP-REVIEW WIP-NONCE:163e2ed85a64ae5d 03eec19abb7d7b3ea0ac8c4bc98bf3170bb0ba98 approve
+OPEN_FLEET_WORKER_DONE disp_3ebc265106 succeeded

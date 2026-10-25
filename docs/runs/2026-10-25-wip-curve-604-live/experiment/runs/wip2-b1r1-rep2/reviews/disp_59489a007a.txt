@@ -1,0 +1,12 @@
+The change does what T5 asks and nothing it forbids.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` after the state update. They are recorded in call order.
+- **Failed calls:** the `ValueError` checks run before the append, so a call that raises is never recorded.
+- **Copy:** `history()` returns `list(self._history)`, so changing the returned list leaves the ledger alone. The tuples are immutable.
+- **Scope:** the diff touches only `stocklib/ledger.py`. Existing behavior is unchanged, and no other mutating methods exist.
+
+I only read the task, the diff and the final file. I didn't run any tests, and the change adds none.
+
+WIP-REVIEW WIP-NONCE:571a935ac86d52df 8260da553ca72d2704483083a82d186295fa07ab approve
+
+OPEN_FLEET_WORKER_DONE disp_59489a007a succeeded

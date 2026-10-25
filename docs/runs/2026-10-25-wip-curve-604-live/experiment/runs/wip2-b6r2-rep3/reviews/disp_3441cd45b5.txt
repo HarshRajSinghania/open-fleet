@@ -1,0 +1,7 @@
+The change adds `lb` (453.59237) and `oz` (28.349523125) to `FACTORS`, with exactly the values the task gives. `convert` already looks units up in `FACTORS` and divides, so conversion works in both directions between any two supported units. A unit that isn't in the table still raises `ValueError` through the existing `KeyError` handler. The diff touches only `stocklib/units.py` and changes nothing else.
+
+I only read the code and didn't run it. Float arithmetic means results such as 16 oz to lb may differ from 1 in the last digit, but the task doesn't require exact float results.
+
+WIP-REVIEW WIP-NONCE:d61b38487cb76a48 e58a758bf68c2ff0416a6a12f2107e52af08f614 approve
+
+OPEN_FLEET_WORKER_DONE disp_3441cd45b5 succeeded

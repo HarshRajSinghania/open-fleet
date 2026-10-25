@@ -105,7 +105,9 @@ STUB = textwrap.dedent(r'''
     import json, os, re, subprocess, sys
     args = sys.argv[1:]
     def opt(name, default=None):
-        return args[args.index(name) + 1] if name in args else default
+        if name in args:
+            return args[args.index(name) + 1]
+        return next((a.split("=", 1)[1] for a in args if a.startswith(name + "=")), default)
     mode = opt("--mode")
     task = sys.stdin.read()
     def spawn_sleeper(pids_file):
@@ -135,12 +137,20 @@ STUB = textwrap.dedent(r'''
         if sink:
             with open(sink + ".argv.json", "w", encoding="utf-8") as fh:
                 json.dump(sys.argv, fh)
-        if mode == "grader-json":
-            print(json.dumps({"type": "result", "result": "not a verdict",
-                              "total_cost_usd": float(opt("--cost", "0"))}))
+        if mode in ("grader-json", "grader-json-hang"):
+            result = {"type": "result", "result": "not a verdict", "total_cost_usd": float(opt("--cost", "0"))}
+            if "--no-usage-model" not in args:
+                result["modelUsage"] = {opt("--usage-model", opt("--model", "stub")): {}}
+            print(json.dumps(result), flush=True)
+            if mode == "grader-json-hang":  # a whole answer, then no exit: the meter's timeout kills it
+                import time
+                time.sleep(60)
         else:
             print("not json")
         sys.exit(0)
+    # Claude Code's system/init line names the model it runs: the --model it was handed (the live
+    # tier appends one), else its own default. --init-model makes it name another; --no-init, none.
+    init = {"type": "system", "subtype": "init", "model": opt("--init-model", opt("--model", "stub"))}
     out = os.environ["ABLATION_OUT"]
     from pathlib import Path
     def alive(pid):
@@ -156,7 +166,7 @@ STUB = textwrap.dedent(r'''
                    "alive_at_start": [pid for pid in earlier if alive(pid)]}, fh)
     if mode == "hang":
         spawn_sleeper(os.path.join(out, "agent.pids"))
-        print(json.dumps({"type": "system", "subtype": "init", "model": "stub"}), flush=True)
+        print(json.dumps(init), flush=True)
         import time
         time.sleep(60)
     if mode == "orphan":
@@ -171,7 +181,14 @@ STUB = textwrap.dedent(r'''
     def read(name):
         return {"type": "tool_use", "name": "Read",
                 "input": {"file_path": f"{catalog}/runtime/{name}.md"}}
-    print(json.dumps({"type": "system", "subtype": "init", "model": "stub"}))
+    if "--no-init" not in args:
+        print(json.dumps(init))
+    if "--synthetic-error" in args:  # Claude Code's own message for an API error: no model ran it
+        print(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "content": [
+            {"type": "text", "text": "API Error: 529 overloaded"}]}}))
+    if opt("--recording"):  # a pinned #602 recording, handed on as this cell's own
+        import shutil
+        shutil.copyfile(opt("--recording"), os.path.join(out, "trajectory.jsonl"))
     phases = list(dict.fromkeys(p for _n, p in cues))
     if mode == "skip-reads":
         say([{"type": "text", "text": f"PHASE: {p}"} for p in phases])
@@ -184,10 +201,12 @@ STUB = textwrap.dedent(r'''
         subprocess.run(["claude", "-p", "hello"], input="", capture_output=True)
     cost = float(opt("--cost", "1.0" if mode == "spend" else "0"))
     if mode != "no-usage":
-        print(json.dumps({"type": "result", "result": "done", "total_cost_usd": cost,
-                          "usage": {"input_tokens": len(task) // 4, "output_tokens": 1,
-                                    "cache_read_input_tokens": 0,
-                                    "cache_creation_input_tokens": 0}}))
+        result = {"type": "result", "result": "done", "total_cost_usd": cost,
+                  "usage": {"input_tokens": len(task) // 4, "output_tokens": 1,
+                            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
+        if opt("--usage-model"):
+            result["modelUsage"] = {opt("--usage-model"): {}}
+        print(json.dumps(result))
 ''')
 
 
@@ -313,6 +332,64 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         prereg["registered_payloads"]["ship-it"]["reduced_sha256"] = "0" * 64
         self.refused(self.live("--cost-cap-usd", "5"), "no longer match the catalog", prereg)
 
+    def test_a_command_naming_another_model_is_refused(self):
+        # 2026-10-25: the results named one model while every call ran another. A command that
+        # names a --model other than the run's would do the same, so nothing starts.
+        prereg = small_live_prereg()
+        agent, grader = self.stub_cmd("plain"), self.stub_cmd("grader-json")
+        base = ["run", "--tier", "live", "--cost-cap-usd", "20", "--model", "stub-model-a",
+                "--harness-version", "0"]
+        for argv, needle in (
+                (["--harness-cmd", f"{agent} --model stub-model-b", "--grader-cmd", grader],
+                 "disagrees with the agent command's --model stub-model-b"),
+                (["--harness-cmd", agent, "--grader-cmd", f"{grader} --model=stub-model-b"],
+                 "disagrees with the grader command's --model stub-model-b")):
+            with self.subTest(needle=needle):
+                self.refused(base + argv, needle, prereg)
+        registered = copy.deepcopy(prereg)
+        registered["harness"]["grader_cmd_default"] = f"{grader} --model stub-model-b"
+        self.refused(base + ["--harness-cmd", agent],
+                     "disagrees with the grader command's --model stub-model-b", registered)
+
+    def test_a_command_with_an_option_terminator_is_refused(self):
+        # #688 review: --model and the spend-limit flag are appended, so after `--` they would be
+        # prompt text and the call would run its default model with no limit.
+        prereg = small_live_prereg()
+        agent, grader = self.stub_cmd("plain"), self.stub_cmd("grader-json")
+        base = ["run", "--tier", "live", "--cost-cap-usd", "20", "--model", "stub-model-a",
+                "--harness-version", "0"]
+        for argv, needle in (
+                (["--harness-cmd", f"{agent} --", "--grader-cmd", grader],
+                 "the agent command holds an option terminator (--)"),
+                (["--harness-cmd", agent, "--grader-cmd", f"{grader} --"],
+                 "the grader command holds an option terminator (--)")):
+            with self.subTest(needle=needle):
+                self.refused(base + argv, needle, prereg)
+
+    def test_only_a_terminator_after_claude_ends_its_options(self):
+        # #688 review: a wrapper's own separator (trajectory_harness.py -- claude …) is safe, since
+        # the flags appended at the end still reach claude as options.
+        problem = runner.terminator_problem
+        self.assertIsNone(problem(["python3", "/repo/scripts/trajectory_harness.py", "--", "claude", "-p"]))
+        self.assertIsNone(problem(["/usr/local/bin/claude", "-p", "--output-format", "json"]))
+        self.assertIn("after claude", problem(["python3", "trajectory_harness.py", "--", "claude", "-p", "--"]))
+        self.assertIn("after claude", problem(["claude", "-p", "--"]))
+        self.assertIn("names no claude", problem(["python3", "agent.py", "--", "x"]))
+
+    def test_a_fallback_model_is_refused(self):
+        # #688 review: a fallback lets the call switch off the requested model mid-run.
+        prereg = small_live_prereg()
+        agent, grader = self.stub_cmd("plain"), self.stub_cmd("grader-json")
+        base = ["run", "--tier", "live", "--cost-cap-usd", "20", "--model", "stub-model-a",
+                "--harness-version", "0"]
+        for argv, needle in (
+                (["--harness-cmd", f"{agent} --fallback-model stub-model-b", "--grader-cmd", grader],
+                 "the agent command names --fallback-model stub-model-b"),
+                (["--harness-cmd", agent, "--grader-cmd", f"{grader} --fallback-model=stub-model-b"],
+                 "the grader command names --fallback-model stub-model-b")):
+            with self.subTest(needle=needle):
+                self.refused(base + argv, needle, prereg)
+
 
 class TheDryRunExercisesThePipeline(SafetyNet):
     """One fixture-tier run: review-it, one behavioral and one trajectory task, one repeat."""
@@ -424,6 +501,12 @@ class TheDryRunExercisesThePipeline(SafetyNet):
         self.assertFalse(report["review-it"]["evidence"])
         self.assertIn("SUCCESSFUL_REDUCTION [fixture tier: pipeline check, NOT EVIDENCE]", text)
         self.assertNotIn("SUCCESSFUL_REDUCTION\n", text)
+
+    def test_the_model_each_cell_ran_is_recorded(self):
+        # Read off each cell's own system/init line in every tier; only the live tier checks it.
+        self.assertEqual(self.results["models_observed"], ["inert-stand-in"])
+        for cell in self.results["cells"]:
+            self.assertEqual(cell["model"], "inert-stand-in", cell["cell"])
 
 
 class TheStubTierMeasuresWhatTheHarnessDid(SafetyNet):
@@ -760,6 +843,16 @@ class InterruptedSpendIsRecorded(SafetyNet):
         self.assertEqual(cell["charged_usd"], 1.0 + self.GRADER, "agent measured, grader at reservation")
         self.assertEqual(results["cost"]["spent_usd"], 1.0 + self.GRADER)
 
+    def test_an_interrupt_during_the_grader_keeps_the_models_its_agent_ran(self):
+        # #688 review: the cell cut short during grading lost the model its agent's stream named.
+        with mock.patch.object(runner.eval_mod(), "_grade_trace", side_effect=SystemExit(128 + signal.SIGHUP)):
+            results = self.interrupted(self.live(20), 129)
+        cell = results["cells"][0]
+        self.assertTrue(cell["interrupted"])
+        self.assertEqual(cell["model"], "stub-not-a-model")
+        self.assertEqual(cell["models"], ["stub-not-a-model"])
+        self.assertEqual(results["models_observed"], ["stub-not-a-model"])
+
     def test_a_later_run_into_the_same_directory_counts_the_interrupted_spend(self):
         with mock.patch.object(runner, "run_group", side_effect=SystemExit(128 + signal.SIGTERM)):
             self.interrupted(self.live(20), 143)
@@ -838,6 +931,262 @@ class TheLiveGateEnforcesTheCap(SafetyNet):
         self.assertTrue(results["stopped"].startswith("USAGE_UNAVAILABLE"), results["stopped"])
         report = runner.summarize(results, PREREG)
         self.assertEqual({r["verdict"] for r in report.values()}, {"INCOMPLETE"})
+
+
+class TheLiveTierRunsTheModelItRecords(SafetyNet):
+    """2026-10-25: a live launch recorded `--model claude-sonnet-5-5` while the spend broker billed
+    all 38 calls as claude-opus-5-5. `--model` was recorded but never handed to the agent or the
+    grader, so Claude Code ran its own default. The live tier now hands it to both commands, and
+    reads the model each cell's agent ran off its stream's system/init line, as #602's live runner
+    does. A stub plays Claude Code: its init line names the --model it was handed. No model runs."""
+
+    MODEL = "stub-model-a"
+    AGENT, GRADER = 5.0, 1.0  # the registration's per-call reservations
+
+    def run_live(self, agent_extra=(), grader_extra=(), trajectory=False, code_expected=0,
+                 grader_mode="grader-json"):
+        prereg = small_live_prereg()
+        if trajectory:  # CL-01's pinned recording grades PASS, so only the model can fail its cell
+            prereg["tasks"]["trajectories"]["cases"] = ["CL-01"]
+            prereg["registered_payloads"] = ablation.measure(prereg)
+        path = self.tmpdir() / "prereg.json"
+        path.write_text(json.dumps(prereg), encoding="utf-8")
+        case = runner._trajectory_case("CL-01")[1]
+        recording = runner.eval_mod().TRAJECTORY_DIR / case["trajectories"][0]["file"]
+        out = self.tmpdir() / "out"
+        code, _stdout, err = run_main(
+            ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "50",
+             "--harness-cmd", self.stub_cmd("plain", "--recording", str(recording), *agent_extra),
+             "--grader-cmd", self.stub_cmd(grader_mode, *grader_extra),
+             "--model", self.MODEL, "--harness-version", "0", "--out", str(out)])
+        self.assertEqual(code, code_expected, err)
+        return json.loads((out / "results.json").read_text()), out
+
+    def argvs(self, out, arm):
+        cell = out / "cells" / "review-it" / "behavioral-4" / "r0" / arm
+        return (json.loads((cell / "stub-env.json").read_text())["argv"],
+                json.loads((cell / "grader-usage.json.argv.json").read_text()))
+
+    def test_the_model_is_handed_to_both_commands_before_their_limits(self):
+        results, out = self.run_live()
+        fraction = PREREG["cost_cap"]["harness_limit_fraction"]
+        agent_tail = ["--model", self.MODEL, "--max-budget-usd", f"{self.AGENT * fraction:.2f}"]
+        grader_tail = ["--model", self.MODEL, "--max-budget-usd", f"{self.GRADER * fraction:.2f}"]
+        for arm in ("baseline", "reduced"):
+            agent, grader = self.argvs(out, arm)
+            self.assertEqual(agent[-4:], agent_tail, arm)
+            self.assertEqual(grader[-4:], grader_tail, arm)
+        # What the results record is what ran.
+        self.assertEqual(results["agent_cmd"][-4:], agent_tail)
+        self.assertTrue(results["grader_cmd"].endswith(" " + " ".join(grader_tail)), results["grader_cmd"])
+
+    def test_a_command_that_already_names_the_model_is_left_as_is(self):
+        results, out = self.run_live(agent_extra=("--model", self.MODEL),
+                                     grader_extra=(f"--model={self.MODEL}",))
+        for arm in ("baseline", "reduced"):
+            agent, grader = self.argvs(out, arm)
+            self.assertEqual([t for t in agent if t.startswith("--model")], ["--model"], agent)
+            self.assertEqual([t for t in grader if t.startswith("--model")], [f"--model={self.MODEL}"], grader)
+        self.assertEqual([t for t in results["agent_cmd"] if t.startswith("--model")], ["--model"])
+        self.assertEqual(results["grader_cmd"].count("--model"), 1, results["grader_cmd"])
+        self.assertEqual(results["models_observed"], [self.MODEL])
+
+    def test_the_model_each_cell_ran_is_recorded(self):
+        results, _out = self.run_live(trajectory=True)
+        self.assertEqual(results["model"], self.MODEL)
+        self.assertEqual(results["models_observed"], [self.MODEL])
+        for cell in results["cells"]:
+            self.assertEqual(cell["model"], self.MODEL, cell["cell"])
+            self.assertFalse([e for e in cell["errors"] if "model" in e], cell["errors"])
+        trajectory = [c for c in results["cells"] if c["task"] == "trajectory-CL-01"]
+        self.assertEqual(len(trajectory), 2)
+        for cell in trajectory:  # the control: the same cells pass when the model is the one asked for
+            self.assertEqual(cell["errors"], [], cell["cell"])
+            self.assertTrue(cell["success"], cell["cell"])
+
+    def test_a_cell_whose_agent_ran_another_model_fails_and_stops_the_run(self):
+        results, _out = self.run_live(agent_extra=("--init-model", "stub-model-b"), trajectory=True,
+                                      code_expected=1)
+        self.assertEqual(results["model"], self.MODEL, "the requested model stays recorded as such")
+        self.assertEqual(results["models_observed"], ["stub-model-b"])
+        # The first cell fails, and nothing more is paid for on a model the results do not name.
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        self.assertFalse(results["complete"])
+        for cell in results["cells"]:
+            self.assertEqual(cell["model"], "stub-model-b", cell["cell"])
+            self.assertIn(f"the agent ran model 'stub-model-b', not the requested '{self.MODEL}'",
+                          cell["errors"])
+            self.assertFalse(cell["success"], cell["cell"])
+            self.assertFalse(cell["correct_terminal"], cell["cell"])
+        report = runner.summarize(results, PREREG)
+        self.assertEqual(report["review-it"]["verdict"], "INCOMPLETE")
+        self.assertIn("the agent ran model 'stub-model-b'", " ".join(
+            w for f in report["review-it"]["failures"] for w in f["what"]))
+
+    def test_a_completed_cell_whose_stream_names_no_model_fails_and_stops_the_run(self):
+        results, _out = self.run_live(agent_extra=("--no-init",), trajectory=True, code_expected=1)
+        self.assertEqual(results["models_observed"], [])
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        for cell in results["cells"]:
+            self.assertIsNone(cell["model"], cell["cell"])
+            self.assertIn("the agent reported no model (no system/init line naming one)", cell["errors"])
+            self.assertFalse(cell["success"], cell["cell"])
+
+    def test_a_model_switch_seen_only_in_the_result_fails_and_stops_the_run(self):
+        # #688 review: the init line names the requested model, but the result bills another, as a
+        # --fallback-model switch would show. The init line alone would pass this cell.
+        results, _out = self.run_live(agent_extra=("--usage-model", "stub-model-b"), trajectory=True,
+                                      code_expected=1)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        cell = results["cells"][0]
+        self.assertEqual(cell["model"], self.MODEL, "the init line names the requested model")
+        self.assertEqual(cell["models"], [self.MODEL, "stub-model-b"])
+        self.assertIn(f"the agent ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
+        self.assertFalse(cell["success"])
+        self.assertIn("stub-model-b", results["models_observed"])
+
+    def test_a_grader_on_another_model_fails_its_cell_and_stops_the_run(self):
+        # #688 review: the grader's model was never checked. Its JSON result's modelUsage now is.
+        results, out = self.run_live(grader_extra=("--usage-model", "stub-model-b"), code_expected=1)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        cell = results["cells"][0]
+        self.assertTrue(cell["grader_called"], cell["cell"])
+        self.assertEqual(cell["grader_models"], ["stub-model-b"])
+        self.assertIn(f"the grader ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
+        self.assertFalse(cell["success"])
+        self.assertIn("stub-model-b", results["models_observed"])
+
+    def test_a_grader_reporting_no_model_fails_its_cell_and_stops_the_run(self):
+        # #688 review: a completed grader whose result bills no model is unverified spend.
+        results, _out = self.run_live(grader_extra=("--no-usage-model",), code_expected=1)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        self.assertFalse(results["complete"])
+        cell = results["cells"][0]
+        self.assertEqual(cell["grader_models"], [])
+        self.assertIn("the grader reported no model (no modelUsage in its result)", cell["errors"])
+        self.assertFalse(cell["success"])
+
+    def test_an_unmeasured_grader_fails_its_cell_without_stopping_the_run(self):
+        # The registered rule for an unmeasured grader call stands: charged its whole reservation,
+        # the run going on. Its model cannot be observed, so its cell fails rather than passes.
+        results, _out = self.run_live(grader_mode="grader-text")
+        self.assertIsNone(results["stopped"])
+        graded = [c for c in results["cells"] if c["grader_called"]]
+        self.assertTrue(graded)
+        for cell in graded:
+            self.assertIsNone(cell["grader_cost_usd"], cell["cell"])
+            self.assertEqual(cell["grader_models"], [], cell["cell"])
+            self.assertIn("the grader reported no model (no modelUsage in its result)", cell["errors"])
+            self.assertFalse(cell["success"], cell["cell"])
+
+    def test_a_timed_out_grader_still_reports_the_model_it_billed(self):
+        # #688 review: a grader that answered on another model and then hung was killed by the
+        # meter's timeout, and the model it named was dropped with its verdict.
+        with mock.patch.object(runner.eval_mod(), "GRADER_TIMEOUT_S", 3):
+            results, _out = self.run_live(grader_extra=("--usage-model", "stub-model-b"), code_expected=1,
+                                          grader_mode="grader-json-hang")
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        cell = results["cells"][0]
+        self.assertTrue(cell["grader_killed"], cell["cell"])
+        self.assertIsNone(cell["grader_cost_usd"], "a killed grader's cost is not taken")
+        self.assertEqual(cell["grader_models"], ["stub-model-b"])
+        self.assertIn(f"the grader ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
+
+    def test_a_synthetic_api_error_message_is_not_another_model(self):
+        # #688 review: Claude Code names its own API-error messages "<synthetic>".
+        results, _out = self.run_live(agent_extra=("--synthetic-error",), trajectory=True)
+        self.assertIsNone(results["stopped"])
+        self.assertEqual(results["models_observed"], [self.MODEL])
+        for cell in results["cells"]:
+            self.assertEqual(cell["models"], [self.MODEL], cell["cell"])
+            self.assertFalse([e for e in cell["errors"] if "model" in e], cell["errors"])
+
+    def test_an_interrupt_during_the_agent_keeps_the_model_it_named(self):
+        # #688 review: the agent's stream went to a temporary file an interrupt deleted, so the model
+        # its init line named was lost. It now goes straight into the cell.
+        prereg = self.tmpdir() / "prereg.json"
+        prereg.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen(
+            [*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                 "mod._runner().containment_problem = proven; "
+                                 "mod._runner().live_disabled = lifted"),
+             "--prereg", str(prereg), "run", "--tier", "live",
+             "--cost-cap-usd", "50", "--harness-cmd", self.stub_cmd("hang"),
+             "--grader-cmd", self.stub_cmd("grader-json"), "--model", self.MODEL, "--harness-version", "0",
+             "--timeout", "60", "--out", str(out)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(out) if pid_alive(p)])
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not any(
+                '"init"' in p.read_text(errors="replace") for p in out.rglob("stream.jsonl")):
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            _stdout, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _stdout, err = proc.communicate()
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, err[-2000:])
+        results = json.loads((out / "results.json").read_text())
+        cell = results["cells"][0]
+        self.assertTrue(cell["interrupted"], cell)
+        self.assertEqual(cell["model"], self.MODEL)
+        self.assertEqual(cell["models"], [self.MODEL])
+        self.assertEqual(results["models_observed"], [self.MODEL])
+
+    def test_an_interrupt_during_the_grader_keeps_the_model_it_billed(self):
+        # #688 review: the meter held the grader's stdout in memory, so a result it printed naming
+        # another model was lost when an interrupt killed the meter. It now goes to disk at launch.
+        prereg = self.tmpdir() / "prereg.json"
+        prereg.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen(
+            [*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                 "mod._runner().containment_problem = proven; "
+                                 "mod._runner().live_disabled = lifted"),
+             "--prereg", str(prereg), "run", "--tier", "live", "--cost-cap-usd", "50",
+             "--harness-cmd", self.stub_cmd("plain"),
+             "--grader-cmd", self.stub_cmd("grader-json-hang", "--usage-model", "stub-model-b"),
+             "--model", self.MODEL, "--harness-version", "0", "--out", str(out)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(out) if pid_alive(p)])
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not any(
+                "modelUsage" in p.read_text(errors="replace") for p in out.rglob("grader-usage.json.stdout")):
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            _stdout, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _stdout, err = proc.communicate()
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, err[-2000:])
+        results = json.loads((out / "results.json").read_text())
+        cut = [c for c in results["cells"] if c.get("interrupted")]
+        self.assertEqual(len(cut), 1, results["cells"])
+        self.assertEqual(cut[0]["grader_models"], ["stub-model-b"])
+        self.assertIn("stub-model-b", results["models_observed"])
+
+    def test_the_stub_tier_is_handed_no_model(self):
+        out = self.tmpdir() / "out"
+        code, _stdout, err = run_main(["run", "--tier", "stub", "--harness-cmd", self.stub_cmd("plain"),
+                                       "--cost-cap-usd", "0", "--mission", "review-it", "--task", "behavioral-4",
+                                       "--repeats", "1", "--model", self.MODEL, "--out", str(out)])
+        self.assertEqual(code, 0, err)
+        results = json.loads((out / "results.json").read_text())
+        self.assertNotIn("--model", results["agent_cmd"])
+        self.assertEqual(results["models_observed"], ["stub"])
+        for cell in results["cells"]:
+            self.assertFalse([e for e in cell["errors"] if "model" in e], cell["errors"])
 
 
 def cell(task, repeat, arm, success=True, tokens=100.0, violations=0, errors=()):

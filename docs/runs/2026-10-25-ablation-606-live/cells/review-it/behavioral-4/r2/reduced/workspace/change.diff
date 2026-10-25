@@ -1,0 +1,6 @@
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,2 +1,2 @@
+ def can_delete(user, record):
+-    return user.is_admin or record.owner_id == user.id
++    return user.is_authenticated

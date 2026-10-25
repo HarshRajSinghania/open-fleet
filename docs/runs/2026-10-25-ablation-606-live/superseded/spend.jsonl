@@ -1,0 +1,7 @@
+{"call": "agent", "cell": "root-cause.trajectory-BN-01.r0.baseline", "event": "start", "reserve_usd": 5.0, "run": "20261025T105121-7-f0107067"}
+{"call": "agent", "cell": "root-cause.trajectory-BN-01.r0.baseline", "charged_usd": 0.38624, "event": "settle", "killed": false, "measured_usd": 0.3862399999999999, "run": "20261025T105121-7-f0107067"}
+{"call": "agent", "cell": "root-cause.trajectory-BN-01.r0.reduced", "event": "start", "reserve_usd": 5.0, "run": "20261025T105121-7-f0107067"}
+{"call": "agent", "cell": "root-cause.trajectory-BN-01.r0.reduced", "charged_usd": 0.245708, "event": "settle", "killed": false, "measured_usd": 0.24570780000000003, "run": "20261025T105121-7-f0107067"}
+{"call": "agent", "cell": "ship-it.trajectory-CN-01.r0.reduced", "event": "start", "reserve_usd": 5.0, "run": "20261025T105121-7-f0107067"}
+{"call": "agent", "cell": "ship-it.trajectory-CN-01.r0.reduced", "charged_usd": 0.176647, "event": "settle", "killed": false, "measured_usd": 0.1766472, "run": "20261025T105121-7-f0107067"}
+{"call": "agent", "cell": "ship-it.trajectory-CN-01.r0.baseline", "event": "start", "reserve_usd": 5.0, "run": "20261025T105121-7-f0107067"}

@@ -1,82 +1,77 @@
-# open-fleet documentation
+# open-fleet Documentation Hub
 
-open-fleet gives coding agents workflows for goals such as shipping a feature, fixing an
-audit backlog, or reviewing a PR. Each workflow is a **mission**. You provide the repository,
-the goal and its boundaries; the mission coordinates workers and returns a named outcome with
-evidence or a list of what still needs attention.
+**open-fleet** provides autonomous, outcome-driven engineering workflows (**missions**) for coding agents across [Orca](https://github.com/stablyai/orca) and the [open-fleet Runtime Provider Interface (RPI)](runtimes.md). You supply a bounded engineering goal; a coordinator decomposes the work, dispatches isolated workers, and verifies every unit against git, test execution, and a negative control before reporting completion.
 
-Choose a path based on what you want to do:
+---
 
-| I want to… | Start here | Then read |
+## Quick navigation by task
+
+| I want to… | Start here | Next step |
 |---|---|---|
-| Try a mission on my project | [Getting started](getting-started.md) | [Install](install.md), then [prompt recipes](recipes.md) |
-| Choose the right mission | [Mission selector](missions/README.md#choose-by-task) | The linked mission guide |
-| Understand the result of a run | [Concepts](concepts.md#read-a-run-result) | [Evidence and verification](concepts.md#independent-verification) |
-| Fix setup or a stopped run | [Troubleshooting](troubleshooting.md) | The relevant mission's failure modes |
-| Change this repository | [Development guide](development.md) | [Contributing](../CONTRIBUTING.md) and [architecture](../ARCHITECTURE.md) |
-| Inspect a runtime helper | [Runtime reference](runtime-scripts.md) | Its linked implementation and tests |
-| Configure the completion gate | [Gate setup](verify-gate.md#install-paths-and-which-ones-carry-the-gate) | [Trust boundary](verify-gate.md#trust-boundary) |
-| Submit evidence from a real run | [Call for runs](call-for-runs.md) | [Run submission guide](run-submission-guide.md) |
+| **Install `open-fleet` and run my first mission** | [Install guide](install.md) | [Getting started walkthrough](getting-started.md) |
+| **Pick the right mission for an engineering job** | [Mission catalog & selector](missions/README.md#choose-by-task) | [Copy-ready prompt recipes](recipes.md) |
+| **Run without the Orca app (`posix`) or on another orchestrator** | [Multi-runtime & harness guide](runtimes.md) | [Provider & harness certification](certification.md) |
+| **Understand what a run produces and what its verdict proves** | [Concepts & glossary](concepts.md#read-a-run-result) | [Anatomy of a real run](guides/anatomy-of-a-run.md) |
+| **Wire or debug the native completion gate (`verify-gate.sh`)** | [Verify gate & trust boundary](verify-gate.md) | [Negative-control demo](../demo/negative-control/README.md) |
+| **Diagnose a stalled worker, gate block, or setup error** | [Troubleshooting](troubleshooting.md) | [Runtime scripts CLI reference](runtime-scripts.md) |
+| **Edit missions, playbooks, or docs and run local tests** | [Local development](development.md) | [Contributing guide](../CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md) |
+| **Submit evidence from a real mission run** | [Call for runs](call-for-runs.md) | [Run submission guide](run-submission-guide.md) |
 
-Running missions requires Orca and a coding agent. Editing these docs or running the catalog's
-local tests requires Git and Python; see [local setup](development.md#local-setup).
+---
 
-## Tutorials and examples
+## Tier 1 — User & Operator Guides
 
-- [Your first review](getting-started.md#your-first-mission-a-review-it-dry-run) — identify a PR,
-  supply its spec, and interpret a verdict.
-- [Your first feature](getting-started.md#your-second-mission-ship-it-end-to-end) — follow the
-  spec freeze, implementation, review and promotion PR.
-- [Prompt recipes](recipes.md) — concrete starting points for common development tasks.
-- [Anatomy of a run](guides/anatomy-of-a-run.md) — a dated real run, including incidents and
-  recovery. Its timings describe that run.
-- [Negative-control demo](../demo/negative-control/README.md) — run a local example showing why
-  checking a worker's own claim is insufficient.
-- [Migration walkthrough](missions/migrate-it.md#populated-sqlite-walkthrough) — the staged
-  migration example and its executable fixture.
+Step-by-step tutorials, installation procedures, prompt recipes, and operational guides for running missions on your repositories.
 
-## Explanations and reference
+| Guide | Type | What it covers |
+|---|---|---|
+| **[Getting started](getting-started.md)** | Tutorial | End-to-end walkthrough of your first read-only `review-it` run and your first `ship-it` build, where evidence lands, human gates, and per-mission CLI prerequisites. |
+| **[Install](install.md)** | How-To | Comparison and setup instructions for symlink installs (`sh scripts/install.sh`), the Claude Code plugin, completion-gate hook wiring, and `dist/` bundles. |
+| **[Mission guides](missions/README.md)** | Catalog | Deep-dive reference for every mission grouped by job-to-be-done: inputs, phases, terminal states, human gates, convergence proofs, and failure modes. |
+| **[Prompt recipes](recipes.md)** | How-To | Copy-ready prompts with concrete inputs, acceptance criteria, and stop conditions across all mission categories and multi-mission chains. |
+| **[Multi-runtime & harness guide](runtimes.md)** | How-To / Ref | Running missions across 14 orchestrator providers (`orca`, standalone `posix`, `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, `openhands`) and 10 CLI coding-agent harnesses (plus the `openhands` SDK agent). |
+| **[Anatomy of a run](guides/anatomy-of-a-run.md)** | Walkthrough | Hour-by-hour trace of a recorded multi-worker run, including worker dispatch, verification failures, and recovery. |
+| **[Troubleshooting](troubleshooting.md)** | How-To | Symptom → Cause → Fix reference for installation issues, preflight errors, stalled workers, and verification gate rejections. |
 
-| Page | What it answers |
-|---|---|
-| [Concepts](concepts.md) | What are BASE, workers, a manifest, a negative control and a terminal state? |
-| [Mission guides](missions/README.md) | What inputs, outcome, approvals and failure modes belong to each mission? |
-| [Architecture](../ARCHITECTURE.md) | Why are missions, playbooks and runtime policies separate? |
-| [Runtime scripts](runtime-scripts.md) | Which helper handles an operation, and what are its flags and exits? |
-| [Multi-runtime & harness guide](runtimes.md) | Which orchestrator providers, coding-agent harnesses and capabilities are supported? |
-| [Provider and harness certification](certification.md) | How far is each provider/harness route proven, and how do I reproduce a first run? |
-| [Verify gate](verify-gate.md) | What does the completion hook check, and where is it advisory? |
-| [Distribution](distribution.md) | How are installs packaged, and what do proof records establish? |
-| [Platform design](platform-ride.md) | Which platform capabilities informed the design at the recorded date? |
-| [Compliance provenance](compliance-provenance.md) | What supporting evidence can a manifest carry? |
-| [A2A export](a2a-export.md) | What does the mission export claim, and how is an A2A AgentCard validated against the pinned schema? |
-| [Adversarial trajectory evals](adversarial-evals.md) | Do the guards hold when a worker acts on injected instructions? |
-| [WIP-curve experiment](experiments/wip-curve-prereg.md) | How were the WIP caps measured, and what did the live run recommend? |
-| [Instruction-load ablation pre-registration](experiments/ablation-prereg.md) | How was a smaller activation load tested without dropping a safety obligation, and what did the live run recommend? (#606: keep the current activation) |
+---
 
-## For contributors and maintainers
+## Tier 2 — Architecture, Verification & Technical Reference
 
-- [Development](development.md) — local commands, generated files, tests and a docs change walkthrough.
-- [Contributing](../CONTRIBUTING.md) — the contracts for changing a mission, playbook or runtime helper.
-- [Frozen quality bar](../CONSTRAINTS.md) — approved thresholds and their baseline measurements;
-  [validate CI](../.github/workflows/validate.yml) holds the current job wiring.
-- [Security](../SECURITY.md) — private vulnerability reporting and secret handling.
-- [Maintainer ops](ops.md) — account inventory, release commands and incident response.
-- [Live harness](guides/live-harness.md) — run a paid live experiment arm in a disposable
-  container, and read its receipt.
-- [Release checklist](release-1.0-checklist.md) — evidence needed before a 1.0 release.
-- [Product roadmap](roadmap.md) — current priorities, dependencies and research-backed issues.
-- [Repository description](about.md) — the canonical text for the GitHub About setting.
+Conceptual explanations, security boundaries, and exact CLI/schema specifications for how `open-fleet` enforces correctness below the model.
 
-## Evidence and history
+| Document | Type | What it covers |
+|---|---|---|
+| **[Concepts & glossary](concepts.md)** | Explanation | Core mental model: integration `BASE`, coordinator vs. workers, evidence manifests, negative controls, one-router-per-worker, gate classification, and proof tiers. |
+| **[Architecture](../ARCHITECTURE.md)** | Explanation | The strict three-layer separation (`skills/`, `playbooks/`, `runtime/`), the six-point mission-identity test, and activation-load budgets. |
+| **[Verify gate](verify-gate.md)** | Reference | How `runtime/scripts/verify-gate.sh` and `runtime/scripts/verify.py` enforce completion, all `ORCA_*` environment variables, negative-control replay (`ORCA_EXECUTE_NC`), and the off-worker trust boundary. |
+| **[Runtime scripts](runtime-scripts.md)** | Reference | Complete CLI reference (flags, JSON outputs, and exit codes) for every script in `runtime/scripts/` and operator configuration file in `runtime/`. |
+| **[Provider & harness certification](certification.md)** | Reference | Certification matrix across orchestrator providers and coding-agent harnesses, plus reproducible first-run harnesses. |
+| **[Distribution & packaging](distribution.md)** | Reference | Enforced vs. observed prerequisite pins, self-contained `dist/` bundle semantics, and ecosystem indexer compatibility. |
+| **[Compliance provenance](compliance-provenance.md)** | Reference | Mapping evidence-manifest provenance blocks to EU AI Act (Articles 12 & 50), SOC 2, and NIST SSDF audit requirements. |
+| **[A2A AgentCard export](a2a-export.md)** | Reference | Exporting mission metadata to Agent-to-Agent (A2A) protocol AgentCards and validating against the pinned schema. |
+| **[Adversarial trajectory evals](adversarial-evals.md)** | Reference | Red-team trajectory evaluations testing whether runtime guards hold against prompt-injected worker instructions. |
+| **[Platform capabilities](platform-ride.md)** | Explanation | Which primitives `open-fleet` delegates to Claude Code, the Agent SDK, MCP, and Orca vs. what it implements directly. |
 
-The [run archive](runs/README.md) records retained runs and explains whether their evidence
-binds. A mission's current proof tier lives in its `SKILL.md` and is shown in the
-[README catalog](../README.md#the-mission-catalog). `doctrine-only` describes a protocol;
-`self-run` and `external-run` require binding reports. A tier is separate from your run's result.
+---
 
-[Research](research/README.md), [reviews](reviews/), [completion records](completion/STATUS.md),
-[decisions](DECISIONS.md) and the [changelog](../CHANGELOG.md) explain past findings and choices.
-Read them at their recorded date and SHA. Commands quoted in an evidence transcript are a record
-of that execution, rather than the current setup procedure. Use the install and development
-guides for current instructions.
+## Tier 3 — Contributors, Maintainer Ops & Evidence Archives
+
+Guides for developing `open-fleet`, cutting releases, and inspecting retained run evidence, benchmarks, and historical design records.
+
+### Contributing & Maintenance
+
+- **[Local development](development.md)** — Running `validate.py`, contract tests, eval suites, diagram wiring, and badge generators locally with zero external dependencies.
+- **[Contributing](../CONTRIBUTING.md)** — Rules for modifying missions, playbooks, runtime scripts, and bookkeeping fragments (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`).
+- **[Frozen quality bar](../CONSTRAINTS.md)** — Enforced CI thresholds, line-budget caps, and ratchet baselines ([CI workflow](../.github/workflows/validate.yml)).
+- **[Security policy](../SECURITY.md)** — Vulnerability disclosure process and secret-handling rules.
+- **[Maintainer ops](ops.md)** — Release procedures, weekly pin probes, quarantine operations, and incident response.
+- **[1.0 release checklist](release-1.0-checklist.md)** & **[Product roadmap](roadmap.md)** — Exit criteria for 1.0 and prioritized engineering roadmap.
+- **[Live experiment harness](guides/live-harness.md)** — Running controlled live experiment arms in disposable containers ([WIP-curve experiment](experiments/wip-curve-prereg.md): mutation-wave caps measured and kept · [Instruction-load ablation pre-registration](experiments/ablation-prereg.md): current activation load kept).
+- **[Repository metadata](about.md)** — Canonical GitHub repository description and topics.
+
+### Evidence & Historical Archives
+
+- **[Retained run archive](runs/README.md)** — Every recorded mission execution, its SHA-256 inventory, and whether it binds to advance a mission's `metadata.proof` tier (`doctrine-only` → `self-run` → `external-run`).
+- **[Architectural decisions](DECISIONS.md)** & **[Changelog](../CHANGELOG.md)** — Record of architectural trade-offs and release history.
+- **[Research archive](research/README.md)** — Dated ecosystem comparisons, positioning snapshots, and the ledger of rejected mission candidates.
+- **[Historical reviews](reviews/)** & **[Completion records](completion/STATUS.md)** — Point-in-time repository audits (`2026-09-10`, `2026-09-11`, `2026-09-14`, `2026-09-28`) and issue closure witnesses. Read historical records at their recorded date and SHA; always use [Install](install.md) and [Local development](development.md) for current commands.

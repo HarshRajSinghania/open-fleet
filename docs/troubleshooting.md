@@ -1,129 +1,143 @@
 # Troubleshooting
 
-[Documentation](README.md) · [Install](install.md) · [Development](development.md)
+[Documentation Hub](README.md) · [Install](install.md) · [Verify Gate](verify-gate.md) · [Local Development](development.md)
 
-Start with the symptom below. Run catalog scripts from your **open-fleet clone**; run project
-tests from the **target repository**. Agent prompts and `/plugin` commands go into the coding
-agent, rather than your shell.
+Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-request issues. Run catalog maintenance scripts from your **`open-fleet` clone** and run project test suites from your **target repository**.
+
+---
+
+## Quick diagnostic table
+
+| Symptom | Likely cause | Jump to fix |
+|---|---|---|
+| `install.sh` succeeded, but a mission refuses to start | Runtime prerequisites (`orca`, `gh`, or `OPEN_FLEET_RUNTIME=posix`) are not ready | [Mission cannot start](#the-catalog-installs-but-a-mission-cannot-start) |
+| Agent does not list outcome skills (`ship-it`, `review-it`) | Symlinks missing in `~/.claude/skills/` or plugin inactive | [Mission missing from agent](#the-mission-is-missing-from-the-agent) |
+| Mission errors on missing `playbooks/` or `../../ARCHITECTURE.md` | Skill directory was copied (`cp`) instead of symlinked (`ln -s`) | [Playbooks not found](#playbooks-or-architecture-links-cannot-be-found) |
+| `install.sh` refuses an existing mission directory | Destination in `~/.claude/skills/<name>` is a real folder, not a symlink | [Existing directory refusal](#installation-refuses-an-existing-mission-directory) |
+| `print-settings-snippet.sh --check` says `ok`, but unverified units pass | Snippet was not merged into `~/.claude/settings.json` | [Completion gate not firing](#the-settings-snippet-says-ok-but-completion-is-not-checked) |
+| `verify-gate.sh` blocks a turn or task (`exit 2`) | Missing manifest, missing `ORCA_CONTRACT_*`, or failed check | [Gate blocks a turn or task](#the-gate-blocks-a-turn-or-task) |
+| `spawn_worker.sh` exits `2` with `SPAWN=REFUSED` | Missing `rw`/`danger` consent env vars, `danger` on `orca`, or unmet task deps | [Worker spawn refused](#worker-spawn-is-refused-spawnrefused) |
+| `preflight.py` refuses `BASE` (`"BASE is the default branch"`) | Mutation mission pointed at `main`/`master` instead of an integration branch | [Preflight refuses BASE](#preflight-refuses-base) |
+| Preflight stops on a failing baseline test suite | Target repository has pre-existing failing or flaky tests | [Baseline suite failing](#the-baseline-suite-is-already-failing) |
+| Worker terminal appears idle or coordinator session closed | Worker stalled past heartbeat or coordinator restarted | [Idle worker or coordinator restart](#a-worker-appears-idle-or-the-coordinator-restarts) |
+| Local tests pass, but conductor refuses to merge PR | `reviewed_sha != head_sha` (post-review rebase/push) or GitHub checks pending | [PR still blocked](#tests-passed-but-a-pr-is-still-blocked) |
+
+---
 
 ## The catalog installs, but a mission cannot start
 
-Installation and live execution have different prerequisites. The installer needs Git and
-Python 3.11 or newer; it warns about missing or unready run tools. A successful install with
-warnings is not a successful runtime check.
+- **Cause:** `scripts/install.sh` requires only `git` and Python ≥ 3.11 to link skills, and prints soft warnings when runtime tools are offline. Running a mission requires a live runtime (`orca` or `OPEN_FLEET_RUNTIME=posix`) and authenticated `gh`.
+- **Fix:** Check your runtime environment from a terminal:
+  ```bash
+  python3 --version
+  git --version
+  gh auth status
+  orca status --json   # Or use `orca-ide` on Linux outside Orca terminals
+  ```
+  - If using **Orca** and `runtime.state` is `not_running`, run `orca open` and wait for `ready` (at or above the catalog pin in [`runtime/pins.json`](../runtime/pins.json); see [pinned prerequisites](distribution.md#prerequisites-pinned)).
+  - If running **without the Orca desktop app**, export `OPEN_FLEET_RUNTIME=posix` ([Multi-runtime guide](runtimes.md)).
 
-From a shell, check:
-
-```bash
-python3 --version
-git --version
-gh auth status
-orca status --json
-```
-
-On Linux outside an Orca terminal, use `orca-ide` where these examples say `orca`.
-If the app is stopped, start it with `orca open` and check status again. The app must be running,
-and its runtime reachable and `ready`. The catalog's minimum witnessed version lives in
-[`runtime/pins.json`](../runtime/pins.json); [the prerequisites table](distribution.md#prerequisites-pinned)
-explains which checks are hard requirements and which are warnings.
-
-Local docs editing and catalog tests have their own [setup](development.md#local-setup).
+---
 
 ## The mission is missing from the agent
 
-For a symlink install, run `sh scripts/install.sh --check` from the clone. It verifies every
-mission link points into that clone and that playbooks and runtime policies are reachable.
-For a deliberately selected subset, inspect the particular link instead:
+- **Cause:** Symlinks in `~/.claude/skills/` are missing or broken, or the Claude Code plugin is not enabled.
+- **Fix (whole-catalog symlink):** Run `sh scripts/install.sh --check` from your `open-fleet` clone.
+- **Fix (selective symlink subset):** Check the individual symlink target:
+  ```bash
+  python3 - <<'PY'
+  from pathlib import Path
+  mission = Path.home() / '.claude/skills/review-it'
+  print('symlink:', mission.is_symlink())
+  print('target:', mission.resolve())
+  print('skill exists:', (mission / 'SKILL.md').is_file())
+  PY
+  ```
+- **Fix (plugin install):** Run `claude plugin details open-fleet@open-fleet` or check `/plugin` inside Claude Code ([plugin setup](install.md#claude-code-plugin)).
 
-```bash
-python3 - <<'PY'
-from pathlib import Path
-mission = Path.home() / '.claude/skills/review-it'
-print('symlink:', mission.is_symlink())
-print('target:', mission.resolve())
-print('skill exists:', (mission / 'SKILL.md').is_file())
-PY
-```
-
-For a plugin install, inspect the agent's installed-plugin list and its reported load errors.
-Follow [plugin setup](install.md#claude-code-plugin) to confirm activation and the skill namespace.
+---
 
 ## Playbooks or architecture links cannot be found
 
-A source mission needs the rest of the catalog tree. Copying only `skills/<mission>/` removes
-the files its bare-name references resolve to. Reinstall using the
-[symlink or plugin path](install.md#choose-an-install-path). A copy installer needs the
-self-contained output of `scripts/bundle.py`, with `references/` inside each mission;
-[bundle packaging](install.md#copy-installers-and-bundles) explains the current support status.
+- **Cause:** A `skills/<mission>/` directory was copied out of the source repository without `playbooks/`, `runtime/`, and `ARCHITECTURE.md`.
+- **Fix:** Reinstall using the [symlink or plugin path](install.md#choose-an-install-path). If you must use a copy-based installer, build or pull the self-contained `dist/` bundle generated by `python3 scripts/bundle.py` ([bundle details](install.md#copy-installers-and-bundles)).
+
+---
 
 ## Installation refuses an existing mission directory
 
-`scripts/install.sh` refuses a destination that is a real directory instead of a symlink.
-Inspect that directory and preserve any local edits before moving it out of the way. Then rerun
-the installer. It can also install into a separate skills directory with
-`--skills-dir=/absolute/path`; supply the same directory when using `--check`.
+- **Cause:** `scripts/install.sh` never overwrites a real (non-symlink) directory in `~/.claude/skills/<name>` to protect local files.
+- **Fix:** Inspect `~/.claude/skills/<name>`, back up or remove the directory if it was an old manual copy, and re-run `sh scripts/install.sh`. Alternatively, install into a custom directory with `--skills-dir=/absolute/path`.
+
+---
 
 ## The settings snippet says “ok”, but completion is not checked
 
-`sh hooks/print-settings-snippet.sh --check` checks files in the clone. It does not read your
-Claude Code settings or prove the hook is active. Merge the printed entries into the existing
-settings, preserving other hooks, and confirm both `Stop` and `TaskCompleted` point to the clone.
-The [install guide](install.md#verify-the-completion-gate) includes the missing-manifest check.
+- **Cause:** `sh hooks/print-settings-snippet.sh --check` only verifies that the hook template and `verify-gate.sh` exist in your clone; it does not inspect `~/.claude/settings.json`.
+- **Fix:** Merge the `Stop` and `TaskCompleted` hook entries from `sh hooks/print-settings-snippet.sh` into `~/.claude/settings.json` and run the fail-closed test in [Verify the completion gate](install.md#verify-the-completion-gate).
+
+---
 
 ## The gate blocks a turn or task
 
-Read the gate's failure output. A task needs a manifest and the coordinator's contract source
-and digest. A named manifest that is missing, invalid or fails a required check blocks completion.
-The `Stop` event permits a turn with no unit in progress; `TaskCompleted` requires a manifest.
-Use the [gate reference](verify-gate.md#native-path--plugin-hooks-set-claude_plugin_root) to
-diagnose the failing input. The gate's native execution is advisory; its
-[trust boundary](verify-gate.md#trust-boundary) still applies.
+- **Cause:** `verify-gate.sh` is fail-closed (`exit 2`). A block occurs when `ORCA_MANIFEST` is missing on `TaskCompleted`, when `ORCA_CONTRACT_SOURCE` / `ORCA_CONTRACT_DIGEST` are unset, or when `verify.py` finds an unaddressed criterion, missing git ancestry, stale review, or failed negative control.
+- **Fix:** Inspect the stderr diagnostics printed by `verify-gate.sh`. See **[Verify gate — Environment variables](verify-gate.md#native-path--plugin-hooks-set-claude_plugin_root)** for required inputs and **[Trust boundary](verify-gate.md#trust-boundary)** for advisory vs. off-worker execution.
+
+---
+
+## Worker spawn is refused (`SPAWN=REFUSED`)
+
+- **Cause:** [`runtime/scripts/spawn_worker.sh`](../runtime/scripts/spawn_worker.sh) validates sandbox profiles, coordinator consent flags, and DAG dependencies before creating or mutating any task, exiting `2` with `SPAWN=REFUSED task=<id> <reason>` on violation.
+- **Fix:** Match the refusal message on stderr:
+  - **`PROFILE=rw launches an autonomous permission-bypass worker — set ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`:** Export `OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE=1` (or `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`) in the coordinator environment when dispatching write workers.
+  - **`PROFILE=danger requires ORCA_COORD_ALLOW_DANGER=1` or `has no supported authoritative placement binding`:** `PROFILE=danger` is unconditionally refused on the `orca` runtime because `orca` does not bind prelaunch disposable-sandbox placement. To run a `danger` lane, use a placement-bound runtime such as `OPEN_FLEET_RUNTIME=posix` with Docker (`--on <recipe>`), `OPEN_FLEET_COORD_ALLOW_DANGER=1`, and `OPEN_FLEET_SANDBOX_RECIPE=<recipe>` ([Multi-runtime guide](runtimes.md)).
+  - **`unmet_deps=<N>` or `status=pending`:** Complete upstream tasks in the DAG first, or pass `--mark-ready` only after all dependencies have reached `completed`.
+
+---
 
 ## Preflight refuses BASE
 
-Mutation missions use an integration branch distinct from the default branch. Supply or let
-the coordinator create that branch from the intended fork point. Check which repository and
-branch your agent opened before retrying. A read-only review uses its read-only preflight;
-it does not need a new mutation BASE.
+- **Cause:** Code-mutating missions refuse to use your repository's default branch (`main` or `master`) as the integration `BASE` branch.
+- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Read-only missions (`review-it`, `map-it`, `root-cause`) run preflight with `--mode readonly` and do not require an integration branch.
+
+---
 
 ## The baseline suite is already failing
 
-Run the project's failing command outside the fleet and retain its output. A deterministic
-failure is a defect to fix; intermittent suite failures fit [deflake-it](missions/deflake-it.md).
-A first feature run needs a baseline it can distinguish from its own regressions.
+- **Cause:** Feature and refactoring missions require a green baseline test suite at Phase 0 so pre-existing failures are never confused with fleet regressions.
+- **Fix:**
+  - If the failures are **intermittent flakes**, run **[`deflake-it`](missions/deflake-it.md)** first.
+  - If the failures are **deterministic bugs**, run **[`clean-sweep`](missions/clean-sweep.md)** to drain them first.
+  - If you are running **`open-fleet`'s own test suite** inside an Orca terminal and see a sender-identity fixture error, run with `env -u ORCA_TERMINAL_HANDLE` ([Local development](development.md#everyday-checks)).
 
-For this catalog's suite, missing historical commits or tags usually indicate an incomplete
-clone. A fixture sender-identity error in an agent terminal may need
-`env -u ORCA_TERMINAL_HANDLE` for the test process. See [development checks](development.md#everyday-checks).
+---
 
 ## A worker appears idle or the coordinator restarts
 
-Use the run's ledger and scoped runtime state to identify its task and dispatch before taking
-action. An idle terminal alone does not establish failure. The policies for
-[worker supervision](../runtime/worker-supervision.md) and
-[resume](../runtime/liveness-resume.md) define recovery, bounded retries and re-verification.
-Keep the ledger and evidence available to the resumed coordinator.
+- **Cause:** A worker process hung past its heartbeat window or the coordinator terminal was closed.
+- **Fix:** Do not manually edit worker worktrees. Check the run ledger first:
+  - Under [`runtime/worker-supervision.md`](../runtime/worker-supervision.md) and [`runtime/liveness-resume.md`](../runtime/liveness-resume.md), the watchdog respawns stalled workers in fresh terminals with bounded retries.
+  - A restarted coordinator reads the ledger header (`RUN`, `BASE`, `FORK_POINT`, `T0`), cross-verifies completed rows against git ancestry, and resumes from the last unverified unit.
+
+---
 
 ## Tests passed, but a PR is still blocked
 
-Inspect the PR's current head, required checks, review state and conversations:
+- **Cause:** Local test execution is only one leg of verification. The conductor also requires an `APPROVED` review where `reviewed_sha == head_sha` and green required checks.
+- **Fix:** Inspect the PR state via `gh`:
+  ```bash
+  gh pr view 123 --repo owner/repo --json headRefOid,baseRefName,mergeStateStatus,reviews
+  gh pr checks 123 --repo owner/repo --required
+  ```
+  If a rebase, bot autofix, or late commit changed the branch tip after review, dispatch a fresh build-blind review of the new `head_sha` ([`runtime/reviewed-sha-freshness.md`](../runtime/reviewed-sha-freshness.md)).
 
-```bash
-gh pr view 123 --repo owner/repo --json headRefOid,baseRefName,mergeStateStatus,reviews
-gh pr checks 123 --repo owner/repo --required
-```
-
-Replace `123` and `owner/repo`. A local test pass does not establish a fresh review or satisfy
-every branch protection rule. A content-changing rebase or late push needs a fresh review;
-see [reviewed-SHA freshness](../runtime/reviewed-sha-freshness.md).
+---
 
 ## Report a problem with enough context to reproduce it
 
-Include the catalog commit/version, agent and Python versions, install path, operating system,
-mission, exact command or prompt, expected result and actual failure output. For a stopped run,
-include its task/dispatch identifiers and the relevant ledger row. Remove credentials and private
-project data from a public report.
+When filing an issue, include:
+1. Catalog commit SHA (`git rev-parse HEAD`), OS, Python version, and install path (`symlink` vs. `plugin`).
+2. Runtime provider (`OPEN_FLEET_RUNTIME`), harness binary/version, and mission name.
+3. Exact prompt or command executed, ledger row / dispatch ID, and full error output (with secrets redacted).
 
-Use the [bug template](../.github/ISSUE_TEMPLATE/bug_report.md) for behavior and the
-[doc-claim template](../.github/ISSUE_TEMPLATE/doc_claim.md) for inaccurate documentation.
-Send security reports through the private route in [SECURITY.md](../SECURITY.md).
+Use the [bug report template](../.github/ISSUE_TEMPLATE/bug_report.md) for runtime defects, the [doc-claim template](../.github/ISSUE_TEMPLATE/doc_claim.md) for documentation drift, and [SECURITY.md](../SECURITY.md) for private vulnerability disclosures.

@@ -1,122 +1,240 @@
-# Prompt recipes for developers
+# Prompt Recipes for Developers
 
-[Documentation](README.md) · [Mission selector](missions/README.md#choose-by-task)
+[Documentation Hub](README.md) · [Mission Selector](missions/README.md#choose-by-task) · [Getting Started](getting-started.md)
 
-These are example requests to paste into your **coding-agent session in the target project**.
-They are not shell commands or recorded runs. Replace the paths, identifiers and commands with
-your project's values. Complete [setup](getting-started.md#prerequisites) first.
+Copy and adapt these prompts into your **coding-agent session inside the target repository** after completing [prerequisite setup](getting-started.md#prerequisites).
 
-A useful request names the target, the expected behavior, the evidence to check, and where the
-run should stop. You can supply a known test command; the coordinator still checks the baseline
-and confirms the scope required by the mission.
+> [!TIP]
+> **Anatomy of a strong mission prompt:**
+> 1. **Target & scope:** Name the PR, issue filter, audit file, directory, or user journey.
+> 2. **Oracle / baseline command:** State the test, lint, or benchmark command the fleet should use.
+> 3. **Stop condition:** Specify which terminal state to stop at (for example, `"Stop at the promotion PR"`).
 
-## Review an existing PR
+---
 
-Use [review-it](missions/review-it.md) when you want findings and a verdict.
+## 1. Plan, Build & Ship
+
+### Chart an ambiguous epic (`map-it`)
+
+Use **[map-it](missions/map-it.md)** when a goal spans multiple subsystems and has unresolved architectural forks:
 
 ```text
-Review PR <owner/repo>#123 against its description and issue #120.
-Check the retry behavior, compatibility and test coverage. Return a GO/NO-GO
-verdict bound to the reviewed commit, with a quoted line for each finding.
+Map this epic: add multi-tenant workspace isolation to the billing and webhook services.
+Inspect src/billing, src/webhooks, and prisma/schema.prisma.
+Surface the architectural forks one question at a time with a recommended option,
+freeze the decision map, and output a decompose-dag task graph ready for ship-it.
 ```
 
-Provide a PR URL or number, its base branch and the spec or issue it implements. `GO` means
-the reviewed change has no Critical or Required findings; acting on it is a separate decision.
-If a new commit changes the reviewed content, request a fresh review.
+### Build and ship a bounded feature (`ship-it`)
 
-## Build a bounded feature
-
-Use [ship-it](missions/ship-it.md) when the requested behavior is clear enough to specify.
+Use **[ship-it](missions/ship-it.md)** when requirements are ready to freeze and implement:
 
 ```text
 Ship this: add GET /healthz to the API using the existing router.
 Return version and database connectivity; return 503 when the database is unavailable.
-Cover both responses with integration tests. Use pnpm test as the baseline command.
-Keep the existing deployment configuration. Stop at the promotion PR.
+Cover both responses with integration tests using `pnpm test` as the baseline command.
+Keep the existing deployment configuration. Stop at the promotion PR (PROMOTION_READY).
 ```
 
-The exact acceptance criteria are frozen before implementation. `PROMOTION_READY` gives you
-the reviewed integration work and its promotion PR; it does not claim a deployment.
+### Drain an inbound contributor PR queue (`absorb-it`)
 
-## Fix a finite set of known defects
+Use **[absorb-it](missions/absorb-it.md)** to evaluate, test, and land open community pull requests:
 
-Use [clean-sweep](missions/clean-sweep.md) for a tracker or audit with identifiable findings.
+```text
+Absorb the open pull requests labeled "community" on this repository.
+For each PR, verify a RED test on base and GREEN on head, preserve contributor authorship,
+refute invalid PRs with a reproduction, and park PRs needing author changes with a clear ask.
+Stop at the promotion PR.
+```
+
+---
+
+## 2. Fix, Sweep & Stabilize
+
+### Drain an audit or issue backlog (`clean-sweep`)
+
+Use **[clean-sweep](missions/clean-sweep.md)** for a finite list of defects, tracker issues, or inaccurate documentation claims:
 
 ```text
 Clean-sweep the findings in docs/audits/retry-path.md.
-Reproduce each finding, fix the confirmed defects and link each result to its tests.
-Keep a named disposition for findings that require an owner decision.
-Stop at the promotion PR for the integration branch.
+Reproduce each finding first, fix confirmed defects in isolated PRs against BASE,
+and prove each fix with a test that fails on revert.
+Re-enumerate the audit at close until DRY, and stop at the promotion PR.
 ```
 
-Provide the audit path or issue filter and the tests that exercise the affected surface.
-`DRY` requires re-enumeration; a list of built fixes with unresolved blockers is a partial result.
+### Eradicate flaky tests across a suite (`deflake-it`)
 
-## Diagnose one intermittent failure
+Use **[deflake-it](missions/deflake-it.md)** when intermittent failures break CI:
 
-Use [root-cause](missions/root-cause.md) for an unexplained symptom.
+```text
+Deflake the test suite under tests/integration/.
+Pull recent failure history via `gh run list`, reproduce each flake under stress,
+fix the root timing or state-leak cause, and verify a consecutive-green streak
+both locally and in CI.
+```
+
+### Reproduce and fix a mobile/device-only bug (`field-test-it`)
+
+Use **[field-test-it](missions/field-test-it.md)** when a bug only manifests on a real device, simulator, or driven browser:
+
+```text
+Field-test the checkout sheet keyboard overlap bug on the iOS Simulator (EMULATOR tier).
+Reproduce the overlap in a ledgered simulator session, fix the layout constraint,
+re-verify at head_sha on the simulator, and run a revert negative control on-target.
+```
+
+---
+
+## 3. Review, Diagnose & Prove
+
+### Run a read-only, SHA-bound PR review (`review-it`)
+
+Use **[review-it](missions/review-it.md)** for an independent `GO` / `NO-GO` verdict with zero code modifications:
+
+```text
+Review PR <owner/repo>#123 against its description and issue #120.
+Evaluate repo standards, spec fidelity, and test adequacy, plus security and data-migration
+lenses if triggered by the diff. Return a GO/NO-GO verdict bound to the head SHA,
+with an exact file:line quote for every finding.
+```
+
+### Diagnose a hard intermittent bug (`root-cause`)
+
+Use **[root-cause](missions/root-cause.md)** when you need a demonstrated explanation before writing a fix:
 
 ```text
 Diagnose duplicate orders during mobile checkout.
 The failing request IDs and timestamps are in docs/incidents/duplicate-orders.md.
-Use the staging reproduction there. Demonstrate the cause and rule out rival
-hypotheses; return the diagnosis and a proposed fix handoff.
+Reproduce the symptom in staging, enumerate rival hypotheses, falsify them with
+quoted evidence until one survivor remains, and produce a fix handoff brief.
 ```
 
-Provide the environment, observed behavior, relevant logs and a reproduction if one exists.
-For repeated flakes across a suite, use [deflake-it](missions/deflake-it.md) instead.
+### Close test gaps with mutation-audited tests (`prove-it`)
 
-## Improve tests on a critical path
-
-Use [prove-it](missions/prove-it.md) when a green suite may miss real regressions.
+Use **[prove-it](missions/prove-it.md)** when line coverage hides weak assertions:
 
 ```text
-Close the test gap on refund authorization and webhook signature verification.
-Start from tests/payments and the existing coverage report.
-Confirm the critical paths, then show that behavior-changing mutations fail the tests.
+Close the test gap on refund authorization and webhook signature verification in src/payments/.
+Run `pytest tests/payments` as the baseline, freeze the critical paths, and prove that
+every new test fails when a behavior-changing mutation is injected.
 ```
 
-Name the critical paths and runnable test command. A higher coverage percentage alone is not
-the outcome: the tests must detect a changed behavior.
+### Establish an enforced CI quality bar (`floor-it`)
 
-## Update dependencies with a green baseline
-
-Use [modernize-it](missions/modernize-it.md) for package and framework upgrades.
+Use **[floor-it](missions/floor-it.md)** to wire and prove repository-wide CI gates:
 
 ```text
-Update the dependencies for this service using its existing lockfile and package manager.
-Prioritize reachable security advisories, then supported versions.
-Record a reason and owner for any dependency that must remain pinned.
-Keep CI green and stop at the promotion PR.
+Set the quality bar for this repository across type-checking, lint, secret scanning, and test coverage.
+Wire one deterministic check per dimension into CI, prove each check turns RED on an injected
+violation before enabling enforcement, and add a floor-guard against bar-lowering diffs.
 ```
 
-Provide the manifests, package manager and compatibility constraints. If the upgrade requires
-a persistent data-shape change, the [migrate-it](missions/migrate-it.md) handoff has its own scope
-and deployment gates.
+---
 
-## Document a public surface
+## 4. Audit, Harden & Attest
 
-Use [document-it](missions/document-it.md) to fill missing documentation.
+### Close the security loop (`harden-it`)
+
+Use **[harden-it](missions/harden-it.md)** for threat modeling, exploit verification, remediation, and re-attack:
 
 ```text
-Document the CLI in src/cli for developers integrating it into build scripts.
-Cover command syntax, exit codes, configuration and one end-to-end example.
-Extract the public surface from code and check each factual claim against its source.
+Harden the authentication and session-token endpoints in src/auth/.
+Build a threat model, prove exploitable P0/P1 findings with non-destructive PoCs,
+land fixes with regression tests, re-attack every fix in a fresh session, and run
+a clean re-audit before stopping at the promotion PR.
 ```
 
-Name the intended readers and their task. Existing false claims belong to
-[clean-sweep](missions/clean-sweep.md); missing documentation belongs to this coverage mission.
+### Meet a quantitative performance budget (`speed-it`)
 
-## Make a slow journey measurable
-
-Use [speed-it](missions/speed-it.md) when a user journey exceeds a budget.
+Use **[speed-it](missions/speed-it.md)** when user journeys exceed latency or throughput targets:
 
 ```text
 Bring checkout submit and order-history load within a p95 budget of 2.5 seconds.
-Measure on staging with the seeded dataset and the existing browser harness.
-Confirm the measurement conditions before changing code, then remeasure the same journeys.
+Freeze the measurement contract on staging with the seeded dataset first,
+optimize the bottleneck paths, and re-measure across repeated trials to prove WITHIN-BUDGET.
 ```
 
-Specify journeys, metrics, budget and environment. Freeze the measurement contract before
-using a number as evidence. Use the [mission selector](missions/README.md#choose-by-task) for
-device verification, accessibility, data migrations and other goals.
+### Drive WCAG 2.2 AA accessibility conformance (`access-it`)
+
+Use **[access-it](missions/access-it.md)** for automated axe-core remediation plus structured human-AT parking:
+
+```text
+Bring the onboarding, login, and settings flows to WCAG 2.2 AA conformance.
+Freeze the page and flow inventory, fix all deterministic axe-core violations with
+revert-to-violation controls, and generate the manual assistive-technology review packet
+for criteria beyond the automation ceiling.
+```
+
+---
+
+## 5. Evolve, Refactor & Migrate
+
+### Upgrade dependencies safely (`modernize-it`)
+
+Use **[modernize-it](missions/modernize-it.md)** for dependency and framework upgrades:
+
+```text
+Update the dependencies for this service using its existing lockfile and package manager.
+Prioritize reachable security advisories, then current stable releases.
+Keep CI green at every step, document a reason and owner for any dependency that must stay pinned,
+and stop at the promotion PR.
+```
+
+### Refactor god modules behind narrow interfaces (`reshape-it`)
+
+Use **[reshape-it](missions/reshape-it.md)** to reduce architectural coupling without changing behavior:
+
+```text
+Reshape the order-processing module in src/orders/processor.ts.
+Pin a characterization test net and mutation baseline before restructuring,
+extract narrow domain interfaces, and prove behaviour is unchanged at head_sha.
+```
+
+### Execute a zero-downtime schema migration (`migrate-it`)
+
+Use **[migrate-it](missions/migrate-it.md)** for staged expand → backfill → switch → contract database changes:
+
+```text
+Migrate the users.billing_address text column to the normalized addresses table.
+Execute phase by phase (EXPAND → DUAL-WRITE → BACKFILL → SWITCH READS → ZERO READERS → RETIRE-WRITES → ZERO-WRITERS → CONTRACT),
+verifying down-migrations and row-parity probes and pausing for my deploy grant at each phase.
+```
+
+---
+
+## 6. Operate, Document & Provision
+
+### Make critical paths operable for on-call (`oncall-it`)
+
+Use **[oncall-it](missions/oncall-it.md)** to add structured telemetry, symptom alerts, and verified runbooks:
+
+```text
+Make the payment webhook and payout settlement paths operable.
+Ensure every on-call triage question is answered by a quoted metric or log signal,
+test-fire symptom alerts with linked runbooks, and verify that a source-blind worker
+can diagnose an induced staging failure using only the telemetry and runbooks.
+```
+
+### Document an undocumented public surface (`document-it`)
+
+Use **[document-it](missions/document-it.md)** to achieve verified documentation coverage:
+
+```text
+Document the public CLI and SDK surface in src/cli/ and src/sdk/.
+Extract the public symbol inventory, cover tutorial, how-to, reference, and explanation quadrants,
+and bind every factual claim and example to a file:symbol or executable check.
+```
+
+---
+
+## 7. Multi-mission sequential chains
+
+When a goal spans multiple outcomes, declare a sequential chain per [`runtime/mission-chaining.md`](../runtime/mission-chaining.md):
+
+```text
+Run a sequential mission chain on src/payments/:
+1. harden-it (require terminal state: CLEAN)
+2. prove-it (require terminal state: COVERED)
+3. ship-it (package the release and stop at PROMOTION_READY)
+Halt the chain for my approval if any stage finishes in a degraded (-WITH-PARKED / -WITH-OPEN-ITEMS) state.
+```

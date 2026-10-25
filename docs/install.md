@@ -1,25 +1,26 @@
 # Installing open-fleet
 
-[Documentation](README.md) · [First run](getting-started.md) · [Troubleshooting](troubleshooting.md)
+[Documentation Hub](README.md) · [Getting Started](getting-started.md) · [Verify Gate](verify-gate.md) · [Troubleshooting](troubleshooting.md)
 
-Install the catalog once, then invoke missions in the project you want worked on. The catalog
-clone and that target project are separate directories. Running missions has additional
-[prerequisites](getting-started.md#prerequisites); editing the catalog uses the
-[local development setup](development.md#local-setup).
+Install the `open-fleet` catalog once on your workstation, then invoke missions from inside any target project repository. Keep your `open-fleet` clone on disk — symlinked skills and completion-gate hooks resolve files directly from it.
+
+---
 
 ## Choose an install path
 
-| Path | Use it when | Completion gate | Status |
+| Path | Best for | Completion gate (`verify-gate.sh`) | Witness status |
 |---|---|---|---|
-| [Symlink](#symlink-the-catalog) | You want to evaluate or edit the catalog from a local clone | Merge the settings snippet yourself | Retained clean-install transcript |
-| [Claude Code plugin](#claude-code-plugin) | You want the whole catalog managed as a plugin | Declared by the plugin's hooks | Retained clean-container install and uninstall witness |
-| [Copy installer / bundle](#copy-installers-and-bundles) | An installer copies individual mission directories | Separate wiring required | Repo-root copy install unsupported; bundled-install witness still needed |
+| **[Symlink install](#symlink-the-catalog)** *(recommended)* | Evaluating `open-fleet`, selecting specific missions, or hacking on the catalog | Wire into `~/.claude/settings.json` via `sh hooks/print-settings-snippet.sh` | Verified in CI ([clean-container transcript](completion/evidence/414-clean-container-install.txt) · [symlink witness](completion/evidence/CF-02-r2-happy-symlink-install.txt)) |
+| **[Claude Code plugin](#claude-code-plugin)** | Installing the entire catalog as a managed Claude Code plugin | Automatically wired via `${CLAUDE_PLUGIN_ROOT}` in `hooks/hooks.json` | Verified ([lean plugin witness](completion/evidence/CF-02c-lean-plugin-install.txt) · [plugin install](completion/evidence/CF-02b-plugin-install.txt) · [uninstall](completion/evidence/CF-02b-plugin-uninstall.txt)) |
+| **[Copy installer / `dist/` bundle](#copy-installers-and-bundles)** | External copy-based skill installers that copy individual skill folders | Requires separate hook wiring and `OPEN_FLEET_ROOT` | Repo-root copy unsupported; self-contained `dist` branch published per release tag |
+
+---
 
 ## Symlink the catalog
 
-The installer validates the catalog, links every mission, and checks the gate
-snippet is available (prerequisites: `git` + Python ≥ 3.11; the
-[pinned table](distribution.md#prerequisites-pinned) names the run substrate too):
+### 1. Whole-catalog installer
+
+The install script validates the repository, creates symlinks in `~/.claude/skills/`, and checks that the completion-gate snippet is ready (requires `git` and Python ≥ 3.11; see [pinned runtime prerequisites](distribution.md#prerequisites-pinned)):
 
 ```bash
 git clone https://github.com/ravidsrk/open-fleet.git
@@ -28,32 +29,21 @@ sh scripts/install.sh
 sh scripts/install.sh --check
 ```
 
-Clone with full history — **do not use `git clone --depth 1`**. Proven missions' run reports
-pin the commit their evidence was hashed at, and validation re-checks those pins; a shallow
-clone cannot resolve them. The installer detects a shallow clone and stops before linking
-anything, printing the fix, which it never runs for you:
+> [!WARNING]
+> **Use a full clone (`git clone` without `--depth 1`).** Proven missions bind their run reports to historical commits in this repository, and `validate.py` verifies those commit hashes during installation. If you have a shallow clone, unshallow it first:
+> ```bash
+> git fetch --unshallow
+> sh scripts/install.sh
+> ```
 
-```bash
-git fetch --unshallow
-sh scripts/install.sh
-```
+**Installer flags and safety checks:**
+- If a mission is already symlinked to a *different* `open-fleet` checkout, `install.sh` stops rather than silently repointing it. Pass `--force` to repoint existing mission symlinks to the current clone, or pass `--skills-dir=DIR` to target a custom directory.
+- Real (non-symlink) directories inside `~/.claude/skills/` are never overwritten ([troubleshooting](troubleshooting.md#installation-refuses-an-existing-mission-directory)).
+- If the Orca desktop app is closed or unreachable, `install.sh` prints a soft warning so headless/CI installs still succeed.
 
-If a mission name is already linked into a *different* open-fleet clone, the installer refuses
-rather than silently repointing it. Re-run with `--force` to move every mission link to this
-clone, or install into another directory with `--skills-dir=DIR`. A dangling link (its clone was
-deleted) is repointed with a warning.
+### 2. Selective symlink install
 
-The final command rechecks the symlink install without changing it. Expect a line beginning
-`verified` confirming links, skills and the protocol directories are in reach. It does not
-confirm your completion-hook settings. The installer also warns (never fails) when `orca status` shows the app down,
-unreachable, or unready — start Orca before running missions. The warn stays soft
-because headless installs have no app to be ready; hardening it into a gate is a
-parked policy decision, not a missing check.
-
-To link only the missions you want by hand instead — link, don't copy. A mission
-names its playbooks and runtime policies by bare name and finds them in
-playbooks/ and runtime/ two levels above its own directory (and links
-../../ARCHITECTURE.md); a symlink keeps that tree intact, a copy breaks it.
+To link only specific missions by hand, always use `ln -s` (never `cp -r`). Every mission resolves its composed playbooks and runtime policies in `playbooks/` and `runtime/` two levels above its `skills/<name>/` directory:
 
 ```bash
 mkdir -p ~/.claude/skills
@@ -61,55 +51,31 @@ ln -s "$(pwd)/skills/ship-it"   ~/.claude/skills/ship-it
 ln -s "$(pwd)/skills/review-it" ~/.claude/skills/review-it
 ```
 
-Then wire the completion gate — a symlink install loads no plugin, so
-hooks/hooks.json (which resolves through ${CLAUDE_PLUGIN_ROOT}) never fires.
+### 3. Wire the completion gate
+
+A symlink install does not load a Claude Code plugin, so `${CLAUDE_PLUGIN_ROOT}` is unset and `hooks/hooks.json` does not fire automatically. Without this step, a symlink install has **no completion gate**:
 
 ```bash
-sh hooks/print-settings-snippet.sh          # merge into ~/.claude/settings.json
-sh hooks/print-settings-snippet.sh --check  # confirm the gate script resolves
+sh hooks/print-settings-snippet.sh          # Merge the printed "hooks" block into ~/.claude/settings.json
+sh hooks/print-settings-snippet.sh --check  # Confirm the template and gate script exist in this clone
 ```
 
-Without that snippet this install has **no completion gate**: missions still run, but nothing
-blocks a unit from being marked done on an unverified manifest. See
-[docs/verify-gate.md](verify-gate.md#install-paths-and-which-ones-carry-the-gate).
+When merging the snippet into `~/.claude/settings.json`, delete the `_comment` keys if your settings reader rejects unknown keys, and ensure `runtime/scripts/verify-gate.sh` has its execute bit set (`test -x runtime/scripts/verify-gate.sh || chmod +x runtime/scripts/verify-gate.sh`). Because the registered hook executes `runtime/scripts/verify-gate.sh` directly from your local clone path, keep the clone in a user-owned directory and review `git pull` updates just as you would for local dotfiles. See [Verify the completion gate](#verify-the-completion-gate) below to test that the hook blocks unverified manifests.
 
-Keep the clone at this path. Moving or deleting it breaks both the links and any hook command
-that points to it. The installer replaces its own and dangling symlinks (a link into another
-clone needs `--force`) but refuses to overwrite real mission
-directories; [troubleshooting](troubleshooting.md#installation-refuses-an-existing-mission-directory)
-covers that case.
+---
 
 ## Claude Code plugin
 
-The repo ships a plugin manifest at [`.claude-plugin/plugin.json`](../.claude-plugin/plugin.json):
+The repository includes a Claude Code plugin manifest at [`.claude-plugin/plugin.json`](../.claude-plugin/plugin.json) and marketplace configuration at [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json).
 
-Run these inside a Claude Code session:
+Inside an interactive Claude Code session, run:
 
 ```text
 /plugin marketplace add ravidsrk/open-fleet
 /plugin install open-fleet@open-fleet
 ```
 
-Since 0.7.1 the marketplace sources the plugin from the generated `dist` tree: the install
-copies that lean tree (each mission self-contained, its playbooks and runtime docs vendored
-under its own `references/`), so the bare-name lookups resolve inside the plugin directory —
-and it is the one path where the completion gate wires itself, because
-`${CLAUDE_PLUGIN_ROOT}` resolves the plugin directory. At v0.7.0 and earlier a plugin
-install copied the whole repo instead. Follow the install UI to choose a scope,
-then check the reported activation status. Type `/` and look for skills such as
-`/open-fleet:review-it`. See the upstream [plugin installation guide](https://code.claude.com/docs/en/discover-plugins)
-for host-specific scope and activation behavior.
-
-The [clean-container transcript](completion/evidence/CF-02b-plugin-install.txt) records Claude
-Code 2.1.285 installing all 22 missions and discovering `Stop` and `TaskCompleted` hooks on
-Ubuntu 24.04.4 — the v0.7.0 whole-tree install; the lean shape's witness is run per the same
-[procedure](completion/PLUGIN-INSTALL-WITNESS.md) at its own tag. Every tracked file matches the `v0.7.0` cut. The
-[uninstall control](completion/evidence/CF-02b-plugin-uninstall.txt) removes the mission
-registrations and checks the gate blocks a missing manifest. This witnesses packaging and
-registration; it does not claim an authenticated agent turn, an agent event invoking the gate,
-or an Orca mission run. Installing the plugin does not supply the mission run prerequisites.
-
-From your shell, the equivalent native commands are:
+Or from your shell:
 
 ```bash
 claude plugin marketplace add ravidsrk/open-fleet
@@ -117,151 +83,66 @@ claude plugin install open-fleet@open-fleet
 claude plugin details open-fleet@open-fleet
 ```
 
-`details` lists the discovered skills and hook events. Follow the
-[repeatable witness procedure](completion/PLUGIN-INSTALL-WITNESS.md) when recording another
-host. The full catalog validator needs a source clone with Git history: a plugin cache is a
-file copy, so its retained proof reports cannot be re-derived there.
+**How the plugin is packaged:**
+- The marketplace installs from the generated `dist` branch (force-updated on `v*` release tags alongside `DIST-PROVENANCE.txt`, which records the exact release tag and source commit), where each mission is bundled with its referenced playbooks and runtime docs under `references/` and `hooks/hooks.json` is wired automatically via `${CLAUDE_PLUGIN_ROOT}`. If your environment requires pinning an immutable git tag rather than a branch ref, use the symlink install path checked out at a signed release tag.
+- After installing, verify activation in the plugin manager (`claude plugin details open-fleet@open-fleet`) and type `/` in Claude Code to see skills such as `/open-fleet:review-it`. See the upstream [Claude Code plugin documentation](https://code.claude.com/docs/en/discover-plugins) and our repeatable [plugin install witness procedure](completion/PLUGIN-INSTALL-WITNESS.md).
+
+---
 
 ## Copy installers and bundles
 
-The open [skills CLI](https://github.com/vercel-labs/skills) installs into Claude Code, Cursor,
-Codex, and 70+ other agents — but **not from this repository, today.** `npx skills add
-ravidsrk/open-fleet` copies `dirname(SKILL.md)` and nothing else, so the `playbooks/` and `runtime/` directories a
-mission resolves its bare names against are not there after the install. The mission then reads "Composes
-`decide-and-freeze`, `decompose-dag`…" with no file for any of those names, and either invents the
-protocol or stops. The command is not shown here as runnable because running it produces that.
+Copy-based skill managers (such as the [skills CLI](https://github.com/vercel-labs/skills)) work by copying `dirname(SKILL.md)` in isolation — so installing directly via copy CLI is **not from this repository, today.** Copying `skills/<name>/` out of the source root leaves behind `playbooks/`, `runtime/`, and `ARCHITECTURE.md`, causing the mission to fail when resolving its phase protocols.
 
-What works today is the symlink path or the plugin install, both above. What makes the skills
-CLI work is a published `dist/` for it to point at. Since #518 the `publish-dist` workflow
-(`.github/workflows/publish-dist.yml`) builds that tree with `scripts/bundle.py` on every `v*` tag
-and force-pushes it to the **`dist` branch** as one orphan commit per tag, with a
-`DIST-PROVENANCE.txt` naming the tag and commit it was built from. The branch was first populated by
-[`v0.7.0`](https://github.com/ravidsrk/open-fleet/releases/tag/v0.7.0); its
-[publication run](https://github.com/ravidsrk/open-fleet/actions/runs/36700658706) succeeded. Point a copy installer at the `dist` branch,
-never at the repo root — and until an install from it has been witnessed and its transcript
-recorded here, the skills CLI stays listed as unsupported
-([#294](https://github.com/ravidsrk/open-fleet/issues/294)).
-
-**Copy installers need a bundled tree.** Every mission resolves its playbooks and runtime
-policies two levels above its own directory. An installer that copies skill directories *out* of
-the repo tree severs that resolution — one mission or the whole catalog. Build self-contained
-missions first:
+Instead, copy installers require a published `dist/` bundle where every mission directory is self-contained:
 
 ```bash
-python3 scripts/bundle.py           # writes dist/skills/<name>/ with references/ vendored
-python3 scripts/bundle.py --check   # verify no reference escapes a mission directory
+python3 scripts/bundle.py           # Generates dist/skills/<name>/ with playbooks & runtime vendored under references/
+python3 scripts/bundle.py --check   # Builds and verifies a temporary bundle; does not inspect existing dist/
 ```
 
-A build records every file it writes in `<out>/.open-fleet-bundle.json` (`dist/` unless `--out`
-names another directory), and a rebuild deletes only the files that marker lists — never a
-directory tree. Anything else where the bundle would write (a file the marker does not list, a
-symlink, a symlinked parent) makes it exit 2 having deleted and written nothing, so your own
-skills, hooks and runtime files beside a bundle survive, and one under a mission's name is a
-refusal rather than a casualty. A local `dist/` built before the marker existed has no marker,
-so the first rebuild refuses: remove that `dist/` once by hand, then rebuild.
+- **Automated `dist` branch:** On every `v*` release tag, `.github/workflows/publish-dist.yml` runs `python3 scripts/bundle.py` and publishes the self-contained tree to the **`dist` branch** alongside `DIST-PROVENANCE.txt` ([first published at `v0.7.0`](https://github.com/ravidsrk/open-fleet/releases/tag/v0.7.0), [workflow run](https://github.com/ravidsrk/open-fleet/actions/runs/36700658706)).
+- **Safe rebuilds:** `bundle.py` tracks its generated files in `<out>/.open-fleet-bundle.json` and refuses (exit `2`) to overwrite untracked files or symlinks.
 
-Each bundled mission carries its own `references/` copies of every protocol it names plus the root
-docs it links, with its SKILL.md links rewritten to point there and an index at
-`references/README.md`. A copy installer must take `dist/`, never the repo root — and no installer
-can be pointed at a local `dist/` over the network, which is why the tree is published to the
-`dist` branch above rather than left on a laptop. In the repository, `dist/` is generated and
-gitignored: committing a copy of the doctrine tree per mission would make every runtime edit a many-file diff
-and the copies would rot between edits.
+---
 
-The installed layout depends on the packaging:
+## Check the install
 
-- **Source symlink or whole-tree plugin:** the mission resolves `playbooks/` and `runtime/`
-  two levels above its real directory.
-- **Bundled copy:** the mission carries `references/README.md`, the composed Markdown files,
-  and its own `runtime/scripts/`. Follow that generated README to set `OPEN_FLEET_ROOT` and
-  invoke the helpers from the target project.
-
-For a source symlink, check the resolved tree from the shell:
+1. **In your coding agent:** Ask `"which missions are available?"` to confirm your installed missions appear.
+2. **Verify symlink resolution from your shell** (uses Python's `os.path.realpath` for cross-platform macOS/Linux portability):
 
 ```bash
 shipit=$(python3 -c 'import os; print(os.path.realpath(os.path.expanduser("~/.claude/skills/ship-it")))')
 ls "$(dirname "$(dirname "$shipit")")/playbooks"
 ```
 
-(`readlink -f` is GNU-only; on stock macOS it fails and a naive fallback tests the wrong directory —
-reporting a correct install as broken. `os.path.realpath` is the portable resolver, and python3 is
-already a hard requirement of this repo.)
+If you installed from a bundled copy, inspect `references/README.md` and `runtime/scripts/verify.py` inside the mission folder instead.
 
-For a bundled copy, inspect the installed mission's `references/README.md` and
-`runtime/scripts/verify.py` instead. A directory containing only `SKILL.md` is not a complete
-bundle. If the matching layout check fails, reinstall from the symlink or plugin path above,
-or from a bundled tree whose install has been verified. The
-symlink path is verified to preserve them
-([`docs/completion/evidence/CF-02-r2-happy-symlink-install.txt`](completion/evidence/CF-02-r2-happy-symlink-install.txt));
-the plugin path is witnessed by the [clean-container install](completion/evidence/CF-02b-plugin-install.txt)
-and [uninstall control](completion/evidence/CF-02b-plugin-uninstall.txt).
-
-**Packaging decision (#518):** keep the immutable run/report archives in the source tree:
-mission proof metadata and the run indexes navigate to them, and moving them would break
-retained evidence. The whole-tree plugin measured 66 MiB on this container at the `v0.7.0`
-cut; that is a measured footprint, not a claimed reduction. Use the published self-contained
-`dist` bundles when copying individual missions. A future lean plugin should be a separately
-generated distribution with preserved evidence references, rather than pruning source receipts.
-
-**Lean plugin (since 0.7.1):** that separately generated distribution now exists. The bundle
-tree carries the plugin manifest, hooks, and gate runtime at its root, and the marketplace
-sources the plugin from the `dist` branch, so a plugin install copies the generated tree
-instead of the whole source tree. The archives stay in the source tree; symlinked source
-checkouts are unchanged. Witnessed clean-machine at the `v0.7.1` tag: the installed copy
-measures 24 MB, and all 1,652 paths of a bundle rebuilt with `scripts/bundle.py` at the
-commit its `DIST-PROVENANCE.txt` names fingerprint-match it (the published dist tree
-matches as a second check)
-([`CF-02c-lean-plugin-install.txt`](completion/evidence/CF-02c-lean-plugin-install.txt),
-per the [witness procedure](completion/PLUGIN-INSTALL-WITNESS.md)); the uninstall half
-records that the host keeps the deregistered cache on disk.
-
-## Check the install
-
-Ask your agent "which missions are available?" — the outcome-named skills should list; with the
-two symlinks above you get `ship-it` and `review-it`. If a mission is visible but stops on start
-saying it cannot find a playbook, it was copied rather than linked.
+---
 
 ## Verify the completion gate
 
-For a symlink install, merge the snippet's `Stop` and `TaskCompleted` entries into your existing
-settings; preserve other hooks. `print-settings-snippet.sh --check` only checks the clone's files.
-Review the registered paths and exercise the gate itself from the catalog root:
+After merging the output of `sh hooks/print-settings-snippet.sh` into `~/.claude/settings.json` (or installing the plugin), test the gate from the catalog root:
 
 ```bash
 ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop
 ```
 
-Expected: `BLOCKING (fail-closed)` and exit status 2, because the named manifest is missing.
-This tests the gate's failure path; it does not prove an agent event called that gate. Check
-the agent's hook registration as well. The [gate reference](verify-gate.md) explains event
-behavior and the native advisory trust boundary.
+**Expected output:** `BLOCKING (fail-closed)` with exit code `2` because `/nonexistent.json` does not exist. When `ORCA_MANIFEST` is unset (normal turns with no unit in flight), the hook exits `0` silently. Full environment and trust-boundary details are in **[Verify gate](verify-gate.md)**.
+
+---
 
 ## Update or remove an install
 
-**Whole-catalog symlink install:** update the clone with `git pull --ff-only` once its working tree is clean,
-then run `sh scripts/install.sh --check`. If the catalog gained missions, rerun
-`sh scripts/install.sh` to link them too. Local edits should be reviewed and committed on their
-own branch before you update; use [Development](development.md) for that workflow.
-
-**Selected subset managed by hand:** update the clone, then inspect each selected link as
-described in [Troubleshooting](troubleshooting.md#the-mission-is-missing-from-the-agent).
-The installer and its `--check` mode expect every catalog mission: unlinking one makes
-`--check` fail, and running the installer again recreates it. Maintain a subset with the
-individual links above rather than rerunning the whole-catalog installer.
-
-To remove a mission from that subset, first inspect its symlink target, then unlink only that entry in
-`~/.claude/skills/`. For example, after confirming it points to this clone:
-
-```bash
-unlink ~/.claude/skills/review-it
-```
-
-When removing the catalog entirely, also remove the two completion-hook entries that point to
-this clone, preserving unrelated settings. Keeping them after deleting the clone leaves hook
-commands that cannot resolve.
-
-**Plugin install:** manage updates and removal through Claude Code's plugin manager; consult
-the [upstream instructions](https://code.claude.com/docs/en/discover-plugins#manage-installed-plugins).
-
-Next: [run your first review](getting-started.md#your-first-mission-a-review-it-dry-run), or use
-[a developer recipe](recipes.md) for your task.
+- **Update a whole-catalog symlink install:**
+  ```bash
+  git pull --ff-only
+  sh scripts/install.sh
+  sh scripts/install.sh --check
+  ```
+- **Update or remove a selective symlink install:** Run `git pull --ff-only` in the clone. To remove a single symlinked mission without touching others:
+  ```bash
+  unlink ~/.claude/skills/review-it
+  ```
+  *(Note: `sh scripts/install.sh --check` checks that the full catalog is linked; if you manage a subset by hand, verify individual links with the `os.path.realpath` snippet above.)*
+- **Full uninstall:** Unlink the mission entries from `~/.claude/skills/` and remove the `verify-gate.sh` hook entries from `~/.claude/settings.json` before deleting your local clone.
+- **Plugin update or uninstall:** Use `/plugin` inside Claude Code or `claude plugin` from your shell ([upstream plugin management docs](https://code.claude.com/docs/en/discover-plugins#manage-installed-plugins)).

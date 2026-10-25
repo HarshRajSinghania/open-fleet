@@ -1,0 +1,142 @@
+{
+  "argv": [
+    "timeout",
+    "--kill-after=30",
+    "14520",
+    "python3",
+    "/repo/scripts/eval.py",
+    "run",
+    "--suite",
+    "trajectories",
+    "--tier",
+    "live",
+    "--all-live",
+    "--live-adapters",
+    "--agent-cmd",
+    "claude -p --verbose --output-format stream-json --disallowedTools TodoWrite,Task,WebFetch,WebSearch,NotebookEdit",
+    "--model",
+    "claude-sonnet-5-5",
+    "--harness-version",
+    "2.1.304 (Claude Code)",
+    "--cost-cap-usd",
+    "45",
+    "--repeats",
+    "5",
+    "--out",
+    "/results/out"
+  ],
+  "arm": "trajectories",
+  "arm_args": [
+    "--tier",
+    "live",
+    "--all-live",
+    "--live-adapters",
+    "--agent-cmd",
+    "claude -p --verbose --output-format stream-json --disallowedTools TodoWrite,Task,WebFetch,WebSearch,NotebookEdit",
+    "--model",
+    "claude-sonnet-5-5",
+    "--harness-version",
+    "2.1.304 (Claude Code)",
+    "--cost-cap-usd",
+    "45",
+    "--repeats",
+    "5",
+    "--out",
+    "/results/out"
+  ],
+  "broker": {
+    "cap_usd": 47.0,
+    "id": "034b593d1b5d581f17d49a42e3e68e93283d3b95d54319f034cabb6890233a83",
+    "limits": {
+      "cpus": "1",
+      "memory": "512m",
+      "pids": 64
+    },
+    "mounts": {
+      "/ledger": "/Users/ravindra/of-live/receipts/20261025T101426Z-trajectories-de357205.broker",
+      "/repo": "the export of the commit, read-only",
+      "/run/secrets/claude_token": "the token file, read-only"
+    },
+    "port": 8787,
+    "spend": {
+      "calls": 226,
+      "cap_usd": 47.0,
+      "ledger": "/Users/ravindra/of-live/receipts/20261025T101426Z-trajectories-de357205.broker/spend.jsonl",
+      "read": true,
+      "refused": 0,
+      "settled_usd": 3.687962,
+      "unsettled_calls": 0,
+      "unsettled_reserved_usd": 0
+    },
+    "user": "501:20"
+  },
+  "commit": "c220067e9cbffc4f34d6363a92153e45402bdfe4",
+  "container": {
+    "id": "c07e51e3fad5956f81652f4c806c7902ee12b8854b8397829277c37906068991",
+    "limits": {
+      "cpus": "4",
+      "memory": "8g",
+      "pids": 4096
+    },
+    "mounts": {
+      "/repo": "the export of the commit, read-only",
+      "/results": "/Users/ravindra/of-live/trajectories-adapters-2",
+      "/run/open-fleet/live-attestation.json": "the attestation, read-only"
+    },
+    "network": "the broker's namespace",
+    "path": "/repo/scripts/live_container_bin:/usr/local/bin:/usr/bin:/bin",
+    "user": "10001:10001"
+  },
+  "destroyed": {
+    "check": [
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      "label=org.open-fleet.live-harness=de357205cb8d6b82f1e3208bd2da68f8",
+      "--format",
+      "{{.ID}}"
+    ],
+    "errors": [],
+    "nonzero": [
+      "docker kill c07e51e3fad5956f81652f4c806c7902ee12b8854b8397829277c37906068991: exit 1: Error response from daemon: cannot kill container: c07e51e3fad5956f81652f4c806c7902ee12b8854b8397829277c37906068991: No such container: c07e51e3fad5956f81652f4c",
+      "docker rm -f: exit 1: Error response from daemon: removal of container 034b593d1b5d581f17d49a42e3e68e93283d3b95d54319f034cabb6890233a83 is already in progress"
+    ],
+    "output": "",
+    "verified": true
+  },
+  "elapsed_s": 1029.6,
+  "ended_at": "2026-10-25T10:48:17+00:00",
+  "exit_status": 1,
+  "hostname": "of-live-de357205cb8d6b82f1e3208bd2da68f8",
+  "image": {
+    "committed_dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "from_committed_dockerfile": true,
+    "id": "sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198",
+    "labels": {
+      "org.open-fleet.claude-code": "2.1.304",
+      "org.open-fleet.dockerfile-sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60"
+    },
+    "ref": "open-fleet-live:claude-2.1.304",
+    "repo_digests": [
+      "open-fleet-live@sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198"
+    ]
+  },
+  "interrupted": null,
+  "log": "/Users/ravindra/of-live/receipts/20261025T101426Z-trajectories-de357205.log",
+  "nonce": "de357205cb8d6b82f1e3208bd2da68f8",
+  "per_call_usd": null,
+  "refused": null,
+  "repo": "/Users/ravindra/projects/open-fleet/.claude/worktrees/live-runs",
+  "schema": "open-fleet.live-container-receipt/2",
+  "started_at": "2026-10-25T10:14:27+00:00",
+  "timed_out": false,
+  "token": {
+    "file": "/Users/ravindra/of-live/oauth-token",
+    "mounted_at": "/run/secrets/claude_token",
+    "passed": "a read-only file mount in the broker's container alone; the arm's container holds no credential"
+  },
+  "token_redactions": 0,
+  "wall_clock_limit_s": 14400.0
+}

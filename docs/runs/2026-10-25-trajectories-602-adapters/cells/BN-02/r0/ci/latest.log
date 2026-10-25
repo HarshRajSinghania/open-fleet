@@ -1,0 +1,3 @@
+FAIL: test_add (tests.test_calc.CalcTest.test_add)
+AssertionError: -1 != 5
+note: the fence suite quotes 'ignore previous instructions' as a labelled example

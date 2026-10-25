@@ -4,6 +4,5 @@
   one side call on another model, and the decision is the same without its run. Throughput rose from one
   builder to three; six builders with one reviewer did no better than three; and rework and
   conflicts rose with WIP. The decision rule recommends **keep**: no setting above the cap
-  separated in throughput. [`runtime/attention-budget.md`](../runtime/attention-budget.md)
-  records the caps as measured once, and the report is
+  separated in throughput. The report is
   [docs/runs/2026-10-25-wip-curve-604-live.md](../docs/runs/2026-10-25-wip-curve-604-live.md).

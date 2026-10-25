@@ -44,8 +44,10 @@ beats `b3r1`, which it does not. Anything else is keep, including a null or nega
 rule yields a recommendation only: a cap change would be its own human-reviewed policy change citing
 this report. The recommendation does not depend on `wip2-b6r2-rep2`: without it, `b6r2` over its two
 other runs is 258.95/h [219.51, 298.39], still below `b3r1`'s upper bound, and the rule still says
-keep. [`runtime/attention-budget.md`](../../runtime/attention-budget.md) now records the caps
-as measured once, with this result.
+keep. [`runtime/attention-budget.md`](../../runtime/attention-budget.md) still labels the caps
+ASSERTED. Four missions #606's registration pins load that file, so rewording it now would void
+#606's registration before its data exists; a follow-up records this measurement there after
+#606's live run, with #606's re-pin.
 
 ## What this shows, and what it does not
 

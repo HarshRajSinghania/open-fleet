@@ -5,7 +5,7 @@ Starting agents is cheap; closing the loop is not. Human judgment is the serial 
 limit. Merge serialization (`merge-serialization.md`) is consumer-side backpressure; this policy
 is producer-side.
 
-## WIP caps (defaults — MEASURED once, #604: keep; override in the ledger header when measured)
+## WIP caps (defaults — ASSERTED; no protocol-compliant measurement yet; override in the ledger header when measured)
 
 | Class | Concurrent builders | Concurrent build-blind reviewers | Notes |
 |-------|---------------------|----------------------------------|-------|
@@ -27,12 +27,20 @@ post-mortem, not a retained report. That mechanism no longer applies: liveness n
 from `worker-list`'s `projection.liveness` and `attention.requiresAction`, not from reading panes
 for heartbeats (liveness-resume.md).
 
-Evidence level: **MEASURED once.** #604's pre-registered curve, 12 runs at four settings
-(`docs/runs/2026-10-25-wip-curve-604-live.md`), recommends keep: neither setting above the cap
-separated in throughput from `builders=3 reviewers=1`, and rework and conflicts rose with WIP. It
-measured one synthetic six-task package, one host and one model, with agent reviewers only; human
-review capacity is unmeasured. The defaults were first asserted from one field run (2026-07-15
-chimely) and its dual-writer post-mortem.
+Evidence level: **ASSERTED.** The defaults were first asserted from one field run (2026-07-15
+chimely) and its dual-writer post-mortem; no published methodology for sizing fleet concurrency to
+verification capacity exists anywhere yet. The 2026-08-28 ship-it self-run
+(`docs/runs/2026-08-28-ship-it-self-run.md`) is recorded but is **not a protocol-compliant data
+point** and does **not** count toward the ≥3-run threshold below — not because it ran at
+`builders=1` (a legitimate low-WIP setting the curve needs), but because it reached verified-BUILT
+rather than the protocol's unit of throughput (units reaching verified-CLOSED per hour): it produced
+no CLOSED-throughput figure to plot. What it shows is narrow and qualitative — in a *solo* run the
+independent-review/approval step is what blocks *autonomous completion* of a mutation unit (the
+hardened verifier `verify.py` requires an independent approval it cannot self-issue). That is a
+statement about the completion gate, not a throughput measurement: the wall-clock was dominated by
+building and acceptance review, machine verification took seconds, and a single non-parallel unit
+cannot by itself locate a throughput bottleneck. The caps stay ASSERTED until ≥3 runs at differing
+WIP settings (a `builders=1` run counts) measure verified-CLOSED-per-hour throughput (protocol below).
 
 ## Sort the work (do not parallelize judgment)
 

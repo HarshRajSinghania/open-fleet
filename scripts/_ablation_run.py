@@ -544,12 +544,14 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
     return (None if killed else proc.returncode), killed, emptied
 
 
-def run_group(argv, *, input_text, timeout, cwd=None, env=None):
+def run_group(argv, *, input_text, timeout, cwd=None, env=None, stdout_path=None):
     """(stdout, exit status or None when killed, killed, emptied): contained_run with the task on
     stdin and stdout read back. The harness never shares a pipe with the runner, so nothing it
-    leaves behind can hold one open."""
+    leaves behind can hold one open. With `stdout_path` the output goes there as it is written, so
+    it outlives an interrupt mid-call (#688 review)."""
     with tempfile.TemporaryDirectory(prefix="of-ablation-call-") as tmp:
-        stdin, stdout = Path(tmp) / "stdin", Path(tmp) / "stdout"
+        stdin = Path(tmp) / "stdin"
+        stdout = Path(stdout_path) if stdout_path else Path(tmp) / "stdout"
         stdin.write_text(input_text, encoding="utf-8")
         code, killed, emptied = contained_run(argv, timeout=timeout, cwd=cwd, env=env, stdin_path=stdin,
                                               stdout_path=stdout, stderr_path=Path(tmp) / "stderr")
@@ -729,7 +731,8 @@ def stream_models(stream_text):
         if obj.get("type") == "system" and obj.get("subtype") == "init":
             named = [obj.get("model")]
         elif obj.get("type") == "assistant":
-            named = [(obj.get("message") or {}).get("model")]
+            # Claude Code's own API-error messages name "<synthetic>": no model ran them.
+            named = [m for m in [(obj.get("message") or {}).get("model")] if m != "<synthetic>"]
         elif obj.get("type") == "result" and isinstance(obj.get("modelUsage"), dict):
             named = list(obj["modelUsage"])
         else:
@@ -906,9 +909,12 @@ def run_cell(ctx, pair, arm):
     ledger, model, tier = ctx["ledger"], ctx["model"], ctx["tier"]
     ledger.start(cell_id, "agent", model["agent_reserve_usd"])  # on disk BEFORE the paid call starts
     started = time.monotonic()
+    # The agent writes its stream straight into the cell, so a signal mid-call still leaves the
+    # models it named on disk (models_on_disk, #688 review).
+    stream_path = cell_dir / "stream.jsonl"
     try:
         stream, code, killed, emptied = run_group(ctx["agent_cmd"], input_text=text, cwd=workspace,
-                                                  env=env, timeout=ctx["timeout"])
+                                                  env=env, timeout=ctx["timeout"], stdout_path=stream_path)
         # Nothing more is paid for while a process of the agent's call may still be spending (K4).
         completed = not killed and emptied
         if killed:
@@ -933,8 +939,8 @@ def run_cell(ctx, pair, arm):
         if completed and ran is None:
             errors.append("the agent reported no model (no system/init line naming one)")
         errors += [f"the agent ran model {m!r}, not the requested {requested!r}" for m in seen if m != requested]
-    stream_path = cell_dir / "stream.jsonl"
-    stream_path.write_text(stream, encoding="utf-8")
+    if not stream_path.is_file():  # the call never started
+        stream_path.write_text(stream, encoding="utf-8")
     tokens_in, tokens_out, cost, reasons = usage_of(stream_path, cell_id, task)
     cell.update({"input_tokens": tokens_in, "output_tokens": tokens_out, "cost_usd": cost,
                  "usage_unavailable": reasons})

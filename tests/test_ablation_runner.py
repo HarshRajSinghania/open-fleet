@@ -183,6 +183,9 @@ STUB = textwrap.dedent(r'''
                 "input": {"file_path": f"{catalog}/runtime/{name}.md"}}
     if "--no-init" not in args:
         print(json.dumps(init))
+    if "--synthetic-error" in args:  # Claude Code's own message for an API error: no model ran it
+        print(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "content": [
+            {"type": "text", "text": "API Error: 529 overloaded"}]}}))
     if opt("--recording"):  # a pinned #602 recording, handed on as this cell's own
         import shutil
         shutil.copyfile(opt("--recording"), os.path.join(out, "trajectory.jsonl"))
@@ -1084,6 +1087,50 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
         self.assertIsNone(cell["grader_cost_usd"], "a killed grader's cost is not taken")
         self.assertEqual(cell["grader_models"], ["stub-model-b"])
         self.assertIn(f"the grader ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
+
+    def test_a_synthetic_api_error_message_is_not_another_model(self):
+        # #688 review: Claude Code names its own API-error messages "<synthetic>".
+        results, _out = self.run_live(agent_extra=("--synthetic-error",), trajectory=True)
+        self.assertIsNone(results["stopped"])
+        self.assertEqual(results["models_observed"], [self.MODEL])
+        for cell in results["cells"]:
+            self.assertEqual(cell["models"], [self.MODEL], cell["cell"])
+            self.assertFalse([e for e in cell["errors"] if "model" in e], cell["errors"])
+
+    def test_an_interrupt_during_the_agent_keeps_the_model_it_named(self):
+        # #688 review: the agent's stream went to a temporary file an interrupt deleted, so the model
+        # its init line named was lost. It now goes straight into the cell.
+        prereg = self.tmpdir() / "prereg.json"
+        prereg.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen(
+            [*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                 "mod._runner().containment_problem = proven; "
+                                 "mod._runner().live_disabled = lifted"),
+             "--prereg", str(prereg), "run", "--tier", "live",
+             "--cost-cap-usd", "50", "--harness-cmd", self.stub_cmd("hang"),
+             "--grader-cmd", self.stub_cmd("grader-json"), "--model", self.MODEL, "--harness-version", "0",
+             "--timeout", "60", "--out", str(out)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(out) if pid_alive(p)])
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not any(
+                '"init"' in p.read_text(errors="replace") for p in out.rglob("stream.jsonl")):
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            _stdout, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _stdout, err = proc.communicate()
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, err[-2000:])
+        results = json.loads((out / "results.json").read_text())
+        cell = results["cells"][0]
+        self.assertTrue(cell["interrupted"], cell)
+        self.assertEqual(cell["model"], self.MODEL)
+        self.assertEqual(cell["models"], [self.MODEL])
+        self.assertEqual(results["models_observed"], [self.MODEL])
 
     def test_the_stub_tier_is_handed_no_model(self):
         out = self.tmpdir() / "out"

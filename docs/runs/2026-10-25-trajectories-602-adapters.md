@@ -310,7 +310,14 @@ the one that counts:
 | `5027d331bd` | The manifest bound to `head_sha`, with the new contract digest, the re-derivation record and `rederive.txt`; the dispatch record re-signed over that digest. |
 | `481ae88ac6` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
 
-Re-derivation, recorded through `evidence-run.py` on `dd4725e220`, exit 0 with 432 checks:
+Re-derivation, recorded through `evidence-run.py` at `dd4725e220`, exit 0 with 432 checks. The
+tree it recorded, `a53de0886f06…`, is not quite `dd4725e220`'s (`ebef1be806e7…`). The manifest's three
+binding fields (`head_sha`, `contract.source` and `contract.digest`) were already filled in when it
+ran, and nothing else differs. `rederive.py` reads `manifest.json` only in its scan of every
+retained file for credential shapes and the canary, and those three values (two commit SHAs and a
+sha256 digest) cannot change what that scan finds. Codex at `b259962ac9` found the mismatch.
+A later binding should record the re-derivation on the clean `head_sha` tree, before the fields
+are filled in.
 
 `python3 runtime/scripts/evidence-run.py --label rederive --manifest docs/runs/2026-10-25-trajectories-602-adapters/manifest.json --artifact docs/runs/2026-10-25-trajectories-602-adapters/rederive.txt -- python3 docs/runs/2026-10-25-trajectories-602-adapters/rederive.py`
 
@@ -361,7 +368,8 @@ Under the signed report-only class it confirms that:
 
 `verify.py` skips the command ledger and the source-binding control for a `report-only` unit, so
 GREEN does not vouch for either. What stands for them is the re-derivation itself:
-`rederive.py`'s recorded exit-0 run on `head_sha`'s tree, its output pinned, re-runnable below.
+`rederive.py`'s recorded exit-0 run on `head_sha`'s content (its tree differing only in the
+manifest's three binding fields, as above), its output pinned, re-runnable below.
 `--base` was not given, so the ancestry leg was skipped before merge.
 
 Re-check:

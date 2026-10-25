@@ -2849,6 +2849,10 @@
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex",
    "sha256": "1f4d5db594495b1c4b0a15ec8ccc7008b6be1079b498ad2109da1530b70cdcaa"
+  },
+  {
+   "path": "docs/runs/2026-10-25-wip-curve-604-live/verifier.txt",
+   "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
   }
  ],
  "commands": [
@@ -2862,6 +2866,17 @@
    "commit": "9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
    "wtree": "7af5e70576955453e86dc2f852b0f82bf7a98d74",
    "artifact": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt"
+  },
+  {
+   "label": "verifier",
+   "ts": "2026-10-25T09:52:51Z",
+   "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --contract-source docs/runs/2026-10-25-wip-curve-604-live/contract.json@9ebdb656dd86dcc6ac58e395146667f8c1b4512d --contract-digest sha256:96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5 --unit-class report-only --dispatch-record docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json@56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02 --dispatch-pubkey docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex@56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02",
+   "cmd_sha256": "638253571baafe6c14ad696e044a9f31af2fb4a80bbee401aff1a10f4532de37",
+   "exit": 0,
+   "duration_s": 36.754,
+   "commit": "56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02",
+   "wtree": "5dc05f4e3c6be4aa3b67e17b6eaeb781cd357f1a",
+   "artifact": "docs/runs/2026-10-25-wip-curve-604-live/verifier.txt"
   }
  ]
 }

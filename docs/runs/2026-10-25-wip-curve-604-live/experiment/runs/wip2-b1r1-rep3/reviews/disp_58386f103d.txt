@@ -1,0 +1,10 @@
+I reviewed the change from af43fc5 to d43dd84 against the T2 task statement. It does what the task asks and nothing it forbids.
+
+- **Overdraw refused:** `Ledger.remove` in `stocklib/ledger.py` now raises `ValueError` when `qty` is greater than `self._stock.get(sku, 0)`. An unknown SKU counts as 0 in stock, so any removal from it is refused.
+- **Stock unchanged on refusal:** The check runs before `_stock` is modified and before the history append. A refused removal therefore changes neither the stock nor the audit trail.
+- **Exact removal allowed:** Removing exactly the quantity in stock passes the check, because `qty > stock` is false, and leaves 0.
+- **No other changes:** The existing `qty <= 0` check is untouched, and the diff has no other changes. I read the full file and didn't run any tests.
+
+WIP-REVIEW WIP-NONCE:52f9394fd2436b5b d43dd84dddc59463fd6462411da79b85e189e5fb approve
+
+OPEN_FLEET_WORKER_DONE disp_58386f103d succeeded

@@ -1,0 +1,11 @@
+The change meets the task, and I found nothing it forbids.
+
+- **What it does:** `slugify` now runs `unicodedata.normalize("NFKD", text)` and drops combining marks before the existing strip, lowercase and regex steps. That is the decomposition the task specifies.
+- **Examples:** 'Crème Brûlée' decomposes to 'Creme Brulee' and slugs to `creme-brulee`. 'Ångström units' becomes 'Angstrom units' and slugs to `angstrom-units`. I traced both by hand and did not run them.
+- **ASCII input:** NFKD leaves ASCII unchanged and ASCII has no combining marks, so the new lines do nothing and the output is the same as before.
+- **Scope:** only `stocklib/textutil.py` changes, by one import and two lines.
+- **Tests:** the diff adds none, but the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:8131a9029f5f093b 3743b3b2fa2ea232636ef83d2d6500ede1377464 approve
+
+OPEN_FLEET_WORKER_DONE disp_f1d7674327 succeeded

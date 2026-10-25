@@ -1,0 +1,11 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `Ledger.remove` now raises `ValueError` when `qty` is more than the quantity in stock. An unknown SKU counts as 0 in stock, so any positive removal from it raises.
+- **Refused removal:** the check runs before `_stock` is touched or `_history` is appended. A refused removal changes neither the stock nor the history, and it doesn't create an entry for an unknown SKU.
+- **Exact removal:** removing exactly the quantity in stock passes the check, because `qty > stock` is false. It leaves 0.
+- **Scope:** the only change is the two-line guard in `stocklib/ledger.py`. `add`, `quantity`, `skus` and `history` are unchanged.
+
+I only read the diff and the file. I didn't run any code or tests.
+
+WIP-REVIEW WIP-NONCE:bf36c119ef1ef6cf cfc0b35e69088c86edfef12837ce2d6fb75987fc approve
+OPEN_FLEET_WORKER_DONE disp_b06e00c477 succeeded

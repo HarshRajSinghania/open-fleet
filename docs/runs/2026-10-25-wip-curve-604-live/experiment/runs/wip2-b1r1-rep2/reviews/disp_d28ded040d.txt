@@ -1,0 +1,5 @@
+The change adds `lb` (453.59237 g) and `oz` (28.349523125 g) to `FACTORS` in `stocklib/units.py`. These are the exact values the task gives. `convert` already works through grams in both directions, so it handles any pair of supported units. Unknown units still hit the `KeyError` branch and raise `ValueError`. The diff touches nothing else. I read the code but did not run it.
+
+WIP-REVIEW WIP-NONCE:e51f302d07c1699f 325ce9388449cdb476688c4ea8f913b3fdc71634 approve
+
+OPEN_FLEET_WORKER_DONE disp_d28ded040d succeeded

@@ -33,7 +33,8 @@ In the source repository, `skills/<name>/SKILL.md` references its phase playbook
 `scripts/bundle.py` solves this for copy-based installers and the lean plugin:
 - Every `dist/skills/<name>/` folder carries a vendored `references/` directory containing all composed playbooks, transitive runtime policies, `ARCHITECTURE.md`, and a generated `references/README.md` index, plus `runtime/scripts/` and runtime control JSON files (`pins.json`, `one-way-doors.json`, `quarantine.json`).
 - Outbound links in the bundled `SKILL.md` are automatically rewritten to point into `references/`.
-- Bundled helpers expect `OPEN_FLEET_ROOT` exported to the installed mission directory, and completion-gate hooks (`hooks/hooks.json`) ship at the bundle root. Always point copy-based registries at the published `dist` branch, never at `skills/<name>/` on `main`.
+- At the bundle root, `scripts/bundle.py` also ships `.claude-plugin/bundle-README.md` as `README.md`, `.claude-plugin/icon.png` (1024 px square PNG listing icon), `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `hooks/hooks.json`.
+- Bundled helpers expect `OPEN_FLEET_ROOT` exported to the installed mission directory. Always point copy-based registries and plugin directory submissions at the published `dist` branch, never at `skills/<name>/` on `main`.
 
 ---
 
@@ -55,30 +56,41 @@ Clean-container installation is verified in CI on every install-path PR ([`.gith
 
 ## Ecosystem directory & indexer status
 
-Current indexing status across external skill and plugin directories (last audited `2026-09-28`; human-account submissions tracked in [H-02](completion/HUMAN_ACTIONS.md)):
+Current indexing status across external skill and plugin directories (last audited `2026-10-25`; human-account submissions tracked in [H-02](completion/HUMAN_ACTIONS.md)):
 
 | Surface | Listed? | Status & notes |
 |---|---|---|
 | **Self-hosted plugin marketplace** | **Yes** | `/plugin marketplace add ravidsrk/open-fleet` (`.claude-plugin/marketplace.json`, sources the lean `dist` branch) |
 | **[buildwithclaude.com](https://buildwithclaude.com/api/search?q=orca-fleet)** | **Yes (auto-indexed)** | Indexed (`updatedAt` `2026-09-19`) with `plugin` and `marketplace` records; awaiting cache refresh for updated repository description ([about.md](about.md)) |
 | **[skills.sh](https://www.skills.sh/ravidsrk/orca-fleet)** | **Yes (`2026-09-23`)** | Live listing registered via first-install telemetry |
-| **[claudemarketplace.net](https://www.claudemarketplace.net/search?q=orca-fleet)** | No | Awaiting manual maintainer submission |
-| **[anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)** | No (verified `2026-09-28`) | Awaiting maintainer submission via the [Claude plugin directory portal](https://claude.ai/directory/manage) |
+| **[claudemarketplace.net](https://www.claudemarketplace.net/search?q=orca-fleet)** | No | Awaiting manual maintainer submission via [submit page](https://www.claudemarketplace.net/submit) |
+| **[anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)** | No (validated `2026-10-25`) | Ready for maintainer submission on branch `dist` after the next release cut via the [Claude plugin directory portal](https://claude.ai/directory/manage) |
 | **`agentskills validate`** | **Pass** | All required `agentskills.io` fields pass; catalog metadata lives under `metadata:` |
 
 ---
 
 ## Maintainer submission kit (H-02)
 
-Standard copy for external directory submissions:
+Shared lead for external directory submissions:
 
-> **open-fleet** is an open-source catalog of outcome-named autonomous fleets for the Orca runtime and the open-fleet Runtime Provider Interface (RPI). Each mission represents a distinct engineering outcome with its own state machine and a SHA-bound evidence manifest verified by an independent verifier (`verify.py`) outside the worker session. Five missions carry binding proof reports (`2 external-run`: `ship-it`, `review-it`; `3 self-run`: `clean-sweep`, `prove-it`, `harden-it`), with `17 doctrine-only` protocols ready to run. One methodology router per worker; MIT licensed.
+> **open-fleet** is 22 outcome-named autonomous fleets for the Orca runtime and the open-fleet Runtime Provider Interface (RPI). Each mission is one outcome with its own state machine and an evidence-backed definition of done: every unit of work closes with a SHA-bound evidence manifest an independent verifier re-derives, never a worker's narration. Its own catalog holds five binding proof reports — two external-run (`ship-it`, `review-it`) and three self-run (`clean-sweep`, `prove-it`, `harden-it`) — with `17 doctrine-only` protocols ready to run. One router per worker; MIT.
 > - **Install:** `/plugin marketplace add ravidsrk/open-fleet`
-> - **Run archive:** `https://github.com/ravidsrk/open-fleet/tree/main/docs/runs`
+> - **Proof:** `https://github.com/ravidsrk/open-fleet/tree/main/docs/runs`
 
 ### Directory-specific entry (`anthropics/claude-plugins-official`)
 
-Submit via the [Claude developer portal](https://claude.ai/directory/manage) (**Plugin bundle**):
+The [official submission link](https://clau.de/plugin-directory-submission) redirects to [Publish to the directory](https://claude.com/docs/directory/publish) (rechecked 2026-09-30). Use the signed-in [developer portal](https://claude.ai/directory/manage), choose **Plugin bundle**, enter repository `ravidsrk/open-fleet`, and under *Plugin in a subfolder or on another branch?*, specify branch `dist`: the lean bundle the marketplace already installs, which the directory then follows for new versions. Validating `main` timed out twice on 2026-10-25 and would ship every receipt tree to each install.
+
+Validation of `dist` at `f14253f` (`v0.8.0`) on 2026-10-25 reported:
+- **1 blocking:** *README missing*. The bundle had no README in the plugin folder. `scripts/bundle.py` now ships `.claude-plugin/bundle-README.md` there as `README.md`, so the next release's `dist` clears it. Re-validate after that cut before submitting.
+- **13 policy holds** for a reviewer:
+  - *Uses a credential from the user's machine*: `upstream_probe.py` sends `GITHUB_TOKEN` to `api.github.com`; `deny-hook.sh` pairs `$PWD` with its `probe.invalid` self-test string; and `offload-it`'s `GH_TOKEN` is read beside a negative-control `nc` the scanner took for netcat;
+  - the file count;
+  - `verify-gate.sh` running other files.
+  The bundle README (`.claude-plugin/bundle-README.md`) discloses each one. None blocks.
+- **26 warnings:** download-and-run commands, which in shipped code are the guard hook's own deny patterns, and *No icon*. The bundle now ships `.claude-plugin/icon.png` (1024 px, square, the orcas from `assets/hero-dark.jpg`). The portal takes the icon **once, at the first save or submission**, so never save a draft from a `dist` older than the cut that adds it.
+
+A submission still requires Anthropic's validation, security scan, and human review before a listing goes live:
 
 ```json
 {
@@ -90,3 +102,15 @@ Submit via the [Claude developer portal](https://claude.ai/directory/manage) (**
   "homepage": "https://github.com/ravidsrk/open-fleet"
 }
 ```
+
+### `claudemarketplace.net`
+
+Their [submit page](https://www.claudemarketplace.net/submit) (rechecked 2026-10-25) takes listings by email to `chekkutech@gmail.com` or by WhatsApp and reviews each by hand (typically within two business days):
+
+- **Name:** `open-fleet`
+- **One-line summary:** Outcome-named autonomous fleets for Orca — evidence-backed done, never narration.
+- **Longer description:** The shared lead above + the README link.
+- **Install:** `/plugin marketplace add ravidsrk/open-fleet` (Claude Code plugin system).
+- **Repository:** `https://github.com/ravidsrk/open-fleet` · **Docs:** `docs/`
+- **Logo:** `https://raw.githubusercontent.com/ravidsrk/open-fleet/main/.claude-plugin/icon.png` (1024 px, square PNG).
+- **Suggested category:** Developer Tools / Agent Skills.

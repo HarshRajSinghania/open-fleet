@@ -1,0 +1,6 @@
+The change adds `lb` (453.59237 g) and `oz` (28.349523125 g) to `FACTORS`. Those are the exact values the task gives. `convert` already goes through grams, so the new units work in either direction and between any two supported units. Unknown units still raise `ValueError` through the existing `KeyError` handler. The diff touches nothing else, and the task forbids nothing that it touches.
+
+I didn't run any code. I only read the diff and `stocklib/units.py`. The factors are floats, so some round trips will carry normal floating-point error. The task asks for the exact gram values, not exact arithmetic, so I don't count that against the change.
+
+WIP-REVIEW WIP-NONCE:cf983c85f9d6ca25 fd0622e952a4c062e5a505eeba143395be15b301 approve
+OPEN_FLEET_WORKER_DONE disp_ab597c0822 succeeded

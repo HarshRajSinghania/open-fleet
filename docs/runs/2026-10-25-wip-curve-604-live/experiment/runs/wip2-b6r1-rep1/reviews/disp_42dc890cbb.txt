@@ -1,0 +1,11 @@
+The change does what T6 asks and nothing it forbids.
+
+- **`totals(ledger)`:** it returns the sum of every SKU's quantity as an int. An empty ledger gives 0.
+- **`summary(ledger)`:** it keeps the existing per-SKU lines unchanged and appends `TOTAL <n>` as the last line. For an empty ledger the line list contains only that entry, so the output is exactly `TOTAL 0`.
+- **Scope:** the diff touches only `stocklib/report.py`, and I saw no unrelated changes. I read the code only and ran no tests.
+
+The `int()` wrapper is harmless. `Ledger.add` and `Ledger.remove` don't enforce integer quantities, but the sum is an int whenever they are ints. Negative totals, which `remove` can produce, are summed as they are.
+
+WIP-REVIEW WIP-NONCE:addab86418e0600b 91a2a73a3519dfbd9ca02d79be5225e9b61786e8 approve
+
+OPEN_FLEET_WORKER_DONE disp_42dc890cbb succeeded

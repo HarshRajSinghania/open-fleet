@@ -1,0 +1,10 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `remove` now raises `ValueError` when `qty` is more than the stock for that SKU. An unknown SKU counts as 0 in stock, so any removal from it is refused.
+- **Refused removals:** the check runs before the stock update and before the history append. A refused removal therefore leaves both the stock and the history unchanged.
+- **Exact removal:** removing exactly the quantity in stock passes the check (`qty > stock` is false) and leaves 0.
+- **Scope:** the diff is two lines in `stocklib/ledger.py`, and the existing `qty <= 0` check is untouched. I didn't run any tests.
+
+WIP-REVIEW WIP-NONCE:0dc18aa4868e4054 dd578758d0437a00c29728e4518d51a1d8d04b4d approve
+
+OPEN_FLEET_WORKER_DONE disp_1109550c3b succeeded

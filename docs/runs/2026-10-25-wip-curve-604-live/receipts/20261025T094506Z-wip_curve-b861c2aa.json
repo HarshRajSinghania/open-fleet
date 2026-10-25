@@ -1,0 +1,124 @@
+{
+  "argv": [
+    "timeout",
+    "--kill-after=30",
+    "3720",
+    "python3",
+    "/repo/scripts/wip_curve.py",
+    "--prereg",
+    "/repo/docs/experiments/wip-curve-prereg-v2.json",
+    "verify",
+    "--results",
+    "/results/experiment",
+    "--report",
+    "/results/report/report.json",
+    "--report-md",
+    "/results/report/report.md"
+  ],
+  "arm": "wip_curve",
+  "arm_args": [
+    "--prereg",
+    "/repo/docs/experiments/wip-curve-prereg-v2.json",
+    "verify",
+    "--results",
+    "/results/experiment",
+    "--report",
+    "/results/report/report.json",
+    "--report-md",
+    "/results/report/report.md"
+  ],
+  "broker": {
+    "cap_usd": 1.0,
+    "id": "86d114f7c1a5103e6c45aa47b8ce654a887fb117b25e89e93af4e5f8c1ef67d6",
+    "limits": {
+      "cpus": "1",
+      "memory": "512m",
+      "pids": 64
+    },
+    "mounts": {
+      "/ledger": "/Users/ravindra/of-live/receipts/20261025T094506Z-wip_curve-b861c2aa.broker",
+      "/repo": "the export of the commit, read-only",
+      "/run/secrets/claude_token": "the token file, read-only"
+    },
+    "port": 8787,
+    "spend": {
+      "calls": 0,
+      "cap_usd": 1.0,
+      "ledger": "/Users/ravindra/of-live/receipts/20261025T094506Z-wip_curve-b861c2aa.broker/spend.jsonl",
+      "read": true,
+      "refused": 0,
+      "settled_usd": 0,
+      "unsettled_calls": 0,
+      "unsettled_reserved_usd": 0
+    },
+    "user": "501:20"
+  },
+  "commit": "bacb5f8dd81df7181790738f7901bbb53f2fa6ec",
+  "container": {
+    "id": "1738a27bb54cee6f5b9cbf52cc8272cf54f183345252e4f070d5062f8c29a478",
+    "limits": {
+      "cpus": "4",
+      "memory": "8g",
+      "pids": 4096
+    },
+    "mounts": {
+      "/repo": "the export of the commit, read-only",
+      "/results": "/Users/ravindra/of-live/wip-curve-v2",
+      "/run/open-fleet/live-attestation.json": "the attestation, read-only"
+    },
+    "network": "the broker's namespace",
+    "path": "/repo/scripts/live_container_bin:/usr/local/bin:/usr/bin:/bin",
+    "user": "10001:10001"
+  },
+  "destroyed": {
+    "check": [
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      "label=org.open-fleet.live-harness=b861c2aa33167d98a4e0460c63c67d7b",
+      "--format",
+      "{{.ID}}"
+    ],
+    "errors": [],
+    "nonzero": [
+      "docker kill 1738a27bb54cee6f5b9cbf52cc8272cf54f183345252e4f070d5062f8c29a478: exit 1: Error response from daemon: cannot kill container: 1738a27bb54cee6f5b9cbf52cc8272cf54f183345252e4f070d5062f8c29a478: No such container: 1738a27bb54cee6f5b9cbf52"
+    ],
+    "output": "",
+    "verified": true
+  },
+  "elapsed_s": 36.3,
+  "ended_at": "2026-10-25T09:45:43+00:00",
+  "exit_status": 0,
+  "hostname": "of-live-b861c2aa33167d98a4e0460c63c67d7b",
+  "image": {
+    "committed_dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "from_committed_dockerfile": true,
+    "id": "sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198",
+    "labels": {
+      "org.open-fleet.claude-code": "2.1.304",
+      "org.open-fleet.dockerfile-sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60"
+    },
+    "ref": "open-fleet-live:claude-2.1.304",
+    "repo_digests": [
+      "open-fleet-live@sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198"
+    ]
+  },
+  "interrupted": null,
+  "log": "/Users/ravindra/of-live/receipts/20261025T094506Z-wip_curve-b861c2aa.log",
+  "nonce": "b861c2aa33167d98a4e0460c63c67d7b",
+  "per_call_usd": null,
+  "refused": null,
+  "repo": "/Users/ravindra/projects/open-fleet/.claude/worktrees/live-runs",
+  "schema": "open-fleet.live-container-receipt/2",
+  "started_at": "2026-10-25T09:45:07+00:00",
+  "timed_out": false,
+  "token": {
+    "file": "/Users/ravindra/of-live/oauth-token",
+    "mounted_at": "/run/secrets/claude_token",
+    "passed": "a read-only file mount in the broker's container alone; the arm's container holds no credential"
+  },
+  "token_redactions": 0,
+  "wall_clock_limit_s": 3600.0
+}

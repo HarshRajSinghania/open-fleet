@@ -1,0 +1,14 @@
+`to_csv` meets the task statement. I read the task and the diff, and checked `Ledger.skus()` in `stocklib/ledger.py`. I didn't run any code.
+
+- **Header and rows:** it writes the header `sku,quantity` first, then one row per SKU.
+- **Sort order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** `csv.writer(..., lineterminator="\n")` ends every line with `\n`, including the last.
+- **Quoting:** it uses the `csv` module, so a SKU containing a comma is quoted.
+- **Empty ledger:** the loop doesn't run, so the output is only the header line.
+- **Scope:** the only changes are the two imports and the new function in `stocklib/report.py`. Nothing the task forbids was touched.
+
+The diff adds no tests, but the task statement doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:30b74998f90bd87b 4f074123f534b80e00a8f4c27dda4255f0d7bab2 approve
+
+OPEN_FLEET_WORKER_DONE disp_ecd625c6fb succeeded

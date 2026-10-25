@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "wip-curve-604-live",
+    "contract_digest": "sha256:c80c0ae3dbdd81391acbe8df50c171af772f377ce600dfae85c350956cedb14a",
+    "unit_class": "report-only"
+  },
+  "sig_b64": "6+HXZuR9bn2Ni53YEtMJ18InrGpQKw00VFWaElWmED8fylZfyrT05nCItJCSAZwh5ilBDdzJJpYpKKncRi0pBg=="
+}

@@ -1,0 +1,10 @@
+The change adds `lb` and `oz` to `FACTORS` in `stocklib/units.py`, with the exact gram values from the task (453.59237 and 28.349523125). I didn't run anything, because this review is read-only.
+
+- **Conversions:** `convert` computes `value * FACTORS[from_unit] / FACTORS[to_unit]`. That works in both directions and between any two supported units, with no other code changes needed.
+- **Unknown units:** a `KeyError` from the lookup is still turned into a `ValueError`, so the requirement holds.
+- **Scope:** the change touches only the factor table and adds nothing the task forbids.
+- **Tests:** the diff adds no tests. The task didn't ask for any, so I'm not counting that against it.
+- **Precision:** the factors are floats, so results like `convert(1, "lb", "oz")` may differ from 16 by a tiny rounding error. The task doesn't require exact results.
+
+WIP-REVIEW WIP-NONCE:a4251d1dad58fca6 adaf4bca96176e821cda5c9ccb00456d64351d56 approve
+OPEN_FLEET_WORKER_DONE disp_b7fe67fb3c succeeded

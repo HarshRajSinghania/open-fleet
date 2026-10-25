@@ -29,10 +29,10 @@ on it. Its tests are in [`tests/test_wip_curve.py`](../../tests/test_wip_curve.p
 | Verification: independent recomputation, git and review authority for every terminal outcome, and detection of an altered metric row | **Implemented** and pinned by tamper tests. |
 | Dry run of the whole pipeline with an inert stand-in | **Implemented.** All 12 scheduled runs complete and verify (fixture tier: no evidence). |
 | Cost cap | **AUTHORISED.** The owner authorised 150.00 USD on 2026-10-24, billed to their Claude subscription. The runner still refuses to start without an explicit cap. |
-| At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **REMAINING.** The owner authorised the spend on 2026-10-24. Version 1 made two live runs on 2026-10-25, and version 2 supersedes both (see [Version 2](#version-2)); no version-2 live run is retained yet. The live tier runs only inside the container-based live harness (PR #668; see [Running it](#running-it)). |
-| A published recommendation to keep or change the caps, with evidence links | **REMAINING.** It follows the live runs. A cap change is a separate human-reviewed policy change. |
+| At least three protocol-compliant **live** runs at differing WIP settings, retained with raw observations | **DONE.** Version 2's 12 scheduled runs, all complete and compliant, ran on 2026-10-25 in the container live harness and are retained and bound in [the run report](../runs/2026-10-25-wip-curve-604-live.md). Version 1's two runs are retained there too, superseded (see [Version 2](#version-2)). |
+| A published recommendation to keep or change the caps, with evidence links | **DONE: keep.** No pre-registered criterion for a change is met ([the run report](../runs/2026-10-25-wip-curve-604-live.md#result)). A cap change would be a separate human-reviewed policy change. |
 
-Until the live runs are retained, the caps in `attention-budget.md` stay ASSERTED.
+`attention-budget.md` records this measurement after #606's live run, since #606's registration pins that file's bytes.
 
 ## The question
 

@@ -1965,6 +1965,10 @@ def main(argv: list[str] | None = None) -> int:
     live.add_argument("--all-live", action="store_true",
                       help="the declared live design: each live_cases row's case plus every "
                            "benign and clean control; a case live cannot reach is UNRUN")
+    live.add_argument("--live-adapters", action="store_true",
+                      help="deliver tool-output, recalled-memory and handover injections live, and "
+                           "point the task at a repository document (#602 arrival adapters); "
+                           "without it a run reproduces the 2026-10-25 design")
     live.add_argument("--agent-cmd", help="the agent command (prints Claude stream-json)")
     live.add_argument("--model", help="the exact model id, recorded with the results")
     live.add_argument("--harness-version", help="the agent harness version, recorded")

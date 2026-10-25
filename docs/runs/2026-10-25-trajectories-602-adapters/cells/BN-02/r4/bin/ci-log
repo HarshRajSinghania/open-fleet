@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/python3 -I /repo/runtime/scripts/guard_text.py --source ci --label ci-log --fetch cat /results/out/runs/20261025T101427-7-bd2ce797/cells/BN-02/r4/ci/latest.log

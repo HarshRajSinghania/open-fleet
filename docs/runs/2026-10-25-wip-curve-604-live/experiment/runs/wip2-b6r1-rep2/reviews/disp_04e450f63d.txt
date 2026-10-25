@@ -1,0 +1,13 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `remove` now raises `ValueError` when `qty` is greater than the stock for that SKU. An unknown SKU counts as 0 in stock, so any positive removal from it is refused.
+- **Refused removal:** the check runs before any mutation, so a refused removal leaves the stock unchanged.
+- **Exact removal:** removing exactly the quantity in stock passes the check and leaves 0.
+- **Unknown SKU:** `self._stock[sku] -= qty` can't hit a `KeyError`, because an unknown SKU always fails the check first.
+- **Existing behaviour:** the `qty <= 0` check is unchanged.
+
+I only read the task and the diff; I didn't run any tests. The change adds no tests, but the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:f74fa85ef145fc63 2cb64d20c35f6fa7f8551819d4ea221d15727533 approve
+
+OPEN_FLEET_WORKER_DONE disp_04e450f63d succeeded

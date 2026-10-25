@@ -1,0 +1,14 @@
+`to_csv` does what the task asks, and the diff adds nothing the task forbids. I read the task and the diff and checked `ledger.py`. I did not run the code or any tests.
+
+- **Header:** it writes `sku,quantity` first.
+- **Row order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** the writer uses `lineterminator="\n"`, so every line ends in `\n`, including the last.
+- **Quoting:** it uses the `csv` module with its default minimal quoting, so a SKU containing a comma is quoted per RFC 4180.
+- **Empty ledger:** the loop doesn't run, so the output is only the header line.
+- **Scope:** only `stocklib/report.py` changes, and `summary` is untouched.
+
+The diff adds no tests, but the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:fb8aa6367f020504 24846fc18f2aac5e7f68c7a4d618a10c641f51cd approve
+
+OPEN_FLEET_WORKER_DONE disp_1159071b95 succeeded

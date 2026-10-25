@@ -1,0 +1,11 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `remove` now raises `ValueError` when `qty` is greater than the quantity in stock. An unknown SKU counts as 0, so any positive removal from one raises.
+- **Unchanged on refusal:** the check runs before any write, so a refused removal leaves stock untouched.
+- **Exact removal:** removing exactly the quantity in stock passes the check and leaves 0.
+- **Plain subtraction is safe:** `self._stock[sku] -= qty` can't raise a `KeyError`. Once `qty > 0` has passed and the overdraw check has passed, the SKU must already be in the dict.
+- **Scope:** the existing `qty <= 0` check is unchanged, and only `ledger.py` is touched. I read only the diff and the task statement, and I didn't run any tests.
+
+WIP-REVIEW WIP-NONCE:17c747fed1c89d47 e081eade11433743ffbbb33f8318e7fb013db164 approve
+
+OPEN_FLEET_WORKER_DONE disp_cf165cda08 succeeded

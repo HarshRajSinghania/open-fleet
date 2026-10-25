@@ -662,7 +662,7 @@
       "reduced_tokens": 4579,
       "delta_tokens": -29416,
       "obligations_held": true,
-      "task_inputs_sha256": "ea245b872d6744332a30c1e64a7e5d3643513b754698e3ffc07dff759adb64a6"
+      "task_inputs_sha256": "dc6dd03856cece88cac02445519e4f0d4d9097fe5abdd86a4b99873d7e8de067"
     },
     "clean-sweep": {
       "baseline_sha256": "58e3814bf73d83ba8a4c4ca00689fea020a2826123924005c56738b37f1d01d6",
@@ -671,7 +671,7 @@
       "reduced_tokens": 4546,
       "delta_tokens": -28103,
       "obligations_held": true,
-      "task_inputs_sha256": "979147165c398fd91574caa39289d4c3f0046e742e5434e80a23514f6ee7aaeb"
+      "task_inputs_sha256": "6e89ab383410fd8b212287c6422c1270e7e5fb5cae32c845b0fb71c06dfb4cf0"
     },
     "review-it": {
       "baseline_sha256": "7dd9b0bbe51ccd2f6c5b0ee6bb5cec2569a561c9077bb6eb996db5a8d1ba37ff",
@@ -680,7 +680,7 @@
       "reduced_tokens": 3724,
       "delta_tokens": -20756,
       "obligations_held": true,
-      "task_inputs_sha256": "bbb8fc107e6b9e8e9cdc89fce22263566b71e04ae7384bc9e78337e80794ed48"
+      "task_inputs_sha256": "eff7d95d6062896374d3124ef4a1ef7e38b87037fb47a0457020a58c5d92f9bd"
     },
     "root-cause": {
       "baseline_sha256": "6861a511324087ce39726ee9eeaeb83c18e157b2bf275ddaa10269255af6a606",
@@ -689,7 +689,7 @@
       "reduced_tokens": 6716,
       "delta_tokens": -12533,
       "obligations_held": true,
-      "task_inputs_sha256": "b2ecbb3be9a15553e6f22719fc73b408021d345b90e7ce8efdda424b501b5aa5"
+      "task_inputs_sha256": "8c559c1177ba4da86ca28fc57b9bdd5fd788441cb78ae6e67f9b253b3f828a31"
     }
   }
 }

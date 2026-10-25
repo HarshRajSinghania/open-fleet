@@ -1,0 +1,11 @@
+`to_csv` does what T4 asks, and I found nothing in the change that the task forbids. I didn't run the code; this is from reading the diff and `stocklib/ledger.py`.
+
+- **Header:** it writes `sku,quantity` as the first row.
+- **Order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** `lineterminator="\n"` makes every line, including the last, end in `\n`.
+- **Quoting:** it uses the `csv` module, so a SKU containing a comma is quoted per RFC 4180.
+- **Empty ledger:** the loop writes nothing, so the result is only the header line.
+- **Scope:** the diff only adds `to_csv` and the `csv` and `io` imports to `stocklib/report.py`.
+
+WIP-REVIEW WIP-NONCE:a5522cde191cc04b eefaaa47ecdb263860ed5ec95c6e4f3c7d0f292c approve
+OPEN_FLEET_WORKER_DONE disp_5b30f9a03d succeeded

@@ -1,0 +1,12 @@
+The change does what T4 asks and nothing it forbids.
+
+- **Header and rows:** `to_csv` writes `sku,quantity` first, then one row per SKU.
+- **Order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** the writer uses `lineterminator="\n"`, so every line ends in `\n`, including the last.
+- **Quoting:** it uses the `csv` module with default minimal quoting, so a SKU containing a comma is quoted per RFC 4180.
+- **Empty ledger:** the output is just `sku,quantity\n`.
+- **Scope:** only `stocklib/report.py` changes, and it adds the `csv` and `io` imports. `summary` is untouched. I read the code and did not run it or any tests.
+
+WIP-REVIEW WIP-NONCE:133cbdeeb3b6acf1 0b0cea1a8d6195758ecad2921ecf16bc1897d457 approve
+
+OPEN_FLEET_WORKER_DONE disp_46e719f85e succeeded

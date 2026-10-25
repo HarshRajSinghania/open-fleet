@@ -1,0 +1,10 @@
+The change adds `lb` (453.59237) and `oz` (28.349523125) to `FACTORS` in `stocklib/units.py`. The values match the task exactly. I did not run any code or tests.
+
+- **Any direction:** `convert` goes through grams (`value * FACTORS[from] / FACTORS[to]`), so any pair of supported units works in either direction.
+- **Unknown units:** a unit missing from `FACTORS` still raises `KeyError`, which `convert` turns into `ValueError`.
+- **Scope:** the diff touches only the two table entries and changes nothing the task forbids.
+
+The conversion uses floating-point arithmetic, so results like 1 lb → oz may differ from 16 in the last digit. The task doesn't ask for exact results, so this isn't a blocker.
+
+WIP-REVIEW WIP-NONCE:7cfc1b717d12a9ee 31dc0881ac94da5166ee776e9cc3ab8bf6cde8a4 approve
+OPEN_FLEET_WORKER_DONE disp_823f5aca84 succeeded

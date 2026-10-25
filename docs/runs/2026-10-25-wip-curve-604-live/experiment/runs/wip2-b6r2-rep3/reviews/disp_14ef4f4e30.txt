@@ -1,0 +1,9 @@
+I approve the change. It does what T5 asks and nothing it forbids. I only read the diff and the final `stocklib/ledger.py`. I didn't run anything.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` as their last step, after the validation check. A call that raises `ValueError` therefore leaves no entry, and entries stay in call order.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list doesn't change the ledger. The entries are immutable tuples.
+- **Scope:** The only file touched is `stocklib/ledger.py`. Existing behavior is unchanged, including that `remove` doesn't reject overselling, which the task doesn't mention.
+- **Style nit:** There is an extra blank line before `history()` (two instead of one). It's harmless and not grounds for changes.
+
+WIP-REVIEW WIP-NONCE:d1f424ddabc3313a e15948bf37878cfeb047cd6d9446c7778c34349a approve
+OPEN_FLEET_WORKER_DONE disp_14ef4f4e30 succeeded

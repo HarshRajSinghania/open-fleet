@@ -1,0 +1,13 @@
+The change meets the task. I read the diff and the `stocklib` sources, and I didn't run any code.
+
+- **`totals`:** `totals(ledger)` sums `ledger.quantity(sku)` over every SKU and returns an `int`.
+- **Summary:** `summary` appends `TOTAL <n>` as its last line, using `totals`.
+- **Empty ledger:** there are no SKU lines, so `"\n".join` gives exactly `TOTAL 0`.
+- **Other lines:** the per-SKU lines are unchanged.
+- **Scope:** the diff touches only `stocklib/report.py`, and nothing the task forbids.
+
+The `int()` cast would truncate a fractional quantity. `Ledger` accepts any positive `qty`, so that is possible, but the task asks for an int.
+
+WIP-REVIEW WIP-NONCE:f03f03ae1447efa2 cc54f0f350dcfed1ed4db2e2d90d981c4494e00e approve
+
+OPEN_FLEET_WORKER_DONE disp_5275c5a3cd succeeded

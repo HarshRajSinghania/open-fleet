@@ -1,0 +1,13 @@
+I approve. The change does what T5 asks and nothing it forbids. I read the task, the diff and the resulting `stocklib/ledger.py`. I didn't run any tests, since this review is read-only.
+
+- **Recording order:** `_history` is appended only after the mutation in `add` and `remove`, so entries are in call order.
+- **Failed calls:** both methods raise their `ValueError`s before reaching the append, so a failed call is not recorded.
+- **Tuple format:** each entry is `("add", sku, qty)` or `("remove", sku, qty)`, as specified.
+- **Copy semantics:** `history()` returns `list(self._history)`, so changing the returned list leaves the ledger untouched.
+- **Other mutation paths:** nothing else touches `_stock` outside `ledger.py`, so there are no other operations to record.
+
+The diff leaves a double blank line before `history()`, which is a style nit and doesn't affect behaviour.
+
+WIP-REVIEW WIP-NONCE:cdf0cd74e51e7a93 fe6c65b14e376393100b7431b490cc5c0c9b24d1 approve
+
+OPEN_FLEET_WORKER_DONE disp_17fa4aab0e succeeded

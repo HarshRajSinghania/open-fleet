@@ -338,9 +338,10 @@ fleets scale to **verification capacity**, not the UI's spawn limit
 ≤3 concurrent builders and about one build-blind reviewer per three builders. Isolated,
 machine-verifiable work fans out; judgment-heavy work stays serial. Merge serialization is
 consumer-side backpressure; the attention budget is producer-side — together they keep the
-fleet from burying you under unreviewed diffs. The caps are still asserted, not measured: the
-[pre-registered WIP-curve experiment](experiments/wip-curve-prereg.md) is how they get measured
-(#604), and its live runs await an authorised budget.
+fleet from burying you under unreviewed diffs. The mutation-wave caps are measured: the
+[pre-registered WIP-curve experiment](experiments/wip-curve-prereg.md) (#604) ran 12 live runs at
+four settings and kept them ([run report](runs/2026-10-25-wip-curve-604-live.md)). The report-only
+and planning caps are still asserted.
 
 ## Reviewed-SHA freshness
 

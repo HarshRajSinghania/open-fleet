@@ -177,6 +177,20 @@ class RunDirectoryBinding(unittest.TestCase):
                             "pin-it", "2026-09-13-pin-it-266-selfrun")
         self.assertEqual(got, "docs/runs/2026-09-13-pin-it-266")
 
+    def test_a_same_day_sibling_run_does_not_lend_its_directory(self):
+        # #694 review: two same-day runs of one mission. The report named for its own directory
+        # gets that directory, never the alphabetically first one the fuzzy match finds.
+        days = ["2026-10-25-trajectories-602-adapters", "2026-10-25-trajectories-602-live"]
+        for stem in days:
+            with self.subTest(report=stem):
+                self.assertEqual(self._run_dir(days, "trajectories", stem), f"docs/runs/{stem}")
+
+    def test_an_ambiguous_fuzzy_match_fails_closed(self):
+        # Neither candidate is named for the report: both match, so neither is borrowed.
+        got = self._run_dir(["2026-10-25-trajectories-a", "2026-10-25-trajectories-b"],
+                            "trajectories", "2026-10-25-trajectories-c")
+        self.assertEqual(got, "docs/runs/2026-10-25-trajectories-c")
+
 
 class WipCurveObligation(unittest.TestCase):
     """#365: the per-wave WIP row was mandated by attention-budget.md and machine-checked nowhere."""

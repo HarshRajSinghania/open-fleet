@@ -1155,12 +1155,21 @@ def run_directory(report, mission, root=None):
     cannot nominate someone else's directory. Both `…-ship-it-self-run.md` and
     its `…-ship-it-selfrun/` artifact directory share the date and the mission,
     which is what is matched: same date prefix, mission name present.
+
+    A directory named exactly for the report wins outright, and a fuzzy match is taken only when
+    it is the one candidate: two same-day runs of one mission (`…-trajectories-602-live` beside
+    `…-trajectories-602-adapters`) must not lend the alphabetically first directory to both
+    reports (#694 review). An ambiguous match falls back to the report's own stem, which fails
+    closed when that directory does not exist.
     """
     m = re.match(r"^(\d{4}-\d{2}-\d{2})-", report.stem)
     if not m or mission not in report.stem:
         return None
     date = m.group(1)
     runs_dir = ((root or ROOT) / "docs" / "runs") if root is not None else RUNS_DIR
+    if (runs_dir / report.stem).is_dir():
+        return f"docs/runs/{report.stem}"
+    matches = []
     for candidate in sorted(runs_dir.glob(f"{date}-*")):
         if not candidate.is_dir():
             continue
@@ -1176,8 +1185,8 @@ def run_directory(report, mission, root=None):
         mtoks = mission.split("-")
         if any(tokens[i:i + len(mtoks)] == mtoks
                for i in range(len(tokens) - len(mtoks) + 1)):
-            return f"docs/runs/{stem}"
-    return f"docs/runs/{report.stem}"
+            matches.append(f"docs/runs/{stem}")
+    return matches[0] if len(matches) == 1 else f"docs/runs/{report.stem}"
 
 
 def _missions(root):

@@ -1,6 +1,6 @@
 # Run report — #606 live paired instruction-load ablation, 2026-10-25
 
-RUN: mission=ablation tier=doctrine-only inventory_at=ed62fb621d3be9f8c1f1d8f43f1eb9c89903ce34 manifest=docs/runs/2026-10-25-ablation-606-live/manifest.json verifier=GREEN
+RUN: mission=ablation tier=doctrine-only inventory_at=60ab37d08e227adbc7e4075184e40da1d95f1514 manifest=docs/runs/2026-10-25-ablation-606-live/manifest.json verifier=GREEN
 
 This is an experiment run, not a catalog mission run. `mission=ablation` names the runner
 (`scripts/ablation.py run --tier live`), and `tier=doctrine-only` because the run advances no
@@ -231,23 +231,26 @@ The run directory held 1,523 retained files (17,106,097 bytes) beside them.
 ## Evidence binding
 
 Commits on `claude/run-report-606-live`, forked from origin/main `a58f822115`. The run's own commit
-is `c220067e9c`, and every input the re-derivation uses is byte-identical there and here.
+is `c220067e9c`. The unit was bound twice, and the second binding, which answers Codex's review of
+the first, is the one that counts:
 
 | Commit | What it adds |
 |---|---|
-| `880e5b65bd` | The retained evidence, `contract.json`, `rederive.py`, and `manifest.json` pinning 1,525 files by sha256. This is the unit's `head_sha`. |
-| `3a6aa2bb03` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`; the coordinator-signed dispatch record and its public key. |
-| `ed62fb621d` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
+| `880e5b65bd`, `3a6aa2bb03`, `ed62fb621d`, `10815e604b` | The first binding and its report, now superseded. |
+| `13f25e61b3` | `rederive.py` runs the run commit's own code (`git archive`) and checks each behavioral verdict, the scope violations and every open reservation (38 checks); `contract.json`'s AB-1, AB-2 and AB-4 say so; `manifest.json` pins 1,525 files. This is the unit's `head_sha`. |
+| `9ad7025187` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`; the dispatch record re-signed over the new digest. |
+| `60ab37d08e` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
 
-Re-derivation, recorded through `evidence-run.py` on `880e5b65bd`'s own tree (`wtree` equals
-`880e5b65bd^{tree}`: the binding fields were filled in only after it ran), exit 0, 39 checks:
+Re-derivation, recorded through `evidence-run.py` on `13f25e61b3`'s own tree (`wtree` equals
+`13f25e61b3^{tree}`: the binding fields were filled in only after it ran), exit 0, 38 checks:
 
 `python3 runtime/scripts/evidence-run.py --label rederive --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --artifact docs/runs/2026-10-25-ablation-606-live/rederive.txt -- python3 docs/runs/2026-10-25-ablation-606-live/rederive.py`
 
-`rederive.py` reads the retained bytes and the checkout. It checks every input the run used, and
-every runner function it calls (by source), against the run commit's. The behavioral grader is an
-LLM call, so its verdicts are not re-run. Each behavioral cell is checked for the consistency of
-its recorded grader rows instead.
+`rederive.py` reads the retained bytes. It runs the run commit's own code and data, extracted from
+`c220067e9c` with `git archive` into a temporary tree, so a later change to the runner (#688)
+cannot change what it checks. The behavioral grader is an LLM call, so its verdicts are not re-run.
+Each verdict is checked to be one `eval.py` accepts instead: one boolean row per registered
+assertion, and every passing excerpt found verbatim in the agent's stream.
 
 ### Signing
 
@@ -256,8 +259,8 @@ The signer, key and custody are those of [the #602 live report](2026-10-25-traje
 - **What was signed.**
   [`dispatch-record.json`](2026-10-25-ablation-606-live/dispatch-record.json) signs
   `manifest_id=ablation-606-live`,
-  `contract_digest=sha256:8e4d8fa708081b09191b470ccde33679433eb36f956f3c8dad8eae9fdec55ed5`
-  (`contract.json` at `880e5b65bd`) and `unit_class=report-only`.
+  `contract_digest=sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689`
+  (`contract.json` at `13f25e61b3`) and `unit_class=report-only`.
 - **The key.** The coordinator's local dispatch key, whose public half is committed as
   [`dispatch-pubkey.hex`](2026-10-25-ablation-606-live/dispatch-pubkey.hex).
 - **What it is not.** It is not the repo-wide `.orca/dispatch-pubkey` pin, and not an off-worker
@@ -267,12 +270,12 @@ The signer, key and custody are those of [the #602 live report](2026-10-25-traje
 
 | Label | Tree | Exit | Outcome |
 |---|---|---|---|
-| `verifier` | `3a6aa2bb03` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier.txt`](2026-10-25-ablation-606-live/verifier.txt) |
+| `verifier` | `9ad7025187` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier.txt`](2026-10-25-ablation-606-live/verifier.txt) |
 
 It ran with `PATH=<stub claude dir>:<mise python 3.13 bin>:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`
 and `SHELL=/bin/sh`:
 
-`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --artifact docs/runs/2026-10-25-ablation-606-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --contract-source docs/runs/2026-10-25-ablation-606-live/contract.json@880e5b65bdf80dcf02ab44346dc01c1ee005d319 --contract-digest sha256:8e4d8fa708081b09191b470ccde33679433eb36f956f3c8dad8eae9fdec55ed5 --unit-class report-only --dispatch-record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json@3a6aa2bb0367d39a454ab934420c13c50e4d1a43 --dispatch-pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex@3a6aa2bb0367d39a454ab934420c13c50e4d1a43`
+`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --artifact docs/runs/2026-10-25-ablation-606-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --contract-source docs/runs/2026-10-25-ablation-606-live/contract.json@13f25e61b3b85dc189167e8c1b3211cdf4504d26 --contract-digest sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689 --unit-class report-only --dispatch-record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json@9ad70251874f28e6559c258f9b07c3ffcd7ecea5 --dispatch-pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex@9ad70251874f28e6559c258f9b07c3ffcd7ecea5`
 
 `verify.py` skips the command ledger and the source-binding control for a `report-only` unit, so
 GREEN does not vouch for either. What stands for them is the re-derivation's recorded exit-0 run on
@@ -285,6 +288,27 @@ Re-check:
 - `python3 runtime/scripts/dispatch-sign.py verify --record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json --pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex`
 - `python3 runtime/scripts/run_report.py docs/runs/2026-10-25-ablation-606-live.md --mission ablation --tier doctrine-only`
 - `python3 runtime/scripts/inventory.py check docs/runs/2026-10-25-ablation-606-live.md`
+
+## Review and re-binding
+
+Codex reviewed the first binding at `10815e604b` and found the recommendation supported by the
+evidence, but held merging (NO-GO) on four gaps in the checker. Each could have certified false
+safety evidence:
+
+- **Behavioral scope violations were not re-derived.** A protected file edited, with the failure
+  recorded and `scope_violations` left at 0, would have passed. The checker now derives every scope
+  violation from the retained workspace by `grade_behavioral`'s own rule, and compares it.
+- **A grader verdict's rows were not checked.** Empty or unrelated rows would have passed. Each
+  verdict must now be one `eval.py` accepts, as above.
+- **The by-source comparison missed the helpers that load modules** (`eval_mod`, `events_mod`).
+  The checker now runs the run commit's whole tree instead of comparing sources.
+- **The arm-cap replay counted only the newest reservation.** Moving every start ahead of every
+  settlement would have passed. The ledger is now checked in its exact order, at the registered
+  reservations, with every open reservation counted at every start.
+
+Discrepancy controls fail the new checks: a protected `src/auth.py` edited with its failure
+recorded fails the scope check, a verdict's rows removed fails the verdict check, and every agent
+start moved ahead of the settlements fails both ledger checks.
 
 ## Gates
 
@@ -1803,18 +1827,18 @@ b631bf96a84c5c999d1bd40d8955d21f5188c66b8d5b2982ab9b103bd277efc4  docs/runs/2026
 6b5ecb225fb79ed385384fd581e8a1bd7f6c5b6e470258acbfc9c884007013d7  docs/runs/2026-10-25-ablation-606-live/cells/ship-it/trajectory-HC-01/r4/reduced/events.jsonl
 f6cadc4393534dd7ad4642854107388881e18fb8006d09c21739474887dba69b  docs/runs/2026-10-25-ablation-606-live/cells/ship-it/trajectory-HC-01/r4/reduced/stream.jsonl
 5aeb399d0bd281a4f2e3143522bc0a57e815628738e2ca3bbb73dbcfe166ad1b  docs/runs/2026-10-25-ablation-606-live/cells/ship-it/trajectory-HC-01/r4/reduced/trajectory.jsonl
-8e4d8fa708081b09191b470ccde33679433eb36f956f3c8dad8eae9fdec55ed5  docs/runs/2026-10-25-ablation-606-live/contract.json
+16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689  docs/runs/2026-10-25-ablation-606-live/contract.json
 1f4d5db594495b1c4b0a15ec8ccc7008b6be1079b498ad2109da1530b70cdcaa  docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex
-8981980f6a123571b0b6a31b10835585975140c8aa37b02388a492900a2ca7e9  docs/runs/2026-10-25-ablation-606-live/dispatch-record.json
+4574d7befd179e4806e6e6b4719e75682b3559b3a32f0f0cb422f0b10c5f71b8  docs/runs/2026-10-25-ablation-606-live/dispatch-record.json
 dc86de142fa05f7aa36d029663a56a9f54d25f077b6c09dc343b4153eeb8c017  docs/runs/2026-10-25-ablation-606-live/dry-run/receipts/20261025T100814Z-ablation-591867d0.json
 fbf367794c685d8003195415c2614f3b563d3f639cd9bb3c6bfeb981537bcd8d  docs/runs/2026-10-25-ablation-606-live/dry-run/receipts/20261025T100814Z-ablation-591867d0.log
-12aebf1a65dcb8a700cc7af0ef87da02de23cc10a2bfba8fb34d6a5e4fc741ad  docs/runs/2026-10-25-ablation-606-live/manifest.json
+34af9e9d4647bfe7313857eb4419738e85a63a4cab98b729660496494ae15b96  docs/runs/2026-10-25-ablation-606-live/manifest.json
 f0d2f1f27b4508726b1767143709831e5ea338fbb9caf775ce2d28cf6afaa973  docs/runs/2026-10-25-ablation-606-live/omitted.sha256
 52e8f6923807f5c58761108f3658a0a26f760b82d33c02112c60b4306f8039a0  docs/runs/2026-10-25-ablation-606-live/receipts/20261025T105506Z-ablation-d50b399f.broker/spend.jsonl
 d164e5e2ae1c41814f3dbd20104bd65aa13f405a32c3f4ac4dce9ecff6281c35  docs/runs/2026-10-25-ablation-606-live/receipts/20261025T105506Z-ablation-d50b399f.json
 fe53dd025262daf6d9ff267273d752c32b4546ca844c931b07a5ced9608dd8e3  docs/runs/2026-10-25-ablation-606-live/receipts/20261025T105506Z-ablation-d50b399f.log
-8c6efad993a2590cc8797574472b6b44bdfb9d0738f467a33d005262da53d3e0  docs/runs/2026-10-25-ablation-606-live/rederive.py
-6384d257d0d076419b5906a7f6c14f9c114cefa1ef13dbe14106c61d8b3bc3f5  docs/runs/2026-10-25-ablation-606-live/rederive.txt
+bf43e5a8b6afd5bfa7d2dae36eafdb79c7b811877c4d84504b7e85365293cd28  docs/runs/2026-10-25-ablation-606-live/rederive.py
+e99676baa84191ae90e8e1d8e2e07fcd6d2e77da4d46962b39691404a9658bc1  docs/runs/2026-10-25-ablation-606-live/rederive.txt
 6e6c47601565cc053625aa696ef3234e52a3efde00b67d83b72e15a1a14ff193  docs/runs/2026-10-25-ablation-606-live/report.md
 4ee64c2242d5cafc3cd8076e56ed3a91743dd7b2447d0ae4b91c956b4043782e  docs/runs/2026-10-25-ablation-606-live/results.json
 f9341e5ac3cfb31fa77cba76c7228d3aaed382ccaea9671d1c73654d916d23c5  docs/runs/2026-10-25-ablation-606-live/spend.jsonl

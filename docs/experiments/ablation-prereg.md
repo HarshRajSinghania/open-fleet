@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `9050682917bc8c95b6eb2e187a1ea2eb550a7cc0c9f066d265b9203775338bec`.
+Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `244ae9f45880faeff9dd0426b2c0fcd635c54db3ef0862d1ce6d0a4e2eae0391`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. **The live paired runs have not happened, and no

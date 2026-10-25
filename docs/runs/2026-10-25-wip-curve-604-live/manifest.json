@@ -2,9 +2,9 @@
  "unit": "wip-curve-604-live",
  "claim": "#604 version 2, run in full in the container harness at bacb5f8dd8 under the owner's USD 150 authorisation: the 12 scheduled runs (4 WIP conditions x 3 repetitions) with claude-sonnet-5-5 on Claude Code 2.1.304, every one complete and protocol-compliant; throughput per hour b1r1 119.64, b3r1 202.71, b6r1 194.08, b6r2 247.16, with rework and conflicts rising with WIP. The pre-registered decision rule recommends keep (no criterion for a change met). The report re-derives field for field from the retained runs; the in-harness verify found 0 binding problems. Broker-settled USD 6.290480 for version 2 (USD 0.455626 for version 1, superseded), notional on a subscription.",
  "base_sha": "6f02e410dab2219966e297590f48592c8764c831",
- "head_sha": "",
+ "head_sha": "9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
  "contract": {
-  "source": "",
+  "source": "docs/runs/2026-10-25-wip-curve-604-live/contract.json@9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
   "digest": "sha256:96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5",
   "criterion_ids": [
    "WC-1",
@@ -58,7 +58,7 @@
   "did": "re-derived every figure the report states from the retained bytes alone: the runner's own build_report over the retained runs (oracle re-runs substituted by their bound transcripts), both spend ledgers, every launch receipt, and version 1's refused credential",
   "command": "python3 docs/runs/2026-10-25-wip-curve-604-live/rederive.py",
   "artifact": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt",
-  "result": ""
+  "result": "rederive.py exit 0: 63 checks ok, 0 FAIL, on the content of head_sha"
  },
  "toolchain": "python 3.13.15 (macOS arm64) for the binding; the run: python 3.13.15-slim and Claude Code 2.1.304 in open-fleet-live:claude-2.1.304 (sha256:59c37b04d715)",
  "artifacts": [
@@ -2837,7 +2837,31 @@
   {
    "path": "docs/runs/2026-10-25-wip-curve-604-live/version-1/receipts/20261025T054651Z-wip_curve-99eecc14.log",
    "sha256": "6411cde4c1781f1da42283f6253e9d492bd0a536bed8cd0f46bf06648d8d1dfb"
+  },
+  {
+   "path": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt",
+   "sha256": "8788be2c3a397b6ee99fc552336e8c1ff6e58f73e81e29b98439f4dc8cd2880e"
+  },
+  {
+   "path": "docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json",
+   "sha256": "9fc1c3ce8d9b92e3d12cce57becde18ec8760172fabe70cc802255d3327ef144"
+  },
+  {
+   "path": "docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex",
+   "sha256": "1f4d5db594495b1c4b0a15ec8ccc7008b6be1079b498ad2109da1530b70cdcaa"
   }
  ],
- "commands": []
+ "commands": [
+  {
+   "label": "rederive",
+   "ts": "2026-10-25T09:51:50Z",
+   "cmd": "python3 docs/runs/2026-10-25-wip-curve-604-live/rederive.py",
+   "cmd_sha256": "12166288354f2569a8da7d6e13799b0221659a9851a22fe08877e593f3c5550e",
+   "exit": 0,
+   "duration_s": 4.23,
+   "commit": "9ebdb656dd86dcc6ac58e395146667f8c1b4512d",
+   "wtree": "7af5e70576955453e86dc2f852b0f82bf7a98d74",
+   "artifact": "docs/runs/2026-10-25-wip-curve-604-live/rederive.txt"
+  }
+ ]
 }

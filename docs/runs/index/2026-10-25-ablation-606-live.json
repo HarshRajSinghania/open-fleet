@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-25",
+  "report": "2026-10-25-ablation-606-live.md",
+  "mission": "[ablation](2026-10-25-ablation-606-live.md) (experiment, not a mission)",
+  "target": "this catalog's activation design — #606's paired instruction-load ablation, the registered design in the container harness: 4 missions × 9 tasks × 5 repeats × 2 arms, `claude-sonnet-5-5` on Claude Code 2.1.304",
+  "ran_as": "self-run",
+  "binds": "yes — at `doctrine-only`, advancing no tier; verifier GREEN under a coordinator-signed dispatch record",
+  "outcome": "the registered rule returns SUCCESSFUL_REDUCTION for all four missions, but task success was 0/180 in each arm (the registered agent command could not run tests or commit) and the reduced arm's deferred documents were unreachable: the run cannot support a reduction, and the recommendation is to keep the current activation; no violation in either arm; input tokens 42–62% lower in the reduced arm; USD 49.91 notional (broker 61.87) of a USD 750 cap",
+  "summary": "the 2026-10-25 #606 live paired ablation, an experiment rather than a mission run, bound at `doctrine-only` with its verifier GREEN under a coordinator-signed dispatch record"
+}

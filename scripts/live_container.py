@@ -96,6 +96,8 @@ SECRET = "/run/secrets/claude_token"  # the token: a read-only file mount in the
 BROKER_SCRIPT, BROKER_PORT = "scripts/live_broker.py", 8787
 BROKER_LIMITS = {"pids": 64, "memory": "512m", "cpus": "1"}
 WRAPPER_DIR = "scripts/live_container_bin"  # its `claude` sends every model call to the broker
+# The arm's claude settings (--per-call-usd), read-only; the wrapper reads the same path.
+CLAUDE_SETTINGS = "/run/open-fleet/claude.json"
 # The container's whole PATH: the wrapper first, and never ~/.local/bin, where the raw binary lies.
 CONTAINER_PATH = f"{REPO_IN}/{WRAPPER_DIR}:/usr/local/bin:/usr/bin:/bin"
 ARMS = {
@@ -296,7 +298,7 @@ def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeou
             "--ledger", f"{LEDGER_IN}/spend.jsonl", "--cap-usd", repr(float(cap_usd)), "--port", str(BROKER_PORT)]
 
 
-def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation, limits):
+def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation, limits, settings=None):
     """`docker create` for the arm: the broker's network namespace and nothing else of it, and no
     credential: its environment is the image's and PATH alone. No privileged flag, no host
     namespace, no capability, no device."""
@@ -306,6 +308,7 @@ def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation,
             "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
             "--mount", f"type=bind,src={results},dst={RESULTS_IN}",
             "--mount", f"type=bind,src={attestation},dst={containment.ATTESTATION},readonly",
+            *(["--mount", f"type=bind,src={settings},dst={CLAUDE_SETTINGS},readonly"] if settings else []),
             "--workdir", RESULTS_IN, image_id, *cmd]
 
 
@@ -453,6 +456,8 @@ def run(args):
         raise Refused("--timeout must be a positive number of seconds")
     if not args.cap_usd > 0:
         raise Refused("--cap-usd must be a positive number of dollars: the broker refuses every call past it")
+    if args.per_call_usd is not None and not 0 < args.per_call_usd <= args.cap_usd:
+        raise Refused("--per-call-usd must be a positive number of dollars, at most --cap-usd")
     if why := output_problem(args.arm, args.arm_args):
         raise Refused(why)
     results = Path(args.results).expanduser().resolve()
@@ -507,6 +512,7 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
                           "cap_usd": args.cap_usd, "spend": None,
                           "mounts": {REPO_IN: "the export of the commit, read-only", SECRET: "the token file, read-only",
                                      LEDGER_IN: str(ledger_dir)}},
+               "per_call_usd": args.per_call_usd,
                "wall_clock_limit_s": args.timeout, "started_at": None, "ended_at": None, "elapsed_s": None,
                "timed_out": False, "interrupted": None, "refused": None, "exit_status": None,
                "destroyed": {"verified": False, "check": None, "output": "no container was created", "errors": []},
@@ -522,13 +528,20 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
         doc = {"schema": containment.ATTESTATION_SCHEMA, "nonce": nonce, "commit": commit, "arm": args.arm,
                "image": image["id"], "created_at": now()}
         write_new(attestation, (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode(), mode=0o644)
+        settings = None
+        if args.per_call_usd is not None:  # every claude call the arm makes carries this --max-budget-usd
+            settings = staging / "claude.json"
+            limit = repr(args.per_call_usd)  # the validated amount itself, never rounded (Codex at cb51f73bb2)
+            write_new(settings, (json.dumps({"max_budget_usd": limit}) + "\n").encode(), mode=0o644)
+            receipt["container"]["mounts"][CLAUDE_SETTINGS] = "the claude settings, read-only"
         results.mkdir(parents=True, exist_ok=True)
         receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
         ledger_dir.mkdir(mode=0o700)
         for role in ("broker", "arm"):
             argv = (broker_argv(image["id"], nonce, export, token_file, ledger_dir, args.cap_usd, args.timeout)
                     if role == "broker" else
-                    arm_argv(image["id"], nonce, args.arm, ids[0], cmd, export, results, attestation, limits))
+                    arm_argv(image["id"], nonce, args.arm, ids[0], cmd, export, results, attestation, limits,
+                             settings))
             attempted = True  # from here a container may exist whose id never comes back (Codex at 3c01b90b5e)
             try:
                 proc = docker(*argv, timeout=CREATE_TIMEOUT_S)
@@ -627,6 +640,9 @@ def parser():
     r.add_argument("--timeout", type=float, required=True, help="wall-clock limit, seconds")
     r.add_argument("--cap-usd", type=float, required=True, dest="cap_usd",
                    help="the spend cap the broker enforces on every model call: the arm's authorised cap")
+    r.add_argument("--per-call-usd", type=float, default=None, dest="per_call_usd",
+                   help="pass claude --max-budget-usd this on every call the arm makes (a registration's per-call "
+                        "limit, e.g. #604's 1.60)")
     r.add_argument("--token-file", default=TOKEN_FILE, dest="token_file",
                    help=f"the subscription token, mode 0600 (default {TOKEN_FILE})")
     r.add_argument("--receipts", default=RECEIPTS, help=f"where the receipt goes (default {RECEIPTS})")

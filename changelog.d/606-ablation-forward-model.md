@@ -7,7 +7,9 @@
   `grader_cmd` show it. A command holding an option terminator (`--`), after which the appended
   flags would be prompt text, or naming `--fallback-model`, is refused too. Each cell records
   every model its agent's stream names (the `system/init` line, assistant messages and the
-  result's `modelUsage`) and its grader's `modelUsage`. In the live tier, a completed run naming
-  none, or any other, is a failed cell, and the run stops there (`MODEL_MISMATCH`), so nothing
-  more is paid for on a model the results may not name. The results add `models_observed`, as
-  #602's live runner does.
+  result's `modelUsage`) and its grader's `modelUsage`, read even from a grader that timed out. In
+  the live tier, a completed call naming none, or any call naming another, is a failed cell, and
+  the run stops there (`MODEL_MISMATCH`), so nothing more is paid for on a model the results may
+  not name. An unmeasured grader keeps its registered rule (charged in full, the run going on),
+  with its cell failed. A cell cut short by a signal keeps the models its calls already wrote.
+  The results add `models_observed`, as #602's live runner does.

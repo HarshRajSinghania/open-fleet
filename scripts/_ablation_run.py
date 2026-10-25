@@ -265,18 +265,22 @@ while time.monotonic() < deadline:
         break
     time.sleep(0.02)
 answer, cost, models = ("" if killed else out), None, []
-if fmt == "claude-json" and not killed:
+if fmt == "claude-json":
     try:
         obj = json.loads(out)
     except ValueError:
         obj = None
     if isinstance(obj, dict):
-        answer = obj["result"] if isinstance(obj.get("result"), str) else ""
-        value = obj.get("total_cost_usd")
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-            cost = value
-        if isinstance(obj.get("modelUsage"), dict):  # every model the call billed
+        # Every model the call billed, kept even from a call that timed out: a model seen is
+        # evidence, whatever became of the verdict (#688 review). A killed call's verdict and
+        # cost are not taken; it is charged its whole reservation.
+        if isinstance(obj.get("modelUsage"), dict):
             models = sorted(str(m) for m in obj["modelUsage"])
+        if not killed:
+            answer = obj["result"] if isinstance(obj.get("result"), str) else ""
+            value = obj.get("total_cost_usd")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                cost = value
 if sink:
     with open(sink, "w", encoding="utf-8") as fh:
         json.dump({"cost_usd": cost, "format": fmt, "exit": proc.returncode, "killed": killed,
@@ -949,10 +953,10 @@ def run_cell(ctx, pair, arm):
         if completed and not graded["orphans"]:
             ledger.settle(cell_id, "grader", grader_charge(graded, model, tier),
                           graded["grader_cost_usd"], graded["grader_killed"])
-        if tier == "live" and graded["grader_called"] and not graded["grader_killed"]:
-            # The grader is checked the same way, on the modelUsage of its JSON result, and a
-            # grader that ran the wrong model fails the cell it graded.
-            if not graded["grader_models"]:
+        if tier == "live" and graded["grader_called"]:
+            # The grader is checked the same way, on the modelUsage of its JSON result (read even
+            # from one that timed out), and a grader that ran the wrong model fails the cell.
+            if not graded["grader_models"] and not graded["grader_killed"]:
                 errors.append("the grader reported no model (no modelUsage in its result)")
             errors += [f"the grader ran model {m!r}, not the requested {requested!r}"
                        for m in graded["grader_models"] if m != requested]
@@ -1195,6 +1199,24 @@ class SpendLedger:
         return round(sum(charged for charged, _settled in self.calls(run, cell).values()), 6)
 
 
+def models_on_disk(out, active):
+    """The model fields a cell cut short still has on disk: its agent's stream once written (before
+    grading starts) and its grader's usage file once the meter wrote it (#688 review)."""
+    pair, arm = active["pair"], active["arm"]
+    cell_dir = Path(out) / "cells" / pair["mission"] / pair["task"] / f"r{pair['repeat']}" / arm
+    fields = {}
+    stream = cell_dir / "stream.jsonl"
+    if stream.is_file():
+        text = stream.read_text(encoding="utf-8", errors="replace")
+        fields.update(model=stream_model(text), models=stream_models(text))
+    try:
+        usage = json.loads((cell_dir / "grader-usage.json").read_text(encoding="utf-8"))
+        fields["grader_models"] = [m for m in usage.get("models") or [] if isinstance(m, str)]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return fields
+
+
 def interrupted_cell(active, ledger, code):
     """The cell a signal cut short, kept in the results with what the ledger charged it."""
     pair, arm, cell_id = active["pair"], active["arm"], active["cell"]
@@ -1428,10 +1450,15 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
                 elif tier == "live" and cell["cost_usd"] is None:
                     stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: charged its full reservation; the "
                                f"harness reports no usage ({'; '.join(cell['usage_unavailable'])})")
-                elif tier == "live" and not cell["agent_killed"] and (
-                        cell.get("model") is None
+                elif tier == "live" and (
+                        (cell.get("model") is None and not cell["agent_killed"])
                         or (set(cell.get("models") or []) | set(cell.get("grader_models") or []))
-                        - {ctx["model_requested"]}):
+                        - {ctx["model_requested"]}
+                        # A measured grader result that bills no model. An unmeasured one (no
+                        # parsable result) keeps the registered rule: charged its whole
+                        # reservation, its cell failed, the run going on.
+                        or (cell.get("grader_called") and not cell.get("grader_killed")
+                            and cell.get("grader_cost_usd") is not None and not cell.get("grader_models"))):
                     # The --model it was handed did not hold, or the run did not say which model it
                     # ran: every further cell would be paid for on a model the results may not name.
                     named = sorted(set(cell.get("models") or []) | set(cell.get("grader_models") or []))
@@ -1451,7 +1478,9 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
         interrupted = stop.code if isinstance(stop.code, int) else 1
         active = ctx["active"]
         if active and not any(c["cell"] == active["cell"] for c in cells):
-            cells.append(interrupted_cell(active, ledger, interrupted))  # charged what the ledger holds
+            cut = interrupted_cell(active, ledger, interrupted)  # charged what the ledger holds
+            cut.update(models_on_disk(ctx["out"], active))  # and which models its calls ran (#688)
+            cells.append(cut)
         spent = ledger.total(run_id)
         stopped = (f"INTERRUPTED (exit {interrupted}): every live child process group was killed "
                    "and reaped before the runner exited")

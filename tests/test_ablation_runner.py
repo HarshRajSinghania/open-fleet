@@ -137,10 +137,14 @@ STUB = textwrap.dedent(r'''
         if sink:
             with open(sink + ".argv.json", "w", encoding="utf-8") as fh:
                 json.dump(sys.argv, fh)
-        if mode == "grader-json":
-            print(json.dumps({"type": "result", "result": "not a verdict",
-                              "total_cost_usd": float(opt("--cost", "0")),
-                              "modelUsage": {opt("--usage-model", opt("--model", "stub")): {}}}))
+        if mode in ("grader-json", "grader-json-hang"):
+            result = {"type": "result", "result": "not a verdict", "total_cost_usd": float(opt("--cost", "0"))}
+            if "--no-usage-model" not in args:
+                result["modelUsage"] = {opt("--usage-model", opt("--model", "stub")): {}}
+            print(json.dumps(result), flush=True)
+            if mode == "grader-json-hang":  # a whole answer, then no exit: the meter's timeout kills it
+                import time
+                time.sleep(60)
         else:
             print("not json")
         sys.exit(0)
@@ -826,6 +830,16 @@ class InterruptedSpendIsRecorded(SafetyNet):
         self.assertEqual(cell["charged_usd"], 1.0 + self.GRADER, "agent measured, grader at reservation")
         self.assertEqual(results["cost"]["spent_usd"], 1.0 + self.GRADER)
 
+    def test_an_interrupt_during_the_grader_keeps_the_models_its_agent_ran(self):
+        # #688 review: the cell cut short during grading lost the model its agent's stream named.
+        with mock.patch.object(runner.eval_mod(), "_grade_trace", side_effect=SystemExit(128 + signal.SIGHUP)):
+            results = self.interrupted(self.live(20), 129)
+        cell = results["cells"][0]
+        self.assertTrue(cell["interrupted"])
+        self.assertEqual(cell["model"], "stub-not-a-model")
+        self.assertEqual(cell["models"], ["stub-not-a-model"])
+        self.assertEqual(results["models_observed"], ["stub-not-a-model"])
+
     def test_a_later_run_into_the_same_directory_counts_the_interrupted_spend(self):
         with mock.patch.object(runner, "run_group", side_effect=SystemExit(128 + signal.SIGTERM)):
             self.interrupted(self.live(20), 143)
@@ -916,7 +930,8 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
     MODEL = "stub-model-a"
     AGENT, GRADER = 5.0, 1.0  # the registration's per-call reservations
 
-    def run_live(self, agent_extra=(), grader_extra=(), trajectory=False, code_expected=0):
+    def run_live(self, agent_extra=(), grader_extra=(), trajectory=False, code_expected=0,
+                 grader_mode="grader-json"):
         prereg = small_live_prereg()
         if trajectory:  # CL-01's pinned recording grades PASS, so only the model can fail its cell
             prereg["tasks"]["trajectories"]["cases"] = ["CL-01"]
@@ -929,7 +944,7 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
         code, _stdout, err = run_main(
             ["--prereg", str(path), "run", "--tier", "live", "--cost-cap-usd", "50",
              "--harness-cmd", self.stub_cmd("plain", "--recording", str(recording), *agent_extra),
-             "--grader-cmd", self.stub_cmd("grader-json", *grader_extra),
+             "--grader-cmd", self.stub_cmd(grader_mode, *grader_extra),
              "--model", self.MODEL, "--harness-version", "0", "--out", str(out)])
         self.assertEqual(code, code_expected, err)
         return json.loads((out / "results.json").read_text()), out
@@ -1031,6 +1046,44 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
         self.assertIn(f"the grader ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
         self.assertFalse(cell["success"])
         self.assertIn("stub-model-b", results["models_observed"])
+
+    def test_a_grader_reporting_no_model_fails_its_cell_and_stops_the_run(self):
+        # #688 review: a completed grader whose result bills no model is unverified spend.
+        results, _out = self.run_live(grader_extra=("--no-usage-model",), code_expected=1)
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        self.assertFalse(results["complete"])
+        cell = results["cells"][0]
+        self.assertEqual(cell["grader_models"], [])
+        self.assertIn("the grader reported no model (no modelUsage in its result)", cell["errors"])
+        self.assertFalse(cell["success"])
+
+    def test_an_unmeasured_grader_fails_its_cell_without_stopping_the_run(self):
+        # The registered rule for an unmeasured grader call stands: charged its whole reservation,
+        # the run going on. Its model cannot be observed, so its cell fails rather than passes.
+        results, _out = self.run_live(grader_mode="grader-text")
+        self.assertIsNone(results["stopped"])
+        graded = [c for c in results["cells"] if c["grader_called"]]
+        self.assertTrue(graded)
+        for cell in graded:
+            self.assertIsNone(cell["grader_cost_usd"], cell["cell"])
+            self.assertEqual(cell["grader_models"], [], cell["cell"])
+            self.assertIn("the grader reported no model (no modelUsage in its result)", cell["errors"])
+            self.assertFalse(cell["success"], cell["cell"])
+
+    def test_a_timed_out_grader_still_reports_the_model_it_billed(self):
+        # #688 review: a grader that answered on another model and then hung was killed by the
+        # meter's timeout, and the model it named was dropped with its verdict.
+        with mock.patch.object(runner.eval_mod(), "GRADER_TIMEOUT_S", 3):
+            results, _out = self.run_live(grader_extra=("--usage-model", "stub-model-b"), code_expected=1,
+                                          grader_mode="grader-json-hang")
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        cell = results["cells"][0]
+        self.assertTrue(cell["grader_killed"], cell["cell"])
+        self.assertIsNone(cell["grader_cost_usd"], "a killed grader's cost is not taken")
+        self.assertEqual(cell["grader_models"], ["stub-model-b"])
+        self.assertIn(f"the grader ran model 'stub-model-b', not the requested '{self.MODEL}'", cell["errors"])
 
     def test_the_stub_tier_is_handed_no_model(self):
         out = self.tmpdir() / "out"

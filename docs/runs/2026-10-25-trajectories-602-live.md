@@ -133,9 +133,11 @@ no mission's proof tier. It also leaves the published table alone: the live-case
   API reported, priced by the broker's list: USD 0.985833, 2.0% of the USD 50 cap. That is the
   receipt's sum of the rounded per-call charges. The ledger's own running total, which accumulates
   the unrounded charges, ends at 0.985838.
-- **They agree on every call and token.** The 25 streams hold 115 distinct API messages, one per
-  broker call. The token counts match exactly: 230 input, 177,387 cache-write (all 5-minute),
-  1,745,401 cache-read and 19,283 output tokens.
+- **They agree on the call count and on the token totals.** The 25 streams hold 115 distinct API
+  messages, as many as the broker's calls, and the summed token counts match exactly: 230 input,
+  177,387 cache-write (all 5-minute), 1,745,401 cache-read and 19,283 output tokens. `rederive.py`
+  checks the count and these sums. It does not pair each message with its broker call, so it does
+  not rule out usage moved between calls with the sums unchanged (Greptile on this PR).
 - **The USD 0.174538 between them is the cache-read rate alone.** Claude Code's per-cell figures
   re-derive exactly at USD 0.10 per million cache-read tokens for `claude-sonnet-5-5`. The broker
   charges USD 0.20, its list price as of 2026-10-06. Everything else prices the same: USD 2 in,

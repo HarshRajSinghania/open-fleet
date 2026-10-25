@@ -1,4 +1,0 @@
-NOTE: redaction: gitleaks at /opt/homebrew/bin/gitleaks is worker-writable — it can only add hits above the built-in floor, so it is consulted and recorded (h409 R2)
-NOTE: --base not given — ancestry check skipped (pre-merge/offline)
-NOTE: dispatch record signature verified against the supplied key (#135) — a soundness boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)
-verify: OK — all required checks passed

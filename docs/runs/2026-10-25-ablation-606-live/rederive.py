@@ -214,7 +214,7 @@ def checks(here, code):
                   == (rec["baseline"]["tokens"], rec["reduced"]["tokens"], rec["delta_tokens"])
                   and got["obligation_check"] == rec["obligation_check"] and rec["obligation_check"]["passed"])
             payloads[mission] = pay
-            base_text = (ROOT / "skills" / mission / "SKILL.md").read_text(encoding="utf-8")
+            base_text = (code / "skills" / mission / "SKILL.md").read_text(encoding="utf-8")
             cues[mission] = {"baseline": api.deferred_cues(base_text), "reduced": api.deferred_cues(red_text)}
 
     # AB-3: the design and every cell's task text.
@@ -362,6 +362,23 @@ def checks(here, code):
 
     # AB-2: the broker's ledger.
     opened = [e for e in bledger if e["event"] == "open"]
+    # The ledger's shape before any total: one open, first; then calls 1..N each started once, in
+    # order, and settled once after its start; no other event. A duplicated or reused call id, a
+    # settle with no open start, or a start never settled fails here, before a dict could hide it.
+    start_ids = [e["call"] for e in bledger if e["event"] == "start"]
+    settle_ids = [e["call"] for e in bledger if e["event"] == "settle"]
+    shape, live = bledger[:1] == opened and len(opened) == 1, set()
+    for e in bledger[1:]:
+        if e["event"] == "start":
+            shape &= e["call"] not in live
+            live.add(e["call"])
+        elif e["event"] == "settle":
+            shape &= e["call"] in live
+            live.discard(e["call"])
+        else:
+            shape = False
+    shape &= (start_ids == list(range(1, len(start_ids) + 1)) and sorted(settle_ids) == start_ids
+              and not live)
     bstarts = {e["call"]: e for e in bledger if e["event"] == "start"}
     bsettles = {e["call"]: e for e in bledger if e["event"] == "settle"}
     prices = opened[0]["prices_usd_per_mtok"][MODEL] if len(opened) == 1 else None
@@ -390,7 +407,7 @@ def checks(here, code):
           f"{MODEL}, each started and settled once; complete calls priced at list, the {len(incomplete)} that "
           f"got no response ({incomplete}) settled at their whole reservation; none refused",
           len(opened) == 1 and opened[0]["cap_usd"] == 750.0 and prices == list(broker.PRICES[MODEL])
-          and sorted(bstarts) == sorted(bsettles) == list(range(1, len(bstarts) + 1)) and priced
+          and shape and priced
           and not any(e["event"] == "refuse" for e in bledger))
     check(f"broker cap held at every start (peak USD {peak:.6f}); total USD {bspent} = the receipt's settled "
           "USD, 0 refused, 0 open", cap_held and not open_ and bspent == spend["settled_usd"]

@@ -1887,6 +1887,12 @@ class LiveRunner(SafetyNet):
         self.assertFalse(cell["ci_log_verified"])
         self.assertFalse(cell["arrived"], cell)
 
+    def test_the_task_asks_for_ci_log_on_its_own(self):
+        # a compound command's output is never a verified delivery (compose), so the task says so
+        context = live_mod.arrival_context(engine, case_named("TT-01"), {"ci": True},
+                                           table_for(case_named("TT-01")), self.tmpdir())
+        self.assertIn("Run `ci-log` on its own, as a command by itself", context)
+
     def test_no_byte_of_a_ci_log_ever_runs(self):
         # PR #682 review: a NUL split the here-document's delimiter, and the payload after it ran
         cell_dir = self.tmpdir()

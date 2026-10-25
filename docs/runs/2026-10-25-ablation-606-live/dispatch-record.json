@@ -1,8 +1,0 @@
-{
-  "record": {
-    "manifest_id": "ablation-606-live",
-    "contract_digest": "sha256:8e4d8fa708081b09191b470ccde33679433eb36f956f3c8dad8eae9fdec55ed5",
-    "unit_class": "report-only"
-  },
-  "sig_b64": "0xIY7yadpp3STSX4o1h71uR5NLZiyghWGtY/Tk5fJ7qJY16Y0t/FGHXwyUiIghO6S8anf2MtgjXmoDIjPwJ7AA=="
-}

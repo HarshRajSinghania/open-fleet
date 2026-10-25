@@ -10,23 +10,24 @@ behavioral workspace state, both spend ledgers and the caps at every call, the p
 analysis and decision, and the record of the superseded launch, and compares them with what
 results.json, report.md, the ledgers and the receipts say. Any disagreement is a FAIL and exit 1.
 
-The paired runner changed after the run (#688). Every runner function this script calls is checked
-to be the run commit's own, by its source; every other input is checked byte-identical to the run
-commit's. The bound record runs it at head_sha. At a later checkout an input that moved fails that
-check, and that is a finding about the change, not about the run. It calls no model and runs no agent. The grader's verdicts are not re-run: an LLM call
+It runs the run commit's own code, not the checkout's: the runner, its analysis, the oracles, the
+variant generator, events.py, the broker's price list and the registration are extracted from
+c220067e9c with `git archive` into a temporary tree and loaded from there. The paired runner changed
+after the run (#688), and a later checkout may change more; neither can change what this checks. It calls no model and runs no agent. The grader's verdicts are not re-run: an LLM call
 cannot be re-derived, so each behavioral cell is checked for the consistency of its recorded
 assertion rows instead. Stdlib only; scratch work goes to temporary directories.
 
     python3 docs/runs/2026-10-25-ablation-606-live/rederive.py [RUN_DIR]
 """
-import ast
 import hashlib
+import io
 import importlib.util
 import json
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -49,18 +50,9 @@ FIRST_ARM_ARGS = ["run", "--tier", "live", "--cost-cap-usd", "740", "--model", M
                   HARNESS_VERSION, "--harness-cmd",
                   "python3 /repo/scripts/trajectory_harness.py claude -p --verbose --output-format stream-json "
                   "--permission-mode acceptEdits", "--out", "/results/out"]
-# The inputs whose bytes decide the run, besides the runner: each must be the run commit's.
-INPUTS = ["scripts/ablation.py", "scripts/eval.py", "scripts/_trajectories.py", "scripts/validate.py",
-          "scripts/trajectory_harness.py", "runtime/scripts/events.py", "scripts/live_broker.py",
-          "scripts/live_container.Dockerfile", "docs/experiments/ablation-prereg.json",
-          "evals/adversarial-trajectories.json", "evals/trajectories/contract.json"]
-# The runner functions this script calls, each checked to be the run commit's by its source.
-RUNNER_FUNCS = ["registered_tasks", "plan_pairs", "fill", "_trajectory_case", "materialize",
-                "stream_sequence", "deferred_reads", "usage_of", "grade_trajectory", "reservation",
-                "agent_charge", "grader_charge", "charge", "bootstrap_ci", "mcnemar_p", "binary_metrics",
-                "_value", "summarize", "_violations", "_verdict", "_failures", "_fmt", "render_markdown",
-                "spend_model"]
-RUNNER_CONSTS = ["RESULTS_SCHEMA", "ARMS", "CLOCK", "METRICS", "VERDICTS"]
+# What the re-derivation needs of the run commit's tree: the code, its data, and the catalog the
+# variant generator and the oracles read.
+CODE_PATHS = ("scripts", "runtime", "evals", "skills", "playbooks", "docs/experiments")
 BINDING = {"contract.json", "rederive.py", "rederive.txt", "manifest.json", "dispatch-record.json",
            "dispatch-pubkey.hex"}
 FAILURES = []
@@ -72,8 +64,22 @@ def check(what, ok, detail=""):
         FAILURES.append(what)
 
 
-def load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, ROOT / rel)
+def run_tree():
+    """The run commit's tree (CODE_PATHS and its root documents), extracted into a temporary
+    directory: every module this script loads, and every file they read, is the run's own."""
+    top = subprocess.run(["git", "-C", str(ROOT), "ls-tree", "--name-only", RUN_COMMIT], capture_output=True,
+                         text=True, check=True).stdout.split()
+    paths = list(CODE_PATHS) + [n for n in top if n.endswith(".md")]
+    tar = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", RUN_COMMIT, "--", *paths],
+                         capture_output=True, check=True).stdout
+    code = Path(tempfile.mkdtemp(prefix="of-rederive-606-code-"))
+    with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
+        archive.extractall(code, filter="data")
+    return code
+
+
+def load(code, name, rel):
+    spec = importlib.util.spec_from_file_location(name, code / rel)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -90,20 +96,6 @@ def jsonl(path):
 def git_show(rel):
     return subprocess.run(["git", "-C", str(ROOT), "show", f"{RUN_COMMIT}:{rel}"], capture_output=True,
                           check=True).stdout
-
-
-def top_level(source):
-    """{name: normalized source} of every top-level function and assignment in a module."""
-    tree = ast.parse(source)
-    out = {}
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            out[node.name] = ast.dump(node)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    out[target.id] = ast.dump(node.value)
-    return out
 
 
 def list_price(usage, prices, geo):
@@ -127,12 +119,20 @@ def stream_lines(path):
 
 
 def main(here):
-    runner = load("of_rederive_runner", "scripts/_ablation_run.py")
-    api = load("of_rederive_ablation", "scripts/ablation.py")
+    code = run_tree()
+    try:
+        return checks(here, code)
+    finally:
+        shutil.rmtree(code, ignore_errors=True)
+
+
+def checks(here, code):
+    runner = load(code, "of_rederive_runner", "scripts/_ablation_run.py")
+    api = load(code, "of_rederive_ablation", "scripts/ablation.py")
     ev_mod = runner.eval_mod()
-    broker = load("of_rederive_broker", "scripts/live_broker.py")
-    vf = load("of_rederive_verify", "runtime/scripts/verify.py")
-    prereg = api.load_prereg(ROOT / "docs/experiments/ablation-prereg.json")
+    broker = load(code, "of_rederive_broker", "scripts/live_broker.py")
+    vf = load(code, "of_rederive_verify", "runtime/scripts/verify.py")
+    prereg = api.load_prereg(code / "docs/experiments/ablation-prereg.json")
 
     results = json.loads((here / "results.json").read_text(encoding="utf-8"))
     report_md = (here / "report.md").read_text(encoding="utf-8")
@@ -146,19 +146,16 @@ def main(here):
         omitted[rel] = digest_hex
     cells = results["cells"]
 
-    # AB-1: the fixed point. The run's inputs and the runner code this script uses are the run's.
-    same = {rel: (ROOT / rel).read_bytes() == git_show(rel) for rel in INPUTS}
-    check("every input that decides the run is byte-identical to the run commit's "
-          f"({', '.join(sorted(r for r, ok in same.items() if not ok)) or 'all'})", all(same.values()))
-    now, then = top_level((ROOT / "scripts/_ablation_run.py").read_text(encoding="utf-8")), \
-        top_level(git_show("scripts/_ablation_run.py").decode("utf-8"))
-    moved = [n for n in RUNNER_FUNCS + RUNNER_CONSTS if now.get(n) != then.get(n)]
-    check(f"the paired runner's {len(RUNNER_FUNCS)} functions and {len(RUNNER_CONSTS)} constants this script "
-          "calls are the run commit's own, by source", not moved, str(moved))
+    # AB-1: the fixed point. The code this script runs is the run commit's own.
+    loaded = {m.__name__: Path(m.__file__).resolve() for m in (runner, api, broker, vf, ev_mod, runner.events_mod())}
+    check("the re-derivation runs the run commit's own code: the runner, the analysis, eval.py's oracles, "
+          "the generator, events.py, the broker and verify.py all load from c220067e9c's tree",
+          all(path.is_relative_to(code.resolve()) for path in loaded.values())
+          and (code / "scripts/_ablation_run.py").read_bytes() == git_show("scripts/_ablation_run.py"))
     check("receipt: schema, commit, arm and the arm's arguments as recorded",
           receipt["schema"] == "open-fleet.live-container-receipt/2" and receipt["commit"] == RUN_COMMIT
           and receipt["arm"] == "ablation" and receipt["arm_args"] == ARM_ARGS)
-    dockerfile = sha((ROOT / "scripts/live_container.Dockerfile").read_bytes())
+    dockerfile = sha(git_show("scripts/live_container.Dockerfile"))
     image = receipt["image"]
     check("container log: the run's failure list, then its results line", log.endswith(
         "\nresults: /results/out/results.json\n"))
@@ -171,8 +168,8 @@ def main(here):
     check("results: schema, live tier, the live-unreviewed evidence line",
           results["schema"] == runner.RESULTS_SCHEMA and results["tier"] == "live"
           and results["evidence"].startswith("live-unreviewed"))
-    check("registration: the checkout's registration re-hashes to the one the run used, every mission "
-          "current at the run and now",
+    check("registration: the run commit's registration re-hashes to the one the run used, every mission "
+          "current at the run and in that tree",
           reg["sha256"] == api.prereg_sha256(prereg) and reg["version"] == prereg["version"]
           and set(reg["registration"].values()) == {"current"}
           and set(api.registration_status(prereg).values()) == {"current"})
@@ -269,27 +266,50 @@ def main(here):
                 traj_ok &= all(c.get(k) == v for k, v in graded.items() if k != "errors") and \
                     c["errors"] == graded["errors"]
             else:
+                assertions = [str(a) for a in ev.get("assertions") or []]
                 rows = c.get("assertion_rows") or []
-                passed = sum(1 for r in rows if r.get("passed"))
-                beh_ok &= (c["assertions"] == len(ev.get("assertions") or []) and c["assertions_passed"] == passed
-                           and c["success"] == (bool(rows) and passed == c["assertions"]
+                none = any("no valid JSON verdict" in e for e in c["errors"])
+                # A verdict stands only as eval.py's _grade_trace accepts one: one row per registered
+                # assertion, each boolean, and every passing row's excerpt copied from the trace (the
+                # agent's stream) and not spent on another row. No verdict leaves no rows.
+                if none:
+                    rows_ok = rows == [] and c["assertions_passed"] == 0
+                else:
+                    texts = [r.get("text") for r in rows]
+                    spent, located = set(), True
+                    for r in rows:
+                        if r.get("passed") is True:
+                            located &= ev_mod._evidence_locates(r.get("evidence"), stream_text, spent)
+                            spent.add(str(r.get("evidence", "")).strip())
+                    rows_ok = (sorted(texts) == sorted(assertions) and len(set(texts)) == len(texts)
+                               and all(isinstance(r.get("passed"), bool) for r in rows) and located)
+                passed = sum(1 for r in rows if r.get("passed") is True)
+                beh_ok &= (rows_ok and c["assertions"] == len(assertions) and c["assertions_passed"] == passed
+                           and c["success"] == (not none and passed == len(assertions)
                                                 and not c["state_failed"] and not c["errors"])
                            and c["correct_terminal"] == c["success"] and c["grader_called"] is True
                            and c["narration_only"] == (ev.get("narration_only") is True))
+                # The violations the workspace shows: a check that forbids a change and failed is a
+                # scope violation (grade_behavioral's rule); behavioral cells carry no approval asset.
+                failed, scope = [], 0
                 if ev.get("workspace_state"):
-                    failed = []
+                    state_ok &= c["task"] == "behavioral-4"  # the only workspaces retained
                     for chk in ev["workspace_state"]:
                         if not ev_mod._state_holds(chk, d / "workspace", originals):
                             pred = next(k for k in ev_mod.STATE_PREDICATES if k in chk)
                             failed.append(f"{chk.get('path') or chk.get('glob')}: {pred} {chk[pred]!r} did not hold")
-                    state_ok &= failed == c["state_failed"]
+                            scope += pred in ("unchanged", "not_matches") or (pred == "exists" and chk["exists"] is False)
+                state_ok &= (failed == c["state_failed"] and c["scope_violations"] == scope
+                             and c["approval_violations"] == 0 and c["attempted"] == [])
         check("usage: every cell's tokens and cost re-derive from its stream through events.py (#603)",
               usage_ok, str(detail[:3]))
         check("deferred reads: every cell's reads and counts re-derive from its stream and its arm's cues", reads_ok)
         check("trajectory cells: the #602 replay grader re-grades every recording to the recorded fields", traj_ok)
-        check("behavioral cells: assertions, the passed count and success agree with each cell's recorded "
-              "grader rows and workspace state; every completed cell was graded", beh_ok)
-        check("behavioral-4: every workspace-state check re-derives from the retained workspace", state_ok)
+        check("behavioral cells: every verdict is one eval.py accepts (one boolean row per registered assertion, "
+              "each passing excerpt found verbatim in the stream), the passed count and success agree with it, "
+              "and every completed cell was graded", beh_ok)
+        check("behavioral cells: every workspace-state check, and the scope violations it implies, re-derive "
+              "from the retained workspace; no approval violation", state_ok)
 
     # AB-2: the arm's ledger, against the cells, and the cap at every start.
     run_id = ledger[0]["run"] if ledger else None
@@ -312,18 +332,31 @@ def main(here):
                                                   == round(runner.grader_charge(c, model, "live"), 6)
                                                   and c["grader_cost_usd"] == grader_cost))
                    and c["charged_usd"] == round(sum(e["charged_usd"] for e in evs if e["event"] == "settle"), 6))
+    # The whole ledger in order: cell by cell as results.json lists them, each call started at its
+    # registered reservation and settled before the next starts; and replayed, every open
+    # reservation counted at every start.
+    sequence = [(c["cell"], call, event) for c in cells
+                for call in (("agent", "grader") if c["grader_called"] else ("agent",)) for event in ("start", "settle")]
+    reserve = {"agent": prereg["cost_cap"]["max_cost_per_agent_run_usd"], "grader": prereg["cost_cap"]["grader_reserve_usd"]}
+    arm_ok &= [(e["cell"], e["call"], e["event"]) for e in ledger] == sequence and all(
+        e["reserve_usd"] == reserve[e["call"]] for e in ledger if e["event"] == "start")
+    open_calls = {}
     for e in ledger:
         if e["event"] == "start":
-            held &= counted + e["reserve_usd"] <= results["cost"]["cap_usd"]
+            open_calls[(e["cell"], e["call"])] = e["reserve_usd"]
+            held &= counted + sum(open_calls.values()) <= results["cost"]["cap_usd"]
         else:
+            del open_calls[(e["cell"], e["call"])]
             counted += e["charged_usd"]
+    held &= not open_calls
     spent = round(sum(e["charged_usd"] for e in ledger if e["event"] == "settle"), 6)
-    check("arm ledger: one run; per cell its agent call (and a behavioral cell's grader) started at its "
-          "reservation and settled at its measured charge; the grader's from its usage file",
+    check("arm ledger: one run, in results order; per cell its agent call (and a behavioral cell's grader) "
+          "started at its registered reservation (USD 5, USD 1) and settled at its measured charge, the grader's "
+          "from its usage file, before the next call started",
           {e["run"] for e in ledger} == {run_id} and arm_ok and len(ledger) == sum(
               4 if c["grader_called"] else 2 for c in cells))
     check(f"arm total re-derives: USD {spent} = spent = counted against the USD 740 cap, nothing prior; "
-          "the cap held at every start", held and spent == results["cost"]["spent_usd"]
+          "replayed with every open reservation counted, the cap held at every start", held and spent == results["cost"]["spent_usd"]
           == results["cost"]["counted_against_cap_usd"] and results["cost"]["prior_spent_usd"] == 0
           and results["cost"]["cap_usd"] == 740)
 
@@ -472,11 +505,13 @@ def main(here):
     between = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", DRY_COMMIT, RUN_COMMIT],
                              capture_output=True, text=True, check=True).stdout.split()
     check("dry run: one repeat of the registered design in the fixture tier, exit 0, no model call, at the "
-          "commit before the run's, which differs from it in no ablation input "
-          f"({', '.join(between)})",
+          f"commit before the run's, which differs from it only in {', '.join(between)}: #602's live runner, "
+          "which the ablation never loads (eval.py loads it only for its own live trajectory arm)",
           dry["commit"] == DRY_COMMIT and dry["arm_args"][:2] == ["run", "--dry-run"] and dry["exit_status"] == 0
           and (dry["broker"]["spend"] or {}).get("calls", 0) == 0
-          and not any(rel in between for rel in INPUTS + ["scripts/_ablation_run.py"]))
+          and set(between) == {"docs/adversarial-evals.md", "scripts/_trajectory_live.py", "tests/test_trajectory_live.py"}
+          and not any("_trajectory_live" in (code / rel).read_text(encoding="utf-8")
+                      for rel in ("scripts/ablation.py", "scripts/_ablation_run.py")))
     files = {p.relative_to(here).as_posix() for p in here.rglob("*") if p.is_file()}
     shapes = sorted({(f, name) for f in sorted(files) for name, rx in vf.REDACTION_PATTERNS
                      if rx.search((here / f).read_bytes().decode("utf-8", "replace"))})

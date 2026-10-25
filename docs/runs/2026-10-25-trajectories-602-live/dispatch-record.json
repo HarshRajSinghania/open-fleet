@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "trajectories-602-live",
+    "contract_digest": "sha256:8754fd828c5e840080318e5c97c4091ad8b869ceb97044a44ac2ffabae4879d3",
+    "unit_class": "report-only"
+  },
+  "sig_b64": "2l99OVx03T39PPZDO8ZadNFOoh+jVMUB1pTjGV+vmRJp8CEuzjUKpkdIrCtYKmv03NRT++JO1k8a1lDJVeSECA=="
+}

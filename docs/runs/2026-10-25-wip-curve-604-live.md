@@ -1,6 +1,6 @@
 # Run report — #604 WIP-curve experiment, version 2, live (12 runs, four WIP settings), 2026-10-25
 
-RUN: mission=wip-curve tier=doctrine-only inventory_at=651e286562e0df4cedcb7a38c02031389799b939 manifest=docs/runs/2026-10-25-wip-curve-604-live/manifest.json verifier=GREEN
+RUN: mission=wip-curve tier=doctrine-only inventory_at=86065113eae2826138b993c74e9774b7fa45d249 manifest=docs/runs/2026-10-25-wip-curve-604-live/manifest.json verifier=GREEN
 
 This is an experiment run, not a catalog mission run. `mission=wip-curve` names the experiment
 (`scripts/wip_curve.py`), and `tier=doctrine-only` because the run advances no mission's proof
@@ -22,9 +22,11 @@ commit. The verifier is GREEN under a dispatch record the coordinator signed for
 
 ## Result
 
-All 12 scheduled runs completed, and all 12 are protocol-compliant. Every unit of every run reached
-verified-CLOSED (6 of 6 tasks, 3 of 3 repetitions, in every condition); nothing parked and no merge
-gate failed. The full report is [`report/report.md`](2026-10-25-wip-curve-604-live/report/report.md),
+All 12 scheduled runs completed, and all 12 are protocol-compliant as the registration defines
+it: every model each run's usage record observes is the pin. The broker, which sees every request,
+recorded one call on another model, in `wip2-b6r2-rep2`; see [One call off the
+pin](#one-call-off-the-pin). Every unit of every run reached verified-CLOSED (6 of 6 tasks, 3 of 3
+repetitions, in every condition); nothing parked and no merge gate failed. The full report is [`report/report.md`](2026-10-25-wip-curve-604-live/report/report.md),
 with its JSON beside it.
 
 | Condition | WIP | Throughput /h, mean [95% CI] | Latency median min, mean [95% CI] | Rework (pooled, 95% Wilson) | Freshness | Conflicts | Cost USD per run, mean |
@@ -40,7 +42,9 @@ above it (`b6r1` or `b6r2`) has a throughput interval whose lower bound exceeds 
 195.84/h and `b6r1`'s is 168.86/h, so neither separates. The rule lowers the cap only when `b1r1`
 beats `b3r1`, which it does not. Anything else is keep, including a null or negative result. The
 rule yields a recommendation only: a cap change would be its own human-reviewed policy change citing
-this report. [`runtime/attention-budget.md`](../../runtime/attention-budget.md) now records the caps
+this report. The recommendation does not depend on `wip2-b6r2-rep2`: without it, `b6r2` over its two
+other runs is 258.95/h [219.51, 298.39], still below `b3r1`'s upper bound, and the rule still says
+keep. [`runtime/attention-budget.md`](../../runtime/attention-budget.md) now records the caps
 as measured once, with this result.
 
 ## What this shows, and what it does not
@@ -101,8 +105,26 @@ unit; the curve's shape, not its absolute rates, is the finding.
 - **#604's whole bill** is USD 6.290480 for version 2 and USD 0.455626 for version 1, USD 6.75 of
   the USD 150 authorised.
 
+## One call off the pin
+
+The registration requires every model a run's usage record observes to equal the pin, and the
+runner reads that record from each dispatch's stream: every stream's result line, in all 12 runs,
+reports usage for `claude-sonnet-5-5` alone. The broker's ledgers see more: every API request
+Claude Code made, including side requests its own usage record leaves out. Of version 2's 539
+calls, 538 ran `claude-sonnet-5-5`. One did not: call 32 of `wip2-b6r2-rep2`'s launch
+(`20261025T084455Z-wip_curve-7ae9926e`), at 08:55:25 UTC, ran `claude-sonnet-5` with 158 input,
+47,709 cache-write and 7 output tokens, and settled USD 0.119659. No assistant message in any
+stream came from it, and no stream's usage reports it, so it was one of Claude Code's own side
+requests, not a worker's turn; what it asked is not retained.
+
+As registered, the run is compliant. Because the registration's purpose is one model across the
+experiment, the decision was also recomputed without that run, and it is the same: keep. Version
+1's ledgers show no call off the pin. A later run should pin Claude Code's side-request model too,
+or count the broker's models in compliance.
+
 ## Observations and deviations (recorded, not hidden)
 
+- **One call off the pin**, above.
 - **81 refused requests.** In every run, 6 to 8 of Claude Code's requests carried a `safeguards`
   field the broker's allow-list cannot price, and the broker refused them before they reached the
   API. Every run completed regardless. The refusals were uniform across conditions and were left
@@ -140,14 +162,14 @@ Commits on `claude/run-report-604-live`, forked from origin/main `6f02e410da`:
 
 | Commit | What it adds |
 |---|---|
-| `9ebdb656dd` | The retained evidence, `contract.json`, `rederive.py`, and `manifest.json` pinning every file by sha256. This is the unit's `head_sha`. |
-| `56f9f64d36` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`; the coordinator-signed dispatch record and its public key. |
-| `651e286562` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
+| `08151bdea7` | The retained evidence, `contract.json`, `rederive.py`, and `manifest.json` pinning every file by sha256. This is the unit's `head_sha`. |
+| `0dcfebac12` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`; the coordinator-signed dispatch record and its public key. |
+| `86065113ea` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
 
-The run itself ran at `bacb5f8dd8`. `rederive.py` checks that the runner, its call helper,
+An earlier binding on this branch (`9ebdb656dd` to `651e286562`) was superseded after review found the call off the pin: the contract now requires the broker's model reconciliation and the decision with that run excluded, so the evidence was re-bound and re-signed. The run itself ran at `bacb5f8dd8`. `rederive.py` checks that the runner, its call helper,
 `events.py`, the registration and the task set are byte-identical there and on this branch.
 
-Re-derivation, recorded through `evidence-run.py` on `9ebdb656dd`'s tree, exit 0, 63 checks:
+Re-derivation, recorded through `evidence-run.py` on `08151bdea7`'s tree, exit 0, 66 checks:
 
 `python3 runtime/scripts/evidence-run.py --label rederive --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --artifact docs/runs/2026-10-25-wip-curve-604-live/rederive.txt -- python3 docs/runs/2026-10-25-wip-curve-604-live/rederive.py`
 
@@ -172,8 +194,8 @@ credential.
   printed, copied or committed.
 - **What was signed.** [`dispatch-record.json`](2026-10-25-wip-curve-604-live/dispatch-record.json),
   over `manifest_id=wip-curve-604-live`,
-  `contract_digest=sha256:96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5`
-  (`contract.json` at `9ebdb656dd`) and `unit_class=report-only`.
+  `contract_digest=sha256:c80c0ae3dbdd81391acbe8df50c171af772f377ce600dfae85c350956cedb14a`
+  (`contract.json` at `08151bdea7`) and `unit_class=report-only`.
 - **What it is worth.** The key lives on the same machine as the session that used it, so the
   signature records the coordinator's authorisation of the report-only class; it is not an
   off-worker trust anchor. It is not the repository's `.orca/dispatch-pubkey` enforcement pin.
@@ -182,12 +204,12 @@ credential.
 
 | Label | Tree | Exit | Outcome |
 |---|---|---|---|
-| `verifier` | `56f9f64d36` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier.txt`](2026-10-25-wip-curve-604-live/verifier.txt) |
+| `verifier` | `0dcfebac12` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier.txt`](2026-10-25-wip-curve-604-live/verifier.txt) |
 
 It ran with the stub `claude` first on `PATH`, the system `/usr/bin` ahead of `/opt/homebrew/bin`,
 and `SHELL=/bin/sh`:
 
-`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --artifact docs/runs/2026-10-25-wip-curve-604-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --contract-source docs/runs/2026-10-25-wip-curve-604-live/contract.json@9ebdb656dd86dcc6ac58e395146667f8c1b4512d --contract-digest sha256:96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5 --unit-class report-only --dispatch-record docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json@56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02 --dispatch-pubkey docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex@56f9f64d3627c2f0f3ca4b114da24e2dbe4b0a02`
+`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --artifact docs/runs/2026-10-25-wip-curve-604-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-wip-curve-604-live/manifest.json --contract-source docs/runs/2026-10-25-wip-curve-604-live/contract.json@08151bdea74493ca2dd1c1a946b5f7c249115bf4 --contract-digest sha256:c80c0ae3dbdd81391acbe8df50c171af772f377ce600dfae85c350956cedb14a --unit-class report-only --dispatch-record docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json@0dcfebac12de5d860c8079737a513a513fb80e8a --dispatch-pubkey docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex@0dcfebac12de5d860c8079737a513a513fb80e8a`
 
 It confirms, under the signed report-only class, that the contract's criteria (WC-1 to WC-7) are
 complete, every artifact matches its sha256 pin, the credential scan found nothing, and the
@@ -213,9 +235,9 @@ docs-navigation and changelog tests. Results are recorded in the landing PR.
 ## Run-close integrity inventory (sha256)
 
 ```
-96850066d0f29d0a0a6790fc9ff331171019dfcffb73bbf659be9117fba929e5  docs/runs/2026-10-25-wip-curve-604-live/contract.json
+c80c0ae3dbdd81391acbe8df50c171af772f377ce600dfae85c350956cedb14a  docs/runs/2026-10-25-wip-curve-604-live/contract.json
 1f4d5db594495b1c4b0a15ec8ccc7008b6be1079b498ad2109da1530b70cdcaa  docs/runs/2026-10-25-wip-curve-604-live/dispatch-pubkey.hex
-9fc1c3ce8d9b92e3d12cce57becde18ec8760172fabe70cc802255d3327ef144  docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json
+1e2cfab247540cd7906f76fccb2a420c52080c1e21a3c24f541cbaed303d8114  docs/runs/2026-10-25-wip-curve-604-live/dispatch-record.json
 350e4a621103a786eb9eccd2abf5cd2233aa67f7a4078af863f7599af22e6781  docs/runs/2026-10-25-wip-curve-604-live/experiment/budget.jsonl
 a6a8123c80dd885e018069dba93948b6412b2bfeb4df6eee516b831510440358  docs/runs/2026-10-25-wip-curve-604-live/experiment/runs/wip2-b1r1-rep1/calls.json
 03f1836c2b8245f196f63cd2d789b9b7aff5ee083772f186ac2bfabc6be7ec15  docs/runs/2026-10-25-wip-curve-604-live/experiment/runs/wip2-b1r1-rep1/events.jsonl
@@ -785,7 +807,7 @@ cf2c5f50c0a0126db9b68f1b48d236476d7e23a498a90639b702a79dc1f76fc8  docs/runs/2026
 b13b70bd43b752845ea029a6618fe3a4ec9ffc6b9dbcf1669078676b1b3d9587  docs/runs/2026-10-25-wip-curve-604-live/experiment/runs/wip2-b6r2-rep3/streams/disp_e21abe7241.jsonl
 a8182c525cc57df4c7756484bbee635d0eb0cd9e1f57e7b8aef6670aed75a952  docs/runs/2026-10-25-wip-curve-604-live/experiment/runs/wip2-b6r2-rep3/streams/disp_e36c4ce7c7.jsonl
 e193a1597731ef52a5b0924a35a01458c66e1e2f9711e68c511d4a262c31e6d4  docs/runs/2026-10-25-wip-curve-604-live/experiment/runs/wip2-b6r2-rep3/target.bundle
-e25aef3bd489073043b2d7dcaebc9b8ae1d642f188863036e215ba18ff961476  docs/runs/2026-10-25-wip-curve-604-live/manifest.json
+0a2e9a8b9656ab0f94ae2104dd07aa7ede81d155795fb9b55b432a178034106b  docs/runs/2026-10-25-wip-curve-604-live/manifest.json
 446200e766f9450145219d62d5464eaaa39b06cec5a5270d1694662339a2de01  docs/runs/2026-10-25-wip-curve-604-live/receipts/20261025T072848Z-wip_curve-a542b577.broker/spend.jsonl
 a63b2096b1a9dd715d6a22b888269a2ca83fc4357624660520916c5b9544ea4e  docs/runs/2026-10-25-wip-curve-604-live/receipts/20261025T072848Z-wip_curve-a542b577.json
 7b316f67bd93e496a432e0abae4ad4063c6b1508ff00400039af6421a4c00e95  docs/runs/2026-10-25-wip-curve-604-live/receipts/20261025T072848Z-wip_curve-a542b577.log
@@ -829,8 +851,8 @@ c868a1adc70fc9f40745bc099a347575170c5a4c1b4ce4ad1caa89ec2f399a2c  docs/runs/2026
 a318f6f3845b477a9aacaf850da8c441077d0601427d6295fe3ffa348e8008c6  docs/runs/2026-10-25-wip-curve-604-live/receipts/20261025T094506Z-wip_curve-b861c2aa.json
 be478bfa00eb5bfcc3d396140a7c16aae299a3dd6753f09bc294a653c76acfab  docs/runs/2026-10-25-wip-curve-604-live/receipts/20261025T094506Z-wip_curve-b861c2aa.log
 973ba590e9c428b472290ec50cb5d39f2dadf6e6a09c09f67cdae35af5e5ea35  docs/runs/2026-10-25-wip-curve-604-live/receipts/chain.log
-29b3ab174099cfd7580b4c3a6b24f58f024933528e7d6a9090a83577c3e0fc68  docs/runs/2026-10-25-wip-curve-604-live/rederive.py
-8788be2c3a397b6ee99fc552336e8c1ff6e58f73e81e29b98439f4dc8cd2880e  docs/runs/2026-10-25-wip-curve-604-live/rederive.txt
+27b8b18c31f4e199696cca5f23d905ee0d78214c2bc4effeefaedbc3254201ab  docs/runs/2026-10-25-wip-curve-604-live/rederive.py
+b7b1a481b939559f213aac7e5b81c268fa70b3e973f7ef01790fdc487dd4c687  docs/runs/2026-10-25-wip-curve-604-live/rederive.txt
 a3321ae7437da210e8f74b34d7b3661f71b1c772a8eef2bbfc52379aa3a27c65  docs/runs/2026-10-25-wip-curve-604-live/report/report.json
 83271b1d47be141aa7a402a2074106d75d8a970b6ed18ef2a47727bdc7967e91  docs/runs/2026-10-25-wip-curve-604-live/report/report.md
 152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c  docs/runs/2026-10-25-wip-curve-604-live/verifier.txt

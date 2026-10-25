@@ -2,10 +2,10 @@
   "unit": "ablation-606-live",
   "claim": "#606 live paired ablation, the registered design run once in the container harness at c220067e9c under the owner's USD 750 authorisation (arm cap USD 740, broker cap USD 750): 4 missions x 9 tasks x 5 repeats, 360 cells, claude-sonnet-5-5 on Claude Code 2.1.304, complete. The pre-registered rule returns SUCCESSFUL_REDUCTION for all four missions, but task success was 0 of 180 in each arm: the registered agent command granted no shell, so no worker could run the tests and none landed, and every one of 385 attempts to read the catalog holding the reduced arm's deferred documents was refused. The non-inferiority leg compares 0 with 0, so the run cannot support adopting the reduced activation; the recommendation is to keep the current one. Measured: no scope or approval violation in either arm, input tokens 42-62% lower in the reduced arm. USD 49.91 notional by the arm's ledger, USD 61.87 settled by the broker over 2297 calls, 0 refused; a superseded launch that ran claude-opus-5-5 settled USD 1.32.",
   "base_sha": "c220067e9cbffc4f34d6363a92153e45402bdfe4",
-  "head_sha": "16a377f01af17c960e31b151d6bcb8b09b690edf",
+  "head_sha": "",
   "contract": {
-    "source": "docs/runs/2026-10-25-ablation-606-live/contract.json@16a377f01af17c960e31b151d6bcb8b09b690edf",
-    "digest": "sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689",
+    "source": "",
+    "digest": "",
     "criterion_ids": [
       "AB-1",
       "AB-2",
@@ -69,8 +69,8 @@
     "tool": "source-binding",
     "did": "re-derived every figure the report states from the retained bytes alone: the payloads, the design, every cell's task text, usage, deferred reads and trajectory grade, both ledgers and the analysis",
     "command": "python3 docs/runs/2026-10-25-ablation-606-live/rederive.py",
-    "artifact": "docs/runs/2026-10-25-ablation-606-live/rederive.txt",
-    "result": "rederive.py exit 0: 38 checks PASS, 0 FAIL, on head_sha's own tree"
+    "artifact": "",
+    "result": ""
   },
   "toolchain": "python 3.13.15 (macOS arm64) for the binding; the run: python 3.13.15-slim and Claude Code 2.1.304 in open-fleet-live:claude-2.1.304 (sha256:59c37b04d715)",
   "artifacts": [
@@ -6132,7 +6132,7 @@
     },
     {
       "path": "docs/runs/2026-10-25-ablation-606-live/rederive.py",
-      "sha256": "e56e2f7eb9519c7ae3540fd18073e111aa1fffc5e2233798558aed9466b0172c"
+      "sha256": "8a92f37d1c1aca328c0ea3bc9da23c6ab56930e9fa818191ab3c062bd4a74dd7"
     },
     {
       "path": "docs/runs/2026-10-25-ablation-606-live/report.md",
@@ -6173,38 +6173,7 @@
     {
       "path": "docs/runs/2026-10-25-ablation-606-live/superseded/spend.jsonl",
       "sha256": "5a510360b98355a226211239e90173604ae22e19161fc3d0a3c171839a048d90"
-    },
-    {
-      "path": "docs/runs/2026-10-25-ablation-606-live/rederive.txt",
-      "sha256": "e99676baa84191ae90e8e1d8e2e07fcd6d2e77da4d46962b39691404a9658bc1"
-    },
-    {
-      "path": "docs/runs/2026-10-25-ablation-606-live/verifier.txt",
-      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
     }
   ],
-  "commands": [
-    {
-      "label": "rederive",
-      "ts": "2026-10-25T14:18:20Z",
-      "cmd": "python3 docs/runs/2026-10-25-ablation-606-live/rederive.py",
-      "cmd_sha256": "aa9efd8fa2842bb9e1da26eb143855f1abfaf7594f3340db5a16db6dd376e8b6",
-      "exit": 0,
-      "duration_s": 114.803,
-      "commit": "16a377f01af17c960e31b151d6bcb8b09b690edf",
-      "wtree": "4e66f7fdea9e3728c66446f5d6687646becd27f9",
-      "artifact": "docs/runs/2026-10-25-ablation-606-live/rederive.txt"
-    },
-    {
-      "label": "verifier",
-      "ts": "2026-10-25T14:19:51Z",
-      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --contract-source docs/runs/2026-10-25-ablation-606-live/contract.json@16a377f01af17c960e31b151d6bcb8b09b690edf --contract-digest sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689 --unit-class report-only --dispatch-record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json@45b97d1412922bc6fc447f197d74093a59bcb12a --dispatch-pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex@45b97d1412922bc6fc447f197d74093a59bcb12a",
-      "cmd_sha256": "846df01cda9f09d4b403d92877f00b301e2363d7fbe9b64c4331c029bba33a06",
-      "exit": 0,
-      "duration_s": 89.91,
-      "commit": "45b97d1412922bc6fc447f197d74093a59bcb12a",
-      "wtree": "2b83c381364cc276a8f10b5fd17944add351772c",
-      "artifact": "docs/runs/2026-10-25-ablation-606-live/verifier.txt"
-    }
-  ]
+  "commands": []
 }

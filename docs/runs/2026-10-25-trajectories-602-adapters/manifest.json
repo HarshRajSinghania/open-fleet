@@ -1355,6 +1355,10 @@
     {
       "path": "docs/runs/2026-10-25-trajectories-602-adapters/rederive.txt",
       "sha256": "670c2934eb9319f039e8d8de9c6f24adb1c051751a4ee5f8e4ab87d129076427"
+    },
+    {
+      "path": "docs/runs/2026-10-25-trajectories-602-adapters/verifier.txt",
+      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
     }
   ],
   "commands": [
@@ -1368,6 +1372,17 @@
       "commit": "dd4725e220af72c9d832656f88f494f394fba04f",
       "wtree": "a53de0886f0659ca431356a232b2bb2759788163",
       "artifact": "docs/runs/2026-10-25-trajectories-602-adapters/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-25T11:49:09Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-trajectories-602-adapters/manifest.json --contract-source docs/runs/2026-10-25-trajectories-602-adapters/contract.json@dd4725e220af72c9d832656f88f494f394fba04f --contract-digest sha256:553899bb832678e9aecf60d5cf2e46918d15bdca4adc9c96f073bac91a05d8c7 --unit-class report-only --dispatch-record docs/runs/2026-10-25-trajectories-602-adapters/dispatch-record.json@5027d331bd05348591f5887071e991f509ff7ac9 --dispatch-pubkey docs/runs/2026-10-25-trajectories-602-adapters/dispatch-pubkey.hex@5027d331bd05348591f5887071e991f509ff7ac9",
+      "cmd_sha256": "51b67cd2dc9164a1b9d511358dae096bcaef3eac461eaf6f2387b80d45918bef",
+      "exit": 0,
+      "duration_s": 18.266,
+      "commit": "5027d331bd05348591f5887071e991f509ff7ac9",
+      "wtree": "adbb4d96f86a7470542217fc38029af536c938a8",
+      "artifact": "docs/runs/2026-10-25-trajectories-602-adapters/verifier.txt"
     }
   ]
 }

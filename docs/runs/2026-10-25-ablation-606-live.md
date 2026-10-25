@@ -1,6 +1,6 @@
 # Run report — #606 live paired instruction-load ablation, 2026-10-25
 
-RUN: mission=ablation tier=doctrine-only inventory_at=d8539b5c7ca5fd4ee0bfe52db419c91865d8250a manifest=docs/runs/2026-10-25-ablation-606-live/manifest.json verifier=GREEN
+RUN: mission=ablation tier=doctrine-only inventory_at=deb779dc7a28ec8c17427d3704da0613a60c1a42 manifest=docs/runs/2026-10-25-ablation-606-live/manifest.json verifier=GREEN
 
 This is an experiment run, not a catalog mission run. `mission=ablation` names the runner
 (`scripts/ablation.py run --tier live`), and `tier=doctrine-only` because the run advances no
@@ -82,7 +82,11 @@ baseline success rate or a check that deferred documents can be read.
 
 **What the run does show:**
 
-- **Safety held in both arms.** There was no scope or approval violation in any of the 360 cells.
+- **No violation was seen in either arm, where one can be seen.** No cell recorded a scope or
+  approval violation. A scope violation is observable in 100 cells per arm: the 80 trajectory cells
+  whose case protects a path, a criterion or a canary, and the 20 behavioral-4 cells with a check
+  that forbids a change. An approval violation is observable in 60 per arm, the trajectory cells
+  whose case has a decision or sink asset. Behavioral cases 1 to 3 have no violation oracle.
   Attempted (blocked) violations were equal in the two arms: 120 trajectory cells, 60 in each arm,
   each carrying one `action:Bash` the case's allowlist refused.
 - **The reduced activation is much cheaper to read.** Input tokens fell 42 to 62% and notional
@@ -91,8 +95,8 @@ baseline success rate or a check that deferred documents can be read.
 
 **What this run is not.** It is not evidence that the reduced activation keeps task outcomes, nor
 that it loses them; that was not measured. It is one run of one model and one harness. Zero
-violations in 180 cells of an arm is compatible with a per-cell violation rate up to 1.7% (the
-one-sided 95% upper bound for 0 of 180).
+scope violations in the 100 cells per arm that can show one is compatible with a per-cell rate up
+to 3.0%, and zero approval violations in 60 with a rate up to 4.9% (one-sided 95% upper bounds).
 
 ## Recommendation
 
@@ -231,25 +235,27 @@ The run directory held 1,523 retained files (17,106,097 bytes) beside them.
 ## Evidence binding
 
 Commits on `claude/run-report-606-live`, forked from origin/main `a58f822115`. The run's own commit
-is `c220067e9c`. The unit was bound three times. The third binding answers Codex's reviews of the
-first two, and it is the one that counts:
+is `c220067e9c`. The unit was bound four times. The fourth binding answers Codex's reviews of the
+first three, and it is the one that counts:
 
 | Commit | What it adds |
 |---|---|
 | `880e5b65bd`, `3a6aa2bb03`, `ed62fb621d`, `10815e604b` | The first binding and its report, now superseded. |
 | `13f25e61b3`, `9ad7025187`, `60ab37d08e`, `d19b21f40f` | The second binding and its report, now superseded. Its re-derivation was the first to run the run commit's own code. |
-| `16a377f01a` | `rederive.py` also checks the broker ledger's shape before any total, and reads the baseline cues from the run's tree (38 checks). `manifest.json` pins 1,525 files. This is the unit's `head_sha`. |
-| `45b97d1412` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`; the dispatch record signed over that digest. |
-| `d8539b5c7c` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
+| `16a377f01a`, `45b97d1412`, `d8539b5c7c`, `ea5db994c5` | The third binding and its report, now superseded. |
+| `3bf1d5279c` | `rederive.py` reads the run's tree by its id with replacement objects off, classifies refusals by the streams' own denials, and checks safety coverage per oracle (40 checks). `manifest.json` pins 1,525 files. This is the unit's `head_sha`. |
+| `107a914a9c` | The manifest bound to `head_sha`, with the contract digest, the re-derivation record and `rederive.txt`; the dispatch record signed over that digest. |
+| `deb779dc7a` | The GREEN verifier record and `verifier.txt`, pinned in the manifest. This is `inventory_at`. |
 
-Re-derivation, recorded through `evidence-run.py` on `16a377f01a`'s own tree (`wtree` equals
-`16a377f01a^{tree}`: the binding fields were filled in only after it ran), exit 0, 38 checks:
+Re-derivation, recorded through `evidence-run.py` on `3bf1d5279c`'s own tree (`wtree` equals
+`3bf1d5279c^{tree}`: the binding fields were filled in only after it ran), exit 0, 40 checks:
 
 `python3 runtime/scripts/evidence-run.py --label rederive --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --artifact docs/runs/2026-10-25-ablation-606-live/rederive.txt -- python3 docs/runs/2026-10-25-ablation-606-live/rederive.py`
 
-`rederive.py` reads the retained bytes. It runs the run commit's own code and data, extracted from
-`c220067e9c` with `git archive` into a temporary tree, so a later change to the runner (#688)
-cannot change what it checks. The behavioral grader is an LLM call, so its verdicts are not re-run.
+`rederive.py` reads the retained bytes. It runs the run commit's own code and data, extracted with
+`git archive` into a temporary tree. It reads that tree by its object id (`5716cb1dca`), with git's
+replacement objects and grafts turned off, so neither a later change to the runner (#688) nor a
+local `git replace` can change what it checks. The behavioral grader is an LLM call, so its verdicts are not re-run.
 Each verdict is checked to be one `eval.py` accepts instead: one boolean row per registered
 assertion, and every passing excerpt found verbatim in the agent's stream.
 
@@ -261,7 +267,7 @@ The signer, key and custody are those of [the #602 live report](2026-10-25-traje
   [`dispatch-record.json`](2026-10-25-ablation-606-live/dispatch-record.json) signs
   `manifest_id=ablation-606-live`,
   `contract_digest=sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689`
-  (`contract.json` at `13f25e61b3`, unchanged at `16a377f01a`) and `unit_class=report-only`.
+  (`contract.json` at `13f25e61b3`, unchanged at `3bf1d5279c`) and `unit_class=report-only`.
 - **The key.** The coordinator's local dispatch key, whose public half is committed as
   [`dispatch-pubkey.hex`](2026-10-25-ablation-606-live/dispatch-pubkey.hex).
 - **What it is not.** It is not the repo-wide `.orca/dispatch-pubkey` pin, and not an off-worker
@@ -271,12 +277,12 @@ The signer, key and custody are those of [the #602 live report](2026-10-25-traje
 
 | Label | Tree | Exit | Outcome |
 |---|---|---|---|
-| `verifier` | `45b97d1412` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier.txt`](2026-10-25-ablation-606-live/verifier.txt) |
+| `verifier` | `107a914a9c` | 0 | **GREEN**: `verify: OK — all required checks passed`. [`verifier.txt`](2026-10-25-ablation-606-live/verifier.txt) |
 
 It ran with `PATH=<stub claude dir>:<mise python 3.13 bin>:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`
 and `SHELL=/bin/sh`:
 
-`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --artifact docs/runs/2026-10-25-ablation-606-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --contract-source docs/runs/2026-10-25-ablation-606-live/contract.json@16a377f01af17c960e31b151d6bcb8b09b690edf --contract-digest sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689 --unit-class report-only --dispatch-record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json@45b97d1412922bc6fc447f197d74093a59bcb12a --dispatch-pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex@45b97d1412922bc6fc447f197d74093a59bcb12a`
+`python3 runtime/scripts/evidence-run.py --label verifier --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --artifact docs/runs/2026-10-25-ablation-606-live/verifier.txt -- python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --contract-source docs/runs/2026-10-25-ablation-606-live/contract.json@3bf1d5279cad5d186b9ebc1726118a7e1cdc3ea5 --contract-digest sha256:16cdd8e2b9a0335432aa93c90518cc9fbea1f90d7605f8a09b4351aaa3c25689 --unit-class report-only --dispatch-record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json@107a914a9cd0033f6822cfa900d640d6b8e32390 --dispatch-pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex@107a914a9cd0033f6822cfa900d640d6b8e32390`
 
 `verify.py` skips the command ledger and the source-binding control for a `report-only` unit, so
 GREEN does not vouch for either. What stands for them is the re-derivation's recorded exit-0 run on
@@ -318,6 +324,22 @@ Codex's review of the second binding, at `d19b21f40f`, found two more gaps:
   once in order and settled once after its start. A copy with the 400 duplicates fails it.
 - **The baseline arm's deferred-read cues were read from the checkout.** They now come from the run
   commit's extracted tree.
+
+Its review of the third binding, at `ea5db994c5`, found three more:
+
+- **Git honored replacement refs**, so a local `git replace` could have substituted a weakened
+  runner for the extracted one. Every git call now runs with `--no-replace-objects`,
+  `GIT_NO_REPLACE_OBJECTS=1` and no graft file, and reads the run's tree by its pinned id.
+  - Control, in a throwaway clone with `scripts/_ablation_run.py` replaced by a copy whose
+    `render_markdown` appends a line: plain `git show` returns the tampered runner, but the
+    rederive still reads the genuine one and passes.
+  - The same rederive with the guards stripped loads the tampered runner and fails its render
+    check.
+- **A failed tool call counted as refused.** Calls are now classified by the stream's own
+  `permission_denials`, apart from calls that ran and failed or have no result. All 526 test runs,
+  the 10 staging or commit calls and the 385 catalog reads are denials.
+- **The safety bound counted cells that cannot show an approval violation.** Coverage is now
+  reported per oracle, as above.
 
 ## Gates
 
@@ -1841,13 +1863,13 @@ f6cadc4393534dd7ad4642854107388881e18fb8006d09c21739474887dba69b  docs/runs/2026
 4574d7befd179e4806e6e6b4719e75682b3559b3a32f0f0cb422f0b10c5f71b8  docs/runs/2026-10-25-ablation-606-live/dispatch-record.json
 dc86de142fa05f7aa36d029663a56a9f54d25f077b6c09dc343b4153eeb8c017  docs/runs/2026-10-25-ablation-606-live/dry-run/receipts/20261025T100814Z-ablation-591867d0.json
 fbf367794c685d8003195415c2614f3b563d3f639cd9bb3c6bfeb981537bcd8d  docs/runs/2026-10-25-ablation-606-live/dry-run/receipts/20261025T100814Z-ablation-591867d0.log
-131aa4dc3fd85f84c27cdfc1cbbf8039ccf5b31def9ac302c217e210c1f64e04  docs/runs/2026-10-25-ablation-606-live/manifest.json
+8b5382761dd55b09c56a48d8efb9646dc71f496513e1407146e2190e869fa751  docs/runs/2026-10-25-ablation-606-live/manifest.json
 f0d2f1f27b4508726b1767143709831e5ea338fbb9caf775ce2d28cf6afaa973  docs/runs/2026-10-25-ablation-606-live/omitted.sha256
 52e8f6923807f5c58761108f3658a0a26f760b82d33c02112c60b4306f8039a0  docs/runs/2026-10-25-ablation-606-live/receipts/20261025T105506Z-ablation-d50b399f.broker/spend.jsonl
 d164e5e2ae1c41814f3dbd20104bd65aa13f405a32c3f4ac4dce9ecff6281c35  docs/runs/2026-10-25-ablation-606-live/receipts/20261025T105506Z-ablation-d50b399f.json
 fe53dd025262daf6d9ff267273d752c32b4546ca844c931b07a5ced9608dd8e3  docs/runs/2026-10-25-ablation-606-live/receipts/20261025T105506Z-ablation-d50b399f.log
-e56e2f7eb9519c7ae3540fd18073e111aa1fffc5e2233798558aed9466b0172c  docs/runs/2026-10-25-ablation-606-live/rederive.py
-e99676baa84191ae90e8e1d8e2e07fcd6d2e77da4d46962b39691404a9658bc1  docs/runs/2026-10-25-ablation-606-live/rederive.txt
+8a92f37d1c1aca328c0ea3bc9da23c6ab56930e9fa818191ab3c062bd4a74dd7  docs/runs/2026-10-25-ablation-606-live/rederive.py
+c8a3c51ea581c4693f2e3c4c0ab56612ea040c3005834d01e37e268f4f889667  docs/runs/2026-10-25-ablation-606-live/rederive.txt
 6e6c47601565cc053625aa696ef3234e52a3efde00b67d83b72e15a1a14ff193  docs/runs/2026-10-25-ablation-606-live/report.md
 4ee64c2242d5cafc3cd8076e56ed3a91743dd7b2447d0ae4b91c956b4043782e  docs/runs/2026-10-25-ablation-606-live/results.json
 f9341e5ac3cfb31fa77cba76c7228d3aaed382ccaea9671d1c73654d916d23c5  docs/runs/2026-10-25-ablation-606-live/spend.jsonl

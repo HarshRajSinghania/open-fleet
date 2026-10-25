@@ -205,8 +205,9 @@ next run. An uncontained gate oracle halts the run as soon as its merge returns.
   ended `failed`, `interrupted` or `lost`, or the API refused every model call it made for the
   credential, whatever its status (version 2). That last claim is read only from the run's bound
   record: every retained source unaltered and none unbound, and exactly one stream per recorded
-  dispatch, each the harness's refusal and nothing else (text-only assistant turns and error
-  results, every one reporting zero tokens, and no cost). It refuses `-a3` and later. The report holds every other
+  dispatch, each the harness's refusal and nothing else: text-only assistant turns and error
+  results, every number they carry zero but their timing, turn count and HTTP status, nested
+  counts and per-model usage included. It refuses `-a3` and later. The report holds every other
   attempt non-compliant. A null or negative result completes
   the experiment.
 

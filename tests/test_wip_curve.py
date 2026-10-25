@@ -2966,8 +2966,11 @@ class TestAKilledRunStillCounts(Tmp):
 # of its calls (HTTP 401), every unit parked, and the run read `complete`, so the re-run the stopping
 # rule allows after an infrastructure failure was refused. refused_stream() is that run's stream.
 
-REFUSED_USAGE = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0,
-                 "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard"}
+REFUSED_USAGE = {"output_tokens_details": {"thinking_tokens": 0}, "input_tokens": 0, "cache_creation_input_tokens": 0,
+                 "cache_read_input_tokens": 0, "output_tokens": 0,
+                 "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard",
+                 "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+                 "inference_geo": "", "iterations": [], "speed": "standard", "fallback_credit": None}
 
 
 def refused_stream(text="Not logged in · Please run /login", usage=None, is_error=True, model="claude-sonnet-5-5"):
@@ -2975,8 +2978,11 @@ def refused_stream(text="Not logged in · Please run /login", usage=None, is_err
     lines = [{"type": "turn_started", "dispatchId": "disp_0123456789", "monitorPid": 1},
              {"type": "system", "subtype": "init", "model": model, "apiKeySource": "none"},
              {"type": "assistant", "message": {"model": "<synthetic>", "role": "assistant", "usage": REFUSED_USAGE,
-                                               "content": [{"type": "text", "text": text}]}},
-             {"type": "result", "subtype": "success", "is_error": is_error, "result": text,
+                                               "content": [{"type": "text", "text": text}]},
+              "error": "authentication_failed", "is_api_error_message": True, "api_error_status": 401},
+             {"type": "result", "subtype": "success", "is_error": is_error, "result": text, "duration_ms": 514,
+              "duration_api_ms": 0, "api_error_status": 401, "terminal_reason": "api_error", "modelUsage": {},
+              "subagent_stats": {"spawned": 0, "completed": 0}, "result_index": 0,
               "usage": REFUSED_USAGE if usage is None else usage, "total_cost_usd": 0, "num_turns": 1}]
     return "".join(json.dumps(line) + "\n" for line in lines)
 
@@ -3049,6 +3055,44 @@ class TestARefusedCredentialIsAnInfrastructureFailure(Tmp):
         self.assertFalse(wip.credential_rejected(self.stream("".join(lines[:3]) + json.dumps(result) + "\n")),
                          "a cost the result does not report")
 
+    def test_a_nested_count_is_work(self):
+        # Codex at 616217810a: only the four top-level token counts were read
+        lines = refused_stream().splitlines(keepends=True)
+
+        def result_with(**changes):
+            result = json.loads(lines[3])
+            for path, value in changes.items():
+                *parents, leaf = path.split(".")
+                node = result
+                for name in parents:
+                    node = node[name]
+                node[leaf] = value
+            return "".join(lines[:3]) + json.dumps(result) + "\n"
+
+        for change in ({"usage.server_tool_use.web_search_requests": 1},
+                       {"usage.iterations": [{"input_tokens": 12, "output_tokens": 4}]},
+                       {"usage.output_tokens_details.thinking_tokens": 7},
+                       {"usage.cache_creation.ephemeral_5m_input_tokens": 5160},
+                       {"modelUsage": {"claude-sonnet-5-5": {"inputTokens": 12, "costUSD": 0.01}}},
+                       {"subagent_stats.spawned": 1}, {"duration_api_ms": 900}):
+            self.assertFalse(wip.credential_rejected(self.stream(result_with(**change))), change)
+        turn = json.loads(lines[2])
+        turn["message"]["usage"] = {**REFUSED_USAGE, "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 1}}
+        self.assertFalse(wip.credential_rejected(self.stream(lines[0] + lines[1] + json.dumps(turn) + "\n" + lines[3])))
+
+    def test_the_report_reads_it_from_the_same_bound_evidence(self):
+        prereg, taskset, _path, prereg_sha, taskset_path = wip.load_prereg(PREREG)
+        cond = {"condition": {"id": "b1r1", "builders": 1, "reviewers": 1}}
+        refused = retained_run(self.tmp / "wip1-b1r1-rep1", {f"disp_{k}": refused_stream() for k in range(3)}, **cond)
+        nested = json.loads(refused_stream().splitlines()[3])
+        nested["usage"]["iterations"] = [{"input_tokens": 12, "output_tokens": 4}]
+        worked = retained_run(self.tmp / "wip1-b3r1-rep1", {"disp_0": refused_stream(),
+                                                            "disp_1": json.dumps(nested) + "\n"}, **cond)
+        args = (prereg, prereg_sha, taskset, wip.sha256_file(taskset_path))
+        self.assertEqual(wip.summarize_run(refused, *args)["infrastructure"],
+                         "the API refused all 3 of its model calls for the credential")
+        self.assertIsNone(wip.summarize_run(worked, *args)["infrastructure"])
+
     def test_a_usage_it_does_not_report_is_not_zero(self):
         missing = {k: v for k, v in REFUSED_USAGE.items() if k != "output_tokens"}
         self.assertFalse(wip.credential_rejected(self.stream(refused_stream(usage=missing))))
@@ -3108,6 +3152,13 @@ class TestARunEveryCallOfWhichWasRefusedMayBeReRunOnce(Tmp):
         del turn["message"]["usage"]
         self.retained({**{f"disp_{k}": refused_stream() for k in range(3)},
                        "disp_9": json.dumps(turn) + "\n" + refused_stream()})
+        self.rerun("infrastructure failure")
+
+    def test_a_nested_count_is_never_re_run(self):
+        # Codex at 616217810a: a bound, complete run whose call reported its tokens only in iterations
+        nested = json.loads(refused_stream().splitlines()[3])
+        nested["usage"]["iterations"] = [{"input_tokens": 12, "output_tokens": 4}]
+        self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": json.dumps(nested) + "\n"})
         self.rerun("infrastructure failure")
 
     def test_removing_or_altering_the_answered_stream_never_authorises_a_re_run(self):

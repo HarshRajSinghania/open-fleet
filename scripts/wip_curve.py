@@ -2567,7 +2567,8 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
            "machine": {"clock": rec.get("clock"), **{k: (rec.get("host") or {}).get(k)
                                                      for k in ("platform", "machine", "cpu_count")}},
            "attempt": rec.get("attempt", 1), "timeout_scale": rec.get("timeout_scale"),
-           "run_json_sha256": sha256_file(run_dir / "run.json")}
+           "run_json_sha256": sha256_file(run_dir / "run.json"),
+           "infrastructure": infrastructure_failure(run_dir, rec.get("status"))}
     reasons = []
     if not bound.path("events.jsonl").is_file():
         out.update(metrics=None, compliant=False, noncompliance=["no event record was retained"])
@@ -2698,7 +2699,6 @@ def summarize_run(run_dir: Path, prereg: dict, prereg_sha: str, taskset: dict, t
         reasons.append(f"{len(out['binding_problems'])} terminal outcome(s) do not bind")
     if rec.get("status") != "complete":
         reasons.append(f"the run ended {rec.get('status')}" + (f" ({rec['stop_reason']})" if rec.get("stop_reason") else ""))
-    out["infrastructure"] = infrastructure_failure(run_dir, rec.get("status"))
     if out["infrastructure"] and rec.get("status") not in RETRYABLE:
         reasons.append(f"an infrastructure failure: {out['infrastructure']}")
     out["compliant"] = not reasons
@@ -2765,19 +2765,39 @@ def launched_model(stream: Path):
 _TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 
-def _zero_usage(usage) -> bool:
-    """True only for a usage record that reports zero in every token count: a count it does not
-    carry is unknown, never zero."""
-    return isinstance(usage, dict) and all(type(usage.get(k)) is int and usage[k] == 0 for k in _TOKEN_FIELDS)
+# A refusal line's own non-zero numbers, at its top level only: its wall time, its one turn, its
+# HTTP status and its place in the stream. Every other number it carries counts work, so is zero.
+_REFUSAL_NUMBERS = frozenset({"duration_ms", "num_turns", "api_error_status", "result_index"})
+
+
+def _no_work(value) -> bool:
+    """True when no number in `value`, at any depth, is non-zero (Codex at 616217810a: a nested
+    count, server_tool_use or iterations or modelUsage, is work too)."""
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, dict):
+        return all(_no_work(v) for v in value.values())
+    return isinstance(value, list) and all(_no_work(v) for v in value)
+
+
+def _zero_usage(line: dict, usage) -> bool:
+    """True only for a line whose usage reports zero in every token count (a count it does not
+    carry is unknown, never zero) and that carries no other non-zero number anywhere."""
+    return isinstance(usage, dict) and all(type(usage.get(k)) is int and usage[k] == 0 for k in _TOKEN_FIELDS) \
+        and all(_no_work(v) for k, v in line.items() if k not in _REFUSAL_NUMBERS)
 
 
 def credential_rejected(stream: Path) -> bool:
     """True when a dispatch's stream is the harness's refusal of its credential and nothing else,
     wip1-b3r1-rep1's shape: the monitor's turn_started, the harness's init and notices, assistant
-    turns of text alone that report zero tokens, and results that are each an error reporting zero
-    tokens and no cost, the last carrying an authentication message ("Not logged in", a 401). Any
-    other line (a tool result, a thinking count, a tool call), a count a line does not report, or
-    one answered or paid result, and it is not (Codex at a61f3e660a and a8068b5cd5)."""
+    turns of text alone, and results that are each an error with a reported zero cost, the last
+    carrying an authentication message ("Not logged in", a 401); every line reports zero tokens
+    and carries no other non-zero number but its timing, turn count and HTTP status. Any other line
+    (a tool result, a thinking count, a tool call), a count a line does not report, a nested count
+    (server tools, iterations, per-model usage), or one answered or paid result, and it is not
+    (Codex at a61f3e660a, a8068b5cd5 and 616217810a)."""
     results = []
     for line in Path(stream).read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
@@ -2792,12 +2812,12 @@ def credential_rejected(stream: Path) -> bool:
         if kind == "assistant":
             message = obj.get("message")
             content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, list) or not _zero_usage(message.get("usage")) \
+            if not isinstance(content, list) or not _zero_usage(obj, message.get("usage")) \
                     or not all(isinstance(block, dict) and block.get("type") == "text" for block in content):
                 return False
             continue
         cost = obj.get("total_cost_usd") if kind == "result" else None
-        if kind != "result" or obj.get("is_error") is not True or not _zero_usage(obj.get("usage")) \
+        if kind != "result" or obj.get("is_error") is not True or not _zero_usage(obj, obj.get("usage")) \
                 or type(cost) not in (int, float) or cost != 0:
             return False
         results.append(obj)

@@ -1,11 +1,11 @@
-# Getting started with open-fleet
+# Getting Started with open-fleet
 
-[Documentation](README.md) · [Install](install.md) · [Prompt recipes](recipes.md)
+[Documentation Hub](README.md) · [Install](install.md) · [Mission Guides](missions/README.md) · [Prompt Recipes](recipes.md)
 
-Use this guide to run a mission on your project. It assumes you have used Claude Code before
-but never run a multi-agent fleet. You will install the catalog, review an existing change,
-then see how a bounded feature moves to a promotion PR. For editing this repository and running
-its local checks, use [Development](development.md).
+Use this guide to run your first mission on a target repository. You will verify your runtime prerequisites, link the catalog, run a read-only [`review-it`](missions/review-it.md) dry run on an existing pull request, and then trace how [`ship-it`](missions/ship-it.md) takes a bounded feature from specification freeze to a promotion PR.
+
+> [!NOTE]
+> Looking to edit this repository or run its local contract tests? You only need `git` and Python ≥ 3.11 — jump to **[Local development](development.md)**.
 
 ## Contents
 
@@ -19,6 +19,8 @@ its local checks, use [Development](development.md).
 - [What a run costs](#what-a-run-costs)
 - [Troubleshooting](#troubleshooting)
 
+---
+
 ## Prerequisites
 
 <p align="center">
@@ -29,33 +31,21 @@ its local checks, use [Development](development.md).
   </picture>
 </p>
 
-Three hard requirements, without which no mission will start:
+Running a mission on a target project requires three core layers:
 
-1. **The Orca app, the `orca` CLI, and Orca's two public skills, `orchestration` and
-   `orca-cli`** (all shipped with Orca, not with this repo; on Linux outside an Orca terminal the
-   CLI is `orca-ide`). Missions are coordinators for Orca fleets: they create worktrees, spawn
-   worker terminals, dispatch tasks, and read `worker_done` messages (the message a worker sends
-   when it claims a unit is finished) through Orca. Verify with:
+1. **An orchestration runtime** ([Multi-runtime & harness guide](runtimes.md)):
+   - **Default (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.238**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
+     ```bash
+     orca status --json
+     ```
+     If `"runtime": {"state": "not_running"}` is returned, run `orca open` and wait until `runtime.state` reads `ready` ([transcript](completion/evidence/P0-r3-orca-status.txt)).
+   - **Standalone POSIX (`posix`) or external orchestrators:** Set `OPEN_FLEET_RUNTIME=posix` to dispatch workers using local git worktrees and background processes (`tmux`, `cmux`, or `setsid`) without the Orca desktop app, or configure any of the other supported providers in **[docs/runtimes.md](runtimes.md)**.
+2. **`git` and `gh`**, authenticated (`gh auth status`). Fleets open pull requests per unit of work and verify merges by git ancestry. Repositories using Linear or Jira can use `orca linear` or `orca jira` where supported.
+3. **Python 3.11 or newer** (standard library only; no virtualenv required) for the runtime verification scripts (`runtime/scripts/verify.py`, `preflight.py`, `run_report.py`) and catalog checks.
 
-   ```bash
-   orca status --json
-   ```
+### Per-mission tooling
 
-   With the app closed it answers `"runtime": {"state": "not_running", "reachable": false}`.
-   Run `orca open`, wait until `runtime.state` reads `ready`, and a mission can start. The
-   before-and-after transcript is
-   [P0-r3-orca-status.txt](completion/evidence/P0-r3-orca-status.txt).
-
-2. **`git` and `gh`**, authenticated. Fleets open PRs per unit of work and verify merges by
-   ancestry; `gh auth status` must succeed. Repos on a tracker other than GitHub issues can use
-   `orca linear` or `orca jira` where a mission supports it.
-
-3. **Python 3.11 or newer** for the catalog gates (`scripts/validate.py`, `tests/`) and for the
-   runtime scripts a fleet runs (`runtime/scripts/verify.py` and its neighbours). CI runs the
-   suite on 3.11, 3.12 and 3.13 (3.10 compiles, but two tests depend on 3.11 interpreter
-   behaviour, so it is not supported); stdlib only — no venv required.
-
-Per-mission tooling on top of that — each mission declares its own in `SKILL.md` frontmatter:
+Each mission declares any additional tooling in its `SKILL.md` frontmatter:
 
 | If you plan to run | Also install |
 |---|---|
@@ -83,26 +73,15 @@ Per-mission tooling on top of that — each mission declares its own in `SKILL.m
 | ship-it | your deploy tooling and a canary surface, if you want the states past `RELEASED` |
 | speed-it | a real measurement path: Lighthouse/DevTools access, or a load/profiler harness |
 
-This table is the single home of the per-mission list; the README links here rather than
-repeating it.
+---
 
 ## Install the catalog
 
-Follow [Install](install.md#choose-an-install-path) for the path comparison and full procedure.
-The minimal selected-mission setup below runs in the **open-fleet clone**. Keep it available;
-the links and completion hook resolve files inside it.
+See **[Install](install.md)** for all installation options (whole-catalog `sh scripts/install.sh`, selective symlinks, or the Claude Code plugin). Keep the `open-fleet` clone on disk — symlinks and completion hooks resolve files inside it.
 
-**Symlink (recommended while evaluating).** Some missions link `../../ARCHITECTURE.md` relative
-to their own directory, and every mission resolves its playbooks by bare name against the repo
-tree. A symlink preserves both; a copy severs them — this is the single most common
-broken-install cause.
+### Option A: Symlink install (recommended)
 
-One thing the symlink path does **not** wire: the native completion gate. `hooks/hooks.json`
-registers `verify-gate.sh` on `Stop` / `TaskCompleted` through `${CLAUDE_PLUGIN_ROOT}`, a path
-that exists only under the plugin install below. On a symlinked mission nothing fires that hook
-until you wire it yourself: the coordinator still runs `verify.py` where its playbooks say so,
-but no hook blocks a turn on a failing manifest. The settings snippet that resolves the repo path
-is in [docs/verify-gate.md](verify-gate.md); `sh hooks/print-settings-snippet.sh` prints it.
+Missions resolve their playbooks (`playbooks/`) and runtime policies (`runtime/`) two levels above their skill folder. Always **symlink** rather than copy:
 
 ```bash
 git clone https://github.com/ravidsrk/open-fleet.git
@@ -112,47 +91,38 @@ ln -s "$(pwd)/skills/ship-it"   ~/.claude/skills/ship-it
 ln -s "$(pwd)/skills/review-it" ~/.claude/skills/review-it
 ```
 
-**Plugin (whole catalog).** The manifest at `.claude-plugin/plugin.json` installs the entire
-mission catalog at once; the relative references resolve inside the copied plugin directory:
+Next, wire the native completion gate. Because `hooks/hooks.json` uses `${CLAUDE_PLUGIN_ROOT}` (which only exists in plugin installs), a symlink install requires merging the `"hooks"` block from the snippet into `~/.claude/settings.json` (delete the `_comment` keys if your settings reader rejects unknown keys):
 
+```bash
+sh hooks/print-settings-snippet.sh
 ```
+
+Verify your hook registration, confirm `verify-gate.sh` is executable, and confirm the gate blocks a missing manifest (fail-closed):
+
+```bash
+test -x runtime/scripts/verify-gate.sh && grep -c verify-gate.sh ~/.claude/settings.json  # Expect: 2
+ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop; echo "exit $?"
+```
+
+The second command must output `BLOCKING (fail-closed)` and `exit 2` ([Verify gate details](verify-gate.md)).
+
+### Option B: Claude Code plugin (whole catalog)
+
+```text
 /plugin marketplace add ravidsrk/open-fleet
 /plugin install open-fleet@open-fleet
 ```
 
-Confirm the install by asking your agent "which missions are available?" — the
-outcome-named skills should list; with the two symlinks above you get `ship-it` and `review-it`.
-If a mission is visible but errors on start about missing playbooks, you copied instead of linking.
+Confirm installation by asking your agent `"which missions are available?"` — you should see outcome-named skills such as `review-it` and `ship-it`.
 
-**Wiring the gate on a symlink install.** `sh hooks/print-settings-snippet.sh` prints a JSON
-object with a `hooks` key — a `TaskCompleted` entry and a `Stop` entry, each running
-`verify-gate.sh` from your clone by absolute path — plus a `_comment` key you can delete. Merge
-the `hooks` entries into `~/.claude/settings.json`. The script's `--check` flag only confirms the
-clone still holds the template and `verify-gate.sh`; it never reads your settings, so it prints
-`ok` whether or not the hooks are installed. Confirm the wiring itself, then exercise the gate:
-
-```bash
-grep -c verify-gate.sh ~/.claude/settings.json                        # 2 — one per hook entry
-ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop; echo "exit $?"
-```
-
-The second line must end in `BLOCKING (fail-closed)` and `exit 2`: a named-but-missing manifest is
-refused, which is the behavior a mis-wired gate would silently lack. The `Stop` hook fires on every
-turn end, which is harmless: with no unit in progress (`ORCA_MANIFEST` unset) it allows the turn,
-and it blocks only a turn that is mid-unit with a failing manifest
-([docs/verify-gate.md](verify-gate.md#native-path--plugin-hooks-set-claude_plugin_root)).
+---
 
 ## Your first mission: a review-it dry run
 
-Before any run, read the README's
-[Before you run a mission](../README.md#before-you-run-a-mission) section: it says what a
-fleet does on your machine (permission-bypass workers, worktrees, PRs on your repository) and
-where to run a first one.
+> [!IMPORTANT]
+> Before running your first mission, review **[Before you run a mission](../README.md#before-you-run-a-mission)** for how worker permissions, git worktrees, and off-worker verification behave.
 
-Start with [`review-it`](missions/review-it.md): it evaluates an existing change without fixing
-project code. After the install checks, open a **fresh coding-agent session in the target
-repository**, identify a PR with a non-empty diff, and supply the issue or spec it implements.
-Replace the values in this example and paste it into the agent prompt:
+Start with [`review-it`](missions/review-it.md): it evaluates an existing pull request using read-only workers (`PROFILE=ro`) without modifying any code. Open a **fresh coding-agent session in the target repository** and prompt:
 
 ```text
 review this PR: <PR URL>
@@ -160,91 +130,41 @@ Use <issue URL or spec path> as the acceptance criteria.
 Return a SHA-bound GO/NO-GO verdict with findings grouped by review axis.
 ```
 
-**How proven is it?** `review-it` reads `external-run`. Its binding run
-([2026-10-13](runs/2026-10-13-review-it-linux.md)) reviewed a real PR on a repository other
-than this catalog (stablyai/orca #28206) from Ubuntu via `orca-ide`: four read-only workers, a
-NO-GO verdict bound to the reviewed SHA, every quote re-read, `verify.py` OK, every artifact
-retained and re-hashable here. That proves the protocol ran end to end once, maintainer-driven,
-on one PR. It does not prove the verdict is right for your PR, and it was run by the
-maintainer, not an independent party (see [proof status](concepts.md#proof-status)).
+### What happens step by step
 
-What happens, in order:
+1. **Freeze the target:** The coordinator records the ledger header, pins the PR's head SHA (ensuring a non-empty diff), and freezes the acceptance criteria source.
+2. **Parallel read-only dispatch:** Read-only workers (`PROFILE=ro`) evaluate the three core acceptance axes in parallel isolation:
+   - *Repo standards & architecture*
+   - *Spec fidelity*
+   - *Test adequacy*
+   - Conditional risk lenses (*security*, *performance*, *accessibility*, *data migration*) run only when triggered by the diff.
+3. **Quote-backed filtering:** Any finding that cannot quote the exact file and line that motivated it is demoted to an informational appendix, eliminating speculative single-agent false positives.
+4. **SHA-bound verdict:** You receive a `GO` or `NO-GO` verdict bound to `reviewed_sha`. Any Critical or Required finding forces `NO-GO`. If new commits are pushed later, the verdict is automatically staled ([`runtime/reviewed-sha-freshness.md`](../runtime/reviewed-sha-freshness.md)).
 
-1. The coordinator pins the fixed point — a SHA or PR with a non-empty diff — and identifies
-   the spec source (the PR description, the linked issue, a spec file).
-2. Read-only workers (`PROFILE=ro`) run the acceptance axes in parallel isolation: repo
-   standards, spec fidelity, test adequacy. Risk lenses (security, performance, accessibility,
-   data migration) dispatch only if the diff triggers them.
-3. Findings that cannot quote the exact line that motivated them drop to an appendix — that one
-   rule removes most of the false positives you have seen from single-agent reviews.
-4. You get a GO / NO-GO verdict bound to the reviewed SHA. Any Critical or Required finding
-   defaults the verdict to NO-GO. A later content-changing push needs a fresh review.
+> **Proof tier:** `review-it` is proven at `external-run` ([2026-10-13 run report](runs/2026-10-13-review-it-linux.md) reviewing `stablyai/orca#28206` on Ubuntu). See [Proof status](concepts.md#proof-status) for what that tier guarantees.
 
-Check the result for the reviewed commit, all three acceptance axes, the reasons risk lenses
-ran or were skipped, and the quoted evidence behind each finding. `GO` is the review's outcome;
-the PR's checks, review requirements and merge decision still apply. The native worker profile
-and completion hook have the [documented advisory boundary](verify-gate.md#trust-boundary).
-
-The first thing the coordinator writes, before any dispatch, is the ledger header. This one is
-real, from the run [Anatomy of a run](guides/anatomy-of-a-run.md) walks:
-
-```
-RUN: clean-sweep-chimely-20260715 · COORDINATOR: term_905ccdf2… + term_c5e4d798… ·
-BASE: clean-sweep/integration · FORK_POINT: ce7891bf… · T0: 2026-07-15T17:40:00Z ·
-SOURCE: tracker dodopayments/chimely open issues #34,35,36,37,38,39,55,56,58,61
-(count=10, enumerated via gh api --paginate state=open)
-```
-
-A `review-it` header has the same shape with `BASE: -`, because a report-only mission has no
-integration branch to merge into ([`runtime/liveness-resume.md`](../runtime/liveness-resume.md)).
-Everything a crash-resume needs is on that line: which terminals own the run, which branch
-integrates, and the exact denominator with how it was enumerated (`T0` is the moment it was
-frozen).
-
-Total cost: a few worker sessions, no writes, and you have now seen the coordinator/worker shape
-without risking a single line of code.
+---
 
 ## Your second mission: ship-it end to end
 
-Pick something real but small — a feature you could build by hand in an afternoon — and, in a
-Claude Code session opened in that repo, type:
+Once you have seen a read-only run, try [`ship-it`](missions/ship-it.md) on a small, self-contained feature in a repository with a passing baseline test suite:
 
-```
+```text
 ship this: add GET /healthz through the existing router.
 Return version and DB connectivity, with 503 when the database is unavailable.
 Test both responses using the project's integration-test command.
 Stop at the promotion PR.
 ```
 
-The run in phases (the full tour is in [the ship-it guide](missions/ship-it.md)):
+### The pipeline in five phases
 
-**Phase 0 — preflight.** The coordinator checks `orca status`, verifies the integration BASE is
-not your default branch (`runtime/scripts/preflight.py`), and confirms the suite is green at
-baseline. A red baseline stops the run — otherwise the fleet cannot tell its regressions from
-your pre-existing ones.
+1. **Phase 0 — Preflight:** The coordinator verifies runtime readiness, checks that the integration `BASE` branch is not your default branch (`runtime/scripts/preflight.py`), and runs the baseline test suite. A red baseline stops the run immediately.
+2. **Phase 1 — Grill & Freeze (Human Gate #1):** If you supplied high-level intent rather than a frozen spec, the coordinator asks clarifying questions one at a time (each with a recommended option), drafts the specification (objectives, acceptance criteria, non-goals, test seams), and waits for your **FREEZE** approval.
+3. **Phase 2 — Decompose & Build:** The spec is decomposed into vertical tracer-bullet slices. Each slice is dispatched to an isolated builder worker in its own git worktree (`≤ 3` concurrent builders per [`runtime/attention-budget.md`](../runtime/attention-budget.md)). Workers write failing tests first and implement only their assigned slice.
+4. **Phase 3 — Build-Blind Review & Negative Control:** Fresh reviewer sessions inspect each slice without seeing the builder's narration. The verifier checks git ancestry, review freshness, and the negative control (reverting the fix must make the new test go `RED`).
+5. **Phase 4 — Merge Train & Promotion PR (Human Gate #2):** A single conductor merges verified slices into the integration `BASE` branch in arrival order, then opens the `BASE` → default branch **promotion PR** containing a full traceability table and stops for your merge decision.
 
-**Phase 1 — the grill (your part).** Since you gave intent, not a spec, the coordinator
-interviews you: one question at a time, each with a recommended answer. Facts it can look up in
-the codebase it does not ask about. When the decision tree is resolved it publishes a spec —
-objectives, acceptance criteria, explicit non-goals, test seams — and asks you to **freeze** it.
-This is human gate #1. After the freeze, scope does not silently reopen.
-
-**Phase 2 — decompose and build.** The spec is cut into tracer-bullet slices; each slice gets a
-fresh worker in its own worktree and terminal. Workers write the failing test first and touch
-only what their slice requires. Concurrent builders stay within the
-[attention budget](../runtime/attention-budget.md) (default ≤3) so review capacity keeps up.
-Irreversible slices (auth, destructive migrations, secrets, …) write a plan and wait for a gate
-before coding. You can watch, but nothing needs you until a one-way door.
-
-**Phase 3 — review and prove.** Fresh sessions that did not write the code review each slice;
-then the integrated whole is driven through its real entry point — for the example above,
-an actual HTTP request to `/healthz` asserting the persisted response, plus a negative control
-(revert the change, watch the test go red, restore).
-
-**Phase 4 — land and stop.** A single conductor merges each reviewed slice into the integration
-BASE, verifying ancestry and reviewed-SHA freshness. The fleet opens the BASE → default
-**promotion PR** with a traceability table mapping every frozen criterion to a passing test, and
-stops. Merging that PR is human gate #2 — always yours.
+---
 
 ## What you will see while a fleet runs
 
@@ -256,21 +176,23 @@ stops. Merging that PR is human gate #2 — always yours.
   </picture>
 </p>
 
-For a blow-by-blow of a real run — including the incidents and what the coordinator did about
-them — read [Anatomy of a run](guides/anatomy-of-a-run.md), which walks the actual ledger of
-the 2026-07-15 sweep of `dodopayments/chimely` hour by hour.
+During an active run (walked hour-by-hour in **[Anatomy of a run](guides/anatomy-of-a-run.md)**), you will see four surfaces:
 
-A fleet is not one scrolling transcript. Expect:
+- **Coordinator terminal:** The session where you typed your prompt. It manages phase transitions, runs `verify.py`, updates the ledger, and surfaces human gates.
+- **Worker terminals:** Ephemeral sessions (one per active unit in its own git worktree) that execute a single task, emit an evidence manifest, and exit. You never need to type into a worker terminal.
+- **The run ledger:** A durable file tracking every unit's state flags (`BUILD_DONE`, `REVIEWED`, `MERGED`, `VERIFIED`), PR number, `reviewed_sha`, `merge_sha`, and manifest path.
+- **Per-unit pull requests:** Opened against the integration `BASE` branch and merged by the conductor once verified.
 
-- **The coordinator terminal** — where you started. It narrates phases, dispatches, and
-  verification results, and it is where gates surface.
-- **Worker terminals** — one per active slice/finding, each in its own git worktree. They open,
-  work, emit a manifest, and are torn down. You never need to type into one.
-- **The ledger** — a file the coordinator keeps (its memory gets compacted; the ledger
-  survives). One row per unit: id, flags, lighting, PR, reviewed SHA, merge SHA, evidence
-  pointer. If you want to know where the run is, read the ledger, not the scrollback.
-- **PRs on your repo** — one per unit of work, each targeting the integration BASE (never your
-  default branch), each merged only by the conductor after verification.
+Example ledger header written at `T0`:
+
+```text
+RUN: clean-sweep-chimely-20260715 · COORDINATOR: term_905ccdf2… + term_c5e4d798… ·
+BASE: clean-sweep/integration · FORK_POINT: ce7891bf… · T0: 2026-07-15T17:40:00Z ·
+SOURCE: tracker dodopayments/chimely open issues #34,35,36,37,38,39,55,56,58,61
+(count=10, enumerated via gh api --paginate state=open)
+```
+
+---
 
 ## Where the evidence lands
 
@@ -282,26 +204,17 @@ A fleet is not one scrolling transcript. Expect:
   </picture>
 </p>
 
-Every unit of work produces a SHA-bound **evidence manifest** — the JSON contract described in
-[concepts](concepts.md#the-evidence-manifest) and specified in
-[`runtime/evidence-manifest.md`](../runtime/evidence-manifest.md). The parts worth reading as a
-human:
+Every completed unit emits a SHA-bound JSON **evidence manifest** ([schema reference](concepts.md#the-evidence-manifest) · [`runtime/evidence-manifest.md`](../runtime/evidence-manifest.md)):
 
-- `base_sha` → `head_sha` — exactly what moved.
-- `criteria[]` — every acceptance criterion from the frozen source, each marked addressed or
-  not. The verifier re-derives this list; a worker cannot shrink it.
-- `intent` — on mutation units: `goal` · `ruled_out` · `why`. Presence is checked; wisdom is
-  not. Distinct from `claim`.
-- `lighting` — `lit` (default) or `dark-eligible`. Dark only for Lane A work with an
-  unfakeable oracle.
-- `negative_control` — what was reverted or mutated, and proof the test went red.
-- `commands[]` — real invocations with exit codes and artifact paths, not summaries.
-- `claim` — the worker's own narration. Informational only; never the completion oracle.
+- `base_sha` → `head_sha` — the exact git commit range for the unit.
+- `criteria[]` — every acceptance criterion from the frozen contract, re-derived by `verify.py` so a worker cannot omit requirements.
+- `intent` — on code-mutating units: `goal`, `ruled_out`, and `why`.
+- `lighting` — `lit` (human/build-blind review required, the default) or `dark-eligible` (narrow Lane A changes with a deterministic oracle).
+- `negative_control` — what was reverted or mutated and proof that the test suite went `RED`.
+- `commands[]` — exact commands executed, exit codes, and artifact paths.
+- `claim` — the worker's summary (informational only; never trusted as proof).
 
-When a coordinator says a unit is done, it means an independent verifier has already checked the
-manifest against git, and the coordinator has re-run the suite in a clean environment at that
-SHA — not that a worker said so. (The clean-env run is the coordinator's job, not `verify.py`'s;
-[concepts](concepts.md#independent-verification) lists which check belongs to whom.)
+---
 
 ## Your side of the human gates
 
@@ -313,105 +226,40 @@ SHA — not that a worker said so. (The clean-env run is the coordinator's job, 
   </picture>
 </p>
 
-Fleets classify every decision as **mechanical** (auto-resolved, audited), **taste**
-(recommendation picked, batched for your veto, work continues), or **one-way** (yours, always).
-You will be interrupted only at one-way gates and human parks — these are the ones the missions name:
+Decisions are classified below the model as **mechanical** (auto-resolved and logged), **taste** (recommended option selected immediately, batched for your later veto), or **one-way** (blocks until a human answers — never defaulted on timeout).
 
-| Gate                             | When                       | What a good answer looks like |
-|----------------------------------|----------------------------|-------------------------------|
-| Freeze the target                | ship-it/map-it intent entry; the scope, surface, or catalog of access-it, attest-it, document-it, floor-it, migrate-it, oncall-it, prove-it, reshape-it, speed-it | Read the acceptance criteria or the frozen list, not the prose. If a criterion is untestable, say so now — it is cheap here and expensive later. |
-| Promotion to the default branch  | the end of every mission that lands code; every migrate-it phase | Review the traceability table and the `accountable:` line, then merge it yourself. |
-| Deploy and rollback              | ship-it past `RELEASED`; every migrate-it phase | Deploy it yourself or record the grant (`decisions.py append --source human:<you>`) — the fleet never self-authorizes one. |
-| The destructive drop             | migrate-it CONTRACT        | Check the archived parity and both zero-use windows before you grant it. |
-| Refuted/duplicate closes (batch) | clean-sweep, absorb-it, oss-contribute | Skim the refutation evidence; approve as a batch or pull items out. |
-| One-way remediations             | harden-it (e.g. secret rotation) | Do the action, then confirm — the mission counts it done only when *verified*, not when acknowledged. |
-| Posting the verdict              | review-it                  | Read the verdict that will be posted; your grant covers that one post. |
-| Paid steps and the agent login   | offload-it                 | OK each paid checkpoint; run the device-auth login in your own terminal. |
-| Device and permission grants     | field-test-it              | Pair or grant on your device; nothing outside the paired set is touched. |
-| Human-owed parks                 | access-it human-AT review, attest-it GAPs, oncall-it cost and channel items, root-cause's fix handoff, map-it decision tickets | Each park names its artifact, its recipient, and the observation that closes it. |
-| Lane B product forks             | any mission                | Pick one of the two drafted options; the fleet never picks for you. |
+| Gate | Missions | What you do |
+|---|---|---|
+| **Freeze the target / contract** | `ship-it`, `map-it`, `access-it`, `attest-it`, `document-it`, `floor-it`, `migrate-it`, `oncall-it`, `prove-it`, `reshape-it`, `speed-it` | Inspect the testable acceptance criteria or scope denominator and approve the freeze. |
+| **Promote `BASE` → default branch** | Every code-landing mission; every `migrate-it` phase | Review the promotion PR's traceability table and merge it yourself. |
+| **Deploy / rollback / destructive drop** | `ship-it` past `RELEASED`; `migrate-it` phases and `CONTRACT` | Execute the deploy or record an explicit human grant (`decisions.py append --source human:<you>`). |
+| **Refuted or duplicate issue closes** | `clean-sweep`, `absorb-it`, `oss-contribute` | Review the batched refutation evidence and approve or pull items out. |
+| **External side-effects & grants** | `review-it` (posting verdict), `harden-it` (secret rotation), `offload-it` (paid cloud steps), `field-test-it` (device pairing) | Perform or authorize the external action explicitly. |
 
-Here is what an actual gate looks like when it reaches you — a question from a freeze
-session, recommendation attached, one question at a time:
+Example freeze prompt in your coordinator terminal:
 
-```
+```text
 DECISION (freeze grill) · spec/magic-link · token storage
   (a) signed JWT in the link — stateless, no schema change; revocation only by expiry  [recommended]
   (b) DB-backed one-time token — revocable, adds a table + a cleanup job
 Reply 'a' or 'b'. No timeout default — the freeze is a one-way gate, and its questions wait.
 ```
 
-Freeze questions block by design: the freeze itself is a one-way door, so nothing is defaulted
-on your behalf. A **taste** gate mid-run looks similar but never blocks — the fleet takes the
-recommendation, keeps working, and batches the decision for your later veto. Answer in one
-character and the run moves; ask "why" and the coordinator argues its case. If the fleet
-believes YOUR stated direction is wrong, that disagreement is never auto-decided — your
-direction stands as the default while the fleet names its case, its blind spots, and the cost
-of being wrong.
-
-An unattended run never fakes your answer: unanswerable one-way questions get parked with the
-run continuing elsewhere, or the run winds down and tells you what it was blocked on.
+---
 
 ## What a run costs
 
-No mission has a fixed price; the measured runs in the [archive](runs/README.md) are the honest
-anchors. Rules of thumb from them:
-
-- **One worker session per unit, plus its reviewers.** A unit is one finding, slice, flake or
-  hypothesis; each gets a builder in a fresh worktree, a build-blind reviewer and, where it merges,
-  an integrator turn. The [attention budget](../runtime/attention-budget.md) caps concurrent
-  builders so review keeps up, which sets the wall clock more than model speed does.
-- **A first `ship-it` is an overnight run, not a lunch break.** The one narrated run
-  ([Anatomy of a run](guides/anatomy-of-a-run.md)) spans more than fourteen hours with five
-  builder panes at its peak; the 2026-09-14 tracker close was ten units in two waves; the
-  2026-09-21 `harden-it` self-run took ten waves to a clean re-audit.
-- **A `review-it` dry run is cheap:** a few read-only worker sessions and no writes, which is why
-  it is the first mission this guide recommends.
-- **Activation alone costs context.** Every mission loads roughly a sixth of a 200k-token window
-  before the first dispatch (each guide's Activation-load line has the number), so start a mission
-  in a fresh session, never mid-conversation; the coordinator's own context compacts during a long
-  run, which is why the ledger, not the scrollback, is its memory.
-
-## Troubleshooting
-
-The [troubleshooting guide](troubleshooting.md) gives concrete checks for installation, missing
-skills, completion hooks, baseline failures and blocked PRs. The frequent first-run cases are
-summarized here.
-
-**"BASE is the default branch" and the run refuses to start.** Working as intended — fixes must
-not land straight on production. Let the mission create its integration branch, or pass one that
-forks from your default's history.
-
-**A mission starts but workers never pick up tasks.** Check `orca status` and that the
-`orchestration` skill is available in the worker context. The most common cause is running in a
-repo where Orca is not initialized.
-
-**A broken `../../ARCHITECTURE.md` link, or playbooks not found beside the skill.** You copied
-a mission directory instead of symlinking it, or installed a single skill with a tool that
-copies. Re-install per [Install the catalog](#install-the-catalog).
-
-**The suite was red before the fleet started.** Fleets refuse to build on a red baseline.
-Run [`deflake-it`](missions/deflake-it.md) (if the red is intermittent) or fix the deterministic
-failures first — [`clean-sweep`](missions/clean-sweep.md) can drain them as findings.
-
-**A worker died mid-run / the coordinator crashed.** Nothing is lost: liveness is watched, dead
-workers are respawned in fresh terminals with bounded attempts, and a dead coordinator resumes
-from the ledger + Orca provenance, re-verifying every completed unit against git before trusting
-it. See [`runtime/liveness-resume.md`](../runtime/liveness-resume.md).
-
-**You want to know why a decision was made.** Mechanical decisions are audited in the ledger
-with their reasoning; taste decisions arrive batched in a brief you can veto. If a fleet made a
-one-way decision without you, that is a bug — file it.
-
-**A unit was marked done on a manifest that should have failed.** On a symlink install the
-completion gate is not wired until the settings snippet is merged. `print-settings-snippet.sh
---check` cannot tell you: it only checks that the gate script exists in the clone. Look for the
-two `verify-gate.sh` entries in `~/.claude/settings.json` and run the gate by hand against a
-missing manifest, as shown under [Install the catalog](#install-the-catalog) — it must block. Remember what the gate checks from inside the worker's own session is advisory;
-the sound surfaces are CI, an MCP task or an SDK subprocess
-([docs/verify-gate.md](verify-gate.md#trust-boundary)).
+- **Sessions scale with unit count:** Each unit of work (slice, finding, flake, or hypothesis) spawns an isolated builder session, a build-blind reviewer session, and a conductor merge turn. Concurrent builders are capped by the [attention budget](../runtime/attention-budget.md) (default ≤ 3).
+- **Wall-clock expectations:** A `review-it` dry run takes minutes across a few read-only workers. A multi-slice `ship-it` or 10-issue `clean-sweep` is a multi-hour or overnight run ([retained run archive](runs/README.md)).
+- **Start in a fresh session:** Activating a mission loads its coordinator instructions (~15% of a 200k-token context window), so always start a mission in a clean agent session rather than mid-conversation.
 
 ---
 
-Next: [Concepts](concepts.md) for the mental model behind fleets, or pick a
-[mission guide](missions/) and go deep.
+## Troubleshooting
+
+See **[Troubleshooting](troubleshooting.md)** for the full diagnostic reference. Common first-run issues:
+
+- **`"BASE is the default branch"` — preflight refuses to start:** By design, fleets never commit directly to `main`/`master`. Allow the coordinator to create an integration branch (e.g., `ship-it/integration`).
+- **Playbooks or `../../ARCHITECTURE.md` not found:** The mission folder was copied instead of symlinked. Re-install using `sh scripts/install.sh` or `ln -s` per [Install the catalog](#install-the-catalog).
+- **Baseline test suite is red:** Missions refuse to build on top of pre-existing test failures. Run [`deflake-it`](missions/deflake-it.md) for intermittent flakes or [`clean-sweep`](missions/clean-sweep.md) to fix deterministic failures first.
+- **Worker stalled or coordinator interrupted:** Liveness supervision respawns stalled workers in clean terminals, and a restarted coordinator resumes from the ledger after re-verifying git ancestry ([`runtime/liveness-resume.md`](../runtime/liveness-resume.md)).

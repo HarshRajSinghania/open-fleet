@@ -1,24 +1,15 @@
-# The verify gate — native hooks, with an enterprise fallback
+# The Verify Gate — Native Hooks and Off-Worker Verification
 
-[Documentation](README.md) · [Install](install.md) · [Troubleshooting](troubleshooting.md#the-gate-blocks-a-turn-or-task)
+[Documentation Hub](README.md) · [Install](install.md) · [Concepts](concepts.md#independent-verification) · [Troubleshooting](troubleshooting.md#the-gate-blocks-a-turn-or-task)
 
-Use this reference when configuring completion hooks or an independent verification process.
-For a first install, follow [Install](install.md#verify-the-completion-gate) first. The native
-hook checks run inside the agent's session and are advisory; the [trust boundary](#trust-boundary)
-explains what an independent process must own.
+`open-fleet` packages its independent verifier ([`runtime/scripts/verify.py`](../runtime/scripts/verify.py)) as a fail-closed **completion gate** ([`runtime/scripts/verify-gate.sh`](../runtime/scripts/verify-gate.sh)): a unit of work cannot be marked complete until its SHA-bound evidence manifest passes verification against authorities outside the worker's own narration.
 
-On this page: [install paths](#install-paths-and-which-ones-carry-the-gate),
-[events and inputs](#native-path--plugin-hooks-set-claude_plugin_root),
-[enterprise fallback](#fallback-path--where-allowmanagedhooksonly-disables-plugin-hooks),
-[trust boundary](#trust-boundary), and
-[signed dispatch](#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135).
-
-Packages the independent verifier ([`runtime/scripts/verify.py`](../runtime/scripts/verify.py)) as a
-**completion gate**: a unit cannot be marked done until its evidence manifest passes. The gate
-*mechanism* is native (Claude Code hooks); its **content** — an independent second-session verdict
-that anchors to authorities OUTSIDE the worker's manifest (the coordinator's frozen contract for
-scope, GitHub for review, the artifact/replay for the negative control) — is the differentiator, and
-it runs the same `verify.py` no matter which surface fires it.
+On this page:
+- [Install paths, and which ones carry the gate](#install-paths-and-which-ones-carry-the-gate)
+- [Native path — plugin hooks](#native-path--plugin-hooks-set-claude_plugin_root)
+- [Fallback path — CI, MCP Task, and SDK subprocess](#fallback-path--where-allowmanagedhooksonly-disables-plugin-hooks)
+- [Trust boundary](#trust-boundary)
+- [Signed dispatch and verifier transcripts](#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135)
 
 <p align="center">
   <picture>
@@ -30,330 +21,124 @@ it runs the same `verify.py` no matter which surface fires it.
 
 ## Install paths, and which ones carry the gate
 
-| Install | `${CLAUDE_PLUGIN_ROOT}` | Gate |
+| Install path | `${CLAUDE_PLUGIN_ROOT}` | Completion gate behavior |
 |---|---|---|
-| `/plugin install open-fleet@open-fleet` | set by Claude Code | declared by [`hooks/hooks.json`](../hooks/hooks.json); confirm activation in the plugin manager |
-| `ln -s … ~/.claude/skills/<mission>` | **unset** | **none until you wire it**: `sh hooks/print-settings-snippet.sh` and merge the output into `settings.json` |
-| `npx skills add …` (copy installer) | unset | **not supported today** — the copy severs the mission's bare-name lookups and its `../../ARCHITECTURE.md` link ([#294](https://github.com/ravidsrk/open-fleet/issues/294)); see [Install](../README.md#install) |
+| **Claude Code plugin** (`/plugin install open-fleet@open-fleet`) | Set by Claude Code | Automatically wired by [`hooks/hooks.json`](../hooks/hooks.json); confirm activation in the plugin manager |
+| **Symlink install** (`sh scripts/install.sh` or `ln -s`) | **Unset** | **Off until wired:** run `sh hooks/print-settings-snippet.sh` and merge the output into `~/.claude/settings.json` |
+| **Copy installer** (repo root copy) | Unset | **Unsupported from source root** — copying a single skill folder severs relative `playbooks/` and `runtime/` paths; use a published `dist/` bundle ([Install](install.md#copy-installers-and-bundles)) |
 
-This is issue #262: the README recommends the symlink path for trying the catalog out, and that
-path loads no plugin, so the hook file below never fires. A mission installed that way runs with
-no completion gate and nothing says so at runtime.
-[`hooks/settings-snippet.json`](../hooks/settings-snippet.json) is the same two hooks with an
-absolute path; [`hooks/print-settings-snippet.sh`](../hooks/print-settings-snippet.sh) resolves
-that path against your clone (`--check` verifies the gate script is there).
+[`hooks/settings-snippet.json`](../hooks/settings-snippet.json) provides the `Stop` and `TaskCompleted` hook definitions, and [`hooks/print-settings-snippet.sh`](../hooks/print-settings-snippet.sh) resolves the absolute path to your local `open-fleet` clone (`--check` verifies the template and gate script exist on disk).
+
+---
 
 ## Native path — plugin hooks (set `${CLAUDE_PLUGIN_ROOT}`)
 
-[`hooks/hooks.json`](../hooks/hooks.json) wires two events to
-[`runtime/scripts/verify-gate.sh`](../runtime/scripts/verify-gate.sh), passing `--event task|stop`:
+[`hooks/hooks.json`](../hooks/hooks.json) binds two lifecycle events to [`runtime/scripts/verify-gate.sh`](../runtime/scripts/verify-gate.sh):
 
-- **`TaskCompleted`** (`--event task`, agent-teams) — **exit 2 → prevent completion + return
-  feedback**. Per-unit by construction; with no manifest it blocks (a unit completing must have one).
-- **`Stop`** (`--event stop`) — fires on **every** turn end, so a turn with **no unit in progress**
-  (`ORCA_MANIFEST` unset) has nothing to verify and is **allowed**; a turn that IS mid-unit is
-  verified and **exit 2 refuses the turn end** until the manifest passes.
+- **`TaskCompleted` (`--event task`):** Per-unit completion hook. Requires `ORCA_MANIFEST` to be set and valid; exits `2` to block completion and return feedback if the manifest is missing or fails any check.
+- **`Stop` (`--event stop`):** Turn-end hook. If no unit is in progress (`ORCA_MANIFEST` is unset), it exits `0` to allow normal conversation turns. If `ORCA_MANIFEST` is set, it runs full verification and exits `2` (fail-closed) if any check fails.
 
-`verify-gate.sh` is **fail-closed**: if a manifest is named but missing, if no authoritative
-contract is supplied (`ORCA_CONTRACT_SOURCE`/`ORCA_CONTRACT_DIGEST` — without it the scope check
-cannot be certified, so it blocks), or the verifier errors, it blocks (exit 2) — an un-runnable
-verifier is never a green light. The one carve-out is the `Stop` semantics above: `Stop` with
-`ORCA_MANIFEST` unset (no unit in progress) is ALLOWED, while `TaskCompleted` with no manifest is a
-mis-dispatch and blocks.
-
-```
-coordinator sets the gate env (every input verify-gate.sh reads, enumerated below) — NOT the worker
-   → TaskCompleted / Stop hook fires verify-gate.sh
-       → verify.py re-derives against authorities outside the manifest; the unit CLASS that decides
-         whether review + negative control run comes from the dispatch (ORCA_UNIT_CLASS), never the
-         manifest — missing/unknown ⇒ mutation (fail-safe)
-         (scope ← coordinator contract · review ← GitHub · negative control ← EXECUTED replay in a
-          throwaway worktree · commands ← a wtree-bound exit-0 record · redaction · commits · freshness)
-           → exit 0 allow · exit 2 BLOCK (with feedback)
+```text
+Coordinator sets gate environment variables
+   → TaskCompleted / Stop hook invokes verify-gate.sh
+       → verify.py re-derives claims against external authorities:
+          • Scope         ← Coordinator-frozen contract source & digest
+          • Ancestry      ← git merge-base --is-ancestor on BASE
+          • Review        ← GitHub API APPROVED review at head_sha
+          • Neg. control  ← Executed replay in a throwaway worktree (when ORCA_EXECUTE_NC is set)
+          • Commands      ← Worktree-bound exit-0 command records
+           → exit 0 (ALLOW) · exit 2 (BLOCK, fail-closed)
 ```
 
-**The gate env surface** — every `ORCA_*` variable `verify-gate.sh` reads, all coordinator-set (never
-worker-set). Each also reads as its `OPEN_FLEET_*` alias (the neutral family in
-[runtimes.md](runtimes.md); `ORCA_MANIFEST` as `OPEN_FLEET_GATE_MANIFEST` or `OPEN_FLEET_MANIFEST`).
-Either spelling may set an input, and two spellings set to different values BLOCK (exit 2) rather
-than one silently winning: the alias used to override the documented name unannounced, so an
-inherited `OPEN_FLEET_UNIT_CLASS` could downgrade a class the coordinator set as `ORCA_UNIT_CLASS`
-(2026-10-23 review, P3). Anything else in the environment is ignored:
+### Environment variables (`ORCA_*` and `OPEN_FLEET_*`)
 
-- `ORCA_MANIFEST` — path to the unit's evidence manifest (required; named-but-missing ⇒ BLOCK;
-  unset ⇒ BLOCK on `TaskCompleted`, allowed on `Stop` with no unit in progress).
-- `ORCA_CONTRACT_SOURCE` / `ORCA_CONTRACT_DIGEST` — the frozen contract `path@ref` and its sha256;
-  without both, the scope check fail-closes.
-- `ORCA_UNIT_CLASS` — `mutation | report-only | planning`, from dispatch; missing/unknown ⇒ mutation.
-  On the native path the worker owns this variable, and the downgrade it buys is the whole
-  mutation lane at once — negative control, intent packet, lighting legality, reviewer_mode.
-  So an **unsigned** `report-only`/`planning` claim is measured against what
-  `base_sha..head_sha` actually changes: code changed ⇒ RED; an unresolvable range ⇒ RED (the
-  shas are worker-supplied too, so "cannot tell" must not beat "changed"); `base_sha ==
-  head_sha` ⇒ RED, because an empty range *asserts* the unit changed nothing and leaves the
-  gate no diff to check it against — a unit that changed code in commit C can declare
-  `base = head = C` exactly as easily as an honest report can. A docs/tests-only range
-  between two real, distinct commits passes, marked `(unsupervised)` in the verdict. A
-  dispatch record signed by the coordinator authorizes the class and skips all of this — that
-  is what signing it is for (#310).
+Every input below is read by `verify-gate.sh` under both its `ORCA_*` name and its neutral `OPEN_FLEET_*` alias ([Multi-runtime guide](runtimes.md); `ORCA_MANIFEST` also accepts `OPEN_FLEET_GATE_MANIFEST` or `OPEN_FLEET_MANIFEST`). If both spellings are set to conflicting values, `verify-gate.sh` fails closed (exit `2`):
 
-  None of this makes the native path sound, and it is not meant to: `base_sha` and `head_sha`
-  are the same worker's, so a determined unit can name some other docs-only range. That is the
-  [trust boundary](#trust-boundary) result, not a gap this check can close. What it buys is
-  that the cheap downgrade fails and the expensive one is labelled.
-- `ORCA_REPO` — `owner/name` for the independent GitHub review lookup. An approval counts only
-  from a non-author account whose review `author_association` is `OWNER`, `MEMBER` or
-  `COLLABORATOR` (`_Authority.INDEPENDENT_REVIEWER_ASSOCIATIONS` in verify.py) — a throwaway
-  account with no standing in the repository cannot approve; a `CHANGES_REQUESTED` from any
-  non-author account still blocks. **Required on the sound
-  surfaces** (`ORCA_PROVENANCE` set, or an enforcement-mode run): without it verify.py fails the
-  review leg closed rather than infer the repository from `origin` — a remote the worker, and every
-  sibling worktree sharing `.git`, can rewrite. On the native lane the inference stands and the
-  verdict records it as advisory (h409 F-2). The review **authority** is held to the same bar
-  (h409 F-1): `gh` is resolved to an absolute path once, at startup, before the executed negative
-  control runs any worker code; a `gh` under a work tree, the temp dir, or a user-writable dir that
-  is not a standard system bin dir is fatal on a sound lane and an advisory `NOTE` elsewhere.
-- `ORCA_BASE` / `ORCA_SYMBOL` — ancestry-check base branch / a unit symbol to grep on it (optional).
-  A named base whose `origin/<base>` is missing is a NOTE on the advisory native lane and FATAL on
-  a lane claiming soundness (`ORCA_PROVENANCE` set, or a signed record + pubkey): the ref lives in
-  the worker's clone, and deleting it must not skip the ancestry proof the coordinator asked for.
-- `ORCA_NC_COMMAND` — the **authoritative** criterion-bound command the negative control must turn
-  RED, supplied out of band exactly as the frozen contract is. It is forwarded as `--nc-command`,
-  and the manifest's own `negative_control.command` must agree with it or the run is RED — a unit
-  does not get to choose what proves it. It is **REQUIRED whenever `ORCA_EXECUTE_NC` is set**
-  (#279): there is no fallback. verify.py used to accept the manifest's own command when that
-  command was already in the content-bound `commands[]` ledger, but the ledger is written by
-  `evidence-run.py` *on the worker*, from what the worker hands it — so the manifest and the ledger
-  are the same authority twice, and binding one to the other is circular. A worker that writes both
-  can nominate `grep -q FIXED calc.py` as its "criterion-bound proof", record it green at
-  `head_sha`'s tree, and clear the executed-control gate without running a test. That is attack A12
-  of [the 2026-09-11 review](reviews/2026-09-11-review.md), and A15 is the same move in the strongest lane the repo documents.
-- `ORCA_EXECUTE_NC` — set (to anything non-empty) to forward `--execute-nc`, which **executes the
-  negative control** instead of reading it. verify.py checks out `head_sha` in a throwaway worktree,
-  applies the control from the manifest — `tool: revert` restores `negative_control.paths` from
-  `base_sha` (falling back to `git revert --no-commit base..head` only when no paths are given and
-  the range is linear); `tool: hand` applies the unified diff quoted in the NC artifact — seals
-  the result into a throwaway sibling commit of `head_sha`, and runs `negative_control.command`
-  three times: **zero** at clean `head_sha`, **non-zero** at the sealed control, **zero** at clean
-  `head_sha` again. Each run gets its own repository, with every ref that named `head_sha`
-  pointing at that phase's commit and an annotated tag staying an annotated tag of it — a tag
-  of a tag stays a chain — with any signature removed in every phase, including one appended
-  after the message (a clean `git status`, `HEAD` equal to the branch ref,
-  and `git cat-file -t` unchanged, in every phase) and a fresh empty HOME and TMPDIR, so a
-  proof that detects the phase — a
-  dirty tree, a first-run marker, a branch ref left on `head_sha`, a tag flattened to a
-  commit — instead of the behaviour cannot fake a kill. Objects are shared through
-  alternates, and that path is written in the filesystem encoding. Requires `ORCA_NC_COMMAND` — without it the run is RED before any
-  worktree is built, so a command the worker nominated is never executed. The control runs under a six-name environment floor (PATH, HOME, TMPDIR/TMP/TEMP, LANG/LC_* — h409 F-6): credentials and `ORCA_*`/`GIT_*` never reach it, and a toolchain that genuinely needs another variable fails CLOSED (a false RED to name, never a silent pass). The control must bind to
-  the change (#280): the paths it restores, and the `+++` targets of a `hand` diff, must be
-  production paths `base_sha..head_sha` really changes — not a decoy, and not a test file; the
-  range-revert fallback is refused when the unit touches a test module; and the RED must carry an
-  assertion failure rather than an ImportError, a SyntaxError, or silence. A "test path" is not
-  only a name: the runners' own discovery at `head_sha` counts too — pytest's `python_files` and
-  `testpaths` (pytest.ini, pyproject.toml, tox.ini, setup.cfg, `-c`, `-o`), every test file the
-  bound command names as an operand, unittest's module operands and discover pattern, and Jest's
-  `testMatch`/`testRegex` in package.json; a configuration that cannot be parsed is RED. A load
-  failure the runner reports (a SyntaxError or ImportError raised in a test, Jest's "Test suite
-  failed to run", Vitest's "Failed Suites") is a stillborn mutant even when the summary counts
-  it as `N failed`, and even beside an assertion failing in another test: the control must leave
-  the code loadable. The source repository's git hooks never run (`core.hooksPath=/dev/null` on
-  every verifier git leg), and no repository-config command the worker planted runs either: a
-  `core.fsmonitor`, an external diff, a `filter.<driver>.clean/smudge`/`diff.<driver>.textconv`,
-  or a `merge.<driver>.driver` a `.gitattributes` selects are all neutralised before the control's
-  `worktree add`/`checkout`/`write-tree` materialises or merges worker content (#629), so the only
-  worker code the verifier runs is the bound command itself. The drivers are read in the directory and ref state of each call that
-  could run them: the control worktree is created empty (`--no-checkout`) and populated only after
-  its OWN config is read, since an `includeIf "gitdir:"`/`"onbranch:"` can declare a filter only
-  in a linked worktree (PR #649 review). The bind is re-read from the sealed control tree itself, the
-  object the control phase checks out. Fail-closed on anything
-  else too: a tool with no replay, a missing command/paths, a git error, a control that changes
-  nothing, or a command that passes under the control ("tautological — the proof does not go RED"). It is **REQUIRED** in the two review-waiver
-  lanes below; elsewhere it is the stronger form of the same check. Budget: 4 checkouts (the
-  scratch worktree the control is applied and sealed in, plus one fresh repository per phase) and
-  3 runs of the bound command — clean, control, clean — at 600 s cap each.
-- `ORCA_NO_GH` — set to take the **no-gh lane**: review authority switches from the GitHub lookup to a
-  local reviewer artifact — a downgrade, see [Trust boundary](#trust-boundary). **Requires
-  `ORCA_EXECUTE_NC`**: with the GitHub authority gone, the negative control is the only oracle left,
-  and a control nobody ran is a file the worker wrote.
-- `ORCA_UNIT_LANE` — `A | B | 0`, the coordinator's lane decision from dispatch, forwarded as
-  `--lane`; a Lane-0 mutation and dark-eligibility outside Lane A then fail in verify.py.
-- `ORCA_LIGHTING` — the coordinator's lighting decision (`dark-eligible` waives the build-blind human
-  review; gate-classification.md). `dark-eligible` **requires `ORCA_EXECUTE_NC`** for the same
-  reason: six of the ten manifest-gaming attacks in the 2026-09-10 review landed in these two lanes,
-  every one of them on a negative-control artifact nobody executed.
-- `ORCA_PROVENANCE` — `ci|mcp|sdk|dispatch` asserts the env came from OFF the worker; suppresses the
-  advisory `NOTE` and is forwarded as `--provenance`, under which the review authority (an explicit
-  `ORCA_REPO`, a `gh` outside any worker-writable location) is required, not merely noted.
-- `ORCA_DISPATCH_RECORD` — the coordinator-signed dispatch envelope (path, or `path@ref`) binding the
-  contract digest, unit class, and lighting (#135). verify.py checks the signature over
-  dispatch-sign.py's own canonical form, so a record signed with `--profile`/`--parent-profile`
-  (#590) verifies, and an edited profile does not.
-- `ORCA_DISPATCH_PUBKEY` — the Ed25519 verifying key, overriding key discovery; trustworthy only when
-  set off-worker (see below).
+- `ORCA_MANIFEST` — Path to the unit's JSON evidence manifest. Required for `TaskCompleted`; on `Stop`, unset means no unit is in flight (exit `0`), while a named-but-missing file blocks (exit `2`).
+- `ORCA_CONTRACT_SOURCE` / `ORCA_CONTRACT_DIGEST` — The frozen contract `path@ref` and its SHA-256 digest. Without both, scope verification fails closed.
+- `ORCA_UNIT_CLASS` — `mutation | report-only | planning` (defaults to `mutation` when unset or unrecognized). On an unsigned native run, a `report-only` or `planning` claim is cross-checked against `base_sha..head_sha`: if production code changed, if the range cannot be resolved, or if `base_sha == head_sha`, the check fails (`RED`). A valid docs/tests-only commit range passes with an `(unsupervised)` label unless authorized by a signed dispatch record.
+- `ORCA_REPO` — `owner/name` for the GitHub review lookup. Approvals count only from non-author accounts with `OWNER`, `MEMBER`, or `COLLABORATOR` standing, while `CHANGES_REQUESTED` from any non-author blocks. Required on sound off-worker lanes (`ORCA_PROVENANCE` set or enforcement mode); `gh` is resolved once at startup and must reside in a system binary directory outside worker-writable paths.
+- `ORCA_BASE` / `ORCA_SYMBOL` — Integration base branch for git ancestry verification and an optional symbol to grep on `origin/<base>`. Missing `origin/<base>` is a `NOTE` on the advisory native path and fatal on sound off-worker lanes.
+- `ORCA_NC_COMMAND` — The authoritative criterion-bound test command that the negative control must turn `RED` (forwarded as `--nc-command`). Must match `negative_control.command` in the manifest, and is **required whenever `ORCA_EXECUTE_NC` is set** so a worker cannot nominate a trivial self-chosen command.
+- `ORCA_EXECUTE_NC` — When set to any non-empty value, forwards `--execute-nc`, which **executes the negative control** in a throwaway worktree rather than merely reading the manifest's description:
+  - **Replay phases:** Checks out `head_sha`, applies the control (`tool: revert` restores `negative_control.paths` from `base_sha`, or `tool: hand` applies the quoted unified diff), seals the tree into a sibling commit, and executes `3 runs of the bound command` across `4 checkouts` (1 scratch worktree to apply and seal the control + 1 isolated checkout per phase) with a 600 s timeout each:
+    1. Clean `head_sha` → must exit **0** (`GREEN`)
+    2. Sealed control tree → must exit **non-zero** (`RED`) with a real test assertion failure
+    3. Clean `head_sha` → must exit **0** (`GREEN`)
+  - **Hygienic environment & git isolation:** Runs under a minimal 6-variable environment floor (`PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LC_*`) with fresh empty `HOME` and `TMPDIR` per phase, tag signatures stripped, `core.hooksPath=/dev/null`, and any repository-configured git filters (`fsmonitor`, `clean`/`smudge`, `textconv`, `merge` drivers) neutralized before checkout.
+  - **Production-code binding:** The reverted or patched paths must be production files modified in `base_sha..head_sha` (never test files discovered by `pytest`, `unittest`, `jest`, or `vitest`), and syntax/import load errors are rejected as stillborn mutants.
+- `ORCA_NO_GH` — Enables the offline **no-gh lane**, switching review verification from GitHub API lookup to a local reviewer artifact (a trust downgrade; see [Trust boundary](#trust-boundary)). **Requires `ORCA_EXECUTE_NC`** and an out-of-band coordinator contract.
+- `ORCA_UNIT_LANE` — `A | B | 0` lane classification from dispatch (forwarded as `--lane`). Rejects Lane-0 mutations and `dark-eligible` claims outside Lane A.
+- `ORCA_LIGHTING` — Coordinator lighting classification (`lit` or `dark-eligible`). Setting `dark-eligible` waives human/build-blind review and therefore **requires `ORCA_EXECUTE_NC`**.
+- `ORCA_PROVENANCE` — `ci|mcp|sdk|dispatch` asserting that the environment was populated off-worker; enables strict authority enforcement and suppresses the in-session advisory `NOTE`.
+- `ORCA_DISPATCH_RECORD` — Path (or `path@ref`) to the coordinator-signed dispatch envelope binding the contract digest, unit class, profile, and lighting.
+- `ORCA_DISPATCH_PUBKEY` — Ed25519 verifying public key overriding repository key discovery (trustworthy only when set off-worker).
+
+---
 
 ## Fallback path — where `allowManagedHooksOnly` disables plugin hooks
 
-Managed/enterprise settings can set `allowManagedHooksOnly`, which blocks user/project/plugin hooks.
-The gate is therefore **also** runnable off the hook surface, running the identical `verify.py`:
+In enterprise environments where `allowManagedHooksOnly` disables user or plugin hooks, run the exact same verifier off-hook:
 
-1. **CI gate** — run the verifier in the PR pipeline (reference snippet; adapt to your CI):
-
+1. **CI pipeline gate (recommended):**
    ```yaml
-   # .github/workflows/verify-gate.yml (reference — not enabled in this repo)
-   - run: python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST"
-       --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST"
-       --repo "$GITHUB_REPOSITORY" --base "$GITHUB_BASE_REF"
+   - name: Verify unit evidence manifest
+     run: |
+       git fetch origin "${ORCA_BASE:?set ORCA_BASE to the integration branch}"
+       python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
+         --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
+         --repo "$GITHUB_REPOSITORY" --base "$ORCA_BASE" \
+         --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci
    ```
+   *(Pass `--execute-nc --nc-command "$ORCA_NC_COMMAND"` so the CI runner replays the negative control in a throwaway worktree rather than merely reading the manifest's artifact text. Require an explicit integration-branch ref `ORCA_BASE` after `git fetch origin` rather than falling back to `main` or `$GITHUB_BASE_REF`, since unit commits land on the integration `BASE` branch before promotion.)*
+2. **MCP Task:** Expose `verify.py` as an MCP Task awaited by the coordinator before advancing the ledger ([Platform capabilities](platform-ride.md)).
+3. **SDK subprocess:** Invoke `runtime/scripts/verify-gate.sh` directly from the coordinator process at unit boundaries.
 
-2. **MCP Task** — expose `verify.py` as an MCP Task the coordinator awaits before advancing a unit
-   (rides the MCP Tasks extension; see [platform-ride](platform-ride.md)).
-3. **SDK subprocess** — the coordinator invokes `verify-gate.sh` directly as a headless
-   subprocess at the unit boundary (works with no hook surface at all).
-
-All three are the same deterministic re-derivation; the hook is just the most ergonomic trigger.
-
-## Why the gate is native but the moat isn't
-
-Anyone can ship a `Stop`-hook gate — the mechanism is a platform primitive (see the absorption-risk
-register in [platform-ride](platform-ride.md), R3). What a competitor cannot cheaply copy is what this
-gate *checks*: an independent, different-session verdict that re-derives against authorities the
-worker does not control — the coordinator's frozen denominator, GitHub's review state, the negative
-control's artifact/replay. Keep the differentiation in `verify.py`, not in the hook.
+---
 
 ## Trust boundary
 
-The verifier re-derives against authorities the worker does not control — **but those authorities are
-only as sound as the provenance of the inputs that name them.** The scope denominator
-(`--contract-source`/`--contract-digest`) and the unit class (`--unit-class`) are supplied via env; if
-the worker can set that env, it can choose its own denominator and class.
+`verify.py` validates worker claims against external authorities, **but those checks are only as sound as the provenance of the environment variables that configure them**:
 
-- **Authority custody is a probe, and a probe can say no.** Every external authority the verifier consults (gh, git, gitleaks) is pinned once at startup and classed by an ownership+mode probe over every path component and symlink hop; a sound lane refuses a worker-writable authority outright. Consequence (h409 O-1): on a host whose ONLY gh lives in a user-owned location (any Homebrew install), a sound lane cannot take an independent review from that box at all — by design; the review must come from a host where the binary is beyond the worker's reach (a root-owned /usr/bin, a fresh CI clone).
-- **Native `Stop`/`TaskCompleted` hook — ADVISORY by default.** The gate runs *inside the graded
-  worker's session*, so the worker can set `ORCA_*`. With no signed dispatch record it is
-  defense-in-depth (it still catches an honest mistake or a lazy manifest), **not a soundness
-  boundary** — it emits a `NOTE` saying so unless `ORCA_PROVENANCE` asserts off-worker origin.
-- **Native hook + signed dispatch — still ADVISORY (#135).** The signature only helps if the worker
-  cannot control the *verifying key*, and in-session it can: every key source the gate consults
-  (the env var, the local `origin/HEAD` ref, the working-tree file) is worker-influenceable, so a
-  self-signed record verifies (see below). The record's soundness value is **off-worker**
-  re-verification, never the in-session verdict.
-- **CI / MCP-Task / SDK-subprocess — SOUND.** On these surfaces the coordinator (not the worker) sets
-  the env, so the frozen denominator and unit class are trustworthy and the guarantee holds. Set
-  `ORCA_PROVENANCE=ci|mcp|sdk|dispatch` there to suppress the advisory `NOTE`.
-- **The no-gh lane downgrades review authority — disclose it wherever the env is templated.** Setting
-  `ORCA_NO_GH` switches the review check from the independent GitHub lookup to a **local
-  `review.artifact`**: worker-forgeable on its own, so verify.py fail-closes unless an out-of-band
-  coordinator contract (`--contract-source` + `--contract-digest`) corroborates the run — and even
-  then the review is only **coordinator-attested**, not GitHub-verified, and the verdict carries a
-  `NOTE` naming the weaker guarantee (merge-serialization.md). The lane exists for sanctioned
-  offline/no-`gh` operation; on the sound surfaces the coordinator owns the env, so `ORCA_NO_GH` must
-  not leak into a CI template a unit can influence — its presence there silently downgrades the review
-  verification on the one surface meant to be sound.
+- **In-session native hooks (`Stop` / `TaskCompleted`) are ADVISORY:** Because native hooks execute inside the worker's own shell environment, a compromised or adversarial worker could alter `ORCA_*` variables or local git refs. Native hooks catch accidental omissions and malformed manifests as defense-in-depth, and emit an advisory `NOTE` unless `ORCA_PROVENANCE` confirms off-worker execution.
+- **CI, MCP Task, and coordinator subprocesses are SOUND:** When an external process owns the environment and runs against a clean fetch of the repository with system-owned binaries (`git`, `gh`, `gitleaks`), the worker cannot tamper with the contract digest, unit class, or verifying key.
+- **The `ORCA_NO_GH` lane is an explicit downgrade:** Setting `ORCA_NO_GH` replaces the independent GitHub API review check with a local review artifact corroborated by the coordinator contract. It is intended only for sanctioned offline environments and must never be enabled in shared CI templates where it would downgrade review verification.
+
+---
 
 ### Signed dispatch — what it binds, and where the key comes from (#135)
 
-> **Dormant today (#284) — implemented, not switched on.** The scheme below is sound where the key
-> originates off the graded worker, and `verify.py` implements it. But
-> no mission or playbook signs a dispatch with `runtime/scripts/dispatch-sign.py`, and no
-> `.orca/dispatch-pubkey` is committed, so the check never runs on a real unit. The same is true
-> of the **signed verifier transcript**
-> (#281/#386): `verify.py --transcript-out --transcript-key` (or `dispatch-sign.py
-> sign-transcript`, for a seed kept offline) emits the verdict as a signed envelope, and
-> the in-process key lane and the executed control are for DIFFERENT hosts: `--execute-nc`
-> runs worker code as the uid that holds the seed, so `verify.py` refuses the two together
-> (h409 F-6) — sign after the control with `sign-transcript`, and sign only a verdict object
-> you produced (it re-hashes `toolchain.files` against its own siblings; h409 O-2.4) — and
-> `run_report.py` verifies one against the committed pubkey and binds its manifest bytes, exit
-> code and signed argument tuple to the report's claims — implemented end to end, and
-> exercised by no real run yet. **Committing `.orca/dispatch-pubkey` is THE enforcement switch for both**:
-> `verify-gate.sh` then requires a signed dispatch record on every native-hook run, and
-> `run_report.py` requires a verified transcript wherever the key is read. WHERE is ancestry-aware
-> (PR #489 round 1): a report whose `inventory_at` is an ancestor of the grading base (the default
-> branch's tip at verification time) reads the key *at its pin* — a pin from before the key landed
-> keeps the unsigned path, and that is the only door into it; a pin OFF that ancestry (a fork from a
-> pre-key commit, a dangling commit) is judged against the key *at the grading base*, so fresh
-> artifacts on an old fork buy nothing. The maintainer flips it consciously, with the seed generated
-> off any agent session (gate G1, 2026-09-16). Read this section as the contract a signed dispatch
-> satisfies, not as a boundary currently standing.
+> [!NOTE]
+> **Implemented mechanism, dormant by default:** The Ed25519 signing mechanisms below are implemented in `runtime/scripts/dispatch-sign.py`, `verify.py`, and `run_report.py`. Today, no mission or playbook signs a dispatch by default, and the **signed verifier transcript** flow is exercised by no real run yet. **Committing `.orca/dispatch-pubkey` is the enforcement switch for both**: once committed on the default branch, `verify-gate.sh` requires a valid signed dispatch record. For `run_report.py`, a report pin already in the grading branch's history reads the key at that pin, so a pin from before the key landed retains the unsigned path. A pin outside that history reads the key at the current grading branch instead, so an older fork does not avoid the signed-transcript requirement.
 
-The native hook can't trust `ORCA_CONTRACT_DIGEST` / `ORCA_UNIT_CLASS` / `ORCA_LIGHTING` on its own —
-the worker sets them. Bind them to a **coordinator-signed dispatch record**. The whole scheme rests on
-one thing: **the verifying public key must originate off the graded worker.** A worker that could set
-the key would just self-sign. The gate discovers the key from three sources, in this code order
-(precedence pinned by `VerifyGateDispatchPinDiscovery` in `tests/test_verify_gate.py`). Sources 2
-and 3 are read in the **target repo** — the toplevel of the directory the gate runs in — because
-that is where verify.py resolves the relative `.orca/dispatch-pubkey[@ref]` it is handed; the
-plugin's own checkout is never probed (`PinDiscoveryReadsTheTargetRepo`):
+When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispatch record (`runtime/scripts/dispatch-sign.py`) binding:
+- **Core fields:** `manifest_id`, `contract_digest`, `unit_class`, `lighting`, `profile`, `parent_profile`, and optional lane flags (`no_gh`, `lane`, `execute_nc`).
+- **Optional negative-control pins:** `nc_paths` (as a set), `nc_command`, and `nc_artifact_sha256` (when known at dispatch time, such as targeted bug-fix reruns).
 
-1. **`ORCA_DISPATCH_PUBKEY` env.** Honored whenever set — a worker-set value is used, not ignored;
-   `ORCA_PROVENANCE` decides only whether the advisory `NOTE` is emitted, never whether the key is
-   used. Trustworthy only when an **off-worker orchestrator** sets it
-   (`ORCA_PROVENANCE=ci|mcp|sdk|dispatch`).
-2. **The pin blob at the local `origin/HEAD` ref** — `.orca/dispatch-pubkey` read from
-   `refs/remotes/origin/HEAD`, resolved **locally**. The blob's *content* was landed by a reviewed PR,
-   but the ref itself is a local remote-tracking ref: in-session the worker can repoint it with
-   `git update-ref`, no push access needed. Trustworthy only when read off-worker against a
-   fetch-verified ref.
-3. **The working-tree `.orca/dispatch-pubkey`** — fallback when the ref read fails. A plain file in
-   the worker's own checkout; fully worker-writable in-session.
+**Verifying key discovery order in `verify-gate.sh`:**
+1. `ORCA_DISPATCH_PUBKEY` environment variable (trustworthy when set off-worker via `ORCA_PROVENANCE=ci|mcp|sdk|dispatch`).
+2. `.orca/dispatch-pubkey` read from `refs/remotes/origin/HEAD` in the target repository.
+3. `.orca/dispatch-pubkey` in the target repository's working tree.
 
-On the native in-session path **all three** are worker-influenceable, so a key that verifies
-in-session proves nothing about who signed (see [Trust boundary](#trust-boundary)).
+**Operational setup when enabling signed dispatch and signed verifier transcripts:**
+1. **Generate keypair (off-worker):** `python3 runtime/scripts/dispatch-sign.py gen-key --out <secret>` and commit `<secret>.pub` as `.orca/dispatch-pubkey` on the default branch.
+2. **Sign per dispatch (coordinator):**
+   ```bash
+   python3 runtime/scripts/dispatch-sign.py sign --key <secret> \
+     --manifest-id <unit-id> --contract-digest <sha256> --unit-class mutation --lighting lit \
+     > /tmp/dispatch-record.json
+   ```
+3. **Verify at gate and emit a signed verifier transcript:** `verify.py` validates the Ed25519 dispatch signature (via vendored RFC 8032 `runtime/scripts/ed25519.py`) and fails closed on any field substitution, replay across units, or missing signature (`verify-gate.sh` forwards `ORCA_DISPATCH_RECORD` and the discovered `.orca/dispatch-pubkey`; when invoking `verify.py` directly, pass `--dispatch-record` and `--dispatch-pubkey` explicitly). Once `.orca/dispatch-pubkey` is committed, `run_report.py` also requires a signed verifier transcript (`transcript=<path>` in the report's `RUN:` header) binding the manifest digest, exit code, and argument tuple:
+   - **Without `--execute-nc`:** Pass `--dispatch-record /tmp/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey --transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
+   - **With `--execute-nc` (recommended two-process flow):** Because `--execute-nc` executes repository tests under the current user ID, `verify.py` refuses `--transcript-key` alongside `--execute-nc` so the private seed is never loaded into the test-execution process. Instead, write an unsigned verdict first and sign it in a separate process (which re-hashes `toolchain.files` against its sibling scripts before signing):
+     ```bash
+     python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
+       --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
+       --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:?set ORCA_BASE to the integration branch}" \
+       --dispatch-record /tmp/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey \
+       --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci \
+       --transcript-out /tmp/verdict-unsigned.json
 
-**What the signature covers, and what stays worker-chosen (#311).** The tuple is `manifest_id`,
-`contract_digest`, `unit_class`, `lighting`, plus three OPTIONAL negative-control inputs:
-`nc_paths`, `nc_command`, `nc_artifact_sha256`. Binding only the first four would leave the worker
-choosing its own oracle — *which* files the control reverts, and *what* command is supposed to go
-RED — so a sound class and a sound denominator would still grade a unit against a proof it picked.
-
-The three are optional because a coordinator usually **cannot know them at dispatch time**: the fix
-has not been written, so nobody yet knows which paths it will touch. Requiring a signature nobody
-could produce would take the whole scheme out of use. So:
-
-- **Signed** (a targeted mutation unit, a re-run of a known defect): the manifest must match, and a
-  flip is reported as `dispatch substitution`. `nc_paths` is signed as a *set* — the coordinator
-  signs which paths, not the order they were typed. `nc_artifact_sha256` is compared against the
-  **content** of the file `negative_control.artifact` names, re-hashed by the gate, not against any
-  digest the manifest supplies.
-- **Unsigned:** the same inputs are still not free. `negative_control.paths` must be production
-  paths that `base_sha..head_sha` actually changes (#280), a `hand` control's quoted diff must
-  target and patch that same change, and `--execute-nc` takes its command from the coordinator out
-  of band and refuses the manifest's own (#279). What genuinely remains worker-chosen is *which* of
-  the changed production paths to revert when a unit changed several — a partial control, whose RED
-  speaks only for the part it reverted.
-
-**The lane flags.** `--no-gh`, `--lane` and `--execute-nc` reach verify.py from argv and the
-worker-settable `ORCA_NO_GH` / `ORCA_UNIT_LANE` / `ORCA_EXECUTE_NC`, so the tuple also carries
-`no_gh`, `lane` and `execute_nc` (`dispatch-sign.py sign --no-gh --lane A|B|0 --execute-nc`), each
-signed only when set — a record without them keeps its exact canonical bytes. With a record:
-a run using `--no-gh` (the review waiver) or `--lane` the record does not sign is refused as
-unbound, a signed value the run contradicts is a `dispatch substitution`, and a signed
-`execute_nc` cannot be dropped. Executing a control the record did not require is allowed — it
-only makes the run stricter.
-
-**Setup and per-dispatch flow:**
-
-1. **Once:** off the worker, `dispatch-sign.py gen-key --out <secret>` — keep `<secret>` private and
-   land `<secret>.pub` as **`.orca/dispatch-pubkey`** through a reviewed PR to the default branch.
-   Committing it turns the signed-dispatch check on — the gate then requires a valid record; what
-   that check *proves* still depends on where the gate runs (see the soundness condition below).
-2. **Per dispatch (off-worker):** `dispatch-sign.py sign --key <secret> --manifest-id <unit-id>
-   --contract-digest <d> --unit-class <c> [--lighting <l>]` — hand the envelope to the gate as
-   `ORCA_DISPATCH_RECORD` (a path, or a `path@ref` fetched out-of-band). The record may be
-   worker-supplied: a forged one won't verify against the off-worker key.
-3. **At the gate:** `verify.py` verifies the Ed25519 signature against that key, asserts each signed
-   field equals the value the run used, **and** that `manifest_id` names *this* unit (so a valid record
-   from another unit can't be replayed). Substitution, forgery, replay, or a pinned key with no valid
-   record all **fail closed** — against whatever key was discovered, which in-session may be the
-   worker's own (the sources above); the fail-closed guarantee bites only where the key is
-   off-worker-anchored.
-
-**Soundness condition, stated honestly:** signed dispatch makes a verdict sound *exactly where the
-worker cannot influence the verifying key* — i.e., **off the worker's box**, where the orchestrator
-(not the worker) owns any injected env and the pin is read against a fetch-verified remote ref. On
-the native in-session path the worker controls the env, the local `origin/HEAD` ref, and the working
-tree, so the gate stays **advisory** there (the #112 result; ARCHITECTURE.md states the same). The
-signature still gives durable value: a CI job, reviewer, or auditor can verify the coordinator's
-signature **off-worker** and detect a run that used substituted inputs. Ed25519 is the vendored
-`runtime/scripts/ed25519.py` (RFC 8032), so
-the gate stays dependency-free.
+     python3 runtime/scripts/dispatch-sign.py sign-transcript --key <secret> \
+       --transcript /tmp/verdict-unsigned.json --out docs/runs/<run>/verifier-transcript.json
+     ```

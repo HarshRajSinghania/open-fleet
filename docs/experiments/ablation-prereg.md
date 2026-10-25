@@ -3,9 +3,13 @@
 Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `c1f5232de89d036a67db444b7d3414866302dec3794794f52da2b5a47eab5815`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
-and the reporter are implemented and tested. **The live paired runs have not happened, and no
-recommendation exists.** The owner authorised the cost cap below on 2026-10-24 (`AUTHORISED`,
-USD 750); the runs themselves have not started. Nothing in this experiment changes the
+and the reporter are implemented and tested. The owner authorised the cost cap below on
+2026-10-24 (`AUTHORISED`, USD 750). The live run of this registration took place on 2026-10-25
+and is bound in [its run report](../runs/2026-10-25-ablation-606-live.md). **Recommendation: keep
+the current activation.** The registered rule returns SUCCESSFUL_REDUCTION for every mission, but
+only because task success was 0 in both arms: the registered agent command could not run the tests
+or commit, and the reduced arm's deferred documents were unreachable. The report gives a follow-up
+design. Nothing in this experiment changes the
 34,000-token activation cap, any mission's budget, any `SKILL.md` or any proof tier, and it sets
 no 5,000-token target (ARCHITECTURE.md explains why that figure is not one).
 

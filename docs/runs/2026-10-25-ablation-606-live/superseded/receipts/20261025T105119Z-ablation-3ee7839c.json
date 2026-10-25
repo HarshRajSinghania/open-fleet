@@ -1,0 +1,130 @@
+{
+  "argv": [
+    "timeout",
+    "--kill-after=30",
+    "129720",
+    "python3",
+    "/repo/scripts/ablation.py",
+    "run",
+    "--tier",
+    "live",
+    "--cost-cap-usd",
+    "740",
+    "--model",
+    "claude-sonnet-5-5",
+    "--harness-version",
+    "2.1.304 (Claude Code)",
+    "--harness-cmd",
+    "python3 /repo/scripts/trajectory_harness.py claude -p --verbose --output-format stream-json --permission-mode acceptEdits",
+    "--out",
+    "/results/out"
+  ],
+  "arm": "ablation",
+  "arm_args": [
+    "run",
+    "--tier",
+    "live",
+    "--cost-cap-usd",
+    "740",
+    "--model",
+    "claude-sonnet-5-5",
+    "--harness-version",
+    "2.1.304 (Claude Code)",
+    "--harness-cmd",
+    "python3 /repo/scripts/trajectory_harness.py claude -p --verbose --output-format stream-json --permission-mode acceptEdits",
+    "--out",
+    "/results/out"
+  ],
+  "broker": {
+    "cap_usd": 750.0,
+    "id": "81dafb60f7f0060eb3590a28f372608d350789332b2903fcf3da7c87fc593dd8",
+    "limits": {
+      "cpus": "1",
+      "memory": "512m",
+      "pids": 64
+    },
+    "mounts": {
+      "/ledger": "/Users/ravindra/of-live/receipts/20261025T105119Z-ablation-3ee7839c.broker",
+      "/repo": "the export of the commit, read-only",
+      "/run/secrets/claude_token": "the token file, read-only"
+    },
+    "port": 8787,
+    "spend": {
+      "calls": 44,
+      "cap_usd": 750.0,
+      "ledger": "/Users/ravindra/of-live/receipts/20261025T105119Z-ablation-3ee7839c.broker/spend.jsonl",
+      "read": true,
+      "refused": 0,
+      "settled_usd": 1.322898,
+      "unsettled_calls": 1,
+      "unsettled_reserved_usd": 4.681609
+    },
+    "user": "501:20"
+  },
+  "commit": "c220067e9cbffc4f34d6363a92153e45402bdfe4",
+  "container": {
+    "id": "5d8dca59e773a1aa2edbf07a70a5b4904a283fb15c557fba6c56158db3ae6377",
+    "limits": {
+      "cpus": "4",
+      "memory": "8g",
+      "pids": 4096
+    },
+    "mounts": {
+      "/repo": "the export of the commit, read-only",
+      "/results": "/Users/ravindra/of-live/ablation",
+      "/run/open-fleet/live-attestation.json": "the attestation, read-only"
+    },
+    "network": "the broker's namespace",
+    "path": "/repo/scripts/live_container_bin:/usr/local/bin:/usr/bin:/bin",
+    "user": "10001:10001"
+  },
+  "destroyed": {
+    "check": [
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      "label=org.open-fleet.live-harness=3ee7839c0c56aa3045939a2209bd9c05",
+      "--format",
+      "{{.ID}}"
+    ],
+    "errors": [],
+    "nonzero": [],
+    "output": "",
+    "verified": true
+  },
+  "elapsed_s": 184.6,
+  "ended_at": "2026-10-25T10:54:25+00:00",
+  "exit_status": null,
+  "hostname": "of-live-3ee7839c0c56aa3045939a2209bd9c05",
+  "image": {
+    "committed_dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "from_committed_dockerfile": true,
+    "id": "sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198",
+    "labels": {
+      "org.open-fleet.claude-code": "2.1.304",
+      "org.open-fleet.dockerfile-sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60"
+    },
+    "ref": "open-fleet-live:claude-2.1.304",
+    "repo_digests": [
+      "open-fleet-live@sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198"
+    ]
+  },
+  "interrupted": 143,
+  "log": "/Users/ravindra/of-live/receipts/20261025T105119Z-ablation-3ee7839c.log",
+  "nonce": "3ee7839c0c56aa3045939a2209bd9c05",
+  "per_call_usd": null,
+  "refused": null,
+  "repo": "/Users/ravindra/projects/open-fleet/.claude/worktrees/live-runs",
+  "schema": "open-fleet.live-container-receipt/2",
+  "started_at": "2026-10-25T10:51:21+00:00",
+  "timed_out": false,
+  "token": {
+    "file": "/Users/ravindra/of-live/oauth-token",
+    "mounted_at": "/run/secrets/claude_token",
+    "passed": "a read-only file mount in the broker's container alone; the arm's container holds no credential"
+  },
+  "token_redactions": 0,
+  "wall_clock_limit_s": 129600.0
+}

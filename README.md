@@ -19,9 +19,11 @@
   <a href="docs/README.md">Documentation Hub</a> ·
   <a href="docs/getting-started.md">Quickstart</a> ·
   <a href="docs/install.md">Install</a> ·
+  <a href="docs/adoption-guide.md">Adoption Guide</a> ·
   <a href="docs/missions/README.md">Mission Catalog</a> ·
   <a href="docs/recipes.md">Prompt Recipes</a> ·
   <a href="docs/runtimes.md">Runtimes &amp; Harnesses</a> ·
+  <a href="docs/comparison.md">Ecosystem Comparison</a> ·
   <a href="docs/concepts.md">Concepts</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/troubleshooting.md">Troubleshooting</a> ·
@@ -39,7 +41,9 @@ Each **mission** is a complete engineering workflow: a coordinator decomposes yo
 | Your goal | Start here |
 |---|---|
 | **Run your first mission in 5 minutes** | [Install](docs/install.md) → [Your first `review-it` dry run](docs/getting-started.md#your-first-mission-a-review-it-dry-run) |
+| **Roll out fleets on a greenfield or legacy codebase** | [Greenfield vs. Brownfield adoption guide](docs/adoption-guide.md) |
 | **Pick the right workflow for a task** | [Mission catalog by category](#the-mission-catalog) · [Prompt recipes](docs/recipes.md) |
+| **Compare with `gstack`, `agent-skills`, `mattpocock`, & `superpowers`** | [Ecosystem comparison & pack composition](docs/comparison.md) |
 | **Run on Orca, standalone POSIX, or 12 other orchestrators** | [Multi-runtime & harness guide](docs/runtimes.md) (`OPEN_FLEET_RUNTIME=orca\|posix\|overstory\|...`) |
 | **Understand what a run proves (and doesn't)** | [The evidence protocol](#the-evidence-protocol) · [Proof status](#proof-status) · [Concepts](docs/concepts.md) |
 | **Contribute or run local contract tests** | [Local development](docs/development.md) — requires only `git` and Python ≥ 3.11 |
@@ -93,7 +97,59 @@ sh hooks/print-settings-snippet.sh
 ```
 
 > [!IMPORTANT]
-> **Wire the completion gate on symlink installs.** `hooks/hooks.json` binds the verifier through `${CLAUDE_PLUGIN_ROOT}`, which Claude Code populates only for plugin installs. A `ln -s` into `~/.claude/skills/` loads no plugin, so without the `print-settings-snippet.sh` configuration above, missions run with no completion gate at all. See [Install paths](docs/install.md) for full details.
+> **Wire the completion gate on symlink installs.** `hooks/hooks.json` binds the verifier through `${CLAUDE_PLUGIN_ROOT}`, which Claude Code populates only for plugin installs. A `ln -s` into `~/.claude/skills/` loads no plugin, so without the `print-settings-snippet.sh` configuration above, missions run with no completion gate at all. **Pick one install path per host — do not stack the symlink install with the Claude Code plugin** ([Install paths](docs/install.md#pick-one-install-path-per-host-do-not-stack)).
+
+<details>
+<summary><b>Paste-into-agent install prompt</b> (let your coding agent install and verify the catalog)</summary>
+
+Paste this into Claude Code, Codex, Gemini CLI, or OpenCode:
+
+```text
+Clone https://github.com/ravidsrk/open-fleet.git into ~/open-fleet (full clone, no --depth 1),
+run `sh scripts/install.sh && sh scripts/install.sh --check`, print the completion-gate snippet
+with `sh hooks/print-settings-snippet.sh`, and run the fail-closed check
+`ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop` (expect exit 2).
+```
+
+</details>
+
+<details>
+<summary><b>See a mission run (60-second terminal transcript)</b></summary>
+
+```text
+You:
+  ship this: add GET /healthz through the existing router. Return version and DB connectivity,
+  with 503 when the database is unavailable. Stop at the promotion PR.
+
+Coordinator (ship-it):
+  [PHASE 0 · PREFLIGHT]
+  $ python3 runtime/scripts/preflight.py --mission ship-it --base ship-it/integration
+  PREFLIGHT=OK runtime=posix base=ship-it/integration baseline_tests=PASS (42 passed in 1.8s)
+
+  [PHASE 1 · FREEZE SPEC — One-Way Human Gate]
+  DECISION (freeze grill) · specs/healthz.md · DB timeout threshold
+    (a) 500ms statement timeout on ping query — fast fail for load balancers  [recommended]
+    (b) 5000ms pool connection timeout — matches default query pool
+  Reply 'a' or 'b'. No timeout default — the freeze is a one-way gate.
+
+You:
+  a
+
+Coordinator (ship-it):
+  Spec frozen at specs/healthz.md@0b073fb (digest sha256:8f1c… · criteria: AC-1, AC-2).
+  [PHASE 2 · BUILD] Dispatched U1 (builder · PROFILE=rw · pack=mattpocock · worktree=fleet/u1-healthz)
+  [PHASE 3 · REVIEW] Dispatched R1 (build-blind reviewer · PROFILE=ro · pack=gstack)
+    → PR #14 APPROVED at reviewed_sha=9b06458 (matches head_sha=9b06458)
+  [PHASE 3 · VERIFY]
+  $ python3 runtime/scripts/verify.py --manifest docs/reports/u1-manifest.json --base ship-it/integration \
+      --contract-source specs/healthz.md@0b073fb --contract-digest sha256:8f1c… \
+      --execute-nc --nc-command "pnpm test src/health"
+  VERIFY=PASS unit=U1 scope=2/2 ancestor=OK review=FRESH negative_control=RED_ON_REVERT (exit 1)
+  [PHASE 4 · CONDUCTOR] Merged PR #14 → ship-it/integration (merge_sha=c41d902).
+  Opened promotion PR #15 (ship-it/integration → main). Terminal state: PROMOTION_READY.
+```
+
+</details>
 
 ## Before you run a mission
 
@@ -195,6 +251,16 @@ Every mission's `metadata:` block carries a validator-enforced `proof:` tier (`d
 **Today `review-it` and `ship-it` read `external-run`; `clean-sweep`, `harden-it` and `prove-it` read `self-run`; every other mission reads `doctrine-only`.**
 <!-- END GENERATED: proof-status -->
 Browse all retained runs in the [run archive](docs/runs/README.md). Note the scope of the static repository gate: it hashes, it does not re-run the verifier against a live target checkout; see [Concepts — Proof status](docs/concepts.md#proof-status) for how static binding and live verification complement each other.
+
+### Highlighted verified runs
+
+| Mission | Proof tier | Target & verified outcome | Retained report & artifacts |
+|---|---|---|---|
+| 🚢 **[ship-it](docs/missions/ship-it.md)** | `external-run` | Built `ravidsrk/mdtoc` from a frozen spec to `BUILT @ 046d1f8d` across 6 vertical slices (110 tests), catching and repairing an integration seam failure before re-review PASS | [2026-10-13-ship-it-mdtoc.md](docs/runs/2026-10-13-ship-it-mdtoc.md) |
+| 🔍 **[review-it](docs/missions/review-it.md)** | `external-run` | Reviewed `stablyai/orca#28206` via 4 parallel `PROFILE=ro` workers to a SHA-bound `NO-GO` verdict (0 Critical, 2 Required: caught a submodule Force Delete data-loss bug); plus 4 live `posix` witness runs on macOS & Ubuntu | [2026-10-13-review-it-linux.md](docs/runs/2026-10-13-review-it-linux.md) · [2026-10-24-review-it-first-run.md](docs/runs/2026-10-24-review-it-first-run.md) |
+| 🧹 **[clean-sweep](docs/missions/clean-sweep.md)** | `self-run` | Drained tracker backlog across 10 units in 2 waves to `DRY-WITH-PARKED`, each fix backed by a pre-fix `RED` test and SHA-256 inventory | [2026-09-14-clean-sweep-self-run.md](docs/runs/2026-09-14-clean-sweep-self-run.md) |
+| 🛡️ **[harden-it](docs/missions/harden-it.md)** | `self-run` | Audited, exploited, patched, and re-attacked `verify.py`, `dispatch-sign.py`, and `verify-gate.sh` across 10 waves (3 P0 + 1 CI-caught P0-class + 1 P1 closed) to a `CLEAN` final re-audit | [2026-09-21-harden-it-self-run.md](docs/runs/2026-09-21-harden-it-self-run.md) |
+| 🧪 **[prove-it](docs/missions/prove-it.md)** | `self-run` | Closed mutation-coverage gap on `verify.py` kind gate (`COVERED`, 4/4 injected mutants killed) | [2026-09-16-prove-it-self-run.md](docs/runs/2026-09-16-prove-it-self-run.md) |
 
 ## Which mission do I want?
 
@@ -298,11 +364,49 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the three-layer contract and the six
 
 ## Install
 
-Full setup, verification, update, and removal steps are in **[docs/install.md](docs/install.md)**:
+Full setup, per-host coordinator paths, verification, update, and removal steps are in **[docs/install.md](docs/install.md)**. **Pick one install path per host (do not stack plugin + symlink + settings snippet):**
 
 - **Symlink install (recommended):** Run `sh scripts/install.sh` (or symlink individual `skills/<name>` folders into `~/.claude/skills/`) and wire the completion gate via `sh hooks/print-settings-snippet.sh`.
 - **Claude Code plugin:** Run `/plugin marketplace add ravidsrk/open-fleet` and `/plugin install open-fleet@open-fleet`. Includes `hooks/hooks.json` by default.
+- **Non-Claude coordinator hosts (`Codex`, `Gemini CLI`, `OpenCode`, `omp`, `pi`, `Antigravity`):** Point your host's skill directory at `skills/<name>` via symlink and set `OPEN_FLEET_RUNTIME=posix` (or `orca`); see [Installing into non-Claude coordinator hosts](docs/install.md#installing-into-non-claude-coordinator-hosts).
 - **Copy installers / `skills` CLI:** Installing directly via copy CLI is not from this repository, today, because copying a single `skills/<name>/` folder severs its relative references to `playbooks/` and `runtime/`. Copy-based tools require a published `dist/` bundle generated by `python3 scripts/bundle.py` ([details](docs/install.md#copy-installers-and-bundles)).
+
+## Frequently asked questions
+
+<details>
+<summary><b>Do I need the Orca desktop app to run missions?</b></summary>
+
+No. Every mission except `pin-it` (which audits the Orca binary itself) runs without the Orca desktop app by setting `export OPEN_FLEET_RUNTIME=posix` (or `auto`). In `posix` mode, `open-fleet` manages state in a zero-daemon SQLite WAL store and dispatches workers in local git worktrees via `tmux`, `cmux`, or `setsid`. See the [Multi-runtime & harness guide](docs/runtimes.md).
+
+</details>
+
+<details>
+<summary><b>Will a fleet ever push to or merge into <code>main</code> on its own?</b></summary>
+
+Never. `runtime/scripts/preflight.py` refuses to start a code-mutating mission if `BASE` is your default branch (`main`/`master`). Workers open PRs only against a fleet-managed integration `BASE` branch, and promoting `BASE` to your default branch is always a human one-way gate.
+
+</details>
+
+<details>
+<summary><b>How does <code>open-fleet</code> relate to <code>garrytan/gstack</code>, <code>addyosmani/agent-skills</code>, and <code>mattpocock/skills</code>?</b></summary>
+
+Those repositories provide single-session worker techniques (TDD loops, spec interviews, sprint reviews, domain checklists). `open-fleet` is the multi-worker orchestration and independent verification layer above them: each mission dispatches isolated workers that mount **at most one** upstream pack per worker task (preventing router/command collisions) and grades every unit through an off-worker SHA-bound verifier (`runtime/scripts/verify.py`). See [Ecosystem comparison & pack composition](docs/comparison.md).
+
+</details>
+
+<details>
+<summary><b>What happens if a session auto-compacts, crashes, or I close my laptop mid-run?</b></summary>
+
+Authoritative state lives in git and the on-disk run ledger, not in chat scrollback. Start a fresh coordinator session and point it at the ledger file; per [`runtime/liveness-resume.md`](runtime/liveness-resume.md), the coordinator re-verifies completed rows against git ancestry and resumes from the first unverified unit.
+
+</details>
+
+<details>
+<summary><b>How should we introduce <code>open-fleet</code> on a legacy codebase with flaky tests?</b></summary>
+
+Start with Phase 1 read-only missions (`review-it`, `root-cause`, `map-it`) that never touch production code, then run Phase 2 oracle-stabilization missions (`deflake-it`, `prove-it`, `floor-it`) before unleashing multi-worker write missions (`clean-sweep`, `ship-it`). Follow the step-by-step [Greenfield vs. Brownfield adoption guide](docs/adoption-guide.md).
+
+</details>
 
 ## Repository layout
 
@@ -335,8 +439,8 @@ Explore the documentation by audience tier in **[docs/README.md](docs/README.md)
 
 | Tier | Key guides |
 |---|---|
-| **1. User & Operator Guides** | [Getting started](docs/getting-started.md) · [Install](docs/install.md) · [Mission guides](docs/missions/README.md) · [Prompt recipes](docs/recipes.md) · [Runtimes & harnesses](docs/runtimes.md) · [Anatomy of a run](docs/guides/anatomy-of-a-run.md) · [Troubleshooting](docs/troubleshooting.md) |
-| **2. Architecture & Reference** | [Concepts & glossary](docs/concepts.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [Verify gate & trust boundary](docs/verify-gate.md) · [Runtime scripts CLI reference](docs/runtime-scripts.md) · [A2A export](docs/a2a-export.md) · [Compliance provenance](docs/compliance-provenance.md) · [Platform ride](docs/platform-ride.md) |
+| **1. User & Operator Guides** | [Getting started](docs/getting-started.md) · [Install](docs/install.md) · [Adoption guide](docs/adoption-guide.md) · [Mission guides](docs/missions/README.md) · [Prompt recipes](docs/recipes.md) · [Runtimes & harnesses](docs/runtimes.md) · [Anatomy of a run](docs/guides/anatomy-of-a-run.md) · [Troubleshooting](docs/troubleshooting.md) |
+| **2. Architecture & Reference** | [Concepts & glossary](docs/concepts.md) · [Ecosystem comparison](docs/comparison.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [Verify gate & trust boundary](docs/verify-gate.md) · [Runtime scripts CLI reference](docs/runtime-scripts.md) · [A2A export](docs/a2a-export.md) · [Compliance provenance](docs/compliance-provenance.md) · [Platform ride](docs/platform-ride.md) |
 | **3. Contributors, Ops & Archives** | [Local development](docs/development.md) · [Contributing](CONTRIBUTING.md) · [Certification](docs/certification.md) · [Distribution](docs/distribution.md) · [Roadmap](docs/roadmap.md) · [Maintainer ops](docs/ops.md) · [Retained runs](docs/runs/README.md) · [Research archive](docs/research/README.md) |
 
 ## Credits & License

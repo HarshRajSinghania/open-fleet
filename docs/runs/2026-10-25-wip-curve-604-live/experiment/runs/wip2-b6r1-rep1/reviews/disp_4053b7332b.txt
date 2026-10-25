@@ -1,0 +1,5 @@
+The change makes `Ledger.remove` raise `ValueError` when `qty` is more than the quantity in stock. An unknown SKU counts as 0 in stock, so any removal from it is refused. The check runs before the stock dict is written, so a refused removal leaves the stock unchanged. Removing exactly the quantity in stock passes the check and leaves 0. The existing positive-quantity check is unchanged, and the diff touches nothing else. I reviewed this from the task statement and the diff alone. I didn't build the code or run any tests.
+
+WIP-REVIEW WIP-NONCE:0bffebc54008795e 8488149e7ec9abe9c9dc0ead317f9f76cf90c966 approve
+
+OPEN_FLEET_WORKER_DONE disp_4053b7332b succeeded

@@ -1,0 +1,11 @@
+The change adds `'lb': 453.59237` and `'oz': 28.349523125` to `FACTORS` in `stocklib/units.py`. I did not run the code or any tests.
+
+- **Factors:** Both values match the task statement exactly.
+- **Conversions:** `convert` computes `value * FACTORS[from] / FACTORS[to]`, so any pair of supported units works in either direction with no further changes.
+- **Unknown units:** A `KeyError` is still turned into `ValueError`, so the error behaviour is unchanged.
+- **Scope:** The diff touches only that one table and adds nothing the task forbids.
+
+The change has no tests. The task didn't ask for any, so I'm not asking for changes on that basis.
+
+WIP-REVIEW WIP-NONCE:a05f29c70151de0b f1f9379a9bcedb152014f060fa7429f9571154e1 approve
+OPEN_FLEET_WORKER_DONE disp_7d5624bad5 succeeded

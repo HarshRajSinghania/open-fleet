@@ -1,0 +1,13 @@
+`Ledger.skus()` returns `sorted(self._stock)`, so the rows come out in sorted SKU order. I read the diff and the ledger code but didn't run `to_csv`, and the diff adds no tests.
+
+`to_csv` meets each requirement in the task statement:
+- **Header:** the first row is `sku,quantity`.
+- **Line endings:** `csv.writer(..., lineterminator="\n")` ends every line with `\n`, including the last.
+- **Quoting:** it uses the `csv` module, so a SKU containing a comma is quoted.
+- **Empty ledger:** only the header line is written.
+
+The change only touches `stocklib/report.py` and adds nothing the task forbids.
+
+WIP-REVIEW WIP-NONCE:bceb723ff10794cc f7814777f3ea3ab8ecc04f9c9e863bcde405347f approve
+
+OPEN_FLEET_WORKER_DONE disp_d4e0d3feac succeeded

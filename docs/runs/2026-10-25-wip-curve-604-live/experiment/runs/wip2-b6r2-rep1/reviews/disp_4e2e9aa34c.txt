@@ -1,0 +1,12 @@
+I approve this change. It does what T5 asks and nothing it forbids.
+
+- **Storage:** `Ledger.__init__` now creates `self._history = []`.
+- **Recording:** `add` and `remove` append `("add", sku, qty)` and `("remove", sku, qty)` after their work is done, so history stays in call order.
+- **Failed calls:** The `ValueError` checks for `qty <= 0` come before the append, so a call that raises is not recorded.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the result leaves the ledger unchanged. The tuples are immutable.
+- **Scope:** Only `stocklib/ledger.py` changed. Existing behaviour is untouched, including `remove` allowing negative stock.
+
+The diff adds no tests. The task doesn't ask for any, so I didn't count that against it.
+
+WIP-REVIEW WIP-NONCE:238046b08ab6ce1a 4a2b2ad59e9e1af6317a9dbefe4166f8b5ff4e7a approve
+OPEN_FLEET_WORKER_DONE disp_4e2e9aa34c succeeded

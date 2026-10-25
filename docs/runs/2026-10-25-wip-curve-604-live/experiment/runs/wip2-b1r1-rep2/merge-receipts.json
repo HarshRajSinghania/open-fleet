@@ -1,0 +1,929 @@
+{
+  "ok": true,
+  "receipts": [
+    {
+      "body": {
+        "consent": "wip-curve run wip2-b1r1-rep2 (#604): merges only to wip-integration",
+        "default_branch": "main",
+        "host": "localhost",
+        "mode": "git",
+        "promotion": "wip-integration->main is human-only; never merged here",
+        "remote": "origin"
+      },
+      "created_at": 1792917655.9461098,
+      "entry_id": null,
+      "epoch": null,
+      "holder": null,
+      "id": 1,
+      "kind": "queue_opened"
+    },
+    {
+      "body": {
+        "previous": null,
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917682.4015923,
+      "entry_id": null,
+      "epoch": 1,
+      "holder": "wip-runner",
+      "id": 2,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "base": "wip-integration",
+        "branch": "wip/wip2-b1r1-rep2/t5-a1",
+        "delivery": null,
+        "pr": null,
+        "reviewedSha": "8260da553ca72d2704483083a82d186295fa07ab",
+        "reviewedTree": "70df725f047cc062e343dd855c04418d73a3727c",
+        "run": "wip2-b1r1-rep2",
+        "seq": 1,
+        "unit": "task_91485b0711"
+      },
+      "created_at": 1792917682.55715,
+      "entry_id": "mq_7877bbf92cfa",
+      "epoch": 1,
+      "holder": "wip-runner",
+      "id": 3,
+      "kind": "boarded"
+    },
+    {
+      "body": {},
+      "created_at": 1792917682.6807823,
+      "entry_id": null,
+      "epoch": 1,
+      "holder": "wip-runner",
+      "id": 4,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 1,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917682.8212137,
+      "entry_id": null,
+      "epoch": 2,
+      "holder": "wip-runner",
+      "id": 5,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "acceptedHead": "8260da553ca72d2704483083a82d186295fa07ab",
+        "baseHead": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+        "gate": {
+          "cmd": "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --landing /results/sandboxes/wip2-b1r1-rep2/landing.json --tags-file /results/sandboxes/wip2-b1r1-rep2/gate-tags.txt",
+          "commit": "e2dae5d9ab797465009d42e6155fb74ad261ddcf",
+          "exit": 0,
+          "tail": "wip-curve gate: 0 for ['T5']\n[visible] ......\n[visible] ----------------------------------------------------------------------\n[visible] Ran 6 tests in 0.000s\n[visible] \n[visible] OK\n[oracle] ...\n[oracle] ----------------------------------------------------------------------\n[oracle] Ran 3 tests in 0.000s\n[oracle] \n[oracle] OK\n"
+        },
+        "how": "reviewed_sha",
+        "prefixCommit": "e2dae5d9ab797465009d42e6155fb74ad261ddcf",
+        "testedBaseTree": "013af1249760e2189c666144d2fed50582eda072",
+        "testedTree": "70df725f047cc062e343dd855c04418d73a3727c"
+      },
+      "created_at": 1792917683.5231586,
+      "entry_id": "mq_7877bbf92cfa",
+      "epoch": 2,
+      "holder": "wip-runner",
+      "id": 6,
+      "kind": "tested"
+    },
+    {
+      "body": {
+        "acceptedHead": "8260da553ca72d2704483083a82d186295fa07ab",
+        "expectedBase": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+        "how": "reviewed_sha",
+        "localMerge": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "mode": "git",
+        "repository": "/results/sandboxes/wip2-b1r1-rep2/origin.git",
+        "testedTree": "70df725f047cc062e343dd855c04418d73a3727c"
+      },
+      "created_at": 1792917683.6118174,
+      "entry_id": "mq_7877bbf92cfa",
+      "epoch": 2,
+      "holder": "wip-runner",
+      "id": 7,
+      "kind": "merge_intent"
+    },
+    {
+      "body": {
+        "acceptedHead": "8260da553ca72d2704483083a82d186295fa07ab",
+        "entry": "mq_7877bbf92cfa",
+        "expectedBase": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+        "mergeSha": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "mergedTree": "70df725f047cc062e343dd855c04418d73a3727c",
+        "parents": [
+          "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "8260da553ca72d2704483083a82d186295fa07ab"
+        ],
+        "resolution": "merged",
+        "send": {
+          "exit": 0,
+          "stderr": "upport for <GIT_DIR>/info/grafts is deprecated\nhint: and will be removed in a future Git version.\nhint:\nhint: Please use \"git replace --convert-graft-file\"\nhint: to convert the grafts into replace refs.\nhint:\nhint: Turn this message off by running\nhint: \"git config advice.graftFileDeprecated false\"\n"
+        },
+        "treeMatchesTested": true,
+        "unit": "task_91485b0711"
+      },
+      "created_at": 1792917683.6689298,
+      "entry_id": "mq_7877bbf92cfa",
+      "epoch": 2,
+      "holder": "wip-runner",
+      "id": 8,
+      "kind": "reconciled"
+    },
+    {
+      "body": {
+        "acceptedUntestedTree": false,
+        "baseHead": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "ledger": "no-gh: local-merge",
+        "mergeSha": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "note": "drain by wip-runner",
+        "promotion": "wip-integration->main is a human gate, not performed here"
+      },
+      "created_at": 1792917683.6987205,
+      "entry_id": "mq_7877bbf92cfa",
+      "epoch": 2,
+      "holder": "wip-runner",
+      "id": 9,
+      "kind": "acknowledged"
+    },
+    {
+      "body": {},
+      "created_at": 1792917683.7027397,
+      "entry_id": null,
+      "epoch": 2,
+      "holder": "wip-runner",
+      "id": 10,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 2,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917708.8336477,
+      "entry_id": null,
+      "epoch": 3,
+      "holder": "wip-runner",
+      "id": 11,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "base": "wip-integration",
+        "branch": "wip/wip2-b1r1-rep2/t4-a1",
+        "delivery": null,
+        "pr": null,
+        "reviewedSha": "d9ecb3df60750708306f8f4c231432be1a91d37c",
+        "reviewedTree": "cae027c9d4c9a4e6aa4f0c2327572c0c6ab7d7c7",
+        "run": "wip2-b1r1-rep2",
+        "seq": 2,
+        "unit": "task_8fa07f9644"
+      },
+      "created_at": 1792917708.9972672,
+      "entry_id": "mq_7d41da96498c",
+      "epoch": 3,
+      "holder": "wip-runner",
+      "id": 12,
+      "kind": "boarded"
+    },
+    {
+      "body": {},
+      "created_at": 1792917709.1269932,
+      "entry_id": null,
+      "epoch": 3,
+      "holder": "wip-runner",
+      "id": 13,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 3,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917709.2721872,
+      "entry_id": null,
+      "epoch": 4,
+      "holder": "wip-runner",
+      "id": 14,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "acceptedHead": "d9ecb3df60750708306f8f4c231432be1a91d37c",
+        "baseHead": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "gate": {
+          "cmd": "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --landing /results/sandboxes/wip2-b1r1-rep2/landing.json --tags-file /results/sandboxes/wip2-b1r1-rep2/gate-tags.txt",
+          "commit": "b42b149d47952911df9f8fc10ac5179281d52dcc",
+          "exit": 0,
+          "tail": "wip-curve gate: 0 for ['T4', 'T5']\n[visible] ......\n[visible] ----------------------------------------------------------------------\n[visible] Ran 6 tests in 0.000s\n[visible] \n[visible] OK\n[oracle] .....\n[oracle] ----------------------------------------------------------------------\n[oracle] Ran 5 tests in 0.000s\n[oracle] \n[oracle] OK\n"
+        },
+        "how": "reviewed_sha",
+        "prefixCommit": "b42b149d47952911df9f8fc10ac5179281d52dcc",
+        "testedBaseTree": "70df725f047cc062e343dd855c04418d73a3727c",
+        "testedTree": "cae027c9d4c9a4e6aa4f0c2327572c0c6ab7d7c7"
+      },
+      "created_at": 1792917709.9869025,
+      "entry_id": "mq_7d41da96498c",
+      "epoch": 4,
+      "holder": "wip-runner",
+      "id": 15,
+      "kind": "tested"
+    },
+    {
+      "body": {
+        "acceptedHead": "d9ecb3df60750708306f8f4c231432be1a91d37c",
+        "expectedBase": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "how": "reviewed_sha",
+        "localMerge": "451105938245179a343365557a404c48cf0fddee",
+        "mode": "git",
+        "repository": "/results/sandboxes/wip2-b1r1-rep2/origin.git",
+        "testedTree": "cae027c9d4c9a4e6aa4f0c2327572c0c6ab7d7c7"
+      },
+      "created_at": 1792917710.0700994,
+      "entry_id": "mq_7d41da96498c",
+      "epoch": 4,
+      "holder": "wip-runner",
+      "id": 16,
+      "kind": "merge_intent"
+    },
+    {
+      "body": {
+        "acceptedHead": "d9ecb3df60750708306f8f4c231432be1a91d37c",
+        "entry": "mq_7d41da96498c",
+        "expectedBase": "39c55a32de388c8b40b34273abe650583bb59f27",
+        "mergeSha": "451105938245179a343365557a404c48cf0fddee",
+        "mergedTree": "cae027c9d4c9a4e6aa4f0c2327572c0c6ab7d7c7",
+        "parents": [
+          "39c55a32de388c8b40b34273abe650583bb59f27",
+          "d9ecb3df60750708306f8f4c231432be1a91d37c"
+        ],
+        "resolution": "merged",
+        "send": {
+          "exit": 0,
+          "stderr": "upport for <GIT_DIR>/info/grafts is deprecated\nhint: and will be removed in a future Git version.\nhint:\nhint: Please use \"git replace --convert-graft-file\"\nhint: to convert the grafts into replace refs.\nhint:\nhint: Turn this message off by running\nhint: \"git config advice.graftFileDeprecated false\"\n"
+        },
+        "treeMatchesTested": true,
+        "unit": "task_8fa07f9644"
+      },
+      "created_at": 1792917710.1338959,
+      "entry_id": "mq_7d41da96498c",
+      "epoch": 4,
+      "holder": "wip-runner",
+      "id": 17,
+      "kind": "reconciled"
+    },
+    {
+      "body": {
+        "acceptedUntestedTree": false,
+        "baseHead": "451105938245179a343365557a404c48cf0fddee",
+        "ledger": "no-gh: local-merge",
+        "mergeSha": "451105938245179a343365557a404c48cf0fddee",
+        "note": "drain by wip-runner",
+        "promotion": "wip-integration->main is a human gate, not performed here"
+      },
+      "created_at": 1792917710.1645942,
+      "entry_id": "mq_7d41da96498c",
+      "epoch": 4,
+      "holder": "wip-runner",
+      "id": 18,
+      "kind": "acknowledged"
+    },
+    {
+      "body": {},
+      "created_at": 1792917710.1689386,
+      "entry_id": null,
+      "epoch": 4,
+      "holder": "wip-runner",
+      "id": 19,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 4,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917819.9229276,
+      "entry_id": null,
+      "epoch": 5,
+      "holder": "wip-runner",
+      "id": 20,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "base": "wip-integration",
+        "branch": "wip/wip2-b1r1-rep2/t1-a2",
+        "delivery": null,
+        "pr": null,
+        "reviewedSha": "0cb190e18e3e34562a411482cbb69cb3ab7d511c",
+        "reviewedTree": "9f21a6a8d67c7c06dcbf6e93146f68c46bc9d8a3",
+        "run": "wip2-b1r1-rep2",
+        "seq": 3,
+        "unit": "task_a59b6c7e15"
+      },
+      "created_at": 1792917820.0875614,
+      "entry_id": "mq_4e257f5348c7",
+      "epoch": 5,
+      "holder": "wip-runner",
+      "id": 21,
+      "kind": "boarded"
+    },
+    {
+      "body": {},
+      "created_at": 1792917820.2158513,
+      "entry_id": null,
+      "epoch": 5,
+      "holder": "wip-runner",
+      "id": 22,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 5,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917820.3555403,
+      "entry_id": null,
+      "epoch": 6,
+      "holder": "wip-runner",
+      "id": 23,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "acceptedHead": "0cb190e18e3e34562a411482cbb69cb3ab7d511c",
+        "baseHead": "451105938245179a343365557a404c48cf0fddee",
+        "gate": {
+          "cmd": "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --landing /results/sandboxes/wip2-b1r1-rep2/landing.json --tags-file /results/sandboxes/wip2-b1r1-rep2/gate-tags.txt",
+          "commit": "43e2ab5bd841e305036c2de55f7a8b6a16db8838",
+          "exit": 0,
+          "tail": "wip-curve gate: 0 for ['T1', 'T4', 'T5']\n[visible] ......\n[visible] ----------------------------------------------------------------------\n[visible] Ran 6 tests in 0.000s\n[visible] \n[visible] OK\n[oracle] .......\n[oracle] ----------------------------------------------------------------------\n[oracle] Ran 7 tests in 0.000s\n[oracle] \n[oracle] OK\n"
+        },
+        "how": "reviewed_sha",
+        "prefixCommit": "43e2ab5bd841e305036c2de55f7a8b6a16db8838",
+        "testedBaseTree": "cae027c9d4c9a4e6aa4f0c2327572c0c6ab7d7c7",
+        "testedTree": "9f21a6a8d67c7c06dcbf6e93146f68c46bc9d8a3"
+      },
+      "created_at": 1792917821.0770955,
+      "entry_id": "mq_4e257f5348c7",
+      "epoch": 6,
+      "holder": "wip-runner",
+      "id": 24,
+      "kind": "tested"
+    },
+    {
+      "body": {
+        "acceptedHead": "0cb190e18e3e34562a411482cbb69cb3ab7d511c",
+        "expectedBase": "451105938245179a343365557a404c48cf0fddee",
+        "how": "reviewed_sha",
+        "localMerge": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "mode": "git",
+        "repository": "/results/sandboxes/wip2-b1r1-rep2/origin.git",
+        "testedTree": "9f21a6a8d67c7c06dcbf6e93146f68c46bc9d8a3"
+      },
+      "created_at": 1792917821.153926,
+      "entry_id": "mq_4e257f5348c7",
+      "epoch": 6,
+      "holder": "wip-runner",
+      "id": 25,
+      "kind": "merge_intent"
+    },
+    {
+      "body": {
+        "acceptedHead": "0cb190e18e3e34562a411482cbb69cb3ab7d511c",
+        "entry": "mq_4e257f5348c7",
+        "expectedBase": "451105938245179a343365557a404c48cf0fddee",
+        "mergeSha": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "mergedTree": "9f21a6a8d67c7c06dcbf6e93146f68c46bc9d8a3",
+        "parents": [
+          "451105938245179a343365557a404c48cf0fddee",
+          "0cb190e18e3e34562a411482cbb69cb3ab7d511c"
+        ],
+        "resolution": "merged",
+        "send": {
+          "exit": 0,
+          "stderr": "upport for <GIT_DIR>/info/grafts is deprecated\nhint: and will be removed in a future Git version.\nhint:\nhint: Please use \"git replace --convert-graft-file\"\nhint: to convert the grafts into replace refs.\nhint:\nhint: Turn this message off by running\nhint: \"git config advice.graftFileDeprecated false\"\n"
+        },
+        "treeMatchesTested": true,
+        "unit": "task_a59b6c7e15"
+      },
+      "created_at": 1792917821.2091935,
+      "entry_id": "mq_4e257f5348c7",
+      "epoch": 6,
+      "holder": "wip-runner",
+      "id": 26,
+      "kind": "reconciled"
+    },
+    {
+      "body": {
+        "acceptedUntestedTree": false,
+        "baseHead": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "ledger": "no-gh: local-merge",
+        "mergeSha": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "note": "drain by wip-runner",
+        "promotion": "wip-integration->main is a human gate, not performed here"
+      },
+      "created_at": 1792917821.2436461,
+      "entry_id": "mq_4e257f5348c7",
+      "epoch": 6,
+      "holder": "wip-runner",
+      "id": 27,
+      "kind": "acknowledged"
+    },
+    {
+      "body": {},
+      "created_at": 1792917821.2487113,
+      "entry_id": null,
+      "epoch": 6,
+      "holder": "wip-runner",
+      "id": 28,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 6,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917845.8836606,
+      "entry_id": null,
+      "epoch": 7,
+      "holder": "wip-runner",
+      "id": 29,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "base": "wip-integration",
+        "branch": "wip/wip2-b1r1-rep2/t6-a1",
+        "delivery": null,
+        "pr": null,
+        "reviewedSha": "4849524852d6804e2f55301627c0ee1ef7cb61b6",
+        "reviewedTree": "e5fea883077e9ada3fef269befdc5206f09aaf8d",
+        "run": "wip2-b1r1-rep2",
+        "seq": 4,
+        "unit": "task_6e7e39c528"
+      },
+      "created_at": 1792917846.0462332,
+      "entry_id": "mq_66322653f1ae",
+      "epoch": 7,
+      "holder": "wip-runner",
+      "id": 30,
+      "kind": "boarded"
+    },
+    {
+      "body": {},
+      "created_at": 1792917846.1775084,
+      "entry_id": null,
+      "epoch": 7,
+      "holder": "wip-runner",
+      "id": 31,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 7,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917846.315346,
+      "entry_id": null,
+      "epoch": 8,
+      "holder": "wip-runner",
+      "id": 32,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "acceptedHead": "4849524852d6804e2f55301627c0ee1ef7cb61b6",
+        "baseHead": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "gate": {
+          "cmd": "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --landing /results/sandboxes/wip2-b1r1-rep2/landing.json --tags-file /results/sandboxes/wip2-b1r1-rep2/gate-tags.txt",
+          "commit": "948f74212f2696ec734bb1cc88a0e9a7faa3662c",
+          "exit": 0,
+          "tail": "wip-curve gate: 0 for ['T1', 'T4', 'T5', 'T6']\n[visible] ......\n[visible] ----------------------------------------------------------------------\n[visible] Ran 6 tests in 0.000s\n[visible] \n[visible] OK\n[oracle] .........\n[oracle] ----------------------------------------------------------------------\n[oracle] Ran 9 tests in 0.000s\n[oracle] \n[oracle] OK\n"
+        },
+        "how": "reviewed_sha",
+        "prefixCommit": "948f74212f2696ec734bb1cc88a0e9a7faa3662c",
+        "testedBaseTree": "9f21a6a8d67c7c06dcbf6e93146f68c46bc9d8a3",
+        "testedTree": "e5fea883077e9ada3fef269befdc5206f09aaf8d"
+      },
+      "created_at": 1792917847.0509791,
+      "entry_id": "mq_66322653f1ae",
+      "epoch": 8,
+      "holder": "wip-runner",
+      "id": 33,
+      "kind": "tested"
+    },
+    {
+      "body": {
+        "acceptedHead": "4849524852d6804e2f55301627c0ee1ef7cb61b6",
+        "expectedBase": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "how": "reviewed_sha",
+        "localMerge": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "mode": "git",
+        "repository": "/results/sandboxes/wip2-b1r1-rep2/origin.git",
+        "testedTree": "e5fea883077e9ada3fef269befdc5206f09aaf8d"
+      },
+      "created_at": 1792917847.1261256,
+      "entry_id": "mq_66322653f1ae",
+      "epoch": 8,
+      "holder": "wip-runner",
+      "id": 34,
+      "kind": "merge_intent"
+    },
+    {
+      "body": {
+        "acceptedHead": "4849524852d6804e2f55301627c0ee1ef7cb61b6",
+        "entry": "mq_66322653f1ae",
+        "expectedBase": "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+        "mergeSha": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "mergedTree": "e5fea883077e9ada3fef269befdc5206f09aaf8d",
+        "parents": [
+          "a6d8b7a3f398e9b5a72e552971e695799cd8b217",
+          "4849524852d6804e2f55301627c0ee1ef7cb61b6"
+        ],
+        "resolution": "merged",
+        "send": {
+          "exit": 0,
+          "stderr": "upport for <GIT_DIR>/info/grafts is deprecated\nhint: and will be removed in a future Git version.\nhint:\nhint: Please use \"git replace --convert-graft-file\"\nhint: to convert the grafts into replace refs.\nhint:\nhint: Turn this message off by running\nhint: \"git config advice.graftFileDeprecated false\"\n"
+        },
+        "treeMatchesTested": true,
+        "unit": "task_6e7e39c528"
+      },
+      "created_at": 1792917847.1947377,
+      "entry_id": "mq_66322653f1ae",
+      "epoch": 8,
+      "holder": "wip-runner",
+      "id": 35,
+      "kind": "reconciled"
+    },
+    {
+      "body": {
+        "acceptedUntestedTree": false,
+        "baseHead": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "ledger": "no-gh: local-merge",
+        "mergeSha": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "note": "drain by wip-runner",
+        "promotion": "wip-integration->main is a human gate, not performed here"
+      },
+      "created_at": 1792917847.2324936,
+      "entry_id": "mq_66322653f1ae",
+      "epoch": 8,
+      "holder": "wip-runner",
+      "id": 36,
+      "kind": "acknowledged"
+    },
+    {
+      "body": {},
+      "created_at": 1792917847.236201,
+      "entry_id": null,
+      "epoch": 8,
+      "holder": "wip-runner",
+      "id": 37,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 8,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917867.9616277,
+      "entry_id": null,
+      "epoch": 9,
+      "holder": "wip-runner",
+      "id": 38,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "base": "wip-integration",
+        "branch": "wip/wip2-b1r1-rep2/t3-a1",
+        "delivery": null,
+        "pr": null,
+        "reviewedSha": "325ce9388449cdb476688c4ea8f913b3fdc71634",
+        "reviewedTree": "cb6cf9be37a5eb8e9cdf7d933ab4d90fbe4d7415",
+        "run": "wip2-b1r1-rep2",
+        "seq": 5,
+        "unit": "task_861417f26e"
+      },
+      "created_at": 1792917868.124255,
+      "entry_id": "mq_91dcf6312c88",
+      "epoch": 9,
+      "holder": "wip-runner",
+      "id": 39,
+      "kind": "boarded"
+    },
+    {
+      "body": {},
+      "created_at": 1792917868.2564282,
+      "entry_id": null,
+      "epoch": 9,
+      "holder": "wip-runner",
+      "id": 40,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 9,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917868.3963552,
+      "entry_id": null,
+      "epoch": 10,
+      "holder": "wip-runner",
+      "id": 41,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "acceptedHead": "325ce9388449cdb476688c4ea8f913b3fdc71634",
+        "baseHead": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "gate": {
+          "cmd": "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --landing /results/sandboxes/wip2-b1r1-rep2/landing.json --tags-file /results/sandboxes/wip2-b1r1-rep2/gate-tags.txt",
+          "commit": "e23f0b0238e80b6fd4e8b06a69f4273d2203caca",
+          "exit": 0,
+          "tail": "wip-curve gate: 0 for ['T1', 'T3', 'T4', 'T5', 'T6']\n[visible] ......\n[visible] ----------------------------------------------------------------------\n[visible] Ran 6 tests in 0.000s\n[visible] \n[visible] OK\n[oracle] ...........\n[oracle] ----------------------------------------------------------------------\n[oracle] Ran 11 tests in 0.000s\n[oracle] \n[oracle] OK\n"
+        },
+        "how": "reviewed_sha",
+        "prefixCommit": "e23f0b0238e80b6fd4e8b06a69f4273d2203caca",
+        "testedBaseTree": "e5fea883077e9ada3fef269befdc5206f09aaf8d",
+        "testedTree": "cb6cf9be37a5eb8e9cdf7d933ab4d90fbe4d7415"
+      },
+      "created_at": 1792917869.144145,
+      "entry_id": "mq_91dcf6312c88",
+      "epoch": 10,
+      "holder": "wip-runner",
+      "id": 42,
+      "kind": "tested"
+    },
+    {
+      "body": {
+        "acceptedHead": "325ce9388449cdb476688c4ea8f913b3fdc71634",
+        "expectedBase": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "how": "reviewed_sha",
+        "localMerge": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "mode": "git",
+        "repository": "/results/sandboxes/wip2-b1r1-rep2/origin.git",
+        "testedTree": "cb6cf9be37a5eb8e9cdf7d933ab4d90fbe4d7415"
+      },
+      "created_at": 1792917869.222343,
+      "entry_id": "mq_91dcf6312c88",
+      "epoch": 10,
+      "holder": "wip-runner",
+      "id": 43,
+      "kind": "merge_intent"
+    },
+    {
+      "body": {
+        "acceptedHead": "325ce9388449cdb476688c4ea8f913b3fdc71634",
+        "entry": "mq_91dcf6312c88",
+        "expectedBase": "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+        "mergeSha": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "mergedTree": "cb6cf9be37a5eb8e9cdf7d933ab4d90fbe4d7415",
+        "parents": [
+          "12631f459b9959e8a170f85c8c79b6af9baf47e6",
+          "325ce9388449cdb476688c4ea8f913b3fdc71634"
+        ],
+        "resolution": "merged",
+        "send": {
+          "exit": 0,
+          "stderr": "upport for <GIT_DIR>/info/grafts is deprecated\nhint: and will be removed in a future Git version.\nhint:\nhint: Please use \"git replace --convert-graft-file\"\nhint: to convert the grafts into replace refs.\nhint:\nhint: Turn this message off by running\nhint: \"git config advice.graftFileDeprecated false\"\n"
+        },
+        "treeMatchesTested": true,
+        "unit": "task_861417f26e"
+      },
+      "created_at": 1792917869.2790098,
+      "entry_id": "mq_91dcf6312c88",
+      "epoch": 10,
+      "holder": "wip-runner",
+      "id": 44,
+      "kind": "reconciled"
+    },
+    {
+      "body": {
+        "acceptedUntestedTree": false,
+        "baseHead": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "ledger": "no-gh: local-merge",
+        "mergeSha": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "note": "drain by wip-runner",
+        "promotion": "wip-integration->main is a human gate, not performed here"
+      },
+      "created_at": 1792917869.3076887,
+      "entry_id": "mq_91dcf6312c88",
+      "epoch": 10,
+      "holder": "wip-runner",
+      "id": 45,
+      "kind": "acknowledged"
+    },
+    {
+      "body": {},
+      "created_at": 1792917869.3127255,
+      "entry_id": null,
+      "epoch": 10,
+      "holder": "wip-runner",
+      "id": 46,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 10,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917891.9448287,
+      "entry_id": null,
+      "epoch": 11,
+      "holder": "wip-runner",
+      "id": 47,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "base": "wip-integration",
+        "branch": "wip/wip2-b1r1-rep2/t2-a1",
+        "delivery": null,
+        "pr": null,
+        "reviewedSha": "e1079358ccfd10451d796cd45443fdee4f219e77",
+        "reviewedTree": "ec0aa3a91d9f3467e00f6e99034962b0ab6dd2d2",
+        "run": "wip2-b1r1-rep2",
+        "seq": 6,
+        "unit": "task_c01d96d4e2"
+      },
+      "created_at": 1792917892.1092246,
+      "entry_id": "mq_9940bd6c75d7",
+      "epoch": 11,
+      "holder": "wip-runner",
+      "id": 48,
+      "kind": "boarded"
+    },
+    {
+      "body": {},
+      "created_at": 1792917892.2378314,
+      "entry_id": null,
+      "epoch": 11,
+      "holder": "wip-runner",
+      "id": 49,
+      "kind": "lease_released"
+    },
+    {
+      "body": {
+        "previous": {
+          "epoch": 11,
+          "holder": "wip-runner",
+          "live": false
+        },
+        "reconciled": [],
+        "takeover": false
+      },
+      "created_at": 1792917892.3825402,
+      "entry_id": null,
+      "epoch": 12,
+      "holder": "wip-runner",
+      "id": 50,
+      "kind": "lease_acquired"
+    },
+    {
+      "body": {
+        "acceptedHead": "e1079358ccfd10451d796cd45443fdee4f219e77",
+        "baseHead": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "gate": {
+          "cmd": "/usr/local/bin/python3 -s /repo/scripts/wip_curve.py gate --taskset /repo/docs/experiments/wip-curve-taskset.json --landing /results/sandboxes/wip2-b1r1-rep2/landing.json --tags-file /results/sandboxes/wip2-b1r1-rep2/gate-tags.txt",
+          "commit": "6cb00ed1116b917f99b1b146113a573dfe73c5d6",
+          "exit": 0,
+          "tail": "wip-curve gate: 0 for ['T1', 'T2', 'T3', 'T4', 'T5', 'T6']\n[visible] ......\n[visible] ----------------------------------------------------------------------\n[visible] Ran 6 tests in 0.000s\n[visible] \n[visible] OK\n[oracle] ..............\n[oracle] ----------------------------------------------------------------------\n[oracle] Ran 14 tests in 0.000s\n[oracle] \n[oracle] OK\n"
+        },
+        "how": "reviewed_sha",
+        "prefixCommit": "6cb00ed1116b917f99b1b146113a573dfe73c5d6",
+        "testedBaseTree": "cb6cf9be37a5eb8e9cdf7d933ab4d90fbe4d7415",
+        "testedTree": "ec0aa3a91d9f3467e00f6e99034962b0ab6dd2d2"
+      },
+      "created_at": 1792917893.1619453,
+      "entry_id": "mq_9940bd6c75d7",
+      "epoch": 12,
+      "holder": "wip-runner",
+      "id": 51,
+      "kind": "tested"
+    },
+    {
+      "body": {
+        "acceptedHead": "e1079358ccfd10451d796cd45443fdee4f219e77",
+        "expectedBase": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "how": "reviewed_sha",
+        "localMerge": "dbcadcf7df38340e2105956f080917ff9e5e2e04",
+        "mode": "git",
+        "repository": "/results/sandboxes/wip2-b1r1-rep2/origin.git",
+        "testedTree": "ec0aa3a91d9f3467e00f6e99034962b0ab6dd2d2"
+      },
+      "created_at": 1792917893.240182,
+      "entry_id": "mq_9940bd6c75d7",
+      "epoch": 12,
+      "holder": "wip-runner",
+      "id": 52,
+      "kind": "merge_intent"
+    },
+    {
+      "body": {
+        "acceptedHead": "e1079358ccfd10451d796cd45443fdee4f219e77",
+        "entry": "mq_9940bd6c75d7",
+        "expectedBase": "6f2f9426aecac1584425b75c02302f97ef707846",
+        "mergeSha": "dbcadcf7df38340e2105956f080917ff9e5e2e04",
+        "mergedTree": "ec0aa3a91d9f3467e00f6e99034962b0ab6dd2d2",
+        "parents": [
+          "6f2f9426aecac1584425b75c02302f97ef707846",
+          "e1079358ccfd10451d796cd45443fdee4f219e77"
+        ],
+        "resolution": "merged",
+        "send": {
+          "exit": 0,
+          "stderr": "upport for <GIT_DIR>/info/grafts is deprecated\nhint: and will be removed in a future Git version.\nhint:\nhint: Please use \"git replace --convert-graft-file\"\nhint: to convert the grafts into replace refs.\nhint:\nhint: Turn this message off by running\nhint: \"git config advice.graftFileDeprecated false\"\n"
+        },
+        "treeMatchesTested": true,
+        "unit": "task_c01d96d4e2"
+      },
+      "created_at": 1792917893.2931685,
+      "entry_id": "mq_9940bd6c75d7",
+      "epoch": 12,
+      "holder": "wip-runner",
+      "id": 53,
+      "kind": "reconciled"
+    },
+    {
+      "body": {
+        "acceptedUntestedTree": false,
+        "baseHead": "dbcadcf7df38340e2105956f080917ff9e5e2e04",
+        "ledger": "no-gh: local-merge",
+        "mergeSha": "dbcadcf7df38340e2105956f080917ff9e5e2e04",
+        "note": "drain by wip-runner",
+        "promotion": "wip-integration->main is a human gate, not performed here"
+      },
+      "created_at": 1792917893.3298173,
+      "entry_id": "mq_9940bd6c75d7",
+      "epoch": 12,
+      "holder": "wip-runner",
+      "id": 54,
+      "kind": "acknowledged"
+    },
+    {
+      "body": {},
+      "created_at": 1792917893.333938,
+      "entry_id": null,
+      "epoch": 12,
+      "holder": "wip-runner",
+      "id": 55,
+      "kind": "lease_released"
+    }
+  ]
+}

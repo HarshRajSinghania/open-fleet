@@ -1,0 +1,11 @@
+The change does what T6 asks and nothing it forbids.
+
+- **`totals(ledger)`:** It sums `ledger.quantity(sku)` over `ledger.skus()` and returns an `int`. Quantities can go negative through `remove`, and the sum handles that correctly.
+- **`summary(ledger)`:** It appends `TOTAL <n>` as the last line, using `totals`. The per-SKU lines are built exactly as before.
+- **Empty ledger:** The line list holds only `TOTAL 0`, so the joined output is exactly `TOTAL 0`.
+- **Scope:** The diff touches only `stocklib/report.py`.
+
+I read the code and diff only. I did not run any tests.
+
+WIP-REVIEW WIP-NONCE:21ece99142b44694 7d9da00cb0b1091cab60571de8a2f6f1ab235405 approve
+OPEN_FLEET_WORKER_DONE disp_47fe6688ba succeeded

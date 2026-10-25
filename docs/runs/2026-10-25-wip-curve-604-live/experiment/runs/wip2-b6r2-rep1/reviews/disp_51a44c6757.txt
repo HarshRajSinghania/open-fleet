@@ -1,0 +1,10 @@
+The change meets the task and does nothing it forbids. I only read the diff and task statement; I didn't run the code.
+
+- **Transliteration:** `slugify` now runs NFKD normalization and drops combining marks before the existing strip, lowercase and regex steps. By hand-tracing, `'Crème Brûlée'` gives `'creme-brulee'` and `'Ångström units'` gives `'angstrom-units'`.
+- **ASCII input:** NFKD leaves ASCII characters unchanged and none of them are combining marks, so ASCII behaviour is the same as before.
+- **Scope:** The diff touches only `stocklib/textutil.py`, and the `unicodedata` import is used.
+- **Side effect:** NFKD also folds compatibility characters, for example `ﬁ` becomes `fi`. That follows from the NFKD the task asked for.
+
+WIP-REVIEW WIP-NONCE:0c5329a058a95a42 05dfe3e362804ff1f706692719b6831bab27d0a2 approve
+
+OPEN_FLEET_WORKER_DONE disp_51a44c6757 succeeded

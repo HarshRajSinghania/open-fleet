@@ -1,0 +1,11 @@
+The change does what T1 asks and nothing it forbids.
+
+- **Transliteration:** `slugify` now runs `unicodedata.normalize("NFKD", text)` and then drops combining marks, before the existing strip, lower and regex steps. 'Crème Brûlée' decomposes to 'Creme Brulee', which slugs to 'creme-brulee'. 'Ångström units' becomes 'Angstrom units', which slugs to 'angstrom-units'.
+- **ASCII input:** NFKD leaves ASCII unchanged and ASCII has no combining marks, so the output for ASCII input is the same as before.
+- **Scope:** The diff touches only `stocklib/textutil.py`, adding one import and two lines.
+
+I reviewed the diff by reading it and did not run any code. Letters with no decomposition, such as ø and ß, still get dropped into hyphens. The task doesn't ask for them.
+
+WIP-REVIEW WIP-NONCE:fa9ad2d4cdd3d35a d67ac215cac2dbb19f1ea0635fdd23ff1480ca77 approve
+
+OPEN_FLEET_WORKER_DONE disp_fcdafa2dca succeeded

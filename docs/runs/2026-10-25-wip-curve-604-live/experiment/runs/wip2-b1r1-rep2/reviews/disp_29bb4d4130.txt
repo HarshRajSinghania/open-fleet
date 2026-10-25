@@ -1,0 +1,11 @@
+The change meets the task statement and does nothing it forbids.
+
+- **Overdraw check:** `Ledger.remove` now raises `ValueError` when `qty` is more than `self._stock.get(sku, 0)`. An unknown SKU counts as 0 in stock. Since `qty <= 0` is already rejected, any removal from an unknown SKU raises.
+- **Refusal leaves stock alone:** the check runs before the stock update and before the history append. A refused removal changes neither the stock nor the history.
+- **Exact removal:** `qty == stock` fails the `>` test, so it goes through and leaves 0.
+- **Scope:** the diff is two added lines in `stocklib/ledger.py`. The existing `qty <= 0` check is unchanged.
+
+I only read the task and the diff. I did not run any tests.
+
+WIP-REVIEW WIP-NONCE:53536c5de0bac69b e1079358ccfd10451d796cd45443fdee4f219e77 approve
+OPEN_FLEET_WORKER_DONE disp_29bb4d4130 succeeded

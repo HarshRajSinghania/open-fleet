@@ -1,0 +1,10 @@
+I approve the change. It does what T4 asks and nothing it forbids. I checked it by reading the diff and `stocklib/ledger.py`; I didn't run any code.
+
+- **Header and rows:** `to_csv` writes the header `sku,quantity`, then one row per SKU from `ledger.skus()`, sorted again with `sorted()`. The extra sort is harmless.
+- **Line endings:** `lineterminator="\n"` makes every line, including the last, end in `\n`.
+- **Quoting:** it uses the `csv` module, so a SKU containing a comma is quoted as RFC 4180 requires.
+- **Empty ledger:** the loop writes no rows, so only the header line comes back.
+- **Scope:** the diff touches only `stocklib/report.py` (11 lines added). It adds the `csv` and `io` imports and the new function, and changes nothing else.
+
+WIP-REVIEW WIP-NONCE:694a4dee16d60761 f87cab30f45158b873b9026b9fe73e088453c475 approve
+OPEN_FLEET_WORKER_DONE disp_28948cf137 succeeded

@@ -1,0 +1,14 @@
+The change does what the task asks and nothing it forbids.
+
+- **New units:** it adds `"lb": 453.59237` and `"oz": 28.349523125` to `FACTORS`. Both values match the task's exact figures.
+- **Conversion paths:** `convert` computes `value * FACTORS[from_unit] / FACTORS[to_unit]`. That works in either direction and between any two supported units, so no code change was needed.
+- **Unknown units:** a `KeyError` is still turned into a `ValueError`, so unknown units behave as before.
+- **Scope:** only `FACTORS` changed. The diff touches no other behavior.
+- **Float precision:** converting through grams uses floats, so results can differ from the exact ratio by rounding. The task doesn't ask for exact arithmetic, so I don't count this against it.
+- **Tests:** the diff adds none. The task doesn't ask for any.
+
+I only read the files and ran no tests.
+
+WIP-REVIEW WIP-NONCE:6a80163ffc5fa106 15b3fddcfe1b168f05747fc4c16e6b8f39d998ec approve
+
+OPEN_FLEET_WORKER_DONE disp_1868e24d9a succeeded

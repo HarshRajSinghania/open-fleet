@@ -1,0 +1,1393 @@
+{
+  "agent": "claude",
+  "attempt": 1,
+  "clock": "wip-runner@host-1bc4b3da561a",
+  "commands": [
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip1-b3r1-rep1/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip1-b3r1-rep1/target",
+        "init",
+        "--base",
+        "wip-integration",
+        "--default",
+        "main",
+        "--consent",
+        "wip-curve run wip1-b3r1-rep1 (#604): merges only to wip-integration",
+        "--mode",
+        "git"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:fc1dd39f1b5d34dc task=T5\nTask T5: Ledger keeps an audit hi",
+        "--run",
+        "wip1-b3r1-rep1",
+        "--task-title",
+        "wip-t5"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:1959cff5b0733717 task=T2\nTask T2: Ledger.remove refuses to",
+        "--run",
+        "wip1-b3r1-rep1",
+        "--task-title",
+        "wip-t2"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:82b96c2c07d99bd7 task=T6\nTask T6: summary ends with a TOTA",
+        "--run",
+        "wip1-b3r1-rep1",
+        "--task-title",
+        "wip-t6"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:c8e0dd67c4874136 task=T1\nTask T1: slugify transliterates a",
+        "--run",
+        "wip1-b3r1-rep1",
+        "--task-title",
+        "wip-t1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:cf12a72baedcd1cf task=T4\nTask T4: report.to_csv exports th",
+        "--run",
+        "wip1-b3r1-rep1",
+        "--task-title",
+        "wip-t4"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "create",
+        "--spec",
+        "open-fleet WIP-curve builder unit (#604). WIP-BUILD WIP-NONCE:a22440cc65d857f6 task=T3\nTask T3: convert supports pounds ",
+        "--run",
+        "wip1-b3r1-rep1",
+        "--task-title",
+        "wip-t3"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_a870267b4e",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t5-a1",
+        "wip-t5-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_21fc99da73",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t2-a1",
+        "wip-t2-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_2fe390f1aa",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t6-a1",
+        "wip-t6-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_5abf8d452b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_e2a0384c4c"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f4f52bee35"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_f4f52bee35"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_a870267b4e",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_a870267b4e",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t5-a2",
+        "wip-t5-a2",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_21fc99da73",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_21fc99da73",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t2-a2",
+        "wip-t2-a2",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_2fe390f1aa",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_2fe390f1aa",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t6-a2",
+        "wip-t6-a2",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_5e5aee6235"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_9047a5a576"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_c172e03395"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_5e5aee6235"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_a870267b4e",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_a870267b4e",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t5-a3",
+        "wip-t5-a3",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_21fc99da73",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_21fc99da73",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t2-a3",
+        "wip-t2-a3",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_2fe390f1aa",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_2fe390f1aa",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t6-a3",
+        "wip-t6-a3",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_2831cc8199"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_2e34d04c77"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_374b3d8b97"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_2831cc8199"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_8daae20a3e",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t1-a1",
+        "wip-t1-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_02ed6180db",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t4-a1",
+        "wip-t4-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_d71e8d27e1",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t3-a1",
+        "wip-t3-a1",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_70f1c15848"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8dccd777ec"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_9587c85798"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8dccd777ec"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_8daae20a3e",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_8daae20a3e",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t1-a2",
+        "wip-t1-a2",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_02ed6180db",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_02ed6180db",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t4-a2",
+        "wip-t4-a2",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_d71e8d27e1",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_d71e8d27e1",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t3-a2",
+        "wip-t3-a2",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_036e45e607"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8fffa2255b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_b5c344bf30"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8fffa2255b"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_8daae20a3e",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_8daae20a3e",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t1-a3",
+        "wip-t1-a3",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_02ed6180db",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_02ed6180db",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t4-a3",
+        "wip-t4-a3",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/task_ops.py",
+        "update",
+        "--id",
+        "task_d71e8d27e1",
+        "--status",
+        "ready",
+        "--run",
+        "wip1-b3r1-rep1"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "bash",
+        "/repo/runtime/scripts/spawn_worker.sh",
+        "--run",
+        "wip1-b3r1-rep1",
+        "task_d71e8d27e1",
+        "path:/results/sandboxes/wip1-b3r1-rep1/wt/t3-a3",
+        "wip-t3-a3",
+        "claude"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_8289db0142"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_be3b75ede9"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_d0ccbd6c30"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/worker_ops.py",
+        "show",
+        "--dispatch",
+        "disp_d0ccbd6c30"
+      ],
+      "rc": 0
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/repo/runtime/scripts/merge_queue.py",
+        "--db",
+        "/results/sandboxes/wip1-b3r1-rep1/merge-queue.db",
+        "--repo-dir",
+        "/results/sandboxes/wip1-b3r1-rep1/target",
+        "receipts",
+        "--base",
+        "wip-integration"
+      ],
+      "rc": 0
+    }
+  ],
+  "condition": {
+    "builders": 3,
+    "id": "b3r1",
+    "reviewers": 1,
+    "role": "the current asserted default cap"
+  },
+  "cost": {
+    "calls": 36,
+    "cap_usd": "150",
+    "experiment_committed_usd": "0.398359500000000013",
+    "ledger": "budget.jsonl",
+    "observed_usd": "0",
+    "per_call_limit": "none passed: the posix launch table has no per-call budget flag for any harness",
+    "reservation_per_dispatch_usd": "2.00",
+    "reserved_unobserved_usd": "0"
+  },
+  "dispatch_tags": {
+    "disp_036e45e607": "6615f36ba1ef8c4ff8cfddf77bddacb6",
+    "disp_2831cc8199": "cde3a357ee96f312d4e87c7963b4c9b6",
+    "disp_2e34d04c77": "e50d9a88148b8ae4f109674bbc373aa0",
+    "disp_374b3d8b97": "0b73bf87f8789ee88f4110d0e458a5ef",
+    "disp_5abf8d452b": "902075668ba457f1099c48d57a80875a",
+    "disp_5e5aee6235": "4a3d475fbf0b20e44323c307185220fe",
+    "disp_70f1c15848": "07b6b8baf3608d052d64d9ab6c3928ee",
+    "disp_8289db0142": "ab739019629d2d9f6bf1fd906d180f60",
+    "disp_8dccd777ec": "ca3a8d13b3e81ebe9b1708b244cf13e2",
+    "disp_8fffa2255b": "e82e76364c622626831e2a494c83afd3",
+    "disp_9047a5a576": "3c3f02b71f932fb29e00992fca19494f",
+    "disp_9587c85798": "9d1b09d6eaaa224db343ce64edba09f3",
+    "disp_b5c344bf30": "c9eb7e5082fc702d95c06eba4c5bf706",
+    "disp_be3b75ede9": "7c6b876b5b24451408472534dccb388b",
+    "disp_c172e03395": "b2f4d31fb83a31fe79058b9e0ce666a8",
+    "disp_d0ccbd6c30": "81596fd564dd172997332e574479f883",
+    "disp_e2a0384c4c": "25fa93c9b315a712d91cce5b3f0c3046",
+    "disp_f4f52bee35": "e07f82da9e35244c3f5ad692678af9e4"
+  },
+  "epoch": 1,
+  "events_head": "1c70b1b112797903682aa7fd736ab7c4f416d7d3d8d8d46df171bdf752e732b1",
+  "finished_at": "2026-10-25T05:46:49.789569+00:00",
+  "gate_tags": [],
+  "harness": {
+    "path": "/repo/scripts/live_container_bin/claude",
+    "version": "2.1.304 (Claude Code)"
+  },
+  "host": {
+    "bash": "GNU bash, version 5.2.37(1)-release (aarch64-unknown-linux-gnu)",
+    "catalog_commit": "0206c420ae68f39606bef65eb53e5c53b629e513",
+    "catalog_dirty": false,
+    "cpu_count": 18,
+    "git": "git version 2.47.3",
+    "machine": "aarch64",
+    "platform": "Linux-7.2.12-orbstack-00394-gbecdd6130068-aarch64-with-glibc2.41",
+    "python": "3.13.15"
+  },
+  "inert_script": null,
+  "inputs": {
+    "files": {
+      "docs/experiments/ablation-prereg.json": "9050682917bc8c95b6eb2e187a1ea2eb550a7cc0c9f066d265b9203775338bec",
+      "docs/experiments/ablation-prereg.md": "bd1dfec6a451fea6a029957689756032259128da4008a646d932bd3f1d9699e0",
+      "docs/experiments/wip-curve-prereg.json": "54d4a283c680d8859cea46ca88f4212b8e9c270f0cfd5a5ba11e50e0c720a058",
+      "docs/experiments/wip-curve-prereg.md": "380ebe1b488fff69ed2fc7172ead14273f3995b65f95b22ef211d16eb40cd03d",
+      "docs/experiments/wip-curve-taskset.json": "4ea82a93f093372d169f845e0dd6631b7fc3ae62bafb89b5d8efafd83a95f5e4",
+      "runtime/attention-budget.md": "8abafb5e852e17c0c98f992284285a9e658e0c7c033f8adc051d3f7f9b50c52d",
+      "runtime/conductor-close.md": "dc5bb8ca73121f679f1eed2a527ba2255150ca2322ef226e815a82b27c2cc179",
+      "runtime/dispatch-lifecycle.md": "6a0167d5e8c4b0362e98f3b9d395ff5713f98be58764589eab939936efbaab61",
+      "runtime/evidence-manifest.md": "1fa4670edb303a20f288bc2c0a1eaa2e5cf25154e7c2cf55ad0d53e9895121ce",
+      "runtime/gate-classification.md": "d0d20540b972cb1a0cc6a9da49d76cb0d465049988e99720df711e503204befc",
+      "runtime/ledger-contract.md": "e854cc792dc397431aa66ae8619829e488424cae0722f937825805b1573a74d3",
+      "runtime/liveness-resume.md": "b672e621272e3f5fce11f55e76261505d767a56681e8291950f335d63a8adcb5",
+      "runtime/merge-serialization.md": "d16bae998ef456b765ca3974bc7d010f7300c206b464af14c931571802bf3a33",
+      "runtime/mission-chaining.md": "6cad5e5c479c8ba7e6edc57289672b857e0e34e44faec2faab4dd4662f1afb5e",
+      "runtime/mission-scheduling.md": "325203cc6c87f963eddd994feca843d0e5befd1d2384088733e5b3146f36f971",
+      "runtime/one-way-doors.json": "b0fff7f9af61f5aa011df7698a9773144f0f8ae409dddc3dc6dcd85821790351",
+      "runtime/orca-dag-semantics.md": "e38e1b06aac74a77905ce0c2e42bb67f05fd045d5d29f96bdbc55c0e32f7d07b",
+      "runtime/orca-pin.md": "e60db880651e6ff51b4ab0b3f2ddd1392d83422a29132b0b9eda87dfecc372e3",
+      "runtime/pins.json": "4084c53e97cb908964756a03650a29625e465530f202710d53d180dc88573c97",
+      "runtime/providers/__init__.py": "c2e423d7b65608fd860357c5850e1fdebc6227a18c7de039b47183053636030e",
+      "runtime/providers/_external.py": "6101874165e16b700d06b57e8955a030da636d48180f33973c822f89cabcc342",
+      "runtime/providers/ao.py": "cadb77d02cc1b7498a59b2910560f7b76020a3d40820e3259359a8faf53d1221",
+      "runtime/providers/base.py": "ed85890b1b99391fa9a46e7e24ef0e56e152dd11888ae6f09e8048e8b534bf72",
+      "runtime/providers/capabilities.json": "6bf5f764de1a03253028769acbbd6c43c171f4df71b1a818fbeef39ce421342f",
+      "runtime/providers/certification.json": "0bbaae3ed0fac3d4c5d44d542a049f382ff1bcc9fd4385f8c7d69501a4376d84",
+      "runtime/providers/emdash.py": "64d41aedbb640735f3da12e21beb760a7fa6c1abd1821c8650058c9bf3eb90cc",
+      "runtime/providers/gastown.py": "3f154639c425b18a6dc585a3fc128fc0e969b1aaac53fffa3ff838df3e9c4e94",
+      "runtime/providers/jcode_swarm.py": "13953d6b79c4538a74036623001c549f2d874fef2f1f3177952538969f708ece",
+      "runtime/providers/local_state.py": "d541391535ac6df299108554600df86accc100571075328952b22d5fd050d099",
+      "runtime/providers/multiclaude.py": "94993c408feb1d7c8c362099936fe3a2db5d46554e175cdb9a610076d1a0c597",
+      "runtime/providers/openhands.py": "9e9bde37641158ecdea38430788690749edc006b63eea7e8d1278b57997e28ce",
+      "runtime/providers/orca.py": "e090d190663587701059f77b651f1c9e634e2dc94bd8d677344ec12d2b97a087",
+      "runtime/providers/overstory.py": "21b3c797a12a75830e483e5b08d45e7c72e007e599f7931fe490cf97ebd1a31f",
+      "runtime/providers/paperclip.py": "d9ab5e20f1e2cc915113ebc5a8a7845fc30911a85b9585911166e42c61b069ce",
+      "runtime/providers/posix.py": "a7466f6e04e52633a5a2132203039910fdadecb12511beb7b62e0e676080322f",
+      "runtime/providers/superset.py": "dd0e211edf5ca2c33cbfec55ae99bc9bd308b6b32adddfcf4e9cfa97e14c318d",
+      "runtime/providers/t3code.py": "ccebd9e37fc0eacaf5f367e9a0b946ebd22ea8cc30a6ddf1e764bb723e8f469f",
+      "runtime/providers/transcript.py": "8734443bd28bc56ae36360633b3db70123834937b979b986f4a2f5817854f720",
+      "runtime/providers/vibe_kanban.py": "19eedc47ed47d8e5369e8b337fede67157440d14d3ec649353b723e93b6c8789",
+      "runtime/providers/worktrunk.py": "910be6451fa2c576adbf968141edf57a69d8439c3797b46b36fd8f39e9588e48",
+      "runtime/quarantine.json": "6bc70c957980f6cfde5e369c59ad3a5e8ac83ab41ea603f0f7aebc55e7cc13c2",
+      "runtime/reviewed-sha-freshness.md": "60d52b2e80fbcbb6db05a47e244ee80bafe305a447aa79f077e1943de55747b7",
+      "runtime/sandbox-policy.md": "57e98199d01b5bd12edef5127dad668a64de299caa9a919197799dd653262e1d",
+      "runtime/schemas/gate-batch.schema.json": "2602529a386f114d8a08610a6cf19639180f787c4ce4de3e93cbac9d4271cd62",
+      "runtime/scripts/_catalog_grammar.py": "4a7a1c5aa8b5579f7ce6d22fdd69e70fd7179ddb0c204e20a00476197d5ba034",
+      "runtime/scripts/_verify_sig.py": "6d0850e1c7809b7f5377b7df3e2b88baf7ebf97b47b9d8cf2ee693339065ccb3",
+      "runtime/scripts/certification.py": "85c6f792ad9cf84ac6cf3f233f33795b1a27cb05a8d4cf81dce9d657a3aff0f3",
+      "runtime/scripts/chain_check.py": "1da6f4d25181af7d9d6e1313351f073900d990b4ebdfc8940ce8989ed298de63",
+      "runtime/scripts/check_reply.py": "7193c7c746a6d008c6c5519f7544b0bc34817c7eab7ed520085aba0e7c3f9924",
+      "runtime/scripts/containment.py": "d2e4a3874edffa433279c93e9838a929f00f23a7d7fc8649748943a9c6253ce1",
+      "runtime/scripts/decisions.py": "e0cfc9306ae8200c8f2d64463d0f257a1c41b4a9d6f88b45188733c192a28f13",
+      "runtime/scripts/deny-hook.sh": "9558fd5c8302c0045345c0cb51878d6cef1b00bd87f5b3a4378df1f10b953dbf",
+      "runtime/scripts/diff_scope.py": "65fa53fc1b450f94a1bc3cc088ea7f8aab1817a39d4d8b2b6893802111b619ef",
+      "runtime/scripts/diffparse.py": "471915394ffebb7269ad38c288e74652b2c67b8e9058815c9481f0ca039548e4",
+      "runtime/scripts/dispatch-sign.py": "1413901e452fa9f63752dd47ce7c0ab78446d11c4b10bd0db95916e0c2fecfaf",
+      "runtime/scripts/ed25519.py": "fb7da8b4a64d00a8d06abed88358e4be2894e2f8a036f779530c600f28a59709",
+      "runtime/scripts/egress.py": "8ad9948c25f3c9d36ba0b057291d2ced2fc3dcbe99b6f6cf960957679f870565",
+      "runtime/scripts/events.py": "0008076b9d26bf8d8e9706ffa73f5ea4adb12fe27931de5e1db2c372dd2a5c01",
+      "runtime/scripts/evidence-run.py": "323c7cf836e9ec73409b40148d52e761e8c929671e1a67d3b39cddc8b2c385fa",
+      "runtime/scripts/first_run.py": "22e436dd87791f797c0a8e0e82d026086ecd4166fd1d3f07c18da14b4caec8fb",
+      "runtime/scripts/floor_guard.py": "607f5768fb2223346f65b374f568ec0a4dc80a0a73e51574af9013f81dc6f725",
+      "runtime/scripts/gate-batch.py": "9de951643748a770014d05e5961e7724d0086d26c74b1ec21ff1d79e39ed0d2d",
+      "runtime/scripts/gitexec.py": "15d14f20f6de6489ea751539f996aedd6dc2d0186a2e9afe696f725e6d7898d8",
+      "runtime/scripts/guard_text.py": "926e82dcdb0adbb321a87f9cd9a305d48f9b8133a20aa266ac2360903381d7c8",
+      "runtime/scripts/hint_provenance.py": "0cc88c2737a2bcbef22a4dbcc75f905ea10a284459f2c4c08f50c4b0ff98e092",
+      "runtime/scripts/hitl-loop.template.sh": "b6839001de44d0ff4c385c167ca75f38fc8c62fc1fd231c50a416c2c7dae3d35",
+      "runtime/scripts/hitl_ask.py": "eb4d2896c2cb4c08bd43c40a8c20d18fe624819acadad9f7a6fb0bc8e6771120",
+      "runtime/scripts/inventory.py": "a0ebaa507653a1caeeec6610efd8d96b4f91871cf6720e9a1274bd3c01439e88",
+      "runtime/scripts/merge_queue.py": "4f6cca3170174002ea817a4aeef36f009a3373dfd7730975ca94bdba1999b9c2",
+      "runtime/scripts/orca_cli.py": "f6fb1d4572cf5f57b73b818d432a1fe47bd62644ca5d12af568a72fc5d0d569d",
+      "runtime/scripts/pin_review.py": "b3e0b5c149b8042d521b3198f11e61e1b93119f7ae9bfca45fb571b6f77aeda0",
+      "runtime/scripts/pm.py": "722674674879f3259ec1aef6a0620422736637990b51c1bcf45d8d3777cd5415",
+      "runtime/scripts/preflight.py": "9c2c60447dfe5d1d2947034579d250cc87ee508b73a7b04656d651c8a6964419",
+      "runtime/scripts/proof_status.py": "17ba2a927dff6f39ac8ae7d47bda70cf6535018c2dfacf747e837f854b515b7d",
+      "runtime/scripts/quarantine_check.py": "b4a63bddf29af74fd5a9faacb3a921e1d35313ae9ce0b5d175a7d554157cb3b0",
+      "runtime/scripts/run_report.py": "496338e8a8405323c6af093da425194e9eca6a2eed1e0e6b3bcbbafebc91cf97",
+      "runtime/scripts/sandbox_doctor.py": "f9d1ed4db1027dacbf93601c7393186ba0c962112b78792783743f1517fc24bb",
+      "runtime/scripts/search_sessions.py": "5883f0d158d3ff17cec4cdbd765b698735078e8388bd743390964fbc011e8082",
+      "runtime/scripts/send_msg.py": "20e43941a550f70e05be64db788165084d7550046697d56eba25f899f98c2dcf",
+      "runtime/scripts/spawn_worker.sh": "53a18b50181deb509f89979955f3a745dc57330da07dddd2427bf77f5ddfcfab",
+      "runtime/scripts/task_ops.py": "09562e0d6a585bc5c81f38aafbafc08dfbda0303ec2e770ec56b2aad9d7b44ef",
+      "runtime/scripts/terminal_ops.py": "56fa0b67d5b60f7f4f659bd4c7190f169602345e5f05de6a2939218d248fe708",
+      "runtime/scripts/upstream_probe.py": "39b0dd66001b393bd8bc108c4ea9f464dfb0a9240748a4c19864627b5ce1ded3",
+      "runtime/scripts/verify-gate.sh": "67e0589322936dbaa1adbdca01e66b57d89a1300673f5b6c61b471a8c1616be6",
+      "runtime/scripts/verify.py": "e40a6d4f1b7da544d342305a69b5ea32215cc0b12d98e1dfada62277d7522788",
+      "runtime/scripts/watchdog.py": "01973b7c215c809837a3a17e16edb61dcb9a9c41ec3b9fa95412ec215d3479ca",
+      "runtime/scripts/worker_ops.py": "9cd5b86714f607675325eee8fd6178d7eab31b3a7c34d298db9c5a6ae3e31cc3",
+      "runtime/scripts/worktree_ops.py": "65a565f8603913598fa63ac29d8270eafeca64ac5c9fc692f2a0ed9d62791e00",
+      "runtime/scripts/wtree.sh": "5c4e75693b9fa5f15b7afd5fd2ffc5e7e7e3593282ab62423e59e5dccd92669c",
+      "runtime/threat-model.md": "7e363448152bb0f8309edb220152f2999febd03b498c5b981e0dbb22ce856f3c",
+      "runtime/watchdog.json": "0c0810c9949aa78dada13d175af0b8941d065585b5efec3121e3cda3d3422eb6",
+      "runtime/worker-supervision.md": "4ae2ef8f2eda91852943be8962c3fb861637f5c3c4156fa95dbec1b9ce0014fc",
+      "scripts/_ablation_run.py": "81ae946f9047bb337d92c7a5ba4ec3a15286988efd381329d0b09196379d45a4",
+      "scripts/wip_curve.py": "a6dad921452db0b5a46d083a315f4ca1f5a04509fe99fcaa01e4d14590037a6b"
+    },
+    "sha256": "59274dadc3f3585f2b0b2d8a852ef375a9543b67f38b76c210bf178ad89a0065"
+  },
+  "integration": {
+    "branch": "wip-integration",
+    "head": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3"
+  },
+  "launched_models": {
+    "disp_036e45e607": "claude-sonnet-5-5",
+    "disp_2831cc8199": "claude-sonnet-5-5",
+    "disp_2e34d04c77": "claude-sonnet-5-5",
+    "disp_374b3d8b97": "claude-sonnet-5-5",
+    "disp_5abf8d452b": "claude-sonnet-5-5",
+    "disp_5e5aee6235": "claude-sonnet-5-5",
+    "disp_70f1c15848": "claude-sonnet-5-5",
+    "disp_8289db0142": "claude-sonnet-5-5",
+    "disp_8dccd777ec": "claude-sonnet-5-5",
+    "disp_8fffa2255b": "claude-sonnet-5-5",
+    "disp_9047a5a576": "claude-sonnet-5-5",
+    "disp_9587c85798": "claude-sonnet-5-5",
+    "disp_b5c344bf30": "claude-sonnet-5-5",
+    "disp_be3b75ede9": "claude-sonnet-5-5",
+    "disp_c172e03395": "claude-sonnet-5-5",
+    "disp_d0ccbd6c30": "claude-sonnet-5-5",
+    "disp_e2a0384c4c": "claude-sonnet-5-5",
+    "disp_f4f52bee35": "claude-sonnet-5-5"
+  },
+  "launches": {
+    "disp_036e45e607": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "20471e19109bea1e0789cb275c4bb022b1352915e00c3c02f7260bf321eb1a08"
+    },
+    "disp_2831cc8199": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "c6bb1ee94cc3bfc7cac530863e852529a7c304970423347d2764eb55bc8c92c3"
+    },
+    "disp_2e34d04c77": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "221b2cb0f148f808a05afdee840628be4972e9c9f18481fff0319aed1c0214c8"
+    },
+    "disp_374b3d8b97": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "6bdb16167d89381837fc6661b7dc24e41d83333f6377cba2696bfebc8387d1be"
+    },
+    "disp_5abf8d452b": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "6bdb16167d89381837fc6661b7dc24e41d83333f6377cba2696bfebc8387d1be"
+    },
+    "disp_5e5aee6235": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "c6bb1ee94cc3bfc7cac530863e852529a7c304970423347d2764eb55bc8c92c3"
+    },
+    "disp_70f1c15848": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "afe6d3b6574eb42a32c67b3b11e52114493d686b8f62a55ba95d94d23ebaab54"
+    },
+    "disp_8289db0142": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "20471e19109bea1e0789cb275c4bb022b1352915e00c3c02f7260bf321eb1a08"
+    },
+    "disp_8dccd777ec": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "3b1add832b45da2c8076b82cc35d015f3fa2ee89197bd55dbc8ad4d982c3cb61"
+    },
+    "disp_8fffa2255b": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "3b1add832b45da2c8076b82cc35d015f3fa2ee89197bd55dbc8ad4d982c3cb61"
+    },
+    "disp_9047a5a576": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "221b2cb0f148f808a05afdee840628be4972e9c9f18481fff0319aed1c0214c8"
+    },
+    "disp_9587c85798": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "20471e19109bea1e0789cb275c4bb022b1352915e00c3c02f7260bf321eb1a08"
+    },
+    "disp_b5c344bf30": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "afe6d3b6574eb42a32c67b3b11e52114493d686b8f62a55ba95d94d23ebaab54"
+    },
+    "disp_be3b75ede9": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "afe6d3b6574eb42a32c67b3b11e52114493d686b8f62a55ba95d94d23ebaab54"
+    },
+    "disp_c172e03395": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "6bdb16167d89381837fc6661b7dc24e41d83333f6377cba2696bfebc8387d1be"
+    },
+    "disp_d0ccbd6c30": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "3b1add832b45da2c8076b82cc35d015f3fa2ee89197bd55dbc8ad4d982c3cb61"
+    },
+    "disp_e2a0384c4c": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "221b2cb0f148f808a05afdee840628be4972e9c9f18481fff0319aed1c0214c8"
+    },
+    "disp_f4f52bee35": {
+      "agent": "claude",
+      "args": "--dangerously-skip-permissions",
+      "command_sha256": "c6bb1ee94cc3bfc7cac530863e852529a7c304970423347d2764eb55bc8c92c3"
+    }
+  },
+  "merges": [],
+  "model_pin": "claude-sonnet-5-5",
+  "not_run": [],
+  "oracle_tags": [],
+  "position": 2,
+  "prereg": {
+    "path": "/repo/docs/experiments/wip-curve-prereg.json",
+    "sha256": "54d4a283c680d8859cea46ca88f4212b8e9c270f0cfd5a5ba11e50e0c720a058"
+  },
+  "repetition": 1,
+  "run_id": "wip1-b3r1-rep1",
+  "sandbox": "/results/sandboxes/wip1-b3r1-rep1",
+  "schema": "open-fleet.wip-curve-run/1",
+  "seed_commit": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+  "settled_after_stop": [],
+  "sources": {
+    "calls.json": "d3bdbf54019e20aae11df0fcc86a1e931c674ab1f0000dcba4484a9b85b0d4a0",
+    "events.jsonl": "1c8f0cb03b95a758a8333a001dc638fb0e307433ec62d49a645db1914f99d12d",
+    "merge-receipts.json": "d111bd9fafea6831d4dee7d9471b350810c9bdc89e6c5fa6e0dbe1a2cdae5bb1",
+    "run-report.md": "c2de0c71133ade441a05dd86293d2575929fe2cfc06b78fe1c49338dd33ee4a5",
+    "state.db": "1f190f282d6d98474cfa5688eb4397af0b2f048b2e037aa7eca678679d2a98de",
+    "streams/disp_036e45e607.jsonl": "b47c2251c00b09ba95e4153d87977fa4cc41020c9edbe91d0a4de37582d72dca",
+    "streams/disp_2831cc8199.jsonl": "967363d766c65409ded658db0c342cc3459d7d43d751b9da5b67ec05a47e23b0",
+    "streams/disp_2e34d04c77.jsonl": "392e301e95d4f099b25977dd31b9bede6d14fbdcf88f2537029a7453e696a2bf",
+    "streams/disp_374b3d8b97.jsonl": "ef3cf1730ab0b76c958e1b47ba69c1d2ebf5997dd4cd8fa93c6776dadbad4ff5",
+    "streams/disp_5abf8d452b.jsonl": "2d4940fc223d0f8ef2667db3d3c62785a53d8f9186f13f5b50d521c955f08d19",
+    "streams/disp_5e5aee6235.jsonl": "9f57c008eb92cb89f6315e36b99b3f7ad87425024fe7e8ae0efdc98945278819",
+    "streams/disp_70f1c15848.jsonl": "62bfa201f5b4c8735fd2213b31d7974e7c5b0d95dbdaba0f2594b12b0e649148",
+    "streams/disp_8289db0142.jsonl": "52dd4b7c3e99a4da6d7fc5f0e21e90e52a4cfdf7784106df3b887c4dca2917a7",
+    "streams/disp_8dccd777ec.jsonl": "3344e43fdae8e79fd33da7da2c981a63bf36e12a1b26b401404d21b752f13ceb",
+    "streams/disp_8fffa2255b.jsonl": "85d7e142bb592729658e51179e0f95a4f40029b03e406e70d1184450914c6e20",
+    "streams/disp_9047a5a576.jsonl": "dee90e2b814e61ecdd21327b544ea7b58d2ee10f9183ba7882baefea302080e9",
+    "streams/disp_9587c85798.jsonl": "8db5a124d6b47e2cdae84abd35421e9568e0a143dbe11ab1d9b015f00147e593",
+    "streams/disp_b5c344bf30.jsonl": "569f1933dacdcf8e1490f0463c7ca44c1faa46133e5b9d1cfa23dfeedfe6d034",
+    "streams/disp_be3b75ede9.jsonl": "72f699d96a8b8569f42349bdafbd26d864db90a367aa0d44421470576a94d933",
+    "streams/disp_c172e03395.jsonl": "0977f1ae6b2c0ba7679775d46b4e3692f6016dcf28fc0f248de378a06dd32387",
+    "streams/disp_d0ccbd6c30.jsonl": "682846392e9e8c3e032a5dc836c9cb7fb0f8bad23c6cfc67859d787373921ca6",
+    "streams/disp_e2a0384c4c.jsonl": "0936887a3e79e6e31c424808d22e1ab83dccbcf72d44b8ea2c8bf2132124ab8d",
+    "streams/disp_f4f52bee35.jsonl": "5fb0f307e1f396012b70796230feedb6ab06119982974bce727b288a7c871af1",
+    "target.bundle": "b102e1bbad7b6fdc10d0d009cc2bc1e35b917dfabff48e4a3fe34879ff7440d9"
+  },
+  "started_at": "2026-10-25T05:46:03.350799+00:00",
+  "status": "complete",
+  "stop_reason": null,
+  "task_order": [
+    "T5",
+    "T2",
+    "T6",
+    "T1",
+    "T4",
+    "T3"
+  ],
+  "taskset": {
+    "path": "docs/experiments/wip-curve-taskset.json",
+    "sha256": "4ea82a93f093372d169f845e0dd6631b7fc3ae62bafb89b5d8efafd83a95f5e4"
+  },
+  "teardown": {
+    "contained": true,
+    "ended": [],
+    "errors": [],
+    "leaders_alive": [],
+    "survivors": []
+  },
+  "tier": "live-unreviewed",
+  "timeout_scale": 1.0,
+  "units": {
+    "T1": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t1-a1",
+          "deadline": 132055.545695664,
+          "deadline_at": 1792908987.3267128,
+          "dispatch": "disp_70f1c15848",
+          "done_at": null,
+          "head": null,
+          "n": 1,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 4
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t1-a2",
+          "deadline": 132062.785490561,
+          "deadline_at": 1792908994.5665078,
+          "dispatch": "disp_b5c344bf30",
+          "done_at": null,
+          "head": null,
+          "n": 2,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 5
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t1-a3",
+          "deadline": 132070.391460927,
+          "deadline_at": 1792909002.172478,
+          "dispatch": "disp_be3b75ede9",
+          "done_at": null,
+          "head": null,
+          "n": 3,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 6
+        }
+      ],
+      "final": "parked",
+      "nonce": "WIP-NONCE:c8e0dd67c4874136",
+      "park_class": "attempts-exhausted",
+      "reviews": [],
+      "store_task": "task_8daae20a3e"
+    },
+    "T2": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t2-a1",
+          "deadline": 132034.764815748,
+          "deadline_at": 1792908966.5458329,
+          "dispatch": "disp_5abf8d452b",
+          "done_at": null,
+          "head": null,
+          "n": 1,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 1
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t2-a2",
+          "deadline": 132042.218425104,
+          "deadline_at": 1792908973.9994423,
+          "dispatch": "disp_c172e03395",
+          "done_at": null,
+          "head": null,
+          "n": 2,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 2
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t2-a3",
+          "deadline": 132049.779176516,
+          "deadline_at": 1792908981.5601935,
+          "dispatch": "disp_374b3d8b97",
+          "done_at": null,
+          "head": null,
+          "n": 3,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 3
+        }
+      ],
+      "final": "parked",
+      "nonce": "WIP-NONCE:1959cff5b0733717",
+      "park_class": "attempts-exhausted",
+      "reviews": [],
+      "store_task": "task_21fc99da73"
+    },
+    "T3": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t3-a1",
+          "deadline": 132059.06249597302,
+          "deadline_at": 1792908990.843513,
+          "dispatch": "disp_8dccd777ec",
+          "done_at": null,
+          "head": null,
+          "n": 1,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 4
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t3-a2",
+          "deadline": 132066.65347354,
+          "deadline_at": 1792908998.4344907,
+          "dispatch": "disp_8fffa2255b",
+          "done_at": null,
+          "head": null,
+          "n": 2,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 5
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t3-a3",
+          "deadline": 132074.305781848,
+          "deadline_at": 1792909006.0867991,
+          "dispatch": "disp_d0ccbd6c30",
+          "done_at": null,
+          "head": null,
+          "n": 3,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 6
+        }
+      ],
+      "final": "parked",
+      "nonce": "WIP-NONCE:a22440cc65d857f6",
+      "park_class": "attempts-exhausted",
+      "reviews": [],
+      "store_task": "task_d71e8d27e1"
+    },
+    "T4": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t4-a1",
+          "deadline": 132057.30928495,
+          "deadline_at": 1792908989.0903022,
+          "dispatch": "disp_9587c85798",
+          "done_at": null,
+          "head": null,
+          "n": 1,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 4
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t4-a2",
+          "deadline": 132064.72107705602,
+          "deadline_at": 1792908996.5020943,
+          "dispatch": "disp_036e45e607",
+          "done_at": null,
+          "head": null,
+          "n": 2,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 5
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t4-a3",
+          "deadline": 132072.365545797,
+          "deadline_at": 1792909004.146563,
+          "dispatch": "disp_8289db0142",
+          "done_at": null,
+          "head": null,
+          "n": 3,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 6
+        }
+      ],
+      "final": "parked",
+      "nonce": "WIP-NONCE:cf12a72baedcd1cf",
+      "park_class": "attempts-exhausted",
+      "reviews": [],
+      "store_task": "task_02ed6180db"
+    },
+    "T5": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t5-a1",
+          "deadline": 132032.994889141,
+          "deadline_at": 1792908964.7759066,
+          "dispatch": "disp_e2a0384c4c",
+          "done_at": null,
+          "head": null,
+          "n": 1,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 1
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t5-a2",
+          "deadline": 132040.27046962501,
+          "deadline_at": 1792908972.0514867,
+          "dispatch": "disp_9047a5a576",
+          "done_at": null,
+          "head": null,
+          "n": 2,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 2
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t5-a3",
+          "deadline": 132047.853693833,
+          "deadline_at": 1792908979.634711,
+          "dispatch": "disp_2e34d04c77",
+          "done_at": null,
+          "head": null,
+          "n": 3,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 3
+        }
+      ],
+      "final": "parked",
+      "nonce": "WIP-NONCE:fc1dd39f1b5d34dc",
+      "park_class": "attempts-exhausted",
+      "reviews": [],
+      "store_task": "task_a870267b4e"
+    },
+    "T6": {
+      "attempts": [
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t6-a1",
+          "deadline": 132036.544444512,
+          "deadline_at": 1792908968.3254619,
+          "dispatch": "disp_f4f52bee35",
+          "done_at": null,
+          "head": null,
+          "n": 1,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 1
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t6-a2",
+          "deadline": 132044.147479438,
+          "deadline_at": 1792908975.9284966,
+          "dispatch": "disp_5e5aee6235",
+          "done_at": null,
+          "head": null,
+          "n": 2,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 2
+        },
+        {
+          "base": "68a583d7f6fd587c4704b9c8e591440c65cc6bf3",
+          "branch": "wip/wip1-b3r1-rep1/t6-a3",
+          "deadline": 132051.698898982,
+          "deadline_at": 1792908983.4799163,
+          "dispatch": "disp_2831cc8199",
+          "done_at": null,
+          "head": null,
+          "n": 3,
+          "outcome": "builder-failed",
+          "state": "died",
+          "wave": 3
+        }
+      ],
+      "final": "parked",
+      "nonce": "WIP-NONCE:82b96c2c07d99bd7",
+      "park_class": "attempts-exhausted",
+      "reviews": [],
+      "store_task": "task_2fe390f1aa"
+    }
+  },
+  "worker": "live"
+}

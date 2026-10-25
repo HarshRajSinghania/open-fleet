@@ -1,0 +1,10 @@
+The change meets the T5 task statement and does nothing it forbids. I only read the task statement and the diff; I did not run any code.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` to `_history`, in call order.
+- **Failed calls:** The append comes after the `qty <= 0` check and after the stock update. A call that raises therefore leaves no entry. `remove` only raises on a non-positive quantity, so the existing behaviour is unchanged.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list does not change the ledger. The entries are immutable tuples.
+- **Scope:** Nothing else in `stocklib/ledger.py` is modified.
+
+WIP-REVIEW WIP-NONCE:b7ee32c291da63e8 4bf466e1bf3f3137a4cbe98865e648a2f1021ae1 approve
+
+OPEN_FLEET_WORKER_DONE disp_668ef8b203 succeeded

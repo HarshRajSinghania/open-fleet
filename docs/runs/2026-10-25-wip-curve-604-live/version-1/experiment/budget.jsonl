@@ -1,0 +1,244 @@
+{"at": "2026-10-25T05:33:28.661325+00:00", "call": "wip1-b1r1-rep1/run", "call_tag": "acdd8da672a9766ec00ecf582b7ae8a6", "run": "wip1-b1r1-rep1", "sandbox": "/results/sandboxes/wip1-b1r1-rep1", "state": "run", "usd": "0", "worker": "live"}
+{"at": "2026-10-25T05:33:30.115345+00:00", "call": "wip1-b1r1-rep1/T5/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b1r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:33:30.115368+00:00", "call": "wip1-b1r1-rep1/T5/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b1r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:33:30.233619+00:00", "call": "wip1-b1r1-rep1/T5/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:33:30.234267+00:00", "call": "wip1-b1r1-rep1/T5/a1/builder", "store_task": "task_bfcad5c125"}
+{"at": "2026-10-25T05:33:31.529737+00:00", "call": "wip1-b1r1-rep1/T5/a1/builder", "dispatch": "disp_59b96195cc", "state": "launched"}
+{"at": "2026-10-25T05:33:43.411745+00:00", "call": "wip1-b1r1-rep1/T5/a1/builder", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:33:43.411669+00:00"}
+{"at": "2026-10-25T05:33:43.523928+00:00", "call": "wip1-b1r1-rep1/T5/a1/builder", "measured": true, "state": "charged", "usd": "0.05845770000000001"}
+{"at": "2026-10-25T05:33:43.669053+00:00", "call": "wip1-b1r1-rep1/T5/a1/reviewer", "state": "launching"}
+{"at": "2026-10-25T05:33:43.848258+00:00", "call": "wip1-b1r1-rep1/T5/a1/reviewer", "store_task": "task_3c2d2e1f9b"}
+{"at": "2026-10-25T05:33:45.227475+00:00", "call": "wip1-b1r1-rep1/T5/a1/reviewer", "dispatch": "disp_af32c89184", "state": "launched"}
+{"at": "2026-10-25T05:33:54.349170+00:00", "call": "wip1-b1r1-rep1/T5/a1/reviewer", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:33:54.349060+00:00"}
+{"at": "2026-10-25T05:33:54.458670+00:00", "call": "wip1-b1r1-rep1/T5/a1/reviewer", "measured": true, "state": "charged", "usd": "0.0553843"}
+{"at": "2026-10-25T05:33:54.469142+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84"]}
+{"at": "2026-10-25T05:33:54.713530+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b"]}
+{"at": "2026-10-25T05:33:56.818296+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b"]}
+{"at": "2026-10-25T05:33:56.972677+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b"]}
+{"at": "2026-10-25T05:33:57.379704+00:00", "call": "wip1-b1r1-rep1/T3/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b1r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:33:57.379723+00:00", "call": "wip1-b1r1-rep1/T3/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b1r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:33:57.499592+00:00", "call": "wip1-b1r1-rep1/T3/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:33:57.500547+00:00", "call": "wip1-b1r1-rep1/T3/a1/builder", "store_task": "task_5db146fa23"}
+{"at": "2026-10-25T05:33:58.856677+00:00", "call": "wip1-b1r1-rep1/T3/a1/builder", "dispatch": "disp_0fecdc5c5c", "state": "launched"}
+{"at": "2026-10-25T05:34:07.869931+00:00", "call": "wip1-b1r1-rep1/T3/a1/builder", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:34:07.869842+00:00"}
+{"at": "2026-10-25T05:34:07.977951+00:00", "call": "wip1-b1r1-rep1/T3/a1/builder", "measured": true, "state": "charged", "usd": "0.023286"}
+{"at": "2026-10-25T05:34:08.126396+00:00", "call": "wip1-b1r1-rep1/T3/a1/reviewer", "state": "launching"}
+{"at": "2026-10-25T05:34:08.302528+00:00", "call": "wip1-b1r1-rep1/T3/a1/reviewer", "store_task": "task_e5b654485d"}
+{"at": "2026-10-25T05:34:09.687352+00:00", "call": "wip1-b1r1-rep1/T3/a1/reviewer", "dispatch": "disp_1868e24d9a", "state": "launched"}
+{"at": "2026-10-25T05:34:18.305854+00:00", "call": "wip1-b1r1-rep1/T3/a1/reviewer", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:34:18.305769+00:00"}
+{"at": "2026-10-25T05:34:18.415325+00:00", "call": "wip1-b1r1-rep1/T3/a1/reviewer", "measured": true, "state": "charged", "usd": "0.0299739"}
+{"at": "2026-10-25T05:34:18.427910+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c"]}
+{"at": "2026-10-25T05:34:18.671422+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637"]}
+{"at": "2026-10-25T05:34:20.650321+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64"]}
+{"at": "2026-10-25T05:34:20.802101+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64"]}
+{"at": "2026-10-25T05:34:21.211116+00:00", "call": "wip1-b1r1-rep1/T4/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b1r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:34:21.211137+00:00", "call": "wip1-b1r1-rep1/T4/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b1r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:34:21.337617+00:00", "call": "wip1-b1r1-rep1/T4/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:34:21.339369+00:00", "call": "wip1-b1r1-rep1/T4/a1/builder", "store_task": "task_f80877d8eb"}
+{"at": "2026-10-25T05:34:22.699557+00:00", "call": "wip1-b1r1-rep1/T4/a1/builder", "dispatch": "disp_63027640fe", "state": "launched"}
+{"at": "2026-10-25T05:34:35.644625+00:00", "call": "wip1-b1r1-rep1/T4/a1/builder", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:34:35.644506+00:00"}
+{"at": "2026-10-25T05:34:35.762616+00:00", "call": "wip1-b1r1-rep1/T4/a1/builder", "measured": true, "state": "charged", "usd": "0.031627"}
+{"at": "2026-10-25T05:34:35.918070+00:00", "call": "wip1-b1r1-rep1/T4/a1/reviewer", "state": "launching"}
+{"at": "2026-10-25T05:34:36.098175+00:00", "call": "wip1-b1r1-rep1/T4/a1/reviewer", "store_task": "task_ef7126c482"}
+{"at": "2026-10-25T05:34:37.450858+00:00", "call": "wip1-b1r1-rep1/T4/a1/reviewer", "dispatch": "disp_e6ee682b3c", "state": "launched"}
+{"at": "2026-10-25T05:34:45.106419+00:00", "call": "wip1-b1r1-rep1/T4/a1/reviewer", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:34:45.106317+00:00"}
+{"at": "2026-10-25T05:34:45.214856+00:00", "call": "wip1-b1r1-rep1/T4/a1/reviewer", "measured": true, "state": "charged", "usd": "0.0293424"}
+{"at": "2026-10-25T05:34:45.223970+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc"]}
+{"at": "2026-10-25T05:34:45.470651+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc"]}
+{"at": "2026-10-25T05:34:47.617897+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00"]}
+{"at": "2026-10-25T05:34:47.776248+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00"]}
+{"at": "2026-10-25T05:34:48.192932+00:00", "call": "wip1-b1r1-rep1/T6/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b1r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:34:48.192951+00:00", "call": "wip1-b1r1-rep1/T6/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b1r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:34:48.321962+00:00", "call": "wip1-b1r1-rep1/T6/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:34:48.323197+00:00", "call": "wip1-b1r1-rep1/T6/a1/builder", "store_task": "task_96f347ff35"}
+{"at": "2026-10-25T05:34:49.675522+00:00", "call": "wip1-b1r1-rep1/T6/a1/builder", "dispatch": "disp_52ccadc506", "state": "launched"}
+{"at": "2026-10-25T05:34:59.219732+00:00", "call": "wip1-b1r1-rep1/T6/a1/builder", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:34:59.219624+00:00"}
+{"at": "2026-10-25T05:34:59.332880+00:00", "call": "wip1-b1r1-rep1/T6/a1/builder", "measured": true, "state": "charged", "usd": "0.028267400000000005"}
+{"at": "2026-10-25T05:34:59.489875+00:00", "call": "wip1-b1r1-rep1/T6/a1/reviewer", "state": "launching"}
+{"at": "2026-10-25T05:34:59.671807+00:00", "call": "wip1-b1r1-rep1/T6/a1/reviewer", "store_task": "task_cea57da199"}
+{"at": "2026-10-25T05:35:01.037642+00:00", "call": "wip1-b1r1-rep1/T6/a1/reviewer", "dispatch": "disp_bb028041c3", "state": "launched"}
+{"at": "2026-10-25T05:35:11.070772+00:00", "call": "wip1-b1r1-rep1/T6/a1/reviewer", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:35:11.070660+00:00"}
+{"at": "2026-10-25T05:35:11.182029+00:00", "call": "wip1-b1r1-rep1/T6/a1/reviewer", "measured": true, "state": "charged", "usd": "0.0317739"}
+{"at": "2026-10-25T05:35:11.193915+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc", "9f30f6fef20e786382b6e188affa6b61"]}
+{"at": "2026-10-25T05:35:11.431144+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc", "9f30f6fef20e786382b6e188affa6b61", "3c483855c7767b255066c0d1aaff118c"]}
+{"at": "2026-10-25T05:35:13.551590+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d"]}
+{"at": "2026-10-25T05:35:13.709315+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d"]}
+{"at": "2026-10-25T05:35:14.127849+00:00", "call": "wip1-b1r1-rep1/T2/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b1r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:35:14.127867+00:00", "call": "wip1-b1r1-rep1/T2/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b1r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:35:14.256385+00:00", "call": "wip1-b1r1-rep1/T2/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:35:14.258068+00:00", "call": "wip1-b1r1-rep1/T2/a1/builder", "store_task": "task_30decc836c"}
+{"at": "2026-10-25T05:35:15.642899+00:00", "call": "wip1-b1r1-rep1/T2/a1/builder", "dispatch": "disp_88f9b63134", "state": "launched"}
+{"at": "2026-10-25T05:35:26.160276+00:00", "call": "wip1-b1r1-rep1/T2/a1/builder", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:35:26.160140+00:00"}
+{"at": "2026-10-25T05:35:26.268049+00:00", "call": "wip1-b1r1-rep1/T2/a1/builder", "measured": true, "state": "charged", "usd": "0.0293658"}
+{"at": "2026-10-25T05:35:26.423099+00:00", "call": "wip1-b1r1-rep1/T2/a1/reviewer", "state": "launching"}
+{"at": "2026-10-25T05:35:26.609623+00:00", "call": "wip1-b1r1-rep1/T2/a1/reviewer", "store_task": "task_e851b765ae"}
+{"at": "2026-10-25T05:35:27.980818+00:00", "call": "wip1-b1r1-rep1/T2/a1/reviewer", "dispatch": "disp_3ebc265106", "state": "launched"}
+{"at": "2026-10-25T05:35:34.590948+00:00", "call": "wip1-b1r1-rep1/T2/a1/reviewer", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:35:34.590816+00:00"}
+{"at": "2026-10-25T05:35:34.698557+00:00", "call": "wip1-b1r1-rep1/T2/a1/reviewer", "measured": true, "state": "charged", "usd": "0.0245031"}
+{"at": "2026-10-25T05:35:34.708473+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc", "9f30f6fef20e786382b6e188affa6b61", "3c483855c7767b255066c0d1aaff118c", "11b9039d11446dcf56ab459ef1c419e5"]}
+{"at": "2026-10-25T05:35:34.997412+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc", "9f30f6fef20e786382b6e188affa6b61", "3c483855c7767b255066c0d1aaff118c", "11b9039d11446dcf56ab459ef1c419e5", "4e26e6b62d38348f7016a6fbc8529799"]}
+{"at": "2026-10-25T05:35:37.097826+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d", "18642bfb0b09fd95530d47dbb3a42764", "570b73cf52711f12f32df6bd549dfadb"]}
+{"at": "2026-10-25T05:35:37.258884+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d", "18642bfb0b09fd95530d47dbb3a42764", "570b73cf52711f12f32df6bd549dfadb"]}
+{"at": "2026-10-25T05:35:37.658148+00:00", "call": "wip1-b1r1-rep1/T1/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b1r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:35:37.658169+00:00", "call": "wip1-b1r1-rep1/T1/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b1r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:35:37.783446+00:00", "call": "wip1-b1r1-rep1/T1/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:35:37.785392+00:00", "call": "wip1-b1r1-rep1/T1/a1/builder", "store_task": "task_6dbea8bc97"}
+{"at": "2026-10-25T05:35:39.167768+00:00", "call": "wip1-b1r1-rep1/T1/a1/builder", "dispatch": "disp_45458a13cb", "state": "launched"}
+{"at": "2026-10-25T05:35:50.630204+00:00", "call": "wip1-b1r1-rep1/T1/a1/builder", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:35:50.630065+00:00"}
+{"at": "2026-10-25T05:35:50.739932+00:00", "call": "wip1-b1r1-rep1/T1/a1/builder", "measured": true, "state": "charged", "usd": "0.029273800000000003"}
+{"at": "2026-10-25T05:35:50.882758+00:00", "call": "wip1-b1r1-rep1/T1/a1/reviewer", "state": "launching"}
+{"at": "2026-10-25T05:35:51.064831+00:00", "call": "wip1-b1r1-rep1/T1/a1/reviewer", "store_task": "task_2ad7c27cfb"}
+{"at": "2026-10-25T05:35:52.429498+00:00", "call": "wip1-b1r1-rep1/T1/a1/reviewer", "dispatch": "disp_9b6e5af1bc", "state": "launched"}
+{"at": "2026-10-25T05:36:00.045260+00:00", "call": "wip1-b1r1-rep1/T1/a1/reviewer", "run": "wip1-b1r1-rep1", "usage_at": "2026-10-25T05:36:00.045110+00:00"}
+{"at": "2026-10-25T05:36:00.158518+00:00", "call": "wip1-b1r1-rep1/T1/a1/reviewer", "measured": true, "state": "charged", "usd": "0.027104199999999995"}
+{"at": "2026-10-25T05:36:00.170030+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc", "9f30f6fef20e786382b6e188affa6b61", "3c483855c7767b255066c0d1aaff118c", "11b9039d11446dcf56ab459ef1c419e5", "4e26e6b62d38348f7016a6fbc8529799", "b56713bd0b210294cfa12ec1359be4bc"]}
+{"at": "2026-10-25T05:36:00.411652+00:00", "call": "wip1-b1r1-rep1/run", "oracle_tags": ["9e7b79fe9c6ce072094f2b3e98b89a84", "5d4183445d9dd14b73c210c5d715139b", "0e938d8e67f0d06cc2134763df0d981c", "bdb5a648cae42545ed25ab5961245637", "8bdddff6c108af45964c96962807d8cc", "ab269db801dd2a0bb838eeafe6b2b9fc", "9f30f6fef20e786382b6e188affa6b61", "3c483855c7767b255066c0d1aaff118c", "11b9039d11446dcf56ab459ef1c419e5", "4e26e6b62d38348f7016a6fbc8529799", "b56713bd0b210294cfa12ec1359be4bc", "cae64934a8dfbd560be66c22cd20b8af"]}
+{"at": "2026-10-25T05:36:02.448215+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d", "18642bfb0b09fd95530d47dbb3a42764", "570b73cf52711f12f32df6bd549dfadb", "d9af34eb5639ae555cb45cc6a05ad83e", "5894731e1307aafa5144edb763341b2c"]}
+{"at": "2026-10-25T05:36:02.601155+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d", "18642bfb0b09fd95530d47dbb3a42764", "570b73cf52711f12f32df6bd549dfadb", "d9af34eb5639ae555cb45cc6a05ad83e", "5894731e1307aafa5144edb763341b2c"]}
+{"at": "2026-10-25T05:36:02.975996+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d", "18642bfb0b09fd95530d47dbb3a42764", "570b73cf52711f12f32df6bd549dfadb", "d9af34eb5639ae555cb45cc6a05ad83e", "5894731e1307aafa5144edb763341b2c"]}
+{"at": "2026-10-25T05:36:03.140297+00:00", "call": "wip1-b1r1-rep1/run", "gate_tags": ["dbaf7c5f38a88056e1191b2c0b211be5", "ecc4c0dd9bc535138a9d7eb04fe4052b", "ec5f5a15dd3ece22afd06528ada98de9", "22890d289c0cb882a8a12978c0627f64", "242d49684ca6594d31916e3b448dd740", "8a0c0c44d8e5ddcc3afabb94652d9f00", "acf1248664612d1fe3c398adafd7132a", "99fe7b849016c6d4782befc35457a43d", "18642bfb0b09fd95530d47dbb3a42764", "570b73cf52711f12f32df6bd549dfadb", "d9af34eb5639ae555cb45cc6a05ad83e", "5894731e1307aafa5144edb763341b2c"]}
+{"at": "2026-10-25T05:46:03.348066+00:00", "call": "wip1-b3r1-rep1/run", "call_tag": "312b50e6b1abf351d82d5659efbc1436", "run": "wip1-b3r1-rep1", "sandbox": "/results/sandboxes/wip1-b3r1-rep1", "state": "run", "usd": "0", "worker": "live"}
+{"at": "2026-10-25T05:46:04.665178+00:00", "call": "wip1-b3r1-rep1/T5/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:46:04.665195+00:00", "call": "wip1-b3r1-rep1/T5/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:46:04.666222+00:00", "call": "wip1-b3r1-rep1/T2/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:46:04.666228+00:00", "call": "wip1-b3r1-rep1/T2/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:46:04.666873+00:00", "call": "wip1-b3r1-rep1/T6/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:46:04.666888+00:00", "call": "wip1-b3r1-rep1/T6/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:46:04.776236+00:00", "call": "wip1-b3r1-rep1/T5/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:04.777487+00:00", "call": "wip1-b3r1-rep1/T5/a1/builder", "store_task": "task_a870267b4e"}
+{"at": "2026-10-25T05:46:05.982895+00:00", "call": "wip1-b3r1-rep1/T5/a1/builder", "dispatch": "disp_e2a0384c4c", "state": "launched"}
+{"at": "2026-10-25T05:46:06.546122+00:00", "call": "wip1-b3r1-rep1/T2/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:06.547285+00:00", "call": "wip1-b3r1-rep1/T2/a1/builder", "store_task": "task_21fc99da73"}
+{"at": "2026-10-25T05:46:07.761662+00:00", "call": "wip1-b3r1-rep1/T2/a1/builder", "dispatch": "disp_5abf8d452b", "state": "launched"}
+{"at": "2026-10-25T05:46:08.325777+00:00", "call": "wip1-b3r1-rep1/T6/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:08.326655+00:00", "call": "wip1-b3r1-rep1/T6/a1/builder", "store_task": "task_2fe390f1aa"}
+{"at": "2026-10-25T05:46:09.560829+00:00", "call": "wip1-b3r1-rep1/T6/a1/builder", "dispatch": "disp_f4f52bee35", "state": "launched"}
+{"at": "2026-10-25T05:46:10.578050+00:00", "call": "wip1-b3r1-rep1/T2/a1/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:10.577825+00:00"}
+{"at": "2026-10-25T05:46:10.673026+00:00", "call": "wip1-b3r1-rep1/T2/a1/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:10.675592+00:00", "call": "wip1-b3r1-rep1/T5/a1/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:10.675446+00:00"}
+{"at": "2026-10-25T05:46:10.775900+00:00", "call": "wip1-b3r1-rep1/T5/a1/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:10.888927+00:00", "call": "wip1-b3r1-rep1/T2/a1/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:10.903012+00:00", "call": "wip1-b3r1-rep1/T5/a1/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:11.061815+00:00", "call": "wip1-b3r1-rep1/T6/a1/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:11.061659+00:00"}
+{"at": "2026-10-25T05:46:11.157135+00:00", "call": "wip1-b3r1-rep1/T6/a1/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:11.277193+00:00", "call": "wip1-b3r1-rep1/T6/a1/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:11.788627+00:00", "call": "wip1-b3r1-rep1/T5/a2/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:46:11.788643+00:00", "call": "wip1-b3r1-rep1/T5/a2/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:46:11.789926+00:00", "call": "wip1-b3r1-rep1/T2/a2/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:46:11.789943+00:00", "call": "wip1-b3r1-rep1/T2/a2/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:46:11.790622+00:00", "call": "wip1-b3r1-rep1/T6/a2/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:46:11.790631+00:00", "call": "wip1-b3r1-rep1/T6/a2/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:46:12.051783+00:00", "call": "wip1-b3r1-rep1/T5/a2/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:12.053131+00:00", "call": "wip1-b3r1-rep1/T5/a2/builder", "store_task": "task_a870267b4e"}
+{"at": "2026-10-25T05:46:13.259478+00:00", "call": "wip1-b3r1-rep1/T5/a2/builder", "dispatch": "disp_9047a5a576", "state": "launched"}
+{"at": "2026-10-25T05:46:13.999821+00:00", "call": "wip1-b3r1-rep1/T2/a2/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:14.000819+00:00", "call": "wip1-b3r1-rep1/T2/a2/builder", "store_task": "task_21fc99da73"}
+{"at": "2026-10-25T05:46:15.209893+00:00", "call": "wip1-b3r1-rep1/T2/a2/builder", "dispatch": "disp_c172e03395", "state": "launched"}
+{"at": "2026-10-25T05:46:15.928851+00:00", "call": "wip1-b3r1-rep1/T6/a2/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:15.930070+00:00", "call": "wip1-b3r1-rep1/T6/a2/builder", "store_task": "task_2fe390f1aa"}
+{"at": "2026-10-25T05:46:17.144346+00:00", "call": "wip1-b3r1-rep1/T6/a2/builder", "dispatch": "disp_5e5aee6235", "state": "launched"}
+{"at": "2026-10-25T05:46:18.143406+00:00", "call": "wip1-b3r1-rep1/T5/a2/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:18.143219+00:00"}
+{"at": "2026-10-25T05:46:18.245050+00:00", "call": "wip1-b3r1-rep1/T5/a2/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:18.248241+00:00", "call": "wip1-b3r1-rep1/T2/a2/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:18.248058+00:00"}
+{"at": "2026-10-25T05:46:18.345548+00:00", "call": "wip1-b3r1-rep1/T2/a2/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:18.466156+00:00", "call": "wip1-b3r1-rep1/T5/a2/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:18.479623+00:00", "call": "wip1-b3r1-rep1/T2/a2/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:18.633891+00:00", "call": "wip1-b3r1-rep1/T6/a2/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:18.633699+00:00"}
+{"at": "2026-10-25T05:46:18.731932+00:00", "call": "wip1-b3r1-rep1/T6/a2/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:18.844594+00:00", "call": "wip1-b3r1-rep1/T6/a2/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:19.367660+00:00", "call": "wip1-b3r1-rep1/T5/a3/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:46:19.367677+00:00", "call": "wip1-b3r1-rep1/T5/a3/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T5", "usd": "2.00"}
+{"at": "2026-10-25T05:46:19.369117+00:00", "call": "wip1-b3r1-rep1/T2/a3/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:46:19.369126+00:00", "call": "wip1-b3r1-rep1/T2/a3/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T2", "usd": "2.00"}
+{"at": "2026-10-25T05:46:19.369831+00:00", "call": "wip1-b3r1-rep1/T6/a3/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:46:19.369836+00:00", "call": "wip1-b3r1-rep1/T6/a3/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T6", "usd": "2.00"}
+{"at": "2026-10-25T05:46:19.635049+00:00", "call": "wip1-b3r1-rep1/T5/a3/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:19.636469+00:00", "call": "wip1-b3r1-rep1/T5/a3/builder", "store_task": "task_a870267b4e"}
+{"at": "2026-10-25T05:46:20.843602+00:00", "call": "wip1-b3r1-rep1/T5/a3/builder", "dispatch": "disp_2e34d04c77", "state": "launched"}
+{"at": "2026-10-25T05:46:21.560498+00:00", "call": "wip1-b3r1-rep1/T2/a3/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:21.561542+00:00", "call": "wip1-b3r1-rep1/T2/a3/builder", "store_task": "task_21fc99da73"}
+{"at": "2026-10-25T05:46:22.776777+00:00", "call": "wip1-b3r1-rep1/T2/a3/builder", "dispatch": "disp_374b3d8b97", "state": "launched"}
+{"at": "2026-10-25T05:46:23.480294+00:00", "call": "wip1-b3r1-rep1/T6/a3/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:23.481240+00:00", "call": "wip1-b3r1-rep1/T6/a3/builder", "store_task": "task_2fe390f1aa"}
+{"at": "2026-10-25T05:46:24.696801+00:00", "call": "wip1-b3r1-rep1/T6/a3/builder", "dispatch": "disp_2831cc8199", "state": "launched"}
+{"at": "2026-10-25T05:46:25.708272+00:00", "call": "wip1-b3r1-rep1/T5/a3/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:25.708074+00:00"}
+{"at": "2026-10-25T05:46:25.803811+00:00", "call": "wip1-b3r1-rep1/T5/a3/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:25.806820+00:00", "call": "wip1-b3r1-rep1/T2/a3/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:25.806633+00:00"}
+{"at": "2026-10-25T05:46:25.908089+00:00", "call": "wip1-b3r1-rep1/T2/a3/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:26.024003+00:00", "call": "wip1-b3r1-rep1/T5/a3/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:26.034134+00:00", "call": "wip1-b3r1-rep1/T2/a3/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:26.189492+00:00", "call": "wip1-b3r1-rep1/T6/a3/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:26.189284+00:00"}
+{"at": "2026-10-25T05:46:26.290007+00:00", "call": "wip1-b3r1-rep1/T6/a3/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:26.410837+00:00", "call": "wip1-b3r1-rep1/T6/a3/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:27.210717+00:00", "call": "wip1-b3r1-rep1/T1/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:46:27.210738+00:00", "call": "wip1-b3r1-rep1/T1/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:46:27.212263+00:00", "call": "wip1-b3r1-rep1/T4/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:46:27.212278+00:00", "call": "wip1-b3r1-rep1/T4/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:46:27.213081+00:00", "call": "wip1-b3r1-rep1/T3/a1/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:46:27.213094+00:00", "call": "wip1-b3r1-rep1/T3/a1/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:46:27.327071+00:00", "call": "wip1-b3r1-rep1/T1/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:27.328353+00:00", "call": "wip1-b3r1-rep1/T1/a1/builder", "store_task": "task_8daae20a3e"}
+{"at": "2026-10-25T05:46:28.541730+00:00", "call": "wip1-b3r1-rep1/T1/a1/builder", "dispatch": "disp_70f1c15848", "state": "launched"}
+{"at": "2026-10-25T05:46:29.090691+00:00", "call": "wip1-b3r1-rep1/T4/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:29.091683+00:00", "call": "wip1-b3r1-rep1/T4/a1/builder", "store_task": "task_02ed6180db"}
+{"at": "2026-10-25T05:46:30.299439+00:00", "call": "wip1-b3r1-rep1/T4/a1/builder", "dispatch": "disp_9587c85798", "state": "launched"}
+{"at": "2026-10-25T05:46:30.843836+00:00", "call": "wip1-b3r1-rep1/T3/a1/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:30.845181+00:00", "call": "wip1-b3r1-rep1/T3/a1/builder", "store_task": "task_d71e8d27e1"}
+{"at": "2026-10-25T05:46:32.066135+00:00", "call": "wip1-b3r1-rep1/T3/a1/builder", "dispatch": "disp_8dccd777ec", "state": "launched"}
+{"at": "2026-10-25T05:46:33.082479+00:00", "call": "wip1-b3r1-rep1/T1/a1/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:33.082226+00:00"}
+{"at": "2026-10-25T05:46:33.180166+00:00", "call": "wip1-b3r1-rep1/T1/a1/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:33.183159+00:00", "call": "wip1-b3r1-rep1/T4/a1/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:33.182923+00:00"}
+{"at": "2026-10-25T05:46:33.278159+00:00", "call": "wip1-b3r1-rep1/T4/a1/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:33.398003+00:00", "call": "wip1-b3r1-rep1/T1/a1/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:33.410188+00:00", "call": "wip1-b3r1-rep1/T4/a1/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:33.565286+00:00", "call": "wip1-b3r1-rep1/T3/a1/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:33.565048+00:00"}
+{"at": "2026-10-25T05:46:33.663869+00:00", "call": "wip1-b3r1-rep1/T3/a1/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:33.784999+00:00", "call": "wip1-b3r1-rep1/T3/a1/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:34.301643+00:00", "call": "wip1-b3r1-rep1/T1/a2/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:46:34.301660+00:00", "call": "wip1-b3r1-rep1/T1/a2/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:46:34.303035+00:00", "call": "wip1-b3r1-rep1/T4/a2/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:46:34.303047+00:00", "call": "wip1-b3r1-rep1/T4/a2/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:46:34.303843+00:00", "call": "wip1-b3r1-rep1/T3/a2/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:46:34.303850+00:00", "call": "wip1-b3r1-rep1/T3/a2/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:46:34.566895+00:00", "call": "wip1-b3r1-rep1/T1/a2/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:34.568294+00:00", "call": "wip1-b3r1-rep1/T1/a2/builder", "store_task": "task_8daae20a3e"}
+{"at": "2026-10-25T05:46:35.782895+00:00", "call": "wip1-b3r1-rep1/T1/a2/builder", "dispatch": "disp_b5c344bf30", "state": "launched"}
+{"at": "2026-10-25T05:46:36.502445+00:00", "call": "wip1-b3r1-rep1/T4/a2/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:36.503362+00:00", "call": "wip1-b3r1-rep1/T4/a2/builder", "store_task": "task_02ed6180db"}
+{"at": "2026-10-25T05:46:37.727838+00:00", "call": "wip1-b3r1-rep1/T4/a2/builder", "dispatch": "disp_036e45e607", "state": "launched"}
+{"at": "2026-10-25T05:46:38.434858+00:00", "call": "wip1-b3r1-rep1/T3/a2/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:38.435715+00:00", "call": "wip1-b3r1-rep1/T3/a2/builder", "store_task": "task_d71e8d27e1"}
+{"at": "2026-10-25T05:46:39.656651+00:00", "call": "wip1-b3r1-rep1/T3/a2/builder", "dispatch": "disp_8fffa2255b", "state": "launched"}
+{"at": "2026-10-25T05:46:40.670332+00:00", "call": "wip1-b3r1-rep1/T4/a2/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:40.670074+00:00"}
+{"at": "2026-10-25T05:46:40.773181+00:00", "call": "wip1-b3r1-rep1/T4/a2/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:40.775855+00:00", "call": "wip1-b3r1-rep1/T1/a2/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:40.775627+00:00"}
+{"at": "2026-10-25T05:46:40.874674+00:00", "call": "wip1-b3r1-rep1/T1/a2/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:40.997179+00:00", "call": "wip1-b3r1-rep1/T4/a2/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:41.002027+00:00", "call": "wip1-b3r1-rep1/T1/a2/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:41.156407+00:00", "call": "wip1-b3r1-rep1/T3/a2/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:41.156172+00:00"}
+{"at": "2026-10-25T05:46:41.257223+00:00", "call": "wip1-b3r1-rep1/T3/a2/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:41.375192+00:00", "call": "wip1-b3r1-rep1/T3/a2/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:41.902161+00:00", "call": "wip1-b3r1-rep1/T1/a3/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:46:41.902177+00:00", "call": "wip1-b3r1-rep1/T1/a3/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T1", "usd": "2.00"}
+{"at": "2026-10-25T05:46:41.904367+00:00", "call": "wip1-b3r1-rep1/T4/a3/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:46:41.904375+00:00", "call": "wip1-b3r1-rep1/T4/a3/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T4", "usd": "2.00"}
+{"at": "2026-10-25T05:46:41.905207+00:00", "call": "wip1-b3r1-rep1/T3/a3/builder", "hold_usd": "2.00", "role": "builder", "run": "wip1-b3r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:46:41.905213+00:00", "call": "wip1-b3r1-rep1/T3/a3/reviewer", "hold_usd": "2.00", "role": "reviewer", "run": "wip1-b3r1-rep1", "state": "held", "task": "T3", "usd": "2.00"}
+{"at": "2026-10-25T05:46:42.172855+00:00", "call": "wip1-b3r1-rep1/T1/a3/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:42.174586+00:00", "call": "wip1-b3r1-rep1/T1/a3/builder", "store_task": "task_8daae20a3e"}
+{"at": "2026-10-25T05:46:43.406786+00:00", "call": "wip1-b3r1-rep1/T1/a3/builder", "dispatch": "disp_be3b75ede9", "state": "launched"}
+{"at": "2026-10-25T05:46:44.146970+00:00", "call": "wip1-b3r1-rep1/T4/a3/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:44.148194+00:00", "call": "wip1-b3r1-rep1/T4/a3/builder", "store_task": "task_02ed6180db"}
+{"at": "2026-10-25T05:46:45.365328+00:00", "call": "wip1-b3r1-rep1/T4/a3/builder", "dispatch": "disp_8289db0142", "state": "launched"}
+{"at": "2026-10-25T05:46:46.087250+00:00", "call": "wip1-b3r1-rep1/T3/a3/builder", "state": "launching"}
+{"at": "2026-10-25T05:46:46.088353+00:00", "call": "wip1-b3r1-rep1/T3/a3/builder", "store_task": "task_d71e8d27e1"}
+{"at": "2026-10-25T05:46:47.295894+00:00", "call": "wip1-b3r1-rep1/T3/a3/builder", "dispatch": "disp_d0ccbd6c30", "state": "launched"}
+{"at": "2026-10-25T05:46:48.294618+00:00", "call": "wip1-b3r1-rep1/T4/a3/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:48.294367+00:00"}
+{"at": "2026-10-25T05:46:48.395985+00:00", "call": "wip1-b3r1-rep1/T4/a3/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:48.398971+00:00", "call": "wip1-b3r1-rep1/T1/a3/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:48.398727+00:00"}
+{"at": "2026-10-25T05:46:48.498064+00:00", "call": "wip1-b3r1-rep1/T1/a3/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:48.616181+00:00", "call": "wip1-b3r1-rep1/T4/a3/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:48.625665+00:00", "call": "wip1-b3r1-rep1/T1/a3/reviewer", "state": "released", "usd": "0"}
+{"at": "2026-10-25T05:46:48.782593+00:00", "call": "wip1-b3r1-rep1/T3/a3/builder", "run": "wip1-b3r1-rep1", "usage_at": "2026-10-25T05:46:48.782315+00:00"}
+{"at": "2026-10-25T05:46:48.882670+00:00", "call": "wip1-b3r1-rep1/T3/a3/builder", "measured": true, "state": "charged", "usd": "0"}
+{"at": "2026-10-25T05:46:49.001478+00:00", "call": "wip1-b3r1-rep1/T3/a3/reviewer", "state": "released", "usd": "0"}

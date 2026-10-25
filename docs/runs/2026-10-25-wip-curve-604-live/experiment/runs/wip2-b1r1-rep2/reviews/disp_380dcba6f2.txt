@@ -1,0 +1,12 @@
+The change does what T6 asks and nothing it forbids.
+
+- `totals(ledger)` returns the sum of `ledger.quantity(sku)` over `ledger.skus()`, as an int.
+- `summary` builds the per-SKU lines exactly as before and then appends `TOTAL <n>`, so every other line is unchanged.
+- For an empty ledger the line list is just `["TOTAL 0"]`, so the summary is exactly `TOTAL 0`.
+- `Ledger` has the `quantity` and `skus` methods the new code calls.
+
+I only read the task, the diff and the code. I did not run any tests.
+
+WIP-REVIEW WIP-NONCE:41be6b5167f48dff 4849524852d6804e2f55301627c0ee1ef7cb61b6 approve
+
+OPEN_FLEET_WORKER_DONE disp_380dcba6f2 succeeded

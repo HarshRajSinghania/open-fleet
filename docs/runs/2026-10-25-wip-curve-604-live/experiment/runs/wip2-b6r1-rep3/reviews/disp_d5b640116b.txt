@@ -1,0 +1,13 @@
+The change meets every requirement in the task, so I'm approving it.
+
+- **Header:** it writes `sku,quantity` first.
+- **Order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** the writer uses `lineterminator="\n"`, so every line ends in `\n`, including the last.
+- **Quoting:** it uses the `csv` module with default settings, so a SKU containing a comma is quoted per RFC 4180.
+- **Empty ledger:** it yields only the header line.
+- **Scope:** the diff touches only `stocklib/report.py`, and `summary` is unchanged.
+
+I read the code but didn't run it. The diff adds no tests, though the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:dc106b62cf39a21e 504bf94b099ea8ff6e8257a9a64ccc5f27e4bbdb approve
+OPEN_FLEET_WORKER_DONE disp_d5b640116b succeeded

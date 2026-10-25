@@ -1,0 +1,9 @@
+The change does what T1 asks and nothing it forbids.
+
+- **Transliteration:** `slugify` now runs NFKD normalization and drops combining marks before the existing strip, lower and regex steps. That turns 'Crème Brûlée' into 'creme-brulee' and 'Ångström units' into 'angstrom-units'. I checked these by reading the code, not by running it.
+- **ASCII input:** NFKD leaves ASCII unchanged and ASCII has no combining marks, so the rest of the pipeline sees the same text. Behaviour for ASCII input is the same as before.
+- **Scope:** The diff touches only `stocklib/textutil.py`, adding one import and two lines. Letters with no NFKD decomposition, such as 'ø', still become '-'. The task only asks for NFKD, so that is within scope.
+
+WIP-REVIEW WIP-NONCE:d12d6f007f77669d 730c209127cc8b87423061494d13d1a710a5e0dd approve
+
+OPEN_FLEET_WORKER_DONE disp_c44bb2ab83 succeeded

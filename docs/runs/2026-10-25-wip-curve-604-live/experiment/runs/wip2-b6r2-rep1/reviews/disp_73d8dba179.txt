@@ -1,0 +1,12 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `remove` now raises `ValueError` when `qty` is greater than the stock for that SKU. An unknown SKU counts as 0 in stock, so any removal from it raises.
+- **Refusal leaves stock unchanged:** the check comes before the stock update and the history append, so a refused removal changes neither.
+- **Exact removal:** `qty == stock` passes the check, because the test is `>` rather than `>=`, and leaves 0.
+- **Scope:** only `stocklib/ledger.py` changes, and the existing `qty <= 0` check is untouched. I did not run the code or any tests.
+
+One side effect is outside the task's wording: an unknown SKU is never inserted into `_stock` when the removal is refused. That is the behaviour you'd want.
+
+WIP-REVIEW WIP-NONCE:4c3e181c25493d49 93b8d6526227b0265b427c61a12f077e709082ac approve
+
+OPEN_FLEET_WORKER_DONE disp_73d8dba179 succeeded

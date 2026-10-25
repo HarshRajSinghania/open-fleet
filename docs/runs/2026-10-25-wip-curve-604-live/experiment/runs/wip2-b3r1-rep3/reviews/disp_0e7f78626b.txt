@@ -1,0 +1,6 @@
+The change adds `lb` (453.59237) and `oz` (28.349523125) to `FACTORS` in `stocklib/units.py`. Both values match the task exactly.
+
+`convert` computes `value * FACTORS[from_unit] / FACTORS[to_unit]`. Conversion therefore works in either direction and between any two supported units. Unknown units still raise `ValueError` through the existing `KeyError` handler. The diff touches nothing else, and it doesn't do anything the task forbids. I only read the code and did not run it.
+
+WIP-REVIEW WIP-NONCE:c2c512007c42f682 ebabc89e58c069cfca3bab626388b27dec8d8f2a approve
+OPEN_FLEET_WORKER_DONE disp_0e7f78626b succeeded

@@ -1,0 +1,12 @@
+The change does what T2 asks and nothing it forbids.
+
+- **Overdraw:** `remove` now raises `ValueError` when `qty` is greater than the stock for that SKU. An unknown SKU counts as 0 in stock, so any positive removal from one raises.
+- **Unchanged on refusal:** the check runs before any write, so a refused removal leaves the stock as it was.
+- **Exact removal:** `qty == stock` passes the check, and the subtraction leaves 0.
+- **Scope:** the diff touches only `Ledger.remove`. It keeps the existing `qty <= 0` check and adds nothing else.
+
+I judged this from the diff and task statement alone and did not run any tests.
+
+WIP-REVIEW WIP-NONCE:ad2be4f8d3de6173 b93600655552c35de96d6482659116973e7ea7a4 approve
+
+OPEN_FLEET_WORKER_DONE disp_594b353098 succeeded

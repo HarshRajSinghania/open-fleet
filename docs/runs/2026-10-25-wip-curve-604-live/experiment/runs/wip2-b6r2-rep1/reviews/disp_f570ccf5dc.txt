@@ -1,0 +1,11 @@
+The change does what T6 asks and nothing it forbids.
+
+- **`totals(ledger)`:** it returns `int(sum(...))` of `ledger.quantity(sku)` over `ledger.skus()`, which is the sum of all quantities as an int.
+- **`summary(ledger)`:** it appends `TOTAL <n>` as the last line, using `totals()`. The existing per-SKU lines are built the same way as before, so they are unchanged.
+- **Empty ledger:** the line list is just `["TOTAL 0"]`, so the summary is exactly `TOTAL 0`.
+- **Scope:** only `stocklib/report.py` changes, by five added lines. I read the code and did not run it.
+
+The change adds no tests, but the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:13d5de321dee5001 a049c99a2df9c3143db41333b3437ba0e2fe77b2 approve
+OPEN_FLEET_WORKER_DONE disp_f570ccf5dc succeeded

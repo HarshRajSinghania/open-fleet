@@ -1,0 +1,11 @@
+The change does what T5 asks and nothing it forbids.
+
+- **History list:** `Ledger.__init__` creates `_history`, and `history()` returns `list(self._history)`. That is a copy, so mutating the returned list leaves the ledger unchanged.
+- **Order and success only:** `add` and `remove` append `("add", sku, qty)` or `("remove", sku, qty)` as their last statement. The `ValueError` checks run first, so a call that raises is never recorded, and entries stay in call order.
+- **No other changes:** Existing behaviour is untouched. `remove` still lets stock go negative, but that was already the case and the task doesn't mention it.
+- **Style:** There is one extra blank line before `history()`, which is cosmetic only.
+
+I read the task and the diff only. I did not run any code.
+
+WIP-REVIEW WIP-NONCE:ed38f645406ef96c 9d4921b7f997a66d735b29bd6f111860894a545a approve
+OPEN_FLEET_WORKER_DONE disp_0f1f51d996 succeeded

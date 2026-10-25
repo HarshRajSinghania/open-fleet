@@ -1,0 +1,10 @@
+The change adds `lb` (453.59237 g) and `oz` (28.349523125 g) to `FACTORS` in `stocklib/units.py`, and that's all it does. I read the whole diff and the resulting file. I did not run or test the code.
+
+- **Constants:** both values match the task statement exactly.
+- **Any pair, either direction:** `convert` computes `value * FACTORS[from_unit] / FACTORS[to_unit]`. Every unit in the table therefore converts to every other, including `lb` to `oz`.
+- **Unknown units:** a missing key raises `KeyError`, which `convert` re-raises as `ValueError`. That behaviour is unchanged.
+- **Scope:** nothing else is touched, so nothing the task forbids was added.
+
+WIP-REVIEW WIP-NONCE:4bb90bf5c923113a 28c9a5699b8fa4429666673684595296e34b8310 approve
+
+OPEN_FLEET_WORKER_DONE disp_ffe203d023 succeeded

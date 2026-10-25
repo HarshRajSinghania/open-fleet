@@ -1,0 +1,11 @@
+I approve the change. It does what T5 asks and nothing it forbids. I read only the diff and the final `stocklib/ledger.py`. I didn't run any code, and the diff adds no tests.
+
+- **Recording:** `add` and `remove` each append `("add" | "remove", sku, qty)` to `self._history` only after the validation and stock update. A call that raises `ValueError` is therefore not recorded, and entries are in call order.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list doesn't change the ledger.
+- **Scope:** Only `stocklib/ledger.py` changed, with 6 added lines. Existing behavior is untouched.
+
+`remove` still allows stock to go negative, as it did before. T5 doesn't ask for that to change.
+
+WIP-REVIEW WIP-NONCE:fe020c59163929ce 072076b910344e86763af76ed09b1431b8d54924 approve
+
+OPEN_FLEET_WORKER_DONE disp_57b8186cf1 succeeded

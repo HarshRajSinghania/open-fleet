@@ -1,0 +1,13 @@
+The change matches the task statement and doesn't do anything it forbids. I read the task and the diff, and checked `Ledger` in `stocklib/ledger.py`. I didn't run any code.
+
+- **Header and rows:** `to_csv` writes a `sku,quantity` header, then one row per SKU in sorted order. `ledger.skus()` and `ledger.quantity()` both exist.
+- **Line endings:** `lineterminator="\n"` makes every line end in `\n`, including the last. This differs from RFC 4180's CRLF, but the task asks for `\n` explicitly.
+- **Quoting:** it uses the `csv` module, so a SKU containing a comma is quoted.
+- **Empty ledger:** it returns only the header line.
+- **Scope:** the diff touches only `stocklib/report.py`, adding the `csv` and `io` imports and the new function.
+
+No tests were added, but the task doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:9c63780fb9a17679 6a5154102bc84ecae85418b2ac542adcca7bc3d3 approve
+
+OPEN_FLEET_WORKER_DONE disp_bdafba82c0 succeeded

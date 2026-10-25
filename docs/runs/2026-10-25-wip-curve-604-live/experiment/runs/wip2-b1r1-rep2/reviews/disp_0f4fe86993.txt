@@ -1,0 +1,9 @@
+The change meets the task and breaks none of its constraints. I read the task and the diff but didn't run the code.
+
+- **Transliteration:** `slugify` now applies `unicodedata.normalize("NFKD", text)` and then drops combining marks. That gives 'Crème Brûlée' → 'creme-brulee' and 'Ångström units' → 'angstrom-units'.
+- **ASCII input:** NFKD leaves ASCII unchanged and ASCII has no combining marks, so the rest of the function sees the same input as before.
+- **Scope:** the diff touches only `stocklib/textutil.py`, adding the `unicodedata` import and two lines in `slugify`. It adds no tests, but the task doesn't ask for any.
+
+OPEN_FLEET_WORKER_DONE disp_0f4fe86993 succeeded
+
+WIP-REVIEW WIP-NONCE:141d1a42dcbc4298 29180893141369464bfa2e24249909930b94d82e approve

@@ -1,0 +1,141 @@
+{
+  "argv": [
+    "timeout",
+    "--kill-after=30",
+    "14520",
+    "python3",
+    "/repo/scripts/wip_curve.py",
+    "run",
+    "--results",
+    "/results/experiment",
+    "--workdir",
+    "/results/sandboxes",
+    "--worker",
+    "live",
+    "--agent",
+    "claude",
+    "--model",
+    "claude-sonnet-5-5",
+    "--cost-cap-usd",
+    "150",
+    "--reservation-usd",
+    "2.00",
+    "--next",
+    "1"
+  ],
+  "arm": "wip_curve",
+  "arm_args": [
+    "run",
+    "--results",
+    "/results/experiment",
+    "--workdir",
+    "/results/sandboxes",
+    "--worker",
+    "live",
+    "--agent",
+    "claude",
+    "--model",
+    "claude-sonnet-5-5",
+    "--cost-cap-usd",
+    "150",
+    "--reservation-usd",
+    "2.00",
+    "--next",
+    "1"
+  ],
+  "broker": {
+    "cap_usd": 149.54,
+    "id": "17318e2c9d8ae966a8625d86fa711a6dfa2719eefc64518a2ff9eca6aad4410f",
+    "limits": {
+      "cpus": "1",
+      "memory": "512m",
+      "pids": 64
+    },
+    "mounts": {
+      "/ledger": "/Users/ravindra/of-live/receipts/20261025T054651Z-wip_curve-99eecc14.broker",
+      "/repo": "the export of the commit, read-only",
+      "/run/secrets/claude_token": "the token file, read-only"
+    },
+    "port": 8787,
+    "spend": {
+      "calls": 0,
+      "cap_usd": 149.54,
+      "ledger": "/Users/ravindra/of-live/receipts/20261025T054651Z-wip_curve-99eecc14.broker/spend.jsonl",
+      "read": true,
+      "refused": 0,
+      "settled_usd": 0,
+      "unsettled_calls": 0,
+      "unsettled_reserved_usd": 0
+    },
+    "user": "501:20"
+  },
+  "commit": "0206c420ae68f39606bef65eb53e5c53b629e513",
+  "container": {
+    "id": "5074c42b40d5e653b95e7ef5e8bddbfb4d58a8eec98cb93926a92d158ed426c4",
+    "limits": {
+      "cpus": "4",
+      "memory": "8g",
+      "pids": 4096
+    },
+    "mounts": {
+      "/repo": "the export of the commit, read-only",
+      "/results": "/Users/ravindra/of-live/wip-curve",
+      "/run/open-fleet/claude.json": "the claude settings, read-only",
+      "/run/open-fleet/live-attestation.json": "the attestation, read-only"
+    },
+    "network": "the broker's namespace",
+    "path": "/repo/scripts/live_container_bin:/usr/local/bin:/usr/bin:/bin",
+    "user": "10001:10001"
+  },
+  "destroyed": {
+    "check": [
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      "label=org.open-fleet.live-harness=99eecc1438118b27649176895c0716d0",
+      "--format",
+      "{{.ID}}"
+    ],
+    "errors": [],
+    "nonzero": [
+      "docker rm -f: exit 1: Error response from daemon: removal of container 17318e2c9d8ae966a8625d86fa711a6dfa2719eefc64518a2ff9eca6aad4410f is already in progress"
+    ],
+    "output": "",
+    "verified": true
+  },
+  "elapsed_s": null,
+  "ended_at": null,
+  "exit_status": null,
+  "hostname": "of-live-99eecc1438118b27649176895c0716d0",
+  "image": {
+    "committed_dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "dockerfile_sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60",
+    "from_committed_dockerfile": true,
+    "id": "sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198",
+    "labels": {
+      "org.open-fleet.claude-code": "2.1.304",
+      "org.open-fleet.dockerfile-sha256": "41acc5be8952badfceba41539a66e4fcda4a58ad03aed81232e8374c947c6a60"
+    },
+    "ref": "open-fleet-live:claude-2.1.304",
+    "repo_digests": [
+      "open-fleet-live@sha256:59c37b04d71511ef4d1c8e058f20a9367fb541242164c8a6df57bde0d1962198"
+    ]
+  },
+  "interrupted": 143,
+  "log": "/Users/ravindra/of-live/receipts/20261025T054651Z-wip_curve-99eecc14.log",
+  "nonce": "99eecc1438118b27649176895c0716d0",
+  "per_call_usd": 1.6,
+  "refused": null,
+  "repo": "/Users/ravindra/projects/open-fleet/.claude/worktrees/live-runs",
+  "schema": "open-fleet.live-container-receipt/2",
+  "started_at": "2026-10-25T05:46:52+00:00",
+  "timed_out": false,
+  "token": {
+    "file": "/Users/ravindra/of-live/oauth-token",
+    "mounted_at": "/run/secrets/claude_token",
+    "passed": "a read-only file mount in the broker's container alone; the arm's container holds no credential"
+  },
+  "token_redactions": 0,
+  "wall_clock_limit_s": 14400.0
+}

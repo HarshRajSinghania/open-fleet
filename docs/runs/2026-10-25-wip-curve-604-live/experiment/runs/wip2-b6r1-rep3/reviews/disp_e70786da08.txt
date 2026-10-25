@@ -1,0 +1,10 @@
+The change meets the task and breaks none of its constraints. I read the diff and `stocklib/ledger.py`, but I didn't run anything.
+
+- **`totals(ledger)`:** it returns `int(sum(ledger.quantity(sku) for sku in ledger.skus()))`. An empty ledger gives `sum` of nothing, which is 0, so the result is an int `0`.
+- **`summary(ledger)`:** it appends `TOTAL <n>` after the per-SKU lines. For an empty ledger the per-SKU list is empty, so the joined output is exactly `TOTAL 0`.
+- **Unchanged lines:** the per-SKU line format and ordering are untouched. The only change is one appended line.
+- **Scope:** only `stocklib/report.py` changed, with +5 lines and no extras.
+- **Tests:** the change adds none, but the task didn't ask for any.
+
+WIP-REVIEW WIP-NONCE:f9ac5a88bafba4b6 da5e6595ba4f67c12d1380256434e52943eadfca approve
+OPEN_FLEET_WORKER_DONE disp_e70786da08 succeeded

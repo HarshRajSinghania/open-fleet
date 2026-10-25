@@ -1,0 +1,10 @@
+The change meets the task and does nothing it forbids. I checked this by reading `task.md` and `change.diff` in full. I didn't run any tests.
+
+- **History list:** `Ledger.__init__` now creates `_history`.
+- **Recording:** `add` and `remove` append `("add", sku, qty)` or `("remove", sku, qty)` as their last step, after the validation and the stock update. A call that raises `ValueError` on `qty <= 0` never reaches the append, so failed calls aren't recorded. Entries are in call order.
+- **Copy:** `history()` returns `list(self._history)`. Mutating the returned list doesn't change the ledger. The entries are tuples, so they're immutable.
+- **Scope:** only `stocklib/ledger.py` changed, and existing behaviour is untouched. `remove` already allows stock to go negative; that was there before this change, and the task doesn't mention it.
+
+WIP-REVIEW WIP-NONCE:bb699fefeb11722a c3dc40bb783d0c28533419e40c8712ffb6564235 approve
+
+OPEN_FLEET_WORKER_DONE disp_af32c89184 succeeded

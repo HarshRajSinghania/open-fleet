@@ -1,0 +1,10 @@
+The change does what T6 asks and nothing it forbids.
+
+- **`totals(ledger)`:** it returns `int(sum(ledger.quantity(sku) for sku in ledger.skus()))`, which is the sum of all quantities as an int.
+- **`summary(ledger)`:** it keeps the existing per-SKU lines unchanged and appends `TOTAL <n>` as the final line.
+- **Empty ledger:** `skus()` is empty, so the only line is `TOTAL 0`, and the joined string is exactly `TOTAL 0`.
+
+I read the diff and `stocklib/ledger.py`; I did not run the tests. The change adds no tests, but the task doesn't require any.
+
+WIP-REVIEW WIP-NONCE:e0d599b9b22c6258 d9e35b01e3d7ccc2828a9ecc24a57519ccfdb5d3 approve
+OPEN_FLEET_WORKER_DONE disp_316662f0e7 succeeded

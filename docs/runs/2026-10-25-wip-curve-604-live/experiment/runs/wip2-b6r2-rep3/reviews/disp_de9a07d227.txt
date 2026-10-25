@@ -1,0 +1,14 @@
+The change meets the task statement and does nothing it forbids.
+
+- **Header and rows:** `to_csv` writes the header `sku,quantity`, then one row per SKU from `ledger.skus()`.
+- **Sort order:** `Ledger.skus()` returns `sorted(self._stock)`, so rows come out in sorted SKU order.
+- **Line endings:** `lineterminator="\n"` puts a newline after every line, including the last.
+- **Quoting:** it uses the `csv` module, so a SKU containing a comma is quoted.
+- **Empty ledger:** it produces only the header line.
+- **Scope:** the diff touches only `stocklib/report.py`.
+
+I read the code and did not run it. The diff adds no tests, but the task statement doesn't ask for any.
+
+WIP-REVIEW WIP-NONCE:7dd363f1288a4f47 c9996f90f8a23af936c0608ca9a1bbe9c1193724 approve
+
+OPEN_FLEET_WORKER_DONE disp_de9a07d227 succeeded

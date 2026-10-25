@@ -1,0 +1,12 @@
+The change does what the task asks and nothing it forbids.
+
+- **Transliteration:** `slugify` now runs `unicodedata.normalize("NFKD", text)` and drops combining marks before the existing strip, lower and regex steps. That gives `creme-brulee` for 'Crème Brûlée' and `angstrom-units` for 'Ångström units'. The Å in 'Ångström units' decomposes to A plus a combining ring, so it is covered.
+- **ASCII behaviour:** ASCII characters pass through NFKD unchanged and none are combining marks, so ASCII output is identical to before.
+- **Scope:** The diff touches only `stocklib/textutil.py`, with no unrelated edits.
+- **Side effects:** NFKD also applies compatibility mappings, for example the ligature "ﬁ" becomes "fi". The task explicitly asks for NFKD, so I'm not counting this against it.
+- **Letters that don't decompose:** Letters such as ø and ß don't decompose, so they still become a hyphen. The task doesn't ask for them.
+- **Tests:** The diff adds none. The task doesn't require them. I didn't run anything, since the review is build-blind.
+
+WIP-REVIEW WIP-NONCE:c9dd1296803ab828 011c6415ce9475c8e54ba6173021aa0f9c8ed8c7 approve
+
+OPEN_FLEET_WORKER_DONE disp_e59b930d4d succeeded

@@ -1,0 +1,9 @@
+The change does what T5 asks and nothing it forbids.
+
+- **Recording:** `add` and `remove` each append `("add", sku, qty)` or `("remove", sku, qty)` as their last step. Every `raise` happens before the append, so a call that raises is not recorded. Entries are in call order.
+- **Copy:** `history()` returns `list(self._history)`, so mutating the returned list leaves the ledger unchanged.
+- **Scope:** `add` and `remove` are the only methods that change stock, so nothing is left unrecorded. The diff touches only `stocklib/ledger.py`.
+- **Not run:** I read the code and diff only, and ran no tests.
+
+WIP-REVIEW WIP-NONCE:d01831c55ce652b6 359105d3bee13ceb54a7ebf002ac444e1b961d7d approve
+OPEN_FLEET_WORKER_DONE disp_d2a704d9a1 succeeded

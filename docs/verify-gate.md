@@ -84,13 +84,13 @@ In enterprise environments where `allowManagedHooksOnly` disables user or plugin
    ```yaml
    - name: Verify unit evidence manifest
      run: |
-       git fetch origin "${ORCA_BASE:-main}"
+       git fetch origin "${ORCA_BASE:?set ORCA_BASE to the integration branch}"
        python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
          --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
-         --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:-main}" \
+         --repo "$GITHUB_REPOSITORY" --base "$ORCA_BASE" \
          --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci
    ```
-   *(Pass `--execute-nc --nc-command "$ORCA_NC_COMMAND"` so the CI runner replays the negative control in a throwaway worktree rather than merely reading the manifest's artifact text. Use an explicit integration-branch ref `ORCA_BASE` after `git fetch origin` rather than `$GITHUB_BASE_REF`, which is empty on `push` events and names the target branch on unmerged pull requests.)*
+   *(Pass `--execute-nc --nc-command "$ORCA_NC_COMMAND"` so the CI runner replays the negative control in a throwaway worktree rather than merely reading the manifest's artifact text. Require an explicit integration-branch ref `ORCA_BASE` after `git fetch origin` rather than falling back to `main` or `$GITHUB_BASE_REF`, since unit commits land on the integration `BASE` branch before promotion.)*
 2. **MCP Task:** Expose `verify.py` as an MCP Task awaited by the coordinator before advancing the ledger ([Platform capabilities](platform-ride.md)).
 3. **SDK subprocess:** Invoke `runtime/scripts/verify-gate.sh` directly from the coordinator process at unit boundaries.
 
@@ -133,7 +133,7 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
      ```bash
      python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
        --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
-       --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:-main}" \
+       --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:?set ORCA_BASE to the integration branch}" \
        --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci \
        --transcript-out /tmp/verdict-unsigned.json
 

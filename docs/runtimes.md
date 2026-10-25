@@ -86,6 +86,8 @@ python3 runtime/scripts/preflight.py --mission offload-it --runtime posix --stri
 
 All 14 providers implement [`RuntimeProvider`](../runtime/providers/base.py) and return Orca-compatible JSON envelopes so coordinator scripts (`task_ops.py`, `worker_ops.py`, `worktree_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`, `hitl_ask.py`, `watchdog.py`) run unchanged. Every adapter preserves worker commits under `refs/open-fleet/preserved/<dispatch>` before cleanup and fails closed on unsupported profiles or unverified harnesses.
 
+A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) lists only harnesses its adapter honors and that `spawn_worker.sh` launches on it. On `orca`, `spawn_worker.sh` has no default launch row for `opencode`, `omp`, or `pi` (because Orca strips their launch arguments), so those three harnesses require a non-`orca` runtime (such as `OPEN_FLEET_RUNTIME=posix`) or an explicit `WORKER_CMD` override. Conversely, the `openhands` SDK agent runs exclusively on `OPEN_FLEET_RUNTIME=openhands` (which refuses CLI harness names, while all other runtimes refuse `openhands`).
+
 ### Tier 1 — Primary providers
 
 | Provider | Upstream | Transport | Profiles | Native capabilities |

@@ -2974,6 +2974,8 @@ def refused_stream(text="Not logged in · Please run /login", usage=None, is_err
     """A dispatch's stream as Claude Code wrote it for a refused credential (wip1-b3r1-rep1)."""
     lines = [{"type": "turn_started", "dispatchId": "disp_0123456789", "monitorPid": 1},
              {"type": "system", "subtype": "init", "model": model, "apiKeySource": "none"},
+             {"type": "assistant", "message": {"model": "<synthetic>", "role": "assistant", "usage": REFUSED_USAGE,
+                                               "content": [{"type": "text", "text": text}]}},
              {"type": "result", "subtype": "success", "is_error": is_error, "result": text,
               "usage": REFUSED_USAGE if usage is None else usage, "total_cost_usd": 0, "num_turns": 1}]
     return "".join(json.dumps(line) + "\n" for line in lines)
@@ -3021,14 +3023,36 @@ class TestARefusedCredentialIsAnInfrastructureFailure(Tmp):
         self.assertFalse(wip.credential_rejected(self.stream(ANSWERED + refused_stream())))
         assistant = {"type": "assistant", "message": {"model": "claude-sonnet-5-5", "usage": {**REFUSED_USAGE, "output_tokens": 9}}}
         self.assertFalse(wip.credential_rejected(self.stream(json.dumps(assistant) + "\n" + refused_stream())))
-        paid = json.loads(refused_stream().splitlines()[2])
+        paid = json.loads(refused_stream().splitlines()[3])
         paid["total_cost_usd"] = 0.02
         self.assertFalse(wip.credential_rejected(self.stream(json.dumps(paid) + "\n")))
+
+    def test_any_line_but_the_refusal_makes_it_a_result(self):
+        # Codex at a8068b5cd5: an assistant turn with no usage was skipped, so earlier work read as a refusal
+        lines = refused_stream().splitlines(keepends=True)
+        turn = json.loads(lines[2])
+        for usage in (None, "absent"):
+            earlier = copy.deepcopy(turn)
+            if usage == "absent":
+                del earlier["message"]["usage"]
+            else:
+                earlier["message"]["usage"] = None
+            self.assertFalse(wip.credential_rejected(self.stream(json.dumps(earlier) + "\n" + "".join(lines))), usage)
+        tool = copy.deepcopy(turn)
+        tool["message"]["content"] = [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]
+        for extra in (tool, {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result"}]}},
+                      {"type": "system", "subtype": "thinking_tokens", "tokens": 40}, {"type": "assistant", "message": None}):
+            self.assertFalse(wip.credential_rejected(self.stream(json.dumps(extra) + "\n" + "".join(lines))), extra)
+        self.assertFalse(wip.credential_rejected(self.stream("not json\n" + "".join(lines))))
+        result = json.loads(lines[3])
+        del result["total_cost_usd"]
+        self.assertFalse(wip.credential_rejected(self.stream("".join(lines[:3]) + json.dumps(result) + "\n")),
+                         "a cost the result does not report")
 
     def test_a_usage_it_does_not_report_is_not_zero(self):
         missing = {k: v for k, v in REFUSED_USAGE.items() if k != "output_tokens"}
         self.assertFalse(wip.credential_rejected(self.stream(refused_stream(usage=missing))))
-        result = json.loads(refused_stream().splitlines()[2])
+        result = json.loads(refused_stream().splitlines()[3])
         del result["usage"]
         self.assertFalse(wip.credential_rejected(self.stream(json.dumps(result) + "\n")))
 
@@ -3078,6 +3102,14 @@ class TestARunEveryCallOfWhichWasRefusedMayBeReRunOnce(Tmp):
         self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": ANSWERED})
         self.rerun("infrastructure failure")
 
+    def test_earlier_work_with_no_reported_usage_is_never_re_run(self):
+        # Codex at a8068b5cd5: bound, complete, and read as refused because the turn's usage was absent
+        turn = json.loads(refused_stream().splitlines()[2])
+        del turn["message"]["usage"]
+        self.retained({**{f"disp_{k}": refused_stream() for k in range(3)},
+                       "disp_9": json.dumps(turn) + "\n" + refused_stream()})
+        self.rerun("infrastructure failure")
+
     def test_removing_or_altering_the_answered_stream_never_authorises_a_re_run(self):
         # Codex at a61f3e660a: the gate read whatever streams were present, unchecked against run.json
         run = self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": ANSWERED})
@@ -3091,14 +3123,14 @@ class TestARefusedCredentialHaltsTheRun(LiveWithAFakeHarness):
     """A harness that answers every call with the refused-credential error: the first answer halts
     the run, no further call starts, and the run ends `failed`, the re-runnable status."""
 
-    def live(self, *extra, **kw):
+    def live(self, *extra, answer_lines=None, **kw):
         install = install_fake_harness
+        lines = answer_lines or refused_stream(model="wip-fake-model").splitlines(keepends=True)[1:]
 
         def refusing(bin_dir, **fake_kw):
             launcher = install(bin_dir, **fake_kw)
             answer = bin_dir / "refused.jsonl"
-            answer.write_text("".join(refused_stream(model="wip-fake-model").splitlines(keepends=True)[1:]),
-                              encoding="utf-8")
+            answer.write_text("".join(lines), encoding="utf-8")
             launcher.write_text(f'#!/bin/sh\n[ "$1" = --version ] && exec {sys.executable} -I {bin_dir / "worker.py"} '
                                 f'claude --version\ncat {answer}\nexit 1\n', encoding="utf-8")
             return launcher
@@ -3114,6 +3146,17 @@ class TestARefusedCredentialHaltsTheRun(LiveWithAFakeHarness):
         run = wip.build_report(self.results, basis="all")["runs"][0]
         self.assertFalse(run["compliant"])
         self.assertEqual(run["infrastructure"], "it ended failed")
+
+    def test_earlier_work_with_no_reported_usage_never_halts_it(self):
+        # Codex at a8068b5cd5: the same predicate halts the run at ingestion
+        lines = refused_stream(model="wip-fake-model").splitlines(keepends=True)[1:]
+        turn = json.loads(lines[1])
+        del turn["message"]["usage"]
+        p, run_json = self.live(answer_lines=[lines[0], json.dumps(turn) + "\n", *lines[1:]])
+        record = json.loads(run_json.read_text(encoding="utf-8"))
+        self.assertNotEqual(record["stop_reason"], wip.CREDENTIAL_REJECTED, p.stdout + p.stderr)
+        self.assertNotEqual(record["status"], "failed")
+        self.assertGreater(len(list((run_json.parent / "streams").glob("*.jsonl"))), 1)
 
 
 class TestRelativePaths(unittest.TestCase):

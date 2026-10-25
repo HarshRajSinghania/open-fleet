@@ -2772,28 +2772,35 @@ def _zero_usage(usage) -> bool:
 
 
 def credential_rejected(stream: Path) -> bool:
-    """True when a dispatch's stream is the harness's refusal of its credential and nothing else:
-    every result is an error reporting zero tokens and no cost, every assistant turn reports zero
-    tokens, and the last result carries an authentication message ("Not logged in", a 401). One
-    answered or paid result anywhere, or a count it does not report, and it is not (Codex at
-    a61f3e660a)."""
+    """True when a dispatch's stream is the harness's refusal of its credential and nothing else,
+    wip1-b3r1-rep1's shape: the monitor's turn_started, the harness's init and notices, assistant
+    turns of text alone that report zero tokens, and results that are each an error reporting zero
+    tokens and no cost, the last carrying an authentication message ("Not logged in", a 401). Any
+    other line (a tool result, a thinking count, a tool call), a count a line does not report, or
+    one answered or paid result, and it is not (Codex at a61f3e660a and a8068b5cd5)."""
     results = []
     for line in Path(stream).read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
         try:
             obj = json.loads(line)
         except ValueError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        if obj.get("type") == "result":
-            cost = obj.get("total_cost_usd", 0)
-            if obj.get("is_error") is not True or not _zero_usage(obj.get("usage")) \
-                    or type(cost) not in (int, float) or cost != 0:
-                return False
-            results.append(obj)
-        elif obj.get("type") == "assistant" and isinstance(obj.get("message"), dict) \
-                and obj["message"].get("usage") is not None and not _zero_usage(obj["message"]["usage"]):
             return False
+        kind = obj.get("type") if isinstance(obj, dict) else None
+        if kind == "turn_started" or (kind == "system" and obj.get("subtype") in ("init", "informational")):
+            continue
+        if kind == "assistant":
+            message = obj.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list) or not _zero_usage(message.get("usage")) \
+                    or not all(isinstance(block, dict) and block.get("type") == "text" for block in content):
+                return False
+            continue
+        cost = obj.get("total_cost_usd") if kind == "result" else None
+        if kind != "result" or obj.get("is_error") is not True or not _zero_usage(obj.get("usage")) \
+                or type(cost) not in (int, float) or cost != 0:
+            return False
+        results.append(obj)
     return bool(results) and bool(_AUTH_FAILURE_RE.search(str(results[-1].get("result") or "")))
 
 

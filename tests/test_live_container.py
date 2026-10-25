@@ -81,6 +81,9 @@ if argv[:1] == ["create"]:
     sec = mounts.get(scenario["secret_path"], {}).get("src")
     if sec:
         entry["secret"] = open(sec).read().strip()
+    settings = mounts.get("/run/open-fleet/claude.json", {}).get("src")
+    if settings:
+        entry["claude_settings"] = json.load(open(settings))
     ledger = mounts.get("/ledger", {}).get("src")
     if ledger and scenario.get("ledger_lines"):
         with open(os.path.join(ledger, "spend.jsonl"), "w") as fh:
@@ -661,6 +664,45 @@ class TeardownNeverLosesTheReceipt(Harness):
         self.assertNotIn(["start", "--attach"], [c["argv"][:2] for c in self.calls()])
 
 
+class APerCallLimitReachesEveryClaudeCall(Harness):
+    """A registration may fix a per-call limit (#604's claude --max-budget-usd 1.60). The launcher
+    hands it to the arm's claude as a read-only settings file; the wrapper appends it."""
+
+    def test_the_arm_gets_the_limit_read_only(self):
+        rc, err = self.launch("--per-call-usd", "1.6")
+        self.assertEqual(rc, 0, err)
+        arm = self.create("arm")
+        self.assertIs(arm["mounts"][lc.CLAUDE_SETTINGS].get("readonly"), True)
+        self.assertEqual(arm["claude_settings"], {"max_budget_usd": "1.6"})
+        self.assertNotIn(lc.CLAUDE_SETTINGS, self.create("broker")["mounts"])
+        r = self.receipt()
+        self.assertEqual(r["per_call_usd"], 1.6)
+        self.assertIn(lc.CLAUDE_SETTINGS, r["container"]["mounts"])
+
+    def test_without_one_no_settings_are_mounted(self):
+        self.launch()
+        self.assertNotIn(lc.CLAUDE_SETTINGS, self.create("arm")["mounts"])
+        self.assertIsNone(self.receipt()["per_call_usd"])
+
+    def test_the_limit_is_written_as_given_never_rounded(self):
+        # Codex at cb51f73bb2: 0.001 became 0.00 and 1.606 became 1.61
+        for limit, written in (("0.001", "0.001"), ("1.606", "1.606")):
+            with self.subTest(limit=limit):
+                shutil.rmtree(self.receipts, ignore_errors=True)
+                self.log.unlink(missing_ok=True)
+                rc, err = self.launch("--per-call-usd", limit)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(self.create("arm")["claude_settings"], {"max_budget_usd": written})
+
+    def test_a_limit_that_is_not_positive_or_passes_the_cap_is_refused(self):
+        for limit in ("0", "-1", "60"):
+            with self.subTest(limit=limit):
+                rc, err = self.launch("--per-call-usd", limit)
+                self.assertEqual(rc, 2, err)
+                self.assertIn("--per-call-usd", err)
+        self.assertEqual(self.calls(), [])
+
+
 class ABrokerNeverRunsAsRoot(Harness):
     def test_a_root_launcher_is_refused(self):
         with mock.patch.object(lc.os, "getuid", return_value=0):
@@ -1169,8 +1211,59 @@ class TheArmsClaudeTalksToTheBroker(unittest.TestCase):
         self.assertEqual(execs[0][1], [self.wrapper.REAL, "--version"])
         self.assertNotIn("ANTHROPIC_AUTH_TOKEN", execs[0][2])
 
+    def settings(self, content):
+        path = Path(tempfile.mkdtemp(prefix="claude-settings-")) / "claude.json"
+        self.addCleanup(shutil.rmtree, path.parent, True)
+        path.write_text(content, encoding="utf-8")
+        patch = mock.patch.object(self.wrapper, "SETTINGS", str(path))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_per_call_limit_reaches_every_call(self):
+        self.settings('{"max_budget_usd": "1.60"}')
+        rc, execs, err = self.run_wrapper("-p", "hello")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(execs[0][1], [self.wrapper.REAL, "--max-budget-usd", "1.60", "-p", "hello"])
+
+    def test_the_limit_comes_before_a_double_dash(self):
+        # Codex at cb51f73bb2: appended after "--" the limit was a prompt, and prompt text after "--"
+        # that looked like a limit was taken for the caller's own
+        self.settings('{"max_budget_usd": "1.60"}')
+        for argv in (("-p", "--", "hello"), ("-p", "--", "--max-budget-usd", "9")):
+            with self.subTest(argv=argv):
+                rc, execs, err = self.run_wrapper(*argv)
+                self.assertEqual(execs[0][1], [self.wrapper.REAL, "--max-budget-usd", "1.60", *argv])
+
+    def test_a_callers_own_limit_is_left_alone(self):
+        self.settings('{"max_budget_usd": "1.60"}')
+        for argv in (("-p", "x", "--max-budget-usd", "0.5"), ("-p", "x", "--max-budget-usd=0.5")):
+            with self.subTest(argv=argv):
+                rc, execs, err = self.run_wrapper(*argv)
+                self.assertEqual(execs[0][1], [self.wrapper.REAL, *argv])
+
+    def test_a_version_query_takes_no_limit(self):
+        self.settings('{"max_budget_usd": "1.60"}')
+        rc, execs, err = self.run_wrapper("--version")
+        self.assertEqual(execs[0][1], [self.wrapper.REAL, "--version"])
+
+    def test_settings_that_cannot_be_read_refuse(self):
+        for content in ("not json", '{"max_budget_usd": "abc"}', '{"max_budget_usd": 0}', "[1]"):
+            with self.subTest(content=content):
+                self.settings(content)
+                rc, execs, err = self.run_wrapper("-p", "hello")
+                self.assertEqual((rc, execs), (2, []), err)
+                self.assertIn("cannot be read", err)
+
+    def test_without_settings_no_limit_is_added(self):
+        missing = Path(tempfile.mkdtemp(prefix="claude-settings-")) / "absent.json"
+        self.addCleanup(shutil.rmtree, missing.parent, True)
+        with mock.patch.object(self.wrapper, "SETTINGS", str(missing)):
+            rc, execs, err = self.run_wrapper("-p", "hello")
+        self.assertEqual(execs[0][1], [self.wrapper.REAL, "-p", "hello"])
+
     def test_the_wrapper_the_broker_and_the_launcher_agree(self):
         self.assertEqual(self.wrapper.BROKER, f"http://127.0.0.1:{lb.PORT}")
+        self.assertEqual(self.wrapper.SETTINGS, lc.CLAUDE_SETTINGS)
         self.assertEqual(lb.PORT, lc.BROKER_PORT)
         entries = lc.CONTAINER_PATH.split(":")
         self.assertEqual(entries[0], f"{lc.REPO_IN}/{WRAPPER.parent.relative_to(ROOT)}")

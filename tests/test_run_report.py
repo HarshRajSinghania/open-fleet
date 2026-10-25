@@ -185,6 +185,16 @@ class RunDirectoryBinding(unittest.TestCase):
             with self.subTest(report=stem):
                 self.assertEqual(self._run_dir(days, "trajectories", stem), f"docs/runs/{stem}")
 
+    def test_each_legacy_report_keeps_its_directory(self):
+        # The four reports bound before a run's directory had to be named for its report.
+        for stem, mission, directory in (
+                ("2026-08-28-ship-it-self-run", "ship-it", "2026-08-28-ship-it-selfrun"),
+                ("2026-09-14-clean-sweep-self-run", "clean-sweep", "2026-09-14-clean-sweep-tracker"),
+                ("2026-09-16-prove-it-self-run", "prove-it", "2026-09-16-prove-it-selfrun"),
+                ("2026-09-21-harden-it-self-run", "harden-it", "2026-09-21-harden-it-selfrun")):
+            with self.subTest(report=stem):
+                self.assertEqual(self._run_dir([directory], mission, stem), f"docs/runs/{directory}")
+
     def test_an_ambiguous_fuzzy_match_fails_closed(self):
         # Neither candidate is named for the report: both match, so neither is borrowed.
         got = self._run_dir(["2026-10-25-trajectories-a", "2026-10-25-trajectories-b"],
@@ -874,6 +884,17 @@ class RunReportBinding(unittest.TestCase):
         return run_report.check_report(self.path, mission, tier, root=self.repo)
 
     # --- the shape that must pass ------------------------------------------
+    def test_an_unrelated_report_name_cannot_borrow_a_sole_same_day_run(self):
+        # #694/#695 review: a report of any name took a mission's only same-day directory and
+        # bound on another run's manifest and inventory. The same bytes under an unrelated name
+        # are refused; under this run's own name they bind.
+        self._write()
+        self.assertEqual(self._check(), [])
+        self.path = self.repo / "docs" / "runs" / "2026-01-01-demo-it-impostor.md"
+        self._write()
+        errs = self._check()
+        self.assertTrue(any("outside this run's own directory" in e for e in errs), errs)
+
     def _remanifest(self, payload):
         """Rewrite the graded manifest and re-pin the report to the new commit."""
         (self.run_dir / "build-manifest.json").write_text(

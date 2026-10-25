@@ -5,5 +5,6 @@
   `--model` is appended to `--harness-cmd` and the grader command unless they already name it, and
   a command naming another model is refused before anything runs. The recorded `agent_cmd` and
   `grader_cmd` show it. Each cell records the model its agent's `system/init` line names. In the
-  live tier, a completed run naming none, or another, is a failed cell. The results add
-  `models_observed`, as #602's live runner does.
+  live tier, a completed run naming none, or another, is a failed cell, and the run stops there
+  (`MODEL_MISMATCH`), so nothing more is paid for on a model the results may not name. The
+  results add `models_observed`, as #602's live runner does.

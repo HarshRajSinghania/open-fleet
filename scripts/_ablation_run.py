@@ -30,7 +30,7 @@ Tiers, and what each may run
             are current, nothing is filtered, and every variant passed the obligation check.
             Both commands are handed `--model` unless they already name it (one naming another
             model is refused), and a cell fails when its agent's system/init line names no model
-            once its run completes, or names another.
+            once its run completes, or names another; the run then stops (MODEL_MISMATCH).
 
 Every tier needs an explicit `--cost-cap-usd`. The live spend guard is PRE-EMPTIVE (#652 review):
 before a cell starts, the worst case of every call it will make (the agent's reservation, plus
@@ -1379,6 +1379,11 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
                 elif tier == "live" and cell["cost_usd"] is None:
                     stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: charged its full reservation; the "
                                f"harness reports no usage ({'; '.join(cell['usage_unavailable'])})")
+                elif tier == "live" and cell.get("model") != ctx["model_requested"] and not cell["agent_killed"]:
+                    # The --model it was handed did not hold, or the run did not say which model it
+                    # ran: every further cell would be paid for on a model the results may not name.
+                    stopped = (f"MODEL_MISMATCH at {cell['cell']}: the agent ran {cell.get('model')!r}, "
+                               f"not the requested {ctx['model_requested']!r}, although it was handed --model")
                 elif tier != "live" and spent > 0:
                     # Not a spend guard: a stub or the stand-in reporting cost broke its tier's contract.
                     stopped = f"SPEND_IN_NON_LIVE_TIER at {cell['cell']}: USD {spent:.2f} reported"

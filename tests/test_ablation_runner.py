@@ -882,7 +882,7 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
     MODEL = "stub-model-a"
     AGENT, GRADER = 5.0, 1.0  # the registration's per-call reservations
 
-    def run_live(self, agent_extra=(), grader_extra=(), trajectory=False):
+    def run_live(self, agent_extra=(), grader_extra=(), trajectory=False, code_expected=0):
         prereg = small_live_prereg()
         if trajectory:  # CL-01's pinned recording grades PASS, so only the model can fail its cell
             prereg["tasks"]["trajectories"]["cases"] = ["CL-01"]
@@ -897,7 +897,7 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
              "--harness-cmd", self.stub_cmd("plain", "--recording", str(recording), *agent_extra),
              "--grader-cmd", self.stub_cmd("grader-json", *grader_extra),
              "--model", self.MODEL, "--harness-version", "0", "--out", str(out)])
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, code_expected, err)
         return json.loads((out / "results.json").read_text()), out
 
     def argvs(self, out, arm):
@@ -942,11 +942,15 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
             self.assertEqual(cell["errors"], [], cell["cell"])
             self.assertTrue(cell["success"], cell["cell"])
 
-    def test_a_cell_whose_agent_ran_another_model_fails(self):
-        results, _out = self.run_live(agent_extra=("--init-model", "stub-model-b"), trajectory=True)
+    def test_a_cell_whose_agent_ran_another_model_fails_and_stops_the_run(self):
+        results, _out = self.run_live(agent_extra=("--init-model", "stub-model-b"), trajectory=True,
+                                      code_expected=1)
         self.assertEqual(results["model"], self.MODEL, "the requested model stays recorded as such")
         self.assertEqual(results["models_observed"], ["stub-model-b"])
-        self.assertEqual(len(results["cells"]), 4)
+        # The first cell fails, and nothing more is paid for on a model the results do not name.
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
+        self.assertFalse(results["complete"])
         for cell in results["cells"]:
             self.assertEqual(cell["model"], "stub-model-b", cell["cell"])
             self.assertIn(f"the agent ran model 'stub-model-b', not the requested '{self.MODEL}'",
@@ -954,12 +958,15 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
             self.assertFalse(cell["success"], cell["cell"])
             self.assertFalse(cell["correct_terminal"], cell["cell"])
         report = runner.summarize(results, PREREG)
+        self.assertEqual(report["review-it"]["verdict"], "INCOMPLETE")
         self.assertIn("the agent ran model 'stub-model-b'", " ".join(
             w for f in report["review-it"]["failures"] for w in f["what"]))
 
-    def test_a_completed_cell_whose_stream_names_no_model_fails(self):
-        results, _out = self.run_live(agent_extra=("--no-init",), trajectory=True)
+    def test_a_completed_cell_whose_stream_names_no_model_fails_and_stops_the_run(self):
+        results, _out = self.run_live(agent_extra=("--no-init",), trajectory=True, code_expected=1)
         self.assertEqual(results["models_observed"], [])
+        self.assertEqual(len(results["cells"]), 1)
+        self.assertTrue(results["stopped"].startswith("MODEL_MISMATCH at "), results["stopped"])
         for cell in results["cells"]:
             self.assertIsNone(cell["model"], cell["cell"])
             self.assertIn("the agent reported no model (no system/init line naming one)", cell["errors"])

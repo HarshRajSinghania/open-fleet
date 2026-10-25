@@ -601,6 +601,10 @@
     {
       "path": "docs/runs/2026-10-25-trajectories-602-live/rederive.txt",
       "sha256": "acc7f70dfbaa51aa446c5f258e6093a0af9f709d9a79944cf2a407e1cd65a72a"
+    },
+    {
+      "path": "docs/runs/2026-10-25-trajectories-602-live/verifier.txt",
+      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
     }
   ],
   "commands": [
@@ -614,6 +618,17 @@
       "commit": "41afb6e7cd7acf0acc56decd50bdc9427b9d966d",
       "wtree": "fb6bd91dbab02bb56a5bdcef20a260669a554442",
       "artifact": "docs/runs/2026-10-25-trajectories-602-live/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-25T05:18:16Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-trajectories-602-live/manifest.json --contract-source docs/runs/2026-10-25-trajectories-602-live/contract.json@41afb6e7cd7acf0acc56decd50bdc9427b9d966d --contract-digest sha256:8754fd828c5e840080318e5c97c4091ad8b869ceb97044a44ac2ffabae4879d3 --unit-class report-only --dispatch-record docs/runs/2026-10-25-trajectories-602-live/dispatch-record.json@0f7e323d734e87d2b349f4c8f8bd753cc2225c30 --dispatch-pubkey docs/runs/2026-10-25-trajectories-602-live/dispatch-pubkey.hex@0f7e323d734e87d2b349f4c8f8bd753cc2225c30",
+      "cmd_sha256": "087f1f23f1c2e4d1ad6a6a00e1a43808b5ce40de209ebf58477205e844221942",
+      "exit": 0,
+      "duration_s": 8.04,
+      "commit": "0f7e323d734e87d2b349f4c8f8bd753cc2225c30",
+      "wtree": "5a9065c2d003e662f154f83aa0346979d7b2fada",
+      "artifact": "docs/runs/2026-10-25-trajectories-602-live/verifier.txt"
     }
   ]
 }

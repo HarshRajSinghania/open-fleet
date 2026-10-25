@@ -10,6 +10,11 @@ truth is `.claude-plugin/plugin.json`. A change not yet released is one file in
 
 ## [1.0.0] - 2026-10-25
 
+- **The release check's suite gate fits the 1.0 suite.** `release_check.py` gave
+  `python3 -m unittest discover -s tests` 3600 s, sized when the suite took about 8 minutes. At the
+  1.0.0 cut the suite holds 5,139 tests and ran past the limit serially, so the gate reported FAIL
+  although no test failed. The limit is now 7200 s, and the checklist and help text say how long
+  a serial run takes.
 - **A run report can bind only to the directory named for it** (#694 and #695 reviews).
   `run_report.py`'s `run_directory` took the alphabetically first same-day directory that named
   the mission. So `2026-10-25-trajectories-602-live.md` was checked against `…-602-adapters/` and

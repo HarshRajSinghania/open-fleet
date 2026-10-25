@@ -10,7 +10,7 @@ command that runs this file, and tests/test_release_check.py runs it against
 this repository and holds the doc's commands to the script's checks.
 
 Usage:
-  python3 scripts/release_check.py                 # every gate, full suite (~8 min)
+  python3 scripts/release_check.py                 # every gate, full suite (about an hour serially)
   python3 scripts/release_check.py --fast          # skip the unittest suite: SKIP(--fast)
   python3 scripts/release_check.py --skip-github   # skip the gh-backed checks: SKIP(--skip-github)
   python3 scripts/release_check.py --json          # one JSON object on stdout instead of lines
@@ -78,7 +78,7 @@ MECHANIZED = (("runtime/scripts/watchdog.py", "tests/test_watchdog.py"),
               ("runtime/scripts/gate-batch.py", "tests/test_gate_batch.py"))
 
 TIMEOUT_TOOL = 600      # validate, proof_status, run_report, the vf-bench gate, the demo
-TIMEOUT_SUITE = 3600    # the full unittest suite (~8 min)
+TIMEOUT_SUITE = 7200    # the full unittest suite: over 3600 s serially on a laptop at 1.0.0
 TIMEOUT_GH = 120
 
 OWED_LINE = re.compile(r"^(G\d+) \[owed\]")
@@ -832,7 +832,7 @@ def main(argv=None):
     parser.add_argument("--repo", default=str(DEFAULT_REPO),
                         help="the checkout to gate (default: the repo this script lives in)")
     parser.add_argument("--fast", action="store_true",
-                        help="skip the full unittest suite (~8 min); it reports SKIP(--fast)")
+                        help="skip the full unittest suite (about an hour); it reports SKIP(--fast)")
     parser.add_argument("--skip-github", action="store_true",
                         help="skip the gh-backed checks; they report SKIP(--skip-github)")
     parser.add_argument("--json", action="store_true",

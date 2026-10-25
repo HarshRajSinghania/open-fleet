@@ -33,7 +33,7 @@ python3 scripts/run_index.py check            # between releases: one docs/runs/
 python3 scripts/changelog.py check --released # on a cut: every fragment folded into the dated section
 python3 scripts/run_index.py check --current  # on a cut: docs/runs/README.md's index re-rendered
 python3 scripts/gen-badges.py --check --release   # on a cut: the tests badge at today's count
-python3 -m unittest discover -s tests         # full suite green (~8 min; `--fast` reports it as SKIP(--fast))
+python3 -m unittest discover -s tests         # full suite green (about an hour serially; `--fast` reports it as SKIP(--fast))
 python3 runtime/scripts/proof_status.py --check   # every proof_evidence resolves
 python3 runtime/scripts/run_report.py         # every claimed tier binds to artifacts
 RELEASE_SHA=$(git rev-parse HEAD) gh run list --workflow validate --branch main --limit 1 --json conclusion,headSha \

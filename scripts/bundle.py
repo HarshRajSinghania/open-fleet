@@ -342,9 +342,10 @@ def _owned(out):
     return set(files)
 
 
-def _claim(out, planned):
+def _claim(out, planned, files=frozenset()):
     """Delete what a previous build wrote, or refuse: `planned` are the out-relative paths this
-    build writes (files, or mission directories written whole)."""
+    build writes (files, or mission directories written whole); `files` are the ones that are
+    single files."""
     if out.exists() and not out.is_dir():
         raise BundleRefused(f"--out {out} is not a directory")
     owned = _owned(out)
@@ -359,6 +360,9 @@ def _claim(out, planned):
     for rel in planned:
         foreign += [entry for entry in _entries_under(out / rel)
                     if entry.relative_to(out).as_posix() not in owned or entry.is_symlink()]
+    # A directory where a file goes, even an empty one _entries_under cannot see, would take the
+    # copy inside it: README.md/bundle-README.md, and no README (Codex at db5023703c).
+    foreign += [out / rel for rel in files if (out / rel).is_dir() and not (out / rel).is_symlink()]
     if foreign:
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
         raise BundleRefused(
@@ -400,9 +404,9 @@ def build(out_dir):
     out = Path(out_dir)
     missions = [d for d in sorted(SKILLS_DIR.iterdir())
                 if d.is_dir() and not d.name.startswith((".", "_")) and (d / "SKILL.md").is_file()]
-    planned = sorted({destination for _source, destination in plugin_files()}
-                     | {f"skills/{d.name}" for d in missions})
-    _claim(out, planned)
+    files = {destination for _source, destination in plugin_files()}
+    planned = sorted(files | {f"skills/{d.name}" for d in missions})
+    _claim(out, planned, files)
     out.mkdir(parents=True, exist_ok=True)
     try:
         return _build_into(out, missions, protocols)

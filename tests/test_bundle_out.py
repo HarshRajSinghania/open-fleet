@@ -97,6 +97,25 @@ class UserContentSurvives(unittest.TestCase):
                 bundle.build(out)
             self.assertEqual(note.read_text(encoding="utf-8"), "mine\n")
 
+    def test_a_directory_where_a_bundle_file_goes_refuses_the_build(self):
+        """PR #681 review (Codex at db5023703c): an empty directory at README.md took the copy
+        inside it, README.md/bundle-README.md, and the build passed with no README. A directory
+        at any file destination, on a first build or a rebuild, refuses and changes nothing."""
+        for rebuild in (False, True):
+            for rel in ("README.md", ".claude-plugin/icon.png", "hooks/hooks.json"):
+                with self.subTest(rel=rel, rebuild=rebuild), tempfile.TemporaryDirectory() as tmp:
+                    out = Path(tmp)
+                    if rebuild:
+                        self.assertEqual(bundle.build(out), (22, []))
+                        (out / rel).unlink()
+                    (out / rel).mkdir(parents=True)
+                    before = snapshot(out)
+                    code, err = run_main("--out", tmp)
+                    self.assertEqual(code, 2, err)
+                    self.assertIn(rel, err)
+                    self.assertEqual(snapshot(out), before, "a refused build changed the tree")
+                    self.assertTrue((out / rel).is_dir())
+
     def test_a_retired_missions_symlinked_directory_is_never_followed(self):
         """PR #631 review, P1: a mission the catalog dropped stays in the marker. With its
         directory swapped for a symlink into another checkout, the rebuild's unlink followed it

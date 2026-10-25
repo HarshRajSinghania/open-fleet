@@ -1971,7 +1971,8 @@ class LiveWithAFakeHarness(Tmp):
     """--worker live end to end, against a fake harness (never a real one: a tripwire answers
     for every other harness name, and HOME is private)."""
 
-    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25", containment=None):
+    def live(self, *extra, script=None, run="wip1-b1r1-rep1", model="wip-fake-model", cost="0.25", containment=None,
+             prereg=None):
         env, self.trip_log = tripwired_env(self.tmp)
         fake = self.tmp / "fake-bin"
         install_fake_harness(fake, cost=cost, script=script)
@@ -1980,7 +1981,8 @@ class LiveWithAFakeHarness(Tmp):
         self.results = self.tmp / "results"
         with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
                 mock.patch.object(wip.contain, "containment_problem", return_value=containment):
-            p = run_in_process(["run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"),
+            p = run_in_process([*(["--prereg", str(prereg)] if prereg else []),
+                                "run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"),
                                 "--worker", "live", "--agent", "claude", "--model", model, "--cost-cap-usd", "20",
                                 "--reservation-usd", cost, "--runs", run, *extra], env)
         self.assertFalse(self.trip_log.exists(), "a real harness name was reached")
@@ -1991,8 +1993,8 @@ class TestLiveRunsTakeTheRegisteredOrder(LiveWithAFakeHarness):
     """PR #653 review (Bu3): a live run starts only at the next registered position: every earlier
     position has run and no later one has. Checked before anything is dispatched."""
 
-    def refused(self, runs, text):
-        p, _run_json = self.live(run=runs)
+    def refused(self, runs, text, prereg=None):
+        p, _run_json = self.live(run=runs, prereg=prereg)
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertIn(text, p.stderr)
         runs_dir = self.results / "runs"
@@ -2016,7 +2018,8 @@ class TestLiveRunsTakeTheRegisteredOrder(LiveWithAFakeHarness):
     def test_a_skipped_position_is_refused(self):
         results, _p = documented_live_run()  # position 1 ran live
         shutil.copytree(results, self.tmp / "results")
-        self.assertEqual(self.refused("wip1-b6r2-rep1", "[2]"), ["wip1-b1r1-rep1"])
+        self.assertEqual(self.refused(documented_run_id(3), "[2]", prereg=_DOCUMENTED["prereg"]),
+                         [documented_run_id(1)])
 
 
 class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
@@ -2025,11 +2028,11 @@ class TestTheModelPinReachesTheLaunch(LiveWithAFakeHarness):
 
     def test_the_pinned_model_is_the_model_every_call_launched(self):
         results, p = documented_live_run()  # the page's own live command, against a fake claude
-        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        record = json.loads((results / "runs" / documented_run_id(1) / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["status"], "complete", p.stdout + p.stderr)
         self.assertTrue(record["launched_models"])
         self.assertEqual(set(record["launched_models"].values()), {"wip-fake-model"})
-        report = wip.build_report(results, basis="all")
+        report = wip.build_report(results, _DOCUMENTED["prereg"], basis="all")
         self.assertEqual(report["runs"][0]["metrics"]["models"], ["wip-fake-model"])
         self.assertTrue(report["runs"][0]["compliant"], report["runs"][0]["noncompliance"])
 
@@ -2110,15 +2113,24 @@ def documented_live_run():
         argv = shlex.split(command)
         if argv[:2] != ["python3", "scripts/wip_curve.py"]:
             raise AssertionError(f"the documented live command is not the runner: {argv[:2]}")
+        # the registration the command names (version 2 since #604's re-registration), from the checkout
+        prereg = ROOT / argv[argv.index("--prereg") + 1] if "--prereg" in argv else PREREG
         env, trip_log = tripwired_env(root)
         install_fake_harness(root / "fake-bin")
         env.update(PATH=os.pathsep.join([str(root / "fake-bin"), env["PATH"]]), HOME=str(root / "home"))
         (root / "home").mkdir()
         with mock.patch.object(wip, "dirty_inputs", return_value=[]), \
                 mock.patch.object(wip.contain, "containment_problem", return_value=None):
-            proc = run_in_process(argv[2:], env)
-        _DOCUMENTED.update(run=(root / "results", proc), tmp=tmp, trip_log=trip_log)
+            proc = run_in_process(argv[2:], env, cwd=str(ROOT))
+        _DOCUMENTED.update(run=(root / "results", proc), tmp=tmp, trip_log=trip_log, prereg=prereg)
     return _DOCUMENTED["run"]
+
+
+def documented_run_id(position: int) -> str:
+    """The run id at `position` in the schedule of the registration the documented command names."""
+    documented_live_run()
+    return next(e["run_id"] for e in wip.schedule(*wip.load_prereg(_DOCUMENTED["prereg"])[:2])
+                if e["position"] == position)
 
 
 class TestTheDocumentedLiveCommandRuns(unittest.TestCase):
@@ -2128,7 +2140,9 @@ class TestTheDocumentedLiveCommandRuns(unittest.TestCase):
     def test_the_documented_live_command_starts_a_run(self):
         results, p = documented_live_run()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        record = json.loads((results / "runs" / "wip1-b1r1-rep1" / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(_DOCUMENTED["prereg"], PREREG_V2, "the page's live command runs the current registration")
+        record = json.loads((results / "runs" / documented_run_id(1) / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["run_id"], "wip2-b1r1-rep1")
         self.assertEqual((record["tier"], record["status"]), ("live-unreviewed", "complete"))
         self.assertFalse(_DOCUMENTED["trip_log"].exists())
 

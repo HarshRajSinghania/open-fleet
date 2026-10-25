@@ -51,8 +51,8 @@ local tests requires Git and Python; see [local setup](development.md#local-setu
 | [Compliance provenance](compliance-provenance.md) | What supporting evidence can a manifest carry? |
 | [A2A export](a2a-export.md) | What does the mission export claim, and how is an A2A AgentCard validated against the pinned schema? |
 | [Adversarial trajectory evals](adversarial-evals.md) | Do the guards hold when a worker acts on injected instructions? |
-| [WIP-curve experiment](experiments/wip-curve-prereg.md) | How will the asserted WIP caps be measured, and what is built versus still owed a live run? |
-| [Instruction-load ablation pre-registration](experiments/ablation-prereg.md) | How would a smaller activation load be tested without dropping a safety obligation? (#606; the live runs are pending the owner's spend authorisation) |
+| [WIP-curve experiment](experiments/wip-curve-prereg.md) | How were the WIP caps measured, and what did the live run recommend? |
+| [Instruction-load ablation pre-registration](experiments/ablation-prereg.md) | How was a smaller activation load tested without dropping a safety obligation, and what did the live run recommend? (#606: keep the current activation) |
 
 ## For contributors and maintainers
 

@@ -55,18 +55,18 @@ Adopt `open-fleet` on an existing repository in four incremental phases:
 
 ```text
 PHASE 1 (Week 1)          PHASE 2 (Weeks 2–3)        PHASE 3 (Weeks 3–6)         PHASE 4 (Ongoing)
-Read-Only & Diagnostic ──▶ Stabilize the Oracle   ──▶ Bounded Debt & Security ──▶ Full Autonomous Delivery
-review-it / map-it /      deflake-it / prove-it /    clean-sweep / harden-it /   ship-it / reshape-it /
-root-cause (PROFILE=ro)   floor-it                   modernize-it / absorb-it    migrate-it / chains
+Zero Production Changes ──▶ Stabilize the Oracle   ──▶ Bounded Debt & Security ──▶ Full Autonomous Delivery
+review-it / map-it (ro)   deflake-it / prove-it /    clean-sweep / harden-it /   ship-it / reshape-it /
+root-cause (throwaway rw) floor-it                   modernize-it / absorb-it    migrate-it / chains
 ```
 
-### Phase 1 (Week 1): Read-only & diagnostic missions (zero production mutation)
+### Phase 1 (Week 1): Diagnostic & non-landing missions (zero production changes)
 
-Start with missions that dispatch only read-only workers (`PROFILE=ro`) and never modify application code:
+Start with missions that never land changes on `BASE` or `main`, while understanding each mission's worker permission profile:
 
-- **[`review-it`](missions/review-it.md) on live pull requests:** Run `review-it` alongside human code review on 3–5 open PRs. Observe how the coordinator freezes acceptance criteria, dispatches parallel read-only reviewers, filters out unquoted speculation, and binds the `GO` / `NO-GO` verdict to `reviewed_sha`.
-- **[`root-cause`](missions/root-cause.md) on a hard production bug:** Point `root-cause` at an intermittent incident. Watch workers reproduce the symptom and falsify rival hypotheses with quoted evidence before proposing a fix handoff brief.
-- **[`map-it`](missions/map-it.md) on an upcoming epic:** Use `map-it` to chart a cross-cutting refactor or feature against the existing codebase without touching production files.
+- **[`review-it`](missions/review-it.md) on live pull requests (`PROFILE=ro`):** Run `review-it` alongside human code review on 3–5 open PRs. All reviewer workers run strictly read-only (`PROFILE=ro`). Observe how the coordinator freezes acceptance criteria, dispatches parallel reviewers, filters out unquoted speculation, and binds the `GO` / `NO-GO` verdict to `reviewed_sha`.
+- **[`map-it`](missions/map-it.md) on an upcoming epic (`PROFILE=ro`):** Use `map-it`'s read-only exploration workers (`PROFILE=ro`) to chart a cross-cutting refactor or feature against the existing codebase without modifying production files.
+- **[`root-cause`](missions/root-cause.md) on a hard production bug (`PROFILE=rw` in throwaway worktrees):** Point `root-cause` at an intermittent incident. Note that `root-cause` investigation workers run with **`PROFILE=rw` inside isolated throwaway worktrees** so they can write reproduction scripts, add temporary diagnostic probes, and execute tests to falsify rival hypotheses — but `root-cause` has no fix or merge authority, so no code changes ever land on `BASE` or `main`.
 
 **Exit criterion for Phase 1:** Your team is comfortable reading the run ledger, answering one-way gates, and inspecting SHA-bound manifests.
 

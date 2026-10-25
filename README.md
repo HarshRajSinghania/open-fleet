@@ -106,9 +106,11 @@ Paste this into Claude Code, Codex, Gemini CLI, or OpenCode:
 
 ```text
 Clone https://github.com/ravidsrk/open-fleet.git into ~/open-fleet (full clone, no --depth 1),
-run `sh scripts/install.sh && sh scripts/install.sh --check`, print the completion-gate snippet
-with `sh hooks/print-settings-snippet.sh`, and run the fail-closed check
-`ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop` (expect exit 2).
+run `sh scripts/install.sh && sh scripts/install.sh --check`, merge the "hooks" block from
+`sh hooks/print-settings-snippet.sh` into ~/.claude/settings.json without replacing existing
+settings (removing the _comment keys if needed), verify the hook is registered and executable with
+`test -x runtime/scripts/verify-gate.sh && grep -c verify-gate.sh ~/.claude/settings.json` (expect 2),
+and run `ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop` (expect exit 2).
 ```
 
 </details>
@@ -138,14 +140,16 @@ You:
 Coordinator (ship-it):
   Spec frozen at specs/healthz.md@0b073fb (digest sha256:8f1c… · criteria: AC-1, AC-2).
   [PHASE 2 · BUILD] Dispatched U1 (builder · PROFILE=rw · pack=mattpocock · worktree=fleet/u1-healthz)
-  [PHASE 3 · REVIEW] Dispatched R1 (build-blind reviewer · PROFILE=ro · pack=gstack)
-    → PR #14 APPROVED at reviewed_sha=9b06458 (matches head_sha=9b06458)
-  [PHASE 3 · VERIFY]
+    → Opened PR #14 (fleet/u1-healthz → ship-it/integration) at head_sha=9b06458
+  [PHASE 3 · REVIEW] Dispatched R1 (build-blind reviewer · PROFILE=ro · pack=mattpocock)
+    → PR #14 APPROVED at reviewed_sha=9b06458 (matches head_sha=9b06458; pre-merge scope & review fresh)
+  [PHASE 4 · CONDUCTOR & POST-MERGE VERIFY]
+    → Conductor confirmed reviewed_sha==head_sha, merged PR #14 → ship-it/integration (merge_sha=c41d902),
+      and fetched origin/ship-it/integration.
   $ python3 runtime/scripts/verify.py --manifest docs/reports/u1-manifest.json --base ship-it/integration \
       --contract-source specs/healthz.md@0b073fb --contract-digest sha256:8f1c… \
       --execute-nc --nc-command "pnpm test src/health"
   VERIFY=PASS unit=U1 scope=2/2 ancestor=OK review=FRESH negative_control=RED_ON_REVERT (exit 1)
-  [PHASE 4 · CONDUCTOR] Merged PR #14 → ship-it/integration (merge_sha=c41d902).
   Opened promotion PR #15 (ship-it/integration → main). Terminal state: PROMOTION_READY.
 ```
 
@@ -404,7 +408,7 @@ Authoritative state lives in git and the on-disk run ledger, not in chat scrollb
 <details>
 <summary><b>How should we introduce <code>open-fleet</code> on a legacy codebase with flaky tests?</b></summary>
 
-Start with Phase 1 read-only missions (`review-it`, `root-cause`, `map-it`) that never touch production code, then run Phase 2 oracle-stabilization missions (`deflake-it`, `prove-it`, `floor-it`) before unleashing multi-worker write missions (`clean-sweep`, `ship-it`). Follow the step-by-step [Greenfield vs. Brownfield adoption guide](docs/adoption-guide.md).
+Start with Phase 1 non-landing missions that never merge production code (`review-it` and `map-it` on `PROFILE=ro`, plus `root-cause` in isolated throwaway `PROFILE=rw` worktrees), then run Phase 2 oracle-stabilization missions (`deflake-it`, `prove-it`, `floor-it`) before unleashing multi-worker write missions (`clean-sweep`, `ship-it`). Follow the step-by-step [Greenfield vs. Brownfield adoption guide](docs/adoption-guide.md).
 
 </details>
 

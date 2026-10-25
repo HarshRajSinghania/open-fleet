@@ -1,39 +1,71 @@
-# Mission guides
+# Mission Guides
 
-[Documentation](../README.md) · [First run](../getting-started.md) · [Prompt recipes](../recipes.md)
+[Documentation Hub](../README.md) · [Getting Started](../getting-started.md) · [Prompt Recipes](../recipes.md) · [Concepts](../concepts.md)
 
-One deep-dive per mission: what it does, when to reach for it (and when not to), the pipeline
-with its phases, terminal states, human gates, convergence proof, and the failure modes it is
-built to prevent. The agent-facing contracts live in [`skills/`](../../skills/); these pages are
-for the human deciding what to run and what to expect.
+Every mission in `open-fleet` is built for one distinct engineering outcome with its own unit of work, state machine, convergence proof, and SHA-bound evidence contract. The agent-facing skill definitions live in [`skills/`](../../skills/); these guides are written for developers and operators deciding which mission to run, what inputs to provide, what human approvals to expect, and how completion is proven.
+
+---
 
 ## Choose by task
 
-Pick the outcome you need. The guides below explain inputs, tooling, approvals and terminal
-states. Their **Proof** callout shows the mission's retained evidence tier.
+Pick the mission that matches your immediate engineering goal. Each guide displays a **Proof** callout showing its current retained evidence tier (`external-run`, `self-run`, or `doctrine-only`).
 
-| Developer task | Start with | Use the neighboring mission when… |
+### 1. Plan, Build & Ship
+
+| If you need to… | Run | When to use a neighboring mission instead |
 |---|---|---|
-| Build a feature with testable acceptance criteria | [ship-it](ship-it.md) | Use [map-it](map-it.md) while the scope or decisions are still unclear |
-| Fix a finite audit or issue backlog | [clean-sweep](clean-sweep.md) | Use [oss-contribute](oss-contribute.md) when you cannot merge upstream |
-| Assess an existing PR | [review-it](review-it.md) | Use [clean-sweep](clean-sweep.md) to implement known findings |
-| Explain one hard failure | [root-cause](root-cause.md) | Use [deflake-it](deflake-it.md) to eradicate flakes across a suite |
-| Make tests detect real regressions | [prove-it](prove-it.md) | Use [floor-it](floor-it.md) to establish and enforce the overall quality bar |
-| Refactor without changing behavior | [reshape-it](reshape-it.md) | Use [modernize-it](modernize-it.md) for dependency or framework upgrades |
-| Change persistent schema or data | [migrate-it](migrate-it.md) | Use [ship-it](ship-it.md) for feature work without a stateful migration |
-| Close the security audit loop | [harden-it](harden-it.md) | Use [review-it](review-it.md) for a bounded security lens on one diff |
-| Meet a measured performance budget | [speed-it](speed-it.md) | Use [field-test-it](field-test-it.md) to reproduce a defect on its target device |
-| Improve accessibility on defined pages or flows | [access-it](access-it.md) | Manual criteria still need the named assistive-technology reviewer |
-| Add telemetry, alerts and runbooks | [oncall-it](oncall-it.md) | Use [root-cause](root-cause.md) to diagnose an incident already happening |
-| Fill missing public documentation | [document-it](document-it.md) | Use [clean-sweep](clean-sweep.md) for existing false claims |
-| Drain incoming contributor PRs | [absorb-it](absorb-it.md) | Use [review-it](review-it.md) for a verdict on one PR |
-| Collect conformance evidence | [attest-it](attest-it.md) | Use [harden-it](harden-it.md) for exploit, fix and re-attack work |
-| Provision a cloud workspace recipe | [offload-it](offload-it.md) | An existing recipe's worker placement is runtime administration |
-| Recheck runtime doctrine after Orca changes | [pin-it](pin-it.md) | Use [modernize-it](modernize-it.md) for dependencies in your application |
+| Resolve an ambiguous epic into a frozen architecture & task DAG | **[map-it](map-it.md)** | Scope and acceptance criteria are already clear → **[ship-it](ship-it.md)** |
+| Build, review, and ship a feature or spec to a verified release state | **[ship-it](ship-it.md)** | Requires a multi-deploy database/schema migration → **[migrate-it](migrate-it.md)** |
+| Open etiquette-correct PRs on an upstream repo you don't control | **[oss-contribute](oss-contribute.md)** | You own the repo and can merge to an integration branch → **[clean-sweep](clean-sweep.md)** |
+| Triage, test, and land an inbound queue of contributor PRs | **[absorb-it](absorb-it.md)** | You only want a read-only verdict on a single PR → **[review-it](review-it.md)** |
 
-Start with one bounded outcome. When several missions are needed, declare a
-[sequential chain](../concepts.md#chaining-missions) and its allowed terminal states before
-starting. A parked result names work still owed; it does not count as the clean terminal.
+### 2. Fix, Sweep & Stabilize
+
+| If you need to… | Run | When to use a neighboring mission instead |
+|---|---|---|
+| Drain a finite backlog of issues, audit findings, or false doc claims | **[clean-sweep](clean-sweep.md)** | Fixing a single feature from scratch → **[ship-it](ship-it.md)** |
+| Eradicate flaky tests to a statistical consecutive-green streak | **[deflake-it](deflake-it.md)** | Diagnosing one hard failure without suite-wide flake replay → **[root-cause](root-cause.md)** |
+| Reproduce, fix, and prove a bug on a real mobile device or emulator | **[field-test-it](field-test-it.md)** | Diagnosing the cause without landing a fix → **[root-cause](root-cause.md)** |
+
+### 3. Review, Diagnose & Prove
+
+| If you need to… | Run | When to use a neighboring mission instead |
+|---|---|---|
+| Get a trusted, read-only, SHA-bound `GO` / `NO-GO` verdict on a PR | **[review-it](review-it.md)** | You want the fleet to fix the findings it discovers → **[clean-sweep](clean-sweep.md)** |
+| Reproduce an unexplained bug and falsify rival hypotheses until one survives | **[root-cause](root-cause.md)** | The cause is already known and you just need the fix → **[ship-it](ship-it.md)** or **[clean-sweep](clean-sweep.md)** |
+| Close test gaps on critical paths with mutation-audited tests | **[prove-it](prove-it.md)** | Enforcing repo-wide lint/type/coverage gates in CI → **[floor-it](floor-it.md)** |
+| Establish a written quality bar where every CI gate is proven to fire | **[floor-it](floor-it.md)** | Writing unit/integration tests for specific code paths → **[prove-it](prove-it.md)** |
+
+### 4. Audit, Harden & Attest
+
+| If you need to… | Run | When to use a neighboring mission instead |
+|---|---|---|
+| Run a full security loop: audit → exploit → fix → re-attack → clean re-audit | **[harden-it](harden-it.md)** | Read-only security review on a single PR → **[review-it](review-it.md)** |
+| Assemble auditor-grade conformance evidence (SOC 2, EU AI Act, NIST SSDF) | **[attest-it](attest-it.md)** | Exploiting and fixing vulnerabilities rather than attesting controls → **[harden-it](harden-it.md)** |
+| Drive a page/flow set to WCAG 2.2 AA conformance with axe-core + revert controls | **[access-it](access-it.md)** | General UI feature work → **[ship-it](ship-it.md)** |
+| Bring user journeys within a declared performance budget | **[speed-it](speed-it.md)** | Refactoring code structure without a latency/throughput budget → **[reshape-it](reshape-it.md)** |
+
+### 5. Evolve, Refactor & Migrate
+
+| If you need to… | Run | When to use a neighboring mission instead |
+|---|---|---|
+| Upgrade dependencies or migrate frameworks safely across the codebase | **[modernize-it](modernize-it.md)** | Moving persistent database schemas or data across deploys → **[migrate-it](migrate-it.md)** |
+| Deepen god files behind narrow interfaces with behavior proven unchanged | **[reshape-it](reshape-it.md)** | Fixing functional bugs in those modules → **[clean-sweep](clean-sweep.md)** |
+| Execute a zero-downtime expand → backfill → switch → contract data migration | **[migrate-it](migrate-it.md)** | Stateless code or dependency upgrades → **[modernize-it](modernize-it.md)** |
+
+### 6. Operate, Document & Provision
+
+| If you need to… | Run | When to use a neighboring mission instead |
+|---|---|---|
+| Add telemetry, test-fired symptom alerts, and source-blind runbooks | **[oncall-it](oncall-it.md)** | Diagnosing an active incident right now → **[root-cause](root-cause.md)** |
+| Achieve complete, symbol-anchored public documentation coverage | **[document-it](document-it.md)** | Fixing specific inaccuracies in existing docs → **[clean-sweep](clean-sweep.md)** |
+| Stand up and validate a cloud/sandbox workspace recipe (`create→validate→destroy`) | **[offload-it](offload-it.md)** | Testing your application on a mobile device or clean host → **[field-test-it](field-test-it.md)** |
+| Re-witness `open-fleet`'s own runtime policies against a new Orca binary | **[pin-it](pin-it.md)** | Upgrading dependencies in your own application → **[modernize-it](modernize-it.md)** |
+
+> [!TIP]
+> **Chaining missions:** Start with a single bounded outcome. When a goal spans multiple outcomes (for example, `map-it` → `ship-it`, or `harden-it` → `prove-it` → `ship-it`), declare a [sequential chain](../concepts.md#chaining-missions) and its allowed terminal states up front.
+
+---
 
 ## All mission guides
 
@@ -80,6 +112,4 @@ How the missions hand work to one another:
 | 📚 [document-it](document-it.md)   | A public surface covered by quadrant with zero critical gaps — every claim anchored and rename-controlled |
 | ☁️ [offload-it](offload-it.md)     | A per-workspace environment recipe stood up and proven by a live provision — doctor-clear plus an enacted lifecycle |
 
-Not sure which one? The [decision flowchart in the README](../../README.md#which-mission-do-i-want)
-routes by what you have in hand: a goal, a set of known problems, or a question. For a real run
-with its incidents intact, read [Anatomy of a run](../guides/anatomy-of-a-run.md).
+For a concrete trace of a multi-worker run with real verification failures and recovery, read **[Anatomy of a run](../guides/anatomy-of-a-run.md)**.

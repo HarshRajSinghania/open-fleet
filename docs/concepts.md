@@ -1,11 +1,8 @@
-# Concepts — the mental model behind open-fleet
+# Concepts — The Mental Model Behind open-fleet
 
-[Documentation](README.md) · [First run](getting-started.md) · [Mission guides](missions/README.md)
+[Documentation Hub](README.md) · [Getting Started](getting-started.md) · [Mission Guides](missions/README.md) · [Architecture](../ARCHITECTURE.md)
 
-The files in [`runtime/`](../runtime/) are written for agents: terse, imperative, load-bearing.
-This page is the same material written for humans — why each mechanism exists, what failure it
-prevents, and how the pieces fit together. Nothing here overrides the runtime policies; when in
-doubt, the policy file is the source of truth.
+The policy files in [`runtime/`](../runtime/) are written as compact, imperative rules for agent coordinators. This guide explains the same architecture for human engineers and operators — why each mechanism exists, which failure mode it prevents, and how the components fit together. Nothing here overrides the runtime policies; when in doubt, the policy file in `runtime/` is the source of truth.
 
 ## Contents
 
@@ -30,98 +27,67 @@ doubt, the policy file is the source of truth.
 - [Activation load](#activation-load)
 - [The mission-identity test](#the-mission-identity-test)
 
+---
+
 ## Glossary
 
-The words the rest of this page, the README and the mission guides use without stopping to
-define them. Each is one line here and explained in full in its own section or runtime policy.
+Quick definitions of core terms used across the documentation and mission guides:
 
-- **BASE** — the integration branch a fleet merges into, never the default branch; promotion from
-  BASE to the default branch is a one-way human gate.
-- **Coordinator** — the terminal you started. It decomposes the goal, dispatches, verifies and keeps
-  the ledger; it never writes code.
-- **Worker** — a fresh agent in its own git worktree and terminal, dispatched with a task spec and
-  torn down after its unit. **Builders** write the change, **build-blind reviewers** review code
-  they did not write and were not told the conclusion about, **integrators** open PRs against BASE,
-  and one **conductor** owns every merge.
-- **Ledger** — the coordinator's durable memory: one row per unit with its exit flags, lighting,
-  PR, reviewed SHA, merge SHA and evidence pointer. Git is truth; the ledger is its cache.
-- **T0** — the timestamp in the ledger header at which the run's denominator was enumerated.
-- **Denominator** — the frozen set a run must account for: acceptance criteria, findings, journeys,
-  paths. A worker cannot shrink it; the verifier re-derives it from the frozen source.
-- **Evidence manifest** — the SHA-bound JSON a worker emits with `worker_done`, the definition of
-  done as data. **`worker_done`** is the Orca message that says a unit is finished: a claim to
-  verify, never a fact to record.
-- **Verifier** — a session other than the one that did the work (`runtime/scripts/verify.py`,
-  or a fresh verifier worker) that re-derives the manifest's claims from git, GitHub and the
-  frozen contract.
-- **Negative control** — proof that the proof can fail: revert or mutate the change and watch the
-  covering test go red. A *revert* control restores the changed paths; a *hand* control applies a
-  quoted diff. The verifier executes one only when the coordinator passes `--execute-nc`.
-- **Mechanical / taste / one-way** — the three decision classes: auto-resolved with an audit line;
-  recommendation taken and batched for your later veto; yours, always, never defaulted on timeout.
-  The audit lines land in the target repo's `docs/DECISIONS.md`, one per resolved gate.
-- **Lane 0 / A / B** — how a gate on hard-to-reverse work resolves: refuse (0); proceed as
-  reversible work such as testnet or fixtures (A); draft both options for a human to pick (B).
-- **Lit / dark-eligible** — `lit`, the default, means a human or build-blind reviewer reads the
-  change before it lands; `dark-eligible` is opt-in for Lane A work with an unfakeable oracle.
-- **`PROFILE=ro` / `rw` / `danger`** — worker privilege: read-only, workspace-write, or bypass
-  approvals inside a disposable sandbox only.
-- **`reviewed_sha`** — the commit a review approved. A merge requires it to equal the head; a
-  rebase, a bot autofix or a late push voids the review.
-- **Merge train / hot-file chain** — one conductor drains merge-ready PRs in arrival order; PRs
-  that touch the same mount-point file (a route registry, DI wiring, a migration) merge as a chain.
-- **Attention budget / WIP** — concurrent builders capped to what review can absorb (default ≤3),
-  counted as live panes rather than tasks. A mutating run's report records the cap it ran at and
-  what it measured, one row per dispatch wave, so the caps can graduate from asserted to measured.
-- **Skeptic triage** — reproduce or refute every finding before anyone builds.
-- **Tracer-bullet slice** — a narrow but complete path through every layer a change touches, sized
-  for one fresh context window and demoable alone.
-- **Terminal state** — the named end state a mission stops at. A *degraded* terminal
-  (`-WITH-PARKED`, `-WITH-OPEN-ITEMS`, `NO-GO`, `INCONCLUSIVE`, …) is never reported as the clean one.
-- **`SUSPECT`** — a unit Orca's provenance calls completed but git disagrees with; treated as failed.
-- **`DRY`** — clean-sweep's clean terminal: a full re-enumeration finds nothing open.
-- **Playbook / runtime policy / pack** — a callable phase protocol a mission injects into a worker's
-  task; an Orca mechanics policy under `runtime/`; an upstream skill collection
-  (mattpocock/skills, garrytan/gstack, addyosmani/agent-skills) a worker draws its method from —
-  exactly one pack per worker.
-- **Proof tier** — `doctrine-only`, `self-run` or `external-run`; advancing needs a run report that
-  binds at a named commit. `self-run` / `external-run` name the run's *target* (this catalog / any
-  other repo), not who ran it — [Proof status](#proof-status) defines them.
+- **`BASE`** — The integration branch a fleet merges per-unit PRs into (never your repository's default branch). Promoting `BASE` to the default branch is always a one-way human gate.
+- **Coordinator** — The top-level agent session you start. It decomposes the goal, dispatches workers, runs verification, and updates the ledger; it never writes application code.
+- **Worker** — An ephemeral agent session in an isolated git worktree dispatched for a single unit of work:
+  - **Builders** implement code and tests for one slice or finding.
+  - **Build-blind reviewers** inspect diffs they did not write without seeing the builder's narrative conclusion.
+  - **Integrators** open PRs targeting `BASE`.
+  - **Conductor** — A single role that serializes and lands all verified merges onto `BASE`.
+- **Ledger** — The coordinator's durable state file on disk: one row per unit recording its state flags (`BUILD_DONE`, `REVIEWED`, `MERGED`, `VERIFIED`), `lighting`, PR number, `reviewed_sha`, `merge_sha`, and evidence manifest path. Git is the source of truth; the ledger is its index.
+- **`T0`** — The UTC timestamp in the ledger header marking when the run's scope denominator was frozen.
+- **Denominator** — The frozen set of units a run must account for (acceptance criteria, tracker issues, user journeys, or code paths). Workers cannot shrink the denominator; `verify.py` re-derives it from the frozen contract digest.
+- **Evidence manifest** — The SHA-bound JSON document emitted by a worker with `worker_done` (the completion signal). A `worker_done` message is a *claim* to verify, never a fact to record.
+- **Verifier** — An independent check (`runtime/scripts/verify.py` or a fresh verifier session) that re-derives the manifest's claims against git, GitHub reviews, and the frozen contract.
+- **Negative control** — Proof that the test oracle actually catches regressions: reverting the fix or applying a mutation diff causes the covering test to fail (`RED`). Executed in a throwaway worktree when `--execute-nc` is passed.
+- **Mechanical / taste / one-way** — The three decision governance classes:
+  - *Mechanical:* Auto-resolved with an audit entry in `docs/DECISIONS.md`.
+  - *Taste:* Recommended option chosen immediately so work continues, batched for human veto.
+  - *One-way:* Hard to reverse or out of scope — blocks until a human explicitly approves (never defaulted on timeout).
+- **Lane 0 / A / B** — How gates on irreversible surfaces resolve: refuse (`0`), run against reversible fixtures/testnets (`A`), or draft options for human selection (`B`).
+- **Lit / `dark-eligible`** — `lit` (default) requires a human or build-blind reviewer to approve the diff before merge; `dark-eligible` is opt-in for reversible Lane A work backed by a deterministic oracle.
+- **`PROFILE=ro` / `rw` / `danger`** — Worker permission profile: read-only (`ro`), workspace-write (`rw`), or isolated disposable sandbox for destructive/exploit tests (`danger`).
+- **`reviewed_sha`** — The exact commit SHA approved by a reviewer. Any rebase, autofix commit, or late push that changes the tree voids the approval.
+- **Merge train / hot-file chain** — One conductor merges verified PRs in arrival order; PRs modifying shared mount points (route registries, DI containers, migrations) merge sequentially as a chain.
+- **Attention budget / WIP** — Cap on concurrent builders (default ≤ 3 live builder panes) so review capacity is never overwhelmed.
+- **Skeptic triage** — Reproducing or refuting every reported finding before dispatching a builder.
+- **Tracer-bullet slice** — A narrow, end-to-end vertical slice through every layer a feature touches, sized for a single worker context window.
+- **Terminal state** — The named outcome a mission concludes with. Degraded terminals (`*-WITH-PARKED`, `*-WITH-OPEN-ITEMS`, `NO-GO`, `INCONCLUSIVE`) explicitly surface remaining blockers and never masquerade as clean completion.
+- **`SUSPECT`** — A unit marked complete in runtime provenance whose git ancestry or manifest fails verification; treated as failed and re-dispatched.
+- **`DRY`** — `clean-sweep`'s clean terminal state: a fresh full re-enumeration of the source returns zero open items.
+- **Playbook / runtime policy / pack** — A callable phase protocol (`playbooks/<name>.md`), a runtime invariant (`runtime/<name>.md`), and an upstream methodology collection (`mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`) loaded one pack per worker.
+- **Proof tier** — `doctrine-only`, `self-run` (proven on `open-fleet` itself), or `external-run` (proven on an external target repository).
+
+---
 
 ## Read a run result
 
-Suppose you ask for a tested `/healthz` endpoint and a promotion PR. The fleet builds and reviews
-the change on an integration branch (**BASE**), then reports `PROMOTION_READY`. For you, that means
-there is a PR to assess before merging to the default branch. It does not mean the endpoint is
-deployed. The [ship-it states](missions/ship-it.md#terminal-states) distinguish those steps.
+When a mission finishes, it reports a terminal state (for example, `PROMOTION_READY` in `ship-it` or `DRY` in `clean-sweep`) along with a run report and per-unit evidence manifests. Evaluate a run result in five steps:
 
-Read the result in this order:
+1. **Outcome:** Which terminal state was reached, and does it match the stop point you authorized? (`PROMOTION_READY` means an integration PR is ready for your review; it does not mean code is deployed.)
+2. **Scope coverage:** Were all frozen acceptance criteria or enumerated findings addressed? Any unaddressed item must appear in `parked[]` with a named owner and blocker.
+3. **Revision integrity:** Which `head_sha` was tested and reviewed, and does the PR tip still match `reviewed_sha`?
+4. **Verification checks:** Which test commands and negative controls ran, what exit codes did they return, and where are the output artifacts stored?
+5. **Next action:** Merge the promotion PR to your default branch, resolve a parked human gate, or trigger the next mission in a chain.
 
-1. **Outcome:** which terminal state was reached, and does it match the stop point you authorized?
-2. **Scope:** which acceptance criteria or findings were accounted for? A parked item stays
-   visible with the action or owner it needs.
-3. **Revision:** which commit was tested and reviewed? Does the PR still have that reviewed content?
-4. **Checks:** which commands ran, what did they return, and where are the artifacts? A negative
-   control shows the test detects a changed behavior, such as removing the route registration.
-5. **Next action:** merge the promotion PR, resolve a named blocker, or authorize the next stage.
-
-A terminal state describes **this run**. A proof tier describes **retained evidence for the mission
-protocol**. A `GO` review, a green test result, a merged PR and a deployment are different facts.
-The sections below explain how each is checked.
+---
 
 ## A fleet is an outcome, not an ingredient
 
-A skill like `/tdd` is an ingredient: it makes one agent better at one activity. A **fleet** is a
-different species — it is a commitment to an end state. `clean-sweep` does not mean "apply the
-triage technique"; it means *the backlog will be at zero, every close will be backed by a merged
-SHA and a test that failed pre-fix, and the enumeration will be re-run until it comes back dry.*
+A single-agent skill like `/tdd` is an *ingredient*: it helps one agent perform one technique. An **autonomous fleet** is a commitment to a verified end state. Invoking `clean-sweep` does not mean "run a triage prompt"; it means *enumerate the backlog at `T0`, reproduce or refute every item, land each fix in its own PR with a test that failed pre-fix, and re-run enumeration until the source returns zero open findings (`DRY`).*
 
-That commitment is only credible if the fleet can prove it, which is why every mission in this
-catalog is built around three things:
+Every mission in `open-fleet` is therefore defined by:
+1. A **unit of work** and its **per-unit state machine**,
+2. A **convergence proof** (the checkable condition that defines mission completion), and
+3. An **evidence protocol** that allows an independent session to verify every claim after the fact.
 
-1. a **state machine** for its unit of work (a finding, a slice, a flake, a hypothesis),
-2. a **convergence proof** — the specific, checkable condition that means "done",
-3. an **evidence protocol** that makes every claim verifiable after the fact.
+---
 
 ## Coordinators and workers
 
@@ -133,42 +99,28 @@ catalog is built around three things:
   </picture>
 </p>
 
-Every mission runs the same topology on the Orca runtime:
+Every mission separates coordination from execution:
 
-- **One coordinator.** The terminal you started. It decomposes the goal, creates worktrees,
-  spawns workers, classifies decisions, verifies results, and keeps the ledger. It **never
-  writes code** — a coordinator that starts editing files has lost the thread that makes
-  verification independent.
-- **Many workers.** Each is a fresh agent in its own git worktree and terminal, dispatched with
-  a task spec that embeds the playbook it should follow. Workers are disposable by design: a
-  fresh context window per unit of work is what keeps quality flat across a 40-unit run, where a
-  single long-running agent degrades.
-- **Specialized workers.** Builders build. Build-blind reviewers review code they did not write
-  and were not told the conclusion about. Integrators open PRs (builders never do — a builder
-  that self-opens a PR gets the default branch as its base, which is exactly the wrong place).
-  One conductor owns every merge.
+- **One coordinator:** Runs in your primary terminal, decomposes the goal, spawns worktrees and workers, resolves mechanical/taste gates, invokes `verify.py`, and maintains the ledger. **The coordinator never writes application code** — keeping the verifier independent of the author.
+- **Disposable workers:** Each unit of work runs in a fresh agent session with its own git worktree and terminal. Giving every unit a clean context window prevents context-degradation across 20- or 40-unit runs.
+- **Role separation:** Builders write code and tests; build-blind reviewers inspect diffs without seeing builder commentary; integrators open PRs against `BASE`; a single conductor serializes merges.
 
-The ledger deserves a special note: the coordinator's context gets compacted over a long run, so
-its memory is not durable. The **ledger file** is. One row per unit — id, boolean exit flags,
-`lighting` (`lit` or `dark-eligible`), PR, reviewed SHA, merge SHA, evidence pointer. Everything
-the run needs to resume lives there, not in the scrollback.
+---
 
 ## The evidence manifest
 
-The definition of done, as data. Every worker emits one in its `worker_done` payload; the full
-schema lives in [`runtime/evidence-manifest.md`](../runtime/evidence-manifest.md). Annotated:
+Every worker emits a SHA-bound JSON evidence manifest alongside its `worker_done` signal ([full specification](../runtime/evidence-manifest.md)):
 
 ```jsonc
 {
-  "unit": "AC-3-healthz-endpoint",       // which unit of work this claims to complete
-  "base_sha": "6f7e3f8…",                // where the work started
-  "head_sha": "9b06458…",                // what the work produced — both must be real commits
-  "base_branch": "ravidsrk/fleet-base",  // the integration BASE the PR targets
+  "unit": "AC-3-healthz-endpoint",       // Unit of work identifier
+  "base_sha": "6f7e3f8…",                // Starting commit SHA
+  "head_sha": "9b06458…",                // Produced commit SHA (must exist in git)
+  "base_branch": "ravidsrk/fleet-base",  // Target integration BASE branch
 
   "contract": {
-    // Binds the manifest to an AUTHORITATIVE denominator captured at run start.
-    // The worker cannot choose its own scope: the verifier re-derives the id set
-    // from this source and rejects a manifest that drops any criterion.
+    // Binds the unit to the coordinator's frozen denominator at T0.
+    // verify.py re-derives criterion_ids from this source and rejects scope shrinkage.
     "source": "specs/healthz.md@0b073fb",
     "digest": "sha256:…",
     "criterion_ids": ["AC-1", "AC-2", "AC-3"]
@@ -176,47 +128,44 @@ schema lives in [`runtime/evidence-manifest.md`](../runtime/evidence-manifest.md
 
   "criteria": [
     {"id": "AC-1", "text": "GET /healthz returns 200 with version", "addressed": true}
-    // one entry per criterion — an unaddressed criterion is unmet work, not a waiver
   ],
 
   "commands": [
-    // real invocations + exit codes + artifact paths. Never a prose summary.
+    // Exact invocations, exit codes, and retained log paths
     {"cmd": "pnpm test src/health", "exit": 0, "artifact": "docs/reports/AC-3/test.txt"}
   ],
 
   "negative_control": {
-    // mandatory for any fix or test: prove the proof can fail.
+    // Mandatory on fix/test units: proves the test fails when the fix is reverted
     "did": "reverted the handler registration",
     "result": "healthz.test.ts went RED",
     "artifact": "docs/reports/AC-3/revert.txt"
   },
 
   "binding_audit": {
-    // criterion↔test coverage the verifier samples — required on fix/test units
     "coverage": "AC-1..AC-3 (3/3)",
     "method": "criterion quoted, covering test quoted, mutation went RED"
   },
 
   "intent": {
-    // required on mutation units; discarded-agent-reasoning, not the oracle
+    // Required on code-mutating units
     "goal": "GET /healthz returns 200 with version and a DB ping",
     "ruled_out": "a static liveness file with no DB check",
     "why": "the acceptance criterion names connectivity, not process-up"
   },
-  "lighting": "lit",                     // default; dark-eligible only Lane A + unfakeable oracle
-
-  "pr": {"number": 12, "url": "…", "reviewed_sha": "9b06458…"},  // gates the merge
-  "parked": [],                          // anything not done is named, never dropped
-  "claim": "implemented /healthz with DB ping"   // narration — NEVER the completion oracle
+  "lighting": "lit",                     // "lit" (default) or "dark-eligible"
+  "pr": {"number": 12, "url": "…", "reviewed_sha": "9b06458…"},
+  "parked": [],                          // Unfinished items must be explicitly named
+  "claim": "implemented /healthz with DB ping"   // Informational only; never the oracle
 }
 ```
 
-Why this and not "read the transcript"? Three reasons, all learned the hard way:
+Why grade manifests instead of terminal transcripts?
+1. Coordinators do not hold worker terminal scrollback in context.
+2. Transcripts are compacted, truncated, and easily gamed.
+3. **A transcript proves an action was attempted, not that the resulting git state is correct.**
 
-- a coordinator does not hold its workers' terminal traces;
-- traces get truncated and compacted, and they are gameable;
-- most fundamentally, **a trace proves an action was attempted, not that the resulting state is
-  correct** — an agent can run the right-looking commands against the wrong SHA.
+---
 
 ## Independent verification
 
@@ -228,19 +177,17 @@ Why this and not "read the transcript"? Three reasons, all learned the hard way:
   </picture>
 </p>
 
-The manifest is a claim. A **different session** than the one that produced the work checks it
-against authoritative state, in a fixed order — scope first, because passing tests on a shrunken
-denominator is the most dangerous false "done":
+An independent session (`runtime/scripts/verify.py` plus coordinator clean-env execution) verifies the manifest in a strict order — checking **scope first**, because passing tests on a quietly reduced scope is the most common false-completion failure:
 
-| Claim                       | Authoritative check                                              |
-|-----------------------------|------------------------------------------------------------------|
-| scope is complete           | re-derive the criterion set from `contract.source` at its digest |
-| the commit is where claimed | `git merge-base --is-ancestor <head_sha> origin/<BASE>`          |
-| tests pass at that SHA *(coordinator)* | clean worktree checkout + full run — pasted output is a hint     |
-| the proof can fail          | revert/mutate on a sample, watch it go red                       |
-| the review is fresh         | `pr.reviewed_sha == head_sha`                                    |
-| the change is real on base  | a symbol from the unit is greppable on `origin/<BASE>`           |
-| deployed == reviewed *(coordinator)* | (ship only) deployed revision equals the released SHA            |
+| Claim | Authoritative check |
+|---|---|
+| **Scope is complete** | Re-derive the criterion/finding ID set from `contract.source` at `contract.digest` |
+| **Commit is on `BASE`** | `git merge-base --is-ancestor <head_sha> origin/<BASE>` |
+| **Tests pass at `head_sha`** *(coordinator)* | Checkout `head_sha` in a clean environment and run the test suite |
+| **Proof can fail (negative control)** | Revert or mutate the change in a throwaway worktree (`--execute-nc`) and confirm tests go `RED` |
+| **Review is fresh** | `pr.reviewed_sha == head_sha` (or identical content tree) with an `APPROVED` review |
+| **Symbol exists on `BASE`** | Verify the declared symbol is present on `origin/<BASE>` |
+| **Deployed revision matches** *(coordinator)* | For `ship-it` release states past `RELEASED`, confirm deployed SHA equals reviewed SHA |
 
 <p align="center">
   <picture>
@@ -250,16 +197,9 @@ denominator is the most dangerous false "done":
   </picture>
 </p>
 
-A unit that fails any required check is not done — it returns to its state machine. When Orca's
-provenance says "completed" but git disagrees, the unit is marked SUSPECT and treated as failed.
-Git is truth; the ledger is its cache.
+A unit that fails any required check is not done — it returns to its state machine. If runtime provenance marks a task completed but git ancestry or verification disagrees, the unit is flagged `SUSPECT` and treated as failed. Reviewers also practice **blind-fix** (recording their expected fix shape before reading the builder's diff) and `reviewer_mode` validation to prevent rubber-stamping. At run close, a SHA-256 inventory seals all referenced artifacts.
 
-Two further guards keep the reviews honest: each manifest records its `reviewer_mode` (verify.py
-checks it is a legal value), and a coordinator flags an "independent" review byte-identical to the
-worker's own output — instructed isolation is named as the weaker guarantee it is; and reviewers
-practice **blind-fix** — writing their own expected fix to disk before opening the candidate
-diff, because anchoring on a handed artifact is cheaper than re-deriving the answer. At run
-close, a sha256 inventory of every referenced artifact makes the evidence tamper-evident.
+---
 
 ## Decision gates: mechanical, taste, one-way
 
@@ -271,32 +211,15 @@ close, a sha256 inventory of every referenced artifact makes the evidence tamper
   </picture>
 </p>
 
-Fleets hit hundreds of decisions per run. Sending every one to a human makes autonomy pointless;
-sending none makes it dangerous. So every decision is classified **before** anyone answers
-([`runtime/gate-classification.md`](../runtime/gate-classification.md)):
+To balance autonomy with safety, every decision is classified before resolution ([`runtime/gate-classification.md`](../runtime/gate-classification.md)):
 
-- **Mechanical** — one defensible answer exists (tooling with repo precedent, naming,
-  retry-on-transient). The coordinator auto-resolves and writes an audit line: gate, class,
-  answer, why.
-- **Taste** — reasonable people could disagree, and it is reversible (API shape, copy,
-  structure within spec). The coordinator picks the recommendation, batches the decision into a
-  brief, and keeps working. You can veto later.
-- **One-way** — hard or impossible to reverse, or out of authority: merge to default, deploy,
-  rollback, deletion, spend, scope change, secret rotation. **Human, always.** Never
-  auto-resolved, never defaulted on timeout.
+- **Mechanical:** One clear answer exists (repo convention, existing tooling, transient retry). Auto-resolved by the coordinator and logged to `docs/DECISIONS.md`.
+- **Taste:** Reversible choices where reasonable engineers might differ (internal naming, module layout within spec). The coordinator selects the recommended option, continues execution, and batches the decision for human veto.
+- **One-way:** Irreversible or high-blast-radius actions (spec freeze, merging `BASE` to default branch, production deploy/rollback, schema drop, credential rotation, paid cloud spend). **Always blocks for human approval — never auto-decided or defaulted on timeout.**
 
-Every dispatched unit also declares **lighting**: default `lit` (a human or build-blind reviewer
-reads the change before it lands). `dark-eligible` is opt-in and only when the unit is Lane A
-(reversible testnet/fixtures), the stop condition is a cheap unfakeable oracle (types / tests /
-binding audit), and the unit is not on the irreversibility stop-list. Recording nothing means
-`lit`.
+When the fleet's analysis disagrees with your stated direction (**user-challenge rule**), your direction remains the default while the coordinator presents the trade-off, its own blind spots, and the cost of being wrong.
 
-Two refinements worth knowing. First, the *user-challenge* rule: when the fleet's analysis says
-**your** stated direction is wrong, that is never auto-decided — your direction is the default,
-and the fleet must argue its case, name its blind spots, and state the cost if it is wrong.
-Second, escalation is honest about who is on the other end: an agent-to-agent `ask` is not a
-human, and labeling one as human approval is forbidden. In unattended runs, unanswerable one-way
-questions get parked and the run continues elsewhere or winds down.
+---
 
 ## The merge train
 
@@ -308,19 +231,14 @@ questions get parked and the run continues elsewhere or winds down.
   </picture>
 </p>
 
-Parallel workers opening PRs onto one integration BASE invites two failure modes: merge races
-(PRs rebasing over each other) and stale evidence (merging a SHA the reviewer never saw). The
-cure is boring and absolute ([`runtime/merge-serialization.md`](../runtime/merge-serialization.md)):
+Parallel builders opening pull requests against `BASE` can cause merge races and stale reviews if uncoordinated. [`runtime/merge-serialization.md`](../runtime/merge-serialization.md) enforces a single merge train:
 
-- **One conductor per BASE.** Two trains on one base is a race, not redundancy.
-- **Arrival order.** No priority lanes without a human gate.
-- **Freshness at the head of the queue.** The conductor checks the PR is open, targets BASE
-  (never the default branch), and its head equals the reviewed SHA. Mismatch → bounce to
-  re-review, requeue at the back.
-- **Hot-file chains.** PRs touching the same mount-point file (route registry, DI wiring,
-  migrations, barrels) build in parallel but merge as a chain, one at a time, as a union.
-- **Ancestry verification, not grep.** A merge counts when
-  `git merge-base --is-ancestor <mergeCommit> origin/<BASE>` says so.
+- **One conductor per `BASE`:** All merges flow through a single conductor in arrival order.
+- **Head freshness check:** Before merging, the conductor verifies the PR targets `BASE` (never default) and `head_sha == reviewed_sha`. If a rebase changed the tree, the PR bounces back for re-review.
+- **Hot-file chains:** Units modifying shared mount-point files (routing tables, DI registries, migrations) build in parallel but merge sequentially one after another.
+- **Git ancestry proof:** A merge is recorded only when `git merge-base --is-ancestor <mergeCommit> origin/<BASE>` succeeds.
+
+---
 
 ## Attention budget (orchestration tax)
 
@@ -332,15 +250,11 @@ cure is boring and absolute ([`runtime/merge-serialization.md`](../runtime/merge
   </picture>
 </p>
 
-Starting agents is cheap; closing the loop is not. Your judgment is the serial bottleneck, so
-fleets scale to **verification capacity**, not the UI's spawn limit
-([`runtime/attention-budget.md`](../runtime/attention-budget.md)). Default mutation waves keep
-≤3 concurrent builders and about one build-blind reviewer per three builders. Isolated,
-machine-verifiable work fans out; judgment-heavy work stays serial. Merge serialization is
-consumer-side backpressure; the attention budget is producer-side — together they keep the
-fleet from burying you under unreviewed diffs. The caps are still asserted, not measured: the
-[pre-registered WIP-curve experiment](experiments/wip-curve-prereg.md) is how they get measured
-(#604), and its live runs await an authorised budget.
+Spawning workers is cheap; reviewing and verifying their output is the bottleneck. Per [`runtime/attention-budget.md`](../runtime/attention-budget.md), fleets pace concurrency to verification capacity:
+- Default code-mutation waves run at most **≤ 3 concurrent builder panes**, with roughly 1 build-blind reviewer per 3 builders.
+- While merge serialization provides consumer-side backpressure, the attention budget provides producer-side backpressure so unreviewed diffs never pile up. Empirical calibration of these WIP caps is pre-registered in [docs/experiments/wip-curve-prereg.md](experiments/wip-curve-prereg.md).
+
+---
 
 ## Reviewed-SHA freshness
 
@@ -352,12 +266,9 @@ fleet from burying you under unreviewed diffs. The caps are still asserted, not 
   </picture>
 </p>
 
-The single most common way a fleet ships unreviewed code: a branch head that moved *after*
-review. A conductor rebase, a review-bot autofix commit, a builder's late push — all of them void
-the review, by rule ([`runtime/reviewed-sha-freshness.md`](../runtime/reviewed-sha-freshness.md)).
-The merge step refuses on mismatch, and — the part people push back on until it saves them —
-**"re-ran the gates green" is not a review.** Only a fresh build-blind review of the new head
-restores freshness.
+The most common way unreviewed code slips into an automated branch is a commit landing *after* review (a conflict rebase, a bot autofix commit, or a late builder push). Under [`runtime/reviewed-sha-freshness.md`](../runtime/reviewed-sha-freshness.md), any commit that alters the content tree after `reviewed_sha` voids the review. Passing CI checks alone never restores freshness; a build-blind reviewer must approve the new head tree.
+
+---
 
 ## Liveness, crash, resume
 
@@ -369,20 +280,13 @@ restores freshness.
   </picture>
 </p>
 
-Long runs die in boring ways: a worker hangs, a terminal is killed, the coordinator's machine
-sleeps. The runtime tracks heartbeats and provenance in SQLite; the fleet supplies the reflexes
-([`runtime/liveness-resume.md`](../runtime/liveness-resume.md)):
+Long-running fleets must survive hung processes, closed terminals, and laptop sleep ([`runtime/liveness-resume.md`](../runtime/liveness-resume.md)):
 
-- **WATCH.** A dispatched task with no heartbeat past the window is stale. Respawn goes to a
-  **fresh terminal** (re-dispatching to a used handle is a no-op), with an evidence line and a
-  **reflection-before-retry** note first, and a bounded attempt count. Three failures — or two
-  consecutive identical error signatures — → escalate or reassign, don't thrash.
-- **The stuck-pending watchdog.** Task dependencies are not validated at creation, and a dep
-  that *fails* (rather than completes) strands its children in `pending` forever — convergence
-  detection only flags `blocked`. Every fleet watches for pending-with-unmet-deps explicitly.
-- **RESUME.** A dead coordinator rebuilds from the ledger header + Orca provenance, scoped to
-  its own run (runtime state is global; without scope, resume aborts). Every "completed" unit is
-  cross-verified against git before being trusted; verified-merged work is never redone.
+- **Watchdog & fresh-terminal respawn:** Stalled workers past their heartbeat window are respawned in a **new terminal** (never re-sent to a dead handle) after recording a reflection-before-retry note. Repeated identical failures (2 consecutive identical error signatures or 3 total attempts) escalate or park rather than thrashing.
+- **Unmet-dependency detection:** If a parent task fails, dependent tasks in `pending` state are explicitly detected and surfaced so the DAG never deadlocks silently.
+- **Ledger-based coordinator resume:** A restarted coordinator reads the ledger header (`RUN`, `BASE`, `FORK_POINT`, `T0`) and re-verifies every unit marked completed against git ancestry before resuming dispatch.
+
+---
 
 ## Sandbox profiles
 
@@ -394,19 +298,17 @@ sleeps. The runtime tracks heartbeats and provenance in SQLite; the fleet suppli
   </picture>
 </p>
 
-Workers get the least privilege that does their job
-([`runtime/sandbox-policy.md`](../runtime/sandbox-policy.md)):
+Workers are dispatched with the minimum privilege required ([`runtime/sandbox-policy.md`](../runtime/sandbox-policy.md)):
 
-| Profile  | Means                                     | Used for                          |
-|----------|--------------------------------------------|-----------------------------------|
-| `ro`     | read-only / plan mode                      | report-only work: reviews, audits |
-| `rw`     | workspace-write                            | ordinary fix/build work           |
-| `danger` | bypass approvals — **opt-in flag required**| exploit PoCs, destructive tests   |
+| Profile | Capabilities | Typical missions & roles |
+|---|---|---|
+| `ro` | Read-only / plan mode | `review-it`, `map-it`, `root-cause`, `attest-it`, build-blind reviewers |
+| `rw` | Workspace file write inside isolated git worktree (requires `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`) | Standard builder and integrator workers |
+| `danger` | Unattended execution inside a placement-bound disposable VM/container (requires `ORCA_COORD_ALLOW_DANGER=1` + `ORCA_SANDBOX_RECIPE`) | Exploit PoCs (`harden-it`) and destructive environment tests (`offload-it`) |
 
-`danger` never runs on your machine: its sanctioned home is a disposable per-workspace sandbox.
-Work is harvested off the sandbox via `git push` to a work branch **before** teardown, and enters
-BASE through the normal PR → review → merge-train pipeline like everything else. A lane whose
-sandbox died before the push is a failed lane, not a shrug.
+`danger` lanes never run directly on your workstation host and require a non-`orca` runtime with authoritative prelaunch placement binding (`sandbox_doctor.py --require-placement`, such as `posix` Docker `--on <recipe>`); on `orca`, `spawn_worker.sh` refuses `PROFILE=danger` (`SPAWN=REFUSED`) and parks the unit. Verified changes from a `danger` sandbox are harvested via `git push` to a work branch before teardown and enter `BASE` through the standard PR and review pipeline.
+
+---
 
 ## Security boundaries and the response ladder
 
@@ -418,28 +320,17 @@ sandbox died before the push is a failed lane, not a shrug.
   </picture>
 </p>
 
-Prompt text is an optimization, never a security boundary. What keeps an autonomous fleet safe is
-what the layers below the model make impossible or evident
-([`runtime/threat-model.md`](../runtime/threat-model.md)):
+Prompts are guidance, not a security boundary. [`runtime/threat-model.md`](../runtime/threat-model.md) enforces four defense-in-depth boundaries below the model:
 
-- **1. Sandbox** — isolated git worktrees, `PROFILE=ro|rw|danger` tool gates, the `PreToolUse`
-  deny-hook (`profile-gate.sh`), and `orca serve` OS-level process/memory ceilings
-  (`ORCA_TERMINAL_PROCESS_CEILING`, `ORCA_TERMINAL_MEMORY_MAX` at v1.4.229).
-- **2. Network** — hash-chained egress receipts (`runtime/scripts/egress.py`); the deny-hook
-  refuses unreceipted `gh` write calls (`pr create`, `issue close`, `api -X POST`) and run close
-  anchors the chain head in the tamper-evident inventory.
-- **3. Supply chain** — exact upstream commit pins in `runtime/pins.json` with line-by-line
-  rug-pull reviews enforced by `runtime/scripts/pin_review.py`, one router pack per worker, and the
-  `runtime/scripts/guard_text.py` untrusted-text fence.
-- **4. Identity & access** — Ed25519-signed dispatch envelopes (`runtime/scripts/dispatch-sign.py`)
-  so a worker cannot rewrite its own contract digest, human-only one-way gates, and an independent
-  SHA-bound verifier (`runtime/scripts/verify.py`).
+1. **Sandbox boundary:** Isolated git worktrees, `PROFILE=ro|rw|danger` enforcement (`runtime/scripts/spawn_worker.sh` and `runtime/providers/base.py`), `PreToolUse` command guards (`deny-hook.sh`), and OS process/memory limits (`ORCA_TERMINAL_PROCESS_CEILING`, `ORCA_TERMINAL_MEMORY_MAX`).
+2. **Network & egress boundary:** Hash-chained egress receipts (`runtime/scripts/egress.py`) that gate external write operations (`gh pr create`, `gh issue close`) and anchor into the run's SHA-256 inventory.
+3. **Supply-chain boundary:** Commit-pinned upstream packs in `runtime/pins.json` audited by `runtime/scripts/pin_review.py`, one pack per worker, and untrusted-text sanitization via `runtime/scripts/guard_text.py`.
+4. **Identity & verification boundary:** Optional Ed25519 dispatch signing (`runtime/scripts/dispatch-sign.py`), human-only one-way doors (`runtime/one-way-doors.json`), and off-worker verification (`runtime/scripts/verify.py`).
 
-When a signal fires across any boundary, the coordinator escalates through the five-rung **response
-ladder**: **1. Steer** (in-session deny-hook feedback) → **2. Reduce** (park the unit and
-re-dispatch `ro`) → **3. Stop** (kill the worker terminal and block dependents) → **4. Revoke**
-(rotate exposed credentials, one-way human gate) → **5. Quarantine** (record the component in
-`runtime/quarantine.json`, enforced fail-closed across preflight, validation, and hooks).
+When a boundary violation occurs, the coordinator steps through the **five-rung response ladder**:
+**1. Steer** (in-session hook rejection) → **2. Reduce** (park unit and downgrade to `ro`) → **3. Stop** (terminate worker terminal) → **4. Revoke** (human-gated credential rotation) → **5. Quarantine** (add component to `runtime/quarantine.json`, failing preflight and validation closed).
+
+---
 
 ## Hosted trackers and the trust envelope
 
@@ -451,23 +342,13 @@ re-dispatch `ro`) → **3. Stop** (kill the worker terminal and block dependents
   </picture>
 </p>
 
-Trackers feed `clean-sweep`, `absorb-it`, and `oss-contribute`, and in Orca v1.4.229 three hosted
-surfaces speak structured JSON natively: GitHub (`gh issue/pr list --json`), Linear
-(`orca linear list --workspace <id> --json`), and Jira (`orca jira list` / `orca jira search <jql>
---site <id> --json`). Every tracker run enforces three invariants
-([`playbooks/linear-enumeration.md`](../playbooks/linear-enumeration.md)):
+When missions consume issues or PRs from GitHub (`gh`), Linear (`orca linear`), or Jira (`orca jira`), [`playbooks/linear-enumeration.md`](../playbooks/linear-enumeration.md) enforces three safeguards:
 
-- **T0 twin-query denominator.** Record `T0` before the first query, page until `truncated: false`
-  (or `count < limit` on bounded JQL), and reconcile two independent workers on the frozen query
-  before dispatching any build wave.
-- **Untrusted-text fence (`guard_text.py`).** Ticket titles, bodies, and comments are attacker-writable
-  data, never authority. Before a worker sees tracker text, `guard_text.py` normalizes Unicode
-  (`NFKC` + format-char stripping), defuses forged delimiter banners, and flags prompt-injection
-  shapes (`[INJECTION-PATTERN]`).
-- **Single-attempt closure & cross-references.** Status transitions and closing comments replay a
-  stored `writeId` at most once (or read back current state before retrying) and attach PR/branch
-  links via `orca reference add`, while actual completion is proved only by the merged SHA in the
-  unit's evidence manifest.
+- **`T0` twin-query denominator:** Two independent workers paginate the tracker query until `truncated: false` and reconcile the exact item list at `T0` before any builder is dispatched.
+- **Untrusted-text fence (`guard_text.py`):** Issue titles, descriptions, and comments are treated as untrusted data. `guard_text.py` normalizes Unicode (`NFKC`), strips hidden format characters, neutralizes delimiter spoofing, and tags `[INJECTION-PATTERN]` payloads before a worker reads them.
+- **Idempotent closure:** Tracker state updates use single-attempt `writeId` replay or state read-back and link the verified merge SHA via `orca reference add`.
+
+---
 
 ## One router per worker
 
@@ -479,12 +360,9 @@ surfaces speak structured JSON natively: GitHub (`gh issue/pr list --json`), Lin
   </picture>
 </p>
 
-Missions draw worker methodology from three upstream packs, and each pack ships its own
-router/meta-skill. Co-mount two and they fight: clashing command names, competing routing,
-conflicting philosophies (one pack folds refactoring into the TDD loop, another puts it in
-review). The rule is absolute: **a worker loads exactly one pack's playbooks.** Cross-pack
-composition happens at the mission level — one worker runs Matt-style triage while another runs
-Addy-style security — never inside a single worker's context.
+Missions draw worker techniques from three upstream skill packs (`mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`). Because each pack ships its own meta-router and competing TDD/review conventions, co-mounting two packs inside a single worker causes routing collisions. **Every dispatched worker loads at most one upstream pack.** Cross-pack composition happens across workers at the mission level (for example, a Matt-style triage worker followed by an Addy-style security reviewer).
+
+---
 
 ## Chaining missions
 
@@ -496,14 +374,12 @@ Addy-style security — never inside a single worker's context.
   </picture>
 </p>
 
-"Make this repo production-ready" is not one mission — it is harden-it, then prove-it, then
-ship-it. Chains are deliberately minimal ([`runtime/mission-chaining.md`](../runtime/mission-chaining.md)):
-sequential only, declared up front with the terminal states allowed to proceed at each link. The
-gate between missions is the previous mission's **verified** terminal state — an audit gates, it
-never "continues anyway"; a degraded terminal (`HARDENED-WITH-OPEN-ITEMS`, `COVERED-WITH-PARKED`)
-stops the chain, and advancing past it is a one-way human gate. Each link is a full run with its
-own preflight and BASE, and mission N's parked and noticed-but-not-touched items seed mission
-N+1's enumeration as findings to triage. A chain that stops early is a correct outcome.
+Broad goals like *"make this service production-ready"* span multiple missions (e.g., `harden-it` → `prove-it` → `ship-it`). Under [`runtime/mission-chaining.md`](../runtime/mission-chaining.md):
+- Chains are strictly sequential and declared up front with the exact terminal states allowed to advance each link.
+- A degraded terminal state (`HARDENED-WITH-OPEN-ITEMS`, `COVERED-WITH-PARKED`) halts the chain and requires a human one-way gate to proceed.
+- Items parked or noticed during mission `N` automatically seed the intake enumeration of mission `N+1`.
+
+---
 
 ## Proof status
 
@@ -515,79 +391,35 @@ N+1's enumeration as findings to triage. A chain that stops early is a correct o
   </picture>
 </p>
 
-Every mission declares how proven it is — `doctrine-only`, `self-run`, or `external-run` — in
-validator-enforced frontmatter, and cannot advance without a linked run report on disk. This is
-the inherited lesson from this catalog's failed predecessor, which shipped twelve missions with
-two proven: doctrine is allowed to encode hard-won lessons, but it is never allowed to dress up
-as evidence.
+Every mission's `SKILL.md` frontmatter declares a validator-enforced `metadata.proof` tier so unexecuted protocol design is never confused with field-proven execution:
 
-The three tiers, defined once here (other pages link this section):
-
-| Tier | Means | Does NOT mean |
+| Tier | Definition | What it does NOT claim |
 |---|---|---|
-| `doctrine-only` | the protocol is written and validated; no run report binds to it | the mission never ran — some ran without retaining artifacts here |
-| `self-run` | a run report binds, and the run's **target** was this catalog (open-fleet itself) | an outside party ran it |
-| `external-run` | a run report binds, and the run's **target** was a repository other than this catalog | an outside party ran it — the tier names the target, not the runner |
+| `doctrine-only` | The mission protocol, playbooks, and contracts are written and validated; no retained run report binds to it yet. | That the mission has never been tried informally. |
+| `self-run` | A retained run report binds in `docs/runs/`, and the target repository was `open-fleet` itself. | That an independent third party executed the run. |
+| `external-run` | A retained run report binds in `docs/runs/`, and the target repository was an external codebase (e.g., `ravidsrk/mdtoc` or `stablyai/orca`). | That an independent third party executed the run (the tier names the *target*, while the report's `runner` field records who ran it; see [Call for runs](call-for-runs.md)). |
 
-Who ran it is a separate fact, recorded in the report's runner row: both of today's
-`external-run` tiers (`ship-it` on ravidsrk/mdtoc, `review-it` on stablyai/orca) were
-maintainer-run. No tier yet rests on a run by someone outside the project; the
-[call for runs](call-for-runs.md) asks for exactly that.
+**What the static repository gate checks:** `runtime/scripts/run_report.py` verifies that every proven mission has a run report with a `RUN:` header, unit manifests inside its `docs/runs/<run>/` directory, and a SHA-256 inventory whose file hashes match at the git commit named in the report. **It hashes, it does not re-run the verifier** against the original target checkout (which may live in an external repository or ephemeral worktree). Live verification happens *during* the run via `verify.py` and coordinator clean-environment test execution; the retained archive in **[docs/runs/README.md](runs/README.md)** preserves the resulting evidence tamper-evidently.
 
-Be precise about what the gate buys, because it is weaker than "re-derives" would imply and
-[`run_report.py`](../runtime/scripts/run_report.py) says so in its own docstring: **it hashes, it
-does not re-run the verifier.** The [2026-09-11 review](reviews/2026-09-11-review.md) fabricated a `map-it`
-self-run — seven files, one commit, under fifteen minutes — that reported "bound" and passed
-`validate.py`, `proof_status.py --check` and the whole suite, because files a worker writes and
-commits hash true at the commit that contains them. What the gate really refuses is a tier claimed
-on a report whose artifacts were never retained, re-pointed at another mission, or pinned to a
-commit where the bytes differ. It does not refuse a tier whose artifacts were manufactured, and
-re-running the verifier afterwards would not fix that: the authorities that made the original
-verdict — the coordinator's out-of-band contract, a live GitHub review lookup, the worktree as it
-stood — are gone. Closing this needs a leg the worker cannot type at all: a coordinator-signed
-verifier transcript checked against a committed key
-([#281](https://github.com/ravidsrk/open-fleet/issues/281)), on top of making the tier cost an
-actual run ([#286](https://github.com/ravidsrk/open-fleet/issues/286)).
-
-The live state is the [run archive](runs/): it names each mission's tier as its evidence
-lands and records every run that really happened, saying per run whether and why it binds. Tiers
-are earned only through the binding gate, even when that makes the proven count go *down* as the
-mechanism gets stronger — which is the mechanism working. The predecessor shipped twelve missions
-with two proven and paid for it, and a tier whose artifacts are gone is the same claim in better
-packaging.
+---
 
 ## Autonomy
 
-Every mission's `metadata:` block carries `autonomy:`, checked by the validator against Addy Osmani's
-L0–L5 ladder ("Agentic Autonomy Levels", addyo.substack.com, 2026-07-03). The ladder is about
-*structure*, not about what the agents are allowed to touch. In the source's own terms: L3,
-goal-driven autonomy, is one agent looping until a measurable stop condition is met; L4,
-parallel delegation, is many agents each working an isolated slice of the task; L5,
-managed-by-exception orchestration, is a manager that wakes on triggers, dispatches workers,
-verifies their output, retries, and escalates.
+Every mission's `metadata:` block carries `autonomy:`, checked by the validator against Addy Osmani's L0–L5 ladder ("Agentic Autonomy Levels", addyo.substack.com, 2026-07-03). The ladder is about *structure*, not about what the agents are allowed to touch. In the source's own terms: L3, goal-driven autonomy, is one agent looping until a measurable stop condition is met; L4, parallel delegation, is many agents each working an isolated slice of the task; L5, managed-by-exception orchestration, is a manager that wakes on triggers, dispatches workers, verifies their output, retries, and escalates.
 
-Derived from those definitions, every mission in this catalog is **L4 by structure**: one
-coordinator, parallel workers in isolated worktrees, a verifier over their output. That includes
-the read-only and planning missions — `review-it` dispatches its axis reviewers in parallel,
-`map-it` its research workers, `root-cause` its hypothesis falsifiers, `attest-it` its evidence
-workers — because a human owning the verdict or the plan is a **gate class** (a one-way door,
-above), not a lower rung on the ladder. The source defines no "who owns the verdict" axis, and
-this catalog does not invent one in its name. A scheduled, unattended run
-([`runtime/mission-scheduling.md`](../runtime/mission-scheduling.md)) is the L5 shape — a trigger
-wakes the coordinator, which dispatches, verifies, retries within bounds, and escalates the rest
-to the human-owed queue — but the mission's declared level stays L4: the level describes the
-mission's structure, and scheduling is a way of invoking it.
+Derived from those definitions, every mission in this catalog is **L4 by structure**: one coordinator, parallel workers in isolated worktrees, a verifier over their output. That includes the read-only and planning missions — `review-it` dispatches its axis reviewers in parallel, `map-it` its research workers, `root-cause` its hypothesis falsifiers, `attest-it` its evidence workers — because a human owning the verdict or the plan is a **gate class** (a one-way door, above), not a lower rung on the ladder. The source defines no "who owns the verdict" axis, and this catalog does not invent one in its name. A scheduled, unattended run ([`runtime/mission-scheduling.md`](../runtime/mission-scheduling.md)) is the L5 shape — a trigger wakes the coordinator, which dispatches, verifies, retries within bounds, and escalates the rest to the human-owed queue — but the mission's declared level stays L4: the level describes the mission's structure, and scheduling is a way of invoking it.
+
+---
 
 ## Activation load
 
-Every mission is several times the 5,000-token community recommendation, on purpose: the
-runtime policies are whole contracts, and a coordinator that reads half of a merge-ordering rule
-improvises the other half. The cost is real, and each guide states it on its Activation-load
-line: roughly a sixth of a 200k-token context is spent before the first dispatch. Two
-consequences for you: start a mission in a fresh session, and expect the coordinator's own
-context to compact during a long run, which is why the ledger, not the scrollback, is its
-memory. The measurement, the cap and why it only ratchets down are in
-[ARCHITECTURE.md](../ARCHITECTURE.md#instruction-budget).
+Every mission loads its `SKILL.md` plus its composed playbooks and runtime policies (~19,200 to ~34,000 tokens — roughly a sixth of a 200k-token context window) so the coordinator holds complete merge, verification, and gate contracts rather than improvising from partial summaries. Two practical rules follow:
+1. **Start every mission in a fresh agent session.**
+2. **Treat the ledger file as durable memory** across long runs where coordinator context compacts.
+
+See **[ARCHITECTURE.md — Instruction budget](../ARCHITECTURE.md#instruction-budget)** for the CI-enforced token caps and deferred-read mechanics.
+
+---
 
 ## The mission-identity test
 
@@ -599,38 +431,18 @@ memory. The measurement, the cap and why it only ratchets down are in
   </picture>
 </p>
 
-The catalog stays deliberately small because of a bright-line test. Two workflows are the **same
-mission** only if they share *all six*:
+Two workflows belong to the **same mission** if and only if they share **all six identity points**:
 
-1. the same unit of work,
-2. the same per-unit state machine,
-3. the same convergence proof,
-4. the same ordering and isolation constraints,
-5. the same parking / failure semantics,
-6. the same oracle — the authoritative source the proof binds to. Two workflows that differ
-   *only* in oracle are one mission with an `oracle=` source; they are different missions only
-   when the oracle changes the proof's shape or the parking classes.
+1. **Unit of work**
+2. **Per-unit state machine**
+3. **Convergence proof (definition of done)**
+4. **Ordering and isolation constraints**
+5. **Parking and failure semantics**
+6. **The oracle** — the authoritative source the proof binds to (two workflows that differ *only* in oracle are one mission with an `oracle=` parameter; they become separate missions only when the oracle changes the convergence proof shape or parking classes).
 
-"Inventory → fix → repeat" is not enough — almost every maintenance process paraphrases that
-way. Audit findings, tracker issues, and false doc-claims all close through the same
-per-finding pipeline with the same proof against the same repo-suite oracle, so they are one
-mission (`clean-sweep`). A perf breach is *not* a finding: done is a statistical budget over
-journeys, measurements are noisy, and fixes interact — different proof, different mission
-(`speed-it`). Contributing those same fixes to a repo you do *not* control is also its own mission
-(`oss-contribute`): the convergence proof is a PR open and reviewed rather than a merged SHA, the
-state machine adds upstream-PR overlap discovery and drops the merge step, and
-`awaiting-maintainer-merge` is a normal terminal — three of the six differ from `clean-sweep`.
-The oracle point is what keeps `access-it` (a rule engine with a ceiling that creates a human-AT
-park class), `field-test-it` (the target itself, in tiers), and `pin-it` (an external control
-plane whose claims can be refuted, not just closed) their own missions; the argument for each is
-in [ARCHITECTURE.md](../ARCHITECTURE.md), and the candidates that failed the test are ledgered
-in [docs/research/REJECTED.md](research/REJECTED.md). When you are tempted to add a mission, run
-this test first; when you are tempted to add a *mode* to a mission, run it twice.
+For example:
+- **Why audit findings, tracker issues, and false doc claims are all `clean-sweep`:** All three share the same per-finding state machine, the same repo-suite oracle (a test that fails on revert), and the same convergence proof (re-enumeration returns zero open items).
+- **Why performance optimization is `speed-it`:** The unit is a user journey against a quantitative latency/throughput budget, measurements have statistical variance, and optimizations interact across journeys.
+- **Why upstream contributions are `oss-contribute`:** You do not control merge onto the target repository, so the convergence proof stops at an open, etiquette-compliant PR (`awaiting-maintainer-merge`) rather than a merged SHA on `BASE`.
 
----
-
-Deep dives: every mission has its own guide under [docs/missions/](missions/), a real run is
-walked ledger-line by ledger-line in [Anatomy of a run](guides/anatomy-of-a-run.md), dated
-research snapshots that informed adoption decisions live in [docs/research/](research/), and
-the agent-facing sources are [`skills/`](../skills/), [`playbooks/`](../playbooks/), and
-[`runtime/`](../runtime/).
+Rejected mission candidates that failed this six-point test are recorded in **[docs/research/REJECTED.md](research/REJECTED.md)**.

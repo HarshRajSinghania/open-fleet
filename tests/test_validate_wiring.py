@@ -8,9 +8,10 @@ fixture (2026-10-23 review, P2-25). The same copied tree also replays the review
 reproductions end to end (P1-9, P1-10) and the hidden-mission refusal (P2-19).
 
 The tree is a COPY in a tempdir (scripts, skills, playbooks, runtime, evals, hooks, the plugin
-manifest and the root docs). The copy omits docs/ and assets/, so its run fails for unrelated
-reasons; each test asserts its message is ABSENT before the edit and PRESENT after — the edit,
-and nothing else, produced it. runtime/quarantine.json is only ever edited in the copy: the
+manifest and the root docs, plus the run reports the trajectory suite's bound live rows cite). The
+copy omits the rest of docs/ and assets/, so its run fails for unrelated reasons; each test
+asserts its message is ABSENT before the edit and PRESENT after — the edit, and nothing else,
+produced it. runtime/quarantine.json is only ever edited in the copy: the
 live deny-list is a human-only file.
 """
 import contextlib
@@ -44,6 +45,13 @@ class ValidatePyRunsEveryGate(unittest.TestCase):
                                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         for doc in ROOT.glob("*.md"):
             shutil.copy2(doc, cls.root / doc.name)
+        # The eval gate requires a bound live row's run report to exist (#602): copy each one, or
+        # the copy's baseline already fails the eval gate and its probe proves nothing.
+        suite = json.loads((ROOT / "evals" / "adversarial-trajectories.json").read_text(encoding="utf-8"))
+        for report in sorted({row["run_report"] for row in suite.get("live_cases") or []
+                              if isinstance(row.get("run_report"), str)}):
+            (cls.root / report).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / report, cls.root / report)
         git = ["git", "-C", str(cls.root), "-c", "user.name=probe", "-c", "user.email=p@x",
                "-c", "commit.gpgsign=false"]
         for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "copy"]):

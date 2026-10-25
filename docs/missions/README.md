@@ -120,18 +120,18 @@ When you run a mission for the first time, use these observable behavioral tells
 
 ### It's working if…
 
-1. **Phase 0 runs `preflight.py` and checks the baseline before touching code:** On every code-mutating mission, the coordinator verifies that `BASE` is not your default branch (`main`/`master`) and confirms the baseline test suite passes at `T0`.
-2. **The `T0` ledger header is written before worker dispatch:** You see a ledger header recording `RUN`, `COORDINATOR`, `BASE`, `FORK_POINT`, `T0`, and the frozen `SOURCE` denominator.
+1. **Phase 0 runs `preflight.py` before dispatching workers:** On code-mutating missions, the coordinator runs `preflight.py --base <BASE>` (verifying `BASE` is not your default branch) and separately runs the baseline test command to confirm `T0` is green. On report-only/non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`), the coordinator runs `preflight.py --mode readonly`.
+2. **The `T0` ledger header is written before worker dispatch:** You see a ledger header recording `RUN`, `COORDINATOR`, `BASE` (or fixed point), `FORK_POINT`, `T0`, and the frozen `SOURCE` denominator.
 3. **One-way gates ask one question at a time with a recommended option and wait:** During spec/contract freeze or promotion, the coordinator stops and waits for your explicit reply without auto-continuing on timeout.
-4. **The coordinator dispatches isolated workers rather than editing application files itself:** Builders run in separate git worktrees (`≤ 3` concurrent builders per [`runtime/attention-budget.md`](../../runtime/attention-budget.md)), each mounting at most **one** upstream pack router.
-5. **Reviewers are build-blind and SHA-bound:** A fresh reviewer session (`PROFILE=ro`) inspects the PR diff without seeing the builder's narrative summary and records `reviewed_sha == head_sha`.
-6. **`verify.py` grades the evidence manifest before any unit is marked `VERIFIED`:** Completion is decided by `runtime/scripts/verify.py` (checking frozen scope digest, git ancestry on `BASE`, review freshness, and the negative control), never by a worker saying *"Done!"*.
+4. **The coordinator dispatches isolated workers rather than editing application files itself:** Workers run in separate sessions or git worktrees (`≤ 3` concurrent builders per [`runtime/attention-budget.md`](../../runtime/attention-budget.md)), each mounting at most **one** upstream pack router.
+5. **Reviewers are build-blind and SHA-bound:** On code-mutating missions, a fresh reviewer session (`PROFILE=ro`) inspects the PR diff without seeing the builder's narrative summary and records `reviewed_sha == head_sha`.
+6. **Evidence is bound to a SHA in a manifest (`verify.py` on code-mutating missions):** Code-mutating units are graded by `runtime/scripts/verify.py` (checking frozen scope digest, git ancestry on `BASE`, review freshness, and the executed negative control); report-only missions (`review-it`, `map-it`, `attest-it`) emit a report-only manifest bound to `head_sha` / `reviewed_sha` without executing code-mutating negative controls (`review-it` forbids executed controls and judges test coverage statically from the diff).
 
 ### Red flags (the agent is freelancing without the mission protocol)
 
-- The agent starts editing application files directly in your main checkout on `main` without running `preflight.py` or creating an integration `BASE` branch.
+- On a code-mutating mission, the agent starts editing application files directly in your main checkout on `main` without running `preflight.py` or creating an integration `BASE` branch.
 - Multiple upstream packs (`mattpocock`, `gstack`, `addyosmani`) are pasted into the same worker prompt.
-- A unit is marked complete without an evidence manifest JSON file or without a negative-control check.
+- A unit is marked complete without a SHA-bound evidence manifest JSON file (or, on a code-mutating mission, without a negative-control check).
 - *Fix:* Verify your symlink or plugin installation via **[Install — Check the install](../install.md#check-the-install)** and invoke the mission by name at the start of a **fresh** agent session.
 
 For a concrete trace of a multi-worker run with real verification failures and recovery, read **[Anatomy of a run](../guides/anatomy-of-a-run.md)**.

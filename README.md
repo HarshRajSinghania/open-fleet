@@ -126,7 +126,9 @@ You:
 Coordinator (ship-it):
   [PHASE 0 · PREFLIGHT]
   $ python3 runtime/scripts/preflight.py --mission ship-it --base ship-it/integration
-  PREFLIGHT=OK runtime=posix base=ship-it/integration baseline_tests=PASS (42 passed in 1.8s)
+  preflight: OK — repo=acme/service, base=ship-it/integration, default=refs/remotes/origin/main, fork_point=0b073fb41a2c
+  $ pnpm test
+  PASS (42 passed in 1.8s) — baseline test suite green at T0
 
   [PHASE 1 · FREEZE SPEC — One-Way Human Gate]
   DECISION (freeze grill) · specs/healthz.md · DB timeout threshold

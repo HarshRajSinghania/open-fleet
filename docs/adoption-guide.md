@@ -117,6 +117,6 @@ Once the oracle is stable and your team trusts the `BASE` → promotion PR workf
 |---|---|---|
 | **Stacking plugin + symlink + settings snippet** | Duplicate skill listings and `verify-gate.sh` firing twice per turn | Pick **one** install path per host ([Install — Do not stack](install.md#pick-one-install-path-per-host-do-not-stack)) |
 | **Pointing `clean-sweep` at an unbounded 200-issue backlog on Day 1** | Long runtime, high token spend, and noisy triage on stale tickets | Start with a 5–10 item label or a single audit file; expand after reviewing the first promotion PR |
-| **Running mutating missions on top of a red baseline** | Phase 0 preflight halts immediately (by design) | Run `deflake-it` or a scoped `clean-sweep` on the broken baseline tests first |
+| **Running mutating missions on top of a red baseline** | `preflight.py` checks branch and runtime invariants (it does not run tests), so workers inherit a broken baseline | Run your baseline test command separately before starting and stop if it fails; use `deflake-it` or a scoped `clean-sweep` to fix broken baseline tests first |
 | **Installing via `cp -r` or `npx skills add` from `main`** | Relative links to `../../playbooks/` and `../../runtime/` break | Use `sh scripts/install.sh` (symlinks), the Claude Code plugin, or the published `dist` branch |
 | **Starting a mission mid-conversation in a cluttered session** | Coordinator instructions compete with prior chat history and hit early compaction | Always start a mission in a **fresh coding-agent session** |

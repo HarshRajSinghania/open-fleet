@@ -102,7 +102,7 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
 ## Preflight refuses BASE
 
 - **Cause:** Code-mutating missions refuse to use your repository's default branch (`main` or `master`) as the integration `BASE` branch.
-- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Read-only missions (`review-it`, `map-it`, `root-cause`) run preflight with `--mode readonly` and do not require an integration branch.
+- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`) run preflight with `--mode readonly` and do not require an integration branch.
 
 ---
 

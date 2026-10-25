@@ -331,7 +331,8 @@ class BundleClosureTests(unittest.TestCase):
                                  "runtime/one-way-doors.json", "playbooks/build-change.md",
                                  "playbooks/observe.md", "runtime/evidence-manifest.md",
                                  "docs/runs/TEMPLATE.md",
-                                 ".claude-plugin/plugin.json", "hooks/hooks.json"):
+                                 ".claude-plugin/plugin.json", "hooks/hooks.json",
+                                 ".claude-plugin/bundle-README.md", ".claude-plugin/icon.png"):
                     with self.subTest(missing=relative):
                         path = source / relative
                         saved = path.read_bytes()
@@ -342,6 +343,31 @@ class BundleClosureTests(unittest.TestCase):
                                             (relative, problems))
                         finally:
                             path.write_bytes(saved)
+
+    def test_the_bundle_carries_what_the_directory_listing_reads(self):
+        # #235: the developer portal blocked dist for having no README of at least 40 words in the
+        # plugin folder, and takes .claude-plugin/icon.png as the listing icon: a square PNG or
+        # JPEG of 512 to 2048 px, under 2 MB.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(bundle.build(tmp), (22, []))
+            readme = (Path(tmp) / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(readme, (ROOT / ".claude-plugin/bundle-README.md").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(len(re.sub(r"```.*?```", "", readme, flags=re.S).split()), 40)
+            icon = (Path(tmp) / ".claude-plugin/icon.png").read_bytes()
+            self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n")
+            width, height = int.from_bytes(icon[16:20], "big"), int.from_bytes(icon[20:24], "big")
+            self.assertEqual(width, height)
+            self.assertTrue(512 <= width <= 2048, width)
+            self.assertLess(len(icon), 2 * 1024 * 1024)
+            marker = json.loads((Path(tmp) / bundle.MARKER).read_text(encoding="utf-8"))
+            self.assertTrue({"README.md", ".claude-plugin/icon.png"} <= set(marker["files"]))
+            self.assertFalse((Path(tmp) / ".claude-plugin/bundle-README.md").exists())
+
+    def test_the_bundle_readme_links_only_outside_the_bundle_or_to_what_it_ships(self):
+        # The bundle has no docs/: a relative link would break in the listing and the install
+        readme = (ROOT / ".claude-plugin/bundle-README.md").read_text(encoding="utf-8")
+        for target in re.findall(r"\]\(([^)]+)\)", readme):
+            self.assertTrue(target.startswith("https://"), target)
 
     def test_out_pointing_at_the_checkout_is_refused_before_any_delete(self):
         # #350: build() rmtrees <out>/skills before rebuilding; `--out .` resolved that to the

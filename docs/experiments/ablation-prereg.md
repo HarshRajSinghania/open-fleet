@@ -1,11 +1,14 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `244ae9f45880faeff9dd0426b2c0fcd635c54db3ef0862d1ce6d0a4e2eae0391`.
+Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `37b795f4dea38fe01c3f46343b303a8ab5a499dfdf5260a8d75d1a4f105ae843`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. The owner authorised the cost cap below on
-2026-10-24 (`AUTHORISED`, USD 750). The live run of this registration took place on 2026-10-25
-and is bound in [its run report](../runs/2026-10-25-ablation-606-live.md). **Recommendation: keep
+2026-10-24 (`AUTHORISED`, USD 750). The live run took place on 2026-10-25 at `c220067e9c`, whose
+registration (sha256 `244ae9f45880faeff9dd0426b2c0fcd635c54db3ef0862d1ce6d0a4e2eae0391`) is the
+one that ran, and is bound in [its run report](../runs/2026-10-25-ablation-606-live.md). The pins
+here were refreshed after the run for #604's edit to `attention-budget.md`, so they describe
+today's payloads, not the ones that ran; the run re-derives from its own commit. **Recommendation: keep
 the current activation.** The registered rule returns SUCCESSFUL_REDUCTION for every mission, but
 only because task success was 0 in both arms: the registered agent command could not run the tests
 or commit, and the reduced arm's deferred documents were unreachable. The report gives a follow-up
@@ -90,8 +93,8 @@ pinned in `registered_payloads`, and a test holds this table to them:
 <!-- BEGIN GENERATED: ablation-loads — scripts/ablation.py prereg --refresh -->
 | Mission | Baseline activation | Reduced activation | Delta |
 |---|---|---|---|
-| ship-it | ~33,995 | ~4,579 | -29,416 |
-| clean-sweep | ~32,649 | ~4,546 | -28,103 |
+| ship-it | ~33,997 | ~4,579 | -29,418 |
+| clean-sweep | ~32,651 | ~4,546 | -28,105 |
 | review-it | ~24,480 | ~3,724 | -20,756 |
 | root-cause | ~19,249 | ~6,716 | -12,533 |
 <!-- END GENERATED: ablation-loads -->

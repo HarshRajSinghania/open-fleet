@@ -5,7 +5,7 @@ Starting agents is cheap; closing the loop is not. Human judgment is the serial 
 limit. Merge serialization (`merge-serialization.md`) is consumer-side backpressure; this policy
 is producer-side.
 
-## WIP caps (defaults — ASSERTED; no protocol-compliant measurement yet; override in the ledger header when measured)
+## WIP caps (defaults — mutation wave MEASURED, others ASSERTED; override in the ledger header when measured)
 
 | Class | Concurrent builders | Concurrent build-blind reviewers | Notes |
 |-------|---------------------|----------------------------------|-------|
@@ -27,7 +27,7 @@ post-mortem, not a retained report. That mechanism no longer applies: liveness n
 from `worker-list`'s `projection.liveness` and `attention.requiresAction`, not from reading panes
 for heartbeats (liveness-resume.md).
 
-Evidence level: **ASSERTED.** The defaults were first asserted from one field run (2026-07-15
+Evidence level: **MEASURED** (mutation wave), else **ASSERTED**. The defaults were first asserted from one field run (2026-07-15
 chimely) and its dual-writer post-mortem; no published methodology for sizing fleet concurrency to
 verification capacity exists anywhere yet. The 2026-08-28 ship-it self-run
 (`docs/runs/2026-08-28-ship-it-self-run.md`) is recorded but is **not a protocol-compliant data
@@ -39,8 +39,8 @@ independent-review/approval step is what blocks *autonomous completion* of a mut
 hardened verifier `verify.py` requires an independent approval it cannot self-issue). That is a
 statement about the completion gate, not a throughput measurement: the wall-clock was dominated by
 building and acceptance review, machine verification took seconds, and a single non-parallel unit
-cannot by itself locate a throughput bottleneck. The caps stay ASSERTED until ≥3 runs at differing
-WIP settings (a `builders=1` run counts) measure verified-CLOSED-per-hour throughput (protocol below).
+cannot by itself locate a throughput bottleneck. #604's 12 runs at four mutation-wave settings
+(`docs/runs/2026-10-25-wip-curve-604-live.md`) measured that throughput and kept those caps.
 
 ## Sort the work (do not parallelize judgment)
 

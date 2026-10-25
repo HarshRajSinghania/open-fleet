@@ -66,7 +66,7 @@ Guides for developing `open-fleet`, cutting releases, and inspecting retained ru
 - **[Security policy](../SECURITY.md)** — Vulnerability disclosure process and secret-handling rules.
 - **[Maintainer ops](ops.md)** — Release procedures, weekly pin probes, quarantine operations, and incident response.
 - **[1.0 release checklist](release-1.0-checklist.md)** & **[Product roadmap](roadmap.md)** — Exit criteria for 1.0 and prioritized engineering roadmap.
-- **[Live experiment harness](guides/live-harness.md)** — Running controlled live experiment arms in disposable containers ([WIP-curve pre-registration](experiments/wip-curve-prereg.md) · [Instruction-load ablation pre-registration](experiments/ablation-prereg.md)).
+- **[Live experiment harness](guides/live-harness.md)** — Running controlled live experiment arms in disposable containers ([WIP-curve experiment](experiments/wip-curve-prereg.md): mutation-wave caps measured and kept · [Instruction-load ablation pre-registration](experiments/ablation-prereg.md): current activation load kept).
 - **[Repository metadata](about.md)** — Canonical GitHub repository description and topics.
 
 ### Evidence & Historical Archives

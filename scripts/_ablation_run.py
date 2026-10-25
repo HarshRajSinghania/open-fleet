@@ -221,9 +221,13 @@ fmt, argv = sys.argv[1], sys.argv[sys.argv.index("--") + 1:]
 limit = float(os.environ.get("ABLATION_GRADER_TIMEOUT") or 270)
 sink = os.environ.get("ABLATION_GRADER_USAGE")
 prompt = sys.stdin.read()
+# The grader's stdout goes to disk as it is written, beside the usage file, so a result it printed
+# before an interrupt killed this meter still names the model it billed (#688 review).
+raw_path = sink + ".stdout" if sink else None
+raw = open(raw_path, "w", encoding="utf-8") if raw_path else None
 # The grader leads its own process group, so it and anything it starts die together, and the
 # runner is told which group that is before anything else happens (#652 review).
-proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=raw or subprocess.PIPE, stderr=subprocess.PIPE,
                         text=True, start_new_session=True)
 if sink:
     with open(sink + ".pgid", "w", encoding="utf-8") as fh:
@@ -264,6 +268,10 @@ while time.monotonic() < deadline:
     except (ProcessLookupError, PermissionError):
         break
     time.sleep(0.02)
+if raw is not None:
+    raw.close()
+    with open(raw_path, encoding="utf-8", errors="replace") as fh:
+        out = fh.read()
 answer, cost, models = ("" if killed else out), None, []
 if fmt == "claude-json":
     try:
@@ -1040,6 +1048,24 @@ def model_flags(argv, flag="--model"):
     return named
 
 
+def terminator_problem(argv):
+    """Why an option terminator (`--`) in a live command would turn the flags appended to it into
+    prompt text, or None. --model and the spend-limit flag go at the end, so a `--` after the
+    claude executable ends its options and they would be prompt text, running its default model
+    with no limit (#688 review). A `--` before it is a wrapper's own separator
+    (`trajectory_harness.py -- claude …`) and is safe; with no claude executable to anchor on,
+    any `--` is refused, since whose it is cannot be told."""
+    if "--" not in argv:
+        return None
+    at = next((i for i, token in enumerate(argv) if Path(token).name == STAND_IN), None)
+    if at is None:
+        return "holds an option terminator (--) and names no claude executable to place it against"
+    if "--" in argv[at + 1:]:
+        return ("holds an option terminator (--) after claude: --model and the spend-limit flag "
+                "appended after it would be prompt text, not options")
+    return None
+
+
 def with_model(argv, model):
     """`argv` told to run `model`: as it is when it already names one (preflight refused any other),
     else with `--model <model>` appended. A live run once recorded one model while Claude Code ran
@@ -1219,7 +1245,13 @@ def models_on_disk(out, active):
         usage = json.loads((cell_dir / "grader-usage.json").read_text(encoding="utf-8"))
         fields["grader_models"] = [m for m in usage.get("models") or [] if isinstance(m, str)]
     except (OSError, ValueError, AttributeError):
-        pass
+        # The meter was killed before writing it: the grader's own result, if it printed one whole.
+        try:
+            result = json.loads((cell_dir / "grader-usage.json.stdout").read_text(encoding="utf-8"))
+            if isinstance(result.get("modelUsage"), dict):
+                fields["grader_models"] = sorted(str(m) for m in result["modelUsage"])
+        except (OSError, ValueError, AttributeError):
+            pass
     return fields
 
 
@@ -1280,11 +1312,9 @@ def preflight(args, api, prereg):
             argv = shlex.split(command)
         except ValueError as err:
             raise Refused(f"the {what} command cannot be parsed: {err}") from err
-        # --model and the spend-limit flag are appended to the command; after an option terminator
-        # they would be prompt text, so the call would run its default model with no limit (#688).
-        if "--" in argv:
-            raise Refused(f"the {what} command holds an option terminator (--): --model and the "
-                          "spend-limit flag appended after it would be prompt text, not options")
+        problem = terminator_problem(argv)
+        if problem:
+            raise Refused(f"the {what} command {problem}")
         wrong = sorted({named for named in model_flags(argv) if named != args.model})
         if wrong:
             raise Refused(f"--model {args.model} disagrees with the {what} command's --model "

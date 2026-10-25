@@ -366,6 +366,16 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
             with self.subTest(needle=needle):
                 self.refused(base + argv, needle, prereg)
 
+    def test_only_a_terminator_after_claude_ends_its_options(self):
+        # #688 review: a wrapper's own separator (trajectory_harness.py -- claude …) is safe, since
+        # the flags appended at the end still reach claude as options.
+        problem = runner.terminator_problem
+        self.assertIsNone(problem(["python3", "/repo/scripts/trajectory_harness.py", "--", "claude", "-p"]))
+        self.assertIsNone(problem(["/usr/local/bin/claude", "-p", "--output-format", "json"]))
+        self.assertIn("after claude", problem(["python3", "trajectory_harness.py", "--", "claude", "-p", "--"]))
+        self.assertIn("after claude", problem(["claude", "-p", "--"]))
+        self.assertIn("names no claude", problem(["python3", "agent.py", "--", "x"]))
+
     def test_a_fallback_model_is_refused(self):
         # #688 review: a fallback lets the call switch off the requested model mid-run.
         prereg = small_live_prereg()
@@ -1131,6 +1141,40 @@ class TheLiveTierRunsTheModelItRecords(SafetyNet):
         self.assertEqual(cell["model"], self.MODEL)
         self.assertEqual(cell["models"], [self.MODEL])
         self.assertEqual(results["models_observed"], [self.MODEL])
+
+    def test_an_interrupt_during_the_grader_keeps_the_model_it_billed(self):
+        # #688 review: the meter held the grader's stdout in memory, so a result it printed naming
+        # another model was lost when an interrupt killed the meter. It now goes to disk at launch.
+        prereg = self.tmpdir() / "prereg.json"
+        prereg.write_text(json.dumps(small_live_prereg()), encoding="utf-8")
+        out = self.tmpdir() / "out"
+        env = {**os.environ, "SHELL": "/bin/sh"}
+        proc = subprocess.Popen(
+            [*TABLES.proven_host(sys.executable, ROOT / "scripts" / "ablation.py",
+                                 "mod._runner().containment_problem = proven; "
+                                 "mod._runner().live_disabled = lifted"),
+             "--prereg", str(prereg), "run", "--tier", "live", "--cost-cap-usd", "50",
+             "--harness-cmd", self.stub_cmd("plain"),
+             "--grader-cmd", self.stub_cmd("grader-json-hang", "--usage-model", "stub-model-b"),
+             "--model", self.MODEL, "--harness-version", "0", "--out", str(out)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: [os.kill(p, signal.SIGKILL) for p in recorded_pids(out) if pid_alive(p)])
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not any(
+                "modelUsage" in p.read_text(errors="replace") for p in out.rglob("grader-usage.json.stdout")):
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            _stdout, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _stdout, err = proc.communicate()
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, err[-2000:])
+        results = json.loads((out / "results.json").read_text())
+        cut = [c for c in results["cells"] if c.get("interrupted")]
+        self.assertEqual(len(cut), 1, results["cells"])
+        self.assertEqual(cut[0]["grader_models"], ["stub-model-b"])
+        self.assertIn("stub-model-b", results["models_observed"])
 
     def test_the_stub_tier_is_handed_no_model(self):
         out = self.tmpdir() / "out"

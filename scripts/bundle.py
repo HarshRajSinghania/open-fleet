@@ -113,10 +113,12 @@ SUPPORT_DOCS = ("docs/runs/TEMPLATE.md",)
 # The bundle doubles as the installable lean plugin, so its manifests are build inputs too.
 PLUGIN_MANIFESTS = (".claude-plugin/plugin.json", "hooks/hooks.json")
 # What the directory listing reads (#235), source -> out-relative destination. The developer
-# portal blocks a plugin folder with no README of at least 40 words, and takes
+# portal blocks a plugin folder with no README of at least 40 words or no license, and takes
 # .claude-plugin/icon.png as the listing icon, once, at the first save. The repository README links
-# into docs/, which the bundle does not ship, so the bundle carries its own.
-PLUGIN_LISTING = {".claude-plugin/bundle-README.md": "README.md", ".claude-plugin/icon.png": ".claude-plugin/icon.png"}
+# into docs/, which the bundle does not ship, so the bundle carries its own; the license and the
+# notices it names ship in every build, not only the published one (PR #681 review).
+PLUGIN_LISTING = {".claude-plugin/bundle-README.md": "README.md", ".claude-plugin/icon.png": ".claude-plugin/icon.png",
+                  "LICENSE": "LICENSE", "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"}
 
 
 def missing_inputs(protocols):

@@ -320,7 +320,8 @@ class BundleClosureTests(unittest.TestCase):
             source = Path(tmp).resolve() / "source"
             for directory in ("skills", "playbooks", "runtime", "docs", ".claude-plugin", "hooks"):
                 shutil.copytree(ROOT / directory, source / directory)
-            shutil.copy2(ROOT / "ARCHITECTURE.md", source / "ARCHITECTURE.md")
+            for name in ("ARCHITECTURE.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
+                shutil.copy2(ROOT / name, source / name)
             with mock.patch.object(bundle, "ROOT", source), \
                     mock.patch.object(bundle, "SKILLS_DIR", source / "skills"), \
                     mock.patch.object(bundle.validate, "PLAYBOOKS_DIR", source / "playbooks"), \
@@ -332,7 +333,8 @@ class BundleClosureTests(unittest.TestCase):
                                  "playbooks/observe.md", "runtime/evidence-manifest.md",
                                  "docs/runs/TEMPLATE.md",
                                  ".claude-plugin/plugin.json", "hooks/hooks.json",
-                                 ".claude-plugin/bundle-README.md", ".claude-plugin/icon.png"):
+                                 ".claude-plugin/bundle-README.md", ".claude-plugin/icon.png",
+                                 "LICENSE", "THIRD_PARTY_NOTICES.md"):
                     with self.subTest(missing=relative):
                         path = source / relative
                         saved = path.read_bytes()
@@ -362,6 +364,10 @@ class BundleClosureTests(unittest.TestCase):
             marker = json.loads((Path(tmp) / bundle.MARKER).read_text(encoding="utf-8"))
             self.assertTrue({"README.md", ".claude-plugin/icon.png"} <= set(marker["files"]))
             self.assertFalse((Path(tmp) / ".claude-plugin/bundle-README.md").exists())
+            # PR #681 review: every file the README names ships in a local build too
+            for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+                self.assertEqual((Path(tmp) / name).read_bytes(), (ROOT / name).read_bytes(), name)
+                self.assertIn(f"`{name}`", readme)
 
     def test_the_bundle_readme_links_only_outside_the_bundle_or_to_what_it_ships(self):
         # The bundle has no docs/: a relative link would break in the listing and the install

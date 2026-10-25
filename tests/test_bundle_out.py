@@ -102,7 +102,7 @@ class UserContentSurvives(unittest.TestCase):
         inside it, README.md/bundle-README.md, and the build passed with no README. A directory
         at any file destination, on a first build or a rebuild, refuses and changes nothing."""
         for rebuild in (False, True):
-            for rel in ("README.md", ".claude-plugin/icon.png", "hooks/hooks.json"):
+            for rel in ("README.md", ".claude-plugin/icon.png", "hooks/hooks.json", "LICENSE"):
                 with self.subTest(rel=rel, rebuild=rebuild), tempfile.TemporaryDirectory() as tmp:
                     out = Path(tmp)
                     if rebuild:

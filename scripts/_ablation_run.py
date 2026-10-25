@@ -28,6 +28,11 @@ Tiers, and what each may run
             operator's real harness and grader, refused unless the registration records an
             AUTHORISED cap, `--cost-cap-usd` is explicit and within it, the registered payloads
             are current, nothing is filtered, and every variant passed the obligation check.
+            Both commands are handed `--model` unless they already name it; one naming another
+            model or --fallback-model, or holding an option terminator (--), is refused. A cell
+            fails when its agent's stream names no model once its run completes, or any other
+            (init line, assistant messages, the result's modelUsage), or when its grader's
+            modelUsage does; the run then stops (MODEL_MISMATCH).
 
 Every tier needs an explicit `--cost-cap-usd`. The live spend guard is PRE-EMPTIVE (#652 review):
 before a cell starts, the worst case of every call it will make (the agent's reservation, plus
@@ -216,9 +221,13 @@ fmt, argv = sys.argv[1], sys.argv[sys.argv.index("--") + 1:]
 limit = float(os.environ.get("ABLATION_GRADER_TIMEOUT") or 270)
 sink = os.environ.get("ABLATION_GRADER_USAGE")
 prompt = sys.stdin.read()
+# The grader's stdout goes to disk as it is written, beside the usage file, so a result it printed
+# before an interrupt killed this meter still names the model it billed (#688 review).
+raw_path = sink + ".stdout" if sink else None
+raw = open(raw_path, "w", encoding="utf-8") if raw_path else None
 # The grader leads its own process group, so it and anything it starts die together, and the
 # runner is told which group that is before anything else happens (#652 review).
-proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=raw or subprocess.PIPE, stderr=subprocess.PIPE,
                         text=True, start_new_session=True)
 if sink:
     with open(sink + ".pgid", "w", encoding="utf-8") as fh:
@@ -259,20 +268,31 @@ while time.monotonic() < deadline:
     except (ProcessLookupError, PermissionError):
         break
     time.sleep(0.02)
-answer, cost = ("" if killed else out), None
-if fmt == "claude-json" and not killed:
+if raw is not None:
+    raw.close()
+    with open(raw_path, encoding="utf-8", errors="replace") as fh:
+        out = fh.read()
+answer, cost, models = ("" if killed else out), None, []
+if fmt == "claude-json":
     try:
         obj = json.loads(out)
     except ValueError:
         obj = None
     if isinstance(obj, dict):
-        answer = obj["result"] if isinstance(obj.get("result"), str) else ""
-        value = obj.get("total_cost_usd")
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-            cost = value
+        # Every model the call billed, kept even from a call that timed out: a model seen is
+        # evidence, whatever became of the verdict (#688 review). A killed call's verdict and
+        # cost are not taken; it is charged its whole reservation.
+        if isinstance(obj.get("modelUsage"), dict):
+            models = sorted(str(m) for m in obj["modelUsage"])
+        if not killed:
+            answer = obj["result"] if isinstance(obj.get("result"), str) else ""
+            value = obj.get("total_cost_usd")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                cost = value
 if sink:
     with open(sink, "w", encoding="utf-8") as fh:
-        json.dump({"cost_usd": cost, "format": fmt, "exit": proc.returncode, "killed": killed}, fh)
+        json.dump({"cost_usd": cost, "format": fmt, "exit": proc.returncode, "killed": killed,
+                   "models": models}, fh)
 sys.stdout.write(answer)
 sys.stderr.write(err)
 sys.exit(124 if killed else proc.returncode)
@@ -532,12 +552,14 @@ def contained_run(argv, *, timeout, stdout_path, cwd=None, env=None, stdin_path=
     return (None if killed else proc.returncode), killed, emptied
 
 
-def run_group(argv, *, input_text, timeout, cwd=None, env=None):
+def run_group(argv, *, input_text, timeout, cwd=None, env=None, stdout_path=None):
     """(stdout, exit status or None when killed, killed, emptied): contained_run with the task on
     stdin and stdout read back. The harness never shares a pipe with the runner, so nothing it
-    leaves behind can hold one open."""
+    leaves behind can hold one open. With `stdout_path` the output goes there as it is written, so
+    it outlives an interrupt mid-call (#688 review)."""
     with tempfile.TemporaryDirectory(prefix="of-ablation-call-") as tmp:
-        stdin, stdout = Path(tmp) / "stdin", Path(tmp) / "stdout"
+        stdin = Path(tmp) / "stdin"
+        stdout = Path(stdout_path) if stdout_path else Path(tmp) / "stdout"
         stdin.write_text(input_text, encoding="utf-8")
         code, killed, emptied = contained_run(argv, timeout=timeout, cwd=cwd, env=env, stdin_path=stdin,
                                               stdout_path=stdout, stderr_path=Path(tmp) / "stderr")
@@ -690,6 +712,43 @@ def stream_sequence(stream_text):
     return seq
 
 
+def stream_model(stream_text):
+    """The model the stream's first system/init line names, or None: where Claude Code says which
+    model it runs (#602's live runner reads it the same way, scripts/_trajectory_live.py)."""
+    for line in stream_text.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "system" and obj.get("subtype") == "init":
+            return obj["model"] if isinstance(obj.get("model"), str) else None
+    return None
+
+
+def stream_models(stream_text):
+    """Every model the stream names, sorted: its system/init line, each assistant message, and the
+    result line's modelUsage, which is where a --fallback-model switch shows (#688 review)."""
+    seen = set()
+    for line in stream_text.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "system" and obj.get("subtype") == "init":
+            named = [obj.get("model")]
+        elif obj.get("type") == "assistant":
+            # Claude Code's own API-error messages name "<synthetic>": no model ran them.
+            named = [m for m in [(obj.get("message") or {}).get("model")] if m != "<synthetic>"]
+        elif obj.get("type") == "result" and isinstance(obj.get("modelUsage"), dict):
+            named = list(obj["modelUsage"])
+        else:
+            continue
+        seen |= {m for m in named if isinstance(m, str)}
+    return sorted(seen)
+
+
 def deferred_reads(stream_text, cues):
     """Per phase-keyed deferred document: not-entered | omitted | early | on-time | late."""
     seq = stream_sequence(stream_text)
@@ -802,6 +861,7 @@ def grade_behavioral(ev, workspace, originals, trace, grader_cmd, usage_path=Non
             "narration_only": ev.get("narration_only") is True, "grader_called": grader_cmd is not None,
             # A killed grader's partial output is not a bill: it is charged its full reservation.
             "grader_cost_usd": None if killed else usage.get("cost_usd"), "grader_killed": killed,
+            "grader_models": [m for m in usage.get("models") or [] if isinstance(m, str)],
             "orphans": not emptied, "attempted_violations": None,
             "assertion_rows": list((graded or {}).get("assertions") or []), "errors": errors}
 
@@ -857,9 +917,12 @@ def run_cell(ctx, pair, arm):
     ledger, model, tier = ctx["ledger"], ctx["model"], ctx["tier"]
     ledger.start(cell_id, "agent", model["agent_reserve_usd"])  # on disk BEFORE the paid call starts
     started = time.monotonic()
+    # The agent writes its stream straight into the cell, so a signal mid-call still leaves the
+    # models it named on disk (models_on_disk, #688 review).
+    stream_path = cell_dir / "stream.jsonl"
     try:
         stream, code, killed, emptied = run_group(ctx["agent_cmd"], input_text=text, cwd=workspace,
-                                                  env=env, timeout=ctx["timeout"])
+                                                  env=env, timeout=ctx["timeout"], stdout_path=stream_path)
         # Nothing more is paid for while a process of the agent's call may still be spending (K4).
         completed = not killed and emptied
         if killed:
@@ -874,8 +937,18 @@ def run_cell(ctx, pair, arm):
         errors.append(f"agent invocation failed: {eval_mod()._process_error(err)}")
     cell["wall_s"] = round(time.monotonic() - started, 3)
     cell["agent_killed"] = killed
-    stream_path = cell_dir / "stream.jsonl"
-    stream_path.write_text(stream, encoding="utf-8")
+    # The models the agent's own stream names, never just the one asked for: its init line, every
+    # assistant message and its result's modelUsage, where a fallback switch shows (#688 review). In
+    # the live tier a completed run that names none, or any other, is a failed cell.
+    requested = ctx["model_requested"]
+    cell["model"] = ran = stream_model(stream)
+    cell["models"] = seen = stream_models(stream)
+    if tier == "live":
+        if completed and ran is None:
+            errors.append("the agent reported no model (no system/init line naming one)")
+        errors += [f"the agent ran model {m!r}, not the requested {requested!r}" for m in seen if m != requested]
+    if not stream_path.is_file():  # the call never started
+        stream_path.write_text(stream, encoding="utf-8")
     tokens_in, tokens_out, cost, reasons = usage_of(stream_path, cell_id, task)
     cell.update({"input_tokens": tokens_in, "output_tokens": tokens_out, "cost_usd": cost,
                  "usage_unavailable": reasons})
@@ -894,6 +967,13 @@ def run_cell(ctx, pair, arm):
         if completed and not graded["orphans"]:
             ledger.settle(cell_id, "grader", grader_charge(graded, model, tier),
                           graded["grader_cost_usd"], graded["grader_killed"])
+        if tier == "live" and graded["grader_called"]:
+            # The grader is checked the same way, on the modelUsage of its JSON result (read even
+            # from one that timed out), and a grader that ran the wrong model fails the cell.
+            if not graded["grader_models"] and not graded["grader_killed"]:
+                errors.append("the grader reported no model (no modelUsage in its result)")
+            errors += [f"the grader ran model {m!r}, not the requested {requested!r}"
+                       for m in graded["grader_models"] if m != requested]
     else:
         graded = grade_trajectory(case, cell_dir / "trajectory.jsonl")
     graded["errors"] = errors + graded["errors"]
@@ -953,6 +1033,49 @@ def absolute_argv(argv):
             token = str(Path(token).resolve())
         out.append(token)
     return out
+
+
+def model_flags(argv, flag="--model"):
+    """Every value of `flag` a command names (`--model X` or `--model=X`), in order: #602's live
+    runner's model_flag (scripts/_trajectory_live.py), but all of them, so a second --model cannot
+    hide behind a first that agrees. A trailing flag with no value names ""."""
+    named = []
+    for i, token in enumerate(argv):
+        if token == flag:
+            named.append(argv[i + 1] if i + 1 < len(argv) else "")
+        elif token.startswith(flag + "="):
+            named.append(token.split("=", 1)[1])
+    return named
+
+
+def terminator_problem(argv):
+    """Why an option terminator (`--`) in a live command would turn the flags appended to it into
+    prompt text, or None. --model and the spend-limit flag go at the end, so a `--` after the
+    claude executable ends its options and they would be prompt text, running its default model
+    with no limit (#688 review). A `--` before it is a wrapper's own separator
+    (`trajectory_harness.py -- claude …`) and is safe; with no claude executable to anchor on,
+    any `--` is refused, since whose it is cannot be told."""
+    if "--" not in argv:
+        return None
+    at = next((i for i, token in enumerate(argv) if Path(token).name == STAND_IN), None)
+    if at is None:
+        return "holds an option terminator (--) and names no claude executable to place it against"
+    if "--" in argv[at + 1:]:
+        return ("holds an option terminator (--) after claude: --model and the spend-limit flag "
+                "appended after it would be prompt text, not options")
+    return None
+
+
+def with_model(argv, model):
+    """`argv` told to run `model`: as it is when it already names one (preflight refused any other),
+    else with `--model <model>` appended. A live run once recorded one model while Claude Code ran
+    its own default, because `--model` reached neither command (2026-10-25)."""
+    return argv if model_flags(argv) else [*argv, "--model", model]
+
+
+def grader_command(args, prereg):
+    """The live grader's command line as given: --grader-cmd, else the registration's default."""
+    return args.grader_cmd or prereg["harness"]["grader_cmd_default"]
 
 
 def _git_head():
@@ -1108,6 +1231,30 @@ class SpendLedger:
         return round(sum(charged for charged, _settled in self.calls(run, cell).values()), 6)
 
 
+def models_on_disk(out, active):
+    """The model fields a cell cut short still has on disk: its agent's stream once written (before
+    grading starts) and its grader's usage file once the meter wrote it (#688 review)."""
+    pair, arm = active["pair"], active["arm"]
+    cell_dir = Path(out) / "cells" / pair["mission"] / pair["task"] / f"r{pair['repeat']}" / arm
+    fields = {}
+    stream = cell_dir / "stream.jsonl"
+    if stream.is_file():
+        text = stream.read_text(encoding="utf-8", errors="replace")
+        fields.update(model=stream_model(text), models=stream_models(text))
+    try:
+        usage = json.loads((cell_dir / "grader-usage.json").read_text(encoding="utf-8"))
+        fields["grader_models"] = [m for m in usage.get("models") or [] if isinstance(m, str)]
+    except (OSError, ValueError, AttributeError):
+        # The meter was killed before writing it: the grader's own result, if it printed one whole.
+        try:
+            result = json.loads((cell_dir / "grader-usage.json.stdout").read_text(encoding="utf-8"))
+            if isinstance(result.get("modelUsage"), dict):
+                fields["grader_models"] = sorted(str(m) for m in result["modelUsage"])
+        except (OSError, ValueError, AttributeError):
+            pass
+    return fields
+
+
 def interrupted_cell(active, ledger, code):
     """The cell a signal cut short, kept in the results with what the ledger charged it."""
     pair, arm, cell_id = active["pair"], active["arm"], active["cell"]
@@ -1158,6 +1305,25 @@ def preflight(args, api, prereg):
                                                                     args.harness_version)) if not value]
     if missing:
         raise Refused(f"a live run records {', '.join(missing)}")
+    # The model the results name is the one every call is told to run: a command naming another is
+    # refused here, and one naming none is handed --model (_run_holding).
+    for what, command in (("agent", args.harness_cmd), ("grader", grader_command(args, prereg))):
+        try:
+            argv = shlex.split(command)
+        except ValueError as err:
+            raise Refused(f"the {what} command cannot be parsed: {err}") from err
+        problem = terminator_problem(argv)
+        if problem:
+            raise Refused(f"the {what} command {problem}")
+        wrong = sorted({named for named in model_flags(argv) if named != args.model})
+        if wrong:
+            raise Refused(f"--model {args.model} disagrees with the {what} command's --model "
+                          f"{', '.join(wrong)}: the results would name a model the call was not asked for")
+        # A fallback model lets the call switch models mid-run (#688 review).
+        fallback = sorted({named for named in model_flags(argv, "--fallback-model") if named != args.model})
+        if fallback:
+            raise Refused(f"the {what} command names --fallback-model {', '.join(fallback)}: the call "
+                          f"could switch off {args.model} mid-run, and the results name one model")
     if cap["status"] != api.AUTHORISED:
         raise Refused(f"the registration's cost cap is {cap['status']!r}: a live run needs the "
                       "owner to record an AUTHORISED amount in the registration first")
@@ -1239,7 +1405,8 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
            "ledger": ledger, "active": None,
            "guard": lambda path: api.safe_output(path, prereg),
            "timeout": args.timeout or TIMEOUTS[tier], "payloads": {}, "cues": {},
-           "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)})}
+           "protocol": fill(prereg["prompt"]["run_protocol"], {"catalog": str(catalog)}),
+           "model_requested": args.model}
     model = ctx["model"] = spend_model(prereg, tier)
     agent_flag, grader_flag = limit_flags(args, prereg)
     # Every call carries its own limit, whatever the tier, so both arms and every tier see the same
@@ -1249,9 +1416,11 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
     if tier == "fixture":
         ctx["agent_cmd"] = [str(sandbox.stand_in), "-p", "--output-format", "stream-json"] + agent_limit
     else:
-        ctx["agent_cmd"] = absolute_argv(shlex.split(args.harness_cmd)) + agent_limit
+        agent = absolute_argv(shlex.split(args.harness_cmd))
+        # A live call is told the model the results name, before its limit flags; so is the grader.
+        ctx["agent_cmd"] = (with_model(agent, args.model) if tier == "live" else agent) + agent_limit
     if tier == "live":
-        grader = absolute_argv(shlex.split(args.grader_cmd or prereg["harness"]["grader_cmd_default"]))
+        grader = with_model(absolute_argv(shlex.split(grader_command(args, prereg))), args.model)
         grader_output = args.grader_output or prereg["harness"]["grader_output"]
     else:
         grader, grader_output = [str(sandbox.stand_in), "-p", "--output-format", "json"], "claude-json"
@@ -1317,6 +1486,21 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
                 elif tier == "live" and cell["cost_usd"] is None:
                     stopped = (f"USAGE_UNAVAILABLE at {cell['cell']}: charged its full reservation; the "
                                f"harness reports no usage ({'; '.join(cell['usage_unavailable'])})")
+                elif tier == "live" and (
+                        (cell.get("model") is None and not cell["agent_killed"])
+                        or (set(cell.get("models") or []) | set(cell.get("grader_models") or []))
+                        - {ctx["model_requested"]}
+                        # A measured grader result that bills no model. An unmeasured one (no
+                        # parsable result) keeps the registered rule: charged its whole
+                        # reservation, its cell failed, the run going on.
+                        or (cell.get("grader_called") and not cell.get("grader_killed")
+                            and cell.get("grader_cost_usd") is not None and not cell.get("grader_models"))):
+                    # The --model it was handed did not hold, or the run did not say which model it
+                    # ran: every further cell would be paid for on a model the results may not name.
+                    named = sorted(set(cell.get("models") or []) | set(cell.get("grader_models") or []))
+                    stopped = (f"MODEL_MISMATCH at {cell['cell']}: its calls named {named or 'no model'}, "
+                               f"not only the requested {ctx['model_requested']!r}, although each was "
+                               "handed --model")
                 elif tier != "live" and spent > 0:
                     # Not a spend guard: a stub or the stand-in reporting cost broke its tier's contract.
                     stopped = f"SPEND_IN_NON_LIVE_TIER at {cell['cell']}: USD {spent:.2f} reported"
@@ -1330,7 +1514,9 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
         interrupted = stop.code if isinstance(stop.code, int) else 1
         active = ctx["active"]
         if active and not any(c["cell"] == active["cell"] for c in cells):
-            cells.append(interrupted_cell(active, ledger, interrupted))  # charged what the ledger holds
+            cut = interrupted_cell(active, ledger, interrupted)  # charged what the ledger holds
+            cut.update(models_on_disk(ctx["out"], active))  # and which models its calls ran (#688)
+            cells.append(cut)
         spent = ledger.total(run_id)
         stopped = (f"INTERRUPTED (exit {interrupted}): every live child process group was killed "
                    "and reaped before the runner exited")
@@ -1351,6 +1537,9 @@ def _run_holding(args, api, prereg, tier, missions, tasks, repeats, out, run_id,
                    "sha256": api.prereg_sha256(prereg),
                    "registration": api.registration_status(prereg)},
         "model": args.model if tier == "live" else ("inert-stand-in" if tier == "fixture" else "stub"),
+        # What each cell's agent stream named (system/init), never just the model asked for.
+        "models_observed": sorted({m for c in cells
+                                   for m in (c.get("models") or []) + (c.get("grader_models") or [])}),
         "harness": ctx["agent_cmd"][0] if tier != "fixture" else "inert stand-in (no model)",
         "harness_version": args.harness_version, "agent_cmd": ctx["agent_cmd"],
         "grader_cmd": ctx["grader_cmd"], "catalog_head": _git_head(),
@@ -1614,7 +1803,9 @@ def add_run_arguments(sub):
                    help="the harness's per-call spend-limit flag (default: registered; '' = none)")
     r.add_argument("--grader-limit-flag", default=None,
                    help="the grader's per-call spend-limit flag (default: registered; '' = none)")
-    r.add_argument("--model", default=None)
+    r.add_argument("--model", default=None,
+                   help="live: the model id the agent and grader are handed, checked against each "
+                        "agent stream's system/init line")
     r.add_argument("--harness-version", default=None)
     r.add_argument("--mission", action="append", default=None, help="fixture/stub only: a subset")
     r.add_argument("--task", action="append", default=None,

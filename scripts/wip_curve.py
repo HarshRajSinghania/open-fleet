@@ -2762,34 +2762,74 @@ def launched_model(stream: Path):
     return None
 
 
+_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def _zero_usage(usage) -> bool:
+    """True only for a usage record that reports zero in every token count: a count it does not
+    carry is unknown, never zero."""
+    return isinstance(usage, dict) and all(type(usage.get(k)) is int and usage[k] == 0 for k in _TOKEN_FIELDS)
+
+
 def credential_rejected(stream: Path) -> bool:
-    """True when a dispatch's stream ends in the harness's error result for a refused credential:
-    an error, no token used, and an authentication message ("Not logged in", a 401)."""
-    result = None
+    """True when a dispatch's stream is the harness's refusal of its credential and nothing else:
+    every result is an error reporting zero tokens and no cost, every assistant turn reports zero
+    tokens, and the last result carries an authentication message ("Not logged in", a 401). One
+    answered or paid result anywhere, or a count it does not report, and it is not (Codex at
+    a61f3e660a)."""
+    results = []
     for line in Path(stream).read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             obj = json.loads(line)
         except ValueError:
             continue
-        if isinstance(obj, dict) and obj.get("type") == "result":
-            result = obj
-    if not result or result.get("is_error") is not True:
-        return False
-    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
-    used = sum(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens",
-                                                "cache_read_input_tokens") if isinstance(usage.get(k) or 0, int))
-    return not used and bool(_AUTH_FAILURE_RE.search(str(result.get("result") or "")))
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "result":
+            cost = obj.get("total_cost_usd", 0)
+            if obj.get("is_error") is not True or not _zero_usage(obj.get("usage")) \
+                    or type(cost) not in (int, float) or cost != 0:
+                return False
+            results.append(obj)
+        elif obj.get("type") == "assistant" and isinstance(obj.get("message"), dict) \
+                and obj["message"].get("usage") is not None and not _zero_usage(obj["message"]["usage"]):
+            return False
+    return bool(results) and bool(_AUTH_FAILURE_RE.search(str(results[-1].get("result") or "")))
+
+
+def recorded_dispatches(rec: dict) -> set:
+    """Every dispatch a run record names: its builders' and reviewers' attempts, and every
+    dispatch whose launched model it recorded."""
+    found = set(rec.get("launched_models") or {})
+    for unit in (rec.get("units") or {}).values():
+        if isinstance(unit, dict):
+            for entry in list(unit.get("attempts") or []) + list(unit.get("reviews") or []):
+                if isinstance(entry, dict) and isinstance(entry.get("dispatch"), str):
+                    found.add(entry["dispatch"])
+    return found
 
 
 def infrastructure_failure(run_dir: Path, status=None):
     """Why a recorded run failed for an infrastructure reason, or None: it ended failed,
     interrupted or lost, or the API refused every model call it made for the credential. A run of
-    the second kind may still read `complete`, every unit parked, as #604's wip1-b3r1-rep1 did."""
+    the second kind may still read `complete`, every unit parked, as #604's wip1-b3r1-rep1 did, so
+    that claim is read from the run's bound evidence alone: every retained source unaltered and
+    nothing unbound (Bound), at least one recorded dispatch, and exactly one bound stream per
+    recorded dispatch, each a refused credential. A removed, altered or unbound stream never
+    authorises a paid re-run (Codex at a61f3e660a)."""
     if status in RETRYABLE:
         return f"it ended {status}"
-    streams = sorted((Path(run_dir) / "streams").glob("*.jsonl"))
-    if streams and all(credential_rejected(s) for s in streams):
-        return f"the API refused all {len(streams)} of its model calls for the credential"
+    try:
+        bound = Bound(run_dir)
+    except SourceError:
+        return None
+    dispatches = recorded_dispatches(bound.record)
+    streams = {rel[len("streams/"):-len(".jsonl")] for rel in bound.record.get("sources") or {}
+               if rel.startswith("streams/") and rel.endswith(".jsonl")}
+    if not dispatches or streams != dispatches:
+        return None
+    if all(credential_rejected(bound.path(f"streams/{d}.jsonl")) for d in sorted(dispatches)):
+        return f"the API refused all {len(dispatches)} of its model calls for the credential"
     return None
 
 

@@ -203,7 +203,9 @@ next run. An uncontained gate oracle halts the run as soon as its merge returns.
   because of its results. A run that fails for an infrastructure reason may be re-run once under
   a new attempt id (`<run>-a2`), and both runs are reported. `run` refuses `-a2` unless attempt 1
   ended `failed`, `interrupted` or `lost`, or the API refused every model call it made for the
-  credential, whatever its status (version 2). It refuses `-a3` and later. The report holds every other
+  credential, whatever its status (version 2). That last claim is read only from the run's bound
+  record: every retained source unaltered and none unbound, and exactly one stream per recorded
+  dispatch, each an error result reporting zero tokens and no cost. It refuses `-a3` and later. The report holds every other
   attempt non-compliant. A null or negative result completes
   the experiment.
 

@@ -2979,71 +2979,112 @@ def refused_stream(text="Not logged in · Please run /login", usage=None, is_err
     return "".join(json.dumps(line) + "\n" for line in lines)
 
 
+ANSWERED = refused_stream(text="WIP-BUILD-DONE", is_error=False,
+                          usage={**REFUSED_USAGE, "input_tokens": 12, "output_tokens": 4})
+
+
+def retained_run(run_dir: Path, streams: dict, *, dispatches=None, **fields) -> Path:
+    """A retained run in run.json's shape: one builder attempt per recorded dispatch, every stream
+    bound by its digest, as wip1-b3r1-rep1 retained them."""
+    dispatches = list(streams) if dispatches is None else dispatches
+    (run_dir / "streams").mkdir(parents=True, exist_ok=True)
+    for dispatch, text in streams.items():
+        (run_dir / "streams" / f"{dispatch}.jsonl").write_text(text, encoding="utf-8")
+    rec = {"run_id": run_dir.name, "status": "complete", "stop_reason": None,
+           "units": {"T1": {"attempts": [{"n": n, "dispatch": d} for n, d in enumerate(dispatches, 1)], "reviews": []}},
+           "launched_models": {d: "claude-sonnet-5-5" for d in streams}, **fields}
+    (run_dir / "run.json").write_text(json.dumps(rec), encoding="utf-8")
+    rebind(run_dir)
+    return run_dir
+
+
 class TestARefusedCredentialIsAnInfrastructureFailure(Tmp):
-    def stream(self, name="disp_a.jsonl", **kw):
-        path = self.tmp / "streams" / name
+    def stream(self, text):
+        path = self.tmp / "streams" / "disp_a.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(refused_stream(**kw), encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         return path
 
     def test_the_harness_error_for_a_refused_credential_is_recognised(self):
         for text in ("Not logged in · Please run /login", "OAuth token has expired. Please obtain a new token",
                      'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}', "Invalid API key"):
-            self.assertTrue(wip.credential_rejected(self.stream(text=text)), text)
+            self.assertTrue(wip.credential_rejected(self.stream(refused_stream(text=text))), text)
 
     def test_an_error_that_used_tokens_or_names_no_credential_is_not(self):
-        self.assertFalse(wip.credential_rejected(self.stream(usage={**REFUSED_USAGE, "input_tokens": 12})))
-        self.assertFalse(wip.credential_rejected(self.stream(text="API Error: 529 overloaded")))
-        self.assertFalse(wip.credential_rejected(self.stream(is_error=False)))
-        bare = self.tmp / "streams" / "disp_b.jsonl"
-        bare.write_text(refused_stream().splitlines()[1] + "\n", encoding="utf-8")  # no result line
-        self.assertFalse(wip.credential_rejected(bare))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(usage={**REFUSED_USAGE, "input_tokens": 12}))))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(text="API Error: 529 overloaded"))))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(is_error=False))))
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream().splitlines()[1] + "\n")), "no result line")
 
-    def test_a_run_whose_every_call_was_refused_failed_for_an_infrastructure_reason(self):
-        for name in ("disp_a.jsonl", "disp_b.jsonl", "disp_c.jsonl"):
-            self.stream(name)
-        self.assertEqual(wip.infrastructure_failure(self.tmp, "complete"),
+    def test_an_earlier_paid_result_makes_it_a_result(self):
+        # Codex at a61f3e660a: only the last result was read, so real work before a refusal was discarded
+        self.assertFalse(wip.credential_rejected(self.stream(ANSWERED + refused_stream())))
+        assistant = {"type": "assistant", "message": {"model": "claude-sonnet-5-5", "usage": {**REFUSED_USAGE, "output_tokens": 9}}}
+        self.assertFalse(wip.credential_rejected(self.stream(json.dumps(assistant) + "\n" + refused_stream())))
+        paid = json.loads(refused_stream().splitlines()[2])
+        paid["total_cost_usd"] = 0.02
+        self.assertFalse(wip.credential_rejected(self.stream(json.dumps(paid) + "\n")))
+
+    def test_a_usage_it_does_not_report_is_not_zero(self):
+        missing = {k: v for k, v in REFUSED_USAGE.items() if k != "output_tokens"}
+        self.assertFalse(wip.credential_rejected(self.stream(refused_stream(usage=missing))))
+        result = json.loads(refused_stream().splitlines()[2])
+        del result["usage"]
+        self.assertFalse(wip.credential_rejected(self.stream(json.dumps(result) + "\n")))
+
+    def test_a_run_whose_every_recorded_call_was_refused_failed_for_an_infrastructure_reason(self):
+        run = retained_run(self.tmp / "all", {f"disp_{k}": refused_stream() for k in range(3)})
+        self.assertEqual(wip.infrastructure_failure(run, "complete"),
                          "the API refused all 3 of its model calls for the credential")
-        self.stream("disp_d.jsonl", text="WIP-BUILD-DONE", is_error=False)
-        self.assertIsNone(wip.infrastructure_failure(self.tmp, "complete"), "a call was answered: a result")
-        self.assertEqual(wip.infrastructure_failure(self.tmp, "failed"), "it ended failed")
-        self.assertIsNone(wip.infrastructure_failure(self.tmp / "absent", "complete"), "no call is not a refusal")
+        self.assertEqual(wip.infrastructure_failure(self.tmp / "absent", "failed"), "it ended failed")
+
+    def test_an_answered_unbound_or_unrecorded_call_is_not(self):
+        streams = {f"disp_{k}": refused_stream() for k in range(3)}
+        self.assertIsNone(wip.infrastructure_failure(retained_run(self.tmp / "a", {**streams, "disp_9": ANSWERED}),
+                                                     "complete"), "one call was answered")
+        self.assertIsNone(wip.infrastructure_failure(retained_run(self.tmp / "b", streams,
+                                                                  dispatches=[*streams, "disp_9"]), "complete"),
+                          "a recorded dispatch has no stream")
+        self.assertIsNone(wip.infrastructure_failure(retained_run(self.tmp / "c", {}), "complete"), "no call at all")
+        unbound = retained_run(self.tmp / "d", streams)
+        (unbound / "streams" / "disp_8.jsonl").write_text(refused_stream(), encoding="utf-8")
+        self.assertIsNone(wip.infrastructure_failure(unbound, "complete"), "an unbound stream")
 
 
 class TestARunEveryCallOfWhichWasRefusedMayBeReRunOnce(Tmp):
-    """The -a2 rule reads the record: wip1-b3r1-rep1's run.json says `complete`, its streams say
-    the API refused every call. Either way the decision is made before anything launches."""
+    """The -a2 rule reads the bound record: wip1-b3r1-rep1's run.json says `complete`, its streams
+    say the API refused every call. Either way the decision is made before anything launches."""
 
-    def setUp(self):
-        super().setUp()
+    def retained(self, streams):
         self.env, self.trip_log = tripwired_env(self.tmp)
         self.results = self.tmp / "results"
         _prereg, _taskset, _path, prereg_sha, taskset_path = wip.load_prereg(PREREG)
-        self.run_dir = self.results / "runs" / "wip1-b1r1-rep1"
-        (self.run_dir / "streams").mkdir(parents=True)
-        (self.run_dir / "run.json").write_text(json.dumps(
-            {"status": "complete", "stop_reason": None, "prereg": {"sha256": prereg_sha},
-             "taskset": {"sha256": wip.sha256_file(taskset_path)}}), encoding="utf-8")
-        for k in range(3):
-            (self.run_dir / "streams" / f"disp_{k}.jsonl").write_text(refused_stream(), encoding="utf-8")
+        return retained_run(self.results / "runs" / "wip1-b1r1-rep1", streams, prereg={"sha256": prereg_sha},
+                            taskset={"sha256": wip.sha256_file(taskset_path)})
 
-    def rerun(self):
+    def rerun(self, expect):
         # -a2 passes the retry rule when the bogus second id is the refusal reached
-        return runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
-                      "wip1-b1r1-rep1-a2,wip1-b9r9-rep1", "--cost-cap-usd", "0", env=self.env)
-
-    def test_it_may_be_re_run_once(self):
-        p = self.rerun()
+        p = runner("run", "--results", str(self.results), "--workdir", str(self.tmp / "wd"), "--runs",
+                   "wip1-b1r1-rep1-a2,wip1-b9r9-rep1", "--cost-cap-usd", "0", env=self.env)
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
-        self.assertIn("not a scheduled run", p.stderr)
+        self.assertIn(expect, p.stderr)
         self.assertFalse(self.trip_log.exists())
 
+    def test_it_may_be_re_run_once(self):
+        self.retained({f"disp_{k}": refused_stream() for k in range(3)})
+        self.rerun("not a scheduled run")
+
     def test_one_answered_call_makes_it_a_result_that_is_never_re_run(self):
-        (self.run_dir / "streams" / "disp_9.jsonl").write_text(refused_stream(text="done", is_error=False),
-                                                                encoding="utf-8")
-        p = self.rerun()
-        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
-        self.assertIn("infrastructure failure", p.stderr)
+        self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": ANSWERED})
+        self.rerun("infrastructure failure")
+
+    def test_removing_or_altering_the_answered_stream_never_authorises_a_re_run(self):
+        # Codex at a61f3e660a: the gate read whatever streams were present, unchecked against run.json
+        run = self.retained({**{f"disp_{k}": refused_stream() for k in range(3)}, "disp_9": ANSWERED})
+        (run / "streams" / "disp_9.jsonl").write_text(refused_stream(), encoding="utf-8")
+        self.rerun("infrastructure failure")
+        (run / "streams" / "disp_9.jsonl").unlink()
+        self.rerun("infrastructure failure")
 
 
 class TestARefusedCredentialHaltsTheRun(LiveWithAFakeHarness):

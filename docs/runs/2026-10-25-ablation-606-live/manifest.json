@@ -2,10 +2,10 @@
   "unit": "ablation-606-live",
   "claim": "#606 live paired ablation, the registered design run once in the container harness at c220067e9c under the owner's USD 750 authorisation (arm cap USD 740, broker cap USD 750): 4 missions x 9 tasks x 5 repeats, 360 cells, claude-sonnet-5-5 on Claude Code 2.1.304, complete. The pre-registered rule returns SUCCESSFUL_REDUCTION for all four missions, but task success was 0 of 180 in each arm: the registered agent command granted no shell, so no worker could run the tests and none landed, and every one of 385 attempts to read the catalog holding the reduced arm's deferred documents was refused. The non-inferiority leg compares 0 with 0, so the run cannot support adopting the reduced activation; the recommendation is to keep the current one. Measured: no scope or approval violation in either arm, input tokens 42-62% lower in the reduced arm. USD 49.91 notional by the arm's ledger, USD 61.87 settled by the broker over 2297 calls, 0 refused; a superseded launch that ran claude-opus-5-5 settled USD 1.32.",
   "base_sha": "c220067e9cbffc4f34d6363a92153e45402bdfe4",
-  "head_sha": "",
+  "head_sha": "880e5b65bdf80dcf02ab44346dc01c1ee005d319",
   "contract": {
-    "source": "",
-    "digest": "",
+    "source": "docs/runs/2026-10-25-ablation-606-live/contract.json@880e5b65bdf80dcf02ab44346dc01c1ee005d319",
+    "digest": "sha256:8e4d8fa708081b09191b470ccde33679433eb36f956f3c8dad8eae9fdec55ed5",
     "criterion_ids": [
       "AB-1",
       "AB-2",
@@ -69,8 +69,8 @@
     "tool": "source-binding",
     "did": "re-derived every figure the report states from the retained bytes alone: the payloads, the design, every cell's task text, usage, deferred reads and trajectory grade, both ledgers and the analysis",
     "command": "python3 docs/runs/2026-10-25-ablation-606-live/rederive.py",
-    "artifact": "",
-    "result": ""
+    "artifact": "docs/runs/2026-10-25-ablation-606-live/rederive.txt",
+    "result": "rederive.py exit 0: 39 checks PASS, 0 FAIL, on head_sha's own tree"
   },
   "toolchain": "python 3.13.15 (macOS arm64) for the binding; the run: python 3.13.15-slim and Claude Code 2.1.304 in open-fleet-live:claude-2.1.304 (sha256:59c37b04d715)",
   "artifacts": [
@@ -6173,7 +6173,23 @@
     {
       "path": "docs/runs/2026-10-25-ablation-606-live/superseded/spend.jsonl",
       "sha256": "5a510360b98355a226211239e90173604ae22e19161fc3d0a3c171839a048d90"
+    },
+    {
+      "path": "docs/runs/2026-10-25-ablation-606-live/rederive.txt",
+      "sha256": "6384d257d0d076419b5906a7f6c14f9c114cefa1ef13dbe14106c61d8b3bc3f5"
     }
   ],
-  "commands": []
+  "commands": [
+    {
+      "label": "rederive",
+      "ts": "2026-10-25T13:39:22Z",
+      "cmd": "python3 docs/runs/2026-10-25-ablation-606-live/rederive.py",
+      "cmd_sha256": "aa9efd8fa2842bb9e1da26eb143855f1abfaf7594f3340db5a16db6dd376e8b6",
+      "exit": 0,
+      "duration_s": 118.787,
+      "commit": "880e5b65bdf80dcf02ab44346dc01c1ee005d319",
+      "wtree": "4a3a86675f82e67e565ed4340e4b2e37858e1588",
+      "artifact": "docs/runs/2026-10-25-ablation-606-live/rederive.txt"
+    }
+  ]
 }

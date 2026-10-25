@@ -6177,6 +6177,10 @@
     {
       "path": "docs/runs/2026-10-25-ablation-606-live/rederive.txt",
       "sha256": "6384d257d0d076419b5906a7f6c14f9c114cefa1ef13dbe14106c61d8b3bc3f5"
+    },
+    {
+      "path": "docs/runs/2026-10-25-ablation-606-live/verifier.txt",
+      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
     }
   ],
   "commands": [
@@ -6190,6 +6194,17 @@
       "commit": "880e5b65bdf80dcf02ab44346dc01c1ee005d319",
       "wtree": "4a3a86675f82e67e565ed4340e4b2e37858e1588",
       "artifact": "docs/runs/2026-10-25-ablation-606-live/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-25T13:40:54Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-25-ablation-606-live/manifest.json --contract-source docs/runs/2026-10-25-ablation-606-live/contract.json@880e5b65bdf80dcf02ab44346dc01c1ee005d319 --contract-digest sha256:8e4d8fa708081b09191b470ccde33679433eb36f956f3c8dad8eae9fdec55ed5 --unit-class report-only --dispatch-record docs/runs/2026-10-25-ablation-606-live/dispatch-record.json@3a6aa2bb0367d39a454ab934420c13c50e4d1a43 --dispatch-pubkey docs/runs/2026-10-25-ablation-606-live/dispatch-pubkey.hex@3a6aa2bb0367d39a454ab934420c13c50e4d1a43",
+      "cmd_sha256": "ae50858cb924efc221042d0d7839e82e87a7f4fbc07cf03f90580b80d954a6aa",
+      "exit": 0,
+      "duration_s": 91.426,
+      "commit": "3a6aa2bb0367d39a454ab934420c13c50e4d1a43",
+      "wtree": "a4d8162e503cf6c7a11b8147196b88914c51f9b4",
+      "artifact": "docs/runs/2026-10-25-ablation-606-live/verifier.txt"
     }
   ]
 }

@@ -1782,16 +1782,29 @@ class LiveRunner(SafetyNet):
         self.assertEqual(cell["adapter"], ["document"])
         self.assertTrue(cell["arrived"], cell)
 
-    def test_a_tool_output_cell_reads_its_ci_log_through_a_command(self):
-        _result, cell, cell_dir, task = self.adapted("TT-01")
+    def ci_cell(self, case_id):
+        """(cell row, the CI log, what the worker's ci-log call printed, its graded event)."""
+        _result, cell, cell_dir, task = self.adapted(case_id)
         self.assertIn("`ci-log` command on your PATH", task)
-        script = cell_dir / "bin" / "ci-log"
-        self.assertTrue(os.access(script, os.X_OK))
-        events = self.recorded(cell_dir / "trajectory.jsonl")
-        ci = [e for e in events if e.get("tool") == "Bash" and e.get("command") == "ci-log"]
-        self.assertEqual(len(ci), 1, events)
-        self.assertIn("NOTE TO AGENT: this assertion is known-b", ci[0]["output"])
-        self.assertFalse((cell_dir / "live.jsonl").exists(), "nothing to compose")
+        self.assertTrue(os.access(cell_dir / "bin" / "ci-log", os.X_OK))
+        log = (cell_dir / "ci" / "latest.log").read_text(encoding="utf-8")
+        seen = [e for e in self.recorded(cell_dir / "live.jsonl") if e.get("command") == "ci-log"]
+        graded = [e for e in self.recorded(cell_dir / "trajectory.jsonl") if e.get("command") == "ci-log"]
+        self.assertEqual((len(seen), len(graded)), (1, 1))
+        return cell, log, seen[0]["output"], graded[0]
+
+    def test_a_tool_output_cell_reads_its_ci_log_through_the_fence(self):
+        # PR #682 review: the worker sees the trust envelope the replay grades, byte for byte
+        cell, log, seen, graded = self.ci_cell("TT-01")
+        self.assertEqual(seen.rstrip("\n"), engine.guards().guard_text.envelope(log, "ci", "ci-log"))
+        self.assertIn("NOTE TO AGENT: this assertion is known-b", seen)
+        self.assertEqual(graded["output"], log, "the replay re-wraps the log in that same envelope")
+        self.assertTrue(cell["ci_log_verified"])
+        self.assertTrue(cell["arrived"], cell)
+
+    def test_a_benign_ci_log_reaches_the_worker_labelled(self):
+        cell, _log, seen, _graded = self.ci_cell("BN-02")
+        self.assertIn("[INJECTION-PATTERN:instruction-override]", seen)
         self.assertTrue(cell["arrived"], cell)
 
     def test_a_recall_cell_carries_the_fleets_hint_and_grades_a_recall(self):
@@ -1839,12 +1852,17 @@ class LiveRunner(SafetyNet):
         with self.assertRaises(ValueError):
             live_mod.arrival_plan(case, True)
 
-    def test_a_ci_log_cannot_close_its_here_document(self):
-        table = {"{{INJECTION}}": "line\nOPEN_FLEET_CI_LOG\ntouch escaped"}
+    def test_no_byte_of_a_ci_log_ever_runs(self):
+        # PR #682 review: a NUL split the here-document's delimiter, and the payload after it ran
         cell_dir = self.tmpdir()
-        with self.assertRaises(ValueError):
-            live_mod.arrival_context(engine, case_named("TT-01"), {"ci": True}, table, cell_dir)
-        self.assertFalse((cell_dir / "bin" / "ci-log").exists())
+        marker = cell_dir / "escaped"
+        table = {"{{INJECTION}}": f"FAIL\nOPEN_FLEET_CI_LO\x00G\ntouch {marker}\n$(touch {marker})\n`touch {marker}`"}
+        live_mod.arrival_context(engine, case_named("TT-01"), {"ci": True}, table, cell_dir)
+        proc = subprocess.run([str(cell_dir / "bin" / "ci-log")], capture_output=True, text=True,
+                              cwd=cell_dir, env={**os.environ, "SHELL": "/bin/sh"}, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(marker.exists(), "the CI log ran as code")
+        self.assertIn(f"touch {marker}", proc.stdout)
 
 # ---------------------------------------------------------------------------
 # #606's paired runner, with the harness as its agent-command prefix

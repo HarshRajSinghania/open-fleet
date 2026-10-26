@@ -23,16 +23,16 @@ A strip beneath both panels, small: and for every fix, the negative control — 
 Footer, small, centred: reproduce it: sh demo/negative-control/run.sh"""),
 
 n("install-stack", """Content: left two-thirds: a vertical stack of five wide rounded layer boxes, bottom to top, each with a large label and a caption:
-Layer 1, the bottom: Orca app, caption: orchestration experimental feature enabled
-Layer 2: orca CLI, caption: orca-ide on Linux outside Orca terminals
-Layer 3: orchestration skill + orca-cli skill, caption: the substrate — worktrees, terminals, task DAG, worker_done
-Layer 4, drawn with a brighter glow: open-fleet missions, caption: this repo — the outcome layer
-Layer 5, the top: upstream packs, caption: mattpocock/skills · garrytan/gstack · addyosmani/agent-skills — one pack per worker, never two
+Layer 1, the bottom: coding-agent harnesses, caption: claude · codex · gemini · opencode · omp · pi · jcode · goose · hermes · crush · openhands
+Layer 2: runtime provider interface (14 runtimes), caption: OPEN_FLEET_RUNTIME = posix (standalone SQLite + worktrees) · orca · overstory · t3code · ao · +9 more
+Layer 3: runtime policies + verifier, caption: worktree isolation · ro / rw / danger sandboxes · merge train · verify.py + verify-gate.sh
+Layer 4, drawn with a brighter glow: open-fleet missions, caption: skills/ — outcome-named workflows with SHA-bound definitions of done
+Layer 5, the top: upstream worker packs, caption: mattpocock/skills · garrytan/gstack · addyosmani/agent-skills — one pack per worker, never two
 Right third, header: THREE INSTALL PATHS, three cards stacked vertically:
-Card 1: symlink into ~/.claude/skills, caption: references preserved · the completion gate is OFF until you paste the settings snippet, with an amber badge: wire the gate
-Card 2: Claude Code plugin, caption: the whole repo copied · completion gate ON by construction, with a green badge: gate on
-Card 3: skills CLI, caption: copies sever ../../playbooks — not supported today (#294), with a red badge: broken
-Footer, small, centred: scripts/bundle.py --check builds self-contained missions for copy installers"""),
+Card 1: sh scripts/install.sh (symlink), caption: ~/.claude/skills or --skills-dir for Codex / Gemini / OpenCode · paste settings snippet, with an amber badge: wire the gate
+Card 2: Claude Code plugin, caption: lean dist bundle · completion gate ON by construction, with a green badge: gate on
+Card 3: skills CLI (repo root copy), caption: copying skills/ severs ../../playbooks — use dist bundle instead, with a red badge: use dist
+Footer, small, centred: scripts/bundle.py builds self-contained missions in dist/ for copy installers"""),
 
 n("gates-terminal", """Content: what a fleet's questions look like from your side of the terminal.
 Left, large: a terminal window showing exactly these five monospace lines:
@@ -76,10 +76,10 @@ Footer, small, centred: a mission is never presented as more proven than its evi
 Render ONLY the text listed above — no extra captions, no repeated or paraphrased lines, no link hints under the note"""),
 
 n("verify-gate", """Content: the completion gate and its trust boundary.
-Top row, left to right, joined by arrows: a box: the coordinator sets the gate env (caption: ORCA_MANIFEST · contract source + digest · unit class) → a box: Stop / TaskCompleted hook fires verify-gate.sh → a box: verify.py re-derives (caption: scope from the frozen contract · review from GitHub · negative control read, or replayed in a throwaway worktree when ORCA_EXECUTE_NC is set) → two outcome boxes stacked: a green one: exit 0 — allow, and a red one: exit 2 — BLOCK, with feedback
-Caption under the row: fail-closed — a missing manifest, a missing contract, or a verifier error blocks
+Top row, left to right, joined by arrows: a box: the coordinator sets the gate env (caption: OPEN_FLEET_MANIFEST · contract source + digest · unit class) → a box: Stop / TaskCompleted hook fires verify-gate.sh → a box: verify.py re-derives (caption: scope from the frozen contract · review from GitHub · negative control read, or replayed in a throwaway worktree when OPEN_FLEET_EXECUTE_NC is set) → two outcome boxes stacked: a green one: exit 0 — allow, and a red one: exit 2 — BLOCK, with feedback
+Caption under the row: fail-closed — a missing manifest, a missing contract, or a verifier error blocks (ORCA_* legacy aliases also accepted)
 Bottom half, header: WHERE THE VERDICT IS SOUND, two cards side by side:
-Card 1, amber outline, header: native hook, inside the worker's own session, body: the worker can set ORCA_* itself — ADVISORY, defence in depth
+Card 1, amber outline, header: native hook, inside the worker's own session, body: the worker can set OPEN_FLEET_* / ORCA_* itself — ADVISORY, defence in depth
 Card 2, green outline, header: CI · MCP-Task · SDK subprocess, body: the coordinator owns the env — SOUND
 Footer, small, centred: keep the differentiation in verify.py, not in the hook"""),
 
@@ -109,6 +109,19 @@ Stage 1 (blue outline): T0 TWIN-QUERY, caption: page until truncated is false ·
 Stage 2 (amber outline): TRUST FENCE, caption: guard_text.py normalizes text · ticket text is data, never authority
 Stage 3 (green outline): VERIFIED CLOSURE, caption: single-attempt writeId + reference · proved by merged SHA in manifest
 Footer, small, centred: a ticket reflects closure — it never proves it or authorizes writes"""),
+
+n("runtime-providers", """Content: how one mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses.
+Top band: one wide box spanning the canvas, large label: MISSIONS (skills/) + PLAYBOOKS (playbooks/), caption: zero vendor lock-in — workflows call neutral runtime/scripts/*.py entrypoints (spawn_worker.sh · task_ops.py · worker_ops.py · worktree_ops.py · send_msg.py)
+Middle band: two large side-by-side panels fed by downward arrows from the top band:
+Left panel, header: 14 RUNTIME PROVIDERS (OPEN_FLEET_RUNTIME), three compact sub-rows inside:
+Row 1 (green outline): posix — standalone zero-daemon SQLite WAL + local git worktrees + tmux or headless subprocesses
+Row 2 (blue outline): orca — Orca desktop IDE + CLI worktrees, terminals, native task DAG and issue-tracker bridge
+Row 3 (blue outline): 12 external orchestrators — overstory · t3code · ao · superset · gastown · worktrunk · jcode-swarm · emdash · vibe-kanban · paperclip · multiclaude · openhands
+Right panel, header: 11 CODING-AGENT HARNESSES (OPEN_FLEET_HARNESS), two compact sub-rows inside:
+Row 1 (blue outline): claude · codex · gemini · opencode · omp · pi · jcode · goose · hermes · crush · openhands
+Row 2 (amber outline): uniform permission mapping — --profile ro (read-only) · rw (workspace-write) · danger (isolated sandbox only)
+Bottom band: one wide green-outlined box fed by arrows from both panels, large label: INDEPENDENT SHA-BOUND VERIFIER (verify.py + verify-gate.sh + run_report.py), caption: git ancestry · clean-env test replay · negative control · reviewed_sha == head_sha — identical proof on every runtime
+Footer, small, centred: pick the orchestrator and the coding agent independently — the evidence contract never changes"""),
 ]
 
 

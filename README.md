@@ -102,15 +102,16 @@ sh hooks/print-settings-snippet.sh
 <details>
 <summary><b>Paste-into-agent install prompt</b> (let your coding agent install and verify the catalog)</summary>
 
-Paste this into Claude Code, Codex, Gemini CLI, or OpenCode:
+Paste this into Claude Code, Codex, Gemini CLI, or OpenCode (non-Claude hosts pass `--skills-dir` per [non-Claude coordinator hosts](docs/install.md#installing-into-non-claude-coordinator-hosts)):
 
 ```text
-Clone https://github.com/ravidsrk/open-fleet.git into ~/open-fleet (full clone, no --depth 1),
-run `sh scripts/install.sh && sh scripts/install.sh --check`, merge the "hooks" block from
-`sh hooks/print-settings-snippet.sh` into ~/.claude/settings.json without replacing existing
-settings (removing the _comment keys if needed), verify the hook is registered and executable with
-`test -x runtime/scripts/verify-gate.sh && grep -c verify-gate.sh ~/.claude/settings.json` (expect 2),
-and run `ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop` (expect exit 2).
+Clone https://github.com/ravidsrk/open-fleet.git into ~/open-fleet (full clone, no --depth 1) and cd into ~/open-fleet.
+If running in Claude Code, run `sh scripts/install.sh && sh scripts/install.sh --check`, merge the "hooks" block from
+`sh hooks/print-settings-snippet.sh` into ~/.claude/settings.json without replacing existing settings (removing the
+_comment keys if needed), and verify `test -x runtime/scripts/verify-gate.sh && grep -c verify-gate.sh ~/.claude/settings.json`
+(expect 2). If running in another host (Codex: ~/.codex/skills, Gemini CLI: ~/.gemini/skills, OpenCode: ~/.config/opencode/skills),
+run `sh scripts/install.sh --skills-dir=<your-host-skills-dir> && sh scripts/install.sh --check --skills-dir=<your-host-skills-dir>`.
+Finally, verify the fail-closed completion gate with `ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop` (expect exit 2).
 ```
 
 </details>

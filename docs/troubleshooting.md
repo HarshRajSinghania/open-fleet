@@ -140,9 +140,9 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
 ## Duplicate skills or `verify-gate.sh` runs twice (stacked install)
 
 - **Cause:** Both the symlink install (`~/.claude/skills/<mission>` + `~/.claude/settings.json` hook snippet) and the Claude Code plugin (`open-fleet@open-fleet`) are active on the same machine.
-- **Fix:** Pick **one** install path per host ([Install — Do not stack](install.md#pick-one-install-path-per-host-do-not-stack)). To keep the plugin and remove the manual symlinks:
+- **Fix:** Pick **one** install path per host ([Install — Do not stack](install.md#pick-one-install-path-per-host-do-not-stack)). To keep the plugin and remove the manual symlinks, run from your `open-fleet` clone root:
   ```bash
-  find ~/.claude/skills -maxdepth 1 -type l -lname '*open-fleet/skills/*' -delete
+  find ~/.claude/skills -maxdepth 1 -type l \( -lname "$(pwd -P)/skills/*" -o -lname "$(pwd)/skills/*" \) -delete
   ```
   Then remove the manual `verify-gate.sh` entries from `~/.claude/settings.json` so only the plugin's [`hooks/hooks.json`](../hooks/hooks.json) fires.
 

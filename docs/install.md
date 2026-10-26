@@ -25,9 +25,9 @@ Install the `open-fleet` catalog once on your workstation, then invoke missions 
 >
 > **Switching cleanly from symlink install to the plugin (or vice versa):**
 > ```bash
-> # Before installing the plugin, remove symlinked missions from ~/.claude/skills/
+> # Run from your open-fleet clone root: remove symlinked missions from ~/.claude/skills/
 > # and remove the manual verify-gate.sh hook block from ~/.claude/settings.json:
-> find ~/.claude/skills -maxdepth 1 -type l -lname '*open-fleet/skills/*' -delete
+> find ~/.claude/skills -maxdepth 1 -type l \( -lname "$(pwd -P)/skills/*" -o -lname "$(pwd)/skills/*" \) -delete
 > ```
 
 ---

@@ -48,7 +48,9 @@ recorded versions. A group that copies another route's witness is refused (#596 
   start. After the plan was approved in the pane, Write and Edit stayed out of the toolset.
   Route: the run manifest's `toolchain` line (`Orca 1.4.239`, `Claude Code 2.1.304`,
   `PROFILE=ro`). The 2026-10-13 Linux witness (Orca 1.4.224, the earlier row) stays on record.
-- `orca` `rw`/`claude`: same build and harness, in the [ship-it mdtoc run](runs/2026-10-13-ship-it-mdtoc.md).
+- `orca` `rw`/`claude`: Orca 1.4.224 (`orca-ide`, Ubuntu 24.04.5 arm64) and Claude Code
+  2.1.296, 2026-10-13, in the [ship-it mdtoc run](runs/2026-10-13-ship-it-mdtoc.md). The
+  v1.4.239 re-pin re-checked this cell by source delta only, with no live `rw` run.
   Only the `WORKER_CMD` override lane was witnessed. On the witness host, the supervised
   `worker-start` lane reported `LAUNCHED_UNUSABLE`. Route: the run's dispatch script
   (`PROFILE="rw"`, `WORKER_CMD="claude --dangerously-skip-permissions"`) and its ledger

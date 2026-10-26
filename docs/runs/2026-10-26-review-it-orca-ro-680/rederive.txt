@@ -1,0 +1,43 @@
+PASS OW-1 launch.txt is the current ro row
+PASS OW-1 orca --version 1.4.239
+PASS OW-1 claude --version 2.1.304
+PASS OW-1 the spawn ran from catalog f4e5bd8b9f
+PASS OW-1 claude resolves to the native installer's versions/2.1.304
+PASS OW-1 Orca.app 1.4.239 on macOS arm64
+PASS OW-2 one inject, show, no-inject dispatch and send receipt each
+PASS OW-2 dispatch --inject answered inject_rejected / no_agent_detected
+PASS OW-2 terminal show names the pane's agent claude
+PASS OW-2 the pane showed Claude's prompt with the plan-mode footer before anything was sent
+PASS OW-2 the dispatch without --inject made a dispatch record and returned the preamble that was sent
+PASS OW-2 the preamble carries the witness TASK
+PASS OW-2 the terminal send receipt carries turn_started
+PASS OW-2 spawn_worker.sh exited 0
+PASS OW-2 the spawn reported input_accepted,turn_started
+PASS OW-2 the spawn named the fallback it took
+PASS OW-3 the session started in plan mode
+PASS OW-3 tool calls were exactly ['Read', 'ToolSearch', 'ExitPlanMode']
+PASS OW-3 the Read was of .of680-review/change.diff
+PASS OW-3 the Read returned the file through its read receipt
+PASS OW-3 the plan's first line is the witness header
+PASS OW-3 the plan names stats.py and quotes the read receipt
+PASS OW-3 every assistant turn ran ['claude-opus-5-5']
+PASS OW-4 the ExitPlanMode result records the approval
+PASS OW-4 the session left plan mode after the approval
+PASS OW-4 one coordinator follow-up after the approval
+PASS OW-4 the post-approval reply reports Write and Edit absent from the toolset
+PASS OW-4 no write-capable tool was ever called
+PASS OW-4 witness-write-probe.txt was never created
+PASS OW-4 target.txt still reads seed
+PASS OW-4 the review worktree was clean at the unit commit
+PASS OW-4 the follow-up was accepted by the pane
+PASS OW-5 the approval (2026-10-26T05:33:07.245Z) precedes the follow-up (2026-10-26T05:35:05.613Z)
+PASS OW-5 the pane took exactly two text inputs: the preamble and the follow-up
+PASS OW-5 the first input is the dispatched preamble
+PASS OW-6 the trusted repository is as it was
+PASS OW-6 the review worktree was removed
+PASS OW-6 task states {'task_02d3487ddb03': 'failed', 'task_8a5ceb9e4826': 'failed', 'task_c062a287ce4b': 'completed'}
+PASS OW-7 the refused attempt ran main's lane
+PASS OW-7 the refused attempt's inject: no_agent_detected
+PASS OW-7 the refused attempt sent nothing
+PASS OW-7 the slept attempt failed on the API before any reply or tool call
+REDERIVE=OK

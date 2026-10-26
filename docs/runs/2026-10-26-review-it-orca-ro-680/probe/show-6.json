@@ -1,0 +1,31 @@
+{
+  "id": "f1ce3fc3-4e69-43ea-83ff-9c0c615aecb8",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_bb835619-2660-42ca-b51a-898813571ff6",
+      "ptyId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe@@c51bfef7",
+      "incarnationId": "605ab1e8-3bca-4d7d-95c0-7a22a48deefe",
+      "orphaned": false,
+      "worktreeId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe",
+      "worktreePath": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe",
+      "branch": "refs/heads/ravidsrk/of680-probe",
+      "tabId": "9cdc3166-b31f-468a-9fc3-f27f4a262d05",
+      "leafId": "1d3b16ea-d36d-46f5-8bf5-e421057de1fe",
+      "title": "of680-probe-worker",
+      "paneTitle": "of680-probe-worker",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1792985091866,
+      "preview": "────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ Try \"write a test for submit.py\"\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n⏸ plan mode on (shift+tab to cycle)",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

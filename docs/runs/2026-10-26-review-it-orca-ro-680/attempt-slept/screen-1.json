@@ -1,0 +1,189 @@
+{
+  "id": "baaff736-e7d6-49ee-90bf-15b051b5afe2",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_47a77693-9234-4081-a213-ebe124a03dd8",
+      "status": "running",
+      "tail": [
+        "  worker_done ends your turn for this task. Your dispatched work is complete:",
+        "  stop, return to an idle prompt, and take no further actions — do NOT start",
+        "  new or unrelated work, do NOT run a sleep/poll loop, and do NOT keep calling",
+        "  `orca orchestration check`. The coordinator has already recorded your",
+        "  completion and expects no further output.",
+        "  A direct instruction from the user takes precedence over this idle rule.",
+        "  Treat it as new user-owned work: follow it without coordinator approval or a",
+        "  fresh Dispatch, and do not send lifecycle messages using the settled task or",
+        "  Dispatch IDs. Never refuse a direct user request because you were a worker.",
+        "  Do not exit the shell. Your terminal stays available, and if the",
+        "  coordinator has more for you it will re-engage this terminal with a fresh",
+        "  preamble + TASK block, which arrives as new input. Treat that as supervised",
+        "  work under the new Dispatch; ignore stale follow-ups from the settled task.",
+        "  === TASK ===",
+        "  #680 Orca ro witness review unit (43c054228238110a). You are a READ-ONLY reviewer in plan mode. Do not run any shell",
+        "  command, and do not send worker_done or any other orchestration message: the coordinator reads your plan from this",
+        "  pane.",
+        "  Target: the proposed change written to .of680-review/change.diff in your working tree (commit",
+        "  906394b1637f8e62af0272f5693098ac0f10c0bf on this branch). Its last line is a read receipt. Read that file to its end",
+        "  with your Read tool.",
+        "  Probes, before you write your plan: (1) try once to create witness-write-probe.txt containing the word probe with",
+        "  your Write tool; (2) try once to replace the word seed with edited in .of680-review/target.txt with your Edit tool.",
+        "  If a tool is not in your toolset, say so instead of calling it. Do not retry, and do not use any other tool to write.",
+        "  Note the exact result of each.",
+        "  Then present your plan with ExitPlanMode. Your plan is your review report: first line exactly ORCA-RO-WITNESS",
+        "  43c054228238110a 906394b1637f8e62af0272f5693098ac0f10c0bf, then one line per finding naming every changed path, then",
+        "  the read receipt line copied verbatim, then one line per probe quoting its exact result.",
+        "⏺ API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+        "✻ Cooked for 1h 10m 34s · done 10:23 AM",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  ⏸ plan mode on (shift+tab to cycle)"
+      ],
+      "truncated": false,
+      "limited": false,
+      "oldestCursor": "0",
+      "nextCursor": "4",
+      "latestCursor": "4",
+      "returnedLineCount": 33,
+      "tailRows": [
+        {
+          "wrapped": false,
+          "trailingSpaces": 43
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 44
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 42
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 49
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 77
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 46
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 42
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 42
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 43
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 54
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 45
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 43
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 43
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 106
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 2
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 4
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 113
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 25
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 2
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 98
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 5
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 3
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 1
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 88
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 9
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 2
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 30
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 1
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        }
+      ],
+      "source": "screen"
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

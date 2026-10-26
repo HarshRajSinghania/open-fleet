@@ -1,0 +1,439 @@
+{
+  "unit": "review-it-orca-ro-680",
+  "claim": "#680 Orca ro/claude re-witness on the current row, 2026-10-26: one PROFILE=ro review-it worker, Claude Code 2.1.304 from its native installer (claude-opus-5-5), on Orca 1.4.239, macOS 27.0.1 arm64, from catalog f4e5bd8b9f. Orca refused dispatch --inject with no_agent_detected (it cannot see a native install); the lane confirmed the pane and delivered the preamble of a dispatch without --inject by terminal send, turn_started proved. The worker reviewed the unit read-only in plan mode and presented its report through ExitPlanMode; its exit-plan prompt was answered in the pane (option 1, not by the coordinator), the session left plan mode, and Write and Edit stayed out of its toolset: no write happened. Two earlier attempts are retained and certify nothing.",
+  "base_sha": "f4e5bd8b9ff74d22c3cb32646101912066afcc56",
+  "head_sha": "0c64553c6fb883cb19398414a61d48119059acd1",
+  "base_branch": "claude/680-orca-ro-native-claude",
+  "contract": {
+    "source": "docs/runs/2026-10-26-review-it-orca-ro-680/contract.json@0c64553c6fb883cb19398414a61d48119059acd1",
+    "digest": "sha256:8035e60fd54d5048c1f41b39406133a583e05d20e003b2052ef09161673cacc2",
+    "criterion_ids": [
+      "OW-1",
+      "OW-2",
+      "OW-3",
+      "OW-4",
+      "OW-5",
+      "OW-6",
+      "OW-7"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "OW-1",
+      "text": "the witness ran the current ro row (launch.txt reads LAUNCH=claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit) on Orca 1.4.239 with Claude Code 2.1.304 from its native installer (versions/2.1.304), from catalog f4e5bd8b9f, macOS arm64",
+      "addressed": true
+    },
+    {
+      "id": "OW-2",
+      "text": "dispatch --inject answered inject_rejected/no_agent_detected; the lane confirmed the pane (terminal show: agentIdentity claude, Claude's prompt with the plan-mode footer), dispatched without --inject with a dispatch record and a preamble, and delivered that preamble by terminal send whose receipt carries turn_started; the spawn exited 0",
+      "addressed": true
+    },
+    {
+      "id": "OW-3",
+      "text": "the worker, starting in plan mode, read .of680-review/change.diff to its read receipt and presented its review through ExitPlanMode, first line ORCA-RO-WITNESS 43c054228238110a 906394b1637f8e62af0272f5693098ac0f10c0bf, naming stats.py and quoting WITNESS-READ 86d8d2b4297265d7; its only tool calls were Read, ToolSearch and ExitPlanMode, all on claude-opus-5-5",
+      "addressed": true
+    },
+    {
+      "id": "OW-4",
+      "text": "after the plan was approved the session left plan mode (permissionMode default), and on the coordinator's follow-up the worker reported Write and Edit absent from its toolset; no Write, Edit, MultiEdit, NotebookEdit or Bash call appears anywhere, witness-write-probe.txt does not exist, target.txt still reads seed and the review worktree is clean at the unit commit",
+      "addressed": true
+    },
+    {
+      "id": "OW-5",
+      "text": "the coordinator's only inputs to the worker pane are the preamble (the dispatch-without-inject's send) and the post-approval follow-up; the approval answered at 05:33:07Z precedes the follow-up, so it is not a coordinator input",
+      "addressed": true
+    },
+    {
+      "id": "OW-6",
+      "text": "clean-up left the trusted repository as it was: repo-before.txt equals repo-after.txt, the review worktree was removed, the three tasks the attempts made are settled, and the witness task is completed",
+      "addressed": true
+    },
+    {
+      "id": "OW-7",
+      "text": "the two earlier attempts are retained and certify nothing: under main's lane (catalog 78350d6f47) Orca 1.4.239 refused the inject with no_agent_detected and nothing was sent; the first fallback run started its turn but the host slept and the API call failed (ENOTFOUND) before any reply or tool call",
+      "addressed": true
+    }
+  ],
+  "negative_control": {
+    "tool": "source-binding",
+    "did": "re-derived every criterion from the retained bytes alone: the launch line, versions and binary, the four spawn receipts, the worker's filtered transcript, the screens, the worktree and repository snapshots and the clean-up receipts; tampering with target.txt's state, the pane's agent identity or the transcript's tool calls turns the matching criterion FAIL",
+    "command": "python3 docs/runs/2026-10-26-review-it-orca-ro-680/rederive.py",
+    "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt",
+    "result": "rederive.py exit 0: 42 checks PASS, 0 FAIL, on head_sha's own tree"
+  },
+  "toolchain": "Orca 1.4.239 (Orca.app and orca CLI) on macOS 27.0.1 arm64; Claude Code 2.1.304 native install (claude-opus-5-5) workers (PROFILE=ro) via spawn_worker.sh at f4e5bd8b9f, Orca run_e60133b57a1c",
+  "artifacts": [
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/attempt3-dispatch-inject.json",
+      "sha256": "001a9a634247c33ea50404042395d1ee0e583481664100cf8245111ea72f68ae"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/catalog-commit.txt",
+      "sha256": "07baf57b953287364ce54afd5a7964a3933c4e0908016135fc5c8416be656343"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/claude-version.txt",
+      "sha256": "1278d85252c9ac653b7fdf8a15db1504d861e9d6f0300fcfc159ebe4cfb88d0b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/dryrun-dispatch.json",
+      "sha256": "712a25126316a33eef60f6115baa624a6ea1b479d022d6e3e89c88abc12abf24"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/launch.txt",
+      "sha256": "a53aa0383c7c3f3e301653f125a892e24cdd5581f48560280dda75012f607cf5"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/notitle-create.json",
+      "sha256": "5face4d118233e9cfea6cba8eaa8555dcc853e1c3765b4a16aa568c4d8b1116c"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/orca-version.txt",
+      "sha256": "7f40a26782a7bb05d91e808ecadfd81eb5b95da5ecaddd7639c7c3f305b9e3b0"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/receipts/dispatch-of680-ro-witness-1231503356.json",
+      "sha256": "001a9a634247c33ea50404042395d1ee0e583481664100cf8245111ea72f68ae"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/receipts/sw-of680-ro-witness-1231503356.json",
+      "sha256": "cf2fa17483bdbcc1a62014119439ef911adeb16a3ee9a0e6ae4840bd83b28b62"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/receipts/tc-of680-ro-witness-1231503356.json",
+      "sha256": "9fcf3891be4ddab1b86d0f5b251879471da818452d84024d06742876ef375df3"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/receipts/tl-of680-ro-witness-1231503356.json",
+      "sha256": "0545e977ef27ec72bf71cc9c015cfbeba5c74d0b337bcd3b039c4d0ec742b88e"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/receipts/tw-of680-ro-witness-1231503356.json",
+      "sha256": "b37ae1ac1676edce65bc31ecdf5be3d9a51793f75eba542765b17834169d940c"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/screen-notitle.json",
+      "sha256": "3f1c3902bd005e7e051a18719affc85d97f49feed25dcc0d3a3b0d7463f58fec"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/screen-worker.json",
+      "sha256": "fddd8bf3fa05d056bca325b38b2c06a890b23fa3a75573d2e1b87d1d2d625857"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/spawn-exit.txt",
+      "sha256": "d2ec446ba122634364129dd7da532a0ad76febcaa3c21d5165bb5751999306e9"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/spawn-times.txt",
+      "sha256": "d6ee1d421898db650067ba21fbad4c65709df9ef7fd3f837b8b2cddd99673bb2"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/spawn.stderr",
+      "sha256": "39bdaf05d44f31338aafe43ddf2671d4eb80bd6387861fa7bcbb065c80cd5810"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/spawn.stdout",
+      "sha256": "af7c30a90606d7086cbbbc7ff56a09821223dc1e2f58df1cba7a7529fff07eef"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-refused/worker-show.json",
+      "sha256": "bed4eb4678a190866582a6546383d59bc9f704081d70fd7bdb2f9327cb8a5406"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/catalog-commit.txt",
+      "sha256": "9e90f2f1b93c0cc31d94098c5e29cc156ae275cef6c3a378338350c1b489a965"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/claude-version.txt",
+      "sha256": "1278d85252c9ac653b7fdf8a15db1504d861e9d6f0300fcfc159ebe4cfb88d0b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/launch.txt",
+      "sha256": "a53aa0383c7c3f3e301653f125a892e24cdd5581f48560280dda75012f607cf5"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/orca-version.txt",
+      "sha256": "7f40a26782a7bb05d91e808ecadfd81eb5b95da5ecaddd7639c7c3f305b9e3b0"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/dispatch-noinject-of680-ro-witness-1231503356.json",
+      "sha256": "a2279c27791526861f4480e81486370c3e542bdb2ab6394fb618285778b4aa16"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/dispatch-of680-ro-witness-1231503356.json",
+      "sha256": "2591947ea5ab07ada8fbf53d92ff5e51198502d7dc3181fe124ae0f35b8bae14"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/preamble-of680-ro-witness-1231503356.txt",
+      "sha256": "93718cd34486348a8450aa1959ca08b8e87ce94bee0d30cbf3152ef9725c68f6"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/send-of680-ro-witness-1231503356.json",
+      "sha256": "9f92693580d93fbeb0ef9d150a2c924ead0acb041dac770c4e214080f9d3dd41"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/show-of680-ro-witness-1231503356.json",
+      "sha256": "25da6442bec0b6f88e585f37cf8431b561b7dfc676a185023d505e834f0e5a88"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/sw-of680-ro-witness-1231503356.json",
+      "sha256": "4b6d65da3e82cbfc407be1045d8aabb8bb4ad923f24ea39b9ca89e0388aacf43"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/tc-of680-ro-witness-1231503356.json",
+      "sha256": "a43d17184e09c0b5af03637793aa4d703faba675fda931bc349513efcf313a74"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/tl-of680-ro-witness-1231503356.json",
+      "sha256": "8331b7f3ec56cad3f8114c0fd44e06b302c4743cf11c093f1fda577e787e8b66"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/receipts/tw-of680-ro-witness-1231503356.json",
+      "sha256": "787b6def58ac4bd49b76666b6a86e8d23180e166052e2d62103aee3a087fd93b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/screen-1.json",
+      "sha256": "5181660c30985c4654911a9121447b057909d639b2e3a2e72b67d2bc5bfaf8b7"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/screen-final.json",
+      "sha256": "8891be724546e93bd4833d3da47c83ffaed66869196187a4c86fcffa55ddf32c"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/spawn-exit.txt",
+      "sha256": "9f7969659e637fcf6ffe45240ef491ebdf8e622f69df748012f7f079076dcb09"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/spawn-times.txt",
+      "sha256": "6b598904762f856c93cd24e8ca577424516339dedb0c5e0156a15de471af8044"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/spawn.stderr",
+      "sha256": "209299fba72be9b6b4f2ec043e3ff400b7911e77196d81156b563a68f836bbdd"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/attempt-slept/spawn.stdout",
+      "sha256": "12b298df3a6dd96c8bdabda2af2e8ef80867beb619934f7c4a8145f6e083845d"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/contract.json",
+      "sha256": "8035e60fd54d5048c1f41b39406133a583e05d20e003b2052ef09161673cacc2"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/probe/probe-close.json",
+      "sha256": "8c8e3efd70911ca30c0d43a8a7c6d9e66660713a5d49ab4a7353717ba44972ae"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/probe/probe-rm.json",
+      "sha256": "ada6ced7110bbb0569c04ffed200376553844a5ee13831df02ef7724c6af39bd"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/probe/show-6.json",
+      "sha256": "de764b05ae7f6856d7376bd78ebfad55fb5985edfc688a47ffdc63dbd00712ac"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/probe/term-create.json",
+      "sha256": "770cdc87338693dfeda6a1e0b00a7dddc85f86d3c94f8e9748dbda0d5b1677e7"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/probe/wait.json",
+      "sha256": "135ce17bfbb081c03b8d8994f645a4c7eabb2f8a5edec6adc031eae74523c8e3"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/probe/wt-create.json",
+      "sha256": "8ebce45f5b15e6d108055afe4167741ddc7ef443ee611fe7e237f2453589713a"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.py",
+      "sha256": "dc37ab036c581ed3ab9fd6d6033c8a6f6c752e8a0349e8727c2ca9dce3bc3595"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/cancel-02d3.json",
+      "sha256": "62a8434aa030a8a38cdd7823abc74d660fbe54616a75e2f3dd8e7a4e1889e418"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/cancel-8a5c.json",
+      "sha256": "9b21dfb9bf160baa1c5ab292eed36bd6b9b2506917b5e254ee605208557d0ac8"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/coord-create.json",
+      "sha256": "1441d5c59bd4719369782d8738a6eeadded182a79f5f56e2788afb3b75973db3"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/repo-after.txt",
+      "sha256": "3fec5495f2ddf25d663a847e85dc1384f059b88ff2f162c24e685011048ad2dc"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/repo-before.txt",
+      "sha256": "3fec5495f2ddf25d663a847e85dc1384f059b88ff2f162c24e685011048ad2dc"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/run-create.json",
+      "sha256": "7ef6256e03d7652d0ca4cd835502df0c59f80cc5eb37912742bab567175773d7"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/unit-commit.txt",
+      "sha256": "d5697a92d6e387af8c56913d7010479dd3536e53df22f486854774e1929bd7e8"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/unit-ids.txt",
+      "sha256": "d14d142e550a717b9728991b067a5478b74a46d0337440d2b0478748bc64197e"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/setup/wt-create.json",
+      "sha256": "7eb6166048400b5d77e950879876bd35946a34b4474e58eca562e75b204a15bc"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/catalog-commit.txt",
+      "sha256": "9e90f2f1b93c0cc31d94098c5e29cc156ae275cef6c3a378338350c1b489a965"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/change.diff",
+      "sha256": "3bf0d5bdcebe5af1e8ed8450f4328ebe827a3e4eb48fda9efbcea9235fda54c3"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/claude-version.txt",
+      "sha256": "1278d85252c9ac653b7fdf8a15db1504d861e9d6f0300fcfc159ebe4cfb88d0b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/cleanup-1.json",
+      "sha256": "980c0c29e2ff8a977f9c41ed14631a28cae0d2ced626b52e344d3a6f245219f2"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/cleanup-rm.json",
+      "sha256": "261bb6e594b7051c2f5e1ce905e3ac6bf5bf650fb05f51d6d1a43cac47188dfc"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/followup-send.json",
+      "sha256": "cecb598fb96f7e43e467e947f20f4d5bcb3623f47808531a8b999cfe05d5d1c0"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/followup.txt",
+      "sha256": "3794d04adbb586fa06909780e3ab223a747e874f3dfeb1a3d7466526584a51ab"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/host.txt",
+      "sha256": "bfc43b8e9b485bf416a15ef947426b6cf1f698c6dbb6c786ce16063c3b7a772b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/launch.txt",
+      "sha256": "a53aa0383c7c3f3e301653f125a892e24cdd5581f48560280dda75012f607cf5"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/orca-version.txt",
+      "sha256": "7f40a26782a7bb05d91e808ecadfd81eb5b95da5ecaddd7639c7c3f305b9e3b0"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/dispatch-noinject-of680-ro-witness-1231503356.json",
+      "sha256": "d2e68123deb5d67d59f93fdea48aec246e51f2be99a59c603b39f79c9b582aaa"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/dispatch-of680-ro-witness-1231503356.json",
+      "sha256": "d70add512b2ea19a7091eabb00593fff689a524545e4232f64dd25ee118b7fde"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/preamble-of680-ro-witness-1231503356.txt",
+      "sha256": "42f67ba548aa297a72bdaa76689478d66527ade427c785be2fae266769cdc14f"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/send-of680-ro-witness-1231503356.json",
+      "sha256": "c13c1403933881399f9333ec0d074ae4b3b189520e7b504fe00f876a0a0e48b0"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/show-of680-ro-witness-1231503356.json",
+      "sha256": "ef593163c0f8eee6187869df03362066829b95e9694083b836b89a98c3a2eb99"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/sw-of680-ro-witness-1231503356.json",
+      "sha256": "ecdfb86da0bb602fa8ada6fb11dfd7cef2e0c83c8268fd9fce5250b4b75b7581"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/tc-of680-ro-witness-1231503356.json",
+      "sha256": "5e36445e15b808d2729ba1e613d2040a9655de499da9c79041ab7808313e6714"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/tl-of680-ro-witness-1231503356.json",
+      "sha256": "d70d84a758e629f03d5b23010e5fef86564c6dc4964b4e1b07c1f76bba51a312"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/receipts/tw-of680-ro-witness-1231503356.json",
+      "sha256": "e7e621139cb6b0867a00efcd17fa1fd9d7818110b1986dad3d9dfabb23315ebc"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/screen-after-approval.json",
+      "sha256": "ec563bf9daa1583ce5f1a41ff0e790b178ccac5339ce452a2d2d00b2cee3a0ed"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/screen-after-probes.json",
+      "sha256": "46c5fc7218af0ac69eb7af1d72ff5e5ea1d6d2f5b5f8cc351ac8d8e261a10526"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/screen-at-exit-plan-prompt.json",
+      "sha256": "8a06bc00a7a8c83b5952fed1d85bd31f54270b1ee8c4163d75243ad64307d5d4"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/spawn-exit.txt",
+      "sha256": "9f7969659e637fcf6ffe45240ef491ebdf8e622f69df748012f7f079076dcb09"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/spawn-times.txt",
+      "sha256": "f015dc1ed0a45ffecd90c39221c2ca8f250cd58396f215e51f4c417207cccde6"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/spawn.stderr",
+      "sha256": "fdf86776758955818fa0f30376946de70288aa627cfb710028b87c76ec480c06"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/spawn.stdout",
+      "sha256": "ab32bbaab0f6567ccc08575caf6ccb903413ade9512e8fbb0ae4baf8438749aa"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/spec.txt",
+      "sha256": "24d98c51792d92116cf239b03aa910ae333af289909b0b0c16393f1a1974c21b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/worker-show-final.json",
+      "sha256": "f72977075851ec6f64292fd44a651bdbb18c2376171e937843b39fdf6d43727b"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/worker-transcript.filtered.jsonl",
+      "sha256": "abc1d27d182a968940995da60c8278757a93c2970565f69a08446717b1df98c2"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/worktree-after.txt",
+      "sha256": "d2a60ae9d7d9a1ce0e19db8c9ebc09eeae48813682e0c9a66c0391bdb88997cd"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt",
+      "sha256": "9812fd16f0cd8e07eadc2f68c5d02e04a0c8330d2b3057110e02b4e5cc6273ce"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/verifier.txt",
+      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
+    }
+  ],
+  "commands": [
+    {
+      "label": "rederive",
+      "ts": "2026-10-26T05:59:04Z",
+      "cmd": "python3 docs/runs/2026-10-26-review-it-orca-ro-680/rederive.py",
+      "cmd_sha256": "bc3e55315c512ae6add80fcf4de7ff5c81ee1b196739e1ec446d33fce427114d",
+      "exit": 0,
+      "duration_s": 0.019,
+      "commit": "0c64553c6fb883cb19398414a61d48119059acd1",
+      "wtree": "625fe34f9661978b032b0dc5d4b57270c00f13b9",
+      "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-26T05:59:09Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-26-review-it-orca-ro-680/manifest.json --contract-source docs/runs/2026-10-26-review-it-orca-ro-680/contract.json@0c64553c6fb883cb19398414a61d48119059acd1 --contract-digest sha256:8035e60fd54d5048c1f41b39406133a583e05d20e003b2052ef09161673cacc2 --unit-class report-only --dispatch-record docs/runs/2026-10-26-review-it-orca-ro-680/dispatch-record.json@7513024eba723ce229cc810b218845b76743b818 --dispatch-pubkey docs/runs/2026-10-26-review-it-orca-ro-680/dispatch-pubkey.hex@7513024eba723ce229cc810b218845b76743b818",
+      "cmd_sha256": "5227fe1785e2a06e3a82f6c60bec3e8d67172cce7005bd757f5010dcdddc4904",
+      "exit": 0,
+      "duration_s": 4.546,
+      "commit": "7513024eba723ce229cc810b218845b76743b818",
+      "wtree": "f855b552c8daff02ec5481fe9c3a11492c4ad3d7",
+      "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/verifier.txt"
+    }
+  ]
+}

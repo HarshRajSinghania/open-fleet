@@ -1,0 +1,75 @@
+{
+  "id": "cd54e87a-2000-467e-b612-733dbfc7baf9",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe",
+      "identity": {
+        "key": "wt2:local:3fc065c0-4cb8-4d72-b4e7-bcc820ae206c",
+        "executionHostId": "local",
+        "instanceId": "3fc065c0-4cb8-4d72-b4e7-bcc820ae206c"
+      },
+      "instanceId": "3fc065c0-4cb8-4d72-b4e7-bcc820ae206c",
+      "repoId": "635ce96a-83cc-4bdb-a46c-675b3cb96041",
+      "projectId": "github:ravidsrk/oss-contribution-agent",
+      "hostId": "local",
+      "projectHostSetupId": "635ce96a-83cc-4bdb-a46c-675b3cb96041",
+      "creatorProvenance": {
+        "kind": "host"
+      },
+      "path": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe",
+      "head": "c42078109c9c862fff1b8b332e6385aa1f8ba3bf",
+      "branch": "refs/heads/ravidsrk/of680-probe",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "of680-probe",
+      "displayNameMode": "fixed",
+      "comment": "",
+      "linkedIssue": null,
+      "linkedPR": null,
+      "linkedLinearIssue": null,
+      "linkedLinearIssueWorkspaceId": null,
+      "linkedLinearIssueOrganizationUrlKey": null,
+      "linkedGitLabMR": null,
+      "linkedGitLabIssue": null,
+      "linkedBitbucketPR": null,
+      "linkedAzureDevOpsPR": null,
+      "linkedGiteaPR": null,
+      "linkedWorkItem": null,
+      "linkedTaskSourceContext": null,
+      "isArchived": false,
+      "isUnread": false,
+      "isPinned": false,
+      "sortOrder": 1792985066325,
+      "lastActivityAt": 1792985066325,
+      "createdAt": 1792985066325,
+      "cliProvenance": {
+        "kind": "created-by-cli",
+        "createdAt": 1792985062504
+      },
+      "baseRef": "refs/remotes/origin/main",
+      "workspaceStatus": "in-progress",
+      "parentWorktreeId": null,
+      "childWorktreeIds": [],
+      "lineage": null,
+      "workspaceLineage": null,
+      "git": {
+        "path": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe",
+        "head": "c42078109c9c862fff1b8b332e6385aa1f8ba3bf",
+        "branch": "refs/heads/ravidsrk/of680-probe",
+        "isBare": false,
+        "isMainWorktree": false
+      }
+    },
+    "lineage": null,
+    "workspaceLineage": null,
+    "warnings": [],
+    "catalogVersion": {
+      "epoch": "77dcdeac-1f42-4620-80f5-1e54b529011e",
+      "sequence": 7
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "859d7292-82b7-4168-89ad-f0f3340bee92",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_bb835619-2660-42ca-b51a-898813571ff6",
+      "tabId": "9cdc3166-b31f-468a-9fc3-f27f4a262d05",
+      "paneKey": "9cdc3166-b31f-468a-9fc3-f27f4a262d05:1d3b16ea-d36d-46f5-8bf5-e421057de1fe",
+      "ptyId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe@@c51bfef7",
+      "worktreeId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-probe",
+      "title": "of680-probe-worker",
+      "executionHostId": "local",
+      "incarnationId": "605ab1e8-3bca-4d7d-95c0-7a22a48deefe",
+      "hostPlatform": "darwin",
+      "surface": "visible",
+      "processId": 73434
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "id": "3dc0aae5-81ee-42bf-a447-00eed7edd3c6",
+  "ok": false,
+  "error": {
+    "code": "inject_rejected",
+    "message": "Cannot dispatch --inject to terminal term_6845bf9a-95d4-449b-8163-6f05e0898614: no recognized agent detected. Orca detects these agent CLIs (acli, agy, aider, amp, ante, auggie, autohand, claude, cline, cn, codebuddy, codebuff, codex, command-code, copilot, crush, cursor-agent, devin, droid, dsh, freebuff, gemini, goose, grok, hermes, jcode, kilo, kimi, kiro-cli, mimo, muse, omp, openclaude, openclaw, opencode, opencode2, pi, prime-agent, qodercli, qoderclicn, qwen, traecli, vibe, zcode-cli). Start one in the terminal and let it finish launching, or dispatch without --inject and send the prompt manually. Orchestration mutation request ID: 7fec4bc5-5f47-49ba-99b1-1b13b8b62fd9.",
+    "data": {
+      "terminal": "term_6845bf9a-95d4-449b-8163-6f05e0898614",
+      "reason": "no_agent_detected",
+      "nextSteps": [
+        "Start a recognized agent CLI in that terminal and wait for it to finish launching, or pick a terminal that already runs one.",
+        "Alternatively dispatch without --inject and deliver the prompt with orca terminal send --terminal <handle> --text <prompt> --enter --json."
+      ],
+      "orchestrationRequestId": "7fec4bc5-5f47-49ba-99b1-1b13b8b62fd9",
+      "originalCommand": [
+        "orca",
+        "orchestration",
+        "dispatch",
+        "--task",
+        "task_c062a287ce4b",
+        "--to",
+        "term_6845bf9a-95d4-449b-8163-6f05e0898614",
+        "--inject",
+        "--run",
+        "run_e60133b57a1c",
+        "--from",
+        "term_afba0da7-9a4d-402b-b116-810ce136f357",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

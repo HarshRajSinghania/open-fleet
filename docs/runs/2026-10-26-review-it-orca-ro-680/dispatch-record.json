@@ -1,0 +1,8 @@
+{
+  "record": {
+    "manifest_id": "review-it-orca-ro-680",
+    "contract_digest": "sha256:8035e60fd54d5048c1f41b39406133a583e05d20e003b2052ef09161673cacc2",
+    "unit_class": "report-only"
+  },
+  "sig_b64": "UcwiYs3xmz0d389RHwKxF//qf1ekEQ0YIlFPVhp8tX4w7kIX4MSiQRtZFTnhtKeu/Sv8EwPJf+oEwkstk7mPCg=="
+}

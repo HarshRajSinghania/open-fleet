@@ -1,0 +1,59 @@
+{
+  "id": "5e4049a0-784b-462b-a91a-6fa7ad2f5c0d",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_6d97bc21-9bda-41a0-89b3-e13393995210",
+      "status": "running",
+      "tail": [
+        " ▐▛███▛█   Claude Code v2.1.304",
+        "▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max",
+        " ▝▝   ▝▝   ~/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯ Try \"create a util logging.py that...\"",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  ⏸ plan mode on (shift+tab to cycle)"
+      ],
+      "truncated": false,
+      "limited": false,
+      "oldestCursor": "0",
+      "nextCursor": "4",
+      "latestCursor": "4",
+      "returnedLineCount": 7,
+      "tailRows": [
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        }
+      ],
+      "source": "screen"
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

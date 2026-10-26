@@ -164,6 +164,8 @@
 #                             CLAUDE_CMD / CODEX_CMD still work for those two. Any override
 #                             requires ORCA_COORD_ALLOW_CMD_OVERRIDE=1 (it bypasses the profile).
 #   SETTLE_SECS               TUI settle delay (default 20 seconds) — custom-argv lane.
+#   SUBMIT_SECS               how long terminal send waits to observe the submit (default 30) — the
+#                             ro claude no-inject fallback (#680).
 set -Eeuo pipefail  # -E: ERR trap fires inside functions (orca_json) too
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # sibling scripts (sandbox_doctor.py)
 # The CLI command name, resolved the way upstream documents it (#510): ORCA_CLI_COMMAND when set,
@@ -421,6 +423,7 @@ if [ "$RETRY_REQ_GIVEN" = "1" ]; then WS_ARGS+=(--retry-request "$RETRY_REQUEST"
 SP="${SP:-$(pwd)}"
 PROFILE="${PROFILE:-rw}"
 SETTLE_SECS="${SETTLE_SECS:-20}"
+SUBMIT_SECS="${SUBMIT_SECS:-30}"
 # The runtime, resolved by the SAME rule the providers use (runtime/providers/__init__.py
 # active_provider_name): case- and space-insensitive, local-posix → posix, auto → orca only when
 # the Orca CLI is on PATH. A raw string compare read OPEN_FLEET_RUNTIME=ORCA as a non-Orca
@@ -1429,7 +1432,8 @@ PY
   # step failed (#596).
   dj_rc=0
   "$ORCA_BIN" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$dj" || dj_rc=$?
-  dj_err=$(python3 -I - "$dj" <<'PY'
+  classify_dispatch() {
+    python3 -I - "$1" <<'PY'
 import json, sys
 POLICY_CODES = {"task_not_found", "task_not_startable", "inject_rejected",
                 "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive"}
@@ -1454,10 +1458,96 @@ msg = " ".join(str(err.get("message") or "").split())[:300]
 verdict = "refused" if code in POLICY_CODES else "failed"
 print(f"{verdict} CODE={code}" + (f" reason={reason}" if reason else "") + f" — {msg}")
 PY
+  }
+  dj_err=$(classify_dispatch "$dj")
+  # #680: Orca proves a TUI agent present by its pane or tab title or its foreground process
+  # name. Claude Code's native installer runs ~/.local/share/claude/versions/<version>, so the
+  # kernel names the process `<version>`, and an idle Claude sets no title; `--inject` therefore
+  # answers no_agent_detected for a live claude pane (Orca 1.4.229 to 1.4.240). Orca's own
+  # nextStep is a dispatch without --inject and the prompt by `terminal send`. This lane takes it
+  # ONLY for the certified row (PROFILE=ro claude, no override), and only after Orca's spawn
+  # record names the pane's agent claude AND its screen shows Claude's prompt in plan mode:
+  # typed into a shell instead, a preamble would run as commands.
+  fallback_skip=""
+  case "$dj_err" in
+    "refused CODE=inject_rejected reason=no_agent_detected "*)
+      if [ -n "$override" ] || [ "$PROFILE" != "ro" ] || [ "$agent" != "claude" ]; then
+        fallback_skip="the no-inject fallback covers only PROFILE=ro claude without an override"
+      else
+        step=confirm-agent
+        ts="$SP/show-$safe_title.json"
+        "$ORCA_BIN" terminal show --terminal "$h" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$ts" 2>&1 || true
+        fallback_skip=$(python3 -I - "$ts" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("terminal show gave no readable record")
+    raise SystemExit(0)
+r = d.get("result", d) if isinstance(d, dict) else {}
+t = r.get("terminal", r) if isinstance(r, dict) else None
+if not isinstance(t, dict) or d.get("error"):
+    print("terminal show gave no terminal record")
+    raise SystemExit(0)
+ident = t.get("agentIdentity")
+if ident != "claude":
+    print(f"Orca's spawn record names the pane's agent {ident!r}, not 'claude'")
+    raise SystemExit(0)
+preview = t.get("preview") if isinstance(t.get("preview"), str) else ""
+tail = preview[-2000:]
+# Claude Code's idle composer: the prompt glyph, and the ro row's own plan-mode footer.
+if "\u276f" not in tail or "plan mode on" not in tail:
+    print("the pane's screen does not show Claude's prompt in plan mode")
+PY
 )
+      fi
+      if [ -z "$fallback_skip" ]; then
+        step=dispatch-no-inject
+        dd="$SP/dispatch-noinject-$safe_title.json"
+        dd_rc=0
+        "$ORCA_BIN" orchestration dispatch --task "$task" --to "$h" --return-preamble ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$dd" || dd_rc=$?
+        dd_err=$(classify_dispatch "$dd")
+        case "$dd_err" in
+          "refused "*)
+            echo "SPAWN=REFUSED task=${task} dispatch (no --inject, after inject_rejected/no_agent_detected) ${dd_err#refused } (nothing was sent; receipts $dj and $dd; the agent pane ${h} is still open: inspect it, never resend)" >&2
+            exit 2 ;;
+          "failed "*)
+            echo "SPAWN=FAILED task=${task} step=${step} rc=1 — dispatch (no --inject) ${dd_err#failed } (receipts $dj and $dd)" >&2
+            exit 1 ;;
+        esac
+        pf="$SP/preamble-$safe_title.txt"
+        if [ "$dd_rc" != "0" ] || ! python3 -I - "$dd" "$pf" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d.get("result", d) if isinstance(d, dict) else {}
+pre = r.get("preamble") if isinstance(r, dict) else None
+if not isinstance(r.get("dispatch"), dict) or not isinstance(pre, str) or not pre.strip():
+    raise SystemExit(1)
+open(sys.argv[2], "w").write(pre)
+PY
+        then
+          echo "SPAWN=FAILED task=${task} step=${step} rc=${dd_rc} — dispatch (no --inject) returned no dispatch record or no preamble (receipts $dj and $dd)" >&2
+          exit 1
+        fi
+        step=terminal-send
+        ds="$SP/send-$safe_title.json"
+        ds_rc=0
+        "$ORCA_BIN" terminal send --terminal "$h" --text "$(cat "$pf")" --enter --wait-submit "$SUBMIT_SECS" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$ds" || ds_rc=$?
+        ds_err=$(classify_dispatch "$ds")
+        if [ -n "$ds_err" ] || [ "$ds_rc" != "0" ]; then
+          echo "SPAWN=FAILED task=${task} step=${step} rc=${ds_rc} — terminal send of the dispatch's preamble ${ds_err:-exited ${ds_rc}} (receipts $dd and $ds; the agent pane ${h} may hold part of it: inspect it, never resend)" >&2
+          exit 1
+        fi
+        echo "SPAWN=NOTE task=${task} dispatch --inject answered inject_rejected/no_agent_detected for a pane Orca names claude, showing Claude's plan-mode prompt; the preamble of a dispatch without --inject was delivered by terminal send, Orca's own nextStep (#680). Receipts: $dj, $dd, $ds" >&2
+        dj="$ds"
+        dj_err=""
+        dj_rc=0
+      fi
+      ;;
+  esac
   case "$dj_err" in
     "refused "*)
-      echo "SPAWN=REFUSED task=${task} dispatch --inject ${dj_err#refused } (policy/usage — nextSteps above; nothing was injected; receipt in $dj; the agent pane ${h} is still open: inspect it, never resend)" >&2
+      echo "SPAWN=REFUSED task=${task} dispatch --inject ${dj_err#refused } (policy/usage — nextSteps above; nothing was injected; receipt in $dj; the agent pane ${h} is still open: inspect it, never resend)${fallback_skip:+; no-inject fallback not taken: ${fallback_skip}}" >&2
       exit 2 ;;
     "failed "*)
       echo "SPAWN=FAILED task=${task} step=${step} rc=1 — dispatch --inject ${dj_err#failed } (receipt in $dj)" >&2

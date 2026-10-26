@@ -369,3 +369,27 @@ class ExitCodes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ErrorEnvelopesAreFindings(unittest.TestCase):
+    """2026-10-26 review: an exit-0 `{"error": {...}}` envelope carried no `fail`/`warn`/`status`
+    key, so a doctor that never ran its checks read as CLEAR; spawn_worker.sh's own envelope reader
+    treats the identical shape as failure. A singular `error` is now a finding."""
+
+    def test_a_top_level_error_envelope_is_refused(self):
+        raw = json.dumps({"error": {"code": "recipe_not_found", "data": {"recipe": "lane-7"}}})
+        clear, reason = sandbox_doctor.verdict(raw, "lane-7")
+        self.assertFalse(clear)
+        self.assertIn("error=recipe_not_found", reason)
+
+    def test_a_result_level_error_envelope_is_refused(self):
+        raw = json.dumps({"result": {"recipeId": "lane-7", "error": "runtime_unavailable"}})
+        clear, reason = sandbox_doctor.verdict(raw, "lane-7")
+        self.assertFalse(clear)
+        self.assertIn("error=runtime_unavailable", reason)
+
+    def test_an_empty_or_null_error_field_is_not_a_finding(self):
+        for value in (None, "", [], {}):
+            raw = json.dumps({"recipeId": "lane-7", "ok": True, "checks": [], "error": value})
+            clear, reason = sandbox_doctor.verdict(raw, "lane-7")
+            self.assertTrue(clear, f"{value!r}: {reason}")

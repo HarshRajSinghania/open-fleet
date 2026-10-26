@@ -880,8 +880,14 @@ def main(argv):
     for s in skipped:
         print(f"  [SKIP ] {s['id']:24} {s['class']:26}  <- NOT SCORED: {s['reason']}")
     if skipped:
+        reasons = " ".join(str(s.get("reason") or "") for s in skipped)
+        remedy = []
+        if "shallow clone" in reasons:
+            remedy.append("use a full clone (CI: actions/checkout with fetch-depth: 0)")
+        if "system-custody git" in reasons:
+            remedy.append("run where git is system-custody (root-owned, under a system directory)")
         print(f"  {len(skipped)} trap(s) skipped — this run does not measure them. "
-              "Use a full clone (CI: actions/checkout with fetch-depth: 0).")
+              + "; ".join(remedy or ["see each reason above"]) + ".")
     for name, r in res.items():
         reject = ""
         if "false_reject" in r:

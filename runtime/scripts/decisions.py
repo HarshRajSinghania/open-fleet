@@ -416,6 +416,9 @@ def validate(record, net, grant_pub=None):
         problems.append("empty answer")
     if not record["why"]:
         problems.append("empty why (a decision nobody can reconstruct is not a record)")
+    if _instant(record.get("ts", "")) == _UNDATED:
+        problems.append(f"ts {record.get('ts')!r} is not a readable timestamp — a record whose time "
+                        "cannot be read sorts before everything and would pass for history")
     ahead = (_instant(record.get("ts", "")) - _now()).total_seconds()
     if ahead > MAX_FUTURE_SKEW_SECONDS:
         problems.append(
@@ -716,15 +719,32 @@ def cmd_tally(args, _net):
 def cmd_check(args, net):
     pub = grant_pubkey(args.file, args.pin_ref)
     records = read_lines(args.file)
-    failures = []
+    since = getattr(args, "since", None)
+    fence = None
+    if since:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", since):
+            print(f"decisions: --since {since!r} is not a date (YYYY-MM-DD)", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+        fence = _instant(since + "T00:00:00Z")
+    checked, legacy = [], 0
     for record in records:
+        instant = _instant(record.get("ts", ""))
+        # An unreadable stamp sorts before everything (_UNDATED): judged, never skipped as
+        # history, or `2026-10-26T99:99:99Z` would carry any line past the fence (PR #707 review).
+        if fence is not None and instant != _UNDATED and instant < fence:
+            legacy += 1  # history from before the rule it would fail: counted, never re-litigated
+            continue
+        checked.append(record)
+    failures = []
+    for record in checked:
         for problem in validate(record, net, pub):
             failures.append(f"{args.file}:{record['lineno']}: {problem}")
     if failures:
         for f in failures:
             print(f, file=sys.stderr)
         return EXIT_VIOLATION
-    print(f"decisions: {len(records)} record(s) valid in {args.file}")
+    tail = f" ({legacy} earlier record(s) before {since} not re-checked)" if fence is not None else ""
+    print(f"decisions: {len(checked)} record(s) valid in {args.file}{tail}")
     return EXIT_OK
 
 
@@ -841,7 +861,10 @@ def build_parser():
     t.add_argument("--lens", required=True, help="lens name, e.g. security")
     t.add_argument("--json", action="store_true", help="emit JSON")
 
-    sub.add_parser("check", help="validate an existing log")
+    s = sub.add_parser("check", help="validate an existing log")
+    s.add_argument("--since", default=None, metavar="YYYY-MM-DD",
+                   help="check only records stamped on or after this date; earlier records are "
+                        "history from before the rules they would fail and are counted, not judged")
 
     k = sub.add_parser("grant-keygen", help="generate the human grant keypair (seed off-repo)")
     k.add_argument("--out", required=True, help="seed path, e.g. ~/.open-fleet/human-grant-key")

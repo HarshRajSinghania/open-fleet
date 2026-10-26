@@ -276,6 +276,9 @@ default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
 the checked tree could have been written by a worker). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `tally` takes `--lens`, `--json`;
+`check` takes `--since YYYY-MM-DD` (records stamped earlier are counted, not judged — the
+repository's own ledger predates the human-source and class rules, so CI runs
+`check --since 2026-09-24`); `grant-keygen` takes `--out`, `--in-repo-ok`;
 `sign-grant` takes `--key`, `--id`, `--answer`, `--why`, `--task`, `--ts`.
 
 Log line format: `ts · gate-or-ask-id · class · answer · why · task?` with classes
@@ -577,7 +580,8 @@ Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
 `grants`.
 
-Flags: `--ledger` (default `$ORCA_EGRESS_LEDGER` or `.orca/egress.jsonl`). `write` takes
+Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LEDGER`, else
+`.orca/egress.jsonl`). `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
 else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
@@ -985,8 +989,9 @@ Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path,
 tests and scratch). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
 `--resolved`, `--resolved-file`, `--force-init-over-md`; `add` takes `--id`, `--title`,
 `--question`, `--question-file`, `--asked`, `--related`, `--blocking`; `answer` takes a
-gate id plus `--answer`, `--date`; `waive` takes a gate id plus `--reason`, `--date`;
-`overtake` takes a gate id plus `--note`, `--date`; `list` takes `--status`,
+gate id plus `--answer`, `--source human:<name>` (who answered; required), `--date`; `waive`
+takes a gate id plus `--reason`, `--source human:<name>` (required), `--date`;
+`overtake` takes a gate id plus `--note`, `--source` (optional), `--date`; `list` takes `--status`,
 `--blocking`; `stale` takes `--days` (default 7), `--today`; `show` takes a gate id;
 `render` takes `--out`, `--check`.
 
@@ -1434,8 +1439,13 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   unit supersedes it and joins the back.
 - **`plan` tests the prefix:** BASE plus each queued entry in arrival order, merged in memory with
   `diff_scope.py --predict-merge`'s engine (#590). It records each entry's expected BASE tree,
-  tested merge tree and accepted head. `--gate-cmd` runs in a detached checkout of each prefix
-  commit, in its own session, so a timeout kills everything the gate started. A conflict or a
+  tested merge tree and accepted head. `--gate-cmd` runs in its own `--shared` clone checked out
+  at each prefix commit — never a worktree of the conductor's clone, whose `.git/config` and hooks
+  the unit's test code could rewrite — under a scrubbed environment (`PATH`, `HOME`, `LANG`,
+  `LC_*`, `TMPDIR`, `TERM`, `SHELL`, `USER`, `LOGNAME`, the `MQ_*` facts, plus names listed in
+  `MQ_GATE_ENV_KEEP`), in its own session, so a timeout kills everything the gate started. A
+  content-identical head is accepted only when the reviewed commit itself is at hand to recompute
+  its tree; otherwise the entry bounces `reviewed_sha_unavailable`. A conflict or a
   failed gate FAILS that entry, and the train freezes behind it (`queue_frozen`) until `resolve`.
   A saved plan counts only for the gate it passed: `drain --gate-cmd` plans again unless the head
   passed exactly that command on its current prefix commit, and `merge --require-gate` refuses
@@ -1502,7 +1512,8 @@ Resolves the Orca CLI command name once, for every script that talks to Orca. So
 `runtime/scripts/orca_cli.py:1-38`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
-Usage: `orca_cli.py [--path]`; library `from orca_cli import resolve, run_json`.
+Usage: `orca_cli.py [--path]` (`--version` prints the pinned Orca version from `runtime/pins.json`,
+or `unknown`); library `from orca_cli import resolve, run_json`.
 `run_json(argv, timeout=, error=, nonzero=)` is the one `--json` envelope reader the eight
 operator tools share: it raises the caller's exception class on an unrunnable CLI, unreadable
 or non-object JSON, or an `error` envelope, and returns `result`; `nonzero` keeps each tool's
@@ -1779,7 +1790,9 @@ refuses the same way, since `ready` is a status anyone can set); `--spec` (+ `--
 the task first, then runs the normal verified path with its id; `--timeout-ms`
 (supervised lane, positive int); `--run`/`--from` (explicit binding — never implicit
 cwd/pane resolution); `--retry-of` + `--retry-request` (retries link the failed
-dispatch; one id, one mutation); `--on` (remote placement); `--environment`,
+dispatch; one id, one mutation; `--retry-of` needs `--task` naming the failed task and is
+refused beside `--spec`); `--parent-profile` (the parent's profile, for monotonic narrowing);
+`--on` (remote placement); `--environment`,
 `--pairing-code`, `--cli-cwd` (routing; ambient disagreement refuses, `--from`
 against `ORCA_TERMINAL_HANDLE`);
 `--task-brief` (brief spawn-time read). Documented refusals, not silent drops:
@@ -2083,9 +2096,12 @@ the full tree into it, prints `git write-tree` of that index — the real index 
 touched. Source `runtime/scripts/wtree.sh:1-50`; exercised by `tests/test_evidence_run.py` and
 `tests/test_gitexec_config_commands.py`.
 
-Usage: `wtree.sh [repo-dir]` (default: current directory).
+Usage: `wtree.sh [repo-dir]` (default: current directory), or
+`wtree.sh predict-merge <base> <branch> [repo-dir]` (also `wtree.sh <repo-dir> predict-merge
+<base> <branch>`), which hands off to `diff_scope.py --predict-merge` for the in-memory
+three-way conflict prediction.
 
-Flags: none — one optional positional argument.
+Flags: none — positional arguments only.
 
 Untracked non-ignored files are included; .gitignore'd scratch stays out. Committing
 identical content does not change the fingerprint, so a record made on a dirty tree stays

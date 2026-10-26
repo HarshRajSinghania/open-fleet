@@ -2,8 +2,10 @@
 #
 # The default rule pack, unmodified. The three credential-SHAPED fixtures this
 # repository carries (in tests/test_decisions.py, which exists to prove that
-# runtime/scripts/decisions.py REFUSES credential-shaped text) are handled by a
-# fingerprint BASELINE — .gitleaks-baseline.json — not by an allowlist.
+# runtime/scripts/decisions.py REFUSES credential-shaped text) are handled by
+# fingerprint in .gitleaksignore — not by an allowlist (it was a --baseline-path
+# baseline until #300; see the gitleaks step in .github/workflows/validate.yml
+# for why the ignore file replaced it).
 #
 # Recorded because it is not obvious and cost a debugging round: in gitleaks
 # 8.30 a global `[[allowlists]]` entry with `condition = "AND"` does NOT
@@ -12,7 +14,7 @@
 # DIFFERENT, real-shaped AWS key planted in that file. That is a hole, and it
 # was found by planting the canary rather than by reading the docs.
 #
-# A baseline does not have that failure mode: it accepts exactly the findings it
+# A fingerprint ignore does not have that failure mode: it accepts exactly the findings it
 # lists, matched by fingerprint (commit : file : rule : line). A different
 # secret in the same file, the same fixture on a different line, or either of
 # them in a new commit all still fail. The workflow negative-controls this after

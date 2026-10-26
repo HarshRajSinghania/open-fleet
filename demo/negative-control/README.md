@@ -32,9 +32,10 @@ never a silent re-baseline.
 
 ## Reproduce against a real self-scorer
 
-`selfscore.py` is an honest stand-in, but the trap is gate-agnostic. Point step [1] of `run.sh` at a
-shipping self-scoring gate — e.g. **`ruflo verify`** (claude-flow's Truth Verification System, which
-self-scores and has no frozen denominator) — and it exhibits the same GREEN, because closing the gap
+`selfscore.py` is a stand-in that grades only the manifest's own `criteria[]`, and the trap is
+gate-agnostic: any gate that reads the unit's claims without a frozen denominator held outside the
+unit exhibits the same GREEN (bench/vf-bench/README.md records the shipping tools measured, and which
+take no unit manifest at all), because closing the gap
 requires implementing the moat (a second session that re-derives the frozen contract), at which point
 it stops being a self-scorer. That is why the property, not the branding, is what the demo measures.
 

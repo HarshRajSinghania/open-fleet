@@ -207,3 +207,26 @@ class NoScriptNamesTheExecutable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PinnedVersionIsReadNotAssumed(unittest.TestCase):
+    """2026-10-26 review: an unreadable pins.json fell back to a literal `v1.4.239`, so the drift
+    NOTE in spawn_worker.sh compared the installed CLI against a stale constant. Now it reads
+    "unknown", which the NOTE reports as "could not be checked"."""
+
+    def test_the_pinned_version_comes_from_pins_json(self):
+        import json
+        orca_cli = _load()
+        pins = json.loads((ROOT / "runtime" / "pins.json").read_text(encoding="utf-8"))
+        self.assertEqual(orca_cli._pinned_version(), pins["orca"]["version"])
+
+    def test_an_unreadable_pin_is_unknown_not_a_literal(self):
+        orca_cli = _load()
+        with mock.patch.object(orca_cli.Path, "read_text", side_effect=OSError("gone")):
+            self.assertEqual(orca_cli._pinned_version(), "unknown")
+        with mock.patch.object(orca_cli.Path, "read_text", return_value="{not json"):
+            self.assertEqual(orca_cli._pinned_version(), "unknown")
+
+    def test_no_literal_pin_remains_in_the_resolver(self):
+        src = (ROOT / "runtime" / "scripts" / "orca_cli.py").read_text(encoding="utf-8")
+        self.assertNotRegex(src, r"\"v1\.4\.\d+\"")

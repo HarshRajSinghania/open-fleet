@@ -285,5 +285,64 @@ class TestDefaultDbPath(unittest.TestCase):
         self.assertTrue(os.path.isabs(str(mod.default_db_path({"OPEN_FLEET_STATE_DB": "rel.db"}))))
 
 
+class TestDeadClaimerIsReclaimed(Base):
+    """2026-10-26 review: a claim left by a caller that died held the request id for
+    PENDING_STALE_S; one whose recorded claimer is gone from this host is reclaimed at once."""
+
+    def claim_row(self, pid):
+        import socket
+        with self.store._connect() as conn:
+            conn.execute("INSERT INTO requests(request_id, method, state, response_json, created_at, claim_pid, claim_host) "
+                         "VALUES ('req-1', 'task-create', 'pending', NULL, ?, ?, ?)",
+                         (time.time(), pid, socket.gethostname()))
+
+    def test_a_claim_whose_process_is_gone_is_reclaimed(self):
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        self.claim_row(proc.pid)
+        self.assertIsNone(self.store.get_or_record_request("req-1", "task-create"), "the dead claim should be reclaimed")
+        row = self.store.request_row("req-1")
+        self.assertEqual((row["state"], row["claim_pid"]), ("pending", os.getpid()))
+
+    def test_a_live_claim_is_a_pending_marker(self):
+        self.claim_row(os.getpid())
+        self.assertEqual(self.store.get_or_record_request("req-1", "task-create"),
+                         {"state": "pending", "requestId": "req-1"})
+
+    def test_a_claim_from_another_host_waits_out_the_stale_window(self):
+        with self.store._connect() as conn:
+            conn.execute("INSERT INTO requests(request_id, method, state, response_json, created_at, claim_pid, claim_host) "
+                         "VALUES ('req-1', 'task-create', 'pending', NULL, ?, 1, 'elsewhere')", (time.time(),))
+        self.assertEqual(self.store.get_or_record_request("req-1", "task-create")["state"], "pending")
+
+
+class TestSchemaVersionStamp(Base):
+    """2026-10-26 review: the store carried no schema version, so a store written by a newer
+    open-fleet was read with an older layout without a word. It is stamped now, an unstamped
+    (older) store is migrated and stamped as before, and a newer stamp is refused."""
+
+    def version(self):
+        with self.store._connect() as conn:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+    def test_a_store_is_stamped_with_this_schema_version(self):
+        self.assertGreaterEqual(self.mod.SCHEMA_VERSION, 1)
+        self.assertEqual(self.version(), self.mod.SCHEMA_VERSION)
+
+    def test_an_unstamped_older_store_opens_and_is_stamped(self):
+        with self.store._connect() as conn:
+            conn.execute("PRAGMA user_version = 0")
+        self.mod.LocalStateStore(self.db, env={})
+        self.assertEqual(self.version(), self.mod.SCHEMA_VERSION)
+
+    def test_a_store_from_a_newer_open_fleet_is_refused_not_misread(self):
+        with self.store._connect() as conn:
+            conn.execute(f"PRAGMA user_version = {self.mod.SCHEMA_VERSION + 1}")
+        with self.assertRaises(self.mod.ProviderError) as ctx:
+            self.mod.LocalStateStore(self.db, env={})
+        self.assertEqual(ctx.exception.code, "state_schema_newer")
+        self.assertEqual(self.version(), self.mod.SCHEMA_VERSION + 1, "a refused open changes nothing")
+
+
 if __name__ == "__main__":
     unittest.main()

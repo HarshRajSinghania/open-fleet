@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -488,15 +489,52 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
         self.assertIn("signature verified", r.stdout + r.stderr)
 
-    def test_worktree_fallback(self):
-        # No refs/remotes/origin/HEAD — the blob read cannot fire — but the pin exists in the
-        # worktree, so the fallback supplies it. Deleting the fallback lines turns this red.
+    def test_worktree_fallback_is_refused_on_a_lane_claiming_soundness(self):
+        # 2026-10-26 review: a CI-shaped clone has no refs/remotes/origin/HEAD, so the blob read
+        # missed and the gate fell through to the WORKING TREE — the PR's own checkout, where a
+        # worker swaps the pin for its key and self-signs the record. With ORCA_PROVENANCE set the
+        # working-tree pin is now never read: the key stays undiscovered, verify.py sees a record
+        # with no key and refuses as half-configured, and the gate says why.
         (pinned, _spare) = self.use_repo(pin_worktree=True, remote_head=False)
         src = self.src(["AC-1"])
         rec, _pub = self.sign(self.digest(src), "report-only", key=pinned)
         r = self._run_discovered(src, rec)
-        self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
-        self.assertIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("missing --dispatch-pubkey", r.stderr)
+        self.assertIn("exists only in the working tree", r.stderr)
+
+    def test_a_base_branch_blob_is_read_when_origin_head_is_absent(self):
+        # The CI clone names the base branch it checks against: the pin committed there is a
+        # reviewed blob, so it is read even with no origin/HEAD. Traced, because on a host whose
+        # git is worker-writable the sound lane fails closed later for that reason alone.
+        (pinned, _spare) = self.use_repo(pin_blob=True, remote_head=False)
+        _git(self.repo, "update-ref", "refs/remotes/origin/integration", "HEAD")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=pinned)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "dispatch",
+               "ORCA_DISPATCH_RECORD": rec, "ORCA_BASE": "integration"}
+        r = subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                            "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
+        self.assertIn("PUBKEY=.orca/dispatch-pubkey@refs/remotes/origin/integration", r.stderr)
+        self.assertNotIn("+ PUBKEY=.orca/dispatch-pubkey\n", r.stderr)
+
+    def test_the_native_lane_still_falls_back_to_the_worktree_pin(self):
+        # Advisory lane (no provenance): the worktree pin is read, as documented — traced rather
+        # than run to a verdict, since the enforcement lane it then enters fails closed on a host
+        # whose git is worker-writable.
+        (pinned, _spare) = self.use_repo(pin_worktree=True, remote_head=False)
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=pinned)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_DISPATCH_RECORD": rec}
+        r = subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                            "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
+        self.assertIn("+ PUBKEY=.orca/dispatch-pubkey\n", r.stderr)
 
     def test_env_pubkey_precedes_repo_pin(self):
         # #198 review: env beats a present repo pin. A record signed by the env key verifies
@@ -763,3 +801,94 @@ class GateAliasesNeverOverrideSilently(GateCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class GateSwitchesAreValuesNotPresence(GateCase):
+    """2026-10-26 review: ORCA_NO_GH / ORCA_EXECUTE_NC were read as "set" or "unset", so a
+    coordinator template spelling the review waiver OFF as `false` switched it ON. A switch is now
+    a value — on, off, or a refusal."""
+
+    def _run(self, **switches):
+        src = self.src(["AC-1"])
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", **switches}
+        return subprocess.run(["sh", "-x", str(GATE), "--event", "task"], capture_output=True,
+                              text=True, cwd=self.repo, env=env)
+
+    def test_off_spellings_do_not_arm_the_waiver(self):
+        for value in ("false", "0", "no", "off", "False", ""):
+            with self.subTest(value=value):
+                r = self._run(ORCA_NO_GH=value)
+                self.assertNotIn("--no-gh", r.stderr.split("verify.py", 1)[-1][:400])
+                self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr[-800:]}")
+
+    def test_on_spellings_arm_it(self):
+        for value in ("1", "true", "yes", "on", "TRUE"):
+            with self.subTest(value=value):
+                r = self._run(ORCA_NO_GH=value)
+                self.assertIn("--no-gh", r.stderr)
+
+    def test_any_other_spelling_blocks_before_the_verifier_runs(self):
+        for name, value in (("ORCA_NO_GH", "maybe"), ("ORCA_EXECUTE_NC", "2"),
+                            ("OPEN_FLEET_NO_GH", "yess")):
+            with self.subTest(name=name, value=value):
+                r = self._run(**{name: value})
+                self.assertEqual(r.returncode, 2, r.stderr[-400:])
+                self.assertIn("is not a switch value", r.stderr)
+                self.assertNotIn("verify.py --manifest", r.stderr)
+
+
+class TheGateBoundsTheVerifierItself(GateCase):
+    """2026-10-26 review: Claude Code cancels a command hook at its timeout and discards the
+    output, and only exit 2 blocks a Stop or TaskCompleted — a verifier still running when the host
+    gave up let the turn end. The gate now stops a verifier that runs past ORCA_GATE_TIMEOUT_S and
+    blocks, and the hook files give the host a longer limit than that deadline."""
+
+    def _slow_gate(self):
+        scripts = Path(tempfile.mkdtemp(prefix="slow-gate-")) / "runtime" / "scripts"
+        scripts.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, scripts.parent.parent, True)
+        shutil.copy(GATE, scripts / "verify-gate.sh")
+        (scripts / "verify.py").write_text("import time\ntime.sleep(30)\nprint('late PASS')\n",
+                                           encoding="utf-8")
+        return scripts / "verify-gate.sh"
+
+    def test_a_verifier_past_the_deadline_is_stopped_and_the_gate_blocks(self):
+        gate = self._slow_gate()
+        m = Path(self.repo) / "m.json"
+        m.write_text("{}", encoding="utf-8")
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": str(m),
+               "ORCA_GATE_TIMEOUT_S": "1"}
+        started = time.monotonic()
+        r = subprocess.run(["sh", str(gate), "--event", "task"], capture_output=True, text=True,
+                           cwd=self.repo, env=env, timeout=60)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("ran past 1s", r.stderr)
+        self.assertNotIn("late PASS", r.stdout)
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_a_bad_deadline_value_blocks(self):
+        gate = self._slow_gate()
+        m = Path(self.repo) / "m.json"
+        m.write_text("{}", encoding="utf-8")
+        for value in ("0", "soon", "-5"):
+            with self.subTest(value=value):
+                env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": str(m),
+                       "ORCA_GATE_TIMEOUT_S": value}
+                r = subprocess.run(["sh", str(gate), "--event", "task"], capture_output=True,
+                                   text=True, cwd=self.repo, env=env, timeout=60)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("not a positive integer", r.stderr)
+
+    def test_the_hook_files_give_the_host_a_limit_above_the_gates_deadline(self):
+        gate_src = GATE.read_text(encoding="utf-8")
+        default = int(re.search(r'GATE_TIMEOUT=(\d+)\n', gate_src).group(1))
+        for name in ("hooks.json", "settings-snippet.json"):
+            doc = json.loads((ROOT / "hooks" / name).read_text(encoding="utf-8"))
+            for entries in doc["hooks"].values():
+                for matcher in entries:
+                    for hook in matcher["hooks"]:
+                        self.assertGreater(hook["timeout"], default, name)
+                        self.assertGreater(hook["timeout"], 600, "the host default fails open")

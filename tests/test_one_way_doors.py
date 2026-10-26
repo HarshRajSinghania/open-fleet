@@ -22,6 +22,9 @@ GATE_POLICY = ROOT / "runtime" / "gate-classification.md"
 EXPECTED_DOORS = {
     "merge-to-default", "deploy", "rollback", "deletion", "spend",
     "scope-change", "secret-rotation", "live-credentials", "freeze",
+    # 2026-10-26 review: absorb-it, clean-sweep and review-it declared these one-way in prose
+    # while the registry — which owns the enumeration — did not know them.
+    "close-without-landing", "review-verdict",
 }
 
 ORDINARY_PROSE = [
@@ -93,7 +96,7 @@ class TestPolicyAgreement(unittest.TestCase):
     def test_the_classification_policy_still_names_these_doors(self):
         text = GATE_POLICY.read_text(encoding="utf-8").lower()
         for phrase in ("merge to default", "deploy", "rollback", "deletion", "spend",
-                       "scope change", "secret rotation"):
+                       "scope change", "secret rotation", "close without landing", "review verdict"):
             self.assertIn(phrase, text,
                           f"{phrase!r} left gate-classification.md — the registry has drifted")
 

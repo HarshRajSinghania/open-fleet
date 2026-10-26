@@ -47,7 +47,7 @@ GUIDES_DIR = ROOT / "docs" / "missions"
 # The callout sits directly under the Autonomy one in every mission guide.
 LOAD_CALLOUT_RE = re.compile(r"(?m)^> \*\*Activation load:\*\* .*$")
 AUTONOMY_CALLOUT_RE = re.compile(r"(?m)^> \*\*Autonomy:\*\* .*$")
-LOAD_ROUND = 100  # tokens — small doc edits must not churn 21 guides
+LOAD_ROUND = 100  # tokens — small doc edits must not churn every mission guide
 
 
 def _validate_module():

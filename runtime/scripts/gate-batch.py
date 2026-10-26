@@ -34,6 +34,10 @@ from pathlib import Path
 
 SCHEMA_TAG = "gate-batch/1"
 STATUSES = ("owed", "answered", "waived", "overtaken")
+# Who answered or waived, as decisions.py records a human grant: `human:<name>`. An answer with no
+# recorded human is prose anyone could have typed (2026-10-26 review); records written before the
+# field existed carry none and stay valid history.
+HUMAN_SOURCE = re.compile(r"^human:\S+$")
 TERMINAL = ("answered", "waived", "overtaken")
 GATE_ID_RE = re.compile(r"^G[0-9]+$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -50,6 +54,8 @@ REQUIRED_BATCH_KEYS = ("schema", "run_id", "run_title", "intro", "gates",
                        "resolved_by_events")
 REQUIRED_GATE_KEYS = ("id", "title", "question", "asked", "status", "answer",
                       "answered", "related", "blocking")
+# Keys a gate MAY carry: `source` (human:<name>) arrived 2026-10-26; earlier records lack it.
+OPTIONAL_GATE_KEYS = ("source",)
 
 
 class GateError(Exception):
@@ -85,7 +91,7 @@ def validate_gate(gate):
     missing = [k for k in REQUIRED_GATE_KEYS if k not in gate]
     if missing:
         raise GateError(f"gate {gate.get('id', '?')} is missing {missing}")
-    extra = sorted(set(gate) - set(REQUIRED_GATE_KEYS))
+    extra = sorted(set(gate) - set(REQUIRED_GATE_KEYS) - set(OPTIONAL_GATE_KEYS))
     if extra:
         raise GateError(f"gate {gate['id']} carries unknown fields {extra}")
     if not isinstance(gate["id"], str) or not GATE_ID_RE.match(gate["id"]):
@@ -115,6 +121,11 @@ def validate_gate(gate):
             raise GateError(f"gate {gate['id']}: {gate['status']} needs the "
                             "answer/waiver text recorded (overtaken alone may "
                             "leave it null when the question body says why)")
+    source = gate.get("source")
+    if source is not None and not (isinstance(source, str) and HUMAN_SOURCE.match(source)):
+        raise GateError(f"gate {gate['id']}: source must be human:<name>, got {source!r}")
+    if gate["status"] == "owed" and source is not None:
+        raise GateError(f"gate {gate['id']} is owed but carries a source")
 
 
 def validate_batch(data):
@@ -218,7 +229,7 @@ def add_gate(data, *, title, question, gid=None, asked=None, related=(),
     return gate
 
 
-def transition(data, gid, status, text, answered=None):
+def transition(data, gid, status, text, answered=None, source=None):
     if status not in TERMINAL:
         raise GateError(f"cannot transition to {status!r}")
     gate = find_gate(data, gid)
@@ -230,6 +241,11 @@ def transition(data, gid, status, text, answered=None):
         need = "the human's answer" if status == "answered" \
             else "the waiver reason"
         raise GateError(f"{status} gate {gid} needs {need} recorded")
+    if source is not None and not HUMAN_SOURCE.match(source):
+        raise GateError(f"gate {gid}: --source must be shaped human:<name>, got {source!r}")
+    if status in ("answered", "waived") and not source:
+        raise GateError(f"{status} gate {gid} needs --source human:<name>: who answered is "
+                        "part of the record, or the answer is prose anyone could have typed")
     recorded = answered or today_utc().isoformat()
     if parse_date(recorded, "recorded") < parse_date(gate["asked"], "asked"):
         raise GateError(f"gate {gid}: recorded {recorded} precedes asked "
@@ -237,6 +253,8 @@ def transition(data, gid, status, text, answered=None):
     gate["status"] = status
     gate["answer"] = text or None
     gate["answered"] = recorded
+    if source:
+        gate["source"] = source
     validate_gate(gate)
     return gate
 
@@ -332,8 +350,9 @@ def render_batch(data):
         parts += ["", f"## {gate['id']} \u00b7 {gate['title']}", "",
                   gate["question"]]
         if gate["answer"]:
+            by = f" ({gate['source']})" if gate.get("source") else ""
             parts += ["", f"**{ANNOTATION[gate['status']]} "
-                          f"{gate['answered']}:** {gate['answer']}"]
+                          f"{gate['answered']}{by}:** {gate['answer']}"]
     if data["resolved_by_events"]:
         parts += ["", "## Resolved by events (report only, no ask)", "",
                   data["resolved_by_events"]]
@@ -386,6 +405,8 @@ def _fmt_show(gate):
              f"status: {gate['status']} (asked {gate['asked']})"]
     if gate["status"] != "owed":
         lines.append(f"recorded {gate['answered']}: {gate['answer'] or '(no text)'}")
+    if gate.get("source"):
+        lines.append(f"source: {gate['source']}")
     if gate["related"]:
         lines.append("related: " + ", ".join(gate["related"]))
     if gate["blocking"]:
@@ -466,6 +487,8 @@ def build_parser():
                                "--answer 'the vault holds the key'")
     p.add_argument("gid", help="gate id, e.g. G1")
     p.add_argument("--answer", required=True, help="the human's answer")
+    p.add_argument("--source", required=True, metavar="human:<name>",
+                   help="who answered, as decisions.py records a grant (human:<name>)")
     p.add_argument("--date", default=None,
                    help="recorded date YYYY-MM-DD (default: today, UTC)")
 
@@ -477,6 +500,8 @@ def build_parser():
                                "--reason 'blind verdict suffices'")
     p.add_argument("gid", help="gate id, e.g. G3")
     p.add_argument("--reason", required=True, help="why no answer is needed")
+    p.add_argument("--source", required=True, metavar="human:<name>",
+                   help="who ruled it moot (human:<name>)")
     p.add_argument("--date", default=None,
                    help="recorded date YYYY-MM-DD (default: today, UTC)")
 
@@ -492,6 +517,8 @@ def build_parser():
     p.add_argument("gid", help="gate id, e.g. G4")
     p.add_argument("--note", default=None,
                    help="what overtook the question (may be omitted)")
+    p.add_argument("--source", default=None, metavar="human:<name>",
+                   help="who recorded the overtaking (optional: events, not a person, answered)")
     p.add_argument("--date", default=None,
                    help="recorded date YYYY-MM-DD (default: today, UTC)")
 
@@ -603,7 +630,7 @@ def main(argv=None):
                      "overtake": "note"}[args.command]
             text = getattr(args, field)
             gate = transition(data, args.gid, status, text,
-                              answered=args.date)
+                              answered=args.date, source=args.source)
             save_batch(path, data)
             refresh_view(path, data)
             print(f"{gate['id']} -> {status}")

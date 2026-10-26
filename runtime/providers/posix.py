@@ -7,8 +7,8 @@ an external orchestrator daemon (`stablyai/orca`), combining:
   - `git worktree` / `wtree.sh` worktree isolation
   - `tmux`, `cmux` (`manaflow-ai/cmux` with `kqueue` `cmux wait-for`), or detached `setsid`
     process groups
-  - Verified 9-harness launch table (`claude`, `codex`, `opencode`, `omp`, `pi`, `jcode`, `goose`,
-    `hermes`, `crush`) across `PROFILE=ro|rw|danger`
+  - The verified CLI-harness launch table (`base.SUPPORTED_HARNESSES`) across
+    `PROFILE=ro|rw|danger`
   - Automatic per-worktree `PreToolUse` hook installation (`deny-hook.sh`)
   - Overstory-style synthetic `worker_died` guarantee on process exit without terminal mail (#590).
   - Crash-recoverable worker launch: a launch intent persisted before the first external side
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
@@ -211,6 +212,67 @@ def _exclude_hook_artifacts(wt: Path) -> None:
             fh.write("\n".join(missing) + "\n")
 
 
+# Settings keys a harness reads that would switch the guard off or steer it: never merged in
+# from a document already at a guard path (2026-10-26 review).
+_GUARD_STEERING_PREFIXES = ("ORCA_", "OPEN_FLEET_")
+# Env that steers which shell runs the guard command (a bare `sh`) or what that shell loads: a
+# kept `PATH` naming a planted `sh` ran it instead of deny-hook.sh (#707 review). The same keys
+# deny-hook.sh --verify-settings refuses as STEERING; a test keeps the two lists in step.
+_SHELL_STEERING_KEYS = frozenset((
+    "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+    "ENV", "BASH_ENV", "SHELLOPTS", "CDPATH", "IFS", "SHELL",
+))
+
+
+def _steers_the_guard(key: Any) -> bool:
+    return str(key) in _SHELL_STEERING_KEYS or str(key).startswith(_GUARD_STEERING_PREFIXES)
+
+
+def _runs_a_command(value: Any) -> bool:
+    """True when a settings value names something the harness executes itself: a hook, a status
+    line, an LSP or MCP server — any object, at any depth, carrying a `command`."""
+    if isinstance(value, dict):
+        return "command" in value or any(_runs_a_command(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_runs_a_command(v) for v in value)
+    return False
+
+
+def _merge_hook_doc(path: Path, ours: dict[str, Any]) -> dict[str, Any]:
+    """`ours` laid over the JSON object already at `path` (2026-10-26 review).
+
+    The guard used to REPLACE the file: a repository's checked-in `.crush/crush.json` or
+    `.codex/hooks.json`, or an operator's `.claude/settings.local.json` in a reused worktree, lost
+    every other key it carried. Now its plain settings survive, and what could disarm the guard
+    or run beside it is dropped: `disableAllHooks`, `env` entries that steer the hook
+    (ORCA_*/OPEN_FLEET_*) or the shell that runs it (`_SHELL_STEERING_KEYS`), every hook already
+    there, and every setting that names a command (#707 review: a kept repository hook ran beside
+    the guard, never through it, and Codex launches with --dangerously-bypass-hook-trust). The
+    `hooks` written are ours alone. A file that is unreadable or not a JSON object is replaced
+    outright.
+    """
+    try:
+        have = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ours
+    if not isinstance(have, dict):
+        return ours
+    merged: dict[str, Any] = {k: v for k, v in have.items()
+                              if k not in ("disableAllHooks", "hooks") and not _runs_a_command(v)}
+    env = merged.get("env")
+    if isinstance(env, dict):
+        merged["env"] = {k: v for k, v in env.items() if not _steers_the_guard(k)}
+    merged["hooks"] = {event: list(entries) for event, entries in ours.get("hooks", {}).items()}
+    for key, value in ours.items():
+        if key != "hooks":
+            merged[key] = value
+    return merged
+
+
+def _write_guard_doc(path: Path, ours: dict[str, Any]) -> None:
+    path.write_text(json.dumps(_merge_hook_doc(path, ours), indent=2) + "\n", encoding="utf-8")
+
+
 def install_worktree_hooks(
     worktree_path: str | Path,
     agent: str,
@@ -220,6 +282,7 @@ def install_worktree_hooks(
 ) -> dict[str, str]:
     """Install per-worktree `PreToolUse` hook configs and bridges for all supported harnesses.
 
+    A JSON config already at a guard path is merged, not replaced (`_merge_hook_doc`).
     The hook itself is NEVER copied into the worktree: configs point at the canonical
     `runtime/scripts/deny-hook.sh` outside the unit's write boundary, so a worker cannot edit
     its own guard, and the hook's `$0`-relative lookup of `local_state.py` (file-touch
@@ -252,7 +315,7 @@ def install_worktree_hooks(
             ]
         }
     }
-    claude_settings.write_text(json.dumps(claude_doc, indent=2) + "\n", encoding="utf-8")
+    _write_guard_doc(claude_settings, claude_doc)
     installed["claude"] = str(claude_settings)
 
     strict_doc = {
@@ -269,14 +332,14 @@ def install_worktree_hooks(
     codex_dir = wt / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
     codex_hooks = codex_dir / "hooks.json"
-    codex_hooks.write_text(json.dumps(strict_doc, indent=2) + "\n", encoding="utf-8")
+    _write_guard_doc(codex_hooks, strict_doc)
     installed["codex"] = str(codex_hooks)
 
     # 3. OpenHands (.openhands/hooks.json)
     oh_dir = wt / ".openhands"
     oh_dir.mkdir(parents=True, exist_ok=True)
     oh_hooks = oh_dir / "hooks.json"
-    oh_hooks.write_text(json.dumps(strict_doc, indent=2) + "\n", encoding="utf-8")
+    _write_guard_doc(oh_hooks, strict_doc)
     installed["openhands"] = str(oh_hooks)
 
     # 4. AAIF Goose (.agents/plugins/orca-deny-hook/hooks/hooks.json)
@@ -293,7 +356,7 @@ def install_worktree_hooks(
             ]
         }
     }
-    goose_hooks.write_text(json.dumps(goose_doc, indent=2) + "\n", encoding="utf-8")
+    _write_guard_doc(goose_hooks, goose_doc)
     installed["goose"] = str(goose_hooks)
 
     # 5. OpenCode (.opencode/plugin/orca-deny-hook.ts)
@@ -320,17 +383,39 @@ def install_worktree_hooks(
     )
     crush_rw_dir = wt / ".crush"
     crush_rw_dir.mkdir(parents=True, exist_ok=True)
-    (crush_rw_dir / "crush.json").write_text(
-        json.dumps(strict_doc, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_guard_doc(crush_rw_dir / "crush.json", strict_doc)
     installed["crush"] = str((crush_ro_dir if profile == "ro" else crush_rw_dir) / "crush.json")
 
     _exclude_hook_artifacts(wt)
     return installed
 
 
-WORKER_ENV_DENYLIST = frozenset({"OPEN_FLEET_SIGNING_SEED", "ORCA_DISPATCH_SIGNING_SEED"})
+# Fleet-custody secrets a worker never receives: the dispatch signing seeds (it could sign its
+# own dispatches) and the coordinator's orchestrator/cloud credentials (2026-10-26 review). The
+# rest of the coordinator's environment still reaches the worker — harness credentials and proxy
+# settings live there and no allowlist of them is known — so an operator names anything else to
+# strip in OPEN_FLEET_WORKER_ENV_DENY (`ORCA_WORKER_ENV_DENY`): comma- or space-separated names or
+# fnmatch globs, e.g. `GH_TOKEN,AWS_*`. Applied to the spawn env, the mux server's env and, in the
+# monitor, to the env it inherited from an already-running server.
+WORKER_ENV_DENYLIST = frozenset({
+    "OPEN_FLEET_SIGNING_SEED", "ORCA_DISPATCH_SIGNING_SEED",
+    "ORCA_CLOUD_AUTH_TOKEN",
+    "OPEN_FLEET_PAPERCLIP_API_KEY", "ORCA_PAPERCLIP_API_KEY",
+    "OPEN_FLEET_OPENHANDS_SESSION_API_KEY", "ORCA_OPENHANDS_SESSION_API_KEY",
+    "OPEN_FLEET_OPENHANDS_LLM_API_KEY", "ORCA_OPENHANDS_LLM_API_KEY",
+})
+
+
+def worker_env_deny_patterns(env: dict[str, str]) -> list[str]:
+    """The built-in denylist plus the operator's OPEN_FLEET_WORKER_ENV_DENY patterns, sorted."""
+    extra = env_get("OPEN_FLEET_WORKER_ENV_DENY", "ORCA_WORKER_ENV_DENY", env, "")
+    names = {p for p in re.split(r"[,\s]+", extra) if p}
+    return sorted(WORKER_ENV_DENYLIST | names)
+
+
+def strip_denied_env(mapping: dict[str, str], patterns: list[str]) -> dict[str, str]:
+    """`mapping` without every key that a pattern names (exact name or fnmatch glob)."""
+    return {k: v for k, v in mapping.items() if not any(fnmatch.fnmatchcase(k, p) for p in patterns)}
 HERMES_HOOK_MATCHER = "terminal|write_file|patch|execute_code|process"
 
 # A PROFILE=ro launch strips every tool that could send mail (#596): no shell to run send_msg.py,
@@ -471,13 +556,78 @@ def _pid_runs_monitor(pid: int, lane: Path) -> bool:
         return False
     except PermissionError:
         return True
+    marker = os.path.join(lane.name, "run_worker.py")
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        raw = None
+    if raw is not None:
+        # Linux: the argv without a `ps` fork per sweep. Empty for a zombie or a kernel thread.
+        return marker in raw.replace(b"\0", b" ").decode("utf-8", "replace")
     try:
         proc = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return True  # no `ps` here: the pid is alive, which is all that can be known
     cmd = proc.stdout.strip()
     # A reaped or zombie pid prints nothing / "<defunct>"; the monitor's argv names its script.
-    return proc.returncode == 0 and os.path.join(lane.name, "run_worker.py") in cmd
+    return proc.returncode == 0 and marker in cmd
+
+
+def _cwd_under(cwd: str, wanted: list[str]) -> bool:
+    return any(cwd == r or cwd.startswith(r.rstrip("/") + "/") for r in wanted)
+
+
+def _group_members_under(pgid: int, roots: tuple[Path, ...]) -> list[int] | None:
+    """Live pids in process group `pgid` whose cwd lies under one of `roots`.
+
+    The monitor leads its own session, and the agent (with its `sh -c` wrapper) runs in that
+    group with the worktree as cwd, so after `kill -9` of the monitor alone these are the worker
+    it left behind. Read from /proc, or with `ps` and `lsof` where there is none (macOS, #707
+    review). None: neither can be read, so membership and cwd are unknown.
+    """
+    wanted = [os.path.realpath(str(r)) for r in roots if r]
+    try:
+        entries = [e for e in Path("/proc").iterdir() if e.name.isdigit()]
+    except OSError:
+        return _ps_group_members_under(pgid, wanted)
+    out: list[int] = []
+    for entry in entries:
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[-1].split()
+            if fields[0] == "Z" or int(fields[2]) != pgid:
+                continue
+            cwd = os.readlink(entry / "cwd")
+        except (OSError, ValueError, IndexError):
+            continue
+        if _cwd_under(cwd, wanted):
+            out.append(int(entry.name))
+    return out
+
+
+def _ps_group_members_under(pgid: int, wanted: list[str]) -> list[int] | None:
+    """`_group_members_under` on a host with no /proc: `ps` lists the group, `lsof` reads each
+    member's cwd. None when either tool is missing or fails, as with no /proc before."""
+    try:
+        ps = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if ps.returncode != 0:
+        return None
+    out: list[int] = []
+    for line in ps.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 3 or not fields[0].isdigit() or fields[1] != str(pgid) or fields[2].startswith("Z"):
+            continue
+        try:
+            lsof = subprocess.run(["lsof", "-a", "-p", fields[0], "-d", "cwd", "-Fn"],
+                                  capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # `-Fn` prints one `n<path>` line per file; a member that exited meanwhile prints none.
+        cwd = next((ln[1:] for ln in lsof.stdout.splitlines() if ln.startswith("n")), "")
+        if cwd and _cwd_under(cwd, wanted):
+            out.append(int(fields[0]))
+    return out
 
 
 def _hermes_interpreter(env: dict[str, str]) -> list[str] | None:
@@ -977,9 +1127,11 @@ class PosixWorktreeProvider(RuntimeProvider):
         ro_relay: str = "",
     ) -> dict[str, Any]:
         log_file = lane_dir / "events.jsonl"
-        log_file.touch()
-        # Fleet custody secrets never reach a worker (it could sign its own dispatches).
-        merged_env = {k: v for k, v in {**self.env, **env_vars}.items() if k not in WORKER_ENV_DENYLIST}
+        log_file.touch(mode=0o600)  # the worker's whole transcript: tool output can carry secrets
+        # Fleet custody secrets never reach a worker (it could sign its own dispatches), nor
+        # does anything the operator named in OPEN_FLEET_WORKER_ENV_DENY.
+        deny = worker_env_deny_patterns(self.env)
+        merged_env = strip_denied_env({**self.env, **env_vars}, deny)
 
         if self.runner is not None:
             res = self.runner(
@@ -1011,9 +1163,9 @@ class PosixWorktreeProvider(RuntimeProvider):
         # A multiplexer server this spawn starts keeps its client's env for EVERY later
         # session: hand it the coordinator's env only, never this worker's launch vars, which
         # would otherwise leak into the next worker launched into that server (P1-11).
-        mux_env = {k: v for k, v in self.env.items() if k not in WORKER_ENV_DENYLIST}
+        mux_env = strip_denied_env(self.env, deny)
         monitor_py = f"""
-import json, os, subprocess, sys, time
+import fnmatch, json, os, subprocess, sys, time
 sys.path.insert(0, {repr(str(RUNTIME_DIR))})
 from providers.local_state import LocalStateStore
 
@@ -1027,8 +1179,9 @@ with open({repr(str(env_file))}, encoding="utf-8") as ef:
     worker_env = {{**os.environ, **json.load(ef)}}
 # A tmux/cmux server started with fleet custody secrets hands them to this monitor's
 # environment: strip them from the FINAL worker env too, not only the client's (#592).
-for _secret in {sorted(WORKER_ENV_DENYLIST)!r}:
-    worker_env.pop(_secret, None)
+for _pattern in {deny!r}:
+    for _k in [k for k in worker_env if fnmatch.fnmatchcase(k, _pattern)]:
+        worker_env.pop(_k, None)
 
 def _log(obj):
     with open(log_path, "a", encoding="utf-8") as lf:
@@ -1397,7 +1550,7 @@ if {repr(self.backend)} == "cmux":
                     f"created {wt_path} but the launch intent recorded {planned_wt}; refusing a worktree recovery could not name",
                 )
             Path(wt_path).mkdir(parents=True, exist_ok=True)
-            lane_dir.mkdir(parents=True, exist_ok=True)
+            lane_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             sandbox_meta: dict[str, str] | None = None
             if profile == "danger":
                 if not self._is_disposable(Path(wt_path)):
@@ -1996,6 +2149,8 @@ if {repr(self.backend)} == "cmux":
                 # the sync) with its unknown exit; only the mux session is left to close.
                 vanished = self._report_vanished(d)
                 mon["action"] = "refused_at_gate" if never_ran else "reported_dead"
+                if vanished.get("orphans"):
+                    mon["orphans"] = vanished["orphans"]
                 mon["termination"] = self._terminate_backend(d["backend"] or self.backend, handle, 0, backend_ref=d["backend_ref"])
                 self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
                 if vanished.get("retry"):
@@ -2056,6 +2211,8 @@ if {repr(self.backend)} == "cmux":
                         mon["action"], resolution = "cleanup_pending", "cleanup_pending"
                     else:
                         mon["action"], resolution = "reported_dead", "exited"
+                    if vanished.get("orphans"):
+                        mon["orphans"] = vanished["orphans"]
                     self._record_salvage(vanished.get("salvage"), mon, refs, cleanup)
                 else:
                     resolution = "unknown"
@@ -2374,9 +2531,11 @@ if {repr(self.backend)} == "cmux":
         a container that may still run, with a head that lacks the sandbox's commits. The dispatch
         stays live instead, so the next liveness sweep or reconcile retries the salvage.
         """
+        # The agent it left behind is stopped FIRST, so the head recorded below is final.
+        orphans = self._stop_orphaned_group(r)
         salvage = self._salvage_sandbox(r)
         if salvage and salvage.get("retry"):
-            return {"salvage": salvage, "died": None, "headSha": "", "retry": True}
+            return {"salvage": salvage, "died": None, "headSha": "", "retry": True, "orphans": orphans}
         head = (salvage or {}).get("head") or ""
         if not head and r["worktree"]:
             head = _git(["rev-parse", "HEAD"], cwd=r["worktree"]).stdout.strip()
@@ -2388,7 +2547,7 @@ if {repr(self.backend)} == "cmux":
             worktree_head_sha=head,
             run_id=r["run_id"],
         )
-        return {"salvage": salvage, "died": died, "headSha": head}
+        return {"salvage": salvage, "died": died, "headSha": head, "orphans": orphans}
 
     def _terminate_backend(
         self,
@@ -2475,6 +2634,13 @@ if {repr(self.backend)} == "cmux":
             ref = row["backend_ref"] or f"openfleet-{row['terminal_handle']}"
             return subprocess.run(["tmux", "has-session", "-t", ref], capture_output=True).returncode == 0
         if pid > 0:
+            lane = Path(_col(row, "lane_dir")) if _col(row, "lane_dir") else None
+            if lane is not None and (lane / "run_worker.py").is_file():
+                # A worker_start dispatch: alive means THIS lane's monitor still runs under that
+                # pid. `kill -0` alone said "alive" forever once the kernel reused the pid of a
+                # monitor that died without reporting, and the dispatch was never swept
+                # (2026-10-26 review). An injected dispatch has no monitor script to name.
+                return _pid_runs_monitor(pid, lane)
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
@@ -2489,6 +2655,52 @@ if {repr(self.backend)} == "cmux":
                 pass
             return True
         return None
+
+    def _stop_orphaned_group(self, r: Any, *, grace_s: float = 3.0) -> dict[str, Any] | None:
+        """Stop the worker a vanished monitor left running in its process group (2026-10-26 review).
+
+        The monitor leads the group its agent runs in, so `kill -9` of the monitor alone left the
+        agent writing the worktree while the sweep reported the dispatch died, and a later stop
+        skipped termination as "already finished". Only a group with a live member whose cwd is
+        this dispatch's worktree or lane is signalled: a group id the kernel handed to someone
+        else fails that check and is left alone. None: nothing was signalled (no recorded pid, a
+        backend that holds no local group, an injected runner, a group already gone, or one not
+        provably this worker's — on a host where neither /proc nor `ps`/`lsof` can be read, that
+        is every group).
+        """
+        if self.runner is not None or (r["backend"] or self.backend) not in ("setsid", "tmux"):
+            return None
+        pgid = int(r["pid"] or 0) or int(_col(r, "monitor_pid") or 0)
+        if pgid <= 0:
+            return None
+        try:
+            os.killpg(pgid, 0)
+        except OSError:
+            return None  # gone, or not ours to signal
+        # None (no /proc, ps or lsof) or [] (no member works in this worktree or lane): not provably this
+        # worker's group, so it is left alone and nothing is reported.
+        members = _group_members_under(pgid, tuple(Path(p) for p in (r["worktree"], r["lane_dir"]) if p))
+        if not members:
+            return None
+        out: dict[str, Any] = {"pgid": pgid, "members": members}
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            deadline = time.time() + grace_s
+            while time.time() < deadline:
+                try:
+                    os.killpg(pgid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+            else:
+                os.killpg(pgid, signal.SIGKILL)
+            out["action"] = "terminated"
+        except OSError:
+            out["action"] = "absent"
+        if r["lane_dir"]:
+            with contextlib.suppress(OSError), open(Path(r["lane_dir"]) / "events.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "orphaned_worker_stopped", "dispatchId": r["dispatch_id"], **out}) + "\n")
+        return out
 
     def _sweep_liveness(self, rows: list[Any]) -> None:
         """A dispatch whose monitor was killed (-9) never reports; detect it and emit worker_died."""
@@ -2603,8 +2815,12 @@ if {repr(self.backend)} == "cmux":
             bool(r["lane_dir"]) and (Path(r["lane_dir"]) / "exit.json").is_file()
         )
         if verb != "retain" and finished:
-            # Already exited: its pid may belong to an unrelated process group by now.
+            # Already exited: its pid may belong to an unrelated process group by now, so only
+            # a group proven to be this worker's (a vanished monitor's agent) is still stopped.
             out["termination"] = {"skipped": "dispatch already finished"}
+            orphans = self._stop_orphaned_group(r)
+            if orphans:
+                out["termination"]["orphans"] = orphans
         elif verb != "retain":
             # Record first (the launch gate and the post-spawn check read it), then tear down.
             container = ""
@@ -2683,9 +2899,9 @@ if {repr(self.backend)} == "cmux":
         Path(wt_path).mkdir(parents=True, exist_ok=True)
         handle = f"term_{uuid.uuid4().hex[:8]}"
         lane_dir = self.state.db_path.parent / "terminals" / handle
-        lane_dir.mkdir(parents=True, exist_ok=True)
+        lane_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         log_file = lane_dir / "events.jsonl"
-        log_file.touch()
+        log_file.touch(mode=0o600)
         # Row first: the process can never be orphaned by a failed insert (#578 audit).
         with self.state._connect() as conn:
             conn.execute(

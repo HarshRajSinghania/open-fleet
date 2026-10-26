@@ -86,6 +86,19 @@ def check_corpus(version_text, canary_text, observed_digest):
     return errors
 
 
+def skip_remedy(skipped):
+    """The remedy for a run's skips, read off their reasons: a shallow clone wants the full
+    history (CI: actions/checkout with fetch-depth: 0); a worker-writable git wants a
+    system-custody one (git under a root-owned system directory, as CI runners have)."""
+    reasons = " ".join(str(s.get("reason") or "") for s in skipped)
+    out = []
+    if "shallow clone" in reasons:
+        out.append("full clone (CI: actions/checkout with fetch-depth: 0)")
+    if "system-custody git" in reasons:
+        out.append("a system-custody git (root-owned, under a system directory)")
+    return "; ".join(out) or "see each reason"
+
+
 def evaluate(summary, corpus_total=None):
     """Return a list of gate failures for a parsed `vfbench.py --json` summary.
 
@@ -94,10 +107,12 @@ def evaluate(summary, corpus_total=None):
     failures = []
     skipped = summary.get("skipped", [])
     if skipped:
-        names = ", ".join(s["id"] for s in skipped)
+        # Each skip carries its own reason (a shallow clone, or no system-custody git); the
+        # failure names them, never one fixed remedy for every cause (2026-10-26 review).
+        named = "; ".join(f"{s['id']}: {s.get('reason') or 'no reason recorded'}" for s in skipped)
         failures.append(
-            f"{len(skipped)} trap(s) skipped, not scored ({names}) — a skip is a "
-            f"hole in the score, not a pass (CI needs fetch-depth: 0)")
+            f"{len(skipped)} trap(s) skipped, not scored — a skip is a hole in the score, not a "
+            f"pass ({named}); remedy: {skip_remedy(skipped)}")
     gates = summary.get("gates", {})
     if VERIFY_GATE not in gates:
         failures.append(

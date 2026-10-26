@@ -41,7 +41,8 @@ Two corrections against v1.4.199 make this rule the FLEET's, not the runtime's:
    `reviewed_sha` for the merge command. Mismatch → compare TREES before
    bouncing (`git rev-parse <head>^{tree}` vs the payload's `reviewed_wtree`): equal trees (a
    content-identical rebase) keep the review and pin the newly accepted head; different trees →
-   bounce to re-review, requeue.
+   bounce to re-review, requeue. The reviewed commit must be at hand to recompute its tree; a
+   payload tree alone proves nothing (`merge_queue.py` bounces `reviewed_sha_unavailable`).
 3. MERGE (one at a time, commits preserved): conflicts/behind → rebase onto origin/BASE as a UNION
    preserving both intents, re-run gates, push with `--force-with-lease` (never bare force). A
    content-CHANGING rebase VOIDS the review — the PR leaves the train and re-boards on a new
@@ -68,7 +69,8 @@ Two corrections against v1.4.199 make this rule the FLEET's, not the runtime's:
 
 The FIRST merge of a run gets an extra dispatched verification before the second unit merges: a
 fresh worker confirms it landed as a merge commit (commits preserved, not squashed), every commit
-is authored by the maintainer with no trailers, the branch is deleted, and the worktree is
+is authored by the maintainer with no trailers (absorb-it: the contributor's commit keeps its own
+`Author:`; only the fleet's amendments are maintainer-authored), the branch is deleted, and the worktree is
 retired. Whatever shape the first merge takes, the rest of the train copies, so a squashed or
 mis-authored first merge sets the pattern for every unit after it: catch it at unit one, not at
 run close.

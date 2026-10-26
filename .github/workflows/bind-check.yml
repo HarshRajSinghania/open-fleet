@@ -14,9 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # The PR's tree goes in its own directory, beside the base checkout rather than above it:
+      # a nested checkout is an untracked path to the tools that diff the tree (PR #707 review).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
+          path: pr
           fetch-depth: 0  # the binder re-hashes at the report's pinned commit, not at the tip
+      # The binder comes from the BASE sha, into its own path (as verdict-check.yml does): a PR
+      # that submits a report also carries its own copy of run_report.py, which could grade that
+      # report lenient (2026-10-26 review). The PR's tree is still what gets bound.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-checker
+          sparse-checkout: |
+            scripts
+            runtime/scripts
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
@@ -29,4 +43,4 @@ jobs:
         # interpolated into the script text: a branch name is attacker-shaped.
         env:
           BIND_BASE_REF: ${{ github.base_ref }}
-        run: python3 scripts/bind_check.py --base "origin/$BIND_BASE_REF"
+        run: python3 base-checker/scripts/bind_check.py --root "$GITHUB_WORKSPACE/pr" --base "origin/$BIND_BASE_REF"

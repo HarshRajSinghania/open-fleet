@@ -157,7 +157,7 @@ python3 -m unittest discover -s tests -v   # all contract + validator fixture te
 # (CI's version is hash-pinned in .github/ci-tools.lock; rules are in ruff.toml)
 ```
 
-The validator finishes in under a second; the suite takes a few minutes because it builds real
+The validator finishes in a few seconds; the suite takes tens of minutes because it builds real
 git repositories. It runs on Linux and macOS; tmux tests use a fake agent and never start your
 installed agent CLI. Neither is optional. PRs that fail either
 will be asked to fix before review. ruff is CI-only (not required locally). If you add validator behavior, add the negative-path fixture that proves

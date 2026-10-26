@@ -12,7 +12,7 @@ What a tier advance has to survive here instead:
 * a single ``RUN:`` header line whose fields parse;
 * ``mission=`` matching the mission that claims the tier, and ``tier=`` matching
   the tier it claims — so a report cannot be re-pointed at another mission;
-* ``inventory_at=`` resolving to a real commit **in this repository**;
+* ``inventory_at=`` the hex id (never a ref name) of a real commit **in this repository**;
 * ``manifest=`` existing at that commit — the evidence manifest the run was
   graded against, not a path invented afterwards;
 * ``verifier=`` recording the verifier's outcome, with the body carrying the
@@ -566,6 +566,30 @@ def grading_base(root, base=None):
     return None
 
 
+def commit_object(rev, root):
+    """The full id of the one commit OBJECT `rev` abbreviates, or None.
+
+    `rev-parse --disambiguate` lists object ids by hex prefix and never consults refs, so a branch
+    or tag spelled in hex (`deadbee`) names nothing here, where `rev-parse deadbee^{commit}` would
+    follow the ref to wherever it points today (PR #707 review). Every later read of the report
+    uses the id this returns, never the header's spelling."""
+    proc = subprocess.run(
+        _git_cmd("rev-parse", f"--disambiguate={rev.lower()}"),
+        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    commits = []
+    for oid in proc.stdout.split():
+        kind = subprocess.run(
+            _git_cmd("cat-file", "-t", oid),
+            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        ).stdout.strip()
+        if kind == "commit":
+            commits.append(oid)
+    return commits[0] if len(commits) == 1 else None
+
+
 def is_ancestor(rev, base, root):
     """`rev` reachable from `base` (a commit is its own ancestor)."""
     return subprocess.run(
@@ -1056,7 +1080,25 @@ def check_report(report_path, mission, tier, root=None, base=None):
         )
 
     rev = fields["inventory_at"]
-    if not inventory.rev_exists(rev, root):
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", rev):
+        # A branch or tag names a target that MOVES: the inventory re-hashes at the commit the
+        # report binds, so the header must name a commit by its id (2026-10-26 review). An
+        # abbreviation is a commit id; one that has become ambiguous fails rev_exists below.
+        errors.append(
+            f"{report_path}: RUN: inventory_at={rev} must be a commit id (7 to 40 hex) — a ref name "
+            "binds nothing, since it can move"
+        )
+        return errors
+    resolved = commit_object(rev, root)
+    if resolved is None and inventory.rev_exists(rev, root):
+        # Hex-shaped, resolvable, yet no commit object carries that prefix: a branch or tag named
+        # in hex, which moves (PR #707 review); or a prefix two commits share.
+        errors.append(
+            f"{report_path}: RUN: inventory_at={rev} names no single commit object in this repository "
+            "— a ref spelled in hex binds nothing, since it can move, and an ambiguous prefix binds two"
+        )
+        return errors
+    if resolved is None:
         if is_shallow(root):
             # Still fatal: a pin this clone cannot resolve verifies nothing, and a tier claim
             # must not pass unchecked just because history was truncated. But the cause is the
@@ -1072,6 +1114,7 @@ def check_report(report_path, mission, tier, root=None, base=None):
                 "— an unresolvable pin verifies nothing"
             )
         return errors
+    rev = resolved  # the full object id: every read below binds to it, never to the header's spelling
 
     manifest = fields["manifest"]
     if not path_exists_at(rev, manifest, root):

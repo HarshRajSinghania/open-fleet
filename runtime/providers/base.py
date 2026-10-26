@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""base.py — Runtime Provider Interface (RPI) base contract and 9-harness launch table.
+"""base.py — Runtime Provider Interface (RPI) base contract and the harness launch table.
 
 Defines the canonical `RuntimeProvider` interface, `ProviderError` exception, monotonic
-privilege narrowing (`ro < rw < danger`), and the verified 9-harness launch table
-(`claude`, `codex`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`) used by
-`open-fleet` (and backward-compatible `orca-fleet` callers) across all 15 supported
-orchestrator runtimes.
+privilege narrowing (`ro < rw < danger`), and the launch table for every CLI harness in
+`SUPPORTED_HARNESSES` (the one source of that list; `openhands` is the SDK agent beside it)
+used by `open-fleet` (and backward-compatible `orca-fleet` callers) across every provider
+registered in `runtime/providers/__init__.py`.
 """
 from __future__ import annotations
 

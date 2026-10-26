@@ -510,3 +510,24 @@ class TestHead(EgressBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestLedgerIsNeverASymlink(EgressBase):
+    """2026-10-26 review: the ledger was opened with O_APPEND and followed a symlink, so a planted
+    `.orca/egress.jsonl -> elsewhere` redirected every receipt into another file. The writer now
+    refuses a symlinked ledger and anything that is not a regular file."""
+
+    def test_a_symlinked_ledger_is_refused(self):
+        target = Path(self.tmp) / "elsewhere.txt"
+        target.write_text("", encoding="utf-8")
+        link = Path(self.tmp) / "linked.jsonl"
+        link.symlink_to(target)
+        with self.assertRaises(egress.EgressError):
+            egress.write_receipt(link, "fixture", "fixture.invalid", "test", "fixture")
+        self.assertEqual(target.read_text(encoding="utf-8"), "", "a receipt reached the link target")
+
+    def test_a_directory_at_the_ledger_path_is_refused(self):
+        folder = Path(self.tmp) / "folder.jsonl"
+        folder.mkdir()
+        with self.assertRaises(egress.EgressError):
+            egress.write_receipt(folder, "fixture", "fixture.invalid", "test", "fixture")

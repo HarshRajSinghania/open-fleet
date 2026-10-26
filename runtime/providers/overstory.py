@@ -39,6 +39,7 @@ from .base import (
     require_id,
 )
 from .local_state import LocalStateStore
+from ._external import release_claim_on_failure
 from ._external import (
     call_runner,
     foreign_dirty_paths,
@@ -119,6 +120,7 @@ class OverstoryProvider(RuntimeProvider):
         return raw
 
     # --- Worker Dispatch (`ov spec write` + `ov sling`) ---
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

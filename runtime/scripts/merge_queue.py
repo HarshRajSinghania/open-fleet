@@ -524,9 +524,9 @@ class Git:
         self.env = {**env, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
 
     def run(self, *args: str, check: bool = True, env: dict[str, str] | None = None,
-            pass_fds: tuple[int, ...] = (), timeout: float = 300.0) -> subprocess.CompletedProcess:
+            pass_fds: tuple[int, ...] = (), timeout: float = 300.0, cwd: str | None = None) -> subprocess.CompletedProcess:
         try:
-            proc = subprocess.run([self.bin, "-C", self.repo_dir, *args], capture_output=True, text=True,
+            proc = subprocess.run([self.bin, "-C", cwd or self.repo_dir, *args], capture_output=True, text=True,
                                   env={**self.env, **(env or {})}, pass_fds=pass_fds, timeout=timeout)
         except (OSError, subprocess.SubprocessError) as exc:
             raise QueueError("git_failed", f"git {' '.join(args[:2])} could not run: {exc}") from exc
@@ -1048,6 +1048,14 @@ class MergeQueue:
                                                         "reviewedTree": p["reviewed_tree"], "base": base,
                                                         "delivery": delivery}, entry_id, lease)
             row = conn.execute("SELECT * FROM mq_entries WHERE entry_id = ?", (entry_id,)).fetchone()
+        if not self.git.has_commit(p["reviewed_sha"]):
+            # Fetched while the branch still carries it (boarding is when it does): a later
+            # content-identical move keeps its tree recomputable, so plan never has to take the
+            # payload's word for what was reviewed (2026-10-26 review). Best effort: offline here
+            # is not a refusal, and plan fetches again before it bounces.
+            with contextlib.suppress(QueueError):
+                self.git.fetch(self._cfg_remote({"repo": repo, "base": base}), p["reviewed_sha"],
+                               f"entry/{entry_id}/reviewed")
         return {"ok": True, "duplicate": False, "superseded": superseded, "entry": self._entry_view(dict(row))}
 
     # --- authoritative remote state ----------------------------------------------------------
@@ -1111,7 +1119,13 @@ class MergeQueue:
         """
         if head == e["reviewed_sha"]:
             return head, "reviewed_sha"
-        reviewed_tree, _source = self._reviewed_tree(e)
+        reviewed_tree, source = self._reviewed_tree(e)
+        if source != "recomputed":
+            # The reviewed commit is nowhere this queue can see, so the payload's tree is the only
+            # witness to what was reviewed — and the payload is the enqueuer's. A head that merely
+            # matches it is not proven reviewed: a fabricated reviewed_sha beside the unreviewed
+            # head's tree rode as content_equivalent (2026-10-26 review). Back to review.
+            return None, "reviewed_sha_unavailable"
         if reviewed_tree and self.git.tree(head) == reviewed_tree:
             return head, "content_equivalent"
         return None, "content_changed"
@@ -1348,12 +1362,30 @@ class MergeQueue:
         except diff_scope.ScopeError as exc:
             raise QueueError("predict_failed", f"could not predict the merge of {e['entry_id']}: {exc}") from exc
 
+    # What a gate command sees (2026-10-26 review): the process-hygiene floor and the MQ_* facts,
+    # never the conductor's credentials (GH_TOKEN, SSH_AUTH_SOCK, …) — the gate runs the UNIT's own
+    # test code — plus whatever the operator lists in MQ_GATE_ENV_KEEP (comma-separated names, e.g.
+    # a proxy setting the tests need). The same floor verify.py gives an executed control.
+    GATE_ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "TERM", "SHELL", "USER", "LOGNAME")
+    GATE_ENV_KEEP_PREFIX = ("LC_",)
+
+    def _gate_env(self, e: dict[str, Any], commit: str) -> dict[str, str]:
+        keep = set(self.GATE_ENV_KEEP) | {k.strip() for k in (self.env.get("MQ_GATE_ENV_KEEP") or "").split(",") if k.strip()}
+        env = {k: v for k, v in self.env.items() if k in keep or k.startswith(self.GATE_ENV_KEEP_PREFIX)}
+        env.update({"MQ_ENTRY": e["entry_id"], "MQ_UNIT": e["unit"], "MQ_PREFIX_COMMIT": commit, "GIT_TERMINAL_PROMPT": "0"})
+        return env
+
     def _run_gate(self, gate_cmd: str, commit: str, e: dict[str, Any], timeout: float) -> dict[str, Any]:
         tmp = tempfile.mkdtemp(prefix="mq-gate-")
         checkout = Path(tmp) / "prefix"
         try:
-            self.git.run("worktree", "add", "--detach", str(checkout), commit)
-            env = {**self.env, "MQ_ENTRY": e["entry_id"], "MQ_UNIT": e["unit"], "MQ_PREFIX_COMMIT": commit}
+            # Its own clone (`--shared`: no object copy), never a worktree of the conductor's clone:
+            # a worktree shares the conductor's .git, whose config (core.hooksPath, aliases) and
+            # hooks the unit's test code could rewrite to run under the conductor's next git call
+            # (2026-10-26 review). The prefix commit is read through the clone's alternates.
+            self.git.run("clone", "--quiet", "--shared", "--no-checkout", self.git.repo_dir, str(checkout))
+            self.git.run("checkout", "--quiet", "--detach", commit, cwd=str(checkout))
+            env = self._gate_env(e, commit)
             # Its own session, so a timeout kills everything the gate started: a grandchild left
             # holding the output pipe would otherwise stretch the timeout to its own lifetime.
             proc = subprocess.Popen(["/bin/sh", "-c", gate_cmd], cwd=checkout, env=env, stdout=subprocess.PIPE,
@@ -1369,7 +1401,6 @@ class MergeQueue:
             return {"cmd": gate_cmd, "exit": code, "tail": tail, "commit": commit}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-            self.git.run("worktree", "prune", check=False)
 
     @staticmethod
     def plan_passed(e: dict[str, Any], gate_cmd: str | None) -> bool:

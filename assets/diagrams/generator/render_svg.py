@@ -6,10 +6,14 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO / 'assets/diagrams/generator'))
 
-import specs  # noqa: E402, F401
-from specs_missions import MISSIONS as MISSION_SPECS  # noqa: E402
+
+def load_mission_specs() -> list[dict]:
+    sys.path.insert(0, str(REPO / 'assets/diagrams/generator'))
+    import specs as _specs
+    from specs_missions import MISSIONS
+    _ = _specs
+    return MISSIONS
 
 
 def esc(s: str) -> str:
@@ -234,7 +238,7 @@ def build_mission_svg(spec: dict, theme: str) -> str:
 
 def main() -> None:
     jobs = []
-    for spec in MISSION_SPECS:
+    for spec in load_mission_specs():
         dark_out = str(REPO / spec['out'])
         light_out = dark_out[:-4] + '-light.jpg'
         jobs.append({'out': dark_out, 'svg': build_mission_svg(spec, 'dark')})

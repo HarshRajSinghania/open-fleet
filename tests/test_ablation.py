@@ -335,6 +335,54 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
         prereg[ablation.BOUND_KEY] = self.RUN  # a bare commit, not the object
         self.assertIn("must be an object", " ".join(ablation.bound_errors(prereg)))
 
+    def test_the_run_commit_is_read_with_replacement_refs_off(self):
+        # PR #705 review (Codex P1): _prereg_at EXECUTES the run commit's code, so a planted
+        # refs/replace/* or graft must not be able to serve another tree under the same SHA.
+        seen, real = [], subprocess.run
+
+        def spy(argv, *args, **kwargs):
+            if Path(str(argv[0])).name == "git":
+                seen.append((argv[1:4], kwargs.get("env") or {}))
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(subprocess, "run", spy):
+            self.assertEqual(ablation.bound_errors(PREREG), [])
+            ablation.bound_status(PREREG)
+        self.assertTrue(any("archive" in call for call, _env in seen), seen)
+        for call, env in seen:
+            with self.subTest(call=call):
+                self.assertEqual((env.get("GIT_NO_REPLACE_OBJECTS"), env.get("GIT_GRAFT_FILE")),
+                                 ("1", os.devnull))
+
+    def results_read_as(self, change):
+        """bound_errors with the run's results.json read back changed in memory, never on disk."""
+        real = ablation.read
+
+        def read(path):
+            text = real(path)
+            if Path(path).name != "results.json":
+                return text
+            data = json.loads(text)
+            change(data)
+            return json.dumps(data)
+        with mock.patch.object(ablation, "read", read):
+            return " | ".join(ablation.bound_errors(PREREG))
+
+    def test_a_run_that_recorded_other_missions_current_is_refused(self):
+        # PR #705 review (Codex P2): {"garbage": "current"} passed for "every payload current".
+        for registration in ({"garbage": "current"}, {m: "current" for m in MIX[:-1]}, []):
+            with self.subTest(registration=registration):
+                self.assertIn("does not record every registered mission current",
+                              self.results_read_as(lambda d, r=registration: d["prereg"].update(registration=r)))
+
+    def test_results_edited_since_the_run_are_refused(self):
+        # The binding is the report's integrity inventory: results.json must still be its bytes.
+        real = ablation.file_sha256
+        with mock.patch.object(ablation, "file_sha256",
+                               lambda p: "0" * 64 if Path(p).name == "results.json" else real(p)):
+            found = " | ".join(ablation.bound_errors(PREREG))
+        self.assertIn("is not the bytes docs/runs/2026-10-25-ablation-606-live.md's inventory pins",
+                      found)
+
     def test_refresh_refuses_a_bound_registration_and_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             json_path, md_path = Path(tmp) / "ablation-prereg.json", Path(tmp) / "ablation-prereg.md"

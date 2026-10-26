@@ -791,8 +791,47 @@ _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _STATUS_LINE = re.compile(r"(?m)^([a-z0-9-]+): (.+)$")
 
 
-def _git(*args):
-    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, timeout=BOUND_TIMEOUT)
+_TOOLS = {}
+
+
+def _tool(name):
+    """A runtime/scripts module (gitexec, run_report), loaded once by path."""
+    if name not in _TOOLS:
+        _TOOLS[name] = _load(f"of_ablation_{name}", ROOT / "runtime" / "scripts" / f"{name}.py")
+    return _TOOLS[name]
+
+
+def _git(*args, blanks=()):
+    """git under the read-side tools' hardened environment (runtime/scripts/gitexec.py). A planted
+    `refs/replace/*` or graft would otherwise serve another tree under the run's own SHA, and
+    _prereg_at EXECUTES what it reads (PR #705 review, Codex P1)."""
+    gitexec = _tool("gitexec")
+    return subprocess.run(gitexec.argv("-C", str(ROOT), *args), capture_output=True,
+                          timeout=BOUND_TIMEOUT, env=gitexec.env(blanks=blanks),
+                          stdin=subprocess.DEVNULL)
+
+
+def _results_pinned(report, results):
+    """[] when `results` is the bytes `report`'s integrity inventory records, and those are the
+    bytes at the commit its RUN header names: the report is the binding, so read through it."""
+    run_report = _tool("run_report")
+    fields, err = run_report.parse_run_header(read(ROOT / report))
+    if err:
+        return [f"{report}: {err}"]
+    try:
+        _path, _lines, entries = run_report.inventory.load(ROOT / report)
+    except run_report.inventory.InventoryError as err:
+        return [f"{report}: integrity inventory: {err}"]
+    rows = [row for row in entries if row[1] == results]
+    if len(rows) != 1:
+        return [f"{report}'s integrity inventory does not pin {results} exactly once"]
+    rev = fields["inventory_at"]
+    matched, _mismatched, _missing = run_report.inventory.check_entries(rows, ROOT / report, ROOT, at=rev)
+    if not matched:
+        return [f"{results} at {rev[:10]} is not the bytes {report}'s inventory records"]
+    if file_sha256(ROOT / results) != rows[0][2]:
+        return [f"{results} is not the bytes {report}'s inventory pins (edited since the run)"]
+    return []
 
 
 def _repo_file(rel):
@@ -826,8 +865,15 @@ def bound_errors(prereg):
     frozen = {k: v for k, v in prereg.items() if k != BOUND_KEY}
     if ran.get("tier") != "live" or ran.get("catalog_head") != commit:
         errors.append(f"{results} is not a live run at {commit[:10]}")
-    if set((pinned.get("registration") or {}).values()) != {"current"}:
-        errors.append(f"{results} does not record every registered payload current when it ran")
+    # Every registered mission, current: any map of "current" values once passed (Codex P2).
+    mix = {row.get("mission") for row in prereg.get("mission_mix") or [] if isinstance(row, dict)}
+    recorded = pinned.get("registration")
+    if not isinstance(recorded, dict) or set(recorded) != mix or set(recorded.values()) != {"current"}:
+        errors.append(f"{results} does not record every registered mission current when it ran")
+    try:
+        errors += _results_pinned(report, results)
+    except (OSError, subprocess.SubprocessError) as err:
+        errors.append(f"{report}'s inventory cannot be checked ({err})")
     try:
         shown = _git("show", f"{commit}:{PREREG.relative_to(ROOT).as_posix()}")
     except (OSError, subprocess.SubprocessError) as err:
@@ -867,7 +913,8 @@ def _prereg_at(commit):
     """The CompletedProcess of `ablation.py prereg` as `commit` has it, on `commit`'s own tree."""
     with tempfile.TemporaryDirectory(prefix="of-ablation-bound-") as tmp:
         try:
-            archive = _git("archive", "--format=tar", commit, "--", *BOUND_PATHS)
+            archive = _git("archive", "--format=tar", commit, "--", *BOUND_PATHS,
+                           blanks=_tool("gitexec").driver_blanks(ROOT))
             if archive.returncode != 0:
                 raise AblationError(f"git archive {commit[:10]} failed: "
                                     f"{archive.stderr.decode('utf-8', 'replace').strip()[:200]}")

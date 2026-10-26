@@ -269,7 +269,9 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
     catalog now: five `--refresh` commits in the day after the run re-pinned payloads that never
     ran, one for every edit to a document these missions load."""
 
-    RUN = "c220067e9c"
+    # Read off the binding, never typed: the commit is the registration's, and the run's own
+    # results are what make it the commit that ran (test_the_committed_registration_is_...).
+    RUN = PREREG[ablation.BOUND_KEY]["commit"][:10]
 
     def binding(self, **change):
         prereg = copy.deepcopy(PREREG)
@@ -278,7 +280,10 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
 
     def test_the_committed_registration_is_the_one_its_run_ran_under(self):
         self.assertEqual(ablation.bound_errors(PREREG), [])
-        self.assertTrue(PREREG[ablation.BOUND_KEY]["commit"].startswith(self.RUN))
+        run = PREREG[ablation.BOUND_KEY]
+        ran = json.loads((ROOT / run["results"]).read_text(encoding="utf-8"))
+        self.assertEqual((ran["tier"], ran["catalog_head"]), ("live", run["commit"]))
+        self.assertEqual(ran["prereg"]["sha256"], ablation.prereg_sha256(unbound(PREREG)))
 
     def test_its_pins_are_checked_at_the_run_commit_and_the_catalog_now_is_never_measured(self):
         with mock.patch.object(ablation, "measure", side_effect=AssertionError("measured the catalog now")):
@@ -306,7 +311,7 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
     def test_a_registration_that_does_not_check_at_its_commit_is_a_refusal(self):
         broken = subprocess.CompletedProcess([], 2, "", "ablation: prereg: schema must be ...")
         with mock.patch.object(ablation, "_prereg_at", return_value=broken):
-            with self.assertRaisesRegex(ablation.AblationError, "does not check at c220067e9c"):
+            with self.assertRaisesRegex(ablation.AblationError, f"does not check at {self.RUN}"):
                 ablation.bound_status(PREREG)
             code, _out, err = run_main(["prereg"])
         self.assertEqual(code, 2, err)
@@ -327,7 +332,7 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
         self.assertIn("the report's own run directory",
                       self.binding(results="docs/experiments/ablation-prereg.json"))
         prereg = copy.deepcopy(PREREG)
-        prereg[ablation.BOUND_KEY] = "c220067e9c"
+        prereg[ablation.BOUND_KEY] = self.RUN  # a bare commit, not the object
         self.assertIn("must be an object", " ".join(ablation.bound_errors(prereg)))
 
     def test_refresh_refuses_a_bound_registration_and_writes_nothing(self):

@@ -373,6 +373,26 @@ def parallel_family():
     return cases
 
 
+# Brace expansion (2026-10-26 review): bash expands `--force{,}` to two words before anything
+# else runs, so the refused flag never appeared as a word to the hook. The oracle cannot score
+# these -- it counts a run only when the sentinel receives the payload's words exactly, and an
+# expansion by construction yields other words -- so, like parallel, the family is hook-only:
+# tests/test_deny_hook_conformance.py asserts each form is refused.
+def brace_family():
+    cases = []
+    for name, tpl in (
+            ("force-dup", "{HEAD} push --force{,} origin main"),
+            ("force-alt", "{HEAD} push {--force,} origin main"),
+            ("force-split", "{HEAD} push --fo{rce,rce} origin main"),
+            ("force-late", "{HEAD} push origin --force{,} main"),
+            ("force-feature", "{HEAD} push --force{,} origin feature")):
+        cases.append(Case(f"brace:{name}", tpl, "push"))
+    for name, tpl in (
+            ("root-dup", "{HEAD} -rf /{,}"), ("flag-split", "{HEAD} -r{,}f /")):
+        cases.append(Case(f"brace:{name}", tpl, "wipe"))
+    return cases
+
+
 # --- seeded compositions: the grid's contexts stacked two and three deep -------------------
 def _wrappers():
     """(name, wrap(inner) -> outer or None). None: the context cannot hold this inner text."""

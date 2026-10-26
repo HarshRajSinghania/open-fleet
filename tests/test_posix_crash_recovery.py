@@ -1467,5 +1467,76 @@ class TestFallbackWorktreeNameIsRecorded(CrashRecoveryBase):
         self.assert_no_worker_ran()
 
 
+class TestOrphanedWorkerIsStopped(CrashRecoveryBase):
+    """2026-10-26 review: the monitor leads the process group its agent runs in. `kill -9` of the
+    monitor ALONE left the agent running in the worktree while the liveness sweep reported the
+    dispatch died, and a later stop skipped termination as "already finished". The sweep and the
+    stop now end a group proven to be this worker's (a live member working in its worktree or
+    lane) and leave a group id the kernel handed to someone else alone; a live pid that is not
+    this lane's monitor is a vanished monitor, not a live one."""
+
+    def launch_and_orphan(self):
+        prov = self.restart()
+        res = prov.worker_start(**self.start_kwargs())
+        did = res["dispatchId"]
+        self.assertTrue(_wait_for(lambda: len(self.agent_lines()) == 1), "the sleeper never started")
+        agent_pid = int(self.agent_lines()[0].split()[-1])
+        monitor_pid = int(self.dispatch(prov, did)["pid"])
+        self.assertNotEqual(monitor_pid, agent_pid)
+        os.kill(monitor_pid, signal.SIGKILL)  # the monitor alone: its worker keeps running
+        self.assertTrue(_wait_for(lambda: not _alive(monitor_pid)))
+        self.assertTrue(_alive(agent_pid), "precondition: the agent outlives its monitor")
+        return prov, did, agent_pid, monitor_pid
+
+    def lane_events(self, prov, did):
+        lane = Path(self.dispatch(prov, did)["lane_dir"])
+        out = []
+        for line in (lane / "events.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
+
+    def test_the_sweep_that_reports_the_death_stops_the_worker_the_monitor_left(self):
+        prov, did, agent_pid, monitor_pid = self.launch_and_orphan()
+        states = {w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}
+        self.assertEqual(states[did], "died")
+        self.assertTrue(_wait_for(lambda: not _alive(agent_pid), timeout=10),
+                        "the orphaned agent kept running after the death report")
+        stopped = [e for e in self.lane_events(prov, did) if e.get("type") == "orphaned_worker_stopped"]
+        self.assertEqual([(e["pgid"], e["action"]) for e in stopped], [(monitor_pid, "terminated")])
+        self.assertIn(agent_pid, stopped[0]["members"])
+
+    def test_a_stop_after_the_death_was_recorded_still_ends_a_live_orphan(self):
+        prov, did, agent_pid, monitor_pid = self.launch_and_orphan()
+        with prov.state._connect() as conn:  # an older sweep recorded the death and stopped nothing
+            conn.execute("UPDATE dispatches SET state = 'died' WHERE dispatch_id = ?", (did,))
+        out = prov.worker_fence("stop", did)
+        self.assertEqual(out["termination"]["skipped"], "dispatch already finished")
+        self.assertEqual((out["termination"]["orphans"]["pgid"], out["termination"]["orphans"]["action"]),
+                         (monitor_pid, "terminated"))
+        self.assertTrue(_wait_for(lambda: not _alive(agent_pid), timeout=10))
+
+    def test_a_live_pid_that_is_not_this_lanes_monitor_is_swept_and_its_group_left_alone(self):
+        prov = self.restart()
+        other = subprocess.Popen(["sleep", "30"], start_new_session=True, cwd=str(self.base))
+        self.addCleanup(lambda: (other.kill(), other.wait()))
+        lane = self.base / "state" / "lanes" / "disp_reused"
+        lane.mkdir(parents=True)
+        (lane / "run_worker.py").write_text("# the monitor script a pid this row names never ran\n", encoding="utf-8")
+        with prov.state._connect() as conn:
+            conn.execute(
+                "INSERT INTO dispatches(dispatch_id, task_id, run_id, worktree, agent, terminal_handle, state, pid, backend, "
+                "lane_dir, monitor_pid, created_at, updated_at) VALUES ('disp_reused', ?, 'run-r04', '', 'claude', "
+                "'term_reused', 'ready', ?, 'setsid', ?, ?, 0, 0)",
+                (self.task, other.pid, str(lane), other.pid),
+            )
+        states = {w["dispatchId"]: w["state"] for w in prov.worker_list()["workers"]}
+        self.assertEqual(states["disp_reused"], "died", "a live pid that is not this lane's monitor is a vanished monitor")
+        self.assertIsNone(other.poll(), "a group whose members work elsewhere is never signalled")
+        self.assertTrue(_alive(other.pid))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,7 @@ The tally is never coordinator memory — it lives in the target repo's DECISION
   that can write there can write the marker), so the expected owner must come from authenticated
   state and the marker needs integrity protection; and resolving a path then acting on the NAME is
   a check/use race wherever another process can swap an ancestor — hold the target by descriptor,
-  or prove the hierarchy cannot change. When path-scoped (`--paths`), report any skipped/missing path
+  or prove the hierarchy cannot change. When the review is path-scoped, report any skipped/missing path
   in the scope header (never drop silently). Every finding needs a concrete step-by-step exploit
   scenario (never test live APIs); one verified finding → grep the whole tree for VARIANTS. (Full audit→re-attack loop is `harden-it`; this is the bounded review lens.)
 - **Performance:** measure-first (no optimizing without a baseline); symptom→cause tree (slow load →
@@ -81,4 +81,4 @@ The tally is never coordinator memory — it lives in the target repo's DECISION
 ## Completion
 
 Every triggered lens ran (or is a recorded gate-off); each finding names its lens, severity, and (for
-security) an exploit scenario. A clearance that rests on one safety fact is unproven until a run shows it; for a runtime-behavior `BLOCKER`/`Critical` claim, a review worker may run an ephemeral reproduction probe in a doctor-verified isolated environment recipe (`vm recipe doctor` / `orca environment`) without mutating the reviewed worktree, and any runtime `BLOCKER` claim not backed by an executed probe or failing test receipt is labeled `STATIC_ONLY`. Findings emit in the shared schema for the mission's ledger.
+security) an exploit scenario. A clearance that rests on one safety fact is unproven until a run shows it; a review worker is `ro` and executes nothing, so any runtime `Critical` claim not backed by an executed probe or failing test receipt is labeled `STATIC_ONLY`. Findings emit in the shared schema for the mission's ledger.

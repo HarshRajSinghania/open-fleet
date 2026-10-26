@@ -7,7 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__OPEN_FLEET_ROOT__/runtime/scripts/verify-gate.sh --event task"
+            "command": "__OPEN_FLEET_ROOT__/runtime/scripts/verify-gate.sh --event task",
+            "timeout": 2400
           }
         ]
       }
@@ -18,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__OPEN_FLEET_ROOT__/runtime/scripts/verify-gate.sh --event stop"
+            "command": "__OPEN_FLEET_ROOT__/runtime/scripts/verify-gate.sh --event stop",
+            "timeout": 2400
           }
         ]
       }

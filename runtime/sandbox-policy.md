@@ -122,8 +122,8 @@ buckets map onto gate-classification.md — the taxonomy is the planning surface
   the unit's own branch and worktree, static PoCs under `ro`. Mechanical/taste class; no gate.
 - **Ask-First** — one-way or out-of-authority per gate-classification.md, enumerated in
   `one-way-doors.json` (merge to default, deploy, rollback, deletion, spend, freeze, secret
-  rotation, live credentials, scope change): a recorded human grant BEFORE execution, never
-  defaulted on timeout.
+  rotation, live credentials, scope change, close without landing, review verdict): a recorded
+  human grant BEFORE execution, never defaulted on timeout.
 - **Never** — no grant makes it safe on the mortal host: destructive / networked / supply-chain
   exploit PoCs (danger profile inside an ephemeral sandbox only, above), live-prod mutation,
   credential provisioning — Lane 0 refuse-and-surface, or route to a sandbox per this policy.

@@ -184,7 +184,7 @@ usage() {
 deny-hook.sh — PreToolUse deny/ask guard for read-write workers.
 
 Usage: deny-hook.sh [--help] [--settings <worktree>]
-       deny-hook.sh --verify-settings <file> [--harness <name>]
+       deny-hook.sh --verify-settings <file> [--harness <name>] [--boundary <dir>]
   Reads a PreToolUse event JSON object on stdin; writes a decision object on
   stdout when the action is denied or must be asked, nothing when it is allowed.
   --settings <worktree> prints the settings.json block that registers this hook
@@ -193,7 +193,10 @@ Usage: deny-hook.sh [--help] [--settings <worktree>]
   and allow probes in the harness's own tool names. <name> is claude, codex,
   openhands, goose, crush, hermes (config.yaml), opencode/omp/pi (the .ts
   bridge), or jcode (<file> holds JCODE_HOOK_PRE_TOOL=<cmd>; "-" reads the env).
-  Without --harness it is inferred from the path.
+  Without --harness it is inferred from the path. --boundary <dir> requires the
+  registration to bound exactly that worktree. A registration may name only this
+  hook ([VAR=value ...] [sh] <path>/deny-hook.sh, same bytes); the probes run it
+  under a scrubbed environment, never through sh -c (2026-10-26 review).
 
 Environment:
   ORCA_UNIT_WORKTREE  when set, a write outside this directory is denied: the
@@ -257,23 +260,38 @@ if [ "${1:-}" = "--verify-settings" ]; then
   fi
   _vs_file=$2
   _vs_harness=""
-  if [ "${3:-}" = "--harness" ]; then
-    _vs_harness=${4:-}
-    [ -n "$_vs_harness" ] || { echo "deny-hook.sh --verify-settings: --harness needs a name" >&2; exit 2; }
-  elif [ -n "${3:-}" ]; then
-    printf 'deny-hook.sh --verify-settings: unexpected argument: %s\n' "$3" >&2
-    exit 2
-  fi
-  python3 -I - "$_vs_file" "$_vs_harness" <<'PYEOF'
+  _vs_boundary=""
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --harness)
+        _vs_harness=${2:-}
+        [ -n "$_vs_harness" ] || { echo "deny-hook.sh --verify-settings: --harness needs a name" >&2; exit 2; }
+        shift 2 ;;
+      --boundary)
+        # The worktree the spawn is about: the registration must bound exactly it (2026-10-26 review).
+        _vs_boundary=${2:-}
+        [ -n "$_vs_boundary" ] || { echo "deny-hook.sh --verify-settings: --boundary needs a directory" >&2; exit 2; }
+        shift 2 ;;
+      *)
+        printf 'deny-hook.sh --verify-settings: unexpected argument: %s\n' "$1" >&2
+        exit 2 ;;
+    esac
+  done
+  _vs_self=$(cd "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")
+  python3 -I - "$_vs_file" "$_vs_harness" "$_vs_self" "$_vs_boundary" <<'PYEOF'
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 arg_path, harness = sys.argv[1], sys.argv[2].strip().lower()
+self_path, boundary_arg = sys.argv[3], sys.argv[4]
 path = Path(arg_path)
 KNOWN = ("claude", "codex", "openhands", "goose", "crush", "hermes",
          "opencode", "omp", "pi", "jcode", "generic")
@@ -455,6 +473,7 @@ def parse_simple_yaml(text):
         return None
 
 
+settings = None
 if harness == "jcode":
     cmd = ""
     if arg_path == "-":
@@ -548,6 +567,102 @@ for tool, command in sorted(commands.items()):
             f"no usable ORCA_UNIT_WORKTREE for the {tool} registration "
             "(settings env or an inline assignment) — the worktree boundary "
             "the registration exists to enforce is off"))
+    if boundary_arg and os.path.realpath(boundary) != os.path.realpath(boundary_arg):
+        sys.exit(refuse(
+            f"the {tool} registration bounds {boundary!r}, not the worktree this spawn is about "
+            f"({boundary_arg!r}) — a guard bounding another tree arms nothing here"))
+
+# --- the registration must be THIS hook, and nothing else (2026-10-26 review) -----------------
+# This gate used to run whatever command the settings file registered, through `sh -c`, under
+# the coordinator's whole environment plus the file's own `env` block, with one shape check: the
+# substring "deny-hook.sh". The natural wiring is a per-worktree .claude/settings.json INSIDE the
+# tree a bypass-permissions worker writes, so a worker could plant
+#   touch /pwned; exec sh /real/deny-hook.sh # deny-hook.sh
+# (or an env.PATH naming its own sh) and have the coordinator run it at the next spawn into that
+# worktree. Now a registration is [NAME=value …] [env] [sh|bash|dash] <path>/deny-hook.sh and
+# nothing more; the path is a regular file whose bytes are this hook's; an assignment names only
+# a variable the hook reads; and the probes run under a scrubbed environment — the coordinator's
+# PATH/HOME/locale/TMPDIR, the registration's hook switches, nothing else — with the shell
+# resolved on the coordinator's PATH, never run through `sh -c`.
+HOOK_ENV_KEYS = ("ORCA_UNIT_WORKTREE", "OPEN_FLEET_UNIT_WORKTREE", "ORCA_HOOK_STRICT_EXIT",
+                 "OPEN_FLEET_HOOK_STRICT_EXIT", "OPEN_FLEET_HOOK_EXIT2", "OPEN_FLEET_HEADLESS_STRICT",
+                 "ORCA_EGRESS_LEDGER", "OPEN_FLEET_EGRESS_LEDGER", "ORCA_FLEET_STATE_DB",
+                 "OPEN_FLEET_STATE_DB", "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE",
+                 "OPEN_FLEET_DENY_HOOK", "ORCA_DENY_HOOK_PATH", "OPEN_FLEET_ROOT", "ORCA_FLEET_ROOT",
+                 "GOOSE_MODE", "CODEX_CI", "CODEX_SANDBOX", "JCODE_HOOK_TOOL_NAME")
+PASS_THROUGH = ("PATH", "HOME", "LANG", "TMPDIR", "TMP", "TEMP", "TERM")
+STEERING = ("PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+            "ENV", "BASH_ENV", "SHELLOPTS", "CDPATH", "IFS", "SHELL")
+SHELLS = ("sh", "bash", "dash")
+ASSIGN_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+try:
+    self_digest = hashlib.sha256(Path(self_path).read_bytes()).hexdigest()
+except OSError as err:
+    sys.exit(refuse(f"this hook cannot read itself at {self_path!r} ({err})"))
+
+
+def registered_hook(command):
+    """(assignments, shell, hook path) of a registration this gate may run; refuses otherwise."""
+    try:
+        words = shlex.split(command)
+    except ValueError as err:
+        sys.exit(refuse(f"registration is not a shell word list ({err})"))
+    assigns, i = {}, 0
+
+    def take_assigns(i):
+        while i < len(words) and ASSIGN_RE.fullmatch(words[i]):
+            name, value = ASSIGN_RE.fullmatch(words[i]).groups()
+            if name not in HOOK_ENV_KEYS:
+                sys.exit(refuse(f"registration sets {name}, which the hook does not read — a "
+                                "registration carries only the hook switches"))
+            assigns[name] = value
+            i += 1
+        return i
+
+    i = take_assigns(i)
+    if words[i:i + 1] == ["env"]:
+        i = take_assigns(i + 1)
+    shell = None
+    if i < len(words) and words[i].rsplit("/", 1)[-1] in SHELLS:
+        shell = words[i].rsplit("/", 1)[-1]
+        i += 1
+    rest = words[i:]
+    if len(rest) != 1 or rest[0].rsplit("/", 1)[-1] != "deny-hook.sh":
+        sys.exit(refuse("a registration is [VAR=value …] [sh] <path>/deny-hook.sh and nothing "
+                        f"else; got {command!r}"))
+    hook = Path(rest[0])
+    if not hook.is_absolute():
+        hook = Path(assigns.get("ORCA_UNIT_WORKTREE") or assigns.get("OPEN_FLEET_UNIT_WORKTREE")
+                    or env.get("OPEN_FLEET_UNIT_WORKTREE") or env.get("ORCA_UNIT_WORKTREE")
+                    or path.parent) / hook
+    try:
+        digest = hashlib.sha256(hook.resolve().read_bytes()).hexdigest()
+    except OSError as err:
+        sys.exit(refuse(f"the registered hook {rest[0]!r} cannot be read ({err})"))
+    if digest != self_digest:
+        sys.exit(refuse(f"the registered {rest[0]!r} is not this hook (its bytes differ from "
+                        f"{self_path}); a registration may arm only the fleet's own deny-hook.sh"))
+    return assigns, shell, str(hook)
+
+
+registered_env = settings.get("env") if isinstance(settings, dict) else {}
+registered_env = registered_env if isinstance(registered_env, dict) else {}
+steering = sorted(k for k in registered_env if str(k) in STEERING)
+if steering:
+    sys.exit(refuse(f"the settings env sets {', '.join(steering)}, which would steer what the "
+                    "probes execute; a registration env carries only the hook switches"))
+# PASS_THROUGH values come from the coordinator process itself (never from a settings env block,
+# which the discovery env above may have absorbed); the hook switches come from the discovery
+# env: the coordinator's own, plus the ones the registration names.
+probe_env = {k: v for k, v in os.environ.items() if k in PASS_THROUGH or k.startswith("LC_")}
+probe_env.update({k: v for k, v in env.items() if k in HOOK_ENV_KEYS})
+PROBE_ARGV = {}
+for tool, command in sorted(commands.items()):
+    assigns, shell, hook_path = registered_hook(command)
+    exe = shutil.which(shell or "sh", path=os.environ.get("PATH"))
+    if not exe:
+        sys.exit(refuse(f"no {shell or 'sh'} on the coordinator PATH to run the probes with"))
+    PROBE_ARGV[tool] = ([exe, hook_path], {**probe_env, **assigns})
 
 if argv_mode:
     try:
@@ -578,8 +693,10 @@ shell_tool, shell_key, write_tool, write_input = PROBES[harness]
 
 
 def probe(command, tool_name, tool_input):
-    """(decision, exit status) of the REGISTERED command on one payload."""
-    penv = dict(env)
+    """(decision, exit status) of the REGISTERED hook on one payload: the identified hook as an
+    argv, under the scrubbed environment plus the registration's own assignments."""
+    argv, penv = next(v for tool, v in PROBE_ARGV.items() if commands[tool] == command)
+    penv = dict(penv)
     if harness == "jcode":
         payload = json.dumps(tool_input)
         penv["JCODE_HOOK_TOOL_NAME"] = tool_name
@@ -587,7 +704,6 @@ def probe(command, tool_name, tool_input):
         event = "pre_tool_call" if harness == "hermes" else "PreToolUse"
         payload = json.dumps({"hook_event_name": event, "tool_name": tool_name,
                               "tool_input": tool_input})
-    argv = shlex.split(command) if argv_mode else ["sh", "-c", command]
     try:
         r = subprocess.run(argv, input=payload, capture_output=True, text=True, env=penv,
                            cwd=boundary_for(command), timeout=60)
@@ -1063,8 +1179,189 @@ else:
 STRICT_TOOLS = set(SHELL_TOOLS[1:]) | set(EDITOR_TOOLS) | {"apply_patch", "patch", "write_file"}
 strict_payload = bool(raw_tool) and (raw_tool in STRICT_TOOLS or raw_tool[:1].islower())
 
+# --- brace expansion (2026-10-26 review) ------------------------------------------------------
+# bash expands {a,b} and {1..3} BEFORE every other expansion, so `git push --force{,} origin main`
+# runs `git push --force --force origin main` while every rule here read one opaque word
+# `--force{,}` and ALLOWED the push (`rm -rf /{,}` fell from a HIGH deny to a never-list ask the
+# same way). The command text is expanded here once, the way bash does it: unquoted braces only,
+# `${` opens a parameter expansion and is left alone, nothing expands between [[ and ]], and a
+# word with no unquoted comma and no valid sequence stays as written (find -exec {} is untouched).
+# Everything downstream -- the records, the HIGH tier, the never list -- reads the expanded words.
+# The words one word can expand to are capped; past the cap the word is unreadable and the
+# command is refused (a D record), never read as the one word it is not.
+_BRACE_CAP = 512
+_BRACE_TOTAL = 4096
+_BRACE_SEPS = chr(10) + ";|&()<>" + chr(96)
+_BRACE_WORD_LEADS = "#;|&()<>" + chr(96)
+_SEQ_INT = re.compile(r"^(-?[0-9]+)\.\.(-?[0-9]+)(?:\.\.(-?[0-9]+))?$")
+_SEQ_CHR = re.compile(r"^([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?[0-9]+))?$")
+
+
+def _skip_param(word, i):
+    # i at the { of a ${: the index just past its matching }, quotes and nesting respected.
+    depth, j, n, quote = 0, i, len(word), ""
+    while j < n:
+        ch = word[j]
+        if ch == "\\" and quote != SQ:
+            j += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in (SQ, DQ):
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return n
+
+
+def _seq_items(body):
+    # The words of a {x..y[..step]} sequence, or None when body is not one.
+    m = _SEQ_INT.match(body)
+    if m:
+        lo, hi = int(m[1]), int(m[2])
+        step = abs(int(m[3])) if m[3] and int(m[3]) else 1
+        step = step if lo <= hi else -step
+        if abs(hi - lo) // abs(step) + 1 > _BRACE_CAP:
+            raise ValueError("a sequence longer than %d words" % _BRACE_CAP)
+        width = 0
+        if any(len(x.lstrip("-")) > 1 and x.lstrip("-").startswith("0") for x in (m[1], m[2])):
+            width = max(len(m[1]), len(m[2]))
+        out = []
+        for v in range(lo, hi + (1 if step > 0 else -1), step):
+            out.append(str(v).zfill(width) if v >= 0 else "-" + str(-v).zfill(max(width - 1, 0)))
+        return out
+    m = _SEQ_CHR.match(body)
+    if m:
+        lo, hi = ord(m[1]), ord(m[2])
+        step = abs(int(m[3])) if m[3] and int(m[3]) else 1
+        step = step if lo <= hi else -step
+        return [chr(v) for v in range(lo, hi + (1 if step > 0 else -1), step)]
+    return None
+
+
+def _brace_group(word, i):
+    # i at an unquoted {: (index of its matching }, alternatives), or (None, None) when the
+    # braces are not a brace expansion (unmatched, or neither a top-level comma nor a sequence).
+    depth, j, n, quote, items, start = 0, i, len(word), "", [], i + 1
+    while j < n:
+        ch = word[j]
+        if ch == "\\" and quote != SQ:
+            j += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in (SQ, DQ):
+            quote = ch
+        elif ch == "$" and word[j + 1:j + 2] == "{":
+            j = _skip_param(word, j + 1)
+            continue
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                items.append(word[start:j])
+                break
+        elif ch == "," and depth == 1:
+            items.append(word[start:j])
+            start = j + 1
+        j += 1
+    else:
+        return None, None
+    if len(items) > 1:
+        return j, items
+    seq = _seq_items(items[0])
+    return (j, seq) if seq is not None else (None, None)
+
+
+def _brace_word(word, budget):
+    # Every word one word expands to, in bash order (the leftmost group first); [word] when
+    # nothing in it expands.
+    i, n, quote = 0, len(word), ""
+    while i < n:
+        ch = word[i]
+        if ch == "\\" and quote != SQ:
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in (SQ, DQ):
+            quote = ch
+        elif ch == "$" and word[i + 1:i + 2] == "{":
+            i = _skip_param(word, i + 1)
+            continue
+        elif ch == "{":
+            end, items = _brace_group(word, i)
+            if items is not None:
+                out = []
+                for item in items:
+                    for rest in _brace_word(item + word[end + 1:], budget):
+                        out.append(word[:i] + rest)
+                        budget[0] -= 1
+                        if len(out) > _BRACE_CAP or budget[0] < 0:
+                            raise ValueError("more than %d words from one word" % _BRACE_CAP)
+                return out
+        i += 1
+    return [word]
+
+
+def _brace_expand_text(text):
+    # The command with every unquoted brace expansion written out, word by word. A word ends at
+    # what the shell splits on before it expands: a blank, a newline, an operator character or a
+    # backtick; quotes are tracked across the word so a quoted blank stays inside it.
+    out, i, n, budget, in_test = [], 0, len(text), [_BRACE_TOTAL], False
+    while i < n:
+        ch = text[i]
+        if ch in BLANKS or ch in _BRACE_SEPS:
+            out.append(ch)
+            i += 1
+            continue
+        start, quote = i, ""
+        while i < n:
+            ch = text[i]
+            if ch == "\\" and quote != SQ:
+                i += 2
+                continue
+            if quote:
+                if ch == quote:
+                    quote = ""
+            elif ch in (SQ, DQ):
+                quote = ch
+            elif ch in BLANKS or ch in _BRACE_SEPS:
+                break
+            i += 1
+        word = text[start:min(i, n)]
+        if word == "[[":
+            in_test = True   # bash performs no brace expansion between [[ and ]]
+        elif word == "]]":
+            in_test = False
+        if "{" in word and "}" in word and not in_test:
+            # bash parses before it expands, so a word an expansion produces is a word even when
+            # it opens with a comment or operator character; escaped, it stays one here too.
+            # An unquoted null word an expansion produces is removed, as bash removes it.
+            out.append(" ".join(("\\" + w) if w[0] in _BRACE_WORD_LEADS else w
+                                for w in _brace_word(word, budget) if w))
+        else:
+            out.append(word)
+    return "".join(out)
+
+
 cmd_val = ti.get("command") if (norm_tool == "Bash" and isinstance(ti.get("command"), str)) else (ti.get("cmd") if isinstance(ti.get("cmd"), str) else (ti.get("command") if norm_tool == "Bash" else ""))
 raw_command = r(cmd_val)
+_BRACE_REFUSAL = None
+try:
+    raw_command = _brace_expand_text(raw_command)
+except ValueError as _brace_err:
+    _BRACE_REFUSAL = ("brace expansion of this command is more than the hook reads (%s); "
+                      "spell the words out" % _brace_err)
 
 
 target_paths = []
@@ -2908,6 +3205,7 @@ for _join, seg in _split(_judged):
     _views(_tokenize(seg)[0])
 _guard_segs = []
 _all_views = []   # (words, writes, segment text) of every command in order, bodies included
+_all_assigns = []   # the NAME=value words in front of each of those commands, in the same order
 for _join, seg in _split(_judged):
     args, writes = _tokenize(seg)
     _guard_segs.append((args, writes))
@@ -2923,6 +3221,7 @@ for _join, seg in _split(_judged):
         record("C", " ".join(policy_word(word) for word in _va + _vw))
     _all_views += [(_vw, writes, seg) if _k == 0 else (_vw, [], "")
                    for _k, (_va, _vw) in enumerate(_seg_views)]
+    _all_assigns += [_va for _va, _vw in _seg_views]
 
 
 def _is_deferred_def(ws):
@@ -3049,6 +3348,57 @@ def _alias_refusal(ws):
             return ("a gh alias whose expansion is an off-repo write runs it later; an outer "
                     "egress receipt cannot cover a deferred send (rule 5). Put the receipt "
                     "inside the alias, or run the write itself, receipted.")
+    return None
+
+
+_GIT_CONFIG_READS = ("--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list",
+                     "--unset", "--unset-all", "--remove-section", "--rename-section", "-e",
+                     "--edit", "--show-origin", "--show-scope", "--name-only", "--get-colorbool")
+_GIT_CONFIG_OPERAND = ("-f", "--file", "--blob", "--default", "--type")
+
+
+def _git_alias_laundering(assigns, ws):
+    # D (2026-10-26 review): `git -c alias.p=push p --force origin main` runs `git push`, yet once
+    # the -c operand is stripped the subcommand this hook and the HIGH tier read is `p`, so the
+    # force-push was ALLOWED. An alias defined in the same command -- -c, --config-env, a
+    # GIT_CONFIG_* assignment, or `git config alias.X Y` -- renames a verb every rule here judges
+    # by name, and a worker has no use for one: the definition itself is refused.
+    if not ws or ws[0].rsplit("/", 1)[-1] != "git":
+        return None
+    keys = []
+    for a in assigns or []:
+        name, _eq, value = a.partition("=")
+        if name == "GIT_CONFIG_PARAMETERS" or re.fullmatch(r"GIT_CONFIG_KEY_[0-9]+", name):
+            keys.append(value)
+    rest, i = ws[1:], 0
+    while i < len(rest) and rest[i].startswith("-") and rest[i] != "-":
+        w = rest[i]
+        if w in ("-c", "--config-env") and i + 1 < len(rest):
+            keys.append(rest[i + 1])
+        elif w.startswith("--config-env="):
+            keys.append(w.split("=", 1)[1])
+        i += 2 if w in _GIT_GLOBAL_ARG else 1
+    if any("alias." in k.lower() for k in keys):
+        return ("a git alias defined in the command itself (-c alias.*, --config-env=alias.*, "
+                "GIT_CONFIG_*) renames the subcommand this hook judges by name; run the real "
+                "subcommand instead.")
+    sub = rest[i:]
+    if sub[:1] != ["config"]:
+        return None
+    operands, j = [], 1
+    while j < len(sub):
+        w = sub[j]
+        if w in _GIT_CONFIG_READS:
+            return None
+        if w in _GIT_CONFIG_OPERAND:
+            j += 2
+            continue
+        if not w.startswith("-") or w == "-":
+            operands.append(w)
+        j += 1
+    if len(operands) >= 2 and operands[0].lower().startswith("alias."):
+        return ("git config alias.* defines an alias that a later command runs under another "
+                "name, past every rule here; run the real subcommand instead.")
     return None
 
 
@@ -3703,6 +4053,10 @@ if _fetch_runs():
 if _never:
     record("N", _never[0])
 _hard = [why for why in (_alias_refusal(_vw) for _vw, _w, _sg in _all_views) if why]
+_hard += [why for why in (_git_alias_laundering(_all_assigns[_k], _vw)
+                          for _k, (_vw, _w, _sg) in enumerate(_all_views)) if why]
+if _BRACE_REFUSAL:
+    _hard.insert(0, _BRACE_REFUSAL)
 if _hard:
     record("D", _hard[0])
 
@@ -4406,7 +4760,7 @@ git_redirected() {
   while : ; do
     case "$_r" in
       -C\ *|-C|--git-dir\ *|--git-dir|--work-tree\ *|--work-tree|\
-      --git-dir=*|--git-dir=*\ *|--work-tree=*|--work-tree=*\ *)
+      --git-dir=*|--work-tree=*)
         return 0 ;;
       -c\ *|-c|--namespace\ *|--namespace|--config-env\ *|--config-env)
         _r=${_r#* }
@@ -4558,7 +4912,7 @@ for _SEG in "$@"; do
     for TOK in $CMD; do
       TOK=${TOK#\"}; TOK=${TOK%\"}; TOK=${TOK#\'}; TOK=${TOK%\'}
       case "$TOK" in
-        sudo|rm|-*|--|[0-9]'>'*|'>'*|'<'*|'&') continue ;;
+        sudo|rm|-*|[0-9]'>'*|'>'*|'<'*|'&') continue ;;
         '/'|'//'|'/*'|'~'|'~/'|'$HOME'|'$HOME/'|'${HOME}'|'${HOME}/') ROOTY=1 ;;
         *) SAFE=1 ;;
       esac

@@ -592,6 +592,37 @@ class TestCheck(DecisionsBase):
             self.assertIn(sub, r.stdout)
 
 
+class TestCheckSince(DecisionsBase):
+    """2026-10-26 review: `check` had no CI caller because the repository's own ledger carries
+    records from before the human-source and class rules. `--since` draws that line: earlier
+    records are counted, every later record is judged."""
+
+    OLD_BAD = "2026-09-01T00:00:00Z · gate-old · one-way · approved · deploy to production · t-1"
+    NEW_GOOD = ("2026-09-30T00:00:00Z · gate-new · one-way · approved · deploy to production "
+                "[source=human:lia] · t-2")
+    NEW_BAD = "2026-10-01T00:00:00Z · gate-newer · mechanical · yes · rotate the secret today · t-3"
+
+    def test_records_before_the_fence_are_counted_not_judged(self):
+        self.seed([self.OLD_BAD, self.NEW_GOOD])
+        self.assertEqual(self.run_dec("check").returncode, 1, "the fence is opt-in")
+        r = self.run_dec("check", "--since", "2026-09-24")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("1 record(s) valid", r.stdout)
+        self.assertIn("1 earlier record(s) before 2026-09-24 not re-checked", r.stdout)
+
+    def test_a_record_after_the_fence_still_fails(self):
+        self.seed([self.OLD_BAD, self.NEW_BAD])
+        r = self.run_dec("check", "--since", "2026-09-24")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("secret-rotation", r.stderr)
+        self.assertNotIn("gate-old", r.stderr)
+
+    def test_a_malformed_fence_is_could_not_run(self):
+        self.seed([self.NEW_GOOD])
+        r = self.run_dec("check", "--since", "yesterday")
+        self.assertEqual(r.returncode, 2, r.stdout)
+
+
 class TestScriptShape(unittest.TestCase):
     def test_executable_and_shebanged(self):
         self.assertTrue(os.access(DECISIONS, os.X_OK))

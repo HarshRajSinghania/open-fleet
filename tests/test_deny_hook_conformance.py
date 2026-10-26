@@ -197,6 +197,19 @@ class TestParallelFamily(unittest.TestCase):
                 self.assertEqual(corpus.hook_decision(command, HOOK), "deny", command)
 
 
+class TestBraceFamily(unittest.TestCase):
+    """2026-10-26 review: a force flag or a root operand spelled through a brace expansion is
+    what bash runs, never the one word the hook used to read; every form refuses. The oracle
+    cannot score these (an expansion yields other words than the payload's), so they are
+    hook-only, as the parallel family is."""
+
+    def test_every_brace_expanded_command_is_refused(self):
+        for case in corpus.brace_family():
+            command = corpus.render(case.template, case.payload, False)
+            with self.subTest(command=command):
+                self.assertEqual(corpus.hook_decision(command, HOOK), "deny", command)
+
+
 # Each parser safeguard, switched off in a copy of the hook, must make the corpus disagree with
 # bash on the cases that exercise it: (name, anchor text, replacement, family prefixes). The
 # anchor must occur exactly once, so a refactor that moves a safeguard fails here loudly

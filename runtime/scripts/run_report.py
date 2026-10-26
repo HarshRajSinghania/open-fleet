@@ -12,7 +12,7 @@ What a tier advance has to survive here instead:
 * a single ``RUN:`` header line whose fields parse;
 * ``mission=`` matching the mission that claims the tier, and ``tier=`` matching
   the tier it claims — so a report cannot be re-pointed at another mission;
-* ``inventory_at=`` resolving to a real commit **in this repository**;
+* ``inventory_at=`` the hex id (never a ref name) of a real commit **in this repository**;
 * ``manifest=`` existing at that commit — the evidence manifest the run was
   graded against, not a path invented afterwards;
 * ``verifier=`` recording the verifier's outcome, with the body carrying the
@@ -1056,6 +1056,15 @@ def check_report(report_path, mission, tier, root=None, base=None):
         )
 
     rev = fields["inventory_at"]
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", rev):
+        # A branch or tag names a target that MOVES: the inventory re-hashes at the commit the
+        # report binds, so the header must name a commit by its id (2026-10-26 review). An
+        # abbreviation is a commit id; one that has become ambiguous fails rev_exists below.
+        errors.append(
+            f"{report_path}: RUN: inventory_at={rev} must be a commit id (7 to 40 hex) — a ref name "
+            "binds nothing, since it can move"
+        )
+        return errors
     if not inventory.rev_exists(rev, root):
         if is_shallow(root):
             # Still fatal: a pin this clone cannot resolve verifies nothing, and a tier claim

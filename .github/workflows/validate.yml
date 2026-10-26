@@ -142,6 +142,11 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/check_trailers.py --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA"
+      - name: DECISIONS ledger validates (records since the human-source and class rules)
+        # decisions.py check had no CI caller (2026-10-26 review). Records stamped before
+        # 2026-09-24 predate the human-source, class and payload-v2 rules they would fail and are
+        # history, not drafts: counted, never re-litigated. Every later record must pass.
+        run: python3 runtime/scripts/decisions.py check --since 2026-09-24
       - name: Validate missions, playbooks, and evals
         run: python3 scripts/validate.py
       - name: CHANGELOG entries arrive as fragments, not as edits to the shared file

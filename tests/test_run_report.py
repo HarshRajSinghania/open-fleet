@@ -883,6 +883,20 @@ class RunReportBinding(unittest.TestCase):
     def _check(self, mission="demo-it", tier="self-run"):
         return run_report.check_report(self.path, mission, tier, root=self.repo)
 
+    def test_the_inventory_pin_must_be_a_commit_id_not_a_ref_name(self):
+        # 2026-10-26 review: `inventory_at=main` resolved and bound to whatever the branch pointed
+        # at when the check ran; the report binds one commit, by id. An abbreviation is an id.
+        for rev in ("main", "HEAD", "v1.0", "refs/heads/main"):
+            with self.subTest(rev=rev):
+                self._write(rev=rev)
+                errs = self._check()
+                self.assertEqual(len(errs), 1, errs)
+                self.assertIn("must be a commit id", errs[0])
+        for rev in (self.rev, self.rev[:12]):
+            with self.subTest(rev=rev):
+                self._write(rev=rev)
+                self.assertEqual(self._check(), [])
+
     # --- the shape that must pass ------------------------------------------
     def test_an_unrelated_report_name_cannot_borrow_a_sole_same_day_run(self):
         # #694/#695 review: a report of any name took a mission's only same-day directory and

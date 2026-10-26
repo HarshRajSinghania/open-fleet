@@ -321,12 +321,20 @@ def portable_findings(doc: dict) -> list[str]:
 
 
 def findings(obj):
-    """Every fail/warn the doctor structurally reports. An empty collection reports nothing."""
+    """Every fail/warn the doctor structurally reports. An empty collection reports nothing.
+
+    A singular top-level or result-level `error` is a finding too: the CLI answers some refusals
+    with an exit-0 `{"error": {"code": …}}` envelope (spawn_worker.sh's orca_json treats the same
+    shape as failure), and a doctor that never ran its checks must not read as CLEAR
+    (2026-10-26 review)."""
     found = []
     if isinstance(obj, dict):
         for key, value in obj.items():
             low = str(key).lower()
-            if low in FINDING_KEYS:
+            if low == "error" and value not in (None, "", False, [], {}):
+                code = value.get("code") if isinstance(value, dict) else value
+                found.append(f"error={str(code).strip()[:40]}")
+            elif low in FINDING_KEYS:
                 if isinstance(value, (list, tuple, dict)):
                     if len(value):
                         found.append(f"{key}={len(value)}")

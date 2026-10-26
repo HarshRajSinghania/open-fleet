@@ -35,7 +35,7 @@ demonstrably working. Thin loop-holder: you enumerate, dispatch the per-finding 
 against authoritative state, and keep the ledger FILE (your memory is compacted; the ledger survives).
 You never review, code, open PRs, or merge — every one is a dispatched worker.
 
-Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `triage-state`, `remediate-finding`,
+Composes `triage-state`, `remediate-finding`,
 `build-change`, `linear-enumeration`; rides
 `dispatch-lifecycle`, `evidence-manifest`, `orca-dag-semantics`, `ledger-contract`,
 `attention-budget`, `gate-classification`, `sandbox-policy` (triage PROFILE=ro, build PROFILE=rw, review PROFILE=rw; issue, PR,

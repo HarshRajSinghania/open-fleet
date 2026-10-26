@@ -344,7 +344,7 @@ Workers are dispatched with the minimum privilege required ([`runtime/sandbox-po
 
 | Profile | Capabilities | Typical missions & roles |
 |---|---|---|
-| `ro` | Read-only / plan mode | `review-it`, `map-it`, `root-cause`, `attest-it`, build-blind reviewers |
+| `ro` | Read-only / plan mode | `review-it`, `map-it`, `attest-it`, build-blind reviewers (`root-cause` investigators and mutation-hunt reviewers run `rw` in a throwaway worktree — their SKILL and playbook say so) |
 | `rw` | Workspace file write inside isolated git worktree (requires `OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE=1` or `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`) | Standard builder and integrator workers |
 | `danger` | Unattended execution inside a placement-bound disposable VM/container (requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` + `OPEN_FLEET_SANDBOX_RECIPE`, or `ORCA_*` aliases) | Exploit PoCs (`harden-it`) and destructive environment tests (`offload-it`) |
 

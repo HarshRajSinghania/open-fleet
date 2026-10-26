@@ -48,6 +48,11 @@
 # so an inherited OPEN_FLEET_UNIT_CLASS or OPEN_FLEET_NO_GH overrode the coordinator's ORCA_*
 # value — a class downgrade or a review waiver nobody set where they looked (2026-10-23 review, P3).
 #
+#   ORCA_GATE_TIMEOUT_S   seconds the verifier may run before the gate stops it and BLOCKS
+#                         (default 2100; keep it below the host hook timeout, 2400 in hooks.json)
+# Switch inputs (ORCA_NO_GH, ORCA_EXECUTE_NC) are read as values: on = 1|true|yes|on, off = unset,
+# empty, 0|false|no|off; any other spelling BLOCKS.
+#
 # Exit: 0 = verified (allow) · 2 = a required invariant failed OR nothing to verify (BLOCK).
 # Enterprise note: `allowManagedHooksOnly` can disable plugin hooks — see docs/verify-gate.md
 # for the MCP-Task / CI / SDK-subprocess fallbacks that run the SAME verify.py.
@@ -98,6 +103,24 @@ UNIT_LANE=$(_pick OPEN_FLEET_UNIT_LANE "${OPEN_FLEET_UNIT_LANE:-}" ORCA_UNIT_LAN
 RECORD=$(_pick OPEN_FLEET_DISPATCH_RECORD "${OPEN_FLEET_DISPATCH_RECORD:-}" ORCA_DISPATCH_RECORD "${ORCA_DISPATCH_RECORD:-}") || exit 2
 PUBKEY=$(_pick OPEN_FLEET_DISPATCH_PUBKEY "${OPEN_FLEET_DISPATCH_PUBKEY:-}" ORCA_DISPATCH_PUBKEY "${ORCA_DISPATCH_PUBKEY:-}") || exit 2
 EXECUTE_NC=$(_pick OPEN_FLEET_EXECUTE_NC "${OPEN_FLEET_EXECUTE_NC:-}" ORCA_EXECUTE_NC "${ORCA_EXECUTE_NC:-}") || exit 2
+# A lane switch is read as a VALUE, never as mere non-emptiness: `ORCA_NO_GH=false` used to switch
+# the review waiver ON (2026-10-26 review). on: 1|true|yes|on; off: unset, empty, 0|false|no|off;
+# anything else BLOCKS — a misspelled switch must not silently pick a lane.
+_switch() {
+  case "$2" in
+    ""|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) : ;;
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) printf '1' ;;
+    *) echo "verify-gate: $1='$2' is not a switch value (on: 1|true|yes|on; off: unset|0|false|no|off) — BLOCKING (fail-closed)" >&2
+       return 2 ;;
+  esac
+}
+NO_GH=$(_switch NO_GH "$NO_GH") || exit 2
+EXECUTE_NC=$(_switch EXECUTE_NC "$EXECUTE_NC") || exit 2
+GATE_TIMEOUT=$(_pick OPEN_FLEET_GATE_TIMEOUT_S "${OPEN_FLEET_GATE_TIMEOUT_S:-}" ORCA_GATE_TIMEOUT_S "${ORCA_GATE_TIMEOUT_S:-}") || exit 2
+[ -n "$GATE_TIMEOUT" ] || GATE_TIMEOUT=2100
+case "$GATE_TIMEOUT" in
+  ""|*[!0-9]*|0) echo "verify-gate: ORCA_GATE_TIMEOUT_S='$GATE_TIMEOUT' is not a positive integer of seconds — BLOCKING (fail-closed)" >&2; exit 2 ;;
+esac
 NC_COMMAND=$(_pick OPEN_FLEET_NC_COMMAND "${OPEN_FLEET_NC_COMMAND:-}" ORCA_NC_COMMAND "${ORCA_NC_COMMAND:-}") || exit 2
 PROVENANCE=$(_pick OPEN_FLEET_PROVENANCE "${OPEN_FLEET_PROVENANCE:-}" ORCA_PROVENANCE "${ORCA_PROVENANCE:-}") || exit 2
 # #135 key SOURCE: an injected ORCA_DISPATCH_PUBKEY (off-worker orchestrator) else the committed
@@ -106,14 +129,26 @@ PROVENANCE=$(_pick OPEN_FLEET_PROVENANCE "${OPEN_FLEET_PROVENANCE:-}" ORCA_PROVE
 # Discovered in the TARGET repo — the toplevel of the cwd the gate runs in — because that is where
 # verify.py reads the relative `.orca/dispatch-pubkey[@ref]` it is handed. Probing the plugin root
 # ($HERE/../..) found a pin verify.py then looked for in another repo, and missed the target's own.
+# A CI-shaped clone (actions/checkout) carries no refs/remotes/origin/HEAD, so the blob read used
+# to miss and the gate fell through to the WORKING TREE — the PR's own checkout, where a worker
+# replaces the pin with its own key and self-signs the record (2026-10-26 review). The blob is
+# now also read at refs/remotes/origin/<BASE> when a base is named, and on a lane claiming
+# soundness (ORCA_PROVENANCE set) the working-tree pin is never used: with no reviewed blob the
+# key stays undiscovered, which verify.py reads as half-configured and refuses.
 if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
   TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$TOP" ]; then
     DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/HEAD)"
     if "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
+    elif [ -n "$BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "refs/remotes/origin/$BASE:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@refs/remotes/origin/$BASE"
     elif [ -f "$TOP/.orca/dispatch-pubkey" ]; then
-      PUBKEY=".orca/dispatch-pubkey"
+      if [ -n "$PROVENANCE" ]; then
+        echo "verify-gate: NOTE — .orca/dispatch-pubkey exists only in the working tree, which the graded worker writes; a lane claiming soundness (ORCA_PROVENANCE=$PROVENANCE) does not read a key from there. Pin it on the default or base branch, or inject ORCA_DISPATCH_PUBKEY off-worker." >&2
+      else
+        PUBKEY=".orca/dispatch-pubkey"
+      fi
     fi
   fi
 fi
@@ -181,11 +216,28 @@ if [ -z "$PY_BIN" ]; then
   echo "verify-gate: python3 not on PATH — cannot run the verifier, BLOCKING (fail-closed)" >&2
   exit 2
 fi
-if "$PY_BIN" "$HERE/verify.py" "$@"; then
-  rc=0
-else
-  rc=$?
-fi
+# Claude Code cancels a command hook at its timeout (600 s by default) and DISCARDS its output, and
+# on Stop / TaskCompleted only exit 2 blocks — so a verifier still replaying the negative control
+# (up to 3 × 600 s) when the host gave up let the turn end: fail-OPEN. The gate therefore bounds
+# the verifier itself, below the host's limit (hooks/hooks.json and the snippet set 2400 s): at
+# the deadline the verifier is stopped and the gate BLOCKS (2026-10-26 review).
+"$PY_BIN" "$HERE/verify.py" "$@" &
+_vpid=$!
+_waited=0
+while kill -0 "$_vpid" 2>/dev/null; do
+  if [ "$_waited" -ge "$GATE_TIMEOUT" ]; then
+    kill "$_vpid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$_vpid" 2>/dev/null || true
+    wait "$_vpid" 2>/dev/null || true
+    echo "verify-gate: the verifier ran past ${GATE_TIMEOUT}s (ORCA_GATE_TIMEOUT_S) and was stopped — BLOCKING (fail-closed: a verdict that never arrived is not a pass; the host would have discarded a timed-out hook and let the turn end)" >&2
+    exit 2
+  fi
+  sleep 1
+  _waited=$((_waited + 1))
+done
+rc=0
+wait "$_vpid" || rc=$?
 [ "$rc" -eq 0 ] && exit 0
 echo "verify-gate: verifier returned $rc — BLOCKING completion" >&2
 exit 2

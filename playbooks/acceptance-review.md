@@ -16,9 +16,11 @@ one — mechanical independence beats instructed independence.
 
 SOLO RUN — no second identity at all. This review cannot then be independent, and must not be faked:
 `verify.py` requires an approval the fleet cannot self-issue, so a mutation unit cannot reach a
-closed state. Record the verifier RED and stop the unit short of `REVIEWED`, or take the
-executed-control lane (`--lighting dark-eligible --execute-nc`: the review is waived and the control
-becomes the only oracle). A reviewer that is the builder is not a reviewer. The 2026-08-28 ship-it self-run recorded
+closed state. Record the verifier RED and stop the unit short of `REVIEWED`, or — ONLY for a unit that already
+qualified `dark-eligible` at dispatch (Lane A, a cheap unfakeable oracle, off the irreversibility
+stop-list: gate-classification.md) — re-dispatch it on the executed-control lane (`--lighting
+dark-eligible --execute-nc`: the review is waived and the control becomes the only oracle). A
+lit-required unit (auth, payments, secrets, migrations, deploys) stays RED. A reviewer that is the builder is not a reviewer. The 2026-08-28 ship-it self-run recorded
 exactly that RED.
 
 ## The three axes (one coordinator-dispatched worker each, no cross-rerank)

@@ -140,10 +140,6 @@
     "missions": {
       "ship-it": {
         "defer": {
-          "ARCHITECTURE.md": [
-            "VALIDATE",
-            "GRILL"
-          ],
           "decide-and-freeze": [
             "VALIDATE",
             "GRILL"
@@ -198,9 +194,6 @@
       },
       "clean-sweep": {
         "defer": {
-          "ARCHITECTURE.md": [
-            "SELF-ORIENT"
-          ],
           "gate-classification": [
             "SELF-ORIENT"
           ],
@@ -656,38 +649,38 @@
   },
   "registered_payloads": {
     "ship-it": {
-      "baseline_sha256": "986da96fb50ad473dff95067a1ff94c315edaeced4f66c2bc133f60ec80c7dbe",
-      "reduced_sha256": "1e5bc11488397aaab16825dedc03ecf4e65be5ab9b8f63220fa3168dcd15eaf1",
-      "baseline_tokens": 33993,
-      "reduced_tokens": 4579,
-      "delta_tokens": -29414,
+      "baseline_sha256": "8789fbb35efe77b5b11678dcbd3b3a3ee2e204cfbe8caf2b0ef84a73e83b21be",
+      "reduced_sha256": "72efd641de6d3c282dbf3fb00685ba76f839c774dd4809aba9387287994974aa",
+      "baseline_tokens": 30218,
+      "reduced_tokens": 4585,
+      "delta_tokens": -25633,
       "obligations_held": true,
       "task_inputs_sha256": "e14d94ca1aee683a68f2d1637abae857a8d43c7d2e63ab72539596dd601ccfa2"
     },
     "clean-sweep": {
-      "baseline_sha256": "eef5ae299345a1556d3be52856b5e380f4e2680e2eff84176b9d3b6969acd5d9",
-      "reduced_sha256": "16cdff0db836de3c6e5b62f8ed47cdf5415b3603b006e70f11c3822170ea2b0d",
-      "baseline_tokens": 32651,
-      "reduced_tokens": 4546,
-      "delta_tokens": -28105,
+      "baseline_sha256": "383679f6e6d19fed231a2c9124a36990415e064fd9a3ae3ddb8468499d83ff37",
+      "reduced_sha256": "1c8b5f9ad5d0a67fc5b5c345c86bdceca4682f2b77b242525c7ee65f2e7221a7",
+      "baseline_tokens": 28729,
+      "reduced_tokens": 4538,
+      "delta_tokens": -24191,
       "obligations_held": true,
       "task_inputs_sha256": "550dc668d76a9d80e784dd068c9069f0158c4c330e5d104795676a4bbd5b7f0b"
     },
     "review-it": {
-      "baseline_sha256": "3589cc1cf10cc57fa83e07737764d1bf5e73735dc507b0d31b91bd613d85a12d",
-      "reduced_sha256": "88f3c67bc071d8fb1e467beb12af9941cadd8e1fa3b8fbf390e1eb961cc2182d",
-      "baseline_tokens": 24477,
-      "reduced_tokens": 3724,
-      "delta_tokens": -20753,
+      "baseline_sha256": "ca939c3f88e8ec4aa5819b2e3090d8f440bff604930f0f997f87b2219ca1b0d4",
+      "reduced_sha256": "563095dfe027286f6de1bd3fe4c4bac79250266bddc423f47c5ac6799d35f0fb",
+      "baseline_tokens": 24575,
+      "reduced_tokens": 3765,
+      "delta_tokens": -20810,
       "obligations_held": true,
       "task_inputs_sha256": "b333fb2cbe19d099f2f5b156bbbf72cf05ec8a012ddf01e4ef5ce9105296327f"
     },
     "root-cause": {
-      "baseline_sha256": "ba33761731f4a6d93deab88c5d92de480a3f23ce1f3f48fc5a93da48567244a8",
-      "reduced_sha256": "8211d9962f055b3713c23aec26ee2d568f8b71dad0d5e25c311bb90cb8f92920",
-      "baseline_tokens": 19246,
-      "reduced_tokens": 6716,
-      "delta_tokens": -12530,
+      "baseline_sha256": "db24c7f2e1a60526e45731a356f09549b9a9a60ebe4b2f829a4120b0a5b8ffb0",
+      "reduced_sha256": "2aeeed0404cf8ea01697c87c31ad78cfb3af7b60f7142062e745f10b49c39976",
+      "baseline_tokens": 19266,
+      "reduced_tokens": 6726,
+      "delta_tokens": -12540,
       "obligations_held": true,
       "task_inputs_sha256": "f1752e111c52e4f4b60b321fe482460f2b4ce79a8872135cfe443b8afa17a463"
     }

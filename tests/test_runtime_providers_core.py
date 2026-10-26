@@ -510,5 +510,123 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
         self.assertIn("monotonic privilege narrowing violation", p.stderr)
 
 
+class GuardConfigsMergeWhatIsAlreadyThere(unittest.TestCase):
+    """2026-10-26 review: install_worktree_hooks REPLACED any JSON config at a guard path, so a
+    repository's checked-in `.crush/crush.json` or `.codex/hooks.json`, or an operator's own
+    `.claude/settings.local.json` in a reused worktree, lost every other key. Now their keys
+    survive, the guard hook runs first, and the keys that could disarm it are dropped."""
+
+    def setUp(self):
+        self.posix_mod = _load_posix()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.wt = Path(self.tmp.name) / "wt"
+        self.wt.mkdir()
+
+    def install(self, agent="claude", profile="rw"):
+        return self.posix_mod.install_worktree_hooks(self.wt, agent=agent, profile=profile)
+
+    def read(self, rel):
+        return json.loads((self.wt / rel).read_text(encoding="utf-8"))
+
+    def test_operator_settings_survive_and_the_guard_hook_runs_first(self):
+        settings = self.wt / ".claude" / "settings.local.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({
+            "permissions": {"allow": ["Bash(ls)"]},
+            "env": {"KEEP_ME": "1", "ORCA_HOOK_STRICT_EXIT": "0", "OPEN_FLEET_UNIT_WORKTREE": "/elsewhere"},
+            "disableAllHooks": True,
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo theirs"}]}],
+                      "Stop": [{"hooks": [{"type": "command", "command": "echo bye"}]}]},
+        }), encoding="utf-8")
+        self.install()
+        doc = self.read(".claude/settings.local.json")
+        self.assertEqual(doc["permissions"], {"allow": ["Bash(ls)"]})
+        self.assertEqual(doc["env"], {"KEEP_ME": "1"}, "env that steers the guard is dropped, the rest kept")
+        self.assertNotIn("disableAllHooks", doc)
+        pre = doc["hooks"]["PreToolUse"]
+        self.assertIn(str(self.posix_mod.CANONICAL_DENY_HOOK), pre[0]["hooks"][0]["command"])
+        self.assertEqual(pre[1]["hooks"][0]["command"], "echo theirs")
+        self.assertEqual(doc["hooks"]["Stop"][0]["hooks"][0]["command"], "echo bye")
+
+    def test_installing_twice_adds_no_second_guard_entry(self):
+        self.install()
+        once = self.read(".claude/settings.local.json")
+        self.install()
+        self.assertEqual(self.read(".claude/settings.local.json"), once)
+        self.assertEqual(len(once["hooks"]["PreToolUse"]), 1)
+        for rel in (".codex/hooks.json", ".openhands/hooks.json",
+                    ".agents/plugins/orca-deny-hook/hooks/hooks.json", ".crush/crush.json"):
+            self.assertEqual(len(self.read(rel)["hooks"]["PreToolUse"]), 1, rel)
+
+    def test_a_repositorys_crush_and_codex_configs_keep_their_other_keys(self):
+        (self.wt / ".crush").mkdir()
+        (self.wt / ".crush" / "crush.json").write_text(
+            json.dumps({"options": {"debug": True}, "lsp": {"go": {"command": "gopls"}}}), encoding="utf-8")
+        (self.wt / ".codex").mkdir()
+        (self.wt / ".codex" / "hooks.json").write_text(
+            json.dumps({"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "echo after"}]}]}}),
+            encoding="utf-8")
+        self.install(agent="crush")
+        crush = self.read(".crush/crush.json")
+        self.assertEqual((crush["options"], crush["lsp"]), ({"debug": True}, {"go": {"command": "gopls"}}))
+        self.assertEqual(len(crush["hooks"]["PreToolUse"]), 1)
+        codex = self.read(".codex/hooks.json")
+        self.assertEqual(codex["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "echo after")
+        self.assertIn("ORCA_HOOK_STRICT_EXIT=1", codex["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+
+    def test_an_unreadable_config_is_replaced_by_the_guard(self):
+        (self.wt / ".openhands").mkdir()
+        (self.wt / ".openhands" / "hooks.json").write_text("{not json", encoding="utf-8")
+        (self.wt / ".codex").mkdir()
+        (self.wt / ".codex" / "hooks.json").write_text("[1, 2]", encoding="utf-8")
+        self.install()
+        for rel in (".openhands/hooks.json", ".codex/hooks.json"):
+            doc = self.read(rel)
+            self.assertEqual(list(doc), ["hooks"], rel)
+            self.assertEqual(len(doc["hooks"]["PreToolUse"]), 1, rel)
+
+
+class StateAndLanesArePrivateToTheFleetUser(unittest.TestCase):
+    """2026-10-26 review: the state dir holds every worker's transcript, launch env and the
+    mailbox, and was created with the umask's default mode. What the store and a launch create
+    is now user-private; a directory the operator already had keeps its mode."""
+
+    def test_a_fresh_state_dir_db_lane_and_transcript_are_user_private(self):
+        import stat
+
+        providers = _load_providers()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+            subprocess.run(["git", "-c", "user.email=t@x", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init"],
+                           cwd=repo, check=True)
+            state_db = Path(tmp) / "state" / "runtime.db"
+            env = {**os.environ, "OPEN_FLEET_RUNTIME": "posix", "OPEN_FLEET_STATE_DB": str(state_db),
+                   "OPEN_FLEET_POSIX_MUX": "dry-run", "OPEN_FLEET_CLI_CWD": str(repo)}
+            prov = providers.get_provider("posix", env=env)
+            task = prov.task_create(spec="x")["task"]
+            ws = prov.worker_start(task_id=task["id"], worktree="new-child", agent="claude", profile="rw")
+            with prov.state._connect() as conn:
+                lane = Path(conn.execute("SELECT lane_dir FROM dispatches WHERE dispatch_id = ?",
+                                         (ws["dispatchId"],)).fetchone()["lane_dir"])
+
+            def mode(p):
+                return stat.S_IMODE(Path(p).stat().st_mode)
+
+            self.assertEqual(mode(state_db.parent), 0o700)
+            self.assertEqual(mode(state_db), 0o600)
+            for side in ("-wal", "-shm"):
+                if Path(str(state_db) + side).exists():
+                    self.assertEqual(mode(str(state_db) + side), 0o600, side)
+            self.assertEqual(mode(lane), 0o700)
+            self.assertEqual(mode(lane / "events.jsonl"), 0o600)
+            pre = Path(tmp) / "pre"
+            pre.mkdir(mode=0o755)
+            providers.get_provider("posix", env={**env, "OPEN_FLEET_STATE_DB": str(pre / "runtime.db")})
+            self.assertEqual(mode(pre), 0o755, "an operator's existing directory keeps its mode")
+
+
 if __name__ == "__main__":
     unittest.main()

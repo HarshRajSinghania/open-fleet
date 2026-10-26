@@ -276,7 +276,10 @@ def read_text_safe(path):
 
 
 def split_budget(text):
-    """(frontmatter lines, body lines) — declarations and instructions priced apart."""
+    """(frontmatter lines, body lines) — declarations and instructions priced apart. BOM-tolerant,
+    as frontmatter_lines is: a BOM used to price the whole frontmatter as body (2026-10-26 review)."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
     m = re.match(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", text, re.S)
     if not m:
         return 0, len(text.splitlines())
@@ -310,8 +313,13 @@ def validate_skill(skill_dir, protocols):
 
     if "description" not in data:
         errors.append("missing 'description' field")
+    elif data["description"] == _grammar.OBJECT:
+        errors.append("description must be a string, got a mapping or sequence")
     elif not (1 <= len(data["description"]) <= 1024):
         errors.append(f"description length {len(data['description'])} out of 1-1024")
+    for key in ("name", "license", "allowed-tools"):
+        if data.get(key) == _grammar.OBJECT:
+            errors.append(f"{key} must be a string, got a mapping or sequence")
 
     extras = set(data) - SPEC_FRONTMATTER_FIELDS
     if extras:
@@ -341,7 +349,10 @@ def validate_skill(skill_dir, protocols):
                 + f" — allowed: {sorted(METADATA_KEYS)}"
             )
         for key, value in sorted(meta.items()):
-            if not isinstance(value, str) or not value.strip():
+            # The shared reader hands back a nested map as a dict and a `- item` sequence as the
+            # OBJECT sentinel; the spec's metadata is a map of strings to STRINGS, and an identity
+            # point that is a list would compare as the sentinel's text (2026-10-26 review).
+            if not isinstance(value, str) or not value.strip() or value == _grammar.OBJECT:
                 errors.append(f"metadata.{key} must be a non-empty string")
             elif len(value) > METADATA_VALUE_MAX:
                 errors.append(
@@ -350,7 +361,7 @@ def validate_skill(skill_dir, protocols):
                 )
         # The shared reader reads a map nested under a metadata key as a dict; it is reported
         # above and read as empty below, never handed to a check that expects a string.
-        meta = {k: (v if isinstance(v, str) else "") for k, v in meta.items()}
+        meta = {k: (v if isinstance(v, str) and v != _grammar.OBJECT else "") for k, v in meta.items()}
 
     # Six-point mission identity (ARCHITECTURE.md). Each point is declared, so
     # "is this a mission or a mode of another?" is answered by a diff, not a memo.

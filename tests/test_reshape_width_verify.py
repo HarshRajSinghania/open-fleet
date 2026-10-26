@@ -21,7 +21,10 @@ is again ONE class, and it is paid for: the single-use `_WAIVER_NEEDS_EXECUTED_N
 into check_review, the only function that ever read it, so the pin holds at 91.
 #608 (`check_retention_receipt`: the provenance retention receipt bound offline to its signed
 inventory) is paid for the same way: the one-line `_scan_text` folded into check_redaction, its
-only caller, so the pin still holds at 91.
+only caller, so the pin still holds at 91. The 2026-10-26 review's `check_base_binding` (base_sha
+bound to the integration branch — the executed control's pre-fix content was the worker's to
+choose, P0) is paid for by inlining the single-use `_DISPATCH_NC_FIELDS` into
+`_manifest_nc_values`, its only reader, so the pin still holds at 91.
 
 The pin is a ratchet against the deepening RE-WIDENING, not a freeze: the
 invariant it defends is `width < BASELINE_WIDTH`, and that baseline never

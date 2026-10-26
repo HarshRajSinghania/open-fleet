@@ -1,6 +1,6 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `9fb8c4e0276609fd257b2d6262ad74c9c0781ef51077b3fd16526ecf2098957c`.
+Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `2b5ffc9feba00dd1d45b24023b83d3f56c2e2b8850bead5bcdada5e7e20f93ac`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. The owner authorised the cost cap below on
@@ -79,8 +79,8 @@ registered source is refused before anything is deleted or written, symlinks inc
 
 | Mission | Deferred (loaded on entering the first phase listed) | Kept at activation | Dropped |
 |---|---|---|---|
-| ship-it | `ARCHITECTURE.md` at VALIDATE/GRILL · `decide-and-freeze` at VALIDATE/GRILL · `linear-enumeration` at VALIDATE/GRILL · `gate-classification` at VALIDATE/GRILL · `decompose-dag` at VALIDATE/DECOMPOSE · `dispatch-lifecycle` at DECOMPOSE/ADOPT/BUILD · `sandbox-policy` at DECOMPOSE/ADOPT/BUILD · `attention-budget` at BUILD · `build-change` at BUILD · `evidence-manifest` at BUILD · `acceptance-review` at ACCEPTANCE-REVIEW · `runtime-prove` at RUNTIME-PROVE · `merge-serialization` at LAND · `reviewed-sha-freshness` at LAND | `ledger-contract` | Related |
-| clean-sweep | `ARCHITECTURE.md` at SELF-ORIENT · `gate-classification` at SELF-ORIENT · `linear-enumeration` at ENUMERATE · `sandbox-policy` at ENUMERATE · `triage-state` at SKEPTIC-TRIAGE · `dispatch-lifecycle` at SKEPTIC-TRIAGE · `orca-dag-semantics` at SKEPTIC-TRIAGE · `attention-budget` at SKEPTIC-TRIAGE · `evidence-manifest` at SKEPTIC-TRIAGE · `remediate-finding` at PER-FINDING · `build-change` at PER-FINDING · `runtime-prove` at PER-FINDING | `ledger-contract` | Related |
+| ship-it | `decide-and-freeze` at VALIDATE/GRILL · `linear-enumeration` at VALIDATE/GRILL · `gate-classification` at VALIDATE/GRILL · `decompose-dag` at VALIDATE/DECOMPOSE · `dispatch-lifecycle` at DECOMPOSE/ADOPT/BUILD · `sandbox-policy` at DECOMPOSE/ADOPT/BUILD · `attention-budget` at BUILD · `build-change` at BUILD · `evidence-manifest` at BUILD · `acceptance-review` at ACCEPTANCE-REVIEW · `runtime-prove` at RUNTIME-PROVE · `merge-serialization` at LAND · `reviewed-sha-freshness` at LAND | `ledger-contract` | Related |
+| clean-sweep | `gate-classification` at SELF-ORIENT · `linear-enumeration` at ENUMERATE · `sandbox-policy` at ENUMERATE · `triage-state` at SKEPTIC-TRIAGE · `dispatch-lifecycle` at SKEPTIC-TRIAGE · `orca-dag-semantics` at SKEPTIC-TRIAGE · `attention-budget` at SKEPTIC-TRIAGE · `evidence-manifest` at SKEPTIC-TRIAGE · `remediate-finding` at PER-FINDING · `build-change` at PER-FINDING · `runtime-prove` at PER-FINDING | `ledger-contract` | Related |
 | review-it | `sandbox-policy` at PIN · `dispatch-lifecycle` at ACCEPTANCE-REVIEW · `evidence-manifest` at ACCEPTANCE-REVIEW · `acceptance-review` at ACCEPTANCE-REVIEW · `risk-review` at RISK-REVIEW · `triage-findings` at AGGREGATE · `gate-classification` at VERDICT · `publish-evidence` at VERDICT · `reviewed-sha-freshness` at VERDICT | `mission-scheduling` | Related |
 | root-cause | `diagnose` at STOP-THE-LINE/DIAGNOSIS · `evidence-manifest` at DIAGNOSIS · `sandbox-policy` at DIAGNOSIS · `gate-classification` at DIAGNOSIS/HANDOFF · `agent-brief` at HANDOFF | `ledger-contract`, `liveness-resume` | Related |
 
@@ -93,10 +93,10 @@ pinned in `registered_payloads`, and a test holds this table to them:
 <!-- BEGIN GENERATED: ablation-loads — scripts/ablation.py prereg --refresh -->
 | Mission | Baseline activation | Reduced activation | Delta |
 |---|---|---|---|
-| ship-it | ~33,993 | ~4,579 | -29,414 |
-| clean-sweep | ~32,651 | ~4,546 | -28,105 |
-| review-it | ~24,477 | ~3,724 | -20,753 |
-| root-cause | ~19,246 | ~6,716 | -12,530 |
+| ship-it | ~30,218 | ~4,585 | -25,633 |
+| clean-sweep | ~28,729 | ~4,538 | -24,191 |
+| review-it | ~24,575 | ~3,765 | -20,810 |
+| root-cause | ~19,266 | ~6,726 | -12,540 |
 <!-- END GENERATED: ablation-loads -->
 
 ## Safety obligations both arms keep

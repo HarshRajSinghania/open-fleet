@@ -72,17 +72,35 @@ class StateTransitions(unittest.TestCase):
             _, data = fresh_batch(tmp)
             add_owed(data, "G1", asked="2026-09-14")
             gate = gb.transition(data, "G1", "answered", "the vault holds it",
-                                 answered="2026-09-15")
+                                 answered="2026-09-15", source="human:lia")
             self.assertEqual(gate["status"], "answered")
             self.assertEqual(gate["answer"], "the vault holds it")
             self.assertEqual(gate["answered"], "2026-09-15")
+            self.assertEqual(gate["source"], "human:lia")
+
+    def test_an_answer_or_waiver_records_who_gave_it(self):
+        # 2026-10-26 review: an answer with no recorded human was prose anyone could have typed.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, data = fresh_batch(tmp)
+            add_owed(data, "G1", asked="2026-09-14")
+            add_owed(data, "G2", asked="2026-09-14")
+            for status, text in (("answered", "yes"), ("waived", "moot")):
+                with self.subTest(status=status):
+                    with self.assertRaises(gb.GateError) as ctx:
+                        gb.transition(data, "G1", status, text, answered="2026-09-15")
+                    self.assertIn("--source human:<name>", str(ctx.exception))
+                    with self.assertRaises(gb.GateError):
+                        gb.transition(data, "G1", status, text, answered="2026-09-15", source="coordinator")
+            self.assertEqual(gb.find_gate(data, "G1")["status"], "owed", "a refused transition changes nothing")
+            gate = gb.transition(data, "G2", "overtaken", None, answered="2026-09-15")
+            self.assertNotIn("source", gate, "events overtook it: no person to record")
 
     def test_waive_moves_owed_to_waived_with_the_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, data = fresh_batch(tmp)
             add_owed(data, "G3", asked="2026-09-14")
             gate = gb.transition(data, "G3", "waived", "blind verdict suffices",
-                                 answered="2026-09-16")
+                                 answered="2026-09-16", source="human:lia")
             self.assertEqual((gate["status"], gate["answer"]),
                              ("waived", "blind verdict suffices"))
 
@@ -100,13 +118,13 @@ class StateTransitions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _, data = fresh_batch(tmp)
             add_owed(data, "G1", asked="2026-09-14")
-            gb.transition(data, "G1", "answered", "yes", answered="2026-09-15")
+            gb.transition(data, "G1", "answered", "yes", answered="2026-09-15", source="human:lia")
             for status, text in (("answered", "second"), ("waived", "moot"),
                                  ("overtaken", None)):
                 with self.subTest(status=status):
                     with self.assertRaises(gb.GateError):
                         gb.transition(data, "G1", status, text,
-                                      answered="2026-09-16")
+                                      answered="2026-09-16", source="human:lia")
             self.assertEqual(
                 gb.find_gate(data, "G1")["answer"], "yes",
                 "the failed re-transition must not touch the record")
@@ -117,7 +135,7 @@ class StateTransitions(unittest.TestCase):
             add_owed(data, "G1")
             with self.assertRaises(gb.GateError):
                 gb.transition(data, "G9", "answered", "yes",
-                              answered="2026-09-15")
+                              answered="2026-09-15", source="human:lia")
 
     def test_a_recorded_date_before_asked_is_refused_atomically(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,7 +143,7 @@ class StateTransitions(unittest.TestCase):
             add_owed(data, "G1", asked="2026-09-14")
             with self.assertRaises(gb.GateError):
                 gb.transition(data, "G1", "answered", "yes",
-                              answered="2026-09-13")
+                              answered="2026-09-13", source="human:lia")
             gate = gb.find_gate(data, "G1")
             self.assertEqual(gate["status"], "owed")
             self.assertIsNone(gate["answered"])
@@ -166,7 +184,7 @@ class StaleBoundary(unittest.TestCase):
             _, data = fresh_batch(tmp)
             add_owed(data, "G1", asked="2026-01-01")
             gb.transition(data, "G1", "answered", "long ago",
-                          answered="2026-01-02")
+                          answered="2026-01-02", source="human:lia")
             self.assertEqual(
                 gb.stale_gates(data, 7, datetime.date(2026, 9, 17)), [])
 
@@ -263,8 +281,11 @@ def _rebuild_from_md(md_text):
                     blocking=meta["blocking"])
     for gid, meta in MIGRATED_META.items():
         if meta["status"] != "owed":
-            gb.transition(data, gid, meta["status"], meta["answer"],
-                          answered=meta["answered"])
+            # History, not a transition: a legacy .md records no human source, and the
+            # rebuilt JSON must equal the committed one byte for byte.
+            gate = gb.find_gate(data, gid)
+            gate.update(status=meta["status"], answer=meta["answer"], answered=meta["answered"])
+            gb.validate_gate(gate)
     return data
 
 
@@ -288,9 +309,11 @@ class MigrationRoundTrip(unittest.TestCase):
                                   intro="i")
             add_owed(data, "G1", asked="2026-09-14", title="ask",
                      question="q?")
-            gb.transition(data, "G1", "answered", "yes", answered="2026-09-15")
+            gb.transition(data, "G1", "answered", "yes", answered="2026-09-15", source="human:lia")
             rendered = gb.render_batch(data)
-            self.assertIn("**Answered 2026-09-15:** yes", rendered)
+            self.assertIn("**Answered 2026-09-15 (human:lia):** yes", rendered)
+            gb.find_gate(data, "G1").pop("source")  # a record from before the field renders as it did
+            self.assertIn("**Answered 2026-09-15:** yes", gb.render_batch(data))
             self.assertIn("q?", rendered.split("**Answered")[0])
 
 
@@ -546,9 +569,10 @@ class MutationsRenderTheView(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(
                     gb.main(["--file", str(path), "answer", "G1",
-                             "--answer", "yes", "--date", "2026-09-15"]),
+                             "--answer", "yes", "--date", "2026-09-15",
+                             "--source", "human:lia"]),
                     0)
-            self.assertIn("**Answered 2026-09-15:** yes",
+            self.assertIn("**Answered 2026-09-15 (human:lia):** yes",
                           md.read_text(encoding="utf-8"))
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(

@@ -887,10 +887,15 @@ def bound_errors(prereg):
         return errors + [f"the registration at {commit[:10]} is unreadable ({err})"]
     if prereg_sha256(then) != pinned.get("sha256"):
         errors.append(f"the registration at {commit[:10]} is not the one {results} ran under")
-    moved = sorted(k for k in set(then) | set(frozen) if then.get(k) != frozen.get(k))
-    if moved:
-        errors.append(f"a bound registration is frozen, but {', '.join(moved)} changed since its run "
-                      f"at {commit[:10]}: a new design is a new registration (a new version, unbound)")
+    # The digest, never Python equality: 5 == 5.0 and True == 1, yet each is another registration
+    # (PR #705 review, Codex P2). The keys are named the same canonical way.
+    if prereg_sha256(frozen) != pinned.get("sha256"):
+        def canon(value):
+            return json.dumps(value, sort_keys=True, ensure_ascii=False)
+        moved = sorted(k for k in set(then) | set(frozen) if canon(then.get(k)) != canon(frozen.get(k)))
+        errors.append(f"a bound registration is frozen, but {', '.join(moved) or 'its digest'} changed "
+                      f"since its run at {commit[:10]}: a new design is a new registration (a new "
+                      "version, unbound)")
     return errors
 
 

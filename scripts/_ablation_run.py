@@ -1348,6 +1348,13 @@ def preflight(args, api, prereg):
             raise Refused(f"the registered {call} reservation (USD {reserve:g}) leaves a per-call limit "
                           f"of USD {limit:.2f}: every call needs a positive limit within its "
                           "reservation, or its worst case is unbounded")
+    # A bound registration's run is done and its authorisation spent: re-pinning its payloads to
+    # today's catalog passed every check here and could spend again (PR #705 review, Codex P1).
+    if api.BOUND_KEY in prereg:
+        bound = prereg[api.BOUND_KEY]
+        raise Refused(f"this registration's live run is bound "
+                      f"({bound.get('report') if isinstance(bound, dict) else bound!r}) and frozen: "
+                      "a new run is a new registration, a new version without bound_run")
     stale = {m: s for m, s in api.registration_status(prereg).items() if s != "current"}
     if stale:
         raise Refused(f"the registered payloads no longer match the catalog: {stale} — check out "

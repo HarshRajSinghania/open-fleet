@@ -324,6 +324,15 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
                 found = " | ".join(ablation.bound_errors(prereg))
                 self.assertIn(f"frozen, but {key} changed since its run at {self.RUN}", found)
 
+    def test_an_edit_python_calls_equal_is_still_refused(self):
+        # PR #705 review (Codex P2): 5 == 5.0 and True == 1, yet each is another registration.
+        for key in ("repeats", "version"):
+            with self.subTest(key=key):
+                prereg = copy.deepcopy(PREREG)
+                prereg[key] = float(prereg[key])
+                self.assertIn(f"frozen, but {key} changed since its run at {self.RUN}",
+                              " | ".join(ablation.bound_errors(prereg)))
+
     def test_a_binding_to_another_commit_or_none_is_refused(self):
         self.assertIn(f"is not a live run at {'0' * 10}", self.binding(commit="0" * 40))
         self.assertIn("not in this clone", self.binding(commit="0" * 40))

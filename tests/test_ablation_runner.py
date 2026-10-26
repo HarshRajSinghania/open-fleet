@@ -340,6 +340,13 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         self.refused(self.live("--cost-cap-usd", "5", "--grader-limit-flag", ""), "per-call limit",
                      self.authorised())
 
+    def test_a_bound_registration_never_drives_a_live_run(self):
+        # PR #705 review (Codex P1): the bound registration with its payloads re-pinned to today's
+        # catalog passed every other live check, and would have spent its run's authorisation again.
+        prereg = self.authorised()
+        prereg[ablation.BOUND_KEY] = copy.deepcopy(PREREG[ablation.BOUND_KEY])
+        self.refused(self.live("--cost-cap-usd", "5"), "live run is bound", prereg)
+
     def test_a_live_run_refuses_a_stale_registration(self):
         prereg = self.authorised()
         prereg["registered_payloads"]["ship-it"]["reduced_sha256"] = "0" * 64
@@ -600,8 +607,9 @@ class RelativePathsSurviveTheCellCwd(SafetyNet):
 
 def small_live_prereg(mission="review-it", behavioral=(4,)):
     """A TEST registration marked AUTHORISED with a one-pair design (both cells behavioral), pinned
-    to the catalog as it is now. It authorises nothing: no model runs under it."""
-    prereg = copy.deepcopy(PREREG)
+    to the catalog as it is now. It authorises nothing: no model runs under it. It is a new
+    registration, so it carries no bound_run: the committed one's run is bound and frozen."""
+    prereg = {k: v for k, v in copy.deepcopy(PREREG).items() if k != ablation.BOUND_KEY}
     prereg["mission_mix"] = [row for row in prereg["mission_mix"] if row["mission"] == mission]
     prereg["tasks"]["behavioral"]["cases"] = list(behavioral)
     prereg["tasks"]["trajectories"]["cases"] = []
@@ -917,7 +925,8 @@ class TheLiveGateEnforcesTheCap(SafetyNet):
     Nothing here is live: no model runs, the directory is discarded, nothing is evidence."""
 
     def run_live(self, cap, mode):
-        prereg = copy.deepcopy(PREREG)
+        # A new test registration pinned to the catalog now, so unbound (see small_live_prereg).
+        prereg = {k: v for k, v in copy.deepcopy(PREREG).items() if k != ablation.BOUND_KEY}
         prereg["cost_cap"].update(status=ablation.AUTHORISED, authorised_usd=100.0,
                                   authorised_by="test fixture (not an authorisation)")
         # Pinned to the catalog as it is now, so this gate test does not go stale with the docs.

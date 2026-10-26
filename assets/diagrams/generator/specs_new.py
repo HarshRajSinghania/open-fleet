@@ -24,7 +24,7 @@ Footer, small, centred: reproduce it: sh demo/negative-control/run.sh"""),
 
 n("install-stack", """Content: left two-thirds: a vertical stack of five wide rounded layer boxes, bottom to top, each with a large label and a caption:
 Layer 1, the bottom: coding-agent harnesses, caption: claude · codex · gemini · opencode · omp · pi · jcode · goose · hermes · crush · openhands
-Layer 2: runtime provider interface (14 runtimes), caption: OPEN_FLEET_RUNTIME = posix (standalone SQLite + worktrees) · orca · overstory · t3code · ao · +9 more
+Layer 2: runtime provider interface (14 runtimes), caption: orca (default) · posix (standalone SQLite + worktrees) · auto · overstory · t3code · ao · +9 more
 Layer 3: runtime policies + verifier, caption: worktree isolation · ro / rw / danger sandboxes · merge train · verify.py + verify-gate.sh
 Layer 4, drawn with a brighter glow: open-fleet missions, caption: skills/ — outcome-named workflows with SHA-bound definitions of done
 Layer 5, the top: upstream worker packs, caption: mattpocock/skills · garrytan/gstack · addyosmani/agent-skills — one pack per worker, never two
@@ -101,9 +101,9 @@ Footer, small, centred: security relies on what the layers below the model make 
 
 n("tracker-enumeration", """Content: a spacious left-to-right pipeline showing how hosted trackers feed a fleet run safely.
 Left column, three compact stacked source boxes merging into one right-pointing arrow:
-Box 1 (blue outline): GITHUB, caption: gh issue · pr list
+Box 1 (blue outline): GITHUB, caption: gh issue list · gh pr list
 Box 2 (blue outline): LINEAR, caption: orca linear list
-Box 3 (green outline): JIRA, caption: orca jira list · search
+Box 3 (blue outline): JIRA, caption: orca jira list · orca jira search
 Followed left-to-right by three spacious rounded stage cards joined by arrows:
 Stage 1 (blue outline): T0 TWIN-QUERY, caption: page until truncated is false · reconcile two independent workers
 Stage 2 (amber outline): TRUST FENCE, caption: guard_text.py normalizes text · ticket text is data, never authority
@@ -115,7 +115,7 @@ Top band: one wide box spanning the canvas, large label: MISSIONS (skills/) + PL
 Middle band: two large side-by-side panels fed by downward arrows from the top band:
 Left panel, header: 14 RUNTIME PROVIDERS (OPEN_FLEET_RUNTIME), three compact sub-rows inside:
 Row 1 (green outline): posix — standalone zero-daemon SQLite WAL + local git worktrees + tmux or headless subprocesses
-Row 2 (blue outline): orca — Orca desktop IDE + CLI worktrees, terminals, native task DAG and issue-tracker bridge
+Row 2 (blue outline): orca — Orca desktop IDE + CLI worktrees, terminals, native task DAG and issue-tracker bridge (default)
 Row 3 (blue outline): 12 external orchestrators — overstory · t3code · ao · superset · gastown · worktrunk · jcode-swarm · emdash · vibe-kanban · paperclip · multiclaude · openhands
 Right panel, header: 11 CODING-AGENT HARNESSES (OPEN_FLEET_HARNESS), two compact sub-rows inside:
 Row 1 (blue outline): claude · codex · gemini · opencode · omp · pi · jcode · goose · hermes · crush · openhands

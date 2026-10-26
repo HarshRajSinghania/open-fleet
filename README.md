@@ -179,12 +179,12 @@ Understand the operational boundary before dispatching workers on a repository:
 
 To run missions on a target repository, you need ([pinned prerequisites](docs/distribution.md#prerequisites-pinned)):
 
-1. **An orchestration runtime (`OPEN_FLEET_RUNTIME`, default `auto` — [Multi-runtime & harness guide](docs/runtimes.md)):**
-   - **Standalone local (`posix`):** Set `OPEN_FLEET_RUNTIME=posix` (or use `auto` when `orca` is not on `PATH`) to dispatch workers via local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) with zero external orchestrator daemon.
-   - **Orca (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.239** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
+1. **An orchestration runtime (`OPEN_FLEET_RUNTIME`, default `orca` — [Multi-runtime & harness guide](docs/runtimes.md)):**
+   - **Standalone local (`posix`):** Set `OPEN_FLEET_RUNTIME=posix` (or `OPEN_FLEET_RUNTIME=auto` to use `orca` when on `PATH` and fall back to `posix` otherwise) to dispatch workers via local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) with zero external orchestrator daemon.
+   - **Default (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.239** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
    - **External orchestrators (12 providers):** Set `OPEN_FLEET_RUNTIME` to `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, or `openhands`.
 2. **A coding-agent harness (`OPEN_FLEET_HARNESS`):** Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), OpenCode (`opencode`), Oh My Pi (`omp`), Pi (`pi`), `jcode`, Goose (`goose`), Hermes Agent (`hermes`), or Crush (`crush`), plus the OpenHands SDK agent (`openhands` on `OPEN_FLEET_RUNTIME=openhands`; `opencode`, `omp`, and `pi` require a non-`orca` runtime such as `posix` or a `WORKER_CMD` override — see [certification matrix](docs/certification.md)).
-3. **`git` and `gh`** (authenticated for GitHub PR and review verification, plus portable `runtime/scripts/pm.py` or `orca linear` / `orca jira` for hosted trackers).
+3. **`git` and `gh`** (authenticated for GitHub PR and review verification, or `orca linear` / `orca jira` for hosted trackers).
 4. **Python 3.11+** (standard library only) for catalog validation and runtime verification scripts.
 5. **Upstream methodology packs** referenced by the missions you run ([mattpocock/skills](https://github.com/mattpocock/skills), [garrytan/gstack](https://github.com/garrytan/gstack), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)) — mounted one pack per worker ([why](docs/concepts.md#one-router-per-worker)). Per-mission CLI tools are listed in [Getting started](docs/getting-started.md#prerequisites).
 

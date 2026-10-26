@@ -101,9 +101,9 @@ Footer, small, centred: security relies on what the layers below the model make 
 
 n("tracker-enumeration", """Content: a spacious left-to-right pipeline showing how hosted trackers feed a fleet run safely.
 Left column, three compact stacked source boxes merging into one right-pointing arrow:
-Box 1 (blue outline): GITHUB + PORTABLE CLI, caption: gh issue · pr list · runtime/scripts/pm.py
-Box 2 (blue outline): LINEAR, caption: orca linear list · pm.py fallback
-Box 3 (green outline): JIRA, caption: orca jira list · search · pm.py fallback
+Box 1 (blue outline): GITHUB, caption: gh issue · pr list
+Box 2 (blue outline): LINEAR, caption: orca linear list
+Box 3 (green outline): JIRA, caption: orca jira list · search
 Followed left-to-right by three spacious rounded stage cards joined by arrows:
 Stage 1 (blue outline): T0 TWIN-QUERY, caption: page until truncated is false · reconcile two independent workers
 Stage 2 (amber outline): TRUST FENCE, caption: guard_text.py normalizes text · ticket text is data, never authority

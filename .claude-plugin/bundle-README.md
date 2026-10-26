@@ -26,9 +26,9 @@ requests to missions.
 ## Requirements
 
 - Python 3.11 or later, and git.
-- **Any supported runtime provider (`OPEN_FLEET_RUNTIME`, default `auto`):**
-  - **Standalone `posix`** (`OPEN_FLEET_RUNTIME=posix`, or selected automatically when `orca` is not on `PATH`) — runs locally using SQLite WAL state, git worktrees, and `tmux` or headless subprocesses with zero external orchestrator daemon.
-  - **[Orca](https://github.com/stablyai/orca)** (`OPEN_FLEET_RUNTIME=orca`, or selected automatically when `orca` is on `PATH`) — the Orca app and CLI, at or above the version `runtime/pins.json` pins.
+- **Any supported runtime provider (`OPEN_FLEET_RUNTIME`, default `orca`):**
+  - **Standalone `posix`** (set `OPEN_FLEET_RUNTIME=posix`, or `OPEN_FLEET_RUNTIME=auto` to fall back to `posix` when `orca` is not on `PATH`) — runs locally using SQLite WAL state, git worktrees, and `tmux` or headless subprocesses with zero external orchestrator daemon.
+  - **[Orca](https://github.com/stablyai/orca)** (default when `OPEN_FLEET_RUNTIME` is unset, or `OPEN_FLEET_RUNTIME=orca`) — the Orca app and CLI, at or above the version `runtime/pins.json` pins.
   - **12 additional orchestrators** — `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, and `openhands`.
 - The GitHub CLI, `gh`, signed in, for missions that open, review or merge pull requests.
 
@@ -60,9 +60,9 @@ hold.
 - **GitHub's API.** `runtime/scripts/upstream_probe.py latest` lists stablyai/orca's release tags
   from `api.github.com` to check the Orca pin. When `GITHUB_TOKEN` is set, it sends it to that
   API, or to the `--tags-url` you pass instead, to lift the rate limit.
-- **Your active runtime provider (`OPEN_FLEET_RUNTIME`, default `auto`).** Under `posix`, all state
+- **Your active runtime provider (`OPEN_FLEET_RUNTIME`, default `orca`).** Under `OPEN_FLEET_RUNTIME=posix`, all state
   and worktree dispatch stay local in SQLite WAL and `git worktree` with zero network calls. When
-  the [Orca](https://github.com/stablyai/orca) runtime is active, missions dispatch workers through
+  the [Orca](https://github.com/stablyai/orca) runtime is active (the default when `OPEN_FLEET_RUNTIME` is unset), missions dispatch workers through
   the local Orca app and CLI, and a mission that publishes evidence shares the report or skill
   bundle through Orca's `artifacts share` or `skills share` under your Orca profile's session
   (`ORCA_CLOUD_AUTH_TOKEN` overrides for development only).

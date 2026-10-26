@@ -33,15 +33,15 @@ Use this guide to run your first mission on a target repository. You will verify
 
 Running a mission on a target project requires three core layers:
 
-1. **An orchestration runtime (`OPEN_FLEET_RUNTIME`, default `auto` — [Multi-runtime & harness guide](runtimes.md)):**
-   - **Standalone POSIX (`posix`):** Set `OPEN_FLEET_RUNTIME=posix` (or use `auto` when `orca` is not on `PATH`) to dispatch workers using local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) without any external desktop app or daemon.
-   - **Orca (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.239**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
+1. **An orchestration runtime (`OPEN_FLEET_RUNTIME`, default `orca` — [Multi-runtime & harness guide](runtimes.md)):**
+   - **Standalone POSIX (`posix`):** Explicitly set `OPEN_FLEET_RUNTIME=posix` (or `OPEN_FLEET_RUNTIME=auto` to use `orca` when on `PATH` and fall back to `posix` otherwise) to dispatch workers using local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) without any external desktop app or daemon.
+   - **Default (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.239**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
      ```bash
      orca status --json
      ```
      If `"runtime": {"state": "not_running"}` is returned, run `orca open` and wait until `runtime.state` reads `ready` ([transcript](completion/evidence/P0-r3-orca-status.txt)).
    - **External orchestrators (12 providers):** Configure `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, or `openhands` in **[docs/runtimes.md](runtimes.md)**.
-2. **`git` and `gh`**, authenticated (`gh auth status`). Fleets open pull requests per unit of work and verify merges by git ancestry. Repositories using Linear or Jira can use portable `runtime/scripts/pm.py` or `orca linear` / `orca jira` where supported.
+2. **`git` and `gh`**, authenticated (`gh auth status`). Fleets open pull requests per unit of work and verify merges by git ancestry. Repositories using Linear or Jira can use `orca linear` or `orca jira` where supported.
 3. **Python 3.11 or newer** (standard library only; no virtualenv required) for the runtime verification scripts (`runtime/scripts/verify.py`, `preflight.py`, `run_report.py`) and catalog checks.
 
 ### Per-mission tooling
@@ -50,7 +50,7 @@ Each mission declares any additional tooling in its `SKILL.md` frontmatter:
 
 | If you plan to run | Also install |
 |---|---|
-| any mission | `git` + `gh` (plus `runtime/scripts/pm.py` or `orca linear` / `orca jira` for hosted trackers) |
+| any mission | `git` + `gh`, or a tracker reachable via `orca linear` / `orca jira` |
 | absorb-it | merge rights on the target and permission to comment on and close inbound PRs; a runnable suite; the repo's DCO/CLA policy |
 | access-it | a deterministic a11y oracle (axe-core / Lighthouse) and a runnable surface |
 | attest-it | the standard's own text (or a human-supplied obligation catalog) at a digest |

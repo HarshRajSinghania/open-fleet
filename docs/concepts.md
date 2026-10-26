@@ -126,6 +126,28 @@ Every mission separates coordination from execution:
 
 ---
 
+## Runtime-agnostic execution: the Runtime Provider Interface
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
+    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+  </picture>
+</p>
+
+Missions and playbooks never hardcode a single vendor's terminal or worktree CLI. Instead, they call neutral runtime entrypoints under `runtime/scripts/` (`spawn_worker.sh`, `task_ops.py`, `worker_ops.py`, `worktree_ops.py`, `send_msg.py`, `verify.py`), which dispatch through the **[Runtime Provider Interface (RPI)](runtimes.md)** across two independent axes:
+
+- **Orchestrator runtime (`OPEN_FLEET_RUNTIME`, default `auto`):**
+  - **`posix` (standalone local):** Zero-daemon SQLite WAL state + local `git worktree` checkouts + `tmux`, `cmux`, or headless subprocesses — runs on any POSIX developer workstation or CI container without installing an external desktop app.
+  - **`orca`:** Native [Orca](https://github.com/stablyai/orca) desktop IDE and CLI worktrees, managed terminals, task DAG, and issue-tracker bridge.
+  - **External multi-agent orchestrators:** `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, and `openhands`.
+- **Coding-agent harness (`OPEN_FLEET_HARNESS`):** `claude` (Claude Code), `codex`, `gemini`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`, and the `openhands` SDK agent — each mapped uniformly onto `PROFILE=ro|rw|danger`.
+
+Because verification (`verify.py`, `verify-gate.sh`, and `run_report.py`) inspects git ancestry, clean-environment test runs, negative controls, and GitHub review state rather than orchestrator-specific logs, **the definition of done is identical across every runtime and harness**.
+
+---
+
 ## The evidence manifest
 
 Every worker emits a SHA-bound JSON evidence manifest alongside its `worker_done` signal ([full specification](../runtime/evidence-manifest.md)):
@@ -323,8 +345,8 @@ Workers are dispatched with the minimum privilege required ([`runtime/sandbox-po
 | Profile | Capabilities | Typical missions & roles |
 |---|---|---|
 | `ro` | Read-only / plan mode | `review-it`, `map-it`, `root-cause`, `attest-it`, build-blind reviewers |
-| `rw` | Workspace file write inside isolated git worktree (requires `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`) | Standard builder and integrator workers |
-| `danger` | Unattended execution inside a placement-bound disposable VM/container (requires `ORCA_COORD_ALLOW_DANGER=1` + `ORCA_SANDBOX_RECIPE`) | Exploit PoCs (`harden-it`) and destructive environment tests (`offload-it`) |
+| `rw` | Workspace file write inside isolated git worktree (requires `OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE=1` or `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`) | Standard builder and integrator workers |
+| `danger` | Unattended execution inside a placement-bound disposable VM/container (requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` + `OPEN_FLEET_SANDBOX_RECIPE`, or `ORCA_*` aliases) | Exploit PoCs (`harden-it`) and destructive environment tests (`offload-it`) |
 
 `danger` lanes never run directly on your workstation host and require a non-`orca` runtime with authoritative prelaunch placement binding (`sandbox_doctor.py --require-placement`, such as `posix` Docker `--on <recipe>`); on `orca`, `spawn_worker.sh` refuses `PROFILE=danger` (`SPAWN=REFUSED`) and parks the unit. Verified changes from a `danger` sandbox are harvested via `git push` to a work branch before teardown and enter `BASE` through the standard PR and review pipeline.
 
@@ -358,15 +380,15 @@ When a boundary violation occurs, the coordinator steps through the **five-rung 
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/tracker-enumeration.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/tracker-enumeration-light.jpg">
-    <img src="../assets/diagrams/tracker-enumeration-light.jpg" alt="Four-stage pipeline for hosted trackers: GitHub Issues/PRs, Linear via orca linear, and Jira via orca jira at v1.4.229 enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus orca reference add/find backed by a verified merge SHA" width="820">
+    <img src="../assets/diagrams/tracker-enumeration-light.jpg" alt="Four-stage pipeline for hosted trackers: GitHub Issues/PRs plus portable runtime/scripts/pm.py, Linear via orca linear or pm.py fallback, and Jira via orca jira or pm.py fallback enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus reference backed by a verified merge SHA" width="820">
   </picture>
 </p>
 
-When missions consume issues or PRs from GitHub (`gh`), Linear (`orca linear`), or Jira (`orca jira`), [`playbooks/linear-enumeration.md`](../playbooks/linear-enumeration.md) enforces three safeguards:
+When missions consume issues or PRs from GitHub (`gh` or portable `runtime/scripts/pm.py`), Linear (`orca linear` or `pm.py` fallback), or Jira (`orca jira` or `pm.py` fallback), [`playbooks/linear-enumeration.md`](../playbooks/linear-enumeration.md) enforces three safeguards:
 
 - **`T0` twin-query denominator:** Two independent workers paginate the tracker query until `truncated: false` and reconcile the exact item list at `T0` before any builder is dispatched.
 - **Untrusted-text fence (`guard_text.py`):** Issue titles, descriptions, and comments are treated as untrusted data. `guard_text.py` normalizes Unicode (`NFKC`), strips hidden format characters, neutralizes delimiter spoofing, and tags `[INJECTION-PATTERN]` payloads before a worker reads them.
-- **Idempotent closure:** Tracker state updates use single-attempt `writeId` replay or state read-back and link the verified merge SHA via `orca reference add`.
+- **Idempotent closure:** Tracker state updates use single-attempt `writeId` replay or state read-back and link the verified merge SHA (`orca reference add` or PR/issue close reference).
 
 ---
 

@@ -25,7 +25,7 @@ SCRIPT = ROOT / "assets" / "diagrams" / "generator" / "wire_docs.py"
 def wired_docs():
     """Every file the script edits, relative to the repo root."""
     docs = ["README.md", "docs/concepts.md", "docs/getting-started.md", "docs/verify-gate.md",
-            "docs/missions/README.md", "docs/guides/anatomy-of-a-run.md"]
+            "docs/runtimes.md", "docs/missions/README.md", "docs/guides/anatomy-of-a-run.md"]
     docs += sorted(f"docs/missions/{d.name}.md" for d in (ROOT / "skills").iterdir()
                    if d.is_dir() and not d.name.startswith((".", "_")))
     return docs

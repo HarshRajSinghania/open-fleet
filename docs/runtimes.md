@@ -9,6 +9,14 @@
 
 ---
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
+    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+  </picture>
+</p>
+
 ## Selecting a runtime provider
 
 Set `OPEN_FLEET_RUNTIME` (or the legacy alias `ORCA_FLEET_RUNTIME`) to choose how fleets manage worktrees, worker processes, and task state:

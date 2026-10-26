@@ -27,20 +27,21 @@ Use this guide to run your first mission on a target repository. You will verify
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/install-stack.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/install-stack-light.jpg">
-    <img src="../assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the open-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today" width="820">
+    <img src="../assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: coding-agent harnesses, the runtime provider interface across 14 runtimes including standalone posix and orca, runtime policies and the independent verifier, the outcome-named open-fleet missions, and the upstream worker packs, one per worker; three install paths: sh scripts/install.sh symlink with the completion gate wired via settings snippet, the Claude Code plugin with the gate on by construction, and the dist/ bundle built by scripts/bundle.py for copy installers" width="820">
   </picture>
 </p>
 
 Running a mission on a target project requires three core layers:
 
-1. **An orchestration runtime** ([Multi-runtime & harness guide](runtimes.md)):
-   - **Default (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.239**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
+1. **An orchestration runtime (`OPEN_FLEET_RUNTIME`, default `auto` — [Multi-runtime & harness guide](runtimes.md)):**
+   - **Standalone POSIX (`posix`):** Set `OPEN_FLEET_RUNTIME=posix` (or use `auto` when `orca` is not on `PATH`) to dispatch workers using local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) without any external desktop app or daemon.
+   - **Orca (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.239**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
      ```bash
      orca status --json
      ```
      If `"runtime": {"state": "not_running"}` is returned, run `orca open` and wait until `runtime.state` reads `ready` ([transcript](completion/evidence/P0-r3-orca-status.txt)).
-   - **Standalone POSIX (`posix`) or external orchestrators:** Set `OPEN_FLEET_RUNTIME=posix` to dispatch workers using local git worktrees and background processes (`tmux`, `cmux`, or `setsid`) without the Orca desktop app, or configure any of the other supported providers in **[docs/runtimes.md](runtimes.md)**.
-2. **`git` and `gh`**, authenticated (`gh auth status`). Fleets open pull requests per unit of work and verify merges by git ancestry. Repositories using Linear or Jira can use `orca linear` or `orca jira` where supported.
+   - **External orchestrators (12 providers):** Configure `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, or `openhands` in **[docs/runtimes.md](runtimes.md)**.
+2. **`git` and `gh`**, authenticated (`gh auth status`). Fleets open pull requests per unit of work and verify merges by git ancestry. Repositories using Linear or Jira can use portable `runtime/scripts/pm.py` or `orca linear` / `orca jira` where supported.
 3. **Python 3.11 or newer** (standard library only; no virtualenv required) for the runtime verification scripts (`runtime/scripts/verify.py`, `preflight.py`, `run_report.py`) and catalog checks.
 
 ### Per-mission tooling
@@ -49,7 +50,7 @@ Each mission declares any additional tooling in its `SKILL.md` frontmatter:
 
 | If you plan to run | Also install |
 |---|---|
-| any mission | `git` + `gh`, or a tracker reachable via `orca linear` / `orca jira` |
+| any mission | `git` + `gh` (plus `runtime/scripts/pm.py` or `orca linear` / `orca jira` for hosted trackers) |
 | absorb-it | merge rights on the target and permission to comment on and close inbound PRs; a runnable suite; the repo's DCO/CLA policy |
 | access-it | a deterministic a11y oracle (axe-core / Lighthouse) and a runnable surface |
 | attest-it | the standard's own text (or a human-supplied obligation catalog) at a digest |

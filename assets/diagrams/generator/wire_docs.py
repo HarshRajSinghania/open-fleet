@@ -20,15 +20,16 @@ def mission_alt(mid):
 NEW_ALT = {
  "you-say": "Three columns, what you say, what the fleet runs, what you get: ship this becomes freeze, build, review and PROMOTION_READY with evidence; close every issue becomes triage, fix, re-enumerate and a backlog at zero, SHA-linked; harden this becomes audit, exploit, re-attack and a CLEAN re-audit or named gaps; why is this flaky becomes reproduce, falsify, prove and a demonstrated root cause",
  "negative-control": "Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED",
- "install-stack": "The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the open-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today",
+ "install-stack": "The stack, bottom to top: coding-agent harnesses, the runtime provider interface across 14 runtimes including standalone posix and orca, runtime policies and the independent verifier, the outcome-named open-fleet missions, and the upstream worker packs, one per worker; three install paths: sh scripts/install.sh symlink with the completion gate wired via settings snippet, the Claude Code plugin with the gate on by construction, and the dist/ bundle built by scripts/bundle.py for copy installers",
  "gates-terminal": "A freeze decision as it reaches your terminal: two options with one recommended, reply a or b, no timeout default because the freeze is a one-way gate; beside it a taste gate that takes the recommendation and keeps working for your later veto, and the promotion PR the fleet opens and leaves for you to merge",
  "artifacts-map": "What a run leaves behind: a ledger with one row per unit; a docs/runs directory holding the report, a manifest per unit and a sha256 inventory; one PR per unit merged into BASE with reviewed_sha equal to head; and a promotion PR from BASE to default left to you",
  "mission-handoffs": "How missions hand off: map-it to ship-it with a frozen map and DAG; root-cause to ship-it or clean-sweep with a fix handoff brief; modernize-it and ship-it to migrate-it for stateful changes; deflake-it and prove-it to clean-sweep for deterministic and surfaced bugs; attest-it to ship-it for remediation; oncall-it to root-cause for telemetry; and a chain harden-it, prove-it, ship-it gated by each verified terminal",
  "proof-ladder": "The proof ladder: doctrine-only, then self-run, then external-run; advancing needs a run report that binds, with a RUN header, a manifest in the run's own directory and an inventory that re-hashes at the named commit; the live state is the archive at docs/runs/README.md, which names each mission's tier as its evidence lands",
- "verify-gate": "The completion gate: the coordinator sets the gate env, a Stop or TaskCompleted hook fires verify-gate.sh, verify.py re-derives scope and review and reads the negative control, replaying it in a throwaway worktree only when ORCA_EXECUTE_NC is set, then exit 0 allows or exit 2 blocks, fail-closed; the verdict is advisory inside the worker's own session and sound where CI, MCP-Task or an SDK subprocess owns the env",
+ "verify-gate": "The completion gate: the coordinator sets the gate env (OPEN_FLEET_MANIFEST or ORCA_MANIFEST), a Stop or TaskCompleted hook fires verify-gate.sh, verify.py re-derives scope and review and reads the negative control, replaying it in a throwaway worktree when OPEN_FLEET_EXECUTE_NC or ORCA_EXECUTE_NC is set, then exit 0 allows or exit 2 blocks, fail-closed; the verdict is advisory inside the worker's own session and sound where CI, MCP-Task or an SDK subprocess owns the env",
  "mission-identity": "The six-point mission-identity test: unit of work, per-unit state machine, convergence proof, ordering and isolation, parking and failure semantics, and the oracle; audit findings, tracker issues and doc claims are one mission, clean-sweep, while a perf breach is a different proof and therefore a different mission, speed-it",
  "threat-boundaries": "The four security boundaries from threat-model.md — sandbox with isolated worktree, ro/rw/danger profiles, PreToolUse deny-hook and v1.4.229 OS process/memory ceiling; network with hash-chained egress.py receipts; supply chain with runtime/pins.json, pin_review.py rug-pull audit, one pack per worker and guard_text.py trust envelope; identity and access with ed25519 dispatch-sign.py contract digest, human-only one-way gates and an independent SHA-bound verifier — beside the five-rung response ladder from steer, reduce and stop to revoke and fail-closed quarantine",
- "tracker-enumeration": "Four-stage pipeline for hosted trackers: GitHub Issues/PRs, Linear via orca linear, and Jira via orca jira at v1.4.229 enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus orca reference add/find backed by a verified merge SHA",
+ "tracker-enumeration": "Four-stage pipeline for hosted trackers: GitHub Issues/PRs plus portable runtime/scripts/pm.py, Linear via orca linear or pm.py fallback, and Jira via orca jira or pm.py fallback enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus reference backed by a verified merge SHA",
+ "runtime-providers": "How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)",
 }
 
 def picture(prefix, name, alt, width):
@@ -121,6 +122,8 @@ def readme(t):
 
 def concepts(t):
     t = convert_existing(t)
+    t = insert_after(t, "## Runtime-agnostic execution: the Runtime Provider Interface",
+        picture("../", "runtime-providers", NEW_ALT["runtime-providers"], 820), "concepts")
     t = insert_before(t, "A unit that fails any required check is not done",
         picture("../", "negative-control", NEW_ALT["negative-control"], 820), "concepts")
     t = insert_after(t, "## Security boundaries and the response ladder",
@@ -144,6 +147,11 @@ def verify_gate(t):
     return insert_before(t, "## Install paths, and which ones carry the gate",
         picture("../", "verify-gate", NEW_ALT["verify-gate"], 820), "verify-gate")
 
+def runtimes(t):
+    t = convert_existing(t)
+    return insert_before(t, "## Selecting a runtime provider",
+        picture("../", "runtime-providers", NEW_ALT["runtime-providers"], 820), "runtimes")
+
 def missions_index(t):
     t = convert_existing(t)
     return insert_before(t, "| Guide | One line |",
@@ -154,6 +162,7 @@ edit("README.md", readme)
 edit("docs/concepts.md", concepts)
 edit("docs/getting-started.md", getting_started)
 edit("docs/verify-gate.md", verify_gate)
+edit("docs/runtimes.md", runtimes)
 edit("docs/missions/README.md", missions_index)
 edit("docs/guides/anatomy-of-a-run.md", convert_existing)
 for mid in CONTRACT:

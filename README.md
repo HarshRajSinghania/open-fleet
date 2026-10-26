@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/hero-light.jpg">
-    <img alt="open-fleet — a pod of orcas swimming in formation through a dark ocean of node graphs" src="assets/hero-light.jpg" width="1000">
+    <img alt="open-fleet — an orchestrated formation of autonomous agent nodes converging along a directed DAG into an emerald verified seal" src="assets/hero-light.jpg" width="1000">
   </picture>
 </p>
 
@@ -34,7 +34,7 @@
 
 ---
 
-**open-fleet** is an open-source catalog of outcome-driven autonomous fleets for the [Orca](https://github.com/stablyai/orca) runtime and the [open-fleet Runtime Provider Interface (RPI)](docs/runtimes.md) (including standalone `posix` sessions without the Orca desktop app). It is an independent, community-maintained project, not affiliated with or endorsed by Stably ([third-party notices](THIRD_PARTY_NOTICES.md)).
+**open-fleet** is an open-source catalog of outcome-driven autonomous fleets for coding agents across the [open-fleet Runtime Provider Interface (RPI)](docs/runtimes.md) — running standalone on local POSIX (`OPEN_FLEET_RUNTIME=posix`, zero external daemon), on the [Orca](https://github.com/stablyai/orca) runtime, or across external multi-agent orchestrators (`overstory`, `t3code`, `ao`, `superset`, `openhands`, and more) and coding-agent harnesses. Originally started on Orca, `open-fleet` is an independent, runtime-agnostic project, not affiliated with or endorsed by Stably ([third-party notices](THIRD_PARTY_NOTICES.md)).
 
 Each **mission** is a complete engineering workflow: a coordinator decomposes your goal into units, dispatches isolated workers (each loading a single methodology pack from [mattpocock/skills](https://github.com/mattpocock/skills), [garrytan/gstack](https://github.com/garrytan/gstack), or [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)), and grades completion through an **independent, SHA-bound verifier** outside the worker session that produced the code.
 
@@ -173,17 +173,18 @@ Understand the operational boundary before dispatching workers on a repository:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/install-stack.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/install-stack-light.jpg">
-    <img src="assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: the Orca app with orchestration enabled, the orca CLI, the orchestration and orca-cli skills, the open-fleet missions, and the upstream packs, one per worker; three install paths: a symlink with the completion gate off until the settings snippet is wired, the Claude Code plugin with the gate on by construction, and the skills CLI, which severs playbook references and is not supported today" width="900">
+    <img src="assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: coding-agent harnesses, the runtime provider interface across 14 runtimes including standalone posix and orca, runtime policies and the independent verifier, the outcome-named open-fleet missions, and the upstream worker packs, one per worker; three install paths: sh scripts/install.sh symlink with the completion gate wired via settings snippet, the Claude Code plugin with the gate on by construction, and the dist/ bundle built by scripts/bundle.py for copy installers" width="900">
   </picture>
 </p>
 
 To run missions on a target repository, you need ([pinned prerequisites](docs/distribution.md#prerequisites-pinned)):
 
-1. **An orchestration runtime** ([Multi-runtime & harness guide](docs/runtimes.md)):
-   - **Default (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.239** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
-   - **Standalone (`posix`) or external orchestrators:** Set `OPEN_FLEET_RUNTIME=posix` to dispatch via local git worktrees and background processes (`tmux`, `cmux`, or `setsid`) with no Orca app required, or select one of the other supported RPI providers.
-2. **A coding-agent harness:** Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), OpenCode (`opencode`), Oh My Pi (`omp`), Pi (`pi`), `jcode`, Goose (`goose`), Hermes Agent (`hermes`), or Crush (`crush`), plus the OpenHands SDK agent (`openhands` on `OPEN_FLEET_RUNTIME=openhands`; `opencode`, `omp`, and `pi` require a non-`orca` runtime such as `posix` or a `WORKER_CMD` override — see [certification matrix](docs/certification.md)).
-3. **`git` and `gh`** (authenticated for GitHub PR and review verification, or `orca linear` / `orca jira` for hosted trackers).
+1. **An orchestration runtime (`OPEN_FLEET_RUNTIME`, default `auto` — [Multi-runtime & harness guide](docs/runtimes.md)):**
+   - **Standalone local (`posix`):** Set `OPEN_FLEET_RUNTIME=posix` (or use `auto` when `orca` is not on `PATH`) to dispatch workers via local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) with zero external orchestrator daemon.
+   - **Orca (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.239** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
+   - **External orchestrators (12 providers):** Set `OPEN_FLEET_RUNTIME` to `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, or `openhands`.
+2. **A coding-agent harness (`OPEN_FLEET_HARNESS`):** Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), OpenCode (`opencode`), Oh My Pi (`omp`), Pi (`pi`), `jcode`, Goose (`goose`), Hermes Agent (`hermes`), or Crush (`crush`), plus the OpenHands SDK agent (`openhands` on `OPEN_FLEET_RUNTIME=openhands`; `opencode`, `omp`, and `pi` require a non-`orca` runtime such as `posix` or a `WORKER_CMD` override — see [certification matrix](docs/certification.md)).
+3. **`git` and `gh`** (authenticated for GitHub PR and review verification, plus portable `runtime/scripts/pm.py` or `orca linear` / `orca jira` for hosted trackers).
 4. **Python 3.11+** (standard library only) for catalog validation and runtime verification scripts.
 5. **Upstream methodology packs** referenced by the missions you run ([mattpocock/skills](https://github.com/mattpocock/skills), [garrytan/gstack](https://github.com/garrytan/gstack), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)) — mounted one pack per worker ([why](docs/concepts.md#one-router-per-worker)). Per-mission CLI tools are listed in [Getting started](docs/getting-started.md#prerequisites).
 

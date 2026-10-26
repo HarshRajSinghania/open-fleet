@@ -15,7 +15,7 @@ On this page:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/verify-gate.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/verify-gate-light.jpg">
-    <img src="../assets/diagrams/verify-gate-light.jpg" alt="The completion gate: the coordinator sets the gate env, a Stop or TaskCompleted hook fires verify-gate.sh, verify.py re-derives scope and review and reads the negative control, replaying it in a throwaway worktree only when ORCA_EXECUTE_NC is set, then exit 0 allows or exit 2 blocks, fail-closed; the verdict is advisory inside the worker's own session and sound where CI, MCP-Task or an SDK subprocess owns the env" width="820">
+    <img src="../assets/diagrams/verify-gate-light.jpg" alt="The completion gate: the coordinator sets the gate env (OPEN_FLEET_MANIFEST or ORCA_MANIFEST), a Stop or TaskCompleted hook fires verify-gate.sh, verify.py re-derives scope and review and reads the negative control, replaying it in a throwaway worktree when OPEN_FLEET_EXECUTE_NC or ORCA_EXECUTE_NC is set, then exit 0 allows or exit 2 blocks, fail-closed; the verdict is advisory inside the worker's own session and sound where CI, MCP-Task or an SDK subprocess owns the env" width="820">
   </picture>
 </p>
 
@@ -45,34 +45,34 @@ Coordinator sets gate environment variables
           • Scope         ← Coordinator-frozen contract source & digest
           • Ancestry      ← git merge-base --is-ancestor on BASE
           • Review        ← GitHub API APPROVED review at head_sha
-          • Neg. control  ← Executed replay in a throwaway worktree (when ORCA_EXECUTE_NC is set)
+          • Neg. control  ← Executed replay in a throwaway worktree (when OPEN_FLEET_EXECUTE_NC / ORCA_EXECUTE_NC is set)
           • Commands      ← Worktree-bound exit-0 command records
            → exit 0 (ALLOW) · exit 2 (BLOCK, fail-closed)
 ```
 
-### Environment variables (`ORCA_*` and `OPEN_FLEET_*`)
+### Environment variables (`OPEN_FLEET_*` and `ORCA_*`)
 
-Every input below is read by `verify-gate.sh` under both its `ORCA_*` name and its neutral `OPEN_FLEET_*` alias ([Multi-runtime guide](runtimes.md); `ORCA_MANIFEST` also accepts `OPEN_FLEET_GATE_MANIFEST` or `OPEN_FLEET_MANIFEST`). If both spellings are set to conflicting values, `verify-gate.sh` fails closed (exit `2`):
+Every input below is read by `verify-gate.sh` under both its neutral `OPEN_FLEET_*` name and its legacy `ORCA_*` alias ([Multi-runtime guide](runtimes.md); `OPEN_FLEET_MANIFEST` also accepts `OPEN_FLEET_GATE_MANIFEST` or `ORCA_MANIFEST`). If both spellings are set to conflicting values, `verify-gate.sh` fails closed (exit `2`):
 
-- `ORCA_MANIFEST` — Path to the unit's JSON evidence manifest. Required for `TaskCompleted`; on `Stop`, unset means no unit is in flight (exit `0`), while a named-but-missing file blocks (exit `2`).
-- `ORCA_CONTRACT_SOURCE` / `ORCA_CONTRACT_DIGEST` — The frozen contract `path@ref` and its SHA-256 digest. Without both, scope verification fails closed.
-- `ORCA_UNIT_CLASS` — `mutation | report-only | planning` (defaults to `mutation` when unset or unrecognized). On an unsigned native run, a `report-only` or `planning` claim is cross-checked against `base_sha..head_sha`: if production code changed, if the range cannot be resolved, or if `base_sha == head_sha`, the check fails (`RED`). A valid docs/tests-only commit range passes with an `(unsupervised)` label unless authorized by a signed dispatch record.
-- `ORCA_REPO` — `owner/name` for the GitHub review lookup. Approvals count only from non-author accounts with `OWNER`, `MEMBER`, or `COLLABORATOR` standing, while `CHANGES_REQUESTED` from any non-author blocks. Required on sound off-worker lanes (`ORCA_PROVENANCE` set or enforcement mode); `gh` is resolved once at startup and must reside in a system binary directory outside worker-writable paths.
-- `ORCA_BASE` / `ORCA_SYMBOL` — Integration base branch for git ancestry verification and an optional symbol to grep on `origin/<base>`. Missing `origin/<base>` is a `NOTE` on the advisory native path and fatal on sound off-worker lanes.
-- `ORCA_NC_COMMAND` — The authoritative criterion-bound test command that the negative control must turn `RED` (forwarded as `--nc-command`). Must match `negative_control.command` in the manifest, and is **required whenever `ORCA_EXECUTE_NC` is set** so a worker cannot nominate a trivial self-chosen command.
-- `ORCA_EXECUTE_NC` — When set to any non-empty value, forwards `--execute-nc`, which **executes the negative control** in a throwaway worktree rather than merely reading the manifest's description:
+- `ORCA_MANIFEST` (`OPEN_FLEET_MANIFEST` / `OPEN_FLEET_GATE_MANIFEST`) — Path to the unit's JSON evidence manifest. Required for `TaskCompleted`; on `Stop`, unset means no unit is in flight (exit `0`), while a named-but-missing file blocks (exit `2`).
+- `ORCA_CONTRACT_SOURCE` / `ORCA_CONTRACT_DIGEST` (`OPEN_FLEET_CONTRACT_SOURCE` / `OPEN_FLEET_CONTRACT_DIGEST`) — The frozen contract `path@ref` and its SHA-256 digest. Without both, scope verification fails closed.
+- `ORCA_UNIT_CLASS` (`OPEN_FLEET_UNIT_CLASS`) — `mutation | report-only | planning` (defaults to `mutation` when unset or unrecognized). On an unsigned native run, a `report-only` or `planning` claim is cross-checked against `base_sha..head_sha`: if production code changed, if the range cannot be resolved, or if `base_sha == head_sha`, the check fails (`RED`). A valid docs/tests-only commit range passes with an `(unsupervised)` label unless authorized by a signed dispatch record.
+- `ORCA_REPO` (`OPEN_FLEET_REPO`) — `owner/name` for the GitHub review lookup. Approvals count only from non-author accounts with `OWNER`, `MEMBER`, or `COLLABORATOR` standing, while `CHANGES_REQUESTED` from any non-author blocks. Required on sound off-worker lanes (`ORCA_PROVENANCE` / `OPEN_FLEET_PROVENANCE` set or enforcement mode); `gh` is resolved once at startup and must reside in a system binary directory outside worker-writable paths.
+- `ORCA_BASE` / `ORCA_SYMBOL` (`OPEN_FLEET_BASE` / `OPEN_FLEET_SYMBOL`) — Integration base branch for git ancestry verification and an optional symbol to grep on `origin/<base>`. Missing `origin/<base>` is a `NOTE` on the advisory native path and fatal on sound off-worker lanes.
+- `ORCA_NC_COMMAND` (`OPEN_FLEET_NC_COMMAND`) — The authoritative criterion-bound test command that the negative control must turn `RED` (forwarded as `--nc-command`). Must match `negative_control.command` in the manifest, and is **required whenever `ORCA_EXECUTE_NC` (`OPEN_FLEET_EXECUTE_NC`) is set** so a worker cannot nominate a trivial self-chosen command.
+- `ORCA_EXECUTE_NC` (`OPEN_FLEET_EXECUTE_NC`) — When set to any non-empty value, forwards `--execute-nc`, which **executes the negative control** in a throwaway worktree rather than merely reading the manifest's description:
   - **Replay phases:** Checks out `head_sha`, applies the control (`tool: revert` restores `negative_control.paths` from `base_sha`, or `tool: hand` applies the quoted unified diff), seals the tree into a sibling commit, and executes `3 runs of the bound command` across `4 checkouts` (1 scratch worktree to apply and seal the control + 1 isolated checkout per phase) with a 600 s timeout each:
     1. Clean `head_sha` → must exit **0** (`GREEN`)
     2. Sealed control tree → must exit **non-zero** (`RED`) with a real test assertion failure
     3. Clean `head_sha` → must exit **0** (`GREEN`)
   - **Hygienic environment & git isolation:** Runs under a minimal 6-variable environment floor (`PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LC_*`) with fresh empty `HOME` and `TMPDIR` per phase, tag signatures stripped, `core.hooksPath=/dev/null`, and any repository-configured git filters (`fsmonitor`, `clean`/`smudge`, `textconv`, `merge` drivers) neutralized before checkout.
   - **Production-code binding:** The reverted or patched paths must be production files modified in `base_sha..head_sha` (never test files discovered by `pytest`, `unittest`, `jest`, or `vitest`), and syntax/import load errors are rejected as stillborn mutants.
-- `ORCA_NO_GH` — Enables the offline **no-gh lane**, switching review verification from GitHub API lookup to a local reviewer artifact (a trust downgrade; see [Trust boundary](#trust-boundary)). **Requires `ORCA_EXECUTE_NC`** and an out-of-band coordinator contract.
-- `ORCA_UNIT_LANE` — `A | B | 0` lane classification from dispatch (forwarded as `--lane`). Rejects Lane-0 mutations and `dark-eligible` claims outside Lane A.
-- `ORCA_LIGHTING` — Coordinator lighting classification (`lit` or `dark-eligible`). Setting `dark-eligible` waives human/build-blind review and therefore **requires `ORCA_EXECUTE_NC`**.
-- `ORCA_PROVENANCE` — `ci|mcp|sdk|dispatch` asserting that the environment was populated off-worker; enables strict authority enforcement and suppresses the in-session advisory `NOTE`.
-- `ORCA_DISPATCH_RECORD` — Path (or `path@ref`) to the coordinator-signed dispatch envelope binding the contract digest, unit class, profile, and lighting.
-- `ORCA_DISPATCH_PUBKEY` — Ed25519 verifying public key overriding repository key discovery (trustworthy only when set off-worker).
+- `ORCA_NO_GH` (`OPEN_FLEET_NO_GH`) — Enables the offline **no-gh lane**, switching review verification from GitHub API lookup to a local reviewer artifact (a trust downgrade; see [Trust boundary](#trust-boundary)). **Requires `ORCA_EXECUTE_NC` (`OPEN_FLEET_EXECUTE_NC`)** and an out-of-band coordinator contract.
+- `ORCA_UNIT_LANE` (`OPEN_FLEET_UNIT_LANE`) — `A | B | 0` lane classification from dispatch (forwarded as `--lane`). Rejects Lane-0 mutations and `dark-eligible` claims outside Lane A.
+- `ORCA_LIGHTING` (`OPEN_FLEET_LIGHTING`) — Coordinator lighting classification (`lit` or `dark-eligible`). Setting `dark-eligible` waives human/build-blind review and therefore **requires `ORCA_EXECUTE_NC` (`OPEN_FLEET_EXECUTE_NC`)**.
+- `ORCA_PROVENANCE` (`OPEN_FLEET_PROVENANCE`) — `ci|mcp|sdk|dispatch` asserting that the environment was populated off-worker; enables strict authority enforcement and suppresses the in-session advisory `NOTE`.
+- `ORCA_DISPATCH_RECORD` (`OPEN_FLEET_DISPATCH_RECORD`) — Path (or `path@ref`) to the coordinator-signed dispatch envelope binding the contract digest, unit class, profile, and lighting.
+- `ORCA_DISPATCH_PUBKEY` (`OPEN_FLEET_DISPATCH_PUBKEY`) — Ed25519 verifying public key overriding repository key discovery (trustworthy only when set off-worker).
 
 ---
 

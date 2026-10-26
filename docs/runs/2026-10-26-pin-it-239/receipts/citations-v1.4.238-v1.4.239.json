@@ -1,0 +1,609 @@
+[
+ {
+  "doc": "playbooks/linear-enumeration.md:70",
+  "cite": "cli/specs/jira.ts:10-49",
+  "path": "src/cli/specs/jira.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/attention-budget.md:58",
+  "cite": "account.ts:297-307",
+  "verdict": "AMBIGUOUS(2)"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:7",
+  "cite": "cli/specs/skills.ts:50-56",
+  "path": "src/cli/specs/skills.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:17",
+  "cite": "local-worker-start.ts:263",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/local-worker-start.ts",
+  "verdict": "MOVED",
+  "new": "197"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:17",
+  "cite": "worker-start-readiness-settlement.ts:91-129",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/worker-start-readiness-settlement.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:20",
+  "cite": "worker-start-receipt.ts:32-56",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/worker-start-receipt.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:24",
+  "cite": "dispatch-methods.ts:46-65",
+  "path": "src/main/runtime/rpc/methods/orchestration/runs/dispatch-methods.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:25",
+  "cite": "orchestration-worker-specs.ts:8",
+  "path": "src/cli/specs/orchestration-worker-specs.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:28",
+  "cite": "orchestration-dispatch-refusal-contract.ts:36-53",
+  "path": "src/shared/orchestration-dispatch-refusal-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:28",
+  "cite": "retried-worker-terminal-release.ts:1-57",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/retried-worker-terminal-release.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:29",
+  "cite": "worker-report-settlement.ts:126-156",
+  "path": "src/main/runtime/orchestration/db/dispatch-context/worker-report-settlement.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:30",
+  "cite": "orchestration-dispatch-refusal-contract.ts:8",
+  "path": "src/shared/orchestration-dispatch-refusal-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:32",
+  "cite": "cli/specs/agent-launch.ts:6-35",
+  "path": "src/cli/specs/agent-launch.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:33",
+  "cite": "orchestration-worker-specs.ts:124",
+  "path": "src/cli/specs/orchestration-worker-specs.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:34",
+  "cite": "dispatch-methods.ts:95-107",
+  "path": "src/main/runtime/rpc/methods/orchestration/runs/dispatch-methods.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:35",
+  "cite": "dispatch-methods.ts:155-165",
+  "path": "src/main/runtime/rpc/methods/orchestration/runs/dispatch-methods.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:36",
+  "cite": "src/shared/runtime-terminal-send-contract.ts:12",
+  "path": "src/shared/runtime-terminal-send-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:46",
+  "cite": "cli/specs/orchestration.ts:76-77",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:50",
+  "cite": "cli/specs/orchestration.ts:49",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:65",
+  "cite": "core.ts:108,127",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:72",
+  "cite": "bundled-cli-launcher-path.ts:4",
+  "path": "src/main/cli/bundled-cli-launcher-path.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:75",
+  "cite": "orchestration-worker-specs.ts:101",
+  "path": "src/cli/specs/orchestration-worker-specs.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:121",
+  "cite": "check-run.ts:189-197",
+  "path": "src/main/runtime/rpc/methods/orchestration/messaging/check-run.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:122",
+  "cite": "message-methods.ts:113",
+  "path": "src/main/runtime/rpc/methods/orchestration/messaging/message-methods.ts",
+  "verdict": "MOVED",
+  "new": "138"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:123",
+  "cite": "message-check-handler.ts:98-107",
+  "path": "src/cli/handlers/orchestration/message-check-handler.ts",
+  "verdict": "CHANGED",
+  "new": "?"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:126",
+  "cite": "check-keepalive.ts:18-26",
+  "path": "src/cli/handlers/orchestration/check-keepalive.ts",
+  "verdict": "CHANGED",
+  "new": "?"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:130",
+  "cite": "message-send-handler.ts:55-59",
+  "path": "src/cli/handlers/orchestration/message-send-handler.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/dispatch-lifecycle.md:148",
+  "cite": "cli/specs/terminal-close.ts:8-14",
+  "path": "src/cli/specs/terminal-close.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/gate-classification.md:16",
+  "cite": "decision-gate-store.ts:64-70",
+  "path": "src/main/runtime/orchestration/db/decision-gates/decision-gate-store.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/gate-classification.md:21",
+  "cite": "cli/specs/orchestration.ts:205,256",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/gate-classification.md:23",
+  "cite": "send-point-to-point.ts:154-205",
+  "path": "src/main/runtime/rpc/methods/orchestration/messaging/send-point-to-point.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/gate-classification.md:27",
+  "cite": "coordinator-task-dispatch.ts:130-139",
+  "path": "src/main/runtime/orchestration/coordinator-task-dispatch.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/gate-classification.md:45",
+  "cite": "create-graph-tables-sql.ts:190",
+  "path": "src/main/runtime/orchestration/db/schema/create-graph-tables-sql.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/gate-classification.md:45",
+  "cite": "types.ts:39",
+  "verdict": "AMBIGUOUS(15)"
+ },
+ {
+  "doc": "runtime/liveness-resume.md:47",
+  "cite": "orchestration.ts:115",
+  "verdict": "AMBIGUOUS(3)"
+ },
+ {
+  "doc": "runtime/liveness-resume.md:47",
+  "cite": "orchestration.ts:267-272",
+  "verdict": "AMBIGUOUS(3)"
+ },
+ {
+  "doc": "runtime/liveness-resume.md:62",
+  "cite": "terminal-send.ts:19-20",
+  "verdict": "AMBIGUOUS(2)"
+ },
+ {
+  "doc": "runtime/liveness-resume.md:78",
+  "cite": "orchestration-reset.ts:80-90",
+  "path": "src/main/runtime/orchestration/db/reset/orchestration-reset.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/liveness-resume.md:94",
+  "cite": "task-store.ts:38-43",
+  "path": "src/main/runtime/orchestration/db/tasks/task-store.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/merge-serialization.md:18",
+  "cite": "cli/specs/orchestration.ts:78",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/merge-serialization.md:22",
+  "cite": "message-send-handler.ts:55-59",
+  "path": "src/cli/handlers/orchestration/message-send-handler.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/merge-serialization.md:28",
+  "cite": "recipient-routing.ts:15-24,92-102",
+  "path": "src/main/runtime/rpc/methods/orchestration/messaging/recipient-routing.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/merge-serialization.md:37",
+  "cite": "worker-report-settlement.ts:100-107",
+  "path": "src/main/runtime/orchestration/db/dispatch-context/worker-report-settlement.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/mission-scheduling.md:24",
+  "cite": "automations.ts:62",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/mission-scheduling.md:47",
+  "cite": "automations.ts:74-103",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/mission-scheduling.md:76",
+  "cite": "automations.ts:114-130",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/mission-scheduling.md:82",
+  "cite": "automations.ts:41-71",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/mission-scheduling.md:83",
+  "cite": "agent-attention-notification-delivery.ts:1-14",
+  "path": "src/renderer/src/attention/agent-attention-notification-delivery.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:6",
+  "cite": "db/contract-constants.ts:23",
+  "path": "src/main/runtime/orchestration/db/contract-constants.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:26",
+  "cite": "dispatch-depth.ts:63-73",
+  "path": "src/main/runtime/orchestration/db/dispatch-depth.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:34",
+  "cite": "cli/specs/orchestration.ts:136",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:34",
+  "cite": "task-store.ts:32-35",
+  "path": "src/main/runtime/orchestration/db/tasks/task-store.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:54",
+  "cite": "cli/specs/orchestration.ts:71",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:55",
+  "cite": "legacy-ask-operation.ts:101",
+  "path": "src/main/runtime/orchestration/db/legacy/legacy-ask-operation.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:56",
+  "cite": "message-inbox.ts:81",
+  "path": "src/main/runtime/orchestration/db/messages/message-inbox.ts",
+  "verdict": "MOVED",
+  "new": "82"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:62",
+  "cite": "cli/specs/orchestration.ts:114",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:75",
+  "cite": "migrate-v41.ts:3-4",
+  "path": "src/main/runtime/orchestration/db/schema/migrate-v41.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:81",
+  "cite": "worker-dispatch-outcome.ts:59-66",
+  "path": "src/main/runtime/orchestration/db/worker-dispatch/worker-dispatch-outcome.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:81",
+  "cite": "orchestration-dispatch-refusal-contract.ts:36-53",
+  "path": "src/shared/orchestration-dispatch-refusal-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-dag-semantics.md:132",
+  "cite": "cli/specs/orchestration.ts:49,81",
+  "path": "src/cli/specs/orchestration.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/orca-pin.md:124",
+  "cite": "core.ts:241",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/orca-pin.md:125",
+  "cite": "core.ts:242,246",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/orca-pin.md:125",
+  "cite": "handlers/terminal.ts:137-142",
+  "path": "src/cli/handlers/terminal.ts",
+  "verdict": "CHANGED",
+  "new": "?"
+ },
+ {
+  "doc": "runtime/orca-pin.md:131",
+  "cite": "core.ts:240",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/orca-pin.md:131",
+  "cite": "handlers/terminal.ts:137",
+  "path": "src/cli/handlers/terminal.ts",
+  "verdict": "MOVED",
+  "new": "80"
+ },
+ {
+  "doc": "runtime/sandbox-policy.md:12",
+  "cite": "tui-agent-launch-defaults.ts:18-19",
+  "path": "src/shared/tui-agent-launch-defaults.ts",
+  "verdict": "MOVED",
+  "new": "37-38"
+ },
+ {
+  "doc": "runtime/sandbox-policy.md:15",
+  "cite": "tui-agent-permissions.ts:6-10",
+  "path": "src/shared/tui-agent-permissions.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/sandbox-policy.md:24",
+  "cite": "tui-agent-permissions.ts:12-45",
+  "path": "src/shared/tui-agent-permissions.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/sandbox-policy.md:36",
+  "cite": "tui-agent-permissions.ts:30",
+  "path": "src/shared/tui-agent-permissions.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/sandbox-policy.md:39",
+  "cite": "tui-agent-launch-defaults.ts:13-16",
+  "path": "src/shared/tui-agent-launch-defaults.ts",
+  "verdict": "MOVED",
+  "new": "23-26"
+ },
+ {
+  "doc": "runtime/scripts/pm.py:10",
+  "cite": "check-keepalive.ts:18-26",
+  "path": "src/cli/handlers/orchestration/check-keepalive.ts",
+  "verdict": "CHANGED",
+  "new": "?"
+ },
+ {
+  "doc": "runtime/scripts/pm.py:106",
+  "cite": "check-keepalive.ts:18-26",
+  "path": "src/cli/handlers/orchestration/check-keepalive.ts",
+  "verdict": "CHANGED",
+  "new": "?"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:10",
+  "cite": "local-worker-start.ts:263",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/local-worker-start.ts",
+  "verdict": "MOVED",
+  "new": "197"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:14",
+  "cite": "local-worker-start.ts:243-263",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/local-worker-start.ts",
+  "verdict": "MOVED",
+  "new": "247-267"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:17",
+  "cite": "orchestration-dispatch-refusal-contract.ts:8",
+  "path": "src/shared/orchestration-dispatch-refusal-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:21",
+  "cite": "worker-start-receipt.ts:48,60-68",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/worker-start-receipt.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:27",
+  "cite": "dispatch-methods.ts:155-165",
+  "path": "src/main/runtime/rpc/methods/orchestration/runs/dispatch-methods.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:29",
+  "cite": "src/shared/runtime-terminal-send-contract.ts:12",
+  "path": "src/shared/runtime-terminal-send-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:30",
+  "cite": "runtime-terminal-contracts.ts:221-225",
+  "verdict": "AMBIGUOUS(2)"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:35",
+  "cite": "orchestration-mutation-executor.ts:65-80",
+  "path": "src/main/runtime/rpc/orchestration-mutation-executor.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:40",
+  "cite": "terminal.ts:125-129",
+  "verdict": "AMBIGUOUS(4)"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:44",
+  "cite": "tui-agent-launch-defaults.ts:10",
+  "path": "src/shared/tui-agent-launch-defaults.ts",
+  "verdict": "MOVED",
+  "new": "20"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:49",
+  "cite": "tui-agent-permissions.ts:6-10",
+  "path": "src/shared/tui-agent-permissions.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:52",
+  "cite": "tui-agent-launch-defaults.ts:10",
+  "path": "src/shared/tui-agent-launch-defaults.ts",
+  "verdict": "MOVED",
+  "new": "20"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:110",
+  "cite": "tui-agent-permissions.ts:12-45",
+  "path": "src/shared/tui-agent-permissions.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:120",
+  "cite": "worker-launch-preferences.ts:73-86",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/worker-launch-preferences.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:133",
+  "cite": "tui-agent-launch-defaults.ts:5-8",
+  "path": "src/shared/tui-agent-launch-defaults.ts",
+  "verdict": "MOVED",
+  "new": "15-18"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:377",
+  "cite": "agent-session-option-catalog-claude-codex.ts:183-191",
+  "path": "src/shared/agent-session-option-catalog-claude-codex.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:393",
+  "cite": "tui-agent-launch-defaults.ts:5-8",
+  "path": "src/shared/tui-agent-launch-defaults.ts",
+  "verdict": "MOVED",
+  "new": "15-18"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:632",
+  "cite": "cli-argument-boundary.ts:2",
+  "path": "src/shared/cli-argument-boundary.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:633",
+  "cite": "src/cli/specs/vm.ts:10",
+  "path": "src/cli/specs/vm.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:642",
+  "cite": "vm.ts:6-9",
+  "verdict": "AMBIGUOUS(2)"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1112",
+  "cite": "orchestration-dispatch-refusal-contract.ts:8",
+  "path": "src/shared/orchestration-dispatch-refusal-contract.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1113",
+  "cite": "nested-worker-depth.ts:13",
+  "path": "src/shared/nested-worker-depth.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1114",
+  "cite": "dispatch-capability.ts:18",
+  "verdict": "UNRESOLVED"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1115",
+  "cite": "role-mailbox-delivery.ts:52",
+  "path": "src/main/runtime/orchestration/db/messages/role-mailbox-delivery.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1115",
+  "cite": "decision-gate-store.ts:49",
+  "path": "src/main/runtime/orchestration/db/decision-gates/decision-gate-store.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1116",
+  "cite": "cli-error.ts:117",
+  "path": "src/cli/cli-error.ts",
+  "verdict": "MOVED",
+  "new": "116"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1217",
+  "cite": "worker-start-receipt.ts:42-69",
+  "path": "src/main/runtime/rpc/methods/orchestration/worker/worker-start-receipt.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/scripts/spawn_worker.sh:1355",
+  "cite": "orchestration-worker-specs.ts:124",
+  "path": "src/cli/specs/orchestration-worker-specs.ts",
+  "verdict": "CURRENT"
+ },
+ {
+  "doc": "runtime/worker-supervision.md:42",
+  "cite": "orchestration-worker-specs.ts:125",
+  "path": "src/cli/specs/orchestration-worker-specs.ts",
+  "verdict": "CURRENT"
+ }
+]

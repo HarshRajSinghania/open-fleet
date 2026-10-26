@@ -150,9 +150,9 @@ def _pinned_version() -> str:
     pins_path = Path(__file__).resolve().parent.parent / "pins.json"
     try:
         data = json.loads(pins_path.read_text(encoding="utf-8"))
-        return (data.get("orca") or {}).get("version") or "v1.4.238"
+        return (data.get("orca") or {}).get("version") or "v1.4.239"
     except Exception:
-        return "v1.4.238"
+        return "v1.4.239"
 
 
 def main(argv=None) -> int:

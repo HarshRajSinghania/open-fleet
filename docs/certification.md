@@ -41,15 +41,13 @@ group's `witnessed.route` quotes whole lines of that run's inventoried artifacts
 run's `inventory_at`. Those lines must name the provider, the profile beside the harness, and the
 recorded versions. A group that copies another route's witness is refused (#596 review):
 
-- `orca` `ro`/`claude`: Orca 1.4.224 (`orca-ide`, Ubuntu 24.04.5 arm64) and Claude Code
-  2.1.296, 2026-10-13, in the [review-it Linux witness](runs/2026-10-13-review-it-linux.md). The
-  run used spawn_worker.sh's custom-argv lane. Turn start could not be observed on that host;
-  screen reads and `worker_done` deliveries proved the workers were live. Route: the run
-  manifest's `toolchain` line (`orca-ide 1.4.224`, `Claude Code 2.1.296`, `PROFILE=ro`).
-  **Re-witness owed:** the run launched `claude --permission-mode plan`. The row now also
-  carries `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`, and no live run has exercised
-  it. Its workers wrote their reports after the coordinator approved their plans, and that
-  step now runs with Write and Edit denied.
+- `orca` `ro`/`claude`: Orca 1.4.239 (`Orca.app`, macOS 27.0.1 arm64) and a native Claude Code
+  2.1.304, 2026-10-26, in the [#680 witness](runs/2026-10-26-review-it-orca-ro-680.md), on the
+  current row with its `--disallowedTools` set. The lane delivered the preamble by the no-inject
+  fallback, because Orca cannot see a native install, and the send receipt proved the turn
+  start. After the plan was approved in the pane, Write and Edit stayed out of the toolset.
+  Route: the run manifest's `toolchain` line (`Orca 1.4.239`, `Claude Code 2.1.304`,
+  `PROFILE=ro`). The 2026-10-13 Linux witness (Orca 1.4.224, the earlier row) stays on record.
 - `orca` `rw`/`claude`: same build and harness, in the [ship-it mdtoc run](runs/2026-10-13-ship-it-mdtoc.md).
   Only the `WORKER_CMD` override lane was witnessed. On the witness host, the supervised
   `worker-start` lane reported `LAUNCHED_UNUSABLE`. Route: the run's dispatch script
@@ -66,9 +64,10 @@ recorded versions. A group that copies another route's witness is refused (#596 
   The harness's `upstream.version` is `2.1.304`. Orca runs spawn_worker.sh's own rows, so an
   Orca witness certifies no harness cell.
 
-The Orca pin is now v1.4.238. That pin, like v1.4.229 before it, re-witnessed only the source
-delta. It carries these receipts through `pins.json` `live_receipts`, and the record is
-certified against that three-part fingerprint. No other provider and no other harness has a live
+The Orca pin is now v1.4.239: a source-delta re-witness whose `pins.json` `live_receipts` are
+1.4.239's own (the CLI capture and the `ro`/`claude` witness above). The `rw` cell's 1.4.224
+witness predates them, so its route was re-checked by source delta only. The record is
+certified against the pin's three-part fingerprint. No other provider and no other harness has a live
 witness.
 
 ## Fixture (mocked) results
@@ -89,7 +88,7 @@ works. They do not show how the upstream build or the harness behaves:
   them.
 
 <!-- BEGIN GENERATED: certification-matrix — runtime/scripts/certification.py markdown -->
-Record version 5 (2026-10-24). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
+Record version 6 (2026-10-26). Counts are cells: one (provider, profile, harness) or (harness, profile) route each.
 
 | Provider | Upstream certified against | live-witnessed | fixture-tested | source-only | unsupported | unavailable | stale |
 |---|---|---|---|---|---|---|---|
@@ -99,7 +98,7 @@ Record version 5 (2026-10-24). Counts are cells: one (provider, profile, harness
 | `jcode-swarm` | unknown |  | 1 |  |  |  |  |
 | `multiclaude` | unknown |  | 2 |  |  |  |  |
 | `openhands` | unknown |  | 2 |  |  |  |  |
-| `orca` | v1.4.238 (e6f7fba58e8e) | 2 | 2 | 13 | 16 |  |  |
+| `orca` | v1.4.239 (47f77cf7018e) | 2 | 2 | 13 | 16 |  |  |
 | `overstory` | unknown |  | 9 |  | 5 |  |  |
 | `paperclip` | unknown |  | 3 |  | 1 |  |  |
 | `posix` | in-repo | 2 | 27 |  | 1 |  |  |
@@ -127,7 +126,7 @@ Record version 5 (2026-10-24). Counts are cells: one (provider, profile, harness
 
 Live-witnessed cells (everything else is fixture, source or refusal evidence):
 
-- `orca` ro/claude: upstream orca-ide 1.4.224, Claude Code 2.1.296, Ubuntu 24.04.5 LTS arm64 (OrbStack VM), 2026-10-13 — [2026-10-13-review-it-linux.md](runs/2026-10-13-review-it-linux.md)
+- `orca` ro/claude: upstream Orca 1.4.239, Claude Code 2.1.304, macOS 27.0.1 arm64 (the dev Mac), 2026-10-26 — [2026-10-26-review-it-orca-ro-680.md](runs/2026-10-26-review-it-orca-ro-680.md)
 - `orca` rw/claude: upstream orca-ide 1.4.224, Claude Code 2.1.296, Ubuntu 24.04.5 LTS arm64 (OrbStack VM), 2026-10-13 — [2026-10-13-ship-it-mdtoc.md](runs/2026-10-13-ship-it-mdtoc.md)
 - `posix` ro/claude: upstream b96d47e3354564e1593d34182a817ae04e54545d, 2.1.304 (Claude Code), macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack), 2026-10-24 — [2026-10-24-review-it-first-run.md](runs/2026-10-24-review-it-first-run.md)
 - `posix` rw/claude: upstream b96d47e3354564e1593d34182a817ae04e54545d, 2.1.304 (Claude Code), macOS 27.0.1 arm64 (dev Mac, isolation wrapper) and Ubuntu 24.04.5 aarch64 (fresh ubuntu:24.04 container on the same Mac's OrbStack), 2026-10-24 — [2026-10-24-review-it-first-run.md](runs/2026-10-24-review-it-first-run.md)
@@ -361,8 +360,8 @@ idle Claude sets no title, so `dispatch --inject` answers `no_agent_detected` (1
 1.4.240). For the ro claude row only, `spawn_worker.sh` then confirms the pane: `terminal show`
 must name its agent `claude`, and its screen must show Claude's prompt in plan mode. It then
 delivers the preamble of a dispatch without `--inject` by `terminal send`, Orca's own nextStep.
-Any other screen refuses with exit 2 and nothing is sent. The record takes the witness with the
-pin's move to that build (#680).
+Any other screen refuses with exit 2 and nothing is sent. The record takes the witness at the
+v1.4.239 pin (#680).
 
 To repeat the witness, first meet these prerequisites:
 

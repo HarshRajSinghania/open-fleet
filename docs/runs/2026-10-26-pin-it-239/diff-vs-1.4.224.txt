@@ -1,0 +1,29 @@
+baseline: docs/runs/2026-10-12-pin-it-224 -> agent-context.json, help-root.txt, terminal-help.txt, guides/
+fresh: docs/runs/2026-10-26-pin-it-239/receipts-live-2026-10-26 -> agent-context.json, help-root.txt, terminal-help.txt, guides/
+agent-context: 249 -> 287 commands - added: agent launch, jira assignee clear, jira assignee list, jira assignee set, jira comment add, jira comment list, jira connection, jira create, jira issue, jira label add, jira label rm, jira label set, jira list, jira priority clear, jira priority list, jira priority set, jira project fields, jira project list, jira project types, jira search, jira status list, jira status set, linear comment delete, linear comment edit, reference add, reference find, reference list, reference remove, serve restore resume, serve service install, serve service status, serve service uninstall, speech openai-key clear, speech openai-key set, speech openai-key status, terminal set-pane-title, terminal-daemon restart, terminal-daemon status - removed: none - changed: automations create, automations run, automations runs, environment cancel-stop, environment forget, environment recover, environment rollback, environment status, environment stop, environment update, file open, host list, orchestration ask, profile state rollback, project setup-clone, project setup-create, project setup-delete, project setup-existing-folder, project setup-update, project setups, search, serve, skills install, skills update, terminal create, terminal split, terminal switch, worktree create, worktree list, worktree ps
+help-root.txt: CHANGED (+24/-13 lines)
+    @@ -14,0 +15,6 @@
+    +
+    +References:
+    +  reference list            List a workspace's linked reviews and issues
+    +  reference add             Attach review or issue URLs to a workspace
+    +  reference remove          Detach review or issue URLs from a workspace
+    +  reference find            Find workspaces and agents by URL or issue key
+    @@ -31 +37 @@
+    -  skills update             Update already-installed Orca skills via the community skills CLI
+    +  skills update             Update Orca skills to the version this Orca build ships
+    @@ -79,0 +86,3 @@
+    +Agents:
+    +  agent launch              Start an agent in a worktree, as a chat or terminal per your settings
+    +
+    @@ -92,0 +102 @@
+    +  terminal set-pane-title   Set or clear the title of one terminal pane
+    @@ -225 +235 @@
+    -  orca serve [--port <port>] [--pairing-address <host>] [--mobile-pairing] [--no-pairing] [--grant-desktop-control] [--project-root <path>] [--recipe-json] [--json]
+    +  orca serve [--port <port>] [--pairing-address <host>] [--mobile-pairing] [--no-pairing] [--grant-desktop-control] [--project-root <path>] [--recipe-json] [--supervise] [--json]
+    @@ -239 +249 @@
+terminal-help.txt: CHANGED (+1/-0 lines)
+    @@ -14,0 +15 @@
+    +  set-pane-title     Set or clear the title of one terminal pane
+guides: 6 identical - added: none - removed: none - changed: orca-cli--publishing.md, orca-cli.md, orchestration--coordinator-loop.md, orchestration--low-level-topology.md, orchestration--messaging-and-gates.md, orchestration--recovery-and-cleanup.md, orchestration--worker-contract.md, orchestration.md
+VERDICT: DRIFT - 38 added / 0 removed / 30 changed command(s); 10 changed file(s): help-root.txt, terminal-help.txt, guides/orca-cli--publishing.md, guides/orca-cli.md, guides/orchestration--coordinator-loop.md, guides/orchestration--low-level-topology.md, guides/orchestration--messaging-and-gates.md, guides/orchestration--recovery-and-cleanup.md, guides/orchestration--worker-contract.md, guides/orchestration.md; guides added 0, removed 0

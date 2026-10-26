@@ -1,8 +1,8 @@
 {
   "_about": "Versioned certification record for every advertised Runtime Provider Interface route (#596). Provider cells are capabilities.json's supported_profiles x supported_harnesses per provider; harness cells are base.py's launch table x {ro, rw}. Each route group names its tier, evidence paths, explicit limitations and, for a refusal, the typed refusal. An upstream version or commit that was never recorded stays null (rendered `unknown`) and is never guessed. A provider bound to a pin (`upstream.pin`) goes STALE — every one of its cells reads `stale`, never its recorded tier — as soon as the pin's commit, version or live_receipts.version differs from `certified_against`; recheck the cells, bump record_version, re-record. runtime/scripts/certification.py validates and renders this file; docs/certification.md explains it and carries the first-run guide.",
   "schema_version": "open-fleet-certification/v1",
-  "record_version": 5,
-  "recorded": "2026-10-24",
+  "record_version": 6,
+  "recorded": "2026-10-26",
   "tiers": {
     "live-witnessed": "A real upstream build and a real harness ran this route end to end; the evidence is a docs/runs/ report whose RUN: header binds (verifier=GREEN, cited as a mission's proof_evidence) and whose own inventoried artifacts name this exact route, quoted in witnessed.route. Exact upstream and harness versions are recorded.",
     "fixture-tested": "The fleet's own code for this route runs in CI against an in-repo fixture — a scripted upstream transport or the first_run.py inert worker. Proves the fleet's side of the route; proves nothing about the upstream build or the harness.",
@@ -14,14 +14,14 @@
     "orca": {
       "upstream": {
         "repo": "stablyai/orca",
-        "version": "v1.4.238",
-        "commit": "e6f7fba58e8e47b45e4343f99101b3ca9e05a5da",
+        "version": "v1.4.239",
+        "commit": "47f77cf7018ebc0d046b82c6dde31cf704909162",
         "pin": "runtime/pins.json#orca"
       },
       "certified_against": {
-        "commit": "e6f7fba58e8e47b45e4343f99101b3ca9e05a5da",
-        "version": "v1.4.238",
-        "live_receipts_version": "v1.4.224"
+        "commit": "47f77cf7018ebc0d046b82c6dde31cf704909162",
+        "version": "v1.4.239",
+        "live_receipts_version": "v1.4.239"
       },
       "routes": [
         {
@@ -29,28 +29,28 @@
           "harnesses": ["claude"],
           "tier": "live-witnessed",
           "witnessed": {
-            "upstream_version": "orca-ide 1.4.224",
-            "harness_version": "Claude Code 2.1.296",
-            "host": "Ubuntu 24.04.5 LTS arm64 (OrbStack VM)",
-            "date": "2026-10-13",
+            "upstream_version": "Orca 1.4.239",
+            "harness_version": "Claude Code 2.1.304",
+            "host": "macOS 27.0.1 arm64 (the dev Mac)",
+            "date": "2026-10-26",
             "route": [
               {
-                "path": "docs/runs/2026-10-13-review-it-linux/manifest.json",
+                "path": "docs/runs/2026-10-26-review-it-orca-ro-680/manifest.json",
                 "lines": [
-                  "\"toolchain\": \"CPython 3.12.3 on Ubuntu 24.04.5 LTS arm64 (OrbStack); orca-ide 1.4.224 serve; Claude Code 2.1.296 workers (PROFILE=ro) via Orca run_18440e737a97\","
+                  "\"toolchain\": \"Orca 1.4.239 (Orca.app and orca CLI) on macOS 27.0.1 arm64; Claude Code 2.1.304 native install (claude-opus-5-5) workers (PROFILE=ro) via spawn_worker.sh at f4e5bd8b9f, Orca run_e60133b57a1c\","
                 ]
               }
             ]
           },
           "evidence": [
-            "docs/runs/2026-10-13-review-it-linux.md",
-            "tests/test_spawn_worker.py::test_ro_never_takes_worker_start"
+            "docs/runs/2026-10-26-review-it-orca-ro-680.md",
+            "tests/test_spawn_worker.py::test_ro_never_takes_worker_start",
+            "tests/test_spawn_worker.py::TestOrcaRoNativeClaudeFallback"
           ],
           "limitations": [
-            "Witnessed on Linux only, at Orca 1.4.224; the current pin v1.4.238 carries these receipts through pins.json live_receipts after source-delta re-witnesses, so neither the 1.4.229 nor the 1.4.238 delta ran a worker live.",
-            "ro rides spawn_worker.sh's custom-argv lane, never worker-start; turn start was not observable on that substrate and the workers were proven live by screen reads and their worker_done deliveries.",
-            "RE-WITNESS OWED: the witness ran the row `claude --permission-mode plan`. Since #596 the row is `claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit` (tests/test_claude_ro_launches.py), and no live run has exercised it. The witnessed workers wrote their reports after the coordinator approved their plans in-pane, which exits plan mode; with the set, Write and Edit stay denied after approval, so that report step is unwitnessed until a fresh Orca witness replaces this one. Two 2026-10-24 attempts (docs/runs/2026-10-24-review-it-first-run.md) launched the current row but certify nothing: the first stopped at Claude Code's folder-trust prompt; the second, in a worktree that inherits trust, had its inject refused by Orca 1.4.229 (no_agent_detected) just before the app restarted as 1.4.238.",
-            "macOS was not witnessed for this route."
+            "Witnessed on macOS only, at Orca 1.4.239 with a native Claude Code 2.1.304 install, one run on one model (claude-opus-5-5); the earlier 2026-10-13 Linux witness ran the previous row at Orca 1.4.224.",
+            "ro rides spawn_worker.sh's custom-argv lane, never worker-start. On Orca 1.4.229 to 1.4.240 dispatch --inject cannot see a native Claude Code install (its process is named for its version, and an idle Claude sets no title), so the witness ran the lane's no-inject fallback: a dispatch without --inject, the preamble by terminal send, turn_started from the send receipt. The inject path was not exercised at this build.",
+            "The plan was approved in the pane, not by the coordinator, and the logs do not name the approver; with plan mode off, Write and Edit stayed out of the toolset (docs/runs/2026-10-26-review-it-orca-ro-680.md)."
           ]
         },
         {
@@ -86,8 +86,8 @@
           ],
           "limitations": [
             "Witnessed only on the override lane (WORKER_CMD='claude --dangerously-skip-permissions' with ORCA_COORD_ALLOW_CMD_OVERRIDE=1): the supervised worker-start lane read LAUNCHED_UNUSABLE on the witness host because its agentDefaultArgs lacked the bypass flag.",
-            "Witnessed on Linux only, at Orca 1.4.224 (carried to the v1.4.238 pin through pins.json live_receipts).",
-            "From v1.4.238 a host on Orca's Auto permission switch launches claude with --permission-mode auto, not the rw flag; the wrapper refuses that start as LAUNCHED_UNUSABLE (exit 5), pinned by tests/test_spawn_worker.py, and no live start on an Auto host was witnessed."
+            "Witnessed on Linux only, at Orca 1.4.224. The v1.4.239 pin's live receipts are 1.4.239's own and include no rw run; this route was re-checked by source delta (the worker-start launch receipt and the wrapper's exit 5 are unchanged).",
+            "From v1.4.239 a host's stored permission choice (own, ask, accept-edits, auto or full-access) sets the launch flag; anything but full-access launches claude without the rw flag, and the wrapper refuses that start as LAUNCHED_UNUSABLE (exit 5), pinned by tests/test_spawn_worker.py. No live start under a stored choice was witnessed."
           ]
         },
         {

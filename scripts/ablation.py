@@ -1014,7 +1014,9 @@ def cmd_prereg(args):
         print(json.dumps(pinned, indent=2, sort_keys=True))
         return EXIT_OK
     prereg = load_prereg(args.prereg)
-    bound = BOUND_KEY in prereg
+    # A spent identity is checked as bound whether or not it still carries the marker, so a spent
+    # registration edited with bound_run deleted fails here too (PR #705 review, Codex P2).
+    bound = BOUND_KEY in prereg or spent_registration(prereg) is not None
     # A bound registration's design checks were run at its commit, by bound_status; the catalog
     # now is not its denominator.
     errors = (bound_errors(prereg) if bound else prereg_errors(prereg)) \

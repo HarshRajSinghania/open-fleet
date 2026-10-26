@@ -411,6 +411,19 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
         self.assertIn("id must name the registration",
                       " | ".join(ablation.prereg_errors({k: v for k, v in bare.items() if k != "id"})))
 
+    def test_the_prereg_command_checks_a_spent_identity_as_bound_without_its_marker(self):
+        # PR #705 review (Codex P2, round 5): with bound_run deleted, an edited spent registration
+        # took the pre-run checks and `prereg` exited 0 on it.
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = Path(tmp) / "ablation-prereg.json"
+            json_path.write_text(json.dumps(dict(unbound(PREREG), repeats=4, seeds=PREREG["seeds"][:4]),
+                                            indent=2) + "\n", encoding="utf-8")
+            with mock.patch.object(ablation, "registration_status",
+                                   side_effect=AssertionError("ran the pre-run checks")):
+                code, _out, err = run_main(["--prereg", str(json_path), "prereg"])
+        self.assertEqual(code, 2, err)
+        self.assertIn("bound_run must be an object", err)
+
     def test_a_binding_the_ledger_does_not_record_is_refused(self):
         with mock.patch.dict(ablation.SPENT_RUNS, clear=True):
             self.assertIn("SPENT_RUNS does not record version", " | ".join(ablation.bound_errors(PREREG)))

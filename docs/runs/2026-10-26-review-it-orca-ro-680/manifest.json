@@ -2,11 +2,11 @@
   "unit": "review-it-orca-ro-680",
   "claim": "#680 Orca ro/claude re-witness on the current row, 2026-10-26: one PROFILE=ro review-it worker, Claude Code 2.1.304 from its native installer (claude-opus-5-5), on Orca 1.4.239, macOS 27.0.1 arm64, from catalog f4e5bd8b9f. Orca refused dispatch --inject with no_agent_detected (it cannot see a native install); the lane confirmed the pane and delivered the preamble of a dispatch without --inject by terminal send, turn_started proved. The worker reviewed the unit read-only in plan mode and presented its report through ExitPlanMode; its exit-plan prompt was answered in the pane (option 1, not by the coordinator), the session left plan mode, and Write and Edit stayed out of its toolset: no write happened. Two earlier attempts are retained and certify nothing.",
   "base_sha": "f4e5bd8b9ff74d22c3cb32646101912066afcc56",
-  "head_sha": "",
+  "head_sha": "0c64553c6fb883cb19398414a61d48119059acd1",
   "base_branch": "claude/680-orca-ro-native-claude",
   "contract": {
-    "source": "",
-    "digest": "",
+    "source": "docs/runs/2026-10-26-review-it-orca-ro-680/contract.json@0c64553c6fb883cb19398414a61d48119059acd1",
+    "digest": "sha256:8035e60fd54d5048c1f41b39406133a583e05d20e003b2052ef09161673cacc2",
     "criterion_ids": [
       "OW-1",
       "OW-2",
@@ -58,8 +58,8 @@
     "tool": "source-binding",
     "did": "re-derived every criterion from the retained bytes alone: the launch line, versions and binary, the four spawn receipts, the worker's filtered transcript, the screens, the worktree and repository snapshots and the clean-up receipts; tampering with target.txt's state, the pane's agent identity or the transcript's tool calls turns the matching criterion FAIL",
     "command": "python3 docs/runs/2026-10-26-review-it-orca-ro-680/rederive.py",
-    "artifact": "",
-    "result": ""
+    "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt",
+    "result": "rederive.py exit 0: 42 checks PASS, 0 FAIL, on head_sha's own tree"
   },
   "toolchain": "Orca 1.4.239 (Orca.app and orca CLI) on macOS 27.0.1 arm64; Claude Code 2.1.304 native install (claude-opus-5-5) workers (PROFILE=ro) via spawn_worker.sh at f4e5bd8b9f, Orca run_e60133b57a1c",
   "artifacts": [
@@ -402,7 +402,23 @@
     {
       "path": "docs/runs/2026-10-26-review-it-orca-ro-680/witness/worktree-after.txt",
       "sha256": "d2a60ae9d7d9a1ce0e19db8c9ebc09eeae48813682e0c9a66c0391bdb88997cd"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt",
+      "sha256": "9812fd16f0cd8e07eadc2f68c5d02e04a0c8330d2b3057110e02b4e5cc6273ce"
     }
   ],
-  "commands": []
+  "commands": [
+    {
+      "label": "rederive",
+      "ts": "2026-10-26T05:59:04Z",
+      "cmd": "python3 docs/runs/2026-10-26-review-it-orca-ro-680/rederive.py",
+      "cmd_sha256": "bc3e55315c512ae6add80fcf4de7ff5c81ee1b196739e1ec446d33fce427114d",
+      "exit": 0,
+      "duration_s": 0.019,
+      "commit": "0c64553c6fb883cb19398414a61d48119059acd1",
+      "wtree": "625fe34f9661978b032b0dc5d4b57270c00f13b9",
+      "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt"
+    }
+  ]
 }

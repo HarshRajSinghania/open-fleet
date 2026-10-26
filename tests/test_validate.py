@@ -1513,12 +1513,21 @@ class PerMissionLoadBudgets(unittest.TestCase):
                 self.assertEqual(len(failures), 1, failures)
                 self.assertIn("unreadable", failures[0])
 
-    def test_the_cap_leaves_the_heaviest_mission_its_declared_headroom(self):
+    def test_growing_into_the_headroom_stays_green(self):
+        # The headroom is spent by growth, so nothing may demand it again above the grown load
+        # (PR #705 review, P1: a check against today's load re-imposed it on every run).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._with_headroom(root, {name: load + 1 for name, load in loads.items()}, 0.05)
+            self.assertEqual(validate.check_load_budgets(root), [])
+
+    def test_the_cap_holds_every_committed_budget(self):
+        # Against the committed budgets, never against headroom above today's load (see above).
         data = json.loads((ROOT / "scripts" / "mission-load-budgets.json").read_text(encoding="utf-8"))
-        worst = max(tokens for _name, tokens in validate.load_report())
         self.assertGreater(data["headroom"], 0, "the live budgets declare no headroom")
-        self.assertGreaterEqual(validate.MISSION_MAX_LOAD_TOKENS, math.ceil(worst * (1 + data["headroom"])),
-                                "the cap is tighter than the headroom every other mission gets")
+        self.assertLessEqual(max(data["budgets"].values()), validate.MISSION_MAX_LOAD_TOKENS,
+                             "a committed budget sits above the catalog cap")
 
 
 if __name__ == "__main__":

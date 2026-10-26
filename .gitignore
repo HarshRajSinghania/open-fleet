@@ -26,3 +26,6 @@ dist/
 # coverage.py measurement data (the D9 floor gate runs `coverage run` locally and in CI).
 .coverage
 .coverage.*
+
+# Local Node dependencies installed under assets/diagrams/generator/.
+node_modules/

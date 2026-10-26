@@ -12,7 +12,9 @@ refreshes, for edits to `attention-budget.md`, `evals/adversarial-trajectories.j
 `ARCHITECTURE.md` and the v1.4.239 runtime docs, were rolled back), and the JSON's `bound_run`
 block makes `ablation.py prereg` check them at `c220067e9c`, with that commit's own check on that
 commit's own tree. A later edit to a document these missions load no longer makes the registration
-stale, `--refresh` refuses it, and any other change to it fails. **Recommendation: keep the current activation.** The registered rule returns SUCCESSFUL_REDUCTION for every mission, but
+stale, `--refresh` refuses it, and any other change to it fails. The run also sits in `SPENT_RUNS` in
+`scripts/ablation.py`, so version 2 stays spent whatever a registration file says: the live tier
+refuses it, and a new run is a new version. **Recommendation: keep the current activation.** The registered rule returns SUCCESSFUL_REDUCTION for every mission, but
 only because task success was 0 in both arms: the registered agent command could not run the tests
 or commit, and the reduced arm's deferred documents were unreachable. The report gives a follow-up
 design. Nothing in this experiment changes the

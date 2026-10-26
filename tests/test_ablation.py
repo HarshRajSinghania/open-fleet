@@ -73,7 +73,9 @@ def repo_copy(tmp):
     # The committed registration is bound to its run and frozen there; a copy exercises the pre-run
     # mechanics (refresh, task pins, output safety), so it holds the registration before the binding.
     reg = dest / "docs" / "experiments" / "ablation-prereg.json"
-    reg.write_text(json.dumps(unbound(json.loads(reg.read_text(encoding="utf-8"))), indent=2,
+    # The next version, too: the bound one is spent (SPENT_RUNS), so its own can never re-pin.
+    data = unbound(json.loads(reg.read_text(encoding="utf-8")))
+    reg.write_text(json.dumps(dict(data, version=data["version"] + 1), indent=2,
                               ensure_ascii=False) + "\n", encoding="utf-8")
     _COPIES.append(dest)
     spec = importlib.util.spec_from_file_location(f"ablation_copy_{len(_COPIES)}", dest / "scripts" / "ablation.py")
@@ -394,13 +396,24 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
         self.assertIn("is not the bytes docs/runs/2026-10-25-ablation-606-live.md's inventory pins",
                       found)
 
-    def test_the_committed_registration_decides_what_is_spent(self):
-        # PR #705 review (Codex P1, round 3): the marker is removable, the committed file is not.
+    def test_the_spent_ledger_decides_what_is_spent(self):
+        # PR #705 review (Codex P1, rounds 3 and 4): the marker is removable and a registration file
+        # mutable, so the ledger decides, without reading any file, and a deleted id is no escape.
         bare = unbound(PREREG)
-        self.assertIsNotNone(ablation.spent_registration(bare))
-        self.assertIsNotNone(ablation.spent_registration(dict(bare, version=PREREG["version"] - 1)))
-        self.assertIsNone(ablation.spent_registration(dict(bare, version=PREREG["version"] + 1)))
-        self.assertIsNone(ablation.spent_registration(dict(bare, id="R13-606-follow-up")))
+        with mock.patch.object(ablation, "load_prereg", side_effect=AssertionError("read a file")):
+            self.assertIsNotNone(ablation.spent_registration(bare))
+            self.assertIsNotNone(ablation.spent_registration(dict(bare, version=PREREG["version"] - 1)))
+            self.assertIsNone(ablation.spent_registration(dict(bare, version=PREREG["version"] + 1)))
+            self.assertIsNone(ablation.spent_registration(dict(bare, id="R13-606-follow-up")))
+            for rid in (None, "", "  ", ["R13"]):
+                with self.subTest(id=rid):
+                    self.assertIsNotNone(ablation.spent_registration(dict(bare, id=rid)))
+        self.assertIn("id must name the registration",
+                      " | ".join(ablation.prereg_errors({k: v for k, v in bare.items() if k != "id"})))
+
+    def test_a_binding_the_ledger_does_not_record_is_refused(self):
+        with mock.patch.dict(ablation.SPENT_RUNS, clear=True):
+            self.assertIn("SPENT_RUNS does not record version", " | ".join(ablation.bound_errors(PREREG)))
 
     def test_refresh_refuses_the_bound_version_with_its_marker_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:

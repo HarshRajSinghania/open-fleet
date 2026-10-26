@@ -356,6 +356,18 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
         self.assertNotIn(ablation.BOUND_KEY, prereg)
         self.refused(self.live("--cost-cap-usd", "5"), "live run is bound", prereg)
 
+    def test_a_spent_identity_never_drives_a_live_run_whatever_its_file_says(self):
+        # PR #705 review (Codex P1, round 4): deleting `id` too, or a canonical file that changed or
+        # would not parse, let the spent version through. The ledger decides; a missing id is spent.
+        prereg = self.authorised()
+        prereg["version"] = PREREG["version"]
+        del prereg["id"]
+        self.refused(self.live("--cost-cap-usd", "5"), "id must name the registration", prereg)
+        with mock.patch.object(ablation, "PREREG", self.tmpdir() / "no-such-registration.json"):
+            prereg = self.authorised()
+            prereg["version"] = PREREG["version"]
+            self.refused(self.live("--cost-cap-usd", "5"), "live run is bound", prereg)
+
     def test_a_live_run_refuses_a_stale_registration(self):
         prereg = self.authorised()
         prereg["registered_payloads"]["ship-it"]["reduced_sha256"] = "0" * 64

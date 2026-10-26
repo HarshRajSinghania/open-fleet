@@ -1353,11 +1353,10 @@ def preflight(args, api, prereg):
     # with `bound_run` deleted too, so the committed registration decides, not the marker.
     spent = api.spent_registration(prereg)
     if api.BOUND_KEY in prereg or spent is not None:
-        bound = (spent or prereg)[api.BOUND_KEY]
-        raise Refused(f"version {prereg.get('version')} of {prereg.get('id')}: this registration's "
-                      f"live run is bound ({bound.get('report') if isinstance(bound, dict) else bound!r}) "
-                      "and frozen: a new run is a new registration, a new version above the bound "
-                      "one, without bound_run")
+        where = f"version {spent[0]} ran at {spent[1][:10]}" if spent else "it carries bound_run"
+        raise Refused(f"version {prereg.get('version')} of {prereg.get('id')!r}: this registration's "
+                      f"live run is bound ({where}) and frozen: a new run is a new registration, a "
+                      "new version above the bound one, without bound_run")
     stale = {m: s for m, s in api.registration_status(prereg).items() if s != "current"}
     if stale:
         raise Refused(f"the registered payloads no longer match the catalog: {stale} — check out "

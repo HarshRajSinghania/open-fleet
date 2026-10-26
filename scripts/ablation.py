@@ -223,6 +223,8 @@ def prereg_errors(prereg):
         errors.append(f"schema must be {PREREG_SCHEMA}")
     if not isinstance(prereg.get("version"), int) or prereg["version"] < 1:
         errors.append("version must be a positive integer")
+    if not isinstance(prereg.get("id"), str) or not prereg["id"].strip():
+        errors.append("id must name the registration: it is the identity a spent run is held to")
     if prereg.get("issue") != 606:
         errors.append("issue must be 606")
     mix = [row.get("mission") for row in prereg.get("mission_mix") or [] if isinstance(row, dict)]
@@ -852,6 +854,11 @@ def bound_errors(prereg):
             errors.append(f"{BOUND_KEY}.{key} {rel!r} is not a repository file")
     if errors:
         return errors
+    rid = prereg.get("id")
+    if (SPENT_RUNS.get(rid) if isinstance(rid, str) else None) != (prereg.get("version"), commit):
+        errors.append(f"SPENT_RUNS does not record version {prereg.get('version')} of "
+                      f"{rid!r} as run at {commit[:10]}: a bound run joins that ledger "
+                      "with its binding, so the spent version stays spent without this file")
     if not results.startswith(report[: -len(".md")] + "/"):
         errors.append(f"{BOUND_KEY}.results must sit in the report's own run directory, which the "
                       "report's inventory binds (runtime/scripts/run_report.py)")
@@ -899,23 +906,30 @@ def bound_errors(prereg):
     return errors
 
 
-def spent_registration(prereg):
-    """The committed BOUND registration whose identity `prereg` reuses, or None.
+# The ledger of bound live runs: {registration id: (its bound version, the commit it ran at)}. It is
+# the authority on what is spent, not any registration file: a copy with `bound_run` deleted kept
+# the bound version and its spent AUTHORISED cap (PR #705 review, Codex P1), and a file-based
+# authority vanished when that file changed or would not parse (Codex P1, round 4). Append-only: a
+# bound run is a one-way fact, so an entry is added beside its run's binding and never removed.
+SPENT_RUNS = {
+    "R13-606-activation-ablation": (2, "c220067e9cbffc4f34d6363a92153e45402bdfe4"),
+}
 
-    The committed registration is the authority, never the submitted file: a copy with `bound_run`
-    deleted kept the bound version and its spent AUTHORISED cap, so a live run keyed on the marker
-    alone could spend that authorisation again (PR #705 review, Codex P1). Same `id` at the bound
-    version or below is the same, spent registration; a new run is a new version above it."""
-    try:
-        committed = load_prereg(PREREG)
-    except AblationError:
+
+def spent_registration(prereg):
+    """(version, commit) of the bound run whose identity `prereg` reuses, or None for a new one.
+
+    Same `id` at the bound version or below is the same, spent registration; a new run is a new
+    version above it. An `id` that is not a non-empty string is no identity at all and counts as
+    spent, so deleting it cannot make a registration new (prereg_errors refuses it as well)."""
+    rid, version = prereg.get("id"), prereg.get("version")
+    if not isinstance(rid, str) or not rid.strip():
+        return next(iter(SPENT_RUNS.values()))
+    spent = SPENT_RUNS.get(rid)
+    if spent is None:
         return None
-    if BOUND_KEY not in committed or prereg.get("id") != committed.get("id"):
-        return None
-    version, bound = prereg.get("version"), committed.get("version")
-    newer = (isinstance(version, int) and not isinstance(version, bool) and isinstance(bound, int)
-             and version > bound)
-    return None if newer else committed
+    newer = isinstance(version, int) and not isinstance(version, bool) and version > spent[0]
+    return None if newer else spent
 
 
 def bound_status(prereg):

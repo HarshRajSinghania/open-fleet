@@ -42,6 +42,7 @@ Spec: https://agentskills.io/specification
 """
 import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -695,12 +696,18 @@ def check_layer_separation(root=None):
 # same shape at ~42K.
 #
 # The cap is a RATCHET, not the recommendation: set at the catalog's measured
-# maximum so no mission may grow its activation load, and lowered only by real
-# restructuring (per-phase "read <doc> when entering X" cues instead of a single
-# read-everything compose clause). Naming the gap honestly and freezing it beats
-# a 5K cap that would red every mission on day one and be raised by lunchtime.
+# maximum plus the declared headroom every mission's own budget carries
+# (scripts/mission-load-budgets.json), and lowered only by real restructuring
+# (per-phase "read <doc> when entering X" cues instead of a single read-everything
+# compose clause). Naming the gap honestly and freezing it beats a 5K cap that
+# would red every mission on day one and be raised by lunchtime.
+#
+# It was the bare maximum, 34,000, until 2026-10-26. ship-it then sat 7 tokens
+# under it, so one sentence added to any doc ship-it loads failed this gate in an
+# unrelated PR and cost a compress-or-defer round trip. 35,000 is the heaviest
+# load plus the same 2.5% every mission's budget gets, rounded up to the step.
 TOKENS_PER_BYTE = 0.25  # the crude bytes/4 estimate the docs/reviews/2026-09-10-review.md measurement used
-MISSION_MAX_LOAD_TOKENS = 34_000
+MISSION_MAX_LOAD_TOKENS = 35_000
 ROOT_DOC_RE = re.compile(r"\]\((?:\.\./)+([A-Z][A-Z0-9_.-]*\.md)\)")
 
 
@@ -775,16 +782,23 @@ def check_load_budgets(root=None):
 
     One catalog-wide cap bounded only the heaviest mission; the other 21 could grow by thousands
     of tokens with nothing noticing (2026-10-23 review, section 5). Each mission now carries its
-    own budget: over it fails, and so does a budget more than `max_slack` above the measured load,
-    so a shrink is banked by lowering the budget instead of becoming silent headroom. A missing or
-    malformed file fails closed: no budgets must never read as no limits.
+    own budget: over it fails, and so does a budget more than `max_slack` above the measured load
+    plus the file's declared `headroom` (a fraction; absent means none), so a shrink is banked by
+    lowering the budget instead of becoming silent headroom. Headroom is declared, never drift: with
+    none, a mission at its budget failed on the next sentence any doc it loads gained (ship-it sat
+    7 tokens under on 2026-10-26). A missing or malformed file fails closed: no budgets must never
+    read as no limits.
     """
     path = (root or ROOT) / "scripts" / "mission-load-budgets.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         budgets, step, slack = data["budgets"], int(data["step"]), int(data["max_slack"])
+        headroom = data.get("headroom", 0)
         if not isinstance(budgets, dict) or step <= 0 or slack < 0:
             raise ValueError("budgets must be an object, step positive, max_slack non-negative")
+        if isinstance(headroom, bool) or not isinstance(headroom, (int, float)) \
+                or not 0 <= headroom < 0.1:
+            raise ValueError("headroom must be a fraction of the load, at least 0 and under 0.1")
     except (OSError, ValueError, KeyError, TypeError) as err:
         return [f"{_repo_rel(path)}: unreadable ({type(err).__name__}: {err}) — every mission "
                 "needs a budget; a missing file is not 'no limits'"]
@@ -792,7 +806,8 @@ def check_load_budgets(root=None):
     measured = dict(load_report(root))
     for name, load in sorted(measured.items()):
         budget = budgets.get(name)
-        suggested = min(-(-load // step) * step, MISSION_MAX_LOAD_TOKENS)
+        line = math.ceil(load * (1 + headroom))  # the load plus its declared headroom
+        suggested = min(-(-line // step) * step, MISSION_MAX_LOAD_TOKENS)
         if not isinstance(budget, int) or isinstance(budget, bool):
             failures.append(f"{name}: no integer budget (measured ~{load} tokens; add {suggested})")
         elif budget > MISSION_MAX_LOAD_TOKENS:
@@ -802,9 +817,10 @@ def check_load_budgets(root=None):
                 f"{name}: activation load ~{load} tokens > its budget {budget} — move a phase's "
                 "doc behind a 'read <doc> when entering <phase>' cue, or raise the budget in a "
                 "commit that says why")
-        elif budget - load > slack:
-            failures.append(f"{name}: budget {budget} sits {budget - load} tokens above the "
-                            f"measured ~{load} (max slack {slack}) — lower it to {suggested}")
+        elif budget - line > slack:
+            plus = f" plus its {headroom:.1%} headroom (~{line})" if headroom else ""
+            failures.append(f"{name}: budget {budget} sits {budget - line} tokens above the "
+                            f"measured ~{load}{plus} (max slack {slack}) — lower it to {suggested}")
     for name in sorted(set(budgets) - set(measured)):
         failures.append(f"{name}: a budget for a mission that is not in skills/")
     return failures

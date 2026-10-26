@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ablation.py — paired instruction-load ablations: pre-registered, generated, checked (#606).
 
-The 34,000-token activation cap (ARCHITECTURE.md) is a ratchet with no behavioural evidence
+The activation-load cap (ARCHITECTURE.md) is a ratchet with no behavioural evidence
 behind it either way. #606 asks whether a smaller activation keeps a mission's task AND safety
 outcomes. Answering that needs live model runs, which need the owner's spend authorisation. This
 script is everything short of that spend; its live tier runs only inside the container-based

@@ -1,0 +1,7 @@
+# read after the witness, 2026-10-26, on the witness host (unchanged since the run)
+command -v claude: /Users/ravindra/.local/bin/claude
+resolves to: /Users/ravindra/.local/share/claude/versions/2.1.304
+claude --version: 2.1.304 (Claude Code)
+orca --version: 1.4.239
+Orca.app CFBundleShortVersionString: 1.4.239
+host: macOS 27.0.1 arm64

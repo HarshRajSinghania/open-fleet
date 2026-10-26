@@ -1,0 +1,59 @@
+{
+  "id": "586423b5-ef6e-45f7-8287-ff0005c71e4f",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_f6c9da3b-8c3a-499e-961a-4568653f27de",
+      "status": "running",
+      "tail": [
+        " ▐▛███▛█   Claude Code v2.1.304",
+        "▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max",
+        " ▝▝   ▝▝   ~/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯ Try \"fix typecheck errors\"",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  ⏸ plan mode on (shift+tab to cycle)"
+      ],
+      "truncated": false,
+      "limited": false,
+      "oldestCursor": "0",
+      "nextCursor": "4",
+      "latestCursor": "4",
+      "returnedLineCount": 7,
+      "tailRows": [
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        }
+      ],
+      "source": "screen"
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

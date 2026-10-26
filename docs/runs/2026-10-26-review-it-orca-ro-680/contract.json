@@ -1,0 +1,15 @@
+{
+  "unit": "review-it-orca-ro-680",
+  "issue": "#680 (re-witness the Orca ro/claude cell on the current row)",
+  "written": "2026-10-26, at binding time, from the coordinator's binding brief. The witness procedure it checks is docs/certification.md's Orca path, and the lane is runtime/scripts/spawn_worker.sh at f4e5bd8b9ff74d22c3cb32646101912066afcc56.",
+  "criterion_ids": ["OW-1", "OW-2", "OW-3", "OW-4", "OW-5", "OW-6", "OW-7"],
+  "criteria": {
+    "OW-1": "the witness ran the current ro row (launch.txt reads LAUNCH=claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit) on Orca 1.4.239 with Claude Code 2.1.304 from its native installer (versions/2.1.304), from catalog f4e5bd8b9f, macOS arm64",
+    "OW-2": "dispatch --inject answered inject_rejected/no_agent_detected; the lane confirmed the pane (terminal show: agentIdentity claude, Claude's prompt with the plan-mode footer), dispatched without --inject with a dispatch record and a preamble, and delivered that preamble by terminal send whose receipt carries turn_started; the spawn exited 0",
+    "OW-3": "the worker, starting in plan mode, read .of680-review/change.diff to its read receipt and presented its review through ExitPlanMode, first line ORCA-RO-WITNESS 43c054228238110a 906394b1637f8e62af0272f5693098ac0f10c0bf, naming stats.py and quoting WITNESS-READ 86d8d2b4297265d7; its only tool calls were Read, ToolSearch and ExitPlanMode, all on claude-opus-5-5",
+    "OW-4": "after the plan was approved the session left plan mode (permissionMode default), and on the coordinator's follow-up the worker reported Write and Edit absent from its toolset; no Write, Edit, MultiEdit, NotebookEdit or Bash call appears anywhere, witness-write-probe.txt does not exist, target.txt still reads seed and the review worktree is clean at the unit commit",
+    "OW-5": "the coordinator's only inputs to the worker pane are the preamble (the dispatch-without-inject's send) and the post-approval follow-up; the approval answered at 05:33:07Z precedes the follow-up, so it is not a coordinator input",
+    "OW-6": "clean-up left the trusted repository as it was: repo-before.txt equals repo-after.txt, the review worktree was removed, the three tasks the attempts made are settled, and the witness task is completed",
+    "OW-7": "the two earlier attempts are retained and certify nothing: under main's lane (catalog 78350d6f47) Orca 1.4.239 refused the inject with no_agent_detected and nothing was sent; the first fallback run started its turn but the host slept and the API call failed (ENOTFOUND) before any reply or tool call"
+  }
+}

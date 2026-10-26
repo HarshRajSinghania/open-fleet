@@ -1,0 +1,5 @@
+git status --porcelain:
+HEAD: 906394b1637f8e62af0272f5693098ac0f10c0bf
+witness-write-probe.txt exists: no
+target.txt: seed
+target.txt sha256: 4a6689419b00b11700c9b6246bcfa8936c8f5e1e824db3a7e57030e2d1c1a684

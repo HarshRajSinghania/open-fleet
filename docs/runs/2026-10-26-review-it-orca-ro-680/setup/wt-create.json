@@ -1,0 +1,75 @@
+{
+  "id": "d7a10e04-c99c-4679-bc0a-7b63d8d35d0e",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+      "identity": {
+        "key": "wt2:local:4480a8cd-8846-47d2-8a22-82652cbfe753",
+        "executionHostId": "local",
+        "instanceId": "4480a8cd-8846-47d2-8a22-82652cbfe753"
+      },
+      "instanceId": "4480a8cd-8846-47d2-8a22-82652cbfe753",
+      "repoId": "635ce96a-83cc-4bdb-a46c-675b3cb96041",
+      "projectId": "github:ravidsrk/oss-contribution-agent",
+      "hostId": "local",
+      "projectHostSetupId": "635ce96a-83cc-4bdb-a46c-675b3cb96041",
+      "creatorProvenance": {
+        "kind": "host"
+      },
+      "path": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+      "head": "c42078109c9c862fff1b8b332e6385aa1f8ba3bf",
+      "branch": "refs/heads/ravidsrk/of680-ro-witness",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "of680-ro-witness",
+      "displayNameMode": "fixed",
+      "comment": "",
+      "linkedIssue": null,
+      "linkedPR": null,
+      "linkedLinearIssue": null,
+      "linkedLinearIssueWorkspaceId": null,
+      "linkedLinearIssueOrganizationUrlKey": null,
+      "linkedGitLabMR": null,
+      "linkedGitLabIssue": null,
+      "linkedBitbucketPR": null,
+      "linkedAzureDevOpsPR": null,
+      "linkedGiteaPR": null,
+      "linkedWorkItem": null,
+      "linkedTaskSourceContext": null,
+      "isArchived": false,
+      "isUnread": false,
+      "isPinned": false,
+      "sortOrder": 1792985258902,
+      "lastActivityAt": 1792985258902,
+      "createdAt": 1792985258902,
+      "cliProvenance": {
+        "kind": "created-by-cli",
+        "createdAt": 1792985256048
+      },
+      "baseRef": "refs/remotes/origin/main",
+      "workspaceStatus": "in-progress",
+      "parentWorktreeId": null,
+      "childWorktreeIds": [],
+      "lineage": null,
+      "workspaceLineage": null,
+      "git": {
+        "path": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+        "head": "c42078109c9c862fff1b8b332e6385aa1f8ba3bf",
+        "branch": "refs/heads/ravidsrk/of680-ro-witness",
+        "isBare": false,
+        "isMainWorktree": false
+      }
+    },
+    "lineage": null,
+    "workspaceLineage": null,
+    "warnings": [],
+    "catalogVersion": {
+      "epoch": "77dcdeac-1f42-4620-80f5-1e54b529011e",
+      "sequence": 20
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "29abe043-24e1-4858-9a5c-7dd692229163",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_6d97bc21-9bda-41a0-89b3-e13393995210",
+      "ptyId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness@@6066ec47",
+      "incarnationId": "d61cbd33-9e99-45b5-bb53-bff941cc1bab",
+      "orphaned": false,
+      "worktreeId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+      "worktreePath": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+      "branch": "refs/heads/ravidsrk/of680-ro-witness",
+      "tabId": "0db7eaba-81e0-4883-a76f-c47891994e01",
+      "leafId": "7f25fc0e-f6ec-460a-8069-05b5cd350e7f",
+      "title": "of680-ro-witness",
+      "paneTitle": "of680-ro-witness",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1792985316271,
+      "preview": "──────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ Try \"create a util logging.py that...\"\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n⏸ plan mode on (shift+tab to cycle)",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

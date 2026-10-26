@@ -1,0 +1,22 @@
+{
+  "id": "661494b9-eaa4-4cd0-be21-8f9d8e516ae8",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_e60133b57a1c",
+      "objective": "#680 Orca ro/claude re-witness: one PROFILE=ro review-it worker on the current row",
+      "coordinator_handle": "term_afba0da7-9a4d-402b-b116-810ce136f357",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-26T03:28:03Z",
+      "updated_at": "2026-10-26T03:28:03Z"
+    },
+    "mutation": {
+      "requestId": "74e2ef85-2c96-45fb-9b90-7dd79f8247dd",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

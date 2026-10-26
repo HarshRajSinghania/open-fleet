@@ -1,0 +1,31 @@
+{
+  "id": "3660428c-13ed-434a-abab-5c869c3e1fd1",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_47a77693-9234-4081-a213-ebe124a03dd8",
+      "ptyId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness@@cfa07472",
+      "incarnationId": "ec76e539-f901-4479-a5af-fed531ebec4a",
+      "orphaned": false,
+      "worktreeId": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+      "worktreePath": "/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness",
+      "branch": "refs/heads/ravidsrk/of680-ro-witness",
+      "tabId": "d1ff5d8c-d01f-4c5b-9d78-8c70e0f4dbd8",
+      "leafId": "4d372e93-be54-496b-a18a-e599b4855e1a",
+      "title": "of680-ro-witness",
+      "paneTitle": "of680-ro-witness",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1792986201994,
+      "preview": "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ Try \"edit store.py to...\"\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n⏸ plan mode on (shift+tab to cycle)",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

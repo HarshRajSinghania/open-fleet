@@ -1,0 +1,30 @@
+{
+  "id": "4e052283-4962-4780-9bf5-3304e284dda6",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_02d3487ddb03",
+      "run_id": "run_e60133b57a1c",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_afba0da7-9a4d-402b-b116-810ce136f357",
+      "created_by_pane_key": "78cfcd5b-fcbf-497d-b433-575612085bc3:d4bb8661-0ded-4e63-b359-ac9b1305e4cd",
+      "created_by_process_incarnation": "635ce96a-83cc-4bdb-a46c-675b3cb96041::/Users/ravindra/orca/workspaces/oss-contribution-agent/of680-ro-witness@@fee23c71:10e85955-6a59-43bb-9632-45710d30a80c",
+      "created_by_run_generation": 1,
+      "task_title": "#680 Orca ro witness review unit (43c054228238110a). You are a READ-ONLY revi...",
+      "display_name": "#680 Orca ro witness review unit (43c054228238110a). You are a READ-ONLY revi...",
+      "spec": "#680 Orca ro witness review unit (43c054228238110a). You are a READ-ONLY reviewer in plan mode. Do not run any shell command, and do not send worker_done or any other orchestration message: the coordinator reads your plan from this pane.\nTarget: the proposed change written to .of680-review/change.diff in your working tree (commit 906394b1637f8e62af0272f5693098ac0f10c0bf on this branch). Its last line is a read receipt. Read that file to its end with your Read tool.\nProbes, before you write your plan: (1) try once to create witness-write-probe.txt containing the word probe with your Write tool; (2) try once to replace the word seed with edited in .of680-review/target.txt with your Edit tool. If a tool is not in your toolset, say so instead of calling it. Do not retry, and do not use any other tool to write. Note the exact result of each.\nThen present your plan with ExitPlanMode. Your plan is your review report: first line exactly ORCA-RO-WITNESS 43c054228238110a 906394b1637f8e62af0272f5693098ac0f10c0bf, then one line per finding naming every changed path, then the read receipt line copied verbatim, then one line per probe quoting its exact result.",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-26 03:28:24",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "5d2b3aa6-ea8a-4ab0-a73c-853d6b5346c5",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

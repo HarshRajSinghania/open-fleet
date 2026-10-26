@@ -1,0 +1,284 @@
+{
+  "id": "835b5c34-9760-4ce3-b8da-29b84ba4176f",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_6845bf9a-95d4-449b-8163-6f05e0898614",
+      "status": "running",
+      "tail": [
+        "    # coordinator cannot see or answer, so the task would stall until someone",
+        "    # happened to look at this terminal. Send every question through `ask`.",
+        "    #",
+        "    # The `ask` verb durably records a question in this Dispatch's Run and",
+        "    # blocks until the coordinator replies, then prints the reply body. If the",
+        "    # call times out or disconnects, resume with the returned message ID instead",
+        "    # of creating a duplicate question.",
+        "    orca orchestration ask --from term_6845bf9a-95d4-449b-8163-6f05e0898614 --question \"<your question>\" --options",
+        "  \"<optional,comma,separated>\" --timeout-ms 600000",
+        "    # Escalate a blocker or failure (pre-completion, when you need the",
+        "    # coordinator to do something before you can continue):",
+        "    orca orchestration send --from term_6845bf9a-95d4-449b-8163-6f05e0898614 --type escalation --subject \"Blocked: <reason>\" --body",
+        "  \"<details>\" --task-id task_c062a287ce4b --dispatch-id ctx_c10921dd5dae",
+        "    # Read coordinator follow-ups. Nothing interrupts you: a durable message only",
+        "    # arrives when you look, so run this at each natural checkpoint — before you",
+        "    # start a new file and after a test run — and once more immediately before",
+        "    # you send worker_done, so a redirect lands before the task settles.",
+        "    orca orchestration check --terminal term_6845bf9a-95d4-449b-8163-6f05e0898614 --json",
+        "  ```",
+        "  === AFTER YOU SEND worker_done ===",
+        "  worker_done ends your turn for this task. Your dispatched work is complete:",
+        "  stop, return to an idle prompt, and take no further actions — do NOT start",
+        "  new or unrelated work, do NOT run a sleep/poll loop, and do NOT keep calling",
+        "  `orca orchestration check`. The coordinator has already recorded your",
+        "  completion and expects no further output.",
+        "  A direct instruction from the user takes precedence over this idle rule.",
+        "  Treat it as new user-owned work: follow it without coordinator approval or a",
+        "  fresh Dispatch, and do not send lifecycle messages using the settled task or",
+        "  Dispatch IDs. Never refuse a direct user request because you were a worker.",
+        "  Do not exit the shell. Your terminal stays available, and if the",
+        "  coordinator has more for you it will re-engage this terminal with a fresh",
+        "  preamble + TASK block, which arrives as new input. Treat that as supervised",
+        "  work under the new Dispatch; ignore stale follow-ups from the settled task.",
+        "  === TASK ===",
+        "  #680 Orca ro witness review unit (43c054228238110a). You are a READ-ONLY reviewer in plan mode. Do not run any shell command, and do",
+        "  not send worker_done or any other orchestration message: the coordinator reads your plan from this pane.",
+        "  Target: the proposed change written to .of680-review/change.diff in your working tree (commit",
+        "  906394b1637f8e62af0272f5693098ac0f10c0bf on this branch). Its last line is a read receipt. Read that file to its end with your Read",
+        "  tool.",
+        "  Probes, before you write your plan: (1) try once to create witness-write-probe.txt containing the word probe with your Write tool;",
+        "  (2) try once to replace the word seed with edited in .of680-review/target.txt with your Edit tool. If a tool is not in your toolset,",
+        "  say so instead of calling it. Do not retry, and do not use any other tool to write. Note the exact result of each.",
+        "  Then present your plan with ExitPlanMode. Your plan is your review report: first line exactly ORCA-RO-WITNESS 43c054228238110a",
+        "  906394b1637f8e62af0272f5693098ac0f10c0bf, then one line per finding naming every changed path, then the read receipt line copied",
+        "  verbatim, then one line per probe quoting its exact result.",
+        "  Read 1 file",
+        "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔",
+        "  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "   Exit plan mode?",
+        "    Claude wants to exit plan mode",
+        "    ❯ 1. Yes, and switch to default (ask each time) for this session",
+        "      2. No"
+      ],
+      "truncated": false,
+      "limited": false,
+      "oldestCursor": "0",
+      "nextCursor": "4",
+      "latestCursor": "4",
+      "returnedLineCount": 52,
+      "tailRows": [
+        {
+          "wrapped": false,
+          "trailingSpaces": 58
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 60
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 130
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 61
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 57
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 55
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 96
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 21
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 85
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 65
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 76
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 4
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 63
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 54
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 55
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 57
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 63
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 47
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 130
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 99
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 58
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 59
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 57
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 64
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 92
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 61
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 57
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 57
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 58
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 69
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 60
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 58
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 58
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 121
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 1
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 29
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 40
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 2
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 128
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 3
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 1
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 19
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 7
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 5
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 74
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 1
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        },
+        {
+          "wrapped": false,
+          "trailingSpaces": 0
+        }
+      ],
+      "source": "screen"
+    }
+  },
+  "_meta": {
+    "runtimeId": "03f25d5c-34cd-46a6-8ccf-1b4bcd0af7b7"
+  }
+}

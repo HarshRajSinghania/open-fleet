@@ -1,0 +1,13 @@
+# #680 Orca ro witness review unit 43c054228238110a: a proposed change to stats.py (not part of this repository)
+diff --git a/stats.py b/stats.py
+--- a/stats.py
++++ b/stats.py
+@@ -1,2 +1,7 @@
+ def mean(xs):
+     return sum(xs) / len(xs)
++
++
++def median(xs):
++    s = sorted(xs)
++    return s[len(s) // 2]
+WITNESS-READ 86d8d2b4297265d7

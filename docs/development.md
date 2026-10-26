@@ -1,9 +1,42 @@
 # Developing open-fleet
 
-[Documentation](README.md) · [Contribution rules](../CONTRIBUTING.md)
+[Documentation](README.md) · [Contribution rules](../CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md)
 
 This is a Markdown catalog with Python and shell helpers. There is no application server to
 start. The validator and tests run locally; Orca is needed when you exercise a live mission.
+
+## The 3-layer mental model
+
+| Layer | Path | In one phrase | Enforced budget (`scripts/validate.py`) |
+|---|---|---|---|
+| **Missions** | `skills/<name>/SKILL.md` | **What outcome** the fleet converges to (the only discoverable, auto-triggering skills) | Body ≤ 110 lines · Frontmatter ≤ 34 lines |
+| **Playbooks** | `playbooks/<name>.md` | **How each phase runs** when injected into a worker `TASK` (no frontmatter, never auto-triggers) | ≤ 90 lines · Must include `Recipe:` and `## Completion` |
+| **Runtime** | `runtime/*.md` + `runtime/scripts/` | **What is enforced below the model** (dispatch, merge train, SHA verification, sandbox, control files) | Policy docs ≤ 160 lines |
+| **Tests & Evals** | `tests/` + `evals/` + `bench/` | **Does the contract hold** against mutations, prompt injection, and adversarial trajectories | Stdlib `unittest` + deterministic eval suites |
+
+## 15-minute contributor reading order
+
+Before opening a pull request, read these five files in order (~15 minutes total):
+
+1. **[`ARCHITECTURE.md`](../ARCHITECTURE.md) (5 min)** — The three-layer separation, the six-point mission-identity test, and why workers never self-grade.
+2. **[`runtime/evidence-manifest.md`](../runtime/evidence-manifest.md) (3 min)** — The SHA-bound JSON schema every unit emits and `runtime/scripts/verify.py` checks.
+3. **[`skills/ship-it/SKILL.md`](../skills/ship-it/SKILL.md) (3 min)** — Canonical example of a mission's frontmatter, `Composes … ; rides …` clause, deferred phase reads, and state machine.
+4. **[`playbooks/build-change.md`](../playbooks/build-change.md) (2 min)** — Canonical example of a worker phase playbook (`Recipe:`, single-pack routing, and `## Completion`).
+5. **[`CONTRIBUTING.md`](../CONTRIBUTING.md) (2 min)** — Bookkeeping fragment rules (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`) and PR trailers.
+
+## Three contribution paths
+
+- **Path A — Tighten a playbook, runtime helper, or doc:** Edit the file, add a positive and negative unit test in `tests/`, add a `changelog.d/<slug>.md` fragment if user-visible, and run `scripts/validate.py` + `unittest`.
+- **Path B — Advance an existing mission's proof tier (`doctrine-only` → `self-run` / `external-run`):** Execute a real mission run, retain the artifacts and SHA-256 inventory under `docs/runs/<run>/`, add a `docs/runs/index/<run>.json` row, and verify binding with `python3 runtime/scripts/run_report.py` ([Run submission guide](run-submission-guide.md)).
+- **Path C — Propose a new mission:** Must pass the stemmed six-point mission-identity test (`scripts/_identity.py`) against every existing mission **and** pay the catalog proof ratchet by advancing an existing `doctrine-only` mission to `self-run` or `external-run` first.
+
+## Writing within the line budgets (writing for agents)
+
+Mission (`≤ 110` body lines), playbook (`≤ 90` lines), and runtime policy (`≤ 160` lines) caps are hard CI gates (`scripts/validate.py`) designed to protect the coordinator's host prompt budget:
+
+- **Use progressive disclosure (deferred reads):** Keep `T0` activation load small. If a playbook or runtime policy is only needed at a later phase (e.g., Phase 3 review or Phase 4 merge), cite it as `read <name>.md` at that phase step and list it in the mission's `DEFERRED READS` paragraph rather than loading it at startup.
+- **Apply the no-op test:** Delete any sentence that tells a frontier model what it already knows by default (generic coding advice, polite filler, restating standard git syntax). Every line in `skills/`, `playbooks/`, and `runtime/` must state a checkable rule, threshold, command, or failure class.
+- **Write the procedure, not the model workaround:** State the invariant and the verification command (`verify.py`, `preflight.py`, `spawn_worker.sh`), not brittle prompt patches tailored to one model snapshot.
 
 ## Local setup
 

@@ -21,6 +21,10 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
 | Preflight stops on a failing baseline test suite | Target repository has pre-existing failing or flaky tests | [Baseline suite failing](#the-baseline-suite-is-already-failing) |
 | Worker terminal appears idle or coordinator session closed | Worker stalled past heartbeat or coordinator restarted | [Idle worker or coordinator restart](#a-worker-appears-idle-or-the-coordinator-restarts) |
 | Local tests pass, but conductor refuses to merge PR | `reviewed_sha != head_sha` (post-review rebase/push) or GitHub checks pending | [PR still blocked](#tests-passed-but-a-pr-is-still-blocked) |
+| Missions appear twice, or `verify-gate.sh` runs twice per turn | Stacked both symlink install (`~/.claude/skills/*`) and Claude Code plugin | [Duplicate skills or double gate](#duplicate-skills-or-verify-gatesh-runs-twice-stacked-install) |
+| Long coordinator session auto-compacts and forgets phase state | Host context window compacted mid-run | [Context compaction mid-mission](#context-auto-compaction-mid-mission) |
+| Model refuses PoC exploit step during `harden-it` | Upstream model cyber-safeguard triggered on exploit phrasing | [Cyber-safeguard refusal in harden-it](#upstream-model-cyber-safeguard-refusals-during-harden-it) |
+| Plugin update keeps old version, or Windows symlinks/hooks fail | Cached marketplace index, or Windows clone without WSL2 / `core.symlinks=true` | [Plugin cache or Windows symlinks](#plugin-update-keeps-an-old-version-or-windows-symlinks-fail) |
 
 ---
 
@@ -98,7 +102,7 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
 ## Preflight refuses BASE
 
 - **Cause:** Code-mutating missions refuse to use your repository's default branch (`main` or `master`) as the integration `BASE` branch.
-- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Read-only missions (`review-it`, `map-it`, `root-cause`) run preflight with `--mode readonly` and do not require an integration branch.
+- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`) run preflight with `--mode readonly` and do not require an integration branch.
 
 ---
 
@@ -130,6 +134,49 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
   gh pr checks 123 --repo owner/repo --required
   ```
   If a rebase, bot autofix, or late commit changed the branch tip after review, dispatch a fresh build-blind review of the new `head_sha` ([`runtime/reviewed-sha-freshness.md`](../runtime/reviewed-sha-freshness.md)).
+
+---
+
+## Duplicate skills or `verify-gate.sh` runs twice (stacked install)
+
+- **Cause:** Both the symlink install (`~/.claude/skills/<mission>` + `~/.claude/settings.json` hook snippet) and the Claude Code plugin (`open-fleet@open-fleet`) are active on the same machine.
+- **Fix:** Pick **one** install path per host ([Install — Do not stack](install.md#pick-one-install-path-per-host-do-not-stack)). To keep the plugin and remove the manual symlinks, run from your `open-fleet` clone root:
+  ```bash
+  find ~/.claude/skills -maxdepth 1 -type l \( -lname "$(pwd -P)/skills/*" -o -lname "$(pwd)/skills/*" \) -delete
+  ```
+  Then remove the manual `verify-gate.sh` entries from `~/.claude/settings.json` so only the plugin's [`hooks/hooks.json`](../hooks/hooks.json) fires.
+
+---
+
+## Context auto-compaction mid-mission
+
+- **Cause:** Multi-hour coordinator runs (`ship-it`, `clean-sweep`, `harden-it`) can hit the host's context auto-compaction threshold, causing the coordinator session to summarize away active phase rules.
+- **Fix:** Because `open-fleet` stores authoritative state in **git** and the **on-disk run ledger** (never in chat scrollback), you do not lose progress when a session compacts:
+  1. Start a fresh coordinator session (or run `/clear`).
+  2. Invoke the mission and point it at the existing ledger path (`Resume <mission> from ledger <path>`).
+  3. Per [`runtime/liveness-resume.md`](../runtime/liveness-resume.md), the coordinator reads the `T0` header, re-verifies completed rows against `origin/<BASE>` git ancestry, and resumes from the first unverified unit.
+
+---
+
+## Upstream model cyber-safeguard refusals during `harden-it`
+
+- **Cause:** [`harden-it`](missions/harden-it.md)'s [`playbooks/triage-findings.md`](../playbooks/triage-findings.md) phase requires proving P0/P1 findings with a non-destructive proof-of-concept before patching. Frontier models with strict automated cyber safeguards can misclassify exploit-verification prompts against your own repository as offensive activity and refuse the turn.
+- **Fix:**
+  1. Ensure the prompt and Frozen Contract explicitly state that the target is **your own local repository test fixture** and that the proof is a **non-destructive regression test demonstrating the bug pre-fix (`RED`) and passing post-fix (`GREEN`)**.
+  2. If a finding requires a host-unsafe or safeguard-blocked exploit payload, park the live PoC step under `harden-it`'s documented parking rules (`HARDENED-WITH-OPEN-ITEMS` with the precondition named) or use an authorized evaluation account.
+
+---
+
+## Plugin update keeps an old version or Windows symlinks fail
+
+- **Cause (stale plugin version):** Running `claude plugin update open-fleet@open-fleet` without refreshing the marketplace cache reads the previously cached `dist` ref.
+- **Fix (plugin update):** Refresh the marketplace first:
+  ```bash
+  claude plugin marketplace update open-fleet
+  claude plugin update open-fleet@open-fleet
+  ```
+- **Cause (Windows symlinks / `.sh` hooks):** Cloning on native Windows without `core.symlinks=true` turns symlinks into plain-text files, and native Windows `cmd.exe` cannot execute POSIX `.sh` hooks directly.
+- **Fix (Windows):** Run `open-fleet` inside **WSL2** (recommended), or re-clone with Developer Mode enabled and `git clone -c core.symlinks=true https://github.com/ravidsrk/open-fleet.git` ([Windows & WSL2 support note](install.md#windows--wsl2-support-note)).
 
 ---
 

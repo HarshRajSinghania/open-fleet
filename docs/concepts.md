@@ -31,7 +31,26 @@ The policy files in [`runtime/`](../runtime/) are written as compact, imperative
 
 ## Glossary
 
-Quick definitions of core terms used across the documentation and mission guides:
+Quick definitions of core terms used across the documentation and mission guides.
+
+### Ubiquitous language & disambiguation (`_Avoid_:`)
+
+To prevent terminology drift across coordinator prompts, worker instructions, and human reviews, `open-fleet` uses a strict domain vocabulary:
+
+| Term | Canonical meaning in `open-fleet` | `_Avoid_` (do not confuse or conflate with) |
+|---|---|---|
+| **Mission** (`skills/<name>/SKILL.md`) | A discoverable, outcome-named engineering workflow with its own unit of work, state machine, and convergence proof | *Avoid:* calling a mission a "playbook", "pack", or "slash command", or naming one after an ingredient technique |
+| **Playbook** (`playbooks/<name>.md`) | A callable phase protocol injected into a worker's `TASK` by bare name; has no YAML frontmatter and never auto-triggers | *Avoid:* calling a playbook a "skill" or adding `SKILL.md` frontmatter to it |
+| **Runtime policy** (`runtime/*.md`) | A cross-mission mechanical contract (dispatch, merge train, freshness, liveness, sandbox) enforced below the model | *Avoid:* treating runtime rules as optional prompt suggestions a worker can waive |
+| **Upstream pack** | An external methodology repo (`mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`) pinned in `runtime/pins.json` and mounted **at most one per worker** | *Avoid:* co-mounting two packs in the same worker session ([Ecosystem comparison](comparison.md)) |
+| **Unit (of work)** | The atomic item a mission dispatches to one worker and tracks as one ledger row (a slice, finding, flake, hypothesis, or obligation) | *Avoid:* conflating a single unit with the whole mission run or an unreviewed git commit |
+| **Evidence manifest** | The SHA-bound JSON document emitted alongside `worker_done` that binds `head_sha`, `contract.digest`, `criteria[]`, `negative_control`, and `pr.reviewed_sha` | *Avoid:* calling a worker's chat summary, stdout log, or session trace "evidence" |
+| **Negative control** | A check proving that reverting the fix or injecting a behavior-changing mutation turns the covering test `RED` | *Avoid:* treating a green test run alone (without proof the test can fail) as verification |
+| **One-way door** | An irreversible or high-blast-radius decision (spec freeze, promoting `BASE` → default branch, deploy, schema drop, paid cloud spend) that blocks for human approval | *Avoid:* auto-resolving one-way doors on timeout or downgrading them to "taste" gates |
+| **Quarantine** (`runtime/quarantine.json`) | The human-controlled, fail-closed component deny-list enforced by `validate.py`, `preflight.py`, and `quarantine_check.py` | *Avoid:* editing `quarantine.json` from an agent session or confusing it with flaky-test quarantine (`STABLE-WITH-QUARANTINE`) |
+| **Host prompt budget (Activation load)** | The token cost loaded into the coordinator at mission activation (`SKILL.md` + `ARCHITECTURE.md` + composed `playbooks/` and `runtime/` policies), budgeted and tracked per mission | *Avoid:* loading deferred phase playbooks at T0 before their pipeline phase runs |
+
+### Core operational terms
 
 - **`BASE`** — The integration branch a fleet merges per-unit PRs into (never your repository's default branch). Promoting `BASE` to the default branch is always a one-way human gate.
 - **Coordinator** — The top-level agent session you start. It decomposes the goal, dispatches workers, runs verification, and updates the ledger; it never writes application code.
@@ -361,7 +380,7 @@ When missions consume issues or PRs from GitHub (`gh`), Linear (`orca linear`), 
   </picture>
 </p>
 
-Missions draw worker techniques from three upstream skill packs (`mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`). Because each pack ships its own meta-router and competing TDD/review conventions, co-mounting two packs inside a single worker causes routing collisions. **Every dispatched worker loads at most one upstream pack.** Cross-pack composition happens across workers at the mission level (for example, a Matt-style triage worker followed by an Addy-style security reviewer).
+Missions draw worker techniques from three upstream skill packs (`mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`). Because each pack ships its own meta-router and competing TDD/review conventions, co-mounting two packs inside a single worker causes routing collisions. **Every dispatched worker loads at most one upstream pack.** Cross-pack composition happens across workers at the mission level (for example, a Matt-style triage worker followed by an Addy-style security reviewer). See **[Ecosystem comparison & pack composition](comparison.md)** for the full pack-to-playbook mapping matrix.
 
 ---
 

@@ -1,6 +1,6 @@
 # Mission Guides
 
-[Documentation Hub](../README.md) · [Getting Started](../getting-started.md) · [Prompt Recipes](../recipes.md) · [Concepts](../concepts.md)
+[Documentation Hub](../README.md) · [Getting Started](../getting-started.md) · [Adoption Guide](../adoption-guide.md) · [Prompt Recipes](../recipes.md) · [Concepts](../concepts.md)
 
 Every mission in `open-fleet` is built for one distinct engineering outcome with its own unit of work, state machine, convergence proof, and SHA-bound evidence contract. The agent-facing skill definitions live in [`skills/`](../../skills/); these guides are written for developers and operators deciding which mission to run, what inputs to provide, what human approvals to expect, and how completion is proven.
 
@@ -111,5 +111,27 @@ How the missions hand work to one another:
 | 📥 [absorb-it](absorb-it.md)       | An inbound PR queue drained — landed with authorship and a receipt, refuted, or parked with a named ask |
 | 📚 [document-it](document-it.md)   | A public surface covered by quadrant with zero critical gaps — every claim anchored and rename-controlled |
 | ☁️ [offload-it](offload-it.md)     | A per-workspace environment recipe stood up and proven by a live provision — doctor-clear plus an enacted lifecycle |
+
+---
+
+## How to tell a mission is working ("It's working if…")
+
+When you run a mission for the first time, use these observable behavioral tells to verify that the coordinator has loaded the mission protocol (`skills/<name>/SKILL.md`) rather than improvising as a single chat agent:
+
+### It's working if…
+
+1. **Phase 0 runs `preflight.py` before dispatching workers:** On code-mutating missions, the coordinator runs `preflight.py --base <BASE>` (verifying `BASE` is not your default branch) and separately runs the baseline test command to confirm `T0` is green. On report-only/non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`), the coordinator runs `preflight.py --mode readonly`.
+2. **The `T0` ledger header is written before worker dispatch:** You see a ledger header recording `RUN`, `COORDINATOR`, `BASE` (or fixed point), `FORK_POINT`, `T0`, and the frozen `SOURCE` denominator.
+3. **One-way gates ask one question at a time with a recommended option and wait:** During spec/contract freeze or promotion, the coordinator stops and waits for your explicit reply without auto-continuing on timeout.
+4. **The coordinator dispatches isolated workers rather than editing application files itself:** Workers run in separate sessions or git worktrees (`≤ 3` concurrent builders per [`runtime/attention-budget.md`](../../runtime/attention-budget.md)), each mounting at most **one** upstream pack router.
+5. **Reviewers are build-blind and SHA-bound:** On code-mutating missions, a fresh reviewer session (`PROFILE=ro`) inspects the PR diff without seeing the builder's narrative summary and records `reviewed_sha == head_sha`.
+6. **Evidence is bound to a SHA in a manifest (`verify.py` on code-mutating missions):** Code-mutating units are graded by `runtime/scripts/verify.py` (checking frozen scope digest, git ancestry on `BASE`, review freshness, and the executed negative control); report-only missions (`review-it`, `map-it`, `attest-it`) emit a report-only manifest bound to `head_sha` / `reviewed_sha` without executing code-mutating negative controls (`review-it` forbids executed controls and judges test coverage statically from the diff).
+
+### Red flags (the agent is freelancing without the mission protocol)
+
+- On a code-mutating mission, the agent starts editing application files directly in your main checkout on `main` without running `preflight.py` or creating an integration `BASE` branch.
+- Multiple upstream packs (`mattpocock`, `gstack`, `addyosmani`) are pasted into the same worker prompt.
+- A unit is marked complete without a SHA-bound evidence manifest JSON file (or, on a code-mutating mission, without a negative-control check).
+- *Fix:* Verify your symlink or plugin installation via **[Install — Check the install](../install.md#check-the-install)** and invoke the mission by name at the start of a **fresh** agent session.
 
 For a concrete trace of a multi-worker run with real verification failures and recovery, read **[Anatomy of a run](../guides/anatomy-of-a-run.md)**.

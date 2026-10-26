@@ -9,7 +9,9 @@
 | I want to… | Start here | Next step |
 |---|---|---|
 | **Install `open-fleet` and run my first mission** | [Install guide](install.md) | [Getting started walkthrough](getting-started.md) |
+| **Roll out `open-fleet` on a greenfield or brownfield repo** | [Greenfield vs. Brownfield adoption guide](adoption-guide.md) | [Mission catalog & selector](missions/README.md#choose-by-task) |
 | **Pick the right mission for an engineering job** | [Mission catalog & selector](missions/README.md#choose-by-task) | [Copy-ready prompt recipes](recipes.md) |
+| **Compare `open-fleet` with `gstack`, `agent-skills`, `mattpocock`, & `superpowers`** | [Ecosystem comparison & pack composition](comparison.md) | [Concepts & glossary](concepts.md#one-router-per-worker) |
 | **Run without the Orca app (`posix`) or on another orchestrator** | [Multi-runtime & harness guide](runtimes.md) | [Provider & harness certification](certification.md) |
 | **Understand what a run produces and what its verdict proves** | [Concepts & glossary](concepts.md#read-a-run-result) | [Anatomy of a real run](guides/anatomy-of-a-run.md) |
 | **Wire or debug the native completion gate (`verify-gate.sh`)** | [Verify gate & trust boundary](verify-gate.md) | [Negative-control demo](../demo/negative-control/README.md) |
@@ -19,29 +21,31 @@
 
 ---
 
-## Tier 1 — User & Operator Guides
+## Tier 1 — User & Operator Guides (Tutorials & How-Tos)
 
-Step-by-step tutorials, installation procedures, prompt recipes, and operational guides for running missions on your repositories.
+Step-by-step tutorials, installation procedures, team rollout playbooks, prompt recipes, and operational guides for running missions on your repositories (organized by [Diátaxis](https://diataxis.fr/) quadrant).
 
-| Guide | Type | What it covers |
+| Guide | Quadrant | What it covers |
 |---|---|---|
 | **[Getting started](getting-started.md)** | Tutorial | End-to-end walkthrough of your first read-only `review-it` run and your first `ship-it` build, where evidence lands, human gates, and per-mission CLI prerequisites. |
-| **[Install](install.md)** | How-To | Comparison and setup instructions for symlink installs (`sh scripts/install.sh`), the Claude Code plugin, completion-gate hook wiring, and `dist/` bundles. |
-| **[Mission guides](missions/README.md)** | Catalog | Deep-dive reference for every mission grouped by job-to-be-done: inputs, phases, terminal states, human gates, convergence proofs, and failure modes. |
+| **[Install](install.md)** | How-To | Comparison and setup instructions for symlink installs (`sh scripts/install.sh`), the Claude Code plugin, non-Claude coordinator hosts, anti-stacking rules, completion-gate hook wiring, and `dist/` bundles. |
+| **[Adoption guide (Greenfield vs. Brownfield)](adoption-guide.md)** | How-To | Day 0 greenfield setup and a 4-phase incremental brownfield rollout (Zero Production Changes → Stabilize the Oracle → Bounded Drains → Full Delivery). |
+| **[Mission guides](missions/README.md)** | Reference / Catalog | Deep-dive reference for every mission grouped by job-to-be-done: inputs, phases, terminal states, observable `"It's working if…"` behavioral tells, human gates, and failure modes. |
 | **[Prompt recipes](recipes.md)** | How-To | Copy-ready prompts with concrete inputs, acceptance criteria, and stop conditions across all mission categories and multi-mission chains. |
-| **[Multi-runtime & harness guide](runtimes.md)** | How-To / Ref | Running missions across 14 orchestrator providers (`orca`, standalone `posix`, `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, `openhands`) and 10 CLI coding-agent harnesses (plus the `openhands` SDK agent). |
+| **[Multi-runtime & harness guide](runtimes.md)** | How-To / Ref | Running missions across 14 orchestrator providers (`orca`, standalone `posix`, `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, `openhands`) and 10 CLI coding-agent harnesses (plus the `openhands` SDK agent), cross-harness loader quirks, and harness porting checklist. |
 | **[Anatomy of a run](guides/anatomy-of-a-run.md)** | Walkthrough | Hour-by-hour trace of a recorded multi-worker run, including worker dispatch, verification failures, and recovery. |
-| **[Troubleshooting](troubleshooting.md)** | How-To | Symptom → Cause → Fix reference for installation issues, preflight errors, stalled workers, and verification gate rejections. |
+| **[Troubleshooting](troubleshooting.md)** | How-To | Symptom → Cause → Fix reference for installation issues, stacked-install conflicts, context compaction recovery, model cyber-safeguard refusals, preflight errors, stalled workers, and verification gate rejections. |
 
 ---
 
-## Tier 2 — Architecture, Verification & Technical Reference
+## Tier 2 — Architecture, Verification & Technical Reference (Explanations & Reference)
 
-Conceptual explanations, security boundaries, and exact CLI/schema specifications for how `open-fleet` enforces correctness below the model.
+Conceptual explanations, ecosystem comparisons, security boundaries, and exact CLI/schema specifications for how `open-fleet` enforces correctness below the model.
 
-| Document | Type | What it covers |
+| Document | Quadrant | What it covers |
 |---|---|---|
-| **[Concepts & glossary](concepts.md)** | Explanation | Core mental model: integration `BASE`, coordinator vs. workers, evidence manifests, negative controls, one-router-per-worker, gate classification, and proof tiers. |
+| **[Concepts & glossary](concepts.md)** | Explanation | Core mental model and ubiquitous-language dictionary (`_Avoid_:` synonyms): integration `BASE`, coordinator vs. workers, evidence manifests, negative controls, one-router-per-worker, gate classification, and proof tiers. |
+| **[Ecosystem comparison & pack composition](comparison.md)** | Explanation | How `open-fleet` relates to and composes `mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`, `obra/superpowers`, and `EveryInc/compound-engineering-plugin`, and when to use a single-session skill vs. an autonomous fleet. |
 | **[Architecture](../ARCHITECTURE.md)** | Explanation | The strict three-layer separation (`skills/`, `playbooks/`, `runtime/`), the six-point mission-identity test, and activation-load budgets. |
 | **[Verify gate](verify-gate.md)** | Reference | How `runtime/scripts/verify-gate.sh` and `runtime/scripts/verify.py` enforce completion, all `ORCA_*` environment variables, negative-control replay (`ORCA_EXECUTE_NC`), and the off-worker trust boundary. |
 | **[Runtime scripts](runtime-scripts.md)** | Reference | Complete CLI reference (flags, JSON outputs, and exit codes) for every script in `runtime/scripts/` and operator configuration file in `runtime/`. |

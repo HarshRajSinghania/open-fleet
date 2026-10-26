@@ -150,6 +150,38 @@ Key recovery invariants (tested across `setsid` and real Docker `danger` contain
 | **Gemini CLI** | `gemini` | `gemini --approval-mode plan -p <task>` | `gemini --yolo -p <task>` (worktree/sandbox boundary) |
 | **Cursor / Antigravity / Grok / Droid** | `cursor` / `agy` / `grok` / `droid` | Refused on `PROFILE=ro` (`unsupported_profile`: no verified read-only CLI flag) | Refused when a headless task prompt is supplied (`unsupported_prompt`) |
 
+### Cross-harness host constraints & loader quirks
+
+When running coordinators or dispatching workers across multiple harnesses, keep these empirical harness constraints in mind:
+
+| Constraint / quirk | Harnesses affected | How `open-fleet` handles it |
+|---|---|---|
+| **Skill & context body size limits** | Codex (`AGENTS.md` 32 KiB cap; skill body truncation past ~8 KB), compacting hosts | `scripts/validate.py` enforces strict line budgets (`SKILL.md` body ≤ 110 lines, frontmatter ≤ 34 lines, playbooks ≤ 90 lines, runtime ≤ 160 lines) and deferred phase reads (`read <name>.md`) so activation load stays compact |
+| **Launch argument stripping on `orca`** | `opencode`, `omp`, `pi` | `spawn_worker.sh` has no default `orca` launch row for `opencode`, `omp`, or `pi`; dispatch those harnesses on `OPEN_FLEET_RUNTIME=posix` (or pass an explicit `WORKER_CMD` override) |
+| **SDK-only agent runtime coupling** | `openhands` | Runs exclusively on `OPEN_FLEET_RUNTIME=openhands` (which refuses CLI harness names, while all other runtimes refuse `openhands`) |
+| **No verified headless read-only (`PROFILE=ro`) CLI flag** | `cursor`, `agy`, `grok`, `droid` | Fail-closed in `build_harness_command` (`unsupported_profile` / `unsupported_prompt`); use `claude`, `codex`, `gemini`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, or `crush` for unattended worker dispatch |
+| **`PROFILE=ro` workers cannot run shell commands to signal completion** | All harnesses under `PROFILE=ro` on `posix` | `worker_start` appends an `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded\|failed>` instruction; the exit monitor parses the final transcript line via `runtime/providers/transcript.py` |
+| **Slash-command name collisions** | Gemini CLI (`/plan`), hosts with multiple skill packs installed | Invoke missions by their outcome name (`map-it`, `ship-it`, `review-it`) and avoid stacking multiple install paths ([Install guide](install.md#pick-one-install-path-per-host-do-not-stack)) |
+
+---
+
+## Porting or certifying a new provider or harness
+
+Contributors adding or re-certifying a runtime provider (`runtime/providers/<name>.py`) or coding-agent harness in [`runtime/providers/base.py`](../runtime/providers/base.py) follow a five-point **Definition of Done**:
+
+1. **Monotonic profile enforcement (`ro < rw < danger`):** Implement `build_harness_command` so `PROFILE=ro` strips write/exec tools at the CLI flag or config level, `PROFILE=rw` wires `hooks/deny-hook.sh` (or harness equivalent) to fence edits inside `OPEN_FLEET_UNIT_WORKTREE`, and `PROFILE=danger` requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` plus a placement-bound sandbox recipe (`sandbox_doctor.py --require-placement`). Fail closed (`exit 2`) if the harness cannot enforce the requested profile.
+2. **Worktree preservation before cleanup:** Ensure `worktree-remove` and crash recovery preserve the worker's `HEAD` commit under `refs/open-fleet/preserved/<dispatch>` before deleting any worktree directory.
+3. **Completion & transcript contract:** Verify that `rw` workers can invoke `send_msg.py --type worker_done` and `ro` workers emit a parseable final answer for `runtime/providers/transcript.py`.
+4. **Declare capabilities & supported harnesses:** Register the provider or harness in [`runtime/providers/capabilities.json`](../runtime/providers/capabilities.json) and [`runtime/providers/certification.json`](../runtime/providers/certification.json) at the honest status tier (`source-only`, `fixture-tested`, or `live-witnessed`).
+5. **Run the certification & contract suite:**
+   ```bash
+   python3 runtime/scripts/certification.py check
+   python3 runtime/scripts/first_run.py --profile ro
+   python3 runtime/scripts/first_run.py --profile rw
+   python3 -m unittest discover -s tests -v
+   ```
+   To advance a cell to `live-witnessed`, record a container-isolated run per **[Provider & harness certification](certification.md#recording-a-live-first-run)**.
+
 ---
 
 ## Reproducing a first run on `posix`

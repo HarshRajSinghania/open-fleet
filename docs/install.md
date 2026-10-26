@@ -12,7 +12,23 @@ Install the `open-fleet` catalog once on your workstation, then invoke missions 
 |---|---|---|---|
 | **[Symlink install](#symlink-the-catalog)** *(recommended)* | Evaluating `open-fleet`, selecting specific missions, or hacking on the catalog | Wire into `~/.claude/settings.json` via `sh hooks/print-settings-snippet.sh` | Verified in CI ([clean-container transcript](completion/evidence/414-clean-container-install.txt) · [symlink witness](completion/evidence/CF-02-r2-happy-symlink-install.txt)) |
 | **[Claude Code plugin](#claude-code-plugin)** | Installing the entire catalog as a managed Claude Code plugin | Automatically wired via `${CLAUDE_PLUGIN_ROOT}` in `hooks/hooks.json` | Verified ([lean plugin witness](completion/evidence/CF-02c-lean-plugin-install.txt) · [plugin install](completion/evidence/CF-02b-plugin-install.txt) · [uninstall](completion/evidence/CF-02b-plugin-uninstall.txt)) |
+| **[Non-Claude coordinator hosts](#installing-into-non-claude-coordinator-hosts)** | Running the coordinator in Codex, Gemini CLI, OpenCode, Oh My Pi (`omp`), Pi, or Antigravity | Coordinator invokes `verify.py` / `verify-gate.sh` directly per phase | `posix` + `orca` routes certified in [certification matrix](certification.md) |
 | **[Copy installer / `dist/` bundle](#copy-installers-and-bundles)** | External copy-based skill installers that copy individual skill folders | Requires separate hook wiring and `OPEN_FLEET_ROOT` | Repo-root copy unsupported; self-contained `dist` branch published per release tag |
+
+### Pick one install path per host (do not stack)
+
+> [!CAUTION]
+> **Do not install both the symlink catalog (`~/.claude/skills/*`) and the Claude Code plugin (`open-fleet@open-fleet`) in the same home directory.**
+> Stacking both paths causes two operational bugs:
+> 1. **Duplicate skill entries:** Every mission appears twice in skill discovery (`review-it` from `~/.claude/skills/` and `/open-fleet:review-it` from the plugin).
+> 2. **Double completion-gate execution:** If you merged `sh hooks/print-settings-snippet.sh` into `~/.claude/settings.json` *and* installed the plugin (which registers [`hooks/hooks.json`](../hooks/hooks.json)), `verify-gate.sh` fires **twice** on every `Stop` and `TaskCompleted` event.
+>
+> **Switching cleanly from symlink install to the plugin (or vice versa):**
+> ```bash
+> # Run from your open-fleet clone root: remove symlinked missions from ~/.claude/skills/
+> # and remove the manual verify-gate.sh hook block from ~/.claude/settings.json:
+> find ~/.claude/skills -maxdepth 1 -type l \( -lname "$(pwd -P)/skills/*" -o -lname "$(pwd)/skills/*" \) -delete
+> ```
 
 ---
 
@@ -87,6 +103,58 @@ claude plugin details open-fleet@open-fleet
 - The marketplace installs from the generated `dist` branch (force-updated on `v*` release tags alongside `DIST-PROVENANCE.txt`, which records the exact release tag and source commit), where each mission is bundled with its referenced playbooks and runtime docs under `references/` and `hooks/hooks.json` is wired automatically via `${CLAUDE_PLUGIN_ROOT}`. If your environment requires pinning an immutable git tag rather than a branch ref, use the symlink install path checked out at a signed release tag.
 - After installing, verify activation in the plugin manager (`claude plugin details open-fleet@open-fleet`) and type `/` in Claude Code to see skills such as `/open-fleet:review-it`. See the upstream [Claude Code plugin documentation](https://code.claude.com/docs/en/discover-plugins) and our repeatable [plugin install witness procedure](completion/PLUGIN-INSTALL-WITNESS.md).
 
+<details>
+<summary><b>Declarative <code>~/.claude/settings.json</code> plugin configuration (for dotfiles / team repos)</b></summary>
+
+Instead of running interactive `/plugin` commands on each machine, you can declare the marketplace and plugin directly in `~/.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "open-fleet": {
+      "source": {
+        "source": "github",
+        "repo": "ravidsrk/open-fleet"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "open-fleet@open-fleet": true
+  }
+}
+```
+
+</details>
+
+---
+
+## Installing into non-Claude coordinator hosts
+
+`open-fleet` separates the **coordinator host** (the interactive agent session where you invoke a mission) from the **worker harness** (`WORKER_HARNESS=claude|codex|opencode|omp|pi|jcode|goose|hermes|crush|gemini`, which `runtime/scripts/spawn_worker.sh` launches automatically inside each worker worktree — see [Multi-runtime & harness guide](runtimes.md)).
+
+To load `open-fleet` missions into a non-Claude coordinator host, symlink the `skills/<name>` directories into your host's skill discovery path (keeping the `open-fleet` clone intact so `../../playbooks/` and `../../runtime/` resolve):
+
+| Coordinator host | Skill discovery path (symlink target) | Invocation syntax in coordinator | Notes |
+|---|---|---|---|
+| **Claude Code** | `~/.claude/skills/<mission>` (or plugin) | `/review-it`, `/open-fleet:review-it`, or natural language (`"review this PR"`) | `sh scripts/install.sh` links `~/.claude/skills/` by default |
+| **OpenAI Codex CLI / App** | `~/.codex/skills/<mission>` or `~/.agents/skills/<mission>` | `$review-it` or natural language (`"run review-it on PR #12"`) | Pass `--skills-dir="$HOME/.codex/skills"` to `sh scripts/install.sh` |
+| **Gemini CLI** | `~/.gemini/skills/<mission>` or `.agents/skills/<mission>` | Natural language (`"use ship-it to build..."`) | Avoid `/plan` collision with Gemini CLI's built-in plan mode; invoke `map-it` by name |
+| **OpenCode** | `~/.config/opencode/skills/<mission>` or `.claude/skills/<mission>` | `/review-it` or natural language | For OpenCode workers, use `OPEN_FLEET_RUNTIME=posix` (`orca` strips OpenCode launch args) |
+| **Oh My Pi (`omp`) & Pi (`pi`)** | `~/.omp/agent/skills/<mission>` or `~/.pi/agent/skills/<mission>` | `/skill:review-it` or natural language | Use `OPEN_FLEET_RUNTIME=posix` when dispatching `omp` or `pi` workers |
+| **Antigravity (`agy`)** | `~/.gemini/antigravity-cli/skills/<mission>` or `.agents/skills/<mission>` | `/review-it` or natural language | Interactive coordinator host only; headless worker dispatch uses a CLI harness (`claude`, `codex`, `gemini`, etc.) |
+
+Example installing the catalog into Codex or Gemini CLI using `--skills-dir`:
+
+```bash
+sh scripts/install.sh --skills-dir="$HOME/.codex/skills"
+```
+
+### Windows & WSL2 support note
+
+`scripts/install.sh`, `runtime/scripts/verify-gate.sh`, and `runtime/scripts/spawn_worker.sh` are POSIX `sh` scripts that rely on filesystem symlinks (`ln -s`) and POSIX process groups.
+- **Recommended on Windows:** Clone and run `open-fleet` inside **WSL2** (Ubuntu/Debian), where symlinks, `tmux`/`setsid`, and `.sh` completion hooks work identically to Linux.
+- **If cloning on a Windows filesystem:** Ensure Developer Mode is enabled and clone with `git clone -c core.symlinks=true https://github.com/ravidsrk/open-fleet.git` so Git creates real symlinks rather than plain-text pointer files.
+
 ---
 
 ## Copy installers and bundles
@@ -145,4 +213,8 @@ ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop
   ```
   *(Note: `sh scripts/install.sh --check` checks that the full catalog is linked; if you manage a subset by hand, verify individual links with the `os.path.realpath` snippet above.)*
 - **Full uninstall:** Unlink the mission entries from `~/.claude/skills/` and remove the `verify-gate.sh` hook entries from `~/.claude/settings.json` before deleting your local clone.
-- **Plugin update or uninstall:** Use `/plugin` inside Claude Code or `claude plugin` from your shell ([upstream plugin management docs](https://code.claude.com/docs/en/discover-plugins#manage-installed-plugins)).
+- **Plugin update or uninstall:** Always refresh the cached marketplace index *before* updating the plugin so Claude Code sees the latest `dist` release ([upstream plugin management docs](https://code.claude.com/docs/en/discover-plugins#manage-installed-plugins)):
+  ```bash
+  claude plugin marketplace update open-fleet
+  claude plugin update open-fleet@open-fleet
+  ```

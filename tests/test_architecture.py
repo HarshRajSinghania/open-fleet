@@ -313,13 +313,13 @@ class TheActivationLoadTableIsGenerated(unittest.TestCase):
     def test_no_activation_figure_is_typed_outside_the_generated_block(self):
         """A hand-typed token figure is exactly what went stale.
 
-        Numbers that are NOT measurements — the 34,000 cap, the historical pre-deferral loads,
-        agentskills.io's 5,000 recommendation — are allowed by name; a bare five-figure token
-        count in the prose is not.
+        Numbers that are NOT measurements — the 35,000 cap (34,000 before 2026-10-26), the
+        historical pre-deferral loads, agentskills.io's 5,000 recommendation — are allowed by
+        name; a bare five-figure token count in the prose is not.
         """
         body = re.sub(r"(?s)<!-- BEGIN GENERATED: activation-load.*?"
                       r"<!-- END GENERATED: activation-load -->", "", self.ARCH)
-        allowed = {"34,000", "42,000", "39,600", "37,400", "36,500", "5,000"}
+        allowed = {"35,000", "34,000", "42,000", "39,600", "37,400", "36,500", "5,000"}
         typed = {m for m in re.findall(r"\b\d{2},\d{3}\b", body)} - allowed
         self.assertEqual(typed, set(),
                          "a token figure is typed into the prose — put it in the generated "

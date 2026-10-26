@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """ablation.py — paired instruction-load ablations: pre-registered, generated, checked (#606).
 
-The 34,000-token activation cap (ARCHITECTURE.md) is a ratchet with no behavioural evidence
+The activation-load cap (ARCHITECTURE.md) is a ratchet with no behavioural evidence
 behind it either way. #606 asks whether a smaller activation keeps a mission's task AND safety
 outcomes. Answering that needs live model runs, which need the owner's spend authorisation. This
 script is everything short of that spend; its live tier runs only inside the container-based
 live harness (PR #668; scripts/live_container.py):
 
   prereg    validate docs/experiments/ablation-prereg.json (the registration) and report
-            whether its pinned payloads still match the catalog; --refresh re-pins them
+            whether its pinned payloads still match the catalog; --refresh re-pins them. A
+            registration whose live run is bound (`bound_run`) is frozen: its pins are checked
+            at the run's commit, by that commit's own check, and --refresh refuses it
   generate  write the BASELINE and the REDUCED variant of one registered mission, mechanically,
             from the registration's `reduction` table, plus the exact payloads both arms get and
             the token delta measured by scripts/validate.py's own transitive_load
@@ -42,10 +44,13 @@ Exit: 0 ok · 1 a check failed or a run is incomplete · 2 usage, refusal or a m
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import shutil
+import subprocess
 import sys
+import tarfile
 import tempfile
 import types
 from pathlib import Path
@@ -218,6 +223,8 @@ def prereg_errors(prereg):
         errors.append(f"schema must be {PREREG_SCHEMA}")
     if not isinstance(prereg.get("version"), int) or prereg["version"] < 1:
         errors.append("version must be a positive integer")
+    if not isinstance(prereg.get("id"), str) or not prereg["id"].strip():
+        errors.append("id must name the registration: it is the identity a spent run is held to")
     if prereg.get("issue") != 606:
         errors.append("issue must be 606")
     mix = [row.get("mission") for row in prereg.get("mission_mix") or [] if isinstance(row, dict)]
@@ -767,9 +774,206 @@ def md_sync_errors(json_path=PREREG, md_path=PREREG_MD):
     return errors
 
 
+# ---------------------------------------------------------------------------
+# a bound registration: frozen at the commit its live run ran at
+# ---------------------------------------------------------------------------
+# Before its run a registration must match the catalog, or the run would spend on payloads it never
+# registered. After the run is bound, its pins describe what RAN, at the commit it ran at, and
+# checking them against today's catalog made every later byte in a document these missions load
+# (ARCHITECTURE.md, a runtime policy, the #602 suite) a stale registration and a `prereg --refresh`
+# commit: five in the day after #606's run, each re-pinning payloads that never ran. A bound
+# registration is checked where it ran instead: the run's own results name this registration's
+# digest and the commit, that commit holds the same registration, and that commit's own
+# `ablation.py prereg` still finds every pin current on that commit's own tree.
+BOUND_KEY = "bound_run"
+# What `prereg` reads: the catalog it measures, the scripts it runs, the registration and its page.
+BOUND_PATHS = ("skills", "playbooks", "runtime", "scripts", "evals", "docs/experiments", ":(glob)*.md")
+BOUND_TIMEOUT = 300
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+_STATUS_LINE = re.compile(r"(?m)^([a-z0-9-]+): (.+)$")
+
+
+_TOOLS = {}
+
+
+def _tool(name):
+    """A runtime/scripts module (gitexec, run_report), loaded once by path."""
+    if name not in _TOOLS:
+        _TOOLS[name] = _load(f"of_ablation_{name}", ROOT / "runtime" / "scripts" / f"{name}.py")
+    return _TOOLS[name]
+
+
+def _git(*args, blanks=()):
+    """git under the read-side tools' hardened environment (runtime/scripts/gitexec.py). A planted
+    `refs/replace/*` or graft would otherwise serve another tree under the run's own SHA, and
+    _prereg_at EXECUTES what it reads (PR #705 review, Codex P1)."""
+    gitexec = _tool("gitexec")
+    return subprocess.run(gitexec.argv("-C", str(ROOT), *args), capture_output=True,
+                          timeout=BOUND_TIMEOUT, env=gitexec.env(blanks=blanks),
+                          stdin=subprocess.DEVNULL)
+
+
+def _results_pinned(report, results):
+    """[] when `results` is the bytes `report`'s integrity inventory records, and those are the
+    bytes at the commit its RUN header names: the report is the binding, so read through it."""
+    run_report = _tool("run_report")
+    fields, err = run_report.parse_run_header(read(ROOT / report))
+    if err:
+        return [f"{report}: {err}"]
+    try:
+        _path, _lines, entries = run_report.inventory.load(ROOT / report)
+    except run_report.inventory.InventoryError as err:
+        return [f"{report}: integrity inventory: {err}"]
+    rows = [row for row in entries if row[1] == results]
+    if len(rows) != 1:
+        return [f"{report}'s integrity inventory does not pin {results} exactly once"]
+    rev = fields["inventory_at"]
+    matched, _mismatched, _missing = run_report.inventory.check_entries(rows, ROOT / report, ROOT, at=rev)
+    if not matched:
+        return [f"{results} at {rev[:10]} is not the bytes {report}'s inventory records"]
+    if file_sha256(ROOT / results) != rows[0][2]:
+        return [f"{results} is not the bytes {report}'s inventory pins (edited since the run)"]
+    return []
+
+
+def _repo_file(rel):
+    return isinstance(rel, str) and ".." not in Path(rel).parts and (ROOT / rel).is_file()
+
+
+def bound_errors(prereg):
+    """[] when a registration carrying `bound_run` is exactly the one its bound run ran under."""
+    run = prereg.get(BOUND_KEY)
+    if not isinstance(run, dict):
+        return [f"{BOUND_KEY} must be an object naming the run's commit, results and report"]
+    commit, results, report = run.get("commit"), run.get("results"), run.get("report")
+    errors = []
+    if not isinstance(commit, str) or not _FULL_SHA.fullmatch(commit):
+        errors.append(f"{BOUND_KEY}.commit must be a full 40-hex commit")
+    for key, rel in (("results", results), ("report", report)):
+        if not _repo_file(rel):
+            errors.append(f"{BOUND_KEY}.{key} {rel!r} is not a repository file")
+    if errors:
+        return errors
+    rid = prereg.get("id")
+    if (SPENT_RUNS.get(rid) if isinstance(rid, str) else None) != (prereg.get("version"), commit):
+        errors.append(f"SPENT_RUNS does not record version {prereg.get('version')} of "
+                      f"{rid!r} as run at {commit[:10]}: a bound run joins that ledger "
+                      "with its binding, so the spent version stays spent without this file")
+    if not results.startswith(report[: -len(".md")] + "/"):
+        errors.append(f"{BOUND_KEY}.results must sit in the report's own run directory, which the "
+                      "report's inventory binds (runtime/scripts/run_report.py)")
+    try:
+        ran = json.loads(read(ROOT / results))
+    except (OSError, ValueError) as err:
+        return errors + [f"{results}: unreadable ({err})"]
+    if not isinstance(ran, dict) or not isinstance(ran.get("prereg"), dict):
+        return errors + [f"{results}: not a run's results (no prereg record)"]
+    pinned = ran["prereg"]
+    frozen = {k: v for k, v in prereg.items() if k != BOUND_KEY}
+    if ran.get("tier") != "live" or ran.get("catalog_head") != commit:
+        errors.append(f"{results} is not a live run at {commit[:10]}")
+    # Every registered mission, current: any map of "current" values once passed (Codex P2).
+    mix = {row.get("mission") for row in prereg.get("mission_mix") or [] if isinstance(row, dict)}
+    recorded = pinned.get("registration")
+    if not isinstance(recorded, dict) or set(recorded) != mix or set(recorded.values()) != {"current"}:
+        errors.append(f"{results} does not record every registered mission current when it ran")
+    try:
+        errors += _results_pinned(report, results)
+    except (OSError, subprocess.SubprocessError) as err:
+        errors.append(f"{report}'s inventory cannot be checked ({err})")
+    try:
+        shown = _git("show", f"{commit}:{PREREG.relative_to(ROOT).as_posix()}")
+    except (OSError, subprocess.SubprocessError) as err:
+        return errors + [f"git could not read the run commit ({err})"]
+    if shown.returncode != 0:
+        return errors + [f"commit {commit[:10]} or its registration is not in this clone: a bound "
+                         "registration is checked at its run commit, which a shallow checkout lacks"]
+    try:
+        then = json.loads(shown.stdout.decode("utf-8"))
+    except ValueError as err:
+        return errors + [f"the registration at {commit[:10]} is unreadable ({err})"]
+    if prereg_sha256(then) != pinned.get("sha256"):
+        errors.append(f"the registration at {commit[:10]} is not the one {results} ran under")
+    # The digest, never Python equality: 5 == 5.0 and True == 1, yet each is another registration
+    # (PR #705 review, Codex P2). The keys are named the same canonical way.
+    if prereg_sha256(frozen) != pinned.get("sha256"):
+        def canon(value):
+            return json.dumps(value, sort_keys=True, ensure_ascii=False)
+        moved = sorted(k for k in set(then) | set(frozen) if canon(then.get(k)) != canon(frozen.get(k)))
+        errors.append(f"a bound registration is frozen, but {', '.join(moved) or 'its digest'} changed "
+                      f"since its run at {commit[:10]}: a new design is a new registration (a new "
+                      "version, unbound)")
+    return errors
+
+
+# The ledger of bound live runs: {registration id: (its bound version, the commit it ran at)}. It is
+# the authority on what is spent, not any registration file: a copy with `bound_run` deleted kept
+# the bound version and its spent AUTHORISED cap (PR #705 review, Codex P1), and a file-based
+# authority vanished when that file changed or would not parse (Codex P1, round 4). Append-only: a
+# bound run is a one-way fact, so an entry is added beside its run's binding and never removed.
+SPENT_RUNS = {
+    "R13-606-activation-ablation": (2, "c220067e9cbffc4f34d6363a92153e45402bdfe4"),
+}
+
+
+def spent_registration(prereg):
+    """(version, commit) of the bound run whose identity `prereg` reuses, or None for a new one.
+
+    Same `id` at the bound version or below is the same, spent registration; a new run is a new
+    version above it. An `id` that is not a non-empty string is no identity at all and counts as
+    spent, so deleting it cannot make a registration new (prereg_errors refuses it as well)."""
+    rid, version = prereg.get("id"), prereg.get("version")
+    if not isinstance(rid, str) or not rid.strip():
+        return next(iter(SPENT_RUNS.values()))
+    spent = SPENT_RUNS.get(rid)
+    if spent is None:
+        return None
+    newer = isinstance(version, int) and not isinstance(version, bool) and version > spent[0]
+    return None if newer else spent
+
+
+def bound_status(prereg):
+    """{mission: state} from the run commit's own `ablation.py prereg`, run on that commit's tree.
+
+    The catalog now is never read: the commit's code measures the commit's catalog, so an edit made
+    after the run cannot move the result, and a pin that was stale when it ran still reads stale."""
+    commit = prereg[BOUND_KEY]["commit"]
+    proc = _prereg_at(commit)
+    if proc.returncode not in (EXIT_OK, EXIT_FAILED):
+        raise AblationError(f"the registration does not check at {commit[:10]}: "
+                            f"{proc.stderr.strip()[:300]}")
+    found = dict(_STATUS_LINE.findall(proc.stdout))
+    return {m: (f"{found[m]} at {commit[:10]}" if m in found else f"unchecked at {commit[:10]}")
+            for m in (row["mission"] for row in prereg["mission_mix"])}
+
+
+def _prereg_at(commit):
+    """The CompletedProcess of `ablation.py prereg` as `commit` has it, on `commit`'s own tree."""
+    with tempfile.TemporaryDirectory(prefix="of-ablation-bound-") as tmp:
+        try:
+            archive = _git("archive", "--format=tar", commit, "--", *BOUND_PATHS,
+                           blanks=_tool("gitexec").driver_blanks(ROOT))
+            if archive.returncode != 0:
+                raise AblationError(f"git archive {commit[:10]} failed: "
+                                    f"{archive.stderr.decode('utf-8', 'replace').strip()[:200]}")
+            with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+                # Our own history, but extracted as data all the same where Python can (3.11.4+).
+                tar.extractall(tmp, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+            proc = subprocess.run([sys.executable, "-I", str(Path(tmp) / "scripts" / "ablation.py"),
+                                   "prereg"], cwd=tmp, capture_output=True, text=True,
+                                  timeout=BOUND_TIMEOUT)
+        except (OSError, subprocess.SubprocessError, tarfile.TarError) as err:
+            raise AblationError(f"the registration cannot be checked at {commit[:10]}: {err}") from err
+    return proc
+
+
 def refresh(json_path=PREREG, md_path=PREREG_MD):
     """Re-pin registered_payloads to the catalog now and the md line to the JSON's bytes."""
     prereg = load_prereg(json_path)
+    if BOUND_KEY in prereg or spent_registration(prereg) is not None:
+        raise AblationError(f"{json_path}: refusing to re-pin a bound registration: its pins are "
+                            "frozen at the commit its live run ran at (a new run is a new "
+                            "registration, a new version above the bound one, without bound_run)")
     problems = [e for e in prereg_errors(prereg) if "registered_payloads" not in e]
     if problems:
         raise AblationError("refusing to re-pin a registration with errors: " + "; ".join(problems))
@@ -810,17 +1014,28 @@ def cmd_prereg(args):
         print(json.dumps(pinned, indent=2, sort_keys=True))
         return EXIT_OK
     prereg = load_prereg(args.prereg)
-    errors = prereg_errors(prereg) + md_sync_errors(Path(args.prereg), Path(args.md))
+    # A spent identity is checked as bound whether or not it still carries the marker, so a spent
+    # registration edited with bound_run deleted fails here too (PR #705 review, Codex P2).
+    bound = BOUND_KEY in prereg or spent_registration(prereg) is not None
+    # A bound registration's design checks were run at its commit, by bound_status; the catalog
+    # now is not its denominator.
+    errors = (bound_errors(prereg) if bound else prereg_errors(prereg)) \
+        + md_sync_errors(Path(args.prereg), Path(args.md))
     for err in errors:
         print(f"ablation: prereg: {err}", file=sys.stderr)
     if errors:
         return EXIT_USAGE
-    status = registration_status(prereg)
+    status = bound_status(prereg) if bound else registration_status(prereg)
     for mission, state in status.items():
         print(f"{mission}: {state}")
     cap = prereg["cost_cap"]
     print(f"version {prereg['version']} · cost cap {cap['status']} (proposed USD {cap['proposed_usd']})")
-    return EXIT_OK if all(s == "current" for s in status.values()) else EXIT_FAILED
+    if bound:
+        print(f"bound: {prereg[BOUND_KEY]['report']} (frozen at {prereg[BOUND_KEY]['commit'][:10]})")
+        current = all(s == f"current at {prereg[BOUND_KEY]['commit'][:10]}" for s in status.values())
+    else:
+        current = all(s == "current" for s in status.values())
+    return EXIT_OK if current else EXIT_FAILED
 
 
 def cmd_generate(args):

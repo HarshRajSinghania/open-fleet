@@ -11,9 +11,11 @@
   timeout the shipped hooks now set to 2400 s) because a timed-out Claude Code hook fails OPEN, and
   never reads a worker-writable dispatch key on a sound lane. `spawn_worker.sh` keeps stderr out of
   the receipts it parses and fails closed on an unreadable wait. The posix provider stops the agent
-  a `kill -9`'d monitor leaves running (sweep and `stop`, proven by the group's working directory),
-  treats a reused monitor pid as a vanished monitor, merges guard configs into the settings already
-  at a guard path instead of replacing them, creates the state directory, lanes and transcripts
+  a `kill -9`'d monitor leaves running (sweep and `stop`, proven by the group's working directory,
+  read from /proc or with `ps` and `lsof`), treats a reused monitor pid as a vanished monitor,
+  merges guard configs into the settings already at a guard path instead of replacing them
+  (their plain settings survive; their hooks, any setting that names a command, and env that
+  steers the hook or its shell do not), creates the state directory, lanes and transcripts
   user-private, strips the coordinator's custody tokens plus anything in
   `OPEN_FLEET_WORKER_ENV_DENY` from a worker's environment, claims retry requests inside one
   transaction (and reclaims a dead claimer's at once), and stamps the store's schema version.

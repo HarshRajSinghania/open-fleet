@@ -514,8 +514,10 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
 class GuardConfigsMergeWhatIsAlreadyThere(unittest.TestCase):
     """2026-10-26 review: install_worktree_hooks REPLACED any JSON config at a guard path, so a
     repository's checked-in `.crush/crush.json` or `.codex/hooks.json`, or an operator's own
-    `.claude/settings.local.json` in a reused worktree, lost every other key. Now their keys
-    survive, the guard hook runs first, and the keys that could disarm it are dropped."""
+    `.claude/settings.local.json` in a reused worktree, lost every other key. Now their plain
+    settings survive and the keys that could disarm the guard are dropped. Nothing the harness
+    would EXECUTE survives (#707 review): a kept hook ran beside the guard, never through it, and
+    Codex launches with --dangerously-bypass-hook-trust."""
 
     def setUp(self):
         self.posix_mod = _load_posix()
@@ -547,8 +549,8 @@ class GuardConfigsMergeWhatIsAlreadyThere(unittest.TestCase):
         self.assertNotIn("disableAllHooks", doc)
         pre = doc["hooks"]["PreToolUse"]
         self.assertIn(str(self.posix_mod.CANONICAL_DENY_HOOK), pre[0]["hooks"][0]["command"])
-        self.assertEqual(pre[1]["hooks"][0]["command"], "echo theirs")
-        self.assertEqual(doc["hooks"]["Stop"][0]["hooks"][0]["command"], "echo bye")
+        self.assertEqual(len(pre), 1, "their PreToolUse hook would run beside the guard, unchecked")
+        self.assertEqual(list(doc["hooks"]), ["PreToolUse"], "their Stop hook is executable too")
 
     def test_env_that_steers_the_hook_shell_is_dropped(self):
         # #707 review: the guard command runs a bare `sh`, so a kept env.PATH naming a directory
@@ -592,11 +594,33 @@ class GuardConfigsMergeWhatIsAlreadyThere(unittest.TestCase):
             encoding="utf-8")
         self.install(agent="crush")
         crush = self.read(".crush/crush.json")
-        self.assertEqual((crush["options"], crush["lsp"]), ({"debug": True}, {"go": {"command": "gopls"}}))
+        self.assertEqual(crush["options"], {"debug": True})
+        self.assertNotIn("lsp", crush, "a setting that names a command to run is dropped")
         self.assertEqual(len(crush["hooks"]["PreToolUse"]), 1)
         codex = self.read(".codex/hooks.json")
-        self.assertEqual(codex["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "echo after")
+        self.assertEqual(list(codex["hooks"]), ["PreToolUse"])
         self.assertIn("ORCA_HOOK_STRICT_EXIT=1", codex["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+
+    def test_no_repository_command_survives_beside_the_guard(self):
+        # #707 review: a checked-in `.codex/hooks.json` kept its shell hooks beside the guard,
+        # and Codex launches with --dangerously-bypass-hook-trust, so they ran unchecked.
+        planted = "touch /tmp/pwned-by-repo-hook"
+        (self.wt / ".codex").mkdir()
+        (self.wt / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {
+            "PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": planted}]}],
+            "PostToolUse": [{"hooks": [{"type": "command", "command": planted}]}],
+            "SessionStart": [{"hooks": [{"type": "command", "command": planted}]}],
+        }}), encoding="utf-8")
+        (self.wt / ".claude").mkdir()
+        (self.wt / ".claude" / "settings.local.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": planted},
+            "permissions": {"allow": ["Bash(ls)"]},
+        }), encoding="utf-8")
+        self.install()
+        for rel in (".codex/hooks.json", ".claude/settings.local.json"):
+            with self.subTest(rel=rel):
+                self.assertNotIn(planted, (self.wt / rel).read_text(encoding="utf-8"))
+        self.assertEqual(self.read(".claude/settings.local.json")["permissions"], {"allow": ["Bash(ls)"]})
 
     def test_an_unreadable_config_is_replaced_by_the_guard(self):
         (self.wt / ".openhands").mkdir()

@@ -228,16 +228,28 @@ def _steers_the_guard(key: Any) -> bool:
     return str(key) in _SHELL_STEERING_KEYS or str(key).startswith(_GUARD_STEERING_PREFIXES)
 
 
+def _runs_a_command(value: Any) -> bool:
+    """True when a settings value names something the harness executes itself: a hook, a status
+    line, an LSP or MCP server — any object, at any depth, carrying a `command`."""
+    if isinstance(value, dict):
+        return "command" in value or any(_runs_a_command(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_runs_a_command(v) for v in value)
+    return False
+
+
 def _merge_hook_doc(path: Path, ours: dict[str, Any]) -> dict[str, Any]:
     """`ours` laid over the JSON object already at `path` (2026-10-26 review).
 
     The guard used to REPLACE the file: a repository's checked-in `.crush/crush.json` or
     `.codex/hooks.json`, or an operator's `.claude/settings.local.json` in a reused worktree, lost
-    every other key it carried. Now those keys survive, our hook entries come FIRST under each
-    event, an entry that already carries one of our commands is not doubled, and the keys that
-    could disarm the guard are dropped: `disableAllHooks`, and `env` entries that steer the hook
-    (ORCA_*/OPEN_FLEET_*) or the shell that runs it (`_SHELL_STEERING_KEYS`). A file that is
-    unreadable or not a JSON object is replaced outright.
+    every other key it carried. Now its plain settings survive, and what could disarm the guard
+    or run beside it is dropped: `disableAllHooks`, `env` entries that steer the hook
+    (ORCA_*/OPEN_FLEET_*) or the shell that runs it (`_SHELL_STEERING_KEYS`), every hook already
+    there, and every setting that names a command (#707 review: a kept repository hook ran beside
+    the guard, never through it, and Codex launches with --dangerously-bypass-hook-trust). The
+    `hooks` written are ours alone. A file that is unreadable or not a JSON object is replaced
+    outright.
     """
     try:
         have = json.loads(path.read_text(encoding="utf-8"))
@@ -245,21 +257,12 @@ def _merge_hook_doc(path: Path, ours: dict[str, Any]) -> dict[str, Any]:
         return ours
     if not isinstance(have, dict):
         return ours
-    merged: dict[str, Any] = {k: v for k, v in have.items() if k != "disableAllHooks"}
+    merged: dict[str, Any] = {k: v for k, v in have.items()
+                              if k not in ("disableAllHooks", "hooks") and not _runs_a_command(v)}
     env = merged.get("env")
     if isinstance(env, dict):
         merged["env"] = {k: v for k, v in env.items() if not _steers_the_guard(k)}
-    hooks = merged.get("hooks") if isinstance(merged.get("hooks"), dict) else {}
-    merged["hooks"] = dict(hooks)
-    for event, entries in ours.get("hooks", {}).items():
-        our_cmds = {h.get("command") for e in entries for h in e.get("hooks", [])}
-        existing = hooks.get(event)
-        kept = [
-            e for e in (existing if isinstance(existing, list) else [])
-            if not (isinstance(e, dict) and any(isinstance(h, dict) and h.get("command") in our_cmds
-                                                 for h in (e.get("hooks") or [])))
-        ]
-        merged["hooks"][event] = list(entries) + kept
+    merged["hooks"] = {event: list(entries) for event, entries in ours.get("hooks", {}).items()}
     for key, value in ours.items():
         if key != "hooks":
             merged[key] = value

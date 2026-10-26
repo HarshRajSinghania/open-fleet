@@ -644,9 +644,25 @@ class TestGuardSurfaceCarveOuts(unittest.TestCase):
             with self.subTest(path=path, line=line):
                 self.assertEqual(floor_guard.guard_surface_hit(path, line), path)
 
+    def test_any_toml_quoting_of_an_entry_trips(self):
+        # #707 review: only double-quoted entries matched, so a later
+        # `'runtime/scripts/*' = ['F401', 'F841']` under an existing table disabled frozen rules.
+        cases = [
+            "'runtime/scripts/*' = ['F401', 'F841']",
+            "'tests/*' = [\"F401\"]",
+            "    'F841',",
+            "scripts = ['F401']",
+            'tests = ["F401", "F841"]',
+        ]
+        for line in cases:
+            with self.subTest(line=line):
+                self.assertEqual(floor_guard.guard_surface_hit("ruff.toml", line), "ruff.toml")
+
     def test_the_rest_of_those_files_stays_silent(self):
         cases = [
             ("ruff.toml", 'target-version = "py311"'),
+            ("ruff.toml", "line-length = 120"),
+            ("ruff.toml", "preview = true"),
             ("ruff.toml", "[lint]"),
             ("ruff.toml", "# F401 / F841 unused imports and locals"),
             (".coveragerc", "[run]"),

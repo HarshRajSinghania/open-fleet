@@ -209,8 +209,11 @@ GUARD_SURFACE_KEYS = (
     # gate.py — a corpus bump moves them in the same PR, explicitly).
     ("ruff.toml", re.compile(r"^\s*(extend-)?(select|ignore|exclude|fixable|unfixable)\s*=")),
     ("ruff.toml", re.compile(r"^\s*\[[^\]]*per-file-ignores")),
-    ("ruff.toml", re.compile(r"^\s*\"[^\"]+\"\s*=")),
-    ("ruff.toml", re.compile(r"^\s*\"[A-Z]+[0-9]*\"\s*,?\s*$")),
+    # A table entry and a rule code on its own line, in either TOML quote style, and a bare key
+    # assigned a list of rule codes (#707 review: `'runtime/scripts/*' = ['F401']` matched none).
+    ("ruff.toml", re.compile(r"^\s*(\"[^\"]+\"|'[^']+')\s*=")),
+    ("ruff.toml", re.compile(r"^\s*(\"[A-Z]+[0-9]*\"|'[A-Z]+[0-9]*')\s*,?\s*$")),
+    ("ruff.toml", re.compile(r"^\s*[A-Za-z0-9_.*/-]+\s*=\s*\[\s*[\"'][A-Z]+[0-9]*[\"']")),
     (".coveragerc", re.compile(r"^\s*(fail_under|source|include|omit|exclude_lines|exclude_also|"
                                r"skip_covered|skip_empty|ignore_errors|partial_branches|plugins)\s*=")),
     (".coveragerc", re.compile(r"^\s+[^\s#;]")),

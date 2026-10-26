@@ -3,13 +3,15 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+GEN_DIR = Path(__file__).resolve().parent
+REPO = GEN_DIR.parents[2]
 
 
 def load_mission_specs() -> list[dict]:
-    sys.path.insert(0, str(REPO / 'assets/diagrams/generator'))
+    sys.path.insert(0, str(GEN_DIR))
     import specs as _specs
     from specs_missions import MISSIONS
     _ = _specs
@@ -244,14 +246,11 @@ def main() -> None:
         jobs.append({'out': dark_out, 'svg': build_mission_svg(spec, 'dark')})
         jobs.append({'out': light_out, 'svg': build_mission_svg(spec, 'light')})
 
-    jobs_path = Path('/tmp/mission_svg_jobs.json')
-    jobs_path.write_text(json.dumps(jobs), encoding='utf-8')
-
     node_script = """
 const sharp = require('sharp');
 const fs = require('fs');
 async function run() {
-  const jobs = JSON.parse(fs.readFileSync('/tmp/mission_svg_jobs.json', 'utf8'));
+  const jobs = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
   for (const j of jobs) {
     await sharp(Buffer.from(j.svg))
       .jpeg({ quality: 95, mozjpeg: true, chromaSubsampling: '4:4:4' })
@@ -262,9 +261,33 @@ async function run() {
 run().catch(e => { console.error(e); process.exit(1); });
 """
     env = os.environ.copy()
-    env.setdefault('NODE_PATH', '/tmp/tmpbnu5sghg/head/node_modules/.pnpm/node_modules')
-    subprocess.run(['node', '-e', node_script], env=env, check=True)
-    jobs_path.unlink(missing_ok=True)
+    local_node_modules = str(GEN_DIR / 'node_modules')
+    existing_node_path = env.get('NODE_PATH', '')
+    env['NODE_PATH'] = (
+        f'{local_node_modules}{os.pathsep}{existing_node_path}'
+        if existing_node_path
+        else local_node_modules
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode='w',
+        prefix='mission_svg_jobs_',
+        suffix='.json',
+        delete=False,
+        encoding='utf-8',
+    ) as tmp_file:
+        json.dump(jobs, tmp_file)
+        jobs_path = Path(tmp_file.name)
+
+    try:
+        subprocess.run(
+            ['node', '-e', node_script, str(jobs_path)],
+            cwd=str(GEN_DIR),
+            env=env,
+            check=True,
+        )
+    finally:
+        jobs_path.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

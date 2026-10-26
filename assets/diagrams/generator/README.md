@@ -6,6 +6,7 @@ diagram in a dark and a light variant. The prompts are the diagram source the sa
 mermaid blocks in the README are: edit the prompt, rerun, review the render.
 
 ```bash
+npm --prefix assets/diagrams/generator install                                       # one-time sharp setup for SVG renderers
 OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py                      # everything (image model)
 OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only ship-it       # one dark
 OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only ship-it-light # its light variant

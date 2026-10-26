@@ -1,15 +1,20 @@
 # Pre-registration: paired instruction-load ablations (R13 / #606)
 
-Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `2b5ffc9feba00dd1d45b24023b83d3f56c2e2b8850bead5bcdada5e7e20f93ac`.
+Registration: **version 2**, `docs/experiments/ablation-prereg.json` sha256 `b28af2cc4124b8db466abf101ee1106e0e29ab2d12ce514926030d256cd4daa7`.
 
 **Status.** The design, the variant generator, the static obligation check, the paired runner
 and the reporter are implemented and tested. The owner authorised the cost cap below on
 2026-10-24 (`AUTHORISED`, USD 750). The live run took place on 2026-10-25 at `c220067e9c`, whose
 registration (sha256 `244ae9f45880faeff9dd0426b2c0fcd635c54db3ef0862d1ce6d0a4e2eae0391`) is the
-one that ran, and is bound in [its run report](../runs/2026-10-25-ablation-606-live.md). The pins
-here were refreshed after the run, for #604's edit to `attention-budget.md`, #602's filled live
-rows in `evals/adversarial-trajectories.json`, #695's edit to `ARCHITECTURE.md` and the v1.4.239
-re-pin's runtime-doc edits, so they describe today's payloads, not the ones that ran; the run re-derives from its own commit. **Recommendation: keep the current activation.** The registered rule returns SUCCESSFUL_REDUCTION for every mission, but
+one that ran, and is bound in [its run report](../runs/2026-10-25-ablation-606-live.md). The
+registration is now **frozen at that run**: the pins here are the ones that ran (five post-run
+refreshes, for edits to `attention-budget.md`, `evals/adversarial-trajectories.json`,
+`ARCHITECTURE.md` and the v1.4.239 runtime docs, were rolled back), and the JSON's `bound_run`
+block makes `ablation.py prereg` check them at `c220067e9c`, with that commit's own check on that
+commit's own tree. A later edit to a document these missions load no longer makes the registration
+stale, `--refresh` refuses it, and any other change to it fails. The run also sits in `SPENT_RUNS` in
+`scripts/ablation.py`, so version 2 stays spent whatever a registration file says: the live tier
+refuses it, and a new run is a new version. **Recommendation: keep the current activation.** The registered rule returns SUCCESSFUL_REDUCTION for every mission, but
 only because task success was 0 in both arms: the registered agent command could not run the tests
 or commit, and the reduced arm's deferred documents were unreachable. The report gives a follow-up
 design. Nothing in this experiment changes the
@@ -79,8 +84,8 @@ registered source is refused before anything is deleted or written, symlinks inc
 
 | Mission | Deferred (loaded on entering the first phase listed) | Kept at activation | Dropped |
 |---|---|---|---|
-| ship-it | `decide-and-freeze` at VALIDATE/GRILL · `linear-enumeration` at VALIDATE/GRILL · `gate-classification` at VALIDATE/GRILL · `decompose-dag` at VALIDATE/DECOMPOSE · `dispatch-lifecycle` at DECOMPOSE/ADOPT/BUILD · `sandbox-policy` at DECOMPOSE/ADOPT/BUILD · `attention-budget` at BUILD · `build-change` at BUILD · `evidence-manifest` at BUILD · `acceptance-review` at ACCEPTANCE-REVIEW · `runtime-prove` at RUNTIME-PROVE · `merge-serialization` at LAND · `reviewed-sha-freshness` at LAND | `ledger-contract` | Related |
-| clean-sweep | `gate-classification` at SELF-ORIENT · `linear-enumeration` at ENUMERATE · `sandbox-policy` at ENUMERATE · `triage-state` at SKEPTIC-TRIAGE · `dispatch-lifecycle` at SKEPTIC-TRIAGE · `orca-dag-semantics` at SKEPTIC-TRIAGE · `attention-budget` at SKEPTIC-TRIAGE · `evidence-manifest` at SKEPTIC-TRIAGE · `remediate-finding` at PER-FINDING · `build-change` at PER-FINDING · `runtime-prove` at PER-FINDING | `ledger-contract` | Related |
+| ship-it | `ARCHITECTURE.md` at VALIDATE/GRILL · `decide-and-freeze` at VALIDATE/GRILL · `linear-enumeration` at VALIDATE/GRILL · `gate-classification` at VALIDATE/GRILL · `decompose-dag` at VALIDATE/DECOMPOSE · `dispatch-lifecycle` at DECOMPOSE/ADOPT/BUILD · `sandbox-policy` at DECOMPOSE/ADOPT/BUILD · `attention-budget` at BUILD · `build-change` at BUILD · `evidence-manifest` at BUILD · `acceptance-review` at ACCEPTANCE-REVIEW · `runtime-prove` at RUNTIME-PROVE · `merge-serialization` at LAND · `reviewed-sha-freshness` at LAND | `ledger-contract` | Related |
+| clean-sweep | `ARCHITECTURE.md` at SELF-ORIENT · `gate-classification` at SELF-ORIENT · `linear-enumeration` at ENUMERATE · `sandbox-policy` at ENUMERATE · `triage-state` at SKEPTIC-TRIAGE · `dispatch-lifecycle` at SKEPTIC-TRIAGE · `orca-dag-semantics` at SKEPTIC-TRIAGE · `attention-budget` at SKEPTIC-TRIAGE · `evidence-manifest` at SKEPTIC-TRIAGE · `remediate-finding` at PER-FINDING · `build-change` at PER-FINDING · `runtime-prove` at PER-FINDING | `ledger-contract` | Related |
 | review-it | `sandbox-policy` at PIN · `dispatch-lifecycle` at ACCEPTANCE-REVIEW · `evidence-manifest` at ACCEPTANCE-REVIEW · `acceptance-review` at ACCEPTANCE-REVIEW · `risk-review` at RISK-REVIEW · `triage-findings` at AGGREGATE · `gate-classification` at VERDICT · `publish-evidence` at VERDICT · `reviewed-sha-freshness` at VERDICT | `mission-scheduling` | Related |
 | root-cause | `diagnose` at STOP-THE-LINE/DIAGNOSIS · `evidence-manifest` at DIAGNOSIS · `sandbox-policy` at DIAGNOSIS · `gate-classification` at DIAGNOSIS/HANDOFF · `agent-brief` at HANDOFF | `ledger-contract`, `liveness-resume` | Related |
 
@@ -93,10 +98,10 @@ pinned in `registered_payloads`, and a test holds this table to them:
 <!-- BEGIN GENERATED: ablation-loads — scripts/ablation.py prereg --refresh -->
 | Mission | Baseline activation | Reduced activation | Delta |
 |---|---|---|---|
-| ship-it | ~30,218 | ~4,585 | -25,633 |
-| clean-sweep | ~28,729 | ~4,538 | -24,191 |
-| review-it | ~24,575 | ~3,765 | -20,810 |
-| root-cause | ~19,266 | ~6,726 | -12,540 |
+| ship-it | ~33,995 | ~4,579 | -29,416 |
+| clean-sweep | ~32,649 | ~4,546 | -28,103 |
+| review-it | ~24,480 | ~3,724 | -20,756 |
+| root-cause | ~19,249 | ~6,716 | -12,533 |
 <!-- END GENERATED: ablation-loads -->
 
 ## Safety obligations both arms keep
@@ -282,7 +287,7 @@ counts every earlier entry against its own cap. A ledger that cannot be read ref
 ## Run it
 
 ```bash
-python3 scripts/ablation.py prereg                      # registration valid, md in sync, payloads current
+python3 scripts/ablation.py prereg                      # md in sync; frozen: payloads current at the run commit
 python3 scripts/ablation.py generate --mission ship-it  # both arms, token delta, obligation check
 python3 scripts/ablation.py run --dry-run --cost-cap-usd 0 --repeats 1   # inert stand-in, whole pipeline
 ```

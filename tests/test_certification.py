@@ -209,6 +209,13 @@ class TestRecordValidates(Tripwired):
                 self.assertIn(needle, p.stderr)
 
 
+def moved(version: str) -> str:
+    """The release after `version` (its last number bumped), so a moved pin differs from whatever
+    runtime/pins.json pins today: a literal next release turns into a no-op the day it is pinned."""
+    bumped = re.sub(r"\d+$", lambda m: str(int(m[0]) + 1), version)
+    return bumped if bumped != version else f"{version}.1"
+
+
 class TestPinRefreshInvalidatesCells(Tripwired):
     """Refreshing a provider version voids its cells until a maintainer rechecks them."""
 
@@ -233,8 +240,8 @@ class TestPinRefreshInvalidatesCells(Tripwired):
     def test_a_new_pin_turns_every_orca_cell_stale(self):
         for name, mutate in {
             "commit": lambda e: e.update(commit="f" * 40),
-            "version": lambda e: e.update(version="v1.4.240"),
-            "live receipts": lambda e: e["live_receipts"].update(version="v1.4.240"),
+            "version": lambda e: e.update(version=moved(e["version"])),
+            "live receipts": lambda e: e["live_receipts"].update(version=moved(e["live_receipts"]["version"])),
         }.items():
             with self.subTest(moved=name):
                 pins = self.pins(mutate)
@@ -247,9 +254,10 @@ class TestPinRefreshInvalidatesCells(Tripwired):
                 self.assertEqual(cells[("posix", "ro", "claude")], "live-witnessed", "staleness is per provider")
 
     def test_rechecking_and_re_recording_makes_the_cells_fresh_again(self):
-        pins = self.pins(lambda e: e.update(commit="e" * 40, version="v1.4.240"))
+        pins = self.pins(lambda e: e.update(commit="e" * 40, version=moved(e["version"])))
+        new = json.loads(pins.read_text(encoding="utf-8"))["orca"]
         record = json.loads(RECORD.read_text(encoding="utf-8"))
-        record["providers"]["orca"]["certified_against"].update(commit="e" * 40, version="v1.4.240")
+        record["providers"]["orca"]["certified_against"].update(commit=new["commit"], version=new["version"])
         rec_path = self.tmp / "record.json"
         rec_path.write_text(json.dumps(record), encoding="utf-8")
         p = cert_main("check", "--pins", str(pins), "--record", str(rec_path))

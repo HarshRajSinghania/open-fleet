@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,11 @@ def defer_for(prereg, mission):
     return prereg["reduction"]["missions"][mission]
 
 
+def unbound(prereg):
+    """The registration as it stood before its run was bound: no `bound_run`, so not frozen."""
+    return {k: v for k, v in prereg.items() if k != ablation.BOUND_KEY}
+
+
 _COPIES = []
 
 
@@ -64,6 +70,13 @@ def repo_copy(tmp):
                             ignore=shutil.ignore_patterns("__pycache__"))
     for doc in ROOT.glob("*.md"):
         shutil.copyfile(doc, dest / doc.name)
+    # The committed registration is bound to its run and frozen there; a copy exercises the pre-run
+    # mechanics (refresh, task pins, output safety), so it holds the registration before the binding.
+    reg = dest / "docs" / "experiments" / "ablation-prereg.json"
+    # The next version, too: the bound one is spent (SPENT_RUNS), so its own can never re-pin.
+    data = unbound(json.loads(reg.read_text(encoding="utf-8")))
+    reg.write_text(json.dumps(dict(data, version=data["version"] + 1), indent=2,
+                              ensure_ascii=False) + "\n", encoding="utf-8")
     _COPIES.append(dest)
     spec = importlib.util.spec_from_file_location(f"ablation_copy_{len(_COPIES)}", dest / "scripts" / "ablation.py")
     mod = importlib.util.module_from_spec(spec)
@@ -186,13 +199,31 @@ class RegistrationErrorsAreCaught(unittest.TestCase):
 
 
 class RegistrationDigests(unittest.TestCase):
+    """The pre-run digest mechanics, on an UNBOUND next version pinned to the catalog now. The committed
+    registration is bound to its run and checked there (TheBoundRegistrationIsFrozen, below), so
+    against today's catalog it is stale by design."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pinned = Path(tempfile.mkdtemp(prefix="of-ablation-unbound-"))
+        # The next version: the committed one is bound, so its own version can never re-pin.
+        (cls.pinned / "ablation-prereg.json").write_text(
+            json.dumps(dict(unbound(PREREG), version=PREREG["version"] + 1), indent=2,
+                       ensure_ascii=False) + "\n", encoding="utf-8")
+        shutil.copyfile(ablation.PREREG_MD, cls.pinned / "ablation-prereg.md")
+        ablation.refresh(cls.pinned / "ablation-prereg.json", cls.pinned / "ablation-prereg.md")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.pinned)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="of-ablation-prereg-"))
         self.addCleanup(shutil.rmtree, self.tmp)
         self.json = self.tmp / "ablation-prereg.json"
         self.md = self.tmp / "ablation-prereg.md"
-        shutil.copyfile(ablation.PREREG, self.json)
-        shutil.copyfile(ablation.PREREG_MD, self.md)
+        shutil.copyfile(self.pinned / "ablation-prereg.json", self.json)
+        shutil.copyfile(self.pinned / "ablation-prereg.md", self.md)
 
     def test_a_json_that_moved_without_its_page_is_caught(self):
         self.assertEqual(ablation.md_sync_errors(self.json, self.md), [])
@@ -235,6 +266,187 @@ class RegistrationDigests(unittest.TestCase):
         code, out, _err = run_main(["--prereg", str(self.json), "prereg", "--md", str(self.md)])
         self.assertEqual(code, 1)
         self.assertIn("ship-it: stale: baseline_tokens moved", out)
+
+
+class TheBoundRegistrationIsFrozen(unittest.TestCase):
+    """#606's live run is bound, so its registration is checked where it ran, never against the
+    catalog now: five `--refresh` commits in the day after the run re-pinned payloads that never
+    ran, one for every edit to a document these missions load."""
+
+    # Read off the binding, never typed: the commit is the registration's, and the run's own
+    # results are what make it the commit that ran (test_the_committed_registration_is_...).
+    RUN = PREREG[ablation.BOUND_KEY]["commit"][:10]
+
+    def binding(self, **change):
+        prereg = copy.deepcopy(PREREG)
+        prereg[ablation.BOUND_KEY].update(change)
+        return " | ".join(ablation.bound_errors(prereg))
+
+    def test_the_committed_registration_is_the_one_its_run_ran_under(self):
+        self.assertEqual(ablation.bound_errors(PREREG), [])
+        run = PREREG[ablation.BOUND_KEY]
+        ran = json.loads((ROOT / run["results"]).read_text(encoding="utf-8"))
+        self.assertEqual((ran["tier"], ran["catalog_head"]), ("live", run["commit"]))
+        self.assertEqual(ran["prereg"]["sha256"], ablation.prereg_sha256(unbound(PREREG)))
+
+    def test_its_pins_are_checked_at_the_run_commit_and_the_catalog_now_is_never_measured(self):
+        with mock.patch.object(ablation, "measure", side_effect=AssertionError("measured the catalog now")):
+            status = ablation.bound_status(PREREG)
+        self.assertEqual(status, {m: f"current at {self.RUN}" for m in MIX})
+
+    def test_the_prereg_command_checks_a_bound_registration_at_its_commit(self):
+        with mock.patch.object(ablation, "registration_status",
+                               side_effect=AssertionError("checked against the catalog now")):
+            code, out, err = run_main(["prereg"])
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"ship-it: current at {self.RUN}", out)
+        self.assertIn(f"frozen at {self.RUN}", out)
+
+    def test_a_pin_that_was_stale_at_the_run_commit_still_fails(self):
+        stale = subprocess.CompletedProcess([], 1, "ship-it: stale: baseline_sha256 moved since "
+                                                   "registration\nclean-sweep: current\n", "")
+        with mock.patch.object(ablation, "_prereg_at", return_value=stale):
+            status = ablation.bound_status(PREREG)
+            code, _out, _err = run_main(["prereg"])
+        self.assertEqual(status["ship-it"], f"stale: baseline_sha256 moved since registration at {self.RUN}")
+        self.assertEqual(status["review-it"], f"unchecked at {self.RUN}")
+        self.assertEqual(code, 1)
+
+    def test_a_registration_that_does_not_check_at_its_commit_is_a_refusal(self):
+        broken = subprocess.CompletedProcess([], 2, "", "ablation: prereg: schema must be ...")
+        with mock.patch.object(ablation, "_prereg_at", return_value=broken):
+            with self.assertRaisesRegex(ablation.AblationError, f"does not check at {self.RUN}"):
+                ablation.bound_status(PREREG)
+            code, _out, err = run_main(["prereg"])
+        self.assertEqual(code, 2, err)
+
+    def test_an_edit_to_the_registration_after_its_run_is_refused(self):
+        for key, value in (("repeats", 4), ("registered_payloads", {})):
+            with self.subTest(key=key):
+                prereg = copy.deepcopy(PREREG)
+                prereg[key] = value
+                found = " | ".join(ablation.bound_errors(prereg))
+                self.assertIn(f"frozen, but {key} changed since its run at {self.RUN}", found)
+
+    def test_an_edit_python_calls_equal_is_still_refused(self):
+        # PR #705 review (Codex P2): 5 == 5.0 and True == 1, yet each is another registration.
+        for key in ("repeats", "version"):
+            with self.subTest(key=key):
+                prereg = copy.deepcopy(PREREG)
+                prereg[key] = float(prereg[key])
+                self.assertIn(f"frozen, but {key} changed since its run at {self.RUN}",
+                              " | ".join(ablation.bound_errors(prereg)))
+
+    def test_a_binding_to_another_commit_or_none_is_refused(self):
+        self.assertIn(f"is not a live run at {'0' * 10}", self.binding(commit="0" * 40))
+        self.assertIn("not in this clone", self.binding(commit="0" * 40))
+        self.assertIn("full 40-hex commit", self.binding(commit=self.RUN))
+        self.assertIn("is not a repository file", self.binding(results="../results.json"))
+        self.assertIn("the report's own run directory",
+                      self.binding(results="docs/experiments/ablation-prereg.json"))
+        prereg = copy.deepcopy(PREREG)
+        prereg[ablation.BOUND_KEY] = self.RUN  # a bare commit, not the object
+        self.assertIn("must be an object", " ".join(ablation.bound_errors(prereg)))
+
+    def test_the_run_commit_is_read_with_replacement_refs_off(self):
+        # PR #705 review (Codex P1): _prereg_at EXECUTES the run commit's code, so a planted
+        # refs/replace/* or graft must not be able to serve another tree under the same SHA.
+        seen, real = [], subprocess.run
+
+        def spy(argv, *args, **kwargs):
+            if Path(str(argv[0])).name == "git":
+                seen.append((argv[1:4], kwargs.get("env") or {}))
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(subprocess, "run", spy):
+            self.assertEqual(ablation.bound_errors(PREREG), [])
+            ablation.bound_status(PREREG)
+        self.assertTrue(any("archive" in call for call, _env in seen), seen)
+        for call, env in seen:
+            with self.subTest(call=call):
+                self.assertEqual((env.get("GIT_NO_REPLACE_OBJECTS"), env.get("GIT_GRAFT_FILE")),
+                                 ("1", os.devnull))
+
+    def results_read_as(self, change):
+        """bound_errors with the run's results.json read back changed in memory, never on disk."""
+        real = ablation.read
+
+        def read(path):
+            text = real(path)
+            if Path(path).name != "results.json":
+                return text
+            data = json.loads(text)
+            change(data)
+            return json.dumps(data)
+        with mock.patch.object(ablation, "read", read):
+            return " | ".join(ablation.bound_errors(PREREG))
+
+    def test_a_run_that_recorded_other_missions_current_is_refused(self):
+        # PR #705 review (Codex P2): {"garbage": "current"} passed for "every payload current".
+        for registration in ({"garbage": "current"}, {m: "current" for m in MIX[:-1]}, []):
+            with self.subTest(registration=registration):
+                self.assertIn("does not record every registered mission current",
+                              self.results_read_as(lambda d, r=registration: d["prereg"].update(registration=r)))
+
+    def test_results_edited_since_the_run_are_refused(self):
+        # The binding is the report's integrity inventory: results.json must still be its bytes.
+        real = ablation.file_sha256
+        with mock.patch.object(ablation, "file_sha256",
+                               lambda p: "0" * 64 if Path(p).name == "results.json" else real(p)):
+            found = " | ".join(ablation.bound_errors(PREREG))
+        self.assertIn("is not the bytes docs/runs/2026-10-25-ablation-606-live.md's inventory pins",
+                      found)
+
+    def test_the_spent_ledger_decides_what_is_spent(self):
+        # PR #705 review (Codex P1, rounds 3 and 4): the marker is removable and a registration file
+        # mutable, so the ledger decides, without reading any file, and a deleted id is no escape.
+        bare = unbound(PREREG)
+        with mock.patch.object(ablation, "load_prereg", side_effect=AssertionError("read a file")):
+            self.assertIsNotNone(ablation.spent_registration(bare))
+            self.assertIsNotNone(ablation.spent_registration(dict(bare, version=PREREG["version"] - 1)))
+            self.assertIsNone(ablation.spent_registration(dict(bare, version=PREREG["version"] + 1)))
+            self.assertIsNone(ablation.spent_registration(dict(bare, id="R13-606-follow-up")))
+            for rid in (None, "", "  ", ["R13"]):
+                with self.subTest(id=rid):
+                    self.assertIsNotNone(ablation.spent_registration(dict(bare, id=rid)))
+        self.assertIn("id must name the registration",
+                      " | ".join(ablation.prereg_errors({k: v for k, v in bare.items() if k != "id"})))
+
+    def test_the_prereg_command_checks_a_spent_identity_as_bound_without_its_marker(self):
+        # PR #705 review (Codex P2, round 5): with bound_run deleted, an edited spent registration
+        # took the pre-run checks and `prereg` exited 0 on it.
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = Path(tmp) / "ablation-prereg.json"
+            json_path.write_text(json.dumps(dict(unbound(PREREG), repeats=4, seeds=PREREG["seeds"][:4]),
+                                            indent=2) + "\n", encoding="utf-8")
+            with mock.patch.object(ablation, "registration_status",
+                                   side_effect=AssertionError("ran the pre-run checks")):
+                code, _out, err = run_main(["--prereg", str(json_path), "prereg"])
+        self.assertEqual(code, 2, err)
+        self.assertIn("bound_run must be an object", err)
+
+    def test_a_binding_the_ledger_does_not_record_is_refused(self):
+        with mock.patch.dict(ablation.SPENT_RUNS, clear=True):
+            self.assertIn("SPENT_RUNS does not record version", " | ".join(ablation.bound_errors(PREREG)))
+
+    def test_refresh_refuses_the_bound_version_with_its_marker_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, md_path = Path(tmp) / "ablation-prereg.json", Path(tmp) / "ablation-prereg.md"
+            json_path.write_text(json.dumps(unbound(PREREG), indent=2) + "\n", encoding="utf-8")
+            shutil.copyfile(ablation.PREREG_MD, md_path)
+            before = tree_digest(tmp)
+            with self.assertRaisesRegex(ablation.AblationError, "refusing to re-pin a bound registration"):
+                ablation.refresh(json_path, md_path)
+            self.assertEqual(tree_digest(tmp), before)
+
+    def test_refresh_refuses_a_bound_registration_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, md_path = Path(tmp) / "ablation-prereg.json", Path(tmp) / "ablation-prereg.md"
+            shutil.copyfile(ablation.PREREG, json_path)
+            shutil.copyfile(ablation.PREREG_MD, md_path)
+            before = tree_digest(tmp)
+            with self.assertRaisesRegex(ablation.AblationError, "refusing to re-pin a bound registration"):
+                ablation.refresh(json_path, md_path)
+            self.assertEqual(tree_digest(tmp), before)
 
 
 class GeneratedVariants(unittest.TestCase):

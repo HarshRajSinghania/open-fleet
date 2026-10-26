@@ -37,7 +37,7 @@ loop-holder: you freeze the path set and its questions, dispatch per path, verif
 authoritative state (the query output, the alert receipt, the blind worker's manifest), and keep
 the ledger FILE. You never instrument, review, or merge.
 
-Composes `instrument` (the per-path protocol),
+Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `instrument` (the per-path protocol),
 `remediate-finding` (each path's instrumentation lands as one unit),
 `human-handoff` (cardinality-cost and channel-ownership items); rides `evidence-manifest` (per path: the question→signal map, the alert receipt,
 the blind worker's manifest, the instrumentation-removed negative control),

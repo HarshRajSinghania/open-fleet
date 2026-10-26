@@ -44,6 +44,20 @@ def _load(name, rel):
 ablation = _load("ablation_for_runner_tests", "scripts/ablation.py")
 runner = ablation._runner()
 PREREG = ablation.load_prereg()
+_CURRENT = []
+
+
+def current_registration():
+    """A copy of the registration, unbound and pinned to the catalog now. The committed one is
+    frozen at its run's commit, so a live run refuses it here as stale before any later check runs."""
+    if not _CURRENT:
+        prereg = {k: v for k, v in PREREG.items() if k != ablation.BOUND_KEY}
+        prereg["version"] = PREREG["version"] + 1  # the bound version has spent its authorisation
+        prereg["registered_payloads"] = ablation.measure(prereg)
+        _CURRENT.append(prereg)
+    return copy.deepcopy(_CURRENT[0])
+
+
 SAFETY = {}
 # The host probe, as the runner has it. setUpModule injects a proven host in its place (Python-level,
 # never an environment variable or flag): these tests are about the runner, not this machine. The
@@ -278,7 +292,7 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
                 "--harness-version", "v", *extra]
 
     def authorised(self, amount=10.0):
-        prereg = copy.deepcopy(PREREG)
+        prereg = current_registration()
         prereg["cost_cap"].update(status=ablation.AUTHORISED, authorised_usd=amount,
                                   authorised_by="test fixture (not an authorisation)")
         return prereg
@@ -326,6 +340,33 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
                      self.authorised())
         self.refused(self.live("--cost-cap-usd", "5", "--grader-limit-flag", ""), "per-call limit",
                      self.authorised())
+
+    def test_a_bound_registration_never_drives_a_live_run(self):
+        # PR #705 review (Codex P1): the bound registration with its payloads re-pinned to today's
+        # catalog passed every other live check, and would have spent its run's authorisation again.
+        prereg = self.authorised()
+        prereg[ablation.BOUND_KEY] = copy.deepcopy(PREREG[ablation.BOUND_KEY])
+        self.refused(self.live("--cost-cap-usd", "5"), "live run is bound", prereg)
+
+    def test_the_bound_version_with_its_marker_deleted_never_drives_a_live_run(self):
+        # PR #705 review (Codex P1, round 3): deleting bound_run kept version 2 and its spent
+        # AUTHORISED cap; the committed registration decides, not the submitted file's marker.
+        prereg = self.authorised()
+        prereg["version"] = PREREG["version"]
+        self.assertNotIn(ablation.BOUND_KEY, prereg)
+        self.refused(self.live("--cost-cap-usd", "5"), "live run is bound", prereg)
+
+    def test_a_spent_identity_never_drives_a_live_run_whatever_its_file_says(self):
+        # PR #705 review (Codex P1, round 4): deleting `id` too, or a canonical file that changed or
+        # would not parse, let the spent version through. The ledger decides; a missing id is spent.
+        prereg = self.authorised()
+        prereg["version"] = PREREG["version"]
+        del prereg["id"]
+        self.refused(self.live("--cost-cap-usd", "5"), "id must name the registration", prereg)
+        with mock.patch.object(ablation, "PREREG", self.tmpdir() / "no-such-registration.json"):
+            prereg = self.authorised()
+            prereg["version"] = PREREG["version"]
+            self.refused(self.live("--cost-cap-usd", "5"), "live run is bound", prereg)
 
     def test_a_live_run_refuses_a_stale_registration(self):
         prereg = self.authorised()
@@ -587,8 +628,10 @@ class RelativePathsSurviveTheCellCwd(SafetyNet):
 
 def small_live_prereg(mission="review-it", behavioral=(4,)):
     """A TEST registration marked AUTHORISED with a one-pair design (both cells behavioral), pinned
-    to the catalog as it is now. It authorises nothing: no model runs under it."""
-    prereg = copy.deepcopy(PREREG)
+    to the catalog as it is now. It authorises nothing: no model runs under it. It is a new
+    registration, so it carries no bound_run: the committed one's run is bound and frozen."""
+    prereg = {k: v for k, v in copy.deepcopy(PREREG).items() if k != ablation.BOUND_KEY}
+    prereg["version"] = PREREG["version"] + 1
     prereg["mission_mix"] = [row for row in prereg["mission_mix"] if row["mission"] == mission]
     prereg["tasks"]["behavioral"]["cases"] = list(behavioral)
     prereg["tasks"]["trajectories"]["cases"] = []
@@ -904,7 +947,9 @@ class TheLiveGateEnforcesTheCap(SafetyNet):
     Nothing here is live: no model runs, the directory is discarded, nothing is evidence."""
 
     def run_live(self, cap, mode):
-        prereg = copy.deepcopy(PREREG)
+        # A new test registration pinned to the catalog now, so unbound (see small_live_prereg).
+        prereg = {k: v for k, v in copy.deepcopy(PREREG).items() if k != ablation.BOUND_KEY}
+        prereg["version"] = PREREG["version"] + 1
         prereg["cost_cap"].update(status=ablation.AUTHORISED, authorised_usd=100.0,
                                   authorised_by="test fixture (not an authorisation)")
         # Pinned to the catalog as it is now, so this gate test does not go stale with the docs.

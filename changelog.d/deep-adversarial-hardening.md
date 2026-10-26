@@ -29,6 +29,5 @@
   names each skip's own cause; and the catalog validator refuses YAML sequence and mapping values
   where strings are required, duplicate frontmatter keys and unreadable top-level lines. Doctrine
   and docs were corrected where they overstated (ruflo, the Orca-free claim, the dark-eligible lane,
-  the first-merge authorship check, stale pins, hook paths and flag lists), and the seven missions
-  that loaded `ARCHITECTURE.md` at activation no longer do, which keeps every mission under the
-  activation budget.
+  the first-merge authorship check, stale pins, hook paths and flag lists), and every mission's
+  activation budget was re-banked under the raised cap and declared headroom.

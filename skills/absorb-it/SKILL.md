@@ -35,7 +35,7 @@ attempt on current main, or parked with a named ask. Thin loop-holder: you enume
 inbound PR, verify against authoritative state (git authorship, the receipt SHAs, the merged base),
 and keep the ledger FILE. You never absorb, review, or merge yourself.
 
-Composes `triage-state` (classification and the
+Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `triage-state` (classification and the
 out-of-scope knowledge base), `remediate-finding` (the amendment a review round demands lands as a unit), `acceptance-review` (build-blind review of every absorbed head), `resolve-conflict` (an
 inbound diff against a BASE that moved), `agent-brief` (the durable ask handed to a contributor),
 `compound-learn`; rides `evidence-manifest` (per PR: the pre-absorption base SHA, the RED receipt

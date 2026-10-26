@@ -38,7 +38,7 @@ Thin loop-holder: you plan the phases, dispatch one phase at a time, verify agai
 state (the dumped schema, the parity probe, the deploy record), and keep the ledger FILE (your
 memory is compacted; the ledger survives). You never write migrations, review, or merge.
 
-Composes `decide-and-freeze` (FREEZE is the one-way gate), `data-migration` (the phase contract), `remediate-finding` (each phase is built and closed as one unit), `acceptance-review`
+Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `decide-and-freeze` (FREEZE is the one-way gate), `data-migration` (the phase contract), `remediate-finding` (each phase is built and closed as one unit), `acceptance-review`
 (build-blind review per phase); rides `evidence-manifest` (per phase: base → head SHA, the down round-trip diff, the parity probe, both dual-validity runs),
 `merge-serialization` (the migrations directory is a merge chain), `reviewed-sha-freshness`, `dispatch-lifecycle`, `ledger-contract`, `attention-budget`, `sandbox-policy`,
 `gate-classification` (every phase's promotion and deploy, and CONTRACT, are one-way). Worker TASK pack: one of matt | addy — never co-mount.

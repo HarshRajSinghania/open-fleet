@@ -35,7 +35,7 @@ not a pile of new pages. Thin loop-holder: you extract the surface, dispatch one
 verify against authoritative state (the re-derived map, the claim anchors, the reachability check),
 and keep the ledger FILE. You never write the docs yourself.
 
-Composes `doc-coverage` (extraction, the
+Read [ARCHITECTURE.md](../../ARCHITECTURE.md) once. Composes `doc-coverage` (extraction, the
 quadrant map, claim verification), `remediate-finding` (each cell lands as one unit with its own
 review), `acceptance-review` (build-blind review: voice, accuracy, reachability),
 `compound-learn`, `publish-evidence` (the map + pages leave the tree as versioned links);

@@ -9,6 +9,7 @@ error branch to a fixture that must trip it.
 """
 import importlib.util
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -1465,6 +1466,68 @@ class PerMissionLoadBudgets(unittest.TestCase):
                 failures = validate.check_load_budgets(root)
                 self.assertEqual(len(failures), 1, failures)
                 self.assertIn("unreadable", failures[0])
+
+    # Declared headroom (2026-10-26): with none, ship-it sat 7 tokens under its budget and one
+    # sentence in any doc it loads failed an unrelated PR.
+    def _with_headroom(self, root, budgets, headroom, step=100, slack=100):
+        (root / "scripts" / "mission-load-budgets.json").write_text(json.dumps(
+            {"step": step, "headroom": headroom, "max_slack": slack, "budgets": budgets}), encoding="utf-8")
+
+    def test_declared_headroom_is_room_to_grow_not_slack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            line = {name: math.ceil(load * 1.05) for name, load in loads.items()}
+            self._with_headroom(root, {name: line[name] + 100 for name in loads}, 0.05)
+            self.assertEqual(validate.check_load_budgets(root), [])
+            self._with_headroom(root, {"alpha": line["alpha"] + 101, "beta": line["beta"]}, 0.05)
+            failures = validate.check_load_budgets(root)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("plus its 5.0% headroom", failures[0])
+            self.assertIn("lower it", failures[0])
+
+    def test_headroom_never_admits_growth_past_a_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._with_headroom(root, {"alpha": loads["alpha"] - 1, "beta": loads["beta"]}, 0.05)
+            failures = validate.check_load_budgets(root)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("alpha: activation load", failures[0])
+
+    def test_the_suggested_budget_carries_the_headroom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._with_headroom(root, {"beta": math.ceil(loads["beta"] * 1.05)}, 0.05)
+            want = -(-math.ceil(loads["alpha"] * 1.05) // 100) * 100
+            self.assertEqual(validate.check_load_budgets(root),
+                             [f"alpha: no integer budget (measured ~{loads['alpha']} tokens; add {want})"])
+
+    def test_a_malformed_headroom_fails_closed(self):
+        for headroom in (-0.01, 0.1, 2.5, "2.5%", True, None):
+            with self.subTest(headroom=headroom), tempfile.TemporaryDirectory() as tmp:
+                root = self._catalog(tmp, {})
+                self._with_headroom(root, dict(self._loads(root)), headroom)
+                failures = validate.check_load_budgets(root)
+                self.assertEqual(len(failures), 1, failures)
+                self.assertIn("unreadable", failures[0])
+
+    def test_growing_into_the_headroom_stays_green(self):
+        # The headroom is spent by growth, so nothing may demand it again above the grown load
+        # (PR #705 review, P1: a check against today's load re-imposed it on every run).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._catalog(tmp, {})
+            loads = self._loads(root)
+            self._with_headroom(root, {name: load + 1 for name, load in loads.items()}, 0.05)
+            self.assertEqual(validate.check_load_budgets(root), [])
+
+    def test_the_cap_holds_every_committed_budget(self):
+        # Against the committed budgets, never against headroom above today's load (see above).
+        data = json.loads((ROOT / "scripts" / "mission-load-budgets.json").read_text(encoding="utf-8"))
+        self.assertGreater(data["headroom"], 0, "the live budgets declare no headroom")
+        self.assertLessEqual(max(data["budgets"].values()), validate.MISSION_MAX_LOAD_TOKENS,
+                             "a committed budget sits above the catalog cap")
 
 
 if __name__ == "__main__":

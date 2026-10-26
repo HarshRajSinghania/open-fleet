@@ -1,0 +1,9 @@
+# oracle, 2026-10-26
+tag v1.4.239 -> 47f77cf7018ebc0d046b82c6dde31cf704909162
+tag v1.4.238 -> e6f7fba58e8e47b45e4343f99101b3ca9e05a5da
+upstream main: 35af10dded (2026-10-26T06:19:26Z); newest tag and latest release v1.4.241
+installed: 1.4.239 (orca CLI), Orca.app 1.4.239
+files changed v1.4.238..v1.4.239: 8964
+
+$ upstream_probe.py latest (pin then v1.4.238)
+pin v1.4.238 - upstream v1.4.241 - drift patch - 3 stable tag(s) newer than the pin (threshold 10) -> no re-pin due

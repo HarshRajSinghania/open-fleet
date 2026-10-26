@@ -3,7 +3,7 @@
 Ground truth about how Orca's orchestration DAG behaves for fleets that drive it with CLI verbs
 (`run-create` / `task-create` / `worker-start` / `check` / `send`). Sourced from live-DB research
 plus the version-matched guide the binary serves (`orca skills get orchestration`); treat as
-operational contract, not product marketing. Current schema line: v43 at the pin (`db/contract-constants.ts:23` at v1.4.238 / e6f7fba5, unchanged since v1.4.224 / 2bb20586; v42 was the v1.4.215 line — orca-session-id columns — and v43 only respells stored `session:<id>` addresses as `orca_session_id:<id>`, `migrate-v43.ts`).
+operational contract, not product marketing. Current schema line: v43 at the pin (`db/contract-constants.ts:23` at v1.4.239 / 47f77cf7, unchanged since v1.4.224 / 2bb20586; v42 was the v1.4.215 line — orca-session-id columns — and v43 only respells stored `session:<id>` addresses as `orca_session_id:<id>`, `migrate-v43.ts`).
 
 ## A Run is the durable scope primitive
 
@@ -53,7 +53,7 @@ What *is* real and load-bearing: `worker_done`, `merge_ready`, `heartbeat`, `que
 `escalation`, `status`. `decision_gate`, `dispatch` and `handoff` are all valid `send --type`
 values a fleet *could* write (`cli/specs/orchestration.ts:71` lists all nine); the runtime writes a
 `decision_gate` only on the legacy direct-ask path (`legacy-ask-operation.ts:101`) and migrates
-existing ones to `status` (`message-inbox.ts:81`), and writes no `dispatch` or `handoff` at all.
+existing ones to `status` (`message-inbox.ts:81`, :82 at v1.4.239), and writes no `dispatch` or `handoff` at all.
 `decision_gate` sat in the load-bearing list until #302 — not because the CLI refuses it, which is
 what that issue supposed, but because the runtime has stopped producing it.
 

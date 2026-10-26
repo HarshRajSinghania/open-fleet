@@ -40,15 +40,15 @@
 #     also sets exit 1 for it (`terminal.ts:125-129` at v1.4.203), so v4 failed closed BY ACCIDENT; v5 reads
 #     the field, so a host that sets only one of the two still fails closed.
 #   - PROFILE=ro NEVER takes worker-start on Orca (off Orca the provider builds ro from --profile,
-#     so ro rides worker-start there): launch args come from the host's `agentDefaultArgs`
-#     profile setting, whose migrated default IS the YOLO map (`tui-agent-launch-defaults.ts:10`
-#     re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS`), so a default host would
-#     silently upgrade a read-only reviewer to a bypass one. A host set to manual mode has `''`
-#     instead, and from v1.4.238 a host on the global Auto switch carries claude
-#     `--permission-mode auto` / codex `--approve-for-me` (`AUTO_TUI_AGENT_ARGS`,
-#     `tui-agent-permissions.ts:6-10`, 8d0501622a #30677) — not a PROFILE flag, so exit 5
-#     refuses an Auto host exactly as it refuses a manual one (re-witness: docs/runs/
-#     2026-10-24-pin-it-238.md). The rationale is host-dependent, not universal. `agentDefaultArgs` is
+#     so ro rides worker-start there): launch args come from the host's stored permission
+#     choice for the agent (from v1.4.239 own / ask / accept-edits / auto / full-access, its
+#     flag before `agentDefaultArgs`: `tui-agent-launch-defaults.ts:165-179`). full-access IS the
+#     YOLO map, as is an older host's migrated default (`tui-agent-launch-defaults.ts:37-38`
+#     re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS`), so such a host would
+#     silently upgrade a read-only reviewer to a bypass one. Every other choice carries no
+#     PROFILE flag (auto is claude `--permission-mode auto` / codex `--approve-for-me`,
+#     `AUTO_TUI_AGENT_ARGS`, `tui-agent-permissions.ts:6-10`), so exit 5 refuses it (re-witness:
+#     docs/runs/2026-10-26-pin-it-239.md). The rationale is host-dependent, not universal. `agentDefaultArgs` is
 #     source-witnessed at v1.4.203 (`tui-agent-launch-defaults.ts:10`); live probe owed — pin-it.
 #   - `launch.effective` from the worker-start receipt is printed when present: never claim a model,
 #     effort, or permission flag from the REQUESTED arguments alone
@@ -107,7 +107,7 @@
 #          receipt carries it.  custom-argv lane: HANDLE=<h> STAGES=<csv>
 #
 # Agent × profile coverage (flags are Orca's own autonomous "yolo" args from
-# `tui-agent-permissions.ts:12-45` at the v1.4.238 pin, 6-39 at v1.4.229 — the map itself is
+# `tui-agent-permissions.ts:12-45` at the v1.4.239 pin and v1.4.238, 6-39 at v1.4.229 — the map is
 # unchanged across that range — so workers never block on a prompt; anything else fails closed
 # and needs WORKER_CMD):
 #   claude/codex/gemini → ro + rw + danger
@@ -130,7 +130,7 @@
 #   grok                → rw + danger (Orca has no read-only mode for grok)
 #   droid               → rw + danger (Orca appends `--auto high`); ro → WORKER_CMD
 #   opencode/omp/pi     → WORKER_CMD. opencode AND kilo are actively STRIPPED of
-#                         `--dangerously-skip-permissions` (`tui-agent-launch-defaults.ts:5-8`);
+#                         `--dangerously-skip-permissions` (`tui-agent-launch-defaults.ts:23-26`);
 #                         kilo stays off this roster for the same reason opencode fails closed.
 #   jcode/goose/hermes  → ro + rw + danger; the ro rows are this script's own, carrying base.py's
 #                         ro restriction (#596). crush → rw + danger; ro → WORKER_CMD (its

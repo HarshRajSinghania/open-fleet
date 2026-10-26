@@ -4,7 +4,8 @@
   "mission": "[review-it](2026-10-26-review-it-orca-ro-680.md)",
   "target": "a scratch review unit in a trusted repository's new Orca worktree; the orca ro/claude cell on the current row, Orca 1.4.239 and a native Claude Code 2.1.304 (#680)",
   "ran_as": "external-run",
-  "binds": "yes — binds the certification record's orca ro/claude cell once the pin moves to 1.4.239; review-it's own tier does not cite it",
+  "binds": "yes — binds the certification record's orca ro/claude cell at the v1.4.239 pin; review-it's own tier does not cite it",
   "outcome": "GO: the plan was approved in the pane and Write and Edit stayed out of the toolset; delivered by the no-inject fallback after Orca refused the inject with no_agent_detected; two earlier attempts retained, certifying nothing",
-  "summary": "the 2026-10-26 Orca ro/claude re-witness on the current row (#680); no mission's tier cites it"
+  "summary": "the 2026-10-26 Orca ro/claude re-witness on the current row (#680); no mission's tier cites it",
+  "order": 1
 }

@@ -46,7 +46,7 @@ In the source repository, `skills/<name>/SKILL.md` references its phase playbook
 |---|---|---|---|
 | `git` | Install | Required (hard fail if absent) | 2.47.3 (clean container), 2.55.0 (macOS host) |
 | `python3` | Install | ≥ 3.11 (hard fail below 3.11; CI tests 3.11, 3.12, 3.13) | 3.13.15 |
-| Orca app + CLI (or RPI runtime) | Run | Orca ≥ `runtime/pins.json` pin, currently **v1.4.238** (soft warn on install; `validate.py` enforces pin agreement), or `OPEN_FLEET_RUNTIME=posix` | v1.4.238 source-delta re-witness (2026-10-24) + macOS/Linux live witnesses ([`pins.json`](../runtime/pins.json)) |
+| Orca app + CLI (or RPI runtime) | Run | Orca ≥ `runtime/pins.json` pin, currently **v1.4.239** (soft warn on install; `validate.py` enforces pin agreement), or `OPEN_FLEET_RUNTIME=posix` | v1.4.239 source-delta re-witness with live 1.4.239 receipts (2026-10-26) + macOS/Linux live witnesses ([`pins.json`](../runtime/pins.json)) |
 | `gh` (authenticated) | Run | Present + `gh auth status` green (soft warn on install) | 2.100.0 |
 | Coding-agent harness | Run | Claude Code (`claude`) or supported harness in [runtimes.md](runtimes.md) | Claude Code 2.1.272+ |
 

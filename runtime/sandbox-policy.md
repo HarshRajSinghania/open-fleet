@@ -7,22 +7,22 @@ tiers use each agent's **fully-autonomous flag** (`src/shared/tui-agent-permissi
 they still prompt on shell and network, so a build worker running tests or `npm install` would
 block.
 
-**Say "by default" precisely.** What a `worker-start` launch actually appends is the host's
-`agentDefaultArgs` profile setting, not this map directly. Its MIGRATED DEFAULT is this map —
-`tui-agent-launch-defaults.ts:18-19` re-exports `YOLO_TUI_AGENT_ARGS` as `DEFAULT_TUI_AGENT_ARGS` — but
-a host whose owner chose manual mode carries `''`, and from v1.4.238 one on the Auto switch carries
-claude `--permission-mode auto` / codex `--approve-for-me` (`AUTO_TUI_AGENT_ARGS`,
-`tui-agent-permissions.ts:6-10`). Two consequences, opposite in sign: on a default host a
-supervised `PROFILE=ro` launch would be silently upgraded to bypass (which is why ro never takes
-Orca's `worker-start`, dispatch-lifecycle.md); on a manual or Auto host, `worker-start` launches
-workers without the PROFILE's flag (a manual one PROMPTS on invisible dialogs) while the fleet
-believes they are autonomous — `spawn_worker.sh` exits 5 (LAUNCHED_UNUSABLE) on both. Neither is
-knowable from source: read `launch.effective` off the start receipt and record the host's
-permission mode in the ledger header. Live probe owed (pin-it).
+**Say "by default" precisely.** `worker-start` appends the host's stored permission choice, not
+this map: from v1.4.239 `own`, `ask`, `accept-edits`, `auto` or `full-access`
+(`tui-agent-permission-choice.ts:17-23`), its flag before `agentDefaultArgs`
+(`tui-agent-launch-defaults.ts:165-179`). `full-access` is this map, as is an older host's MIGRATED
+DEFAULT (`tui-agent-launch-defaults.ts:37-38`); `auto` is claude `--permission-mode auto` / codex
+`--approve-for-me` (`AUTO_TUI_AGENT_ARGS`, `tui-agent-permissions.ts:6-10`); `own` adds none. Two
+consequences, opposite in sign: on a full-access host a supervised `PROFILE=ro` launch would be
+silently upgraded to bypass (which is why ro never takes Orca's `worker-start`,
+dispatch-lifecycle.md); any other choice launches without the PROFILE's flag (`ask` PROMPTS on
+invisible dialogs) while the fleet believes it autonomous — `spawn_worker.sh` exits 5
+(LAUNCHED_UNUSABLE). Neither is knowable from source: read `launch.effective` off the start
+receipt and record the host's permission choice in the ledger header. Live probe owed (pin-it).
 
 `spawn_worker.sh` maps each PROFILE per agent. **Orca has no read-only tier for ANY agent** — its
 maps are `YOLO_TUI_AGENT_ARGS` (`tui-agent-permissions.ts:12-45`), a small `YOLO_TUI_AGENT_ENV`
-and the Auto map above — none of them read-only. Every entry in the `ro` column below is that agent's
+and the choice maps above — none of them read-only. Every entry in the `ro` column below is that agent's
 OWN native flag, chosen here; the dashes are agents for which no such flag has been verified, not
 agents Orca singles out. The note used to read "(no RO in Orca)" beside two of them, which implied
 Orca supplied the others (#302).
@@ -36,7 +36,7 @@ Orca supplied the others (#302).
 | cursor | — none verified → WORKER_CMD | `--yolo` (`tui-agent-permissions.ts:30`)     |
 | grok   | — none verified → WORKER_CMD | `--permission-mode bypassPermissions`        |
 | droid  | WORKER_CMD               | `--auto high`                                   |
-| opencode / kilo | WORKER_CMD      | WORKER_CMD — Orca **strips** `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:13-16`) |
+| opencode / kilo | WORKER_CMD      | WORKER_CMD — Orca **strips** `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:23-26`) |
 | omp / pi | WORKER_CMD             | WORKER_CMD (not in Orca's autonomous-arg map)   |
 
 - **`ro`** is non-blocking because it cannot mutate — nothing to approve. It is the permission

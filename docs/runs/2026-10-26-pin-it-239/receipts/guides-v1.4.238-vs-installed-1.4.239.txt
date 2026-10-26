@@ -1,0 +1,47 @@
+# guides: the installed 1.4.239 binary's skills get output vs the v1.4.238 tag archive (docs/runs/2026-10-24-pin-it-238/guides)
+identical orca-cli--automations.md
+identical orca-cli--browser.md
+identical orca-cli--publishing.md
+identical orca-cli.md
+CHANGED orchestration--coordinator-loop.md
+    20a21,22
+    > Helpers a worker starts appear in this Run's `worker-list` with their
+    > `creatorDispatchId`, and report to that worker rather than to you.
+identical orchestration--legacy-contract-migration.md
+identical orchestration--low-level-topology.md
+CHANGED orchestration--messaging-and-gates.md
+    58c58,60
+    < worker resumes by message ID. The coordinator answers that message with `reply`.
+    ---
+    > worker resumes by message ID. The coordinator answers that message with `reply`;
+    > a helper's question goes to the worker that started it, which answers it the
+    > same way.
+identical orchestration--placement-and-remote.md
+identical orchestration--recovery-and-cleanup.md
+CHANGED orchestration--worker-contract.md
+    30a31,35
+    > Each wait defaults to 600000 ms (10 minutes). `--timeout-ms` accepts a positive
+    > integer up to 1800000 ms (30 minutes); larger values are rejected before creating
+    > or resuming a question. For decisions that take longer, resume the same question
+    > after each timeout.
+    > 
+    55a61,75
+    > ## Helper workers
+    > 
+    > When the preamble has a SUB-DISPATCH section, start helpers on your own
+    > Dispatch's Run. Do not `run-create` or `run-use` for them.
+    > 
+    > ```text
+    > ORCA orchestration worker-start --from <worker_handle> --spec "<sub-task>" --worktree current --agent <agent> --json
+    > ORCA orchestration reply --from <worker_handle> --id <message_id> --body "<answer>"
+    > ```
+    > 
+    > Their questions, escalations, and `worker_done` arrive in your own `check`, next
+    > to your coordinator's mail. Answer their questions with `reply`, and wait for
+    > every helper's `worker_done` before sending yours. After you settle, a helper
+    > still running reports to your coordinator's Run.
+    > 
+CHANGED orchestration.md
+    118a119,120
+    > A dispatched worker starts its own helpers with `worker-start --spec` on the Run
+    > it works for, without `run-create`; the helpers report to that worker.

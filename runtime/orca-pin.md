@@ -14,13 +14,13 @@ holds its shape. The two never disagree — a run updates both or neither.
 | Field | Value |
 |---|---|
 | Upstream | `stablyai/orca` (`https://github.com/stablyai/orca`) |
-| Installed version | **v1.4.238** (tag `v1.4.238` source-delta re-witness from v1.4.229; live orchestration receipts carried from installed 1.4.224 macOS + Linux `orca-ide serve` witness; PATH ran 1.4.229) |
-| Build commit | `e6f7fba58e8e47b45e4343f99101b3ca9e05a5da` (tag `v1.4.238` target commit, "release: v1.4.238"; upstream builds from release branches, so the tag IS the release source) |
-| Witnessed | 2026-10-24 (`source`: source-delta re-witness `v1.4.229..v1.4.238`, 1040 commits, across specs, guides, orchestration contracts and every cited upstream file, plus carried 2026-10-13 live Linux/macOS receipts for unchanged orchestration paths) |
-| Upstream HEAD then | `8fd32eccd7` (main, 2026-10-24; newest tag + latest release both v1.4.238, 2026-10-23) |
-| Run record | docs/runs/2026-10-24-pin-it-238.md (drift tables + park register) + docs/runs/2026-10-24-pin-it-238/ (delta inventory D238-1…10) + docs/runs/2026-10-24-pin-it-238-bump.md (the bump) + docs/runs/2026-10-12-pin-it-224/ (live receipts) |
-| Prior pin | v1.4.229 `a0cd1644` (2026-10-17, docs/runs/2026-10-17-pin-it-229.md) |
-| Verdict | **PINNED-WITH-PARKED** — two stale claims patched (`sandbox-policy.md`'s Auto host mode, `mission-scheduling.md`'s `--host` names) and eight stale citations re-anchored; additive v1.4.238 surfaces noted (`--surface`, `linear comment edit\|delete`, `terminal set-pane-title`); live v1.4.224 receipts carried for unchanged orchestration paths |
+| Installed version | **v1.4.239** (installed Orca.app + CLI 1.4.239, macOS arm64; tag `v1.4.239` source-delta re-witness from v1.4.238; live 1.4.239 receipts; deeper orchestration receipts carried from the 1.4.224 macOS + Linux `orca-ide serve` witness) |
+| Build commit | `47f77cf7018ebc0d046b82c6dde31cf704909162` (tag `v1.4.239` target commit, "release: v1.4.239"; upstream builds from release branches, so the tag IS the release source) |
+| Witnessed | 2026-10-26 (`source`: source-delta re-witness `v1.4.238..v1.4.239` across specs, guides, orchestration contracts and every cited upstream file, plus live 1.4.239 receipts: the CLI capture and the #680 ro/claude worker witness) |
+| Upstream HEAD then | `35af10dded` (main, 2026-10-26; newest tag and latest release v1.4.241) |
+| Run record | docs/runs/2026-10-26-pin-it-239.md (drift tables) + docs/runs/2026-10-26-pin-it-239/ (live capture, diffs, delta inventory D239-1…6) + docs/runs/2026-10-26-review-it-orca-ro-680.md (the live worker witness) + docs/runs/2026-10-12-pin-it-224/ (older live receipts, carried) |
+| Prior pin | v1.4.238 `e6f7fba5` (2026-10-24, docs/runs/2026-10-24-pin-it-238.md) |
+| Verdict | **PINNED-WITH-PARKED** — `sandbox-policy.md`'s host modes patched for the stored permission choice; stale citations re-anchored; additive v1.4.239 surfaces noted (`connector`, helper workers under SUB-DISPATCH, the `ask --timeout-ms` cap); the ro lane's no-inject fallback (#680) live-witnessed |
 
 ## What moved since v1.4.224 (diff summary)
 
@@ -29,6 +29,13 @@ re-dumped from the installed binary and replayed live on the Linux serve substra
 `docs/runs/2026-10-12-pin-it-224/`); at v1.4.229 and v1.4.238 the tag-range source delta was
 audited line by line (D229-1…7, D238-1…10, each run's directory).
 
+- **v1.4.239 delta (D239):** a terminal launch's permission is a stored choice per agent (`own`,
+  `ask`, `accept-edits`, `auto`, `full-access`) whose flag precedes the user's Arguments —
+  `sandbox-policy.md` names it, and `spawn_worker.sh` still exits 5 on anything but the rw flag;
+  `dispatch --inject` cannot see a native Claude Code install (D239-2; #680's no-inject fallback,
+  live-witnessed); helper workers under SUB-DISPATCH run in the worker's own Run (off by
+  default: depth 1); `ask --timeout-ms` is capped at 1800000; `connector` (6 commands). Schema
+  v43, the dispatch and agent-presence code and the orchestration CLI spec's paths are unchanged.
 - **v1.4.238 delta (D238):** a global Auto permission switch (`AUTO_TUI_AGENT_ARGS`: claude
   `--permission-mode auto`, codex `--approve-for-me`) — `sandbox-policy.md` names it and
   `spawn_worker.sh` refuses it (exit 5, test-pinned); `--host`/`--project` take the names
@@ -45,13 +52,13 @@ audited line by line (D229-1…7, D238-1…10, each run's directory).
   verdict shapes); and Schema v43 (`orca_session_id:<id>` respell, unchanged through v1.4.238).
 - **Still parked:** `caller.orcaSessionId` (D224-6), `P27` legacy-takeover live replay, agent-owned
   abandon + send-side `consumer_fenced`, live replay of `orca jira` / `reference` / `agent launch`
-  and of v1.4.238's `--surface` receipts, an Auto host's `launch.effective`, and a v1.4.238
-  binary capture (none installed at the witness).
+  and of v1.4.238's `--surface` receipts, and a live `launch.effective` under each stored
+  permission choice. A 1.4.239 binary capture now exists (`receipts-live-2026-10-26`).
 
 ## Noted since the pin (inherited by the next re-pin)
 
-- PATH ran 1.4.229 at the v1.4.238 witness: the app update is owed, and `spawn_worker.sh`
-  NOTEs "update Orca to v1.4.238" until it lands (never "re-run pin-it").
+- PATH ran 1.4.239 at the v1.4.239 witness. Upstream was already at v1.4.241, two patches
+  ahead, below the probe's ten-patch trigger.
 - The v1.4.238 re-witness ran while the #606 ablation was registered but unrun; the bump
   re-registered it (version 2) because four of the docs it edits are in that payload.
 
@@ -79,7 +86,7 @@ A re-pin fires on whichever comes first:
 3. A `SPAWN=NOTE … run pin-it` sighting in the field, or any dispatch-doc drift report.
 
 Owner: the **pin-it** mission (its coordinator runs the loop; the weekly probe files the issue).
-Next trigger: **2027-01-24** (`pins.json` `orca.next_review`, a quarter after this witness) or
+Next trigger: **2027-01-26** (`pins.json` `orca.next_review`, a quarter after this witness) or
 the next minor / ten patches behind / drift sighting, whichever first. The weekly probe files
 triggers 1 and 2 itself — no issue to open; the successor run inherits the park register in
 docs/runs/2026-10-24-pin-it-238.md.

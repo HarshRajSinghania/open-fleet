@@ -656,38 +656,38 @@
   },
   "registered_payloads": {
     "ship-it": {
-      "baseline_sha256": "374c8fcd0d0c4b02a11b45fa84369e2c0f68fbaf23d7818d11128bbc2e21ef68",
+      "baseline_sha256": "986da96fb50ad473dff95067a1ff94c315edaeced4f66c2bc133f60ec80c7dbe",
       "reduced_sha256": "1e5bc11488397aaab16825dedc03ecf4e65be5ab9b8f63220fa3168dcd15eaf1",
-      "baseline_tokens": 33996,
+      "baseline_tokens": 33993,
       "reduced_tokens": 4579,
-      "delta_tokens": -29417,
+      "delta_tokens": -29414,
       "obligations_held": true,
       "task_inputs_sha256": "e14d94ca1aee683a68f2d1637abae857a8d43c7d2e63ab72539596dd601ccfa2"
     },
     "clean-sweep": {
-      "baseline_sha256": "3ca7ec30dbac8f4b0ddb6787b6821412fc96280ec71caf0bf9ec6c4ff5044148",
+      "baseline_sha256": "eef5ae299345a1556d3be52856b5e380f4e2680e2eff84176b9d3b6969acd5d9",
       "reduced_sha256": "16cdff0db836de3c6e5b62f8ed47cdf5415b3603b006e70f11c3822170ea2b0d",
-      "baseline_tokens": 32650,
+      "baseline_tokens": 32651,
       "reduced_tokens": 4546,
-      "delta_tokens": -28104,
+      "delta_tokens": -28105,
       "obligations_held": true,
       "task_inputs_sha256": "550dc668d76a9d80e784dd068c9069f0158c4c330e5d104795676a4bbd5b7f0b"
     },
     "review-it": {
-      "baseline_sha256": "7dd9b0bbe51ccd2f6c5b0ee6bb5cec2569a561c9077bb6eb996db5a8d1ba37ff",
+      "baseline_sha256": "3589cc1cf10cc57fa83e07737764d1bf5e73735dc507b0d31b91bd613d85a12d",
       "reduced_sha256": "88f3c67bc071d8fb1e467beb12af9941cadd8e1fa3b8fbf390e1eb961cc2182d",
-      "baseline_tokens": 24480,
+      "baseline_tokens": 24477,
       "reduced_tokens": 3724,
-      "delta_tokens": -20756,
+      "delta_tokens": -20753,
       "obligations_held": true,
       "task_inputs_sha256": "b333fb2cbe19d099f2f5b156bbbf72cf05ec8a012ddf01e4ef5ce9105296327f"
     },
     "root-cause": {
-      "baseline_sha256": "6861a511324087ce39726ee9eeaeb83c18e157b2bf275ddaa10269255af6a606",
+      "baseline_sha256": "ba33761731f4a6d93deab88c5d92de480a3f23ce1f3f48fc5a93da48567244a8",
       "reduced_sha256": "8211d9962f055b3713c23aec26ee2d568f8b71dad0d5e25c311bb90cb8f92920",
-      "baseline_tokens": 19249,
+      "baseline_tokens": 19246,
       "reduced_tokens": 6716,
-      "delta_tokens": -12533,
+      "delta_tokens": -12530,
       "obligations_held": true,
       "task_inputs_sha256": "f1752e111c52e4f4b60b321fe482460f2b4ce79a8872135cfe443b8afa17a463"
     }

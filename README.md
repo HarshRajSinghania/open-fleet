@@ -180,7 +180,7 @@ Understand the operational boundary before dispatching workers on a repository:
 To run missions on a target repository, you need ([pinned prerequisites](docs/distribution.md#prerequisites-pinned)):
 
 1. **An orchestration runtime** ([Multi-runtime & harness guide](docs/runtimes.md)):
-   - **Default (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.238** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
+   - **Default (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.239** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
    - **Standalone (`posix`) or external orchestrators:** Set `OPEN_FLEET_RUNTIME=posix` to dispatch via local git worktrees and background processes (`tmux`, `cmux`, or `setsid`) with no Orca app required, or select one of the other supported RPI providers.
 2. **A coding-agent harness:** Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), OpenCode (`opencode`), Oh My Pi (`omp`), Pi (`pi`), `jcode`, Goose (`goose`), Hermes Agent (`hermes`), or Crush (`crush`), plus the OpenHands SDK agent (`openhands` on `OPEN_FLEET_RUNTIME=openhands`; `opencode`, `omp`, and `pi` require a non-`orca` runtime such as `posix` or a `WORKER_CMD` override — see [certification matrix](docs/certification.md)).
 3. **`git` and `gh`** (authenticated for GitHub PR and review verification, or `orca linear` / `orca jira` for hosted trackers).

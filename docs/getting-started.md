@@ -34,7 +34,7 @@ Use this guide to run your first mission on a target repository. You will verify
 Running a mission on a target project requires three core layers:
 
 1. **An orchestration runtime** ([Multi-runtime & harness guide](runtimes.md)):
-   - **Default (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.238**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
+   - **Default (`orca`):** The [Orca desktop app](https://github.com/stablyai/orca) (at or above the catalog pin **v1.4.239**), the `orca` CLI (`orca-ide` on Linux outside Orca terminals), and Orca's two public skills (`orchestration` and `orca-cli`). Verify Orca is running and ready:
      ```bash
      orca status --json
      ```

@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-26",
+  "report": "2026-10-26-pin-it-239.md",
+  "order": 2,
+  "mission": "[pin-it](2026-10-26-pin-it-239.md)",
+  "target": "the Orca runtime pin: v1.4.238 → v1.4.239, the installed build the #680 ro/claude witness ran on",
+  "ran_as": "self-run",
+  "binds": "no — a pin-it run note (source delta with live 1.4.239 receipts), not a proof report; pin-it's tier does not cite it",
+  "outcome": "RE-PINNED at v1.4.239: D239-1 (the stored permission choice) patched in sandbox-policy.md; five citations re-anchored; additive surfaces noted; the certification record re-recorded at version 6"
+}

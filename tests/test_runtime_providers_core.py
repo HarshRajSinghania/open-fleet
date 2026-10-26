@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -548,6 +549,28 @@ class GuardConfigsMergeWhatIsAlreadyThere(unittest.TestCase):
         self.assertIn(str(self.posix_mod.CANONICAL_DENY_HOOK), pre[0]["hooks"][0]["command"])
         self.assertEqual(pre[1]["hooks"][0]["command"], "echo theirs")
         self.assertEqual(doc["hooks"]["Stop"][0]["hooks"][0]["command"], "echo bye")
+
+    def test_env_that_steers_the_hook_shell_is_dropped(self):
+        # #707 review: the guard command runs a bare `sh`, so a kept env.PATH naming a directory
+        # with its own `sh` ran that instead of deny-hook.sh. Every key --verify-settings refuses
+        # as steering is dropped on merge, for every harness config.
+        steer = {"PATH": "/planted/bin", "BASH_ENV": "/planted/rc", "ENV": "/planted/rc",
+                 "LD_PRELOAD": "/planted/x.so", "SHELL": "/planted/sh", "IFS": "/"}
+        for rel in (".claude/settings.local.json", ".codex/hooks.json", ".crush/crush.json"):
+            (self.wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.wt / rel).write_text(json.dumps({"env": {**steer, "KEEP_ME": "1"}}), encoding="utf-8")
+        self.install(agent="crush")
+        for rel in (".claude/settings.local.json", ".codex/hooks.json", ".crush/crush.json"):
+            self.assertEqual(self.read(rel)["env"], {"KEEP_ME": "1"}, rel)
+
+    def test_the_dropped_keys_cover_what_verify_settings_refuses(self):
+        hook = (Path(__file__).resolve().parents[1] / "runtime" / "scripts" / "deny-hook.sh").read_text(
+            encoding="utf-8")
+        listed = re.search(r"^STEERING = \(([^)]*)\)", hook, re.M)
+        self.assertIsNotNone(listed, "deny-hook.sh no longer names its STEERING keys")
+        refused = set(re.findall(r'"([A-Z_]+)"', listed.group(1)))
+        self.assertTrue(refused)
+        self.assertLessEqual(refused, set(self.posix_mod._SHELL_STEERING_KEYS))
 
     def test_installing_twice_adds_no_second_guard_entry(self):
         self.install()

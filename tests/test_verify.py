@@ -6519,7 +6519,8 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
         # The ancestry legs resolve the FULL ref name now: a pushable tag `origin/main` used to
         # shadow the remote-tracking branch under gitrevisions' lookup order.
         with self._inside_repo():
-            subprocess.run(["git", "tag", "origin/main", self.poison], cwd=self.repo, check=True)
+            subprocess.run(["git", "-c", "tag.gpgSign=false", "tag", "origin/main", self.poison],
+                           cwd=self.repo, check=True)
             errs = verify.check_base_binding({"base_sha": self.poison}, "main", True)
             self.assertTrue(errs and "not an ancestor" in errs[0], errs)
             errs = verify.check_ancestry({"head_sha": self.poison}, "main")

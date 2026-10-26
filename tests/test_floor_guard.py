@@ -670,7 +670,10 @@ class TestThresholdEvasions(unittest.TestCase):
 
     def run_rows(self, removed, added, repo=None):
         out = []
-        pairs = lambda rows: [("CONSTRAINTS.md", 10 + i, t) for i, t in enumerate(rows)]  # noqa: E731
+
+        def pairs(rows):
+            return [("CONSTRAINTS.md", 10 + i, t) for i, t in enumerate(rows)]
+
         floor_guard._flag_lowered_rows(pairs(added), pairs(removed), "CONSTRAINTS.md",
                                        lambda rule, _p, _l, detail: out.append((rule, detail)), repo)
         return out
@@ -726,6 +729,18 @@ class TestThresholdEvasions(unittest.TestCase):
         two = "- D9: 80% line coverage over 5 modules"
         self.assertEqual(self.run_rows([two], [two.replace("80%", "90%").replace("5 modules", "4 modules")]),
                          [("threshold-lowered", "5 -> 4")])
+
+    def test_an_unrelated_higher_number_does_not_hide_a_lowered_floor(self):
+        # #707 review: `gone=[80]`, `fresh=[70, 100]` passed because 100 >= 80. A vanished value
+        # is matched to the new values that carry its unit; any of them lower is a lowering.
+        before = "- D9: the human froze 80% against an UNMEASURED dimension"
+        lowered = before.replace("80%", "70%") + " (100 cases checked)"
+        self.assertEqual(self.run_rows([before], [lowered]), [("threshold-lowered", "80 -> 70")])
+        raised = "- D9: the human froze 85% against an UNMEASURED dimension (3 modules)"
+        self.assertEqual(self.run_rows([before], [raised]), [], "a raise beside an unrelated count is silent")
+        unitless = "- D9: at most 3 retries"
+        self.assertEqual(self.run_rows([unitless], ["- D9: at most 2 retries in 10 runs"]),
+                         [("threshold-lowered", "3 -> 2")])
 
     def test_an_edited_twin_does_not_hide_an_appended_duplicate(self):
         # PR #707 review: a wording edit to the original row paired it, and the appended

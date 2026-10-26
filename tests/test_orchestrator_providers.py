@@ -83,6 +83,42 @@ class AFailedLaunchReleasesItsClaim(ProviderTestBase):
                                  "the second attempt must be refused again, not answered with a pending marker")
         self.assertIsNone(self.state.request_row("req-refused"), "a refused launch keeps no claim")
 
+    def test_a_launch_that_may_have_started_keeps_its_claim(self):
+        # #707 review: the claim was released on EVERY exception, so a launch whose reply was
+        # lost or malformed freed the id and the retry slung a second worker beside the first.
+        # Once worker_start has reached the runtime the claim stays until it is checked or stopped.
+        slings = []
+
+        def runner(argv, **_kw):
+            if argv[:3] == ["ov", "spec", "write"]:
+                return {"success": True, "path": "/repo/.overstory/specs/t1.md"}
+            if argv[:2] == ["ov", "sling"]:
+                slings.append(argv)
+                return {"success": True}  # the worker launched; the reply names no agent
+            raise AssertionError(argv)
+
+        prov = OverstoryProvider(state=self.state, runner=runner, env={})
+        with self.assertRaises(ProviderError):
+            prov.worker_start(task_id="t1", agent="claude", profile="rw", prompt="Build",
+                              retry_request="req-lost")
+        self.assertEqual(self.state.request_row("req-lost")["state"], "pending")
+        again = prov.worker_start(task_id="t1", agent="claude", profile="rw", prompt="Build",
+                                  retry_request="req-lost")
+        self.assertEqual(again, {"state": "pending", "requestId": "req-lost"})
+        self.assertEqual(len(slings), 1, "a retry must not launch a second worker")
+
+    def test_a_cli_that_is_not_installed_releases_the_claim(self):
+        # Nothing ran: the binary was never found, so no worker can exist and a retry may act.
+        def runner(argv, **_kw):
+            raise FileNotFoundError(argv[0])
+
+        prov = OverstoryProvider(state=self.state, runner=runner, env={})
+        with self.assertRaises(ProviderError) as ctx:
+            prov.worker_start(task_id="t1", agent="claude", profile="rw", prompt="Build",
+                              retry_request="req-nocli")
+        self.assertEqual(ctx.exception.code, "overstory_cli_missing")
+        self.assertIsNone(self.state.request_row("req-nocli"))
+
 
 class TestSupersetProvider(ProviderTestBase):
     """#582: SupersetProvider (`superset-sh/superset`) CLI adapter (full suite: test_superset_provider.py)."""

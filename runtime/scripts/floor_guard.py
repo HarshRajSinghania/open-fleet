@@ -463,6 +463,16 @@ def numbers(text):
     return [float(n) for n in NUMBER.findall(_NOT_A_THRESHOLD.sub(" ", folded))]
 
 
+# A number and the unit written right after it (`80%`, `200 ms`, `100 cases`), or "".
+_NUMBER_UNIT = re.compile(r"(\d+(?:\.\d+)?)\s?(%|[A-Za-z]+)?")
+
+
+def numbers_with_units(text):
+    """`numbers(text)`, each paired with the unit that follows it (#707 review)."""
+    folded = unicodedata.normalize("NFKC", text)
+    return [(float(n), unit.lower()) for n, unit in _NUMBER_UNIT.findall(_NOT_A_THRESHOLD.sub(" ", folded))]
+
+
 def cells(text):
     """A table row's cells (the outer pipes stripped), or the whole line as one cell."""
     folded = unicodedata.normalize("NFKC", text).strip()
@@ -528,24 +538,29 @@ def lowering(before_text, after_text):
     one cell, where a number that no longer appears anywhere is the one that was dropped."""
     b_cells, a_cells = cells(before_text), cells(after_text)
     if len(b_cells) == 1 and len(a_cells) == 1:
-        before, after = numbers(b_cells[0]), numbers(a_cells[0])
-        gone = [v for v in before if v not in after]
-        fresh = [v for v in after if v not in before]
+        b_units, a_units = numbers_with_units(b_cells[0]), numbers_with_units(a_cells[0])
+        before, after = [v for v, _ in b_units], [v for v, _ in a_units]
+        gone = [(v, u) for v, u in b_units if v not in after]
+        fresh = [(v, u) for v, u in a_units if v not in before]
         if not gone:
             return None
         if not fresh:
-            return f"{gone[0]:g} -> (no number)"
+            return f"{gone[0][0]:g} -> (no number)"
         # The numbers that moved, paired in order when the counts agree (a line that restates
-        # two values); otherwise a vanished value must have SOME replacement at least as high —
-        # a raise is a tightening and reads as one (PR #707 review).
+        # two values); a raise is a tightening and reads as one (PR #707 review).
         if len(fresh) == len(gone):
-            for old, new in zip(gone, fresh, strict=True):
+            for (old, _), (new, _) in zip(gone, fresh, strict=True):
                 if new < old:
                     return f"{old:g} -> {new:g}"
             return None
-        for old in gone:
-            if not any(new >= old for new in fresh):
-                return f"{old:g} -> {max(fresh):g}"
+        # Otherwise a vanished value is matched to the new values written with its unit, or to
+        # every new value when none is: an unrelated higher number beside a lowered floor
+        # (`80%` -> `70% … (100 cases)`) no longer reads as its replacement (#707 review).
+        for old, unit in gone:
+            candidates = [new for new, u in fresh if u == unit] or [new for new, _ in fresh]
+            lower = [new for new in candidates if new < old]
+            if lower:
+                return f"{old:g} -> {max(lower):g}"
         return None
     for i, bcell in enumerate(b_cells):
         acell = a_cells[i] if i < len(a_cells) else ""

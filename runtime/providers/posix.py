@@ -215,6 +215,17 @@ def _exclude_hook_artifacts(wt: Path) -> None:
 # Settings keys a harness reads that would switch the guard off or steer it: never merged in
 # from a document already at a guard path (2026-10-26 review).
 _GUARD_STEERING_PREFIXES = ("ORCA_", "OPEN_FLEET_")
+# Env that steers which shell runs the guard command (a bare `sh`) or what that shell loads: a
+# kept `PATH` naming a planted `sh` ran it instead of deny-hook.sh (#707 review). The same keys
+# deny-hook.sh --verify-settings refuses as STEERING; a test keeps the two lists in step.
+_SHELL_STEERING_KEYS = frozenset((
+    "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+    "ENV", "BASH_ENV", "SHELLOPTS", "CDPATH", "IFS", "SHELL",
+))
+
+
+def _steers_the_guard(key: Any) -> bool:
+    return str(key) in _SHELL_STEERING_KEYS or str(key).startswith(_GUARD_STEERING_PREFIXES)
 
 
 def _merge_hook_doc(path: Path, ours: dict[str, Any]) -> dict[str, Any]:
@@ -225,7 +236,8 @@ def _merge_hook_doc(path: Path, ours: dict[str, Any]) -> dict[str, Any]:
     every other key it carried. Now those keys survive, our hook entries come FIRST under each
     event, an entry that already carries one of our commands is not doubled, and the keys that
     could disarm the guard are dropped: `disableAllHooks`, and `env` entries that steer the hook
-    (ORCA_*/OPEN_FLEET_*). A file that is unreadable or not a JSON object is replaced outright.
+    (ORCA_*/OPEN_FLEET_*) or the shell that runs it (`_SHELL_STEERING_KEYS`). A file that is
+    unreadable or not a JSON object is replaced outright.
     """
     try:
         have = json.loads(path.read_text(encoding="utf-8"))
@@ -236,7 +248,7 @@ def _merge_hook_doc(path: Path, ours: dict[str, Any]) -> dict[str, Any]:
     merged: dict[str, Any] = {k: v for k, v in have.items() if k != "disableAllHooks"}
     env = merged.get("env")
     if isinstance(env, dict):
-        merged["env"] = {k: v for k, v in env.items() if not str(k).startswith(_GUARD_STEERING_PREFIXES)}
+        merged["env"] = {k: v for k, v in env.items() if not _steers_the_guard(k)}
     hooks = merged.get("hooks") if isinstance(merged.get("hooks"), dict) else {}
     merged["hooks"] = dict(hooks)
     for event, entries in ours.get("hooks", {}).items():
@@ -558,18 +570,23 @@ def _pid_runs_monitor(pid: int, lane: Path) -> bool:
     return proc.returncode == 0 and marker in cmd
 
 
+def _cwd_under(cwd: str, wanted: list[str]) -> bool:
+    return any(cwd == r or cwd.startswith(r.rstrip("/") + "/") for r in wanted)
+
+
 def _group_members_under(pgid: int, roots: tuple[Path, ...]) -> list[int] | None:
     """Live pids in process group `pgid` whose cwd lies under one of `roots`.
 
     The monitor leads its own session, and the agent (with its `sh -c` wrapper) runs in that
     group with the worktree as cwd, so after `kill -9` of the monitor alone these are the worker
-    it left behind. None: no /proc on this host, so membership and cwd cannot be read.
+    it left behind. Read from /proc, or with `ps` and `lsof` where there is none (macOS, #707
+    review). None: neither can be read, so membership and cwd are unknown.
     """
+    wanted = [os.path.realpath(str(r)) for r in roots if r]
     try:
         entries = [e for e in Path("/proc").iterdir() if e.name.isdigit()]
     except OSError:
-        return None
-    wanted = [os.path.realpath(str(r)) for r in roots if r]
+        return _ps_group_members_under(pgid, wanted)
     out: list[int] = []
     for entry in entries:
         try:
@@ -579,8 +596,34 @@ def _group_members_under(pgid: int, roots: tuple[Path, ...]) -> list[int] | None
             cwd = os.readlink(entry / "cwd")
         except (OSError, ValueError, IndexError):
             continue
-        if any(cwd == r or cwd.startswith(r.rstrip("/") + "/") for r in wanted):
+        if _cwd_under(cwd, wanted):
             out.append(int(entry.name))
+    return out
+
+
+def _ps_group_members_under(pgid: int, wanted: list[str]) -> list[int] | None:
+    """`_group_members_under` on a host with no /proc: `ps` lists the group, `lsof` reads each
+    member's cwd. None when either tool is missing or fails, as with no /proc before."""
+    try:
+        ps = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if ps.returncode != 0:
+        return None
+    out: list[int] = []
+    for line in ps.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 3 or not fields[0].isdigit() or fields[1] != str(pgid) or fields[2].startswith("Z"):
+            continue
+        try:
+            lsof = subprocess.run(["lsof", "-a", "-p", fields[0], "-d", "cwd", "-Fn"],
+                                  capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # `-Fn` prints one `n<path>` line per file; a member that exited meanwhile prints none.
+        cwd = next((ln[1:] for ln in lsof.stdout.splitlines() if ln.startswith("n")), "")
+        if cwd and _cwd_under(cwd, wanted):
+            out.append(int(fields[0]))
     return out
 
 
@@ -2619,7 +2662,8 @@ if {repr(self.backend)} == "cmux":
         this dispatch's worktree or lane is signalled: a group id the kernel handed to someone
         else fails that check and is left alone. None: nothing was signalled (no recorded pid, a
         backend that holds no local group, an injected runner, a group already gone, or one not
-        provably this worker's — on a host without /proc that is every group).
+        provably this worker's — on a host where neither /proc nor `ps`/`lsof` can be read, that
+        is every group).
         """
         if self.runner is not None or (r["backend"] or self.backend) not in ("setsid", "tmux"):
             return None
@@ -2630,7 +2674,7 @@ if {repr(self.backend)} == "cmux":
             os.killpg(pgid, 0)
         except OSError:
             return None  # gone, or not ours to signal
-        # None (no /proc) or [] (no member works in this worktree or lane): not provably this
+        # None (no /proc, ps or lsof) or [] (no member works in this worktree or lane): not provably this
         # worker's group, so it is left alone and nothing is reported.
         members = _group_members_under(pgid, tuple(Path(p) for p in (r["worktree"], r["lane_dir"]) if p))
         if not members:

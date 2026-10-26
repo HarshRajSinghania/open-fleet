@@ -2573,7 +2573,7 @@ class TestBraceExpansionAndInlineAliasesCannotLaunder(ReviewHookBase):
         src = HOOK.read_text(encoding="utf-8")
         code = src[src.index("_BRACE_CAP = 512"):src.index("cmd_val = ti.get(")]
         ns = {"re": re, "SQ": "'", "DQ": '"', "BLANKS": " \t"}
-        exec(code, ns)  # noqa: S102 - the reader's own text, not an input
+        exec(code, ns)  # the reader's own text, not an input
         words = ["a{b,c}d", "x{,}", "{a,}", "{a}", "{}", "{a,b{1,2}}", "{1..3}", "{3..1}",
                  "{a..e}", "{e..a}", "{01..10}", "{-2..2}", "{1..10..3}", "{a..i..3}",
                  "{a,b}{1,2}", "pre{a,b}post", "{a,'b,c'}", "\\{a,b}", "{a,b\\}c}",

@@ -310,10 +310,10 @@ class MigrationRoundTrip(unittest.TestCase):
             add_owed(data, "G1", asked="2026-09-14", title="ask",
                      question="q?")
             gb.transition(data, "G1", "answered", "yes", answered="2026-09-15", source="human:lia")
-            rendered = gb.render_batch(data)
-            self.assertIn("**Answered 2026-09-15 (human:lia):** yes", rendered)
+            self.assertIn("**Answered 2026-09-15 (human:lia):** yes", gb.render_batch(data))
             gb.find_gate(data, "G1").pop("source")  # a record from before the field renders as it did
-            self.assertIn("**Answered 2026-09-15:** yes", gb.render_batch(data))
+            rendered = gb.render_batch(data)
+            self.assertIn("**Answered 2026-09-15:** yes", rendered)
             self.assertIn("q?", rendered.split("**Answered")[0])
 
 

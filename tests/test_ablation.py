@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,11 @@ def defer_for(prereg, mission):
     return prereg["reduction"]["missions"][mission]
 
 
+def unbound(prereg):
+    """The registration as it stood before its run was bound: no `bound_run`, so not frozen."""
+    return {k: v for k, v in prereg.items() if k != ablation.BOUND_KEY}
+
+
 _COPIES = []
 
 
@@ -64,6 +70,11 @@ def repo_copy(tmp):
                             ignore=shutil.ignore_patterns("__pycache__"))
     for doc in ROOT.glob("*.md"):
         shutil.copyfile(doc, dest / doc.name)
+    # The committed registration is bound to its run and frozen there; a copy exercises the pre-run
+    # mechanics (refresh, task pins, output safety), so it holds the registration before the binding.
+    reg = dest / "docs" / "experiments" / "ablation-prereg.json"
+    reg.write_text(json.dumps(unbound(json.loads(reg.read_text(encoding="utf-8"))), indent=2,
+                              ensure_ascii=False) + "\n", encoding="utf-8")
     _COPIES.append(dest)
     spec = importlib.util.spec_from_file_location(f"ablation_copy_{len(_COPIES)}", dest / "scripts" / "ablation.py")
     mod = importlib.util.module_from_spec(spec)
@@ -186,13 +197,29 @@ class RegistrationErrorsAreCaught(unittest.TestCase):
 
 
 class RegistrationDigests(unittest.TestCase):
+    """The pre-run digest mechanics, on an UNBOUND copy pinned to the catalog now. The committed
+    registration is bound to its run and checked there (TheBoundRegistrationIsFrozen, below), so
+    against today's catalog it is stale by design."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pinned = Path(tempfile.mkdtemp(prefix="of-ablation-unbound-"))
+        (cls.pinned / "ablation-prereg.json").write_text(
+            json.dumps(unbound(PREREG), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        shutil.copyfile(ablation.PREREG_MD, cls.pinned / "ablation-prereg.md")
+        ablation.refresh(cls.pinned / "ablation-prereg.json", cls.pinned / "ablation-prereg.md")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.pinned)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="of-ablation-prereg-"))
         self.addCleanup(shutil.rmtree, self.tmp)
         self.json = self.tmp / "ablation-prereg.json"
         self.md = self.tmp / "ablation-prereg.md"
-        shutil.copyfile(ablation.PREREG, self.json)
-        shutil.copyfile(ablation.PREREG_MD, self.md)
+        shutil.copyfile(self.pinned / "ablation-prereg.json", self.json)
+        shutil.copyfile(self.pinned / "ablation-prereg.md", self.md)
 
     def test_a_json_that_moved_without_its_page_is_caught(self):
         self.assertEqual(ablation.md_sync_errors(self.json, self.md), [])
@@ -235,6 +262,83 @@ class RegistrationDigests(unittest.TestCase):
         code, out, _err = run_main(["--prereg", str(self.json), "prereg", "--md", str(self.md)])
         self.assertEqual(code, 1)
         self.assertIn("ship-it: stale: baseline_tokens moved", out)
+
+
+class TheBoundRegistrationIsFrozen(unittest.TestCase):
+    """#606's live run is bound, so its registration is checked where it ran, never against the
+    catalog now: five `--refresh` commits in the day after the run re-pinned payloads that never
+    ran, one for every edit to a document these missions load."""
+
+    RUN = "c220067e9c"
+
+    def binding(self, **change):
+        prereg = copy.deepcopy(PREREG)
+        prereg[ablation.BOUND_KEY].update(change)
+        return " | ".join(ablation.bound_errors(prereg))
+
+    def test_the_committed_registration_is_the_one_its_run_ran_under(self):
+        self.assertEqual(ablation.bound_errors(PREREG), [])
+        self.assertTrue(PREREG[ablation.BOUND_KEY]["commit"].startswith(self.RUN))
+
+    def test_its_pins_are_checked_at_the_run_commit_and_the_catalog_now_is_never_measured(self):
+        with mock.patch.object(ablation, "measure", side_effect=AssertionError("measured the catalog now")):
+            status = ablation.bound_status(PREREG)
+        self.assertEqual(status, {m: f"current at {self.RUN}" for m in MIX})
+
+    def test_the_prereg_command_checks_a_bound_registration_at_its_commit(self):
+        with mock.patch.object(ablation, "registration_status",
+                               side_effect=AssertionError("checked against the catalog now")):
+            code, out, err = run_main(["prereg"])
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"ship-it: current at {self.RUN}", out)
+        self.assertIn(f"frozen at {self.RUN}", out)
+
+    def test_a_pin_that_was_stale_at_the_run_commit_still_fails(self):
+        stale = subprocess.CompletedProcess([], 1, "ship-it: stale: baseline_sha256 moved since "
+                                                   "registration\nclean-sweep: current\n", "")
+        with mock.patch.object(ablation, "_prereg_at", return_value=stale):
+            status = ablation.bound_status(PREREG)
+            code, _out, _err = run_main(["prereg"])
+        self.assertEqual(status["ship-it"], f"stale: baseline_sha256 moved since registration at {self.RUN}")
+        self.assertEqual(status["review-it"], f"unchecked at {self.RUN}")
+        self.assertEqual(code, 1)
+
+    def test_a_registration_that_does_not_check_at_its_commit_is_a_refusal(self):
+        broken = subprocess.CompletedProcess([], 2, "", "ablation: prereg: schema must be ...")
+        with mock.patch.object(ablation, "_prereg_at", return_value=broken):
+            with self.assertRaisesRegex(ablation.AblationError, "does not check at c220067e9c"):
+                ablation.bound_status(PREREG)
+            code, _out, err = run_main(["prereg"])
+        self.assertEqual(code, 2, err)
+
+    def test_an_edit_to_the_registration_after_its_run_is_refused(self):
+        for key, value in (("repeats", 4), ("registered_payloads", {})):
+            with self.subTest(key=key):
+                prereg = copy.deepcopy(PREREG)
+                prereg[key] = value
+                found = " | ".join(ablation.bound_errors(prereg))
+                self.assertIn(f"frozen, but {key} changed since its run at {self.RUN}", found)
+
+    def test_a_binding_to_another_commit_or_none_is_refused(self):
+        self.assertIn(f"is not a live run at {'0' * 10}", self.binding(commit="0" * 40))
+        self.assertIn("not in this clone", self.binding(commit="0" * 40))
+        self.assertIn("full 40-hex commit", self.binding(commit=self.RUN))
+        self.assertIn("is not a repository file", self.binding(results="../results.json"))
+        self.assertIn("the report's own run directory",
+                      self.binding(results="docs/experiments/ablation-prereg.json"))
+        prereg = copy.deepcopy(PREREG)
+        prereg[ablation.BOUND_KEY] = "c220067e9c"
+        self.assertIn("must be an object", " ".join(ablation.bound_errors(prereg)))
+
+    def test_refresh_refuses_a_bound_registration_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, md_path = Path(tmp) / "ablation-prereg.json", Path(tmp) / "ablation-prereg.md"
+            shutil.copyfile(ablation.PREREG, json_path)
+            shutil.copyfile(ablation.PREREG_MD, md_path)
+            before = tree_digest(tmp)
+            with self.assertRaisesRegex(ablation.AblationError, "refusing to re-pin a bound registration"):
+                ablation.refresh(json_path, md_path)
+            self.assertEqual(tree_digest(tmp), before)
 
 
 class GeneratedVariants(unittest.TestCase):

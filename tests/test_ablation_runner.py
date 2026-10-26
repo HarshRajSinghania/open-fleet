@@ -44,6 +44,19 @@ def _load(name, rel):
 ablation = _load("ablation_for_runner_tests", "scripts/ablation.py")
 runner = ablation._runner()
 PREREG = ablation.load_prereg()
+_CURRENT = []
+
+
+def current_registration():
+    """A copy of the registration, unbound and pinned to the catalog now. The committed one is
+    frozen at its run's commit, so a live run refuses it here as stale before any later check runs."""
+    if not _CURRENT:
+        prereg = {k: v for k, v in PREREG.items() if k != ablation.BOUND_KEY}
+        prereg["registered_payloads"] = ablation.measure(prereg)
+        _CURRENT.append(prereg)
+    return copy.deepcopy(_CURRENT[0])
+
+
 SAFETY = {}
 # The host probe, as the runner has it. setUpModule injects a proven host in its place (Python-level,
 # never an environment variable or flag): these tests are about the runner, not this machine. The
@@ -278,7 +291,7 @@ class RefusalsBeforeAnythingRuns(SafetyNet):
                 "--harness-version", "v", *extra]
 
     def authorised(self, amount=10.0):
-        prereg = copy.deepcopy(PREREG)
+        prereg = current_registration()
         prereg["cost_cap"].update(status=ablation.AUTHORISED, authorised_usd=amount,
                                   authorised_by="test fixture (not an authorisation)")
         return prereg

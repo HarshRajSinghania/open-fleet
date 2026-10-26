@@ -530,8 +530,22 @@ def lowering(before_text, after_text):
     if len(b_cells) == 1 and len(a_cells) == 1:
         before, after = numbers(b_cells[0]), numbers(a_cells[0])
         gone = [v for v in before if v not in after]
-        if gone:
-            return f"{gone[0]:g} -> {after[0]:g}" if after else f"{gone[0]:g} -> (no number)"
+        fresh = [v for v in after if v not in before]
+        if not gone:
+            return None
+        if not fresh:
+            return f"{gone[0]:g} -> (no number)"
+        # The numbers that moved, paired in order when the counts agree (a line that restates
+        # two values); otherwise a vanished value must have SOME replacement at least as high —
+        # a raise is a tightening and reads as one (PR #707 review).
+        if len(fresh) == len(gone):
+            for old, new in zip(gone, fresh, strict=True):
+                if new < old:
+                    return f"{old:g} -> {new:g}"
+            return None
+        for old in gone:
+            if not any(new >= old for new in fresh):
+                return f"{old:g} -> {max(fresh):g}"
         return None
     for i, bcell in enumerate(b_cells):
         acell = a_cells[i] if i < len(a_cells) else ""
@@ -726,7 +740,6 @@ def _flag_lowered_rows(added, removed, constraints_name, flag, repo=None):
     for path, _line, text in added:
         if is_constraints(path, constraints_name):
             partners.setdefault((path, shape_key(text)), []).append(text)
-    paired = set()
     for path, line, text in removed:
         if not is_constraints(path, constraints_name):
             continue
@@ -737,17 +750,16 @@ def _flag_lowered_rows(added, removed, constraints_name, flag, repo=None):
         if not pool:
             flag("threshold-lowered", path, line, "row removed or re-keyed")
             continue
-        paired.add((path, key))
         detail = lowering(text, pool.pop(0))
         if detail:
             flag("threshold-lowered", path, line, detail)
     # A SECOND numbered row for a key the file already carries (2026-10-26 review): the old row
-    # stays, a duplicate at a lower number is added, and a reader takes either for the floor.
+    # stays, a duplicate at a lower number is added, and a reader takes either for the floor. Read
+    # off the final file for every added row, an edited twin included: a wording edit to the
+    # original beside the appended duplicate used to hide the duplicate (PR #707 review).
     for path, line, text in added:
         key = shape_key(text)
         if not (is_constraints(path, constraints_name) and key.startswith("row:") and numbers(text)):
-            continue
-        if (path, key) in paired:
             continue
         others = [t for t in _file_rows(repo, path) if shape_key(t) == key]
         if len(others) > 1:

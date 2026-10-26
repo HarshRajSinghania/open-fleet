@@ -617,6 +617,16 @@ class TestCheckSince(DecisionsBase):
         self.assertIn("secret-rotation", r.stderr)
         self.assertNotIn("gate-old", r.stderr)
 
+    def test_an_unreadable_stamp_is_judged_never_skipped_as_history(self):
+        # PR #707 review: _instant() sorts an unreadable stamp before everything, so a malformed
+        # recent record read as pre-fence history and skipped every check.
+        bad = ("2026-10-26T99:99:99Z · gate-bad · one-way · approved · deploy to production · t-4")
+        self.seed([self.NEW_GOOD, bad])
+        r = self.run_dec("check", "--since", "2026-09-24")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("not a readable timestamp", r.stderr)
+        self.assertIn("no human source", r.stderr)
+
     def test_a_malformed_fence_is_could_not_run(self):
         self.seed([self.NEW_GOOD])
         r = self.run_dec("check", "--since", "yesterday")

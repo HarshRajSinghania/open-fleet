@@ -46,6 +46,7 @@ from .base import (
     parse_json_strict,
     require_id,
 )
+from ._external import release_claim_on_failure
 from ._external import call_runner, foreign_dirty_paths, insert_dispatch, load_dispatch, preserve_worker_head, record_fence, run_cli_text, show_from_row
 from .local_state import LocalStateStore
 
@@ -226,6 +227,7 @@ class WorktrunkProvider(RuntimeProvider):
         }
 
     # --- Worker lifecycle ---
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

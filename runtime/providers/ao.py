@@ -31,6 +31,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import release_claim_on_failure
 from ._external import ExternalDispatchMixin, http_json, preserve_worker_head, real_worktree, run_cli
 from .base import (
     ProviderError,
@@ -199,6 +200,7 @@ class ComposioAOProvider(ExternalDispatchMixin, RuntimeProvider):
                 conn.execute("UPDATE dispatches SET head_sha = ? WHERE dispatch_id = ?", (pinned["sha"], session_id))
         return ref_name
 
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

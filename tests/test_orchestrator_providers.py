@@ -67,6 +67,23 @@ class ProviderTestBase(unittest.TestCase):
         self._tmp.cleanup()
 
 
+class AFailedLaunchReleasesItsClaim(ProviderTestBase):
+    """PR #707 review: get_or_record_request claims the request id inside its transaction, and an
+    adapter whose worker_start then refused (an unsupported profile, a service error) left the
+    claim pending, so a coordinator retrying the same id read the pending marker for ten minutes."""
+
+    def test_a_refused_launch_leaves_no_pending_claim_and_a_retry_acts(self):
+        prov = ComposioAOProvider(state=self.state, runner=lambda call: {"ok": True}, project="orca-proj")
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                with self.assertRaises(ProviderError) as ctx:
+                    prov.worker_start(task_id="t1", agent="pi", profile="ro", prompt="Audit",
+                                      retry_request="req-refused")
+                self.assertEqual(ctx.exception.code, "unsupported_profile",
+                                 "the second attempt must be refused again, not answered with a pending marker")
+        self.assertIsNone(self.state.request_row("req-refused"), "a refused launch keeps no claim")
+
+
 class TestSupersetProvider(ProviderTestBase):
     """#582: SupersetProvider (`superset-sh/superset`) CLI adapter (full suite: test_superset_provider.py)."""
 

@@ -40,6 +40,7 @@ from .base import (
     require_id,
 )
 from .local_state import LocalStateStore
+from ._external import release_claim_on_failure
 from ._external import (
     insert_dispatch,
     load_dispatch,
@@ -157,6 +158,7 @@ class T3CodeProvider(RuntimeProvider):
             raise ProviderError("worktree_unresolved", f"git worktree add reported success but {path!r} does not exist")
         return {"path": os.path.realpath(path), "branch": branch, "workspaceRoot": root}
 
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

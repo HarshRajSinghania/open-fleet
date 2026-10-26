@@ -896,6 +896,13 @@ class RunReportBinding(unittest.TestCase):
             with self.subTest(rev=rev):
                 self._write(rev=rev)
                 self.assertEqual(self._check(), [])
+        # PR #707 review: a branch or tag NAMED in hex resolved through the ref lookup and moved
+        # with it; the pin must name a commit object, read by object-id prefix alone.
+        _git(self.repo, "branch", "0000abc", self.rev)
+        self._write(rev="0000abc")
+        errs = self._check()
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("names no single commit object", errs[0])
 
     # --- the shape that must pass ------------------------------------------
     def test_an_unrelated_report_name_cannot_borrow_a_sole_same_day_run(self):

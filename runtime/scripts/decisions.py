@@ -416,6 +416,9 @@ def validate(record, net, grant_pub=None):
         problems.append("empty answer")
     if not record["why"]:
         problems.append("empty why (a decision nobody can reconstruct is not a record)")
+    if _instant(record.get("ts", "")) == _UNDATED:
+        problems.append(f"ts {record.get('ts')!r} is not a readable timestamp — a record whose time "
+                        "cannot be read sorts before everything and would pass for history")
     ahead = (_instant(record.get("ts", "")) - _now()).total_seconds()
     if ahead > MAX_FUTURE_SKEW_SECONDS:
         problems.append(
@@ -725,7 +728,10 @@ def cmd_check(args, net):
         fence = _instant(since + "T00:00:00Z")
     checked, legacy = [], 0
     for record in records:
-        if fence is not None and _instant(record.get("ts", "")) < fence:
+        instant = _instant(record.get("ts", ""))
+        # An unreadable stamp sorts before everything (_UNDATED): judged, never skipped as
+        # history, or `2026-10-26T99:99:99Z` would carry any line past the fence (PR #707 review).
+        if fence is not None and instant != _UNDATED and instant < fence:
             legacy += 1  # history from before the rule it would fail: counted, never re-litigated
             continue
         checked.append(record)

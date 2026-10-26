@@ -582,8 +582,9 @@ for tool, command in sorted(commands.items()):
 # worktree. Now a registration is [NAME=value …] [env] [sh|bash|dash] <path>/deny-hook.sh and
 # nothing more; the path is a regular file whose bytes are this hook's; an assignment names only
 # a variable the hook reads; and the probes run under a scrubbed environment — the coordinator's
-# PATH/HOME/locale/TMPDIR, the registration's hook switches, nothing else — with the shell
-# resolved on the coordinator's PATH, never run through `sh -c`.
+# PATH/HOME/locale/TMPDIR, the registration's hook switches, nothing else — with a bare shell
+# resolved on the coordinator's PATH, an explicit interpreter path run as registered once it lies
+# outside the boundary, and never run through `sh -c`.
 HOOK_ENV_KEYS = ("ORCA_UNIT_WORKTREE", "OPEN_FLEET_UNIT_WORKTREE", "ORCA_HOOK_STRICT_EXIT",
                  "OPEN_FLEET_HOOK_STRICT_EXIT", "OPEN_FLEET_HOOK_EXIT2", "OPEN_FLEET_HEADLESS_STRICT",
                  "ORCA_EGRESS_LEDGER", "OPEN_FLEET_EGRESS_LEDGER", "ORCA_FLEET_STATE_DB",
@@ -624,7 +625,7 @@ def registered_hook(command):
         i = take_assigns(i + 1)
     shell = None
     if i < len(words) and words[i].rsplit("/", 1)[-1] in SHELLS:
-        shell = words[i].rsplit("/", 1)[-1]
+        shell = words[i]  # the whole token: an explicit path is run as registered (PR #707 review)
         i += 1
     rest = words[i:]
     if len(rest) != 1 or rest[0].rsplit("/", 1)[-1] != "deny-hook.sh":
@@ -659,9 +660,22 @@ probe_env.update({k: v for k, v in env.items() if k in HOOK_ENV_KEYS})
 PROBE_ARGV = {}
 for tool, command in sorted(commands.items()):
     assigns, shell, hook_path = registered_hook(command)
-    exe = shutil.which(shell or "sh", path=os.environ.get("PATH"))
-    if not exe:
-        sys.exit(refuse(f"no {shell or 'sh'} on the coordinator PATH to run the probes with"))
+    if shell and "/" in shell:
+        # An interpreter named by path: the probes must run THAT executable, and it must be one
+        # no worker writes. Keeping only the basename let a registration name a shell inside the
+        # worktree, pass the hook byte check, and be probed with the coordinator shell while the
+        # harness later ran the worker one (PR #707 review).
+        exe = os.path.realpath(shell)
+        if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            sys.exit(refuse(f"the registered shell {shell!r} is not an executable file"))
+        fence = os.path.realpath(boundary_for(command))
+        if exe == fence or exe.startswith(fence + "/"):
+            sys.exit(refuse(f"the registered shell {shell!r} lies inside the worktree boundary "
+                            f"{fence!r}; an interpreter the worker can write arms nothing"))
+    else:
+        exe = shutil.which(shell or "sh", path=os.environ.get("PATH"))
+        if not exe:
+            sys.exit(refuse(f"no {shell or 'sh'} on the coordinator PATH to run the probes with"))
     PROBE_ARGV[tool] = ([exe, hook_path], {**probe_env, **assigns})
 
 if argv_mode:

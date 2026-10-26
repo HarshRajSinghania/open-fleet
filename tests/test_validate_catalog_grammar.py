@@ -335,6 +335,15 @@ class TheReaderRefusesWhatSkillsRefRefuses(unittest.TestCase):
             errs = validate.validate_skill(d, PROTOCOLS)
         self.assertTrue(any("description must be a string" in e for e in errs), errs)
 
+    def test_a_mapping_as_the_description_is_not_a_string(self):
+        # PR #707 review: a nested mapping comes back as a dict, which is not the sequence
+        # sentinel and has a length, so it passed as a string.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._skill(tmp, lambda t: t.replace("description: A fixture. Use when testing.\n",
+                                                     "description:\n  key: value\n"))
+            errs = validate.validate_skill(d, PROTOCOLS)
+        self.assertTrue(any("description must be a string" in e for e in errs), errs)
+
     def test_a_duplicate_key_is_an_error_not_last_wins(self):
         data, err = validate.parse_frontmatter(
             "---\nname: x\nname: y\ndescription: d\nmetadata:\n  proof: self-run\n---\nbody\n")

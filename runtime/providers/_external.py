@@ -11,6 +11,7 @@ Private helpers used by every non-Orca, non-POSIX adapter so they all fail the s
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -104,6 +105,29 @@ def http_json(
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         raise ProviderError(f"{provider}_unreachable", f"{method} {url}: {exc}", {"path": path}) from exc
     return parse_json_strict(text, provider, allow_empty=allow_empty)
+
+
+def release_claim_on_failure(worker_start):
+    """Decorator for an adapter's `worker_start`: a `--retry-request` claim this call took and could
+    not complete is released, so a retry acts instead of reading the pending marker for
+    PENDING_STALE_S (PR #707 review: a refusal before any launch, or a service error, left a
+    long-running coordinator locked out of the id for ten minutes). Only this process's own
+    pending claim is released; a completed row, or another caller's claim, never is."""
+
+    @functools.wraps(worker_start)
+    def wrapper(self, *args, **kwargs):
+        retry_request = kwargs.get("retry_request")
+        try:
+            return worker_start(self, *args, **kwargs)
+        except BaseException:
+            if retry_request:
+                row = self.state.request_row(retry_request)
+                if (row and row.get("state") == "pending" and not row.get("response_json")
+                        and int(row.get("claim_pid") or 0) == os.getpid()):
+                    self.state.release_request(retry_request)
+            raise
+
+    return wrapper
 
 
 class ExternalDispatchMixin:

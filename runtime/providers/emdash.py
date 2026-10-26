@@ -38,6 +38,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import release_claim_on_failure
 from ._external import ExternalDispatchMixin, env_lookup, foreign_dirty_paths, preserve_worker_head, real_worktree, run_cli_text
 from .base import (
     ProviderError,
@@ -244,6 +245,7 @@ class EmdashProvider(ExternalDispatchMixin, RuntimeProvider):
         return {"worktrees": items[:limit] if limit else items, "upstream": raw}
 
     # --- Worker dispatch (`tuiAgents.startSession`) ---
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

@@ -303,6 +303,8 @@ def validate_skill(skill_dir, protocols):
 
     if "name" not in data:
         errors.append("missing 'name' field")
+    elif not isinstance(data["name"], str):
+        errors.append("name must be a string, got a mapping or sequence")
     else:
         n = data["name"]
         if not (1 <= len(n) <= 64):
@@ -314,12 +316,13 @@ def validate_skill(skill_dir, protocols):
 
     if "description" not in data:
         errors.append("missing 'description' field")
-    elif data["description"] == _grammar.OBJECT:
+    elif data["description"] == _grammar.OBJECT or not isinstance(data["description"], str):
+        # The sentinel is a sequence; a nested mapping comes back as a dict (PR #707 review).
         errors.append("description must be a string, got a mapping or sequence")
     elif not (1 <= len(data["description"]) <= 1024):
         errors.append(f"description length {len(data['description'])} out of 1-1024")
-    for key in ("name", "license", "allowed-tools"):
-        if data.get(key) == _grammar.OBJECT:
+    for key in ("license", "allowed-tools"):
+        if key in data and (data[key] == _grammar.OBJECT or not isinstance(data[key], str)):
             errors.append(f"{key} must be a string, got a mapping or sequence")
 
     extras = set(data) - SPEC_FRONTMATTER_FIELDS

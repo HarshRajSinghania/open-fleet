@@ -44,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import release_claim_on_failure
 from ._external import ExternalDispatchMixin, coerce_output, env_flag, env_lookup, http_json, real_worktree, run_cli
 from .base import (
     ProviderError,
@@ -310,6 +311,7 @@ class VibeKanbanProvider(ExternalDispatchMixin, RuntimeProvider):
         return out
 
     # --- Worker dispatch (`POST /api/workspaces/start`) ---
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

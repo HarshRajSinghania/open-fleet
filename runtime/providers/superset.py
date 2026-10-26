@@ -46,6 +46,7 @@ from .base import (
     require_id,
 )
 from .local_state import LocalStateStore
+from ._external import release_claim_on_failure
 from ._external import (
     call_runner,
     foreign_dirty_paths,
@@ -220,6 +221,7 @@ class SupersetProvider(RuntimeProvider):
         return self.state.request_show(request_id)
 
     # --- Worker lifecycle ---
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

@@ -2657,6 +2657,24 @@ class TestVerifySettingsRunsOnlyThisHook(unittest.TestCase):
         link.symlink_to(HOOK)
         self.assertEqual(self._verify(self._with_command(f"sh {link}")).returncode, 0)
 
+    def test_the_registered_shell_is_the_shell_the_probes_run(self):
+        # PR #707 review (security): the shell token kept only its basename, so a registration
+        # naming an interpreter INSIDE the worktree passed the hook's byte check while the probes
+        # ran the coordinator's shell and the harness later ran the worker's. An explicit path is
+        # probed as registered, and may not lie in the boundary or be anything but an executable.
+        inside = self.wt / "sh"
+        inside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        inside.chmod(0o755)
+        r = self._verify(self._with_command(f"{inside} {HOOK}"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("inside the worktree boundary", r.stderr)
+        missing = self.tmp / "nowhere" / "bash"
+        r = self._verify(self._with_command(f"{missing} {HOOK}"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("not an executable file", r.stderr)
+        r = self._verify(self._with_command(f"/bin/sh {HOOK}"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_a_registration_assigns_only_the_hooks_own_switches(self):
         ok = self._verify(self._with_command(
             f"ORCA_UNIT_WORKTREE={shlex.quote(str(self.wt))} ORCA_HOOK_STRICT_EXIT=1 sh {HOOK}"))

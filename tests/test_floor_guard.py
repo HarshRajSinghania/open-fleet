@@ -715,6 +715,29 @@ class TestThresholdEvasions(unittest.TestCase):
         out = self.run_rows([self.D9, note], [note + " (edited)"])
         self.assertEqual(out, [("threshold-lowered", "row removed or re-keyed")])
 
+    def test_a_raised_prose_number_is_a_tightening_not_a_lowering(self):
+        # PR #707 review: the prose branch flagged any vanished number, a raise included.
+        before = "- D9: the human froze 80% against an UNMEASURED dimension"
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "90%")]), [])
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "70%")]),
+                         [("threshold-lowered", "80 -> 70")])
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "the floor")]),
+                         [("threshold-lowered", "80 -> (no number)")])
+        two = "- D9: 80% line coverage over 5 modules"
+        self.assertEqual(self.run_rows([two], [two.replace("80%", "90%").replace("5 modules", "4 modules")]),
+                         [("threshold-lowered", "5 -> 4")])
+
+    def test_an_edited_twin_does_not_hide_an_appended_duplicate(self):
+        # PR #707 review: a wording edit to the original row paired it, and the appended
+        # duplicate at a lower number was skipped as that key's "already paired" row.
+        with tempfile.TemporaryDirectory() as tmp:
+            edited = self.D9.replace("FROZEN-BELOW-BAR", "FROZEN-BELOW-BAR (reworded)")
+            lower = self.D9.replace("80%", "70%")
+            Path(tmp, "CONSTRAINTS.md").write_text(
+                "| id | dim |\n|---|---|\n" + edited + "\n" + lower + "\n", encoding="utf-8")
+            out = self.run_rows([self.D9], [edited, lower], repo=tmp)
+            self.assertIn(("threshold-lowered", "duplicate row for d9"), out)
+
     def test_a_duplicate_row_for_a_key_the_file_keeps_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:
             lower = self.D9.replace("80%", "70%")

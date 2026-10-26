@@ -353,8 +353,18 @@ failed closed before any injection:
 - the second ran in a worktree that inherits trust. Orca 1.4.229 refused the inject with
   `no_agent_detected` while the pane showed the claude TUI, and the app then restarted as 1.4.238.
 
-The re-witness belongs with the pin at whatever build is installed. It should also establish why
-the inject was not recognized. Before re-running, meet these prerequisites:
+The [2026-10-26 witness](runs/2026-10-26-review-it-orca-ro-680.md) ran the current row on Orca
+1.4.239 with a native Claude Code 2.1.304, and Write and Edit stayed denied after its plan was
+approved. It also established why the inject was refused. Orca proves an agent present by its
+pane title or its foreground process name. A native install runs as `versions/<version>`, and an
+idle Claude sets no title, so `dispatch --inject` answers `no_agent_detected` (1.4.229 to
+1.4.240). For the ro claude row only, `spawn_worker.sh` then confirms the pane: `terminal show`
+must name its agent `claude`, and its screen must show Claude's prompt in plan mode. It then
+delivers the preamble of a dispatch without `--inject` by `terminal send`, Orca's own nextStep.
+Any other screen refuses with exit 2 and nothing is sent. The record takes the witness with the
+pin's move to that build (#680).
+
+To repeat the witness, first meet these prerequisites:
 
 - **An existing Orca worktree.** The ro lane's `terminal create` cannot create one, so pass
   `path:<abs>`, not `new-child`. For a scratch review unit, register its repository with

@@ -197,15 +197,17 @@ class RegistrationErrorsAreCaught(unittest.TestCase):
 
 
 class RegistrationDigests(unittest.TestCase):
-    """The pre-run digest mechanics, on an UNBOUND copy pinned to the catalog now. The committed
+    """The pre-run digest mechanics, on an UNBOUND next version pinned to the catalog now. The committed
     registration is bound to its run and checked there (TheBoundRegistrationIsFrozen, below), so
     against today's catalog it is stale by design."""
 
     @classmethod
     def setUpClass(cls):
         cls.pinned = Path(tempfile.mkdtemp(prefix="of-ablation-unbound-"))
+        # The next version: the committed one is bound, so its own version can never re-pin.
         (cls.pinned / "ablation-prereg.json").write_text(
-            json.dumps(unbound(PREREG), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            json.dumps(dict(unbound(PREREG), version=PREREG["version"] + 1), indent=2,
+                       ensure_ascii=False) + "\n", encoding="utf-8")
         shutil.copyfile(ablation.PREREG_MD, cls.pinned / "ablation-prereg.md")
         ablation.refresh(cls.pinned / "ablation-prereg.json", cls.pinned / "ablation-prereg.md")
 
@@ -391,6 +393,24 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
             found = " | ".join(ablation.bound_errors(PREREG))
         self.assertIn("is not the bytes docs/runs/2026-10-25-ablation-606-live.md's inventory pins",
                       found)
+
+    def test_the_committed_registration_decides_what_is_spent(self):
+        # PR #705 review (Codex P1, round 3): the marker is removable, the committed file is not.
+        bare = unbound(PREREG)
+        self.assertIsNotNone(ablation.spent_registration(bare))
+        self.assertIsNotNone(ablation.spent_registration(dict(bare, version=PREREG["version"] - 1)))
+        self.assertIsNone(ablation.spent_registration(dict(bare, version=PREREG["version"] + 1)))
+        self.assertIsNone(ablation.spent_registration(dict(bare, id="R13-606-follow-up")))
+
+    def test_refresh_refuses_the_bound_version_with_its_marker_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, md_path = Path(tmp) / "ablation-prereg.json", Path(tmp) / "ablation-prereg.md"
+            json_path.write_text(json.dumps(unbound(PREREG), indent=2) + "\n", encoding="utf-8")
+            shutil.copyfile(ablation.PREREG_MD, md_path)
+            before = tree_digest(tmp)
+            with self.assertRaisesRegex(ablation.AblationError, "refusing to re-pin a bound registration"):
+                ablation.refresh(json_path, md_path)
+            self.assertEqual(tree_digest(tmp), before)
 
     def test_refresh_refuses_a_bound_registration_and_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

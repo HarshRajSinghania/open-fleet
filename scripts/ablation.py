@@ -899,6 +899,25 @@ def bound_errors(prereg):
     return errors
 
 
+def spent_registration(prereg):
+    """The committed BOUND registration whose identity `prereg` reuses, or None.
+
+    The committed registration is the authority, never the submitted file: a copy with `bound_run`
+    deleted kept the bound version and its spent AUTHORISED cap, so a live run keyed on the marker
+    alone could spend that authorisation again (PR #705 review, Codex P1). Same `id` at the bound
+    version or below is the same, spent registration; a new run is a new version above it."""
+    try:
+        committed = load_prereg(PREREG)
+    except AblationError:
+        return None
+    if BOUND_KEY not in committed or prereg.get("id") != committed.get("id"):
+        return None
+    version, bound = prereg.get("version"), committed.get("version")
+    newer = (isinstance(version, int) and not isinstance(version, bool) and isinstance(bound, int)
+             and version > bound)
+    return None if newer else committed
+
+
 def bound_status(prereg):
     """{mission: state} from the run commit's own `ablation.py prereg`, run on that commit's tree.
 
@@ -937,10 +956,10 @@ def _prereg_at(commit):
 def refresh(json_path=PREREG, md_path=PREREG_MD):
     """Re-pin registered_payloads to the catalog now and the md line to the JSON's bytes."""
     prereg = load_prereg(json_path)
-    if BOUND_KEY in prereg:
+    if BOUND_KEY in prereg or spent_registration(prereg) is not None:
         raise AblationError(f"{json_path}: refusing to re-pin a bound registration: its pins are "
                             "frozen at the commit its live run ran at (a new run is a new "
-                            "registration, a new version without bound_run)")
+                            "registration, a new version above the bound one, without bound_run)")
     problems = [e for e in prereg_errors(prereg) if "registered_payloads" not in e]
     if problems:
         raise AblationError("refusing to re-pin a registration with errors: " + "; ".join(problems))

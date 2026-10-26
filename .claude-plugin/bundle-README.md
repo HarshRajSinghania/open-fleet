@@ -1,10 +1,11 @@
 # open-fleet
 
-Outcome-named autonomous fleets for the [Orca](https://github.com/stablyai/orca) runtime. Each
-mission under `skills/` is one outcome, such as shipping a change, draining a backlog, hardening
-a service or reviewing a pull request. Each has its own state machine and an
-evidence-backed definition of done: every unit of work closes with a SHA-bound evidence manifest
-that an independent verifier re-derives from git, never from a worker's narration.
+Outcome-named autonomous fleets for coding agents across standalone POSIX (`OPEN_FLEET_RUNTIME=posix`),
+[Orca](https://github.com/stablyai/orca), and 12 additional multi-agent orchestrators via the
+Runtime Provider Interface. Each mission under `skills/` is one outcome, such as shipping a change,
+draining a backlog, hardening a service or reviewing a pull request. Each has its own state machine
+and an evidence-backed definition of done: every unit of work closes with a SHA-bound evidence
+manifest that an independent verifier re-derives from git, never from a worker's narration.
 
 This is the lean plugin bundle, built by `scripts/bundle.py` from
 [ravidsrk/open-fleet](https://github.com/ravidsrk/open-fleet). In a published release,
@@ -25,8 +26,10 @@ requests to missions.
 ## Requirements
 
 - Python 3.11 or later, and git.
-- The [Orca](https://github.com/stablyai/orca) app and CLI, at or above the version
-  `runtime/pins.json` pins, to dispatch workers.
+- **Any supported runtime provider (`OPEN_FLEET_RUNTIME`, default `orca`):**
+  - **Standalone `posix`** (set `OPEN_FLEET_RUNTIME=posix`, or `OPEN_FLEET_RUNTIME=auto` to fall back to `posix` when `orca` is not on `PATH`) — runs locally using SQLite WAL state, git worktrees, and `tmux` or headless subprocesses with zero external orchestrator daemon.
+  - **[Orca](https://github.com/stablyai/orca)** (default when `OPEN_FLEET_RUNTIME` is unset, or `OPEN_FLEET_RUNTIME=orca`) — the Orca app and CLI, at or above the version `runtime/pins.json` pins.
+  - **12 additional orchestrators** — `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, and `openhands`.
 - The GitHub CLI, `gh`, signed in, for missions that open, review or merge pull requests.
 
 ## What it runs
@@ -57,10 +60,12 @@ hold.
 - **GitHub's API.** `runtime/scripts/upstream_probe.py latest` lists stablyai/orca's release tags
   from `api.github.com` to check the Orca pin. When `GITHUB_TOKEN` is set, it sends it to that
   API, or to the `--tags-url` you pass instead, to lift the rate limit.
-- **Orca, the default runtime.** Missions dispatch workers through the Orca app and CLI, which
-  hand each worker its task. A mission that publishes evidence shares the report or skill bundle
-  through Orca's `artifacts share` or `skills share`, under your Orca profile's session, which
-  `ORCA_CLOUD_AUTH_TOKEN` overrides for development only.
+- **Your active runtime provider (`OPEN_FLEET_RUNTIME`, default `orca`).** Under `OPEN_FLEET_RUNTIME=posix`, all state
+  and worktree dispatch stay local in SQLite WAL and `git worktree` with zero network calls. When
+  the [Orca](https://github.com/stablyai/orca) runtime is active (the default when `OPEN_FLEET_RUNTIME` is unset), missions dispatch workers through
+  the local Orca app and CLI, and a mission that publishes evidence shares the report or skill
+  bundle through Orca's `artifacts share` or `skills share` under your Orca profile's session
+  (`ORCA_CLOUD_AUTH_TOKEN` overrides for development only).
 - **Your workers' model providers.** Workers run in the agent harnesses you choose, and each
   harness sends its prompts to its own provider under your account.
 

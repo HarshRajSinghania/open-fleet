@@ -73,7 +73,7 @@ Current indexing status across external skill and plugin directories (last audit
 
 Shared lead for external directory submissions:
 
-> **open-fleet** is 22 outcome-named autonomous fleets for the Orca runtime and the open-fleet Runtime Provider Interface (RPI). Each mission is one outcome with its own state machine and an evidence-backed definition of done: every unit of work closes with a SHA-bound evidence manifest an independent verifier re-derives, never a worker's narration. Its own catalog holds five binding proof reports — two external-run (`ship-it`, `review-it`) and three self-run (`clean-sweep`, `prove-it`, `harden-it`) — with `17 doctrine-only` protocols ready to run. One router per worker; MIT.
+> **open-fleet** is 22 outcome-named autonomous fleets for coding agents across the open-fleet Runtime Provider Interface (RPI) — running standalone on POSIX (`OPEN_FLEET_RUNTIME=posix`), on the Orca runtime, or across 12 external multi-agent orchestrators. Each mission is one outcome with its own state machine and an evidence-backed definition of done: every unit of work closes with a SHA-bound evidence manifest an independent verifier re-derives, never a worker's narration. Its own catalog holds five binding proof reports — two external-run (`ship-it`, `review-it`) and three self-run (`clean-sweep`, `prove-it`, `harden-it`) — with `17 doctrine-only` protocols ready to run. One router per worker; MIT.
 > - **Install:** `/plugin marketplace add ravidsrk/open-fleet`
 > - **Proof:** `https://github.com/ravidsrk/open-fleet/tree/main/docs/runs`
 
@@ -88,14 +88,14 @@ Validation of `dist` at `f14253f` (`v0.8.0`) on 2026-10-25 reported:
   - the file count;
   - `verify-gate.sh` running other files.
   The bundle README (`.claude-plugin/bundle-README.md`) discloses each one. None blocks.
-- **26 warnings:** download-and-run commands, which in shipped code are the guard hook's own deny patterns, and *No icon*. The bundle now ships `.claude-plugin/icon.png` (1024 px, square, the orcas from `assets/hero-dark.jpg`). The portal takes the icon **once, at the first save or submission**, so never save a draft from a `dist` older than the cut that adds it.
+- **26 warnings:** download-and-run commands, which in shipped code are the guard hook's own deny patterns, and *No icon*. The bundle now ships `.claude-plugin/icon.png` (1024 px, square, the autonomous-fleet emblem from `assets/hero-dark.jpg`). The portal takes the icon **once, at the first save or submission**, so never save a draft from a `dist` older than the cut that adds it.
 
 A submission still requires Anthropic's validation, security scan, and human review before a listing goes live:
 
 ```json
 {
   "name": "open-fleet",
-  "description": "Outcome-named autonomous fleets for the Orca runtime and open-fleet RPI — each mission closes with a SHA-bound, independently verified evidence manifest.",
+  "description": "Outcome-named autonomous fleets for coding agents across Orca, POSIX, and multi-runtime orchestrators — each mission closes with a SHA-bound, independently verified evidence manifest.",
   "author": { "name": "Ravindra Kumar", "email": "ravidsrk@gmail.com", "url": "https://github.com/ravidsrk" },
   "category": "development",
   "source": { "source": "github", "repo": "ravidsrk/open-fleet" },
@@ -108,7 +108,7 @@ A submission still requires Anthropic's validation, security scan, and human rev
 Their [submit page](https://www.claudemarketplace.net/submit) (rechecked 2026-10-25) takes listings by email to `chekkutech@gmail.com` or by WhatsApp and reviews each by hand (typically within two business days):
 
 - **Name:** `open-fleet`
-- **One-line summary:** Outcome-named autonomous fleets for Orca — evidence-backed done, never narration.
+- **One-line summary:** Outcome-named autonomous fleets for coding agents — evidence-backed done, never narration.
 - **Longer description:** The shared lead above + the README link.
 - **Install:** `/plugin marketplace add ravidsrk/open-fleet` (Claude Code plugin system).
 - **Repository:** `https://github.com/ravidsrk/open-fleet` · **Docs:** `docs/`

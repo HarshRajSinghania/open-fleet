@@ -100,7 +100,7 @@ m("map-it", "a foggy goal charted into a frozen map",
   "a goal too foggy to spec",
   "every decision ticket, one per session · the freeze",
   [("MAPPED", G), ("MAPPED-WITH-BLOCKED", A)],
-  "a frozen map + verified Orca DAG that ship-it dispatches unchanged · decision tickets · a frozen spec",
+  "a frozen map + verified task DAG that ship-it dispatches unchanged · decision tickets · a frozen spec",
   "no production code — decisions, not deliverables",
   "NAME → CHART → CLEAR THE FRONTIER → FREEZE → PREPARE THE DAG"),
 

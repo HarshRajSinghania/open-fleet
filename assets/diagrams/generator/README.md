@@ -6,9 +6,14 @@ diagram in a dark and a light variant. The prompts are the diagram source the sa
 mermaid blocks in the README are: edit the prompt, rerun, review the render.
 
 ```bash
-OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py                      # everything
+npm --prefix assets/diagrams/generator install                                       # one-time sharp setup for SVG renderers
+OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py                      # everything (image model)
 OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only ship-it       # one dark
 OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only ship-it-light # its light variant
+python3 assets/diagrams/generator/render_svg.py                                      # deterministic SVG + sharp mission cards (all 22 pairs)
+node assets/diagrams/generator/render_brand_assets.js                                # deterministic SVG + sharp hero/social/icon assets
+node assets/diagrams/generator/render_architecture_diagrams.js                       # deterministic SVG + sharp verify-gate, install-stack, runtime-providers, tracker-enumeration
+node assets/diagrams/generator/replace_corner_whales.js                              # 3-node constellation corner mark patch on concept diagrams
 python3 assets/diagrams/generator/wire_docs.py .                                     # embed into the docs
 ```
 

@@ -13,7 +13,7 @@ Paste this verbatim into **Settings → General → Description**, or the ✎ be
 **About** on the repository home:
 
 ```text
-Outcome-named autonomous fleets for the Orca runtime — SHA-bound evidence definition of done, best-of-breed worker recipes, one router per worker.
+Outcome-named autonomous fleets for coding agents across Orca, POSIX, and multi-runtime orchestrators — SHA-bound evidence definition of done, best-of-breed worker recipes, one router per worker.
 ```
 
 Applying it is a maintainer action: repository settings are writable only from an
@@ -44,8 +44,8 @@ not stating a number at all:
 
 | Surface | Description text |
 |---|---|
-| `.claude-plugin/plugin.json` | opens *"Outcome-named autonomous fleets for the Orca runtime…"* |
-| `.claude-plugin/marketplace.json` | *"Outcome-named autonomous fleets for the Orca runtime"* |
+| `.claude-plugin/plugin.json` | opens *"Outcome-named autonomous fleets for coding agents across Orca, POSIX, and multi-runtime orchestrators…"* |
+| `.claude-plugin/marketplace.json` | *"Outcome-named autonomous fleets for coding agents across Orca, POSIX, and multi-runtime orchestrators"* |
 | README badge | reads the count from `assets/badges/missions.json`, regenerated from the catalog |
 
 That is not a stylistic preference; `check_doc_counts` in `scripts/validate.py`

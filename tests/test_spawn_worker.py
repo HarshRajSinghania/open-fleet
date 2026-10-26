@@ -1742,5 +1742,149 @@ class TestOrcaRoLanePrerequisites(unittest.TestCase):
             self.assertIn("step=dispatch-inject", p.stderr)
 
 
+class TestOrcaRoNativeClaudeFallback(unittest.TestCase):
+    """#680: Orca proves an agent present by its pane title or its foreground process name. A
+    native Claude Code install runs as `versions/<version>`, and an idle Claude sets no title, so
+    `dispatch --inject` answered no_agent_detected for a live claude pane (Orca 1.4.229 to
+    1.4.240). For the certified ro claude row, and only after Orca's spawn record names the pane
+    claude and its screen shows Claude's plan-mode prompt, the lane delivers the preamble of a
+    dispatch without --inject by terminal send, Orca's own nextStep."""
+
+    _stub = TestSpawnWorkerV5Lanes._stub
+    _run = TestSpawnWorkerV5Lanes._run
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    REJECTED = TestOrcaRoLanePrerequisites.REJECTED
+    RO = {"PROFILE": "ro"}
+    ARGS = ["task_test", "path:/tmp/wt", "t", "claude"]
+    # Claude Code 2.1.304's idle composer under the ro row (#680 witness screen).
+    CLAUDE_PLAN = ("\u256d\u2500\u2500\u2500\n\u276f Try \"write a test for submit.py\"\n"
+                   "\u2500\u2500\u2500\n  \u23f8 plan mode on (shift+tab to cycle)\n")
+    SHOW = {"result": {"terminal": {"handle": "term_shell1", "agentIdentity": "claude",
+                                    "preview": CLAUDE_PLAN}}}
+    NOINJECT = {"result": {"dispatch": {"id": "ctx_y"}, "injected": False,
+                           "preamble": "PREAMBLE BODY"}}
+
+    def _fallback_stub(self, tmp, *, show=None, noinject=None, send=None, send_rc=0):
+        log = self._stub(tmp, inject=self.REJECTED, send=send, send_rc=send_rc)
+        root = Path(tmp)
+        (root / "show.json").write_text(json.dumps(show if show is not None else self.SHOW))
+        (root / "noinject.json").write_text(json.dumps(
+            noinject if noinject is not None else self.NOINJECT))
+        stub = root / "orca"
+        text = stub.read_text()
+        inject_line = f'cat "{tmp}/inject.json" ;;'
+        default_line = "  *)                    printf '%s' '{\"result\": {}}' ;;"
+        self.assertIn(inject_line, text)
+        self.assertIn(default_line, text)
+        text = text.replace(inject_line, f'cat "{tmp}/inject.json"; exit 1 ;;')
+        text = text.replace(default_line,
+                            f'  *dispatch*--return-preamble*) cat "{tmp}/noinject.json" ;;\n'
+                            f'  *terminal\\ show*)     cat "{tmp}/show.json" ;;\n' + default_line)
+        stub.write_text(text)
+        return log
+
+    def test_a_native_claude_pane_takes_the_preamble_by_terminal_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._fallback_stub(tmp)
+            p = self._run(tmp, self.ARGS, self.RO)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            calls = log.read_text().splitlines()
+            noinject = [c for c in calls if "--return-preamble" in c]
+            self.assertEqual(len(noinject), 1, calls)
+            self.assertNotIn("--inject", noinject[0])
+            self.assertIn("--task task_test --to term_shell1", noinject[0])
+            sends = [c for c in calls if c.startswith("terminal send")]
+            self.assertEqual(len(sends), 1, calls)
+            self.assertIn("--terminal term_shell1 --text PREAMBLE BODY --enter --wait-submit", sends[0])
+            self.assertIn("HANDLE=term_shell1 STAGES=input_accepted,turn_started", p.stdout)
+            self.assertIn("SPAWN=NOTE", p.stderr)
+            self.assertIn("no_agent_detected", p.stderr)
+
+    def _refused_without_sending(self, tmp, p, log, reason):
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("CODE=inject_rejected", p.stderr)
+        self.assertIn(f"no-inject fallback not taken: {reason}", p.stderr)
+        calls = log.read_text()
+        self.assertNotIn("terminal send", calls, "a refused inject is never resent")
+        self.assertNotIn("--return-preamble", calls)
+
+    def test_the_fallback_needs_orca_to_name_the_pane_claude(self):
+        for ident in (None, "codex", ""):
+            with self.subTest(agentIdentity=ident), tempfile.TemporaryDirectory() as tmp:
+                show = copy.deepcopy(self.SHOW)
+                show["result"]["terminal"]["agentIdentity"] = ident
+                log = self._fallback_stub(tmp, show=show)
+                p = self._run(tmp, self.ARGS, self.RO)
+                self._refused_without_sending(tmp, p, log, "Orca's spawn record names")
+
+    def test_the_fallback_needs_claudes_plan_mode_prompt_on_screen(self):
+        screens = {"a shell prompt": "ravindra@mac of680 % ",
+                   "a prompt out of plan mode": "\u276f Try \"fix lint errors\"\n  ? for shortcuts\n",
+                   "an empty screen": ""}
+        for name, preview in screens.items():
+            with self.subTest(screen=name), tempfile.TemporaryDirectory() as tmp:
+                show = copy.deepcopy(self.SHOW)
+                show["result"]["terminal"]["preview"] = preview
+                log = self._fallback_stub(tmp, show=show)
+                p = self._run(tmp, self.ARGS, self.RO)
+                self._refused_without_sending(tmp, p, log, "the pane's screen does not show")
+
+    def test_the_fallback_covers_only_the_ro_claude_row(self):
+        cases = {"another harness": (["task_test", "path:/tmp/wt", "t", "codex"], self.RO),
+                 "an override": (self.ARGS, dict(self.RO, WORKER_CMD="claude --permission-mode plan",
+                                                 ORCA_COORD_ALLOW_CMD_OVERRIDE="1"))}
+        for name, (args, env) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                log = self._fallback_stub(tmp)
+                p = self._run(tmp, args, env)
+                self._refused_without_sending(tmp, p, log, "the no-inject fallback covers only")
+                self.assertNotIn("terminal show", log.read_text())
+
+    def test_a_no_inject_dispatch_without_a_preamble_fails_before_sending(self):
+        for name, payload in {"no preamble": {"result": {"dispatch": {"id": "ctx_y"}}},
+                              "no dispatch record": {"result": {"preamble": "PREAMBLE BODY"}},
+                              "a blank preamble": {"result": {"dispatch": {"id": "ctx_y"},
+                                                              "preamble": "  "}}}.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                log = self._fallback_stub(tmp, noinject=payload)
+                p = self._run(tmp, self.ARGS, self.RO)
+                self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+                self.assertIn("step=dispatch-no-inject", p.stderr)
+                self.assertNotIn("terminal send", log.read_text())
+
+    def test_a_refused_no_inject_dispatch_is_a_policy_exit_that_sends_nothing(self):
+        refused = {"ok": False, "error": {"code": "task_not_startable", "message": "task is dispatched",
+                                          "data": {"nextSteps": ["Inspect the task."]}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._fallback_stub(tmp, noinject=refused)
+            p = self._run(tmp, self.ARGS, self.RO)
+            self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+            self.assertIn("CODE=task_not_startable", p.stderr)
+            self.assertNotIn("terminal send", log.read_text())
+
+    def test_a_failed_send_fails_and_is_never_retried(self):
+        failed = {"ok": False, "error": {"code": "runtime_error", "message": "pty write failed"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._fallback_stub(tmp, send=failed, send_rc=1)
+            p = self._run(tmp, self.ARGS, self.RO)
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("step=terminal-send", p.stderr)
+            self.assertIn("never resend", p.stderr)
+            sends = [c for c in log.read_text().splitlines() if c.startswith("terminal send")]
+            self.assertEqual(len(sends), 1)
+
+    def test_a_send_without_a_turn_start_is_unproven(self):
+        send = {"result": {"send": {"accepted": True,
+                                    "prompt": {"requestId": "req_2", "stages": ["input_accepted"]}}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._fallback_stub(tmp, send=send)
+            p = self._run(tmp, self.ARGS, self.RO)
+            self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+            self.assertIn("SPAWN=UNPROVEN", p.stderr)
+            self.assertIn("stages=input_accepted", p.stderr)
+            sends = [c for c in log.read_text().splitlines() if c.startswith("terminal send")]
+            self.assertEqual(len(sends), 1, "silence is never answered with a resend")
+
+
 if __name__ == "__main__":
     unittest.main()

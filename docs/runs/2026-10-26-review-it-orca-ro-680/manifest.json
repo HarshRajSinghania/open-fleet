@@ -406,6 +406,10 @@
     {
       "path": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt",
       "sha256": "9812fd16f0cd8e07eadc2f68c5d02e04a0c8330d2b3057110e02b4e5cc6273ce"
+    },
+    {
+      "path": "docs/runs/2026-10-26-review-it-orca-ro-680/verifier.txt",
+      "sha256": "152623fb941f511ab4b52fb0eeb2c14ba64eb0a45a321e39c5cfe0336e4c444c"
     }
   ],
   "commands": [
@@ -419,6 +423,17 @@
       "commit": "0c64553c6fb883cb19398414a61d48119059acd1",
       "wtree": "625fe34f9661978b032b0dc5d4b57270c00f13b9",
       "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/rederive.txt"
+    },
+    {
+      "label": "verifier",
+      "ts": "2026-10-26T05:59:09Z",
+      "cmd": "python3 runtime/scripts/verify.py --manifest docs/runs/2026-10-26-review-it-orca-ro-680/manifest.json --contract-source docs/runs/2026-10-26-review-it-orca-ro-680/contract.json@0c64553c6fb883cb19398414a61d48119059acd1 --contract-digest sha256:8035e60fd54d5048c1f41b39406133a583e05d20e003b2052ef09161673cacc2 --unit-class report-only --dispatch-record docs/runs/2026-10-26-review-it-orca-ro-680/dispatch-record.json@7513024eba723ce229cc810b218845b76743b818 --dispatch-pubkey docs/runs/2026-10-26-review-it-orca-ro-680/dispatch-pubkey.hex@7513024eba723ce229cc810b218845b76743b818",
+      "cmd_sha256": "5227fe1785e2a06e3a82f6c60bec3e8d67172cce7005bd757f5010dcdddc4904",
+      "exit": 0,
+      "duration_s": 4.546,
+      "commit": "7513024eba723ce229cc810b218845b76743b818",
+      "wtree": "f855b552c8daff02ec5481fe9c3a11492c4ad3d7",
+      "artifact": "docs/runs/2026-10-26-review-it-orca-ro-680/verifier.txt"
     }
   ]
 }

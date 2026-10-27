@@ -1624,9 +1624,13 @@ looks the resolved name up and fails when it is absent.
 A configured command must name ONE executable — a bare name or an absolute path; a command line
 (`python3 /tmp/orca.py`), an option-shaped value, a cwd-relative path or a control character is
 refused by name, "(it must name one executable, without arguments)", and `run_json` also refuses
-a configured name that is not on PATH with that message instead of an errno. The rule lives in
-`cli_command_problem`, which `upstream_probe.py`'s `capture` resolver calls too: one policy
-for both resolvers (W4-15/W2-03).
+a configured name that is not on PATH with that message instead of an errno. The precedence
+lives in `configured_command` and the rule in `cli_command_problem`, and `upstream_probe.py`'s
+`capture` resolver reads its override through both, so the override it runs is the one every
+fleet call runs (W4-15/W2-03). It differs on purpose, and only, where `capture` must reach the
+real Orca CLI: the override must also be on PATH, an `ORCA_DEV_REPO_ROOT` without `orca-dev` on
+PATH falls through to the platform default, and `OPEN_FLEET_RUNTIME` is ignored (this module's
+non-Orca shim is not Orca).
 
 Exits: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a provider dispatch
 failed · 2 usage, a configured command that is not one executable, or an unknown
@@ -2049,7 +2053,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 
 Drift probe against the Orca pin: has upstream moved past `runtime/pins.json`, and —
 when a binary is at hand — how do its surfaces differ from the last re-pin's receipts?
-Source `runtime/scripts/upstream_probe.py:1-59`; behavior pinned by
+Source `runtime/scripts/upstream_probe.py:1-60`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
 (`.github/workflows/upstream-drift.yml`) runs `latest` and `review-date` and opens — or
 comments on — an issue labeled `upstream-drift` when either says a re-pin is due. Neither check
@@ -2085,8 +2089,9 @@ over https or loopback http only and never across a redirect, and skips `-rc`, `
 the first component that moved; `patches_behind` counts the stable tags strictly newer
 than the pin. `--json` prints exactly `{"pin","latest","drift","patches_behind"}`.
 
-`capture` resolves the CLI the way upstream's skill stubs do — `ORCA_CLI_COMMAND` if set
-(one executable, no arguments), else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set and it is
+`capture` resolves the CLI the way upstream's skill stubs do — `OPEN_FLEET_CLI_COMMAND`, else
+`ORCA_CLI_COMMAND`, if set (`orca_cli.py`'s precedence and rule: one executable, no
+arguments), else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set and it is
 on PATH, else `orca-ide` on Linux, else `orca` — and refuses when it is not on PATH. It
 runs `agent-context --json`, `--help`, `terminal --help`, and for the `orchestration` and
 `orca-cli` guides `skills get <topic>`, `--references`, then one `--reference <name>` per

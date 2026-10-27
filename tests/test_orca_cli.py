@@ -246,6 +246,40 @@ class TheConfiguredCommandIsOneExecutable(unittest.TestCase):
         self.assertEqual(probe.resolve_cli({"ORCA_CLI_COMMAND": "my-orca"}, "linux", which=everything),
                          ("my-orca", "ORCA_CLI_COMMAND"))
 
+    def test_upstream_probe_takes_the_override_in_orca_cli_precedence(self):
+        # Codex review of W4-15 (P2): upstream_probe read ORCA_CLI_COMMAND only, so with
+        # OPEN_FLEET_CLI_COMMAND=/opt/pinned/orca and ORCA_CLI_COMMAND=/opt/older/orca every fleet
+        # call ran the pinned binary while `capture` witnessed the older one, and with only the
+        # primary set `capture` ignored it. Both now take the override the same way.
+        spec = importlib.util.spec_from_file_location("upstream_probe_for_precedence",
+                                                      SCRIPTS / "upstream_probe.py")
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+
+        def everything(name):
+            """A which() that finds anything: only precedence and shape decide."""
+            return name if name.startswith("/") else f"/bin/{name}"
+
+        cases = (
+            ({"OPEN_FLEET_CLI_COMMAND": "/opt/pinned/orca", "ORCA_CLI_COMMAND": "/opt/older/orca"},
+             ("/opt/pinned/orca", "OPEN_FLEET_CLI_COMMAND")),
+            ({"OPEN_FLEET_CLI_COMMAND": "/opt/pinned/orca"}, ("/opt/pinned/orca", "OPEN_FLEET_CLI_COMMAND")),
+            ({"ORCA_CLI_COMMAND": "/opt/older/orca"}, ("/opt/older/orca", "ORCA_CLI_COMMAND")),
+            ({"OPEN_FLEET_CLI_COMMAND": "  ", "ORCA_CLI_COMMAND": "/opt/older/orca"},
+             ("/opt/older/orca", "ORCA_CLI_COMMAND")),
+        )
+        for env, want in cases:
+            with self.subTest(env=env):
+                self.assertEqual(probe.resolve_cli(env, "linux", which=everything), want)
+                self.assertEqual(self.m.resolve(env, "Linux"), want[0], "the fleet resolver disagrees")
+        # Same validation on the winning value: a bad primary is never skipped for a good legacy.
+        env = {"OPEN_FLEET_CLI_COMMAND": "-x", "ORCA_CLI_COMMAND": "/opt/older/orca"}
+        with self.assertRaises(probe.ProbeError) as ctx:
+            probe.resolve_cli(env, "linux", which=everything)
+        self.assertIn("OPEN_FLEET_CLI_COMMAND='-x'", str(ctx.exception))
+        with self.assertRaises(self.m.CliCommandError):
+            self.m.resolve(env, "Linux")
+
 
 class NoScriptNamesTheExecutable(unittest.TestCase):
     """The contract: the executable is a policy decision made once, in orca_cli.py."""

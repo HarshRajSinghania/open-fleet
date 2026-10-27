@@ -149,8 +149,10 @@ def cli_command_problem(value, var, which=None):
     return f"{var}={value!r} {why} ({CLI_COMMAND_RULE})"
 
 
-def _configured(env):
-    """(var, value) of the CLI-command override in force, or ("", "") when none is set."""
+def configured_command(env):
+    """(var, value) of the CLI-command override in force, or ("", "") when none is set:
+    OPEN_FLEET_CLI_COMMAND, else ORCA_CLI_COMMAND (a blank value is unset). The one precedence
+    for every resolver; upstream_probe.resolve_cli reads the override through this too."""
     for var in ("OPEN_FLEET_CLI_COMMAND", "ORCA_CLI_COMMAND"):
         value = (env.get(var) or "").strip()
         if value:
@@ -165,7 +167,7 @@ def resolve(env=None, system=None) -> str:
     command that is not one executable raises CliCommandError (cli_command_problem).
     """
     env = os.environ if env is None else env
-    var, configured = _configured(env)
+    var, configured = configured_command(env)
     if configured:
         problem = cli_command_problem(configured, var)
         if problem:
@@ -197,7 +199,7 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
         cli = resolve()
     except CliCommandError as exc:
         raise error(f"could not run orca: {exc}")
-    var, configured = _configured(os.environ)
+    var, configured = configured_command(os.environ)
     problem = cli_command_problem(configured, var, shutil.which) if configured else None
     if problem:
         raise error(f"could not run orca: {problem}")

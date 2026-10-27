@@ -187,4 +187,4 @@ When filing an issue, include:
 2. Runtime provider (`OPEN_FLEET_RUNTIME`), harness binary/version, and mission name.
 3. Exact prompt or command executed, ledger row / dispatch ID, and full error output (with secrets redacted).
 
-Use the [bug report template](../.github/ISSUE_TEMPLATE/bug_report.md) for runtime defects, the [doc-claim template](../.github/ISSUE_TEMPLATE/doc_claim.md) for documentation drift, and [SECURITY.md](../SECURITY.md) for private vulnerability disclosures.
+Use the [bug report template](../.github/ISSUE_TEMPLATE/bug_report.md) for runtime defects, the [doc-claim template](../.github/ISSUE_TEMPLATE/doc_claim.md) for documentation drift, and [SECURITY.md](../.github/SECURITY.md) for private vulnerability disclosures.

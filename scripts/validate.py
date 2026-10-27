@@ -1024,7 +1024,7 @@ def check_evals():
 COUNT_LINT_FILES = (
     "README.md", "ARCHITECTURE.md", "AGENTS.md", "docs/concepts.md",
     "docs/getting-started.md",
-    "CONTRIBUTING.md", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
+    ".github/CONTRIBUTING.md", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
     # The GitHub About box is a repository setting, so no lint can reach it — but its
     # canonical text is a file, and that file is why the box stopped carrying a count
     # it had already gone stale on twice. Linting it keeps the count from creeping back

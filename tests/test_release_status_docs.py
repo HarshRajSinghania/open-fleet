@@ -35,7 +35,7 @@ def flat(text):
 
 
 class TodosPointsAtTheFiledReadinessIssues(unittest.TestCase):
-    TEXT = read("TODOS.md")
+    TEXT = read("docs/TODOS.md")
 
     def entry(self):
         m = re.search(r"(?ms)^- \*\*The 2026-09-28 release-readiness review\*\*.*?(?=^- \*\*|\Z)", self.TEXT)

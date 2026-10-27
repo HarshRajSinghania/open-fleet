@@ -573,7 +573,7 @@ class TheRunArchiveMatchesGit(unittest.TestCase):
 
     def test_todos_points_at_the_review_that_is_actually_there(self):
         # PR #278 moved the 2026-09-10 review; TODOS still called REVIEW.md by that date.
-        text = read("TODOS.md")
+        text = read("docs/TODOS.md")
         self.assertIn("docs/reviews/2026-09-10-review.md", text)
         self.assertIn("2026-09-11 deep review", text)
 
@@ -634,7 +634,8 @@ class ReviewCitationsResolve(unittest.TestCase):
         r"(?<!/)\bREVIEW\.md\b[^\n]{0,12}?"
         r"(§\s*\d|\bA\d|\bU\d|\bP[012]-\d|\bP2\s+item)")
     SEARCH_DIRS = ("runtime", "scripts", "tests", "evals", "bench", ".github")
-    SEARCH_FILES = ("ARCHITECTURE.md", "AGENTS.md", "CONTRIBUTING.md", "TODOS.md", "CHANGELOG.md")
+    SEARCH_FILES = ("ARCHITECTURE.md", "AGENTS.md", ".github/CONTRIBUTING.md", "docs/TODOS.md",
+                    "CHANGELOG.md")
 
     def _offenders(self):
         paths = [ROOT / f for f in self.SEARCH_FILES]

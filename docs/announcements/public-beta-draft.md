@@ -123,7 +123,7 @@ workers use; those are credited in the README and in `THIRD_PARTY_NOTICES.md`.
 
 **How to help.** Run a mission and file the bundle ([call for runs](../call-for-runs.md), then
 the [submission guide](../run-submission-guide.md)). Report what breaks through the issue
-templates. The [code of conduct](../../CODE_OF_CONDUCT.md) applies everywhere the project
+templates. The [code of conduct](../../.github/CODE_OF_CONDUCT.md) applies everywhere the project
 talks.
 
 **What comes next.** 1.0 is defined by an executable checklist, `scripts/release_check.py`,

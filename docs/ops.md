@@ -15,8 +15,8 @@ missions already have those.
 | GitHub peer review | `agentsalpha` (designated second maintainer) | [Repository invitations](https://github.com/ravidsrk/open-fleet/invitations) | write invitation `335422854` sent 2026-09-30, never accepted; OpenAI Codex is the second reviewer instead (#595, below); role boundaries below |
 | Claude plugin marketplace | GitHub self-host + buildwithclaude auto-index | [`.claude-plugin/`](../.claude-plugin/plugin.json) | `/plugin marketplace add ravidsrk/open-fleet`; external listing history and submission status are in [distribution](distribution.md) |
 | greptile | removed 2026-10-27 | [greptile.com](https://greptile.com/) | no longer a GitHub check on PRs, a required context on `main`, or part of the review loop; Codex is the second reviewer (#595, below) |
-| agentskills.io listing | not submitted | local `uvx --from skills-ref agentskills validate` | repository claims (`proof`, `autonomy`, `proof_evidence`) live under `metadata:` — [CONTRIBUTING](../CONTRIBUTING.md) |
-| Maintainer email | `ravidsrk@gmail.com` | [SECURITY.md](../SECURITY.md) | security reports (72h ack) and ops contact |
+| agentskills.io listing | not submitted | local `uvx --from skills-ref agentskills validate` | repository claims (`proof`, `autonomy`, `proof_evidence`) live under `metadata:` — [CONTRIBUTING](../.github/CONTRIBUTING.md) |
+| Maintainer email | `ravidsrk@gmail.com` | [SECURITY.md](../.github/SECURITY.md) | security reports (72h ack) and ops contact |
 
 This inventory records no separate production host for the catalog. A source change lands on
 `main`; immutable release publication is a separate step. A `v*` tag triggers the dist and
@@ -400,7 +400,7 @@ environment holds.
    `.pub` (an unchecked fetch can leave the old pin). Do not leave a stale
    working-tree copy. Generate the pair with
    `runtime/scripts/dispatch-sign.py gen-key` **off the clone**; discard the
-   old private seed. Security reports follow [SECURITY.md](../SECURITY.md).
+   old private seed. Security reports follow [SECURITY.md](../.github/SECURITY.md).
 4. Rollback = `git revert -m 1 <merge-sha>` on a branch, then a PR
    through the normal gates — never a force-push or a history rewrite
    on `main`. There is no hosted service or staging environment. A merge

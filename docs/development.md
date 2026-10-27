@@ -1,6 +1,6 @@
 # Developing open-fleet
 
-[Documentation](README.md) · [Contribution rules](../CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md)
+[Documentation](README.md) · [Contribution rules](../.github/CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md)
 
 This is a Markdown catalog with Python and shell helpers. There is no application server to
 start. The validator and tests run locally; a runtime is needed when you exercise a live
@@ -23,7 +23,7 @@ Before opening a pull request, read these five files in order (~15 minutes total
 2. **[`runtime/evidence-manifest.md`](../runtime/evidence-manifest.md) (3 min)** — The SHA-bound JSON schema every unit emits and `runtime/scripts/verify.py` checks.
 3. **[`skills/ship-it/SKILL.md`](../skills/ship-it/SKILL.md) (3 min)** — Canonical example of a mission's frontmatter, `Composes … ; rides …` clause, deferred phase reads, and state machine.
 4. **[`playbooks/build-change.md`](../playbooks/build-change.md) (2 min)** — Canonical example of a worker phase playbook (`Recipe:`, single-pack routing, and `## Completion`).
-5. **[`CONTRIBUTING.md`](../CONTRIBUTING.md) (2 min)** — Bookkeeping fragment rules (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`) and PR trailers.
+5. **[`CONTRIBUTING.md`](../.github/CONTRIBUTING.md) (2 min)** — Bookkeeping fragment rules (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`) and PR trailers.
 
 ## Three contribution paths
 
@@ -155,7 +155,7 @@ files each PR adds on its own: `CHANGELOG.md`'s dated section from `changelog.d/
 ([`scripts/changelog.py`](../scripts/changelog.py)), and the run index in
 [`docs/runs/README.md`](runs/README.md) from `docs/runs/index/` rows
 ([`scripts/run_index.py`](../scripts/run_index.py)). See
-[Contributing](../CONTRIBUTING.md#bookkeeping-files-add-yours-never-edit-a-shared-one).
+[Contributing](../.github/CONTRIBUTING.md#bookkeeping-files-add-yours-never-edit-a-shared-one).
 
 [`scripts/bundle.py`](../scripts/bundle.py) writes `dist/`, which is ignored by Git. Use its
 `--check` mode for validation. Diagram assets have a separate
@@ -175,5 +175,5 @@ Tool versions and hashes live in [`.github/ci-tools.lock`](../.github/ci-tools.l
 live in [`validate.yml`](../.github/workflows/validate.yml). These extra tools are separate from
 the standard-library setup above. A local test pass is one part of PR validation.
 
-Use [Contributing](../CONTRIBUTING.md#commit-and-pr-conventions) for commit and PR conventions.
+Use [Contributing](../.github/CONTRIBUTING.md#commit-and-pr-conventions) for commit and PR conventions.
 Describe the reader problem, the resulting improvement, and the checks you actually ran.

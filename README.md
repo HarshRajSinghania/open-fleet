@@ -27,8 +27,8 @@
   <a href="docs/concepts.md">Concepts</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/troubleshooting.md">Troubleshooting</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="SECURITY.md">Security</a> ·
+  <a href=".github/CONTRIBUTING.md">Contributing</a> ·
+  <a href=".github/SECURITY.md">Security</a> ·
   <a href="docs/ops.md">Ops</a>
 </p>
 
@@ -425,6 +425,7 @@ skills/          Discoverable missions (one SKILL.md per outcome)
 playbooks/       Callable phase protocols composed by missions
 runtime/         Runtime policies, control files, RPI provider adapters (runtime/providers/), and CLI helpers incl. the deny hook (runtime/scripts/)
 hooks/           Completion-gate hook wiring (plugin hooks.json + settings snippet)
+.github/         CI workflows, PR and issue templates, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT
 scripts/         Catalog validator, badge generator, eval runner, bundler
 tests/           Contract and negative-path test suite (Python stdlib unittest)
 evals/ & bench/  Routing evals and vf-bench verifier-soundness benchmark
@@ -451,7 +452,7 @@ Explore the documentation by audience tier in **[docs/README.md](docs/README.md)
 |---|---|
 | **1. User & Operator Guides** | [Getting started](docs/getting-started.md) · [Install](docs/install.md) · [Adoption guide](docs/adoption-guide.md) · [Mission guides](docs/missions/README.md) · [Prompt recipes](docs/recipes.md) · [Runtimes & harnesses](docs/runtimes.md) · [Anatomy of a run](docs/guides/anatomy-of-a-run.md) · [Troubleshooting](docs/troubleshooting.md) |
 | **2. Architecture & Reference** | [Concepts & glossary](docs/concepts.md) · [Ecosystem comparison](docs/comparison.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [Verify gate & trust boundary](docs/verify-gate.md) · [Runtime scripts CLI reference](docs/runtime-scripts.md) · [A2A export](docs/a2a-export.md) · [Compliance provenance](docs/compliance-provenance.md) · [Platform ride](docs/platform-ride.md) |
-| **3. Contributors, Ops & Archives** | [Local development](docs/development.md) · [Contributing](CONTRIBUTING.md) · [Certification](docs/certification.md) · [Distribution](docs/distribution.md) · [Roadmap](docs/roadmap.md) · [Maintainer ops](docs/ops.md) · [Retained runs](docs/runs/README.md) · [Research archive](docs/research/README.md) |
+| **3. Contributors, Ops & Archives** | [Local development](docs/development.md) · [Contributing](.github/CONTRIBUTING.md) · [Certification](docs/certification.md) · [Distribution](docs/distribution.md) · [Roadmap](docs/roadmap.md) · [Maintainer ops](docs/ops.md) · [Retained runs](docs/runs/README.md) · [Research archive](docs/research/README.md) |
 
 ## Credits & License
 

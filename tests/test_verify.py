@@ -6757,6 +6757,17 @@ class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):
         self.assertTrue(any(n.startswith("NOTE: redaction:") and "NOT run" in n
                             and "only the built-in floor" in n for n in notes), notes)
 
+    def test_the_enforcement_lane_is_sound_for_gitleaks_too(self):
+        # PR #719 review (P2): a signed dispatch record + pubkey (no --provenance) is a lane the
+        # other authority checks already treat as claiming soundness (a worker-writable git fails
+        # it closed); the gitleaks rule must use the same predicate.
+        self._pinned("worker-writable", "enforcement (signed dispatch record + pubkey)")
+        with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
+            self.assertIsNone(verify._gitleaks_scan(self.repo / "f.txt"))
+        self.assertEqual([c for c in run.call_args_list if c.args[0][0] == "/x/gitleaks"], [])
+        notes = verify._Authority.authority_leg()
+        self.assertTrue(any("NOT run" in n and "only the built-in floor" in n for n in notes), notes)
+
     def test_the_built_in_floor_still_refuses_on_that_lane(self):
         self._pinned("worker-writable", "provenance=ci")
         art = self.artifact("token ghp_" + "Z" * 30 + "\n")

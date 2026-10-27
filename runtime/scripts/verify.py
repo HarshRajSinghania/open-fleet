@@ -809,8 +809,10 @@ class _Authority:
         """gitleaks is pinned and classed the same way (h409 R2). It can only ADD a redaction hit
         on top of the built-in floor — a replaced one yields at worst a fatal, never a false
         GREEN — so a worker-writable one is still consulted on the advisory lane, and its custody
-        is recorded. On a provenance lane it is not run at all (W3-10): the coordinator's verifier
-        does not execute a binary the graded worker could have replaced."""
+        is recorded. On any lane claiming soundness (a provenance lane, or the enforcement lane a
+        signed dispatch record and pubkey open — the predicate authority_leg applies to git) it is
+        not run at all (W3-10): the coordinator's verifier does not execute a binary the graded
+        worker could have replaced."""
         found = shutil.which("gitleaks")
         cls.gitleaks = os.path.abspath(found) if found else None
         cls.gitleaks_custody = cls.classify(cls.gitleaks) if found else "absent"
@@ -1135,7 +1137,7 @@ class _Authority:
                         "its commit, tree and ancestry facts from a binary the graded worker could "
                         "have replaced; fail-closed (h409 R2)"]
             lines.append(f"NOTE: authority: advisory ({where})")
-        if cls.gitleaks_custody == "worker-writable" and (cls.lane or "").startswith("provenance="):
+        if cls.gitleaks_custody == "worker-writable" and cls.lane:
             # W3-10: on a sound lane a binary the graded worker could have replaced is not RUN by
             # the coordinator's verifier at all — its "clean" is not additive evidence there.
             lines.append(f"NOTE: redaction: gitleaks at {cls.gitleaks} is worker-writable — on a "
@@ -2787,7 +2789,7 @@ def _gitleaks_scan(path):
         _Authority.pin_gitleaks()
     if _Authority.gitleaks is None:
         return None
-    if _Authority.gitleaks_custody != "system" and (_Authority.lane or "").startswith("provenance="):
+    if _Authority.gitleaks_custody != "system" and _Authority.lane:
         return None  # W3-10: never run a worker-replaceable scanner on a sound lane; the floor runs
     # cwd is the evidence copy's directory, never the unit checkout: gitleaks
     # otherwise inherits the process cwd (the worker/test repo) and can write

@@ -482,6 +482,44 @@ class RecordingsCannotReachGitInternals(unittest.TestCase):
                 run.cleanup()
         self.assertFalse(self.marker.exists(), "a replay git call ran a command from repo config")
 
+    def _replay_with_planted_info_attributes(self):
+        # $GIT_DIR/info/attributes outranks GIT_ATTR_SOURCE (the empty tree the replay reads
+        # attributes from), so a line planted there selects the hostile config's filter on the
+        # Commit event's `add -A` -- reproduced on git 2.43 in the 2026-10-26 docs audit. Like the
+        # case above, it is written straight into the git dir after build, behind the write guard.
+        case = self.case()
+        events = self.events("unused", "")[2:]  # the fix and its Commit: `add -A` reads the edit
+        original = engine.Run.build
+
+        def build(run):
+            original(run)
+            git_dir = Path(run.repo) / ".git"
+            (git_dir / "config").write_text(self.hostile_config(), encoding="utf-8")
+            (git_dir / "info").mkdir(exist_ok=True)
+            (git_dir / "info" / "attributes").write_text("* filter=probe diff=probe\n",
+                                                         encoding="utf-8")
+        with tempfile.TemporaryDirectory() as scratch, \
+                mock.patch.object(engine.Run, "build", build):
+            ctx = engine.Context(scratch, CONTRACT.read_bytes(), eval_mod.OBEDIENCE_FIXTURE_SECRET)
+            run = engine.Run(case, events, ctx, SUITE["base_state"])
+            try:
+                run.replay()
+                run._land()
+                run.landed_files()
+            finally:
+                run.cleanup()
+
+    def test_a_planted_info_attributes_selects_no_command(self):
+        self._replay_with_planted_info_attributes()
+        self.assertFalse(self.marker.exists(),
+                         "an info/attributes line made a replay git call run the repo's filter")
+
+    def test_mutation_control_without_the_driver_blanks_the_planted_filter_runs(self):
+        with mock.patch.object(engine.guards().gitexec, "driver_blanks", lambda repo: []):
+            self._replay_with_planted_info_attributes()
+        self.assertTrue(self.marker.exists(),
+                        "control: with the driver blanks removed the planted filter must run")
+
     def test_a_symlink_into_the_git_dir_is_refused(self):
         # The vocabulary cannot create a symlink, but the boundary must not depend on that: a
         # write through an in-repo link that resolves into the git dir is refused all the same.

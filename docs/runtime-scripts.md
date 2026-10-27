@@ -1087,9 +1087,9 @@ directory resolves (`--git-dir`) instead of discovering one from `repo`, for a c
 trusts a worktree's own `.git` pointer. A read that MATERIALISES working-tree
 content passes its pairs (`hint_provenance.py` on every `diff` and `log`, `_trajectories.py`'s replay
 on every call after `init`, beside attributes from the empty tree; the posix provider's checkout,
-`worktree remove`, sandbox seed refresh and sync `reset`, each read where that call runs; an
-adapter's `status`, `worktree`, `reset`, `merge-tree` and the other content subcommands, read at
-its `-C <dir>`; not `live_container.py`'s `status` of the catalog checkout); a read of committed objects alone selects
+`worktree remove`, sandbox seed refresh and sync `reset`, each read where that call runs; every
+git an adapter launches, whatever its subcommand, read at its `-C`, `--git-dir` or launch cwd; not
+`live_container.py`'s `status` of the catalog checkout); a read of committed objects alone selects
 no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, the posix provider's `ProviderError` (`worktree_create_failed`, `worktree_rm_failed`, `sandbox_git_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that

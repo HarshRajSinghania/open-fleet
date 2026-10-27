@@ -7,8 +7,9 @@
   repository root on `sys.path`, and `tests/test_entrypoint_guard.py` plants every stdlib module
   name beside all 26 of them and at the root. The gate reads `.orca/dispatch-pubkey` only where a
   ref's final target is remote-tracking — `origin/HEAD`'s (W3-02, P1) or `origin/<base>`'s — and,
-  in a fresh CI checkout, at the pull request's base commit (W3-08); on a `--provenance` lane
-  `verify.py` refuses a bare-path, local-ref or symbolic-to-local trust key, reads it at the one
+  in a fresh CI checkout, at the pull request's base commit (W3-08); on any lane claiming soundness
+  `verify.py` refuses a bare-path, local-ref or symbolic-to-local trust key (a record with such a
+  key opens no enforcement lane, only the advisory one), reads it at the one
   commit its ref resolves to, and every NOTE says where the key came from (W3-03). A
   remote-tracking or commit key pin is trustworthy only where the worker cannot write refs — the
   coordinator's own fetch or a CI checkout — and every NOTE now says so; in a worker's own clone

@@ -272,12 +272,14 @@ def check_pr_merged(ctx, gate, number, why):
 
 
 def check_workflow_green_at_head(ctx, gate, workflow):
-    """The latest `<workflow>` run on the branch being cut must be a success AT this HEAD —
-    a stale green from another SHA does not count.
+    """The newest `<workflow>` run at exactly this HEAD must be a success — a stale green from
+    another SHA does not count.
 
     docs/ops.md cuts on a release branch, whose HEAD never has a run on main, so asking main
-    could only FAIL at a cut (2026-10-27 security audit, W6-12). The branch is HEAD's own; a
-    detached HEAD reads main, as every run of this check did before."""
+    could only FAIL at a cut (2026-10-27 security audit, W6-12); asking by branch NAME let a
+    fork's pull request from a same-named branch take the one run read (PR #718 re-attack). gh's
+    run list names no head repository, so the read is bound to the commit instead: the runs at
+    HEAD, on any branch. A fork can only show a run of this very commit."""
     name = f"{gate}/gh-{workflow}-run-green-at-head"
     reason = gh_unavailable(ctx)
     if reason:
@@ -288,20 +290,24 @@ def check_workflow_green_at_head(ctx, gate, workflow):
     if not head_probe.ok:
         return (name, FAIL, f"git rev-parse HEAD: {tail(head_probe.stderr, 1)}")
     head = head_probe.stdout.strip()
-    branch_probe = ctx.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"])
-    branch = branch_probe.stdout.strip() if branch_probe.ok and branch_probe.stdout.strip() else "main"
-    data, err = gh_json(ctx, ["run", "list", "--workflow", workflow, "--branch", branch,
-                              "--limit", "1", "--json", "conclusion,headSha"])
+    data, err = gh_json(ctx, ["run", "list", "--workflow", workflow, "--commit", head,
+                              "--limit", "20", "--json", "conclusion,headSha,headBranch,event"])
     if err:
         return (name, err[0], err[1])
     if not isinstance(data, list) or not data:
-        return (name, FAIL, f"no `{workflow}` workflow run recorded on {branch}")
-    run = data[0] if isinstance(data[0], dict) else {}
-    conclusion, sha = run.get("conclusion"), run.get("headSha")
-    if conclusion == "success" and sha == head:
-        return (name, PASS, f"`{workflow}` bound GREEN at {sha} on {branch}")
-    return (name, FAIL, f"latest `{workflow}` run on {branch} is {conclusion or 'unfinished'} at "
-                        f"{sha}; HEAD is {head} — a stale green from another SHA does not count")
+        return (name, FAIL, f"no `{workflow}` workflow run recorded at HEAD {head}")
+    at_head = [run for run in data if isinstance(run, dict) and run.get("headSha") == head]
+    if not at_head:
+        other = data[0].get("headSha") if isinstance(data[0], dict) else None
+        return (name, FAIL, f"no `{workflow}` run at HEAD {head} (the newest listed is at {other}) "
+                            "— a stale green from another SHA does not count")
+    run = at_head[0]  # gh lists the newest first
+    conclusion = run.get("conclusion")
+    if conclusion == "success":
+        return (name, PASS, f"`{workflow}` bound GREEN at {head} "
+                            f"({run.get('event') or '?'} run on {run.get('headBranch') or '?'})")
+    return (name, FAIL, f"the newest `{workflow}` run at HEAD {head} is "
+                        f"{conclusion or 'unfinished'}")
 
 
 # ---------------------------------------------------------------------------

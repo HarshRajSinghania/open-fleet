@@ -505,8 +505,9 @@ class GitHubAnswersAreVerdicts(unittest.TestCase):
 class TheGreenRunIsOnTheBranchBeingCut(unittest.TestCase):
     """2026-10-27 security audit, W6-12: gates 0 and 4 asked for the latest run on `main` and
     bound it to HEAD, while docs/ops.md cuts on a release branch, whose HEAD never has a run on
-    main: the gate could only FAIL at a cut. The run is now read on the branch being cut (main
-    when HEAD is detached), and a green at another SHA still does not count."""
+    main: the gate could only FAIL at a cut. Reading by branch name instead let a fork's PR from a
+    same-named branch take the one run read (PR #718 re-attack). The runs at exactly HEAD are
+    read, on any branch; the newest decides, and a green at another SHA still does not count."""
 
     LOGGING_GH = ("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_ARGV_LOG\"\n"
                   "case \"$1 $2\" in\n  \"auth status\") exit 0 ;;\n"
@@ -546,29 +547,45 @@ class TheGreenRunIsOnTheBranchBeingCut(unittest.TestCase):
         self.assertEqual(len(asked), 1, asked)
         return result, asked[0].split()
 
-    def test_a_green_run_at_the_release_branch_head_passes(self):
-        (name, status, detail), argv = self.check([{"conclusion": "success",
-                                                    "headSha": self.head}])
-        self.assertEqual(argv[argv.index("--branch") + 1], "release/9.9.9")
-        self.assertEqual((name, status), ("gate4/gh-install-run-green-at-head", rc.PASS), detail)
-        self.assertIn("release/9.9.9", detail)
+    def run_at(self, sha, conclusion="success", branch="release/9.9.9", event="pull_request"):
+        return {"conclusion": conclusion, "headSha": sha, "headBranch": branch, "event": event}
 
-    def test_a_stale_green_on_the_branch_still_fails(self):
+    def test_a_green_run_at_the_release_branch_head_passes(self):
+        (name, status, detail), argv = self.check([self.run_at(self.head)])
+        self.assertEqual(argv[argv.index("--commit") + 1], self.head)
+        self.assertNotIn("--branch", argv)
+        self.assertEqual((name, status), ("gate4/gh-install-run-green-at-head", rc.PASS), detail)
+        self.assertIn(self.head, detail)
+
+    def test_a_stale_green_still_fails(self):
         parent = self.git("rev-parse", "HEAD~1").strip()
-        (_, status, detail), _ = self.check([{"conclusion": "success", "headSha": parent}])
+        (_, status, detail), _ = self.check([self.run_at(parent)])
         self.assertEqual(status, rc.FAIL)
         self.assertIn("stale green", detail)
         (_, status, detail), _ = self.check([])
         self.assertEqual(status, rc.FAIL)
-        self.assertIn("no `install` workflow run recorded on release/9.9.9", detail)
+        self.assertIn("no `install` workflow run recorded at", detail)
 
-    def test_main_and_a_detached_head_read_main(self):
-        self.git("switch", "-q", "main")
-        _, argv = self.check([])
-        self.assertEqual(argv[argv.index("--branch") + 1], "main")
-        self.git("switch", "-q", "--detach", "release/9.9.9")
-        _, argv = self.check([])
-        self.assertEqual(argv[argv.index("--branch") + 1], "main")
+    def test_a_fork_run_on_a_same_named_branch_cannot_take_the_slot(self):
+        # PR #718 re-attack: `--branch <name> --limit 1` read whichever run was newest on that
+        # branch NAME, a fork's same-named PR branch included. The runs at exactly HEAD decide.
+        fork = self.run_at("f" * 40, conclusion="failure")
+        (_, status, detail), _ = self.check([fork, self.run_at(self.head)])
+        self.assertEqual(status, rc.PASS, detail)
+
+    def test_the_newest_run_at_head_decides(self):
+        (_, status, detail), _ = self.check([self.run_at(self.head, conclusion="failure"),
+                                             self.run_at(self.head)])
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("failure", detail)
+
+    def test_main_and_a_detached_head_read_the_same_commit(self):
+        for target in (("switch", "-q", "main"), ("switch", "-q", "--detach", "release/9.9.9")):
+            self.git(*target)
+            head = self.git("rev-parse", "HEAD").strip()
+            with self.subTest(target=target):
+                _, argv = self.check([])
+                self.assertEqual(argv[argv.index("--commit") + 1], head)
 
 
 class SkipsNeverPass(unittest.TestCase):

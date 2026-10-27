@@ -64,6 +64,9 @@ jobs:
           # A dispatch checks out the named tag, never the branch the run was started from.
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0  # bundle.py resolves references against the full tree; provenance names the commit
+          # No write token in the tree bundle.py runs in (W6-07): the re-fetches below are
+          # anonymous (a public repository), and the push names its token in the URL.
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)

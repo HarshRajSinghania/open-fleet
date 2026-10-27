@@ -587,6 +587,151 @@ class EveryWorkflowToolComesFromAHashedLock(unittest.TestCase):
             "            -r .github/ci-tools.lock\n"), [])
 
 
+def _checkout_steps(text):
+    """[(job, step lines)] for every actions/checkout step in a workflow's jobs."""
+    return [(job, step) for job, body in _jobs(text).items() for step in _steps(body)
+            if any(re.match(r"^\s*(?:- )?uses:\s*actions/checkout@", ln) for ln in step)]
+
+
+class NoCheckoutLeavesItsTokenInTheTree(unittest.TestCase):
+    """2026-10-27 security audit, W6-07: actions/checkout writes the run's token into the
+    working tree's .git/config unless `persist-credentials: false`, and the PR-tree checkouts
+    then ran the PR's own code (the suite, validate.py, floor_guard over the tree), which can
+    read it. No step here pushes through that config: publish-dist pushes to an explicit URL
+    from a fresh repository, and every other write goes through `gh` with GH_TOKEN."""
+
+    PERSIST_OFF = re.compile(r"^\s+persist-credentials:\s*false\s*(?:#.*)?$")
+
+    def _offenders(self, text):
+        return [f"{job}: {step[0].strip()}" for job, step in _checkout_steps(text)
+                if not any(self.PERSIST_OFF.match(ln) for ln in step)]
+
+    def test_every_checkout_sets_persist_credentials_false(self):
+        for path in WORKFLOWS:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name):
+                self.assertEqual(len(_checkout_steps(text)), text.count("actions/checkout@"),
+                                 f"{path.name}: a checkout the step parser did not see")
+                self.assertEqual(self._offenders(text), [],
+                                 f"{path.name}: a checkout persists the run's token")
+
+    def test_the_scan_can_actually_see_one(self):
+        base = ("jobs:\n  x:\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n"
+                "        with:\n          fetch-depth: 0\n")
+        self.assertEqual(len(self._offenders(base)), 1)
+        self.assertEqual(self._offenders(base + "          persist-credentials: false\n"), [])
+        self.assertEqual(len(self._offenders(base + "          persist-credentials: true\n")), 1)
+
+    def test_no_step_pushes_through_the_checkouts_config(self):
+        for path in WORKFLOWS:
+            scripts = "\n".join(s for _, s in _run_scripts(path.read_text(encoding="utf-8")))
+            for line in scripts.splitlines():
+                if re.search(r"\bgit\b.*\bpush\b", line.split(" #", 1)[0]):
+                    with self.subTest(workflow=path.name, line=line.strip()):
+                        self.assertIn("x-access-token:${GITHUB_TOKEN}@github.com", line,
+                                      "a push that relies on the token checkout persisted")
+
+
+class EveryActionIsPinnedToACommit(unittest.TestCase):
+    """2026-10-27 security audit, W6-15: every `uses:` was a full 40-hex SHA, held by reviewer
+    attention alone. A tag (`@v4`) or branch can be moved under the workflow; a commit cannot."""
+
+    USES = re.compile(r"^\s*(?:- )?uses:\s*([^\s#]+)")
+    PINNED = re.compile(r"^(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}"
+                        r"|docker://[^@\s]+@sha256:[0-9a-f]{64}|\./[^@\s]+)$")
+
+    def _unpinned(self, text):
+        return [m.group(1) for ln in text.splitlines() if (m := self.USES.match(ln))
+                and not self.PINNED.match(m.group(1))]
+
+    def test_every_uses_is_a_full_commit_sha(self):
+        seen = 0
+        for path in WORKFLOWS:
+            text = path.read_text(encoding="utf-8")
+            seen += sum(1 for ln in text.splitlines() if self.USES.match(ln))
+            with self.subTest(workflow=path.name):
+                self.assertEqual(self._unpinned(text), [],
+                                 f"{path.name} uses an action by a movable ref")
+        self.assertGreaterEqual(seen, 40, "the scan stopped seeing the workflows' actions")
+
+    def test_the_scan_can_actually_see_one(self):
+        for ref in ("actions/checkout@v4", "actions/checkout@main", "actions/checkout",
+                    "actions/checkout@3d3c42e", "docker://alpine:3.20",
+                    "owner/repo/path@" + "A" * 40):
+            with self.subTest(ref=ref):
+                self.assertEqual(self._unpinned(f"      - uses: {ref}\n"), [ref])
+        for ref in ("actions/checkout@" + "a" * 40, "./.github/actions/setup",
+                    "docker://alpine@sha256:" + "b" * 64):
+            with self.subTest(ref=ref):
+                self.assertEqual(self._unpinned(f"        uses: {ref} # v1\n"), [])
+
+
+def _workflow_name(text):
+    m = re.search(r"(?m)^name:\s*(.+?)\s*$", text)
+    return m.group(1).strip("'\"") if m else None
+
+
+class TheAlertPathNamesWorkflowsThatExist(unittest.TestCase):
+    """2026-10-27 security audit, W6-17: `workflow_run` matches workflows by display `name:`,
+    and main-health and the release gate ask for runs by file or name. A rename left the alert
+    path silently blind (nothing fires, CI stays green), so each reference must name a real
+    workflow, and the two alert paths must watch the same thing."""
+
+    NAMES = {_workflow_name(p.read_text(encoding="utf-8")): p.name for p in WORKFLOWS}
+
+    @staticmethod
+    def _workflow_run_lists(text):
+        on = text.split("\non:\n", 1)[1].split("\n\n", 1)[0] if "\non:\n" in text else ""
+        block = on.split("  workflow_run:\n", 1)[1] if "  workflow_run:\n" in on else ""
+        m = re.search(r"(?m)^    workflows:\s*\[([^\]]*)\]", block)
+        return [w.strip().strip("'\"") for w in m.group(1).split(",")] if m else None
+
+    def test_every_workflow_has_a_unique_name(self):
+        self.assertNotIn(None, self.NAMES)
+        self.assertEqual(len(self.NAMES), len(WORKFLOWS), "two workflows share a name")
+
+    def test_every_workflow_run_trigger_names_a_real_workflow(self):
+        found = 0
+        for path in WORKFLOWS:
+            watched = self._workflow_run_lists(path.read_text(encoding="utf-8"))
+            if watched is None:
+                continue
+            found += 1
+            for name in watched:
+                with self.subTest(workflow=path.name, watches=name):
+                    self.assertIn(name, self.NAMES, f"{path.name} watches a workflow named "
+                                                    f"{name!r}, and none has that name")
+        self.assertGreaterEqual(found, 2, "alert-on-failure and verdict-gate both watch by name")
+
+    def test_the_alert_watches_validate_and_the_demo_by_their_real_names(self):
+        watched = self._workflow_run_lists(
+            (ROOT / ".github" / "workflows" / "alert-on-failure.yml").read_text(encoding="utf-8"))
+        self.assertEqual({self.NAMES.get(n) for n in watched},
+                         {"validate.yml", "negative-control.yml"})
+
+    def test_main_health_reads_a_watched_workflow_file(self):
+        text = (ROOT / ".github" / "workflows" / "main-health.yml").read_text(encoding="utf-8")
+        files = re.findall(r"gh run list --workflow (\S+)", text)
+        self.assertTrue(files, "main-health no longer asks for a workflow's runs")
+        watched = self._workflow_run_lists(
+            (ROOT / ".github" / "workflows" / "alert-on-failure.yml").read_text(encoding="utf-8"))
+        for ref in files:
+            with self.subTest(ref=ref):
+                self.assertTrue((ROOT / ".github" / "workflows" / ref).is_file(),
+                                f"main-health reads {ref}, which is not a workflow file")
+                self.assertIn(_workflow_name((ROOT / ".github" / "workflows" / ref)
+                                             .read_text(encoding="utf-8")), watched,
+                              "main-health watches a workflow the alert does not")
+
+    def test_the_release_gate_asks_for_workflows_that_exist(self):
+        source = (ROOT / "scripts" / "release_check.py").read_text(encoding="utf-8")
+        asked = re.findall(r'check_workflow_green_at_head\(ctx, "gate\d", "([^"]+)"\)', source)
+        self.assertGreaterEqual(len(asked), 2)
+        for name in asked:
+            with self.subTest(workflow=name):
+                self.assertIn(name, self.NAMES, f"release_check asks gh for {name!r} runs")
+
+
 class TagPublishersRefuseAnyoneButTheMaintainer(unittest.TestCase):
     """2026-10-23 review, P2-23: release.yml and publish-dist.yml published on ANY `v*` tag push
     with `contents: write` (publish-dist force-pushes `dist`), while docs/ops.md says only the

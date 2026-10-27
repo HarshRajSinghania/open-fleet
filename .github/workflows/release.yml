@@ -51,6 +51,7 @@ jobs:
           echo "release maintainer '$RELEASE_MAINTAINER' started this run"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as validate.yml)
         with:
+          persist-credentials: false
           fetch-depth: 0  # the tag must resolve locally for --verify-tag and for reading the cut's CHANGELOG
 
       - name: The tag exists and is annotated at a commit on the default branch

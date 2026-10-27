@@ -94,10 +94,13 @@ grep -rlE 'vfbench\.py|vf-bench/gate\.py' .github/workflows/   # non-empty: #412
 grep -rl 'negative-control' .github/workflows/                 # non-empty: #413 landed
 ```
 
-The two greps are the quick look; the script holds CI to more: a job step whose `run:` line
-hands `bench/vf-bench/gate.py` (or `vfbench.py`) and `evals/demo/negative-control/run.sh` to an
-interpreter, in a job and a step no never-true `if:` switches off. An `echo` of the name does
-not count (2026-10-27 security audit, W6-10).
+The two greps are the quick look; the script holds CI to more. A job step must invoke
+`bench/vf-bench/gate.py` (or `vfbench.py`) and `evals/demo/negative-control/run.sh`, and neither
+the step nor its job may carry `if:` or `continue-on-error:`. The invocation must open a line of
+the step's `run:` script (an interpreter and the script, or the script itself, after at most
+`time` or `VAR=value`), outside a quoted string, a heredoc and a continued line, with no `||` or
+`&` on that line. An `echo` of the name, `true || …` or a conditioned job does not count
+(2026-10-27 security audit, W6-10; PR #718 review).
 
 ## Gate 4 — install is one command (epic DoD 4)
 

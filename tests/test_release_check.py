@@ -788,14 +788,55 @@ class CiRunsMeansARunStep(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.assertEqual(self.gate3(workflow), rc.FAIL)
 
-    def test_a_real_invocation_passes_in_any_shell_shape(self):
+    def test_an_invocation_at_command_position_passes(self):
         step = "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n{}"
         for body in ("          set -euo pipefail\n          time python3 bench/vf-bench/gate.py\n",
                      "          FOO=1 python3 -u bench/vf-bench/gate.py --strict\n",
-                     "          cd . && ./bench/vf-bench/gate.py | tee out.txt\n",
-                     "          if ! python3 bench/vf-bench/gate.py; then exit 1; fi\n"):
+                     "          ./bench/vf-bench/gate.py 2>&1 | tee out.txt\n",
+                     "          echo start\n          python3 bench/vf-bench/gate.py\n"):
             with self.subTest(body=body):
                 self.assertEqual(self.gate3(step.format(body)), rc.PASS)
+
+    def test_a_condition_or_a_non_failing_step_does_not_count(self):
+        """PR #718 review (P2): `_NEVER_RE` knew only literal false spellings, so
+        `if: ${{ 1 == 2 }}` kept a dead job counting. A counted step and its job carry no `if:`
+        at all (none of the real ones does), and no `continue-on-error`."""
+        run = "        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+            "jobs:\n  gates:\n    if: ${{ 1 == 2 }}\n    steps:\n      - name: x\n" + run,
+            "jobs:\n  gates:\n    if: github.event_name == 'nothing'\n    steps:\n"
+            "      - name: x\n" + run,
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        if: ${{ 1 == 2 }}\n" + run,
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        if: always()\n" + run,
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        continue-on-error: true\n" + run,
+            "jobs:\n  gates:\n    continue-on-error: true\n    steps:\n      - name: x\n" + run,
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_only_a_line_that_starts_with_the_invocation_counts(self):
+        """PR #718 review (P2): `true || python3 bench/vf-bench/gate.py` counted though the
+        script never runs. The invocation must open its own line (after `time` or VAR=value at
+        most), outside a quoted string, a heredoc body and a continued line, and nothing on the
+        line may swallow its failure (`||`) or background it (`&`)."""
+        step = "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n{}"
+        for body in (
+            "          true || python3 bench/vf-bench/gate.py\n",
+            "          false && python3 bench/vf-bench/gate.py\n",
+            "          cd . && ./bench/vf-bench/gate.py\n",
+            "          if ! python3 bench/vf-bench/gate.py; then exit 1; fi\n",
+            "          echo x; python3 bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py || true\n",
+            "          python3 bench/vf-bench/gate.py &\n",
+            "          echo '\n          python3 bench/vf-bench/gate.py\n          '\n",
+            "          cat <<'EOF'\n          python3 bench/vf-bench/gate.py\n          EOF\n",
+            "          echo \\\n          python3 bench/vf-bench/gate.py\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.gate3(step.format(body)), rc.FAIL)
+        folded = ("jobs:\n  gates:\n    steps:\n      - name: bench\n        run: >-\n"
+                  "          echo\n          python3 bench/vf-bench/gate.py\n")
+        self.assertEqual(self.gate3(folded), rc.FAIL, "a folded scalar is one shell line")
 
     def test_the_demo_check_wants_the_demo_script_itself(self):
         with tempfile.TemporaryDirectory() as tmp:

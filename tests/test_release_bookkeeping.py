@@ -331,6 +331,12 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
         (self.root / "docs" / "assets" / "badges" / "tests.json").write_text(
             json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
+    def fixture_tests(self, count):
+        """A fixture tests/ holding `count` test functions, as the release cut counts them."""
+        (self.root / "tests").mkdir(exist_ok=True)
+        (self.root / "tests" / "test_fixture.py").write_text(
+            "".join(f"def test_{n}():\n    pass\n\n\n" for n in range(count)), encoding="utf-8")
+
     def releases(self, preparing, commit=None):
         data = {"preparing": preparing, "releases": [
             {"version": "0.8.0", "tag": "v0.8.0", "commit": commit or self.cut}]}
@@ -347,7 +353,9 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
         self.assertIn("'3270 in source'", errors[0])
 
     def test_a_cut_in_progress_writes_its_own(self):
-        self.badge(4714)
+        # The cut's own badge is what `gen-badges.py --release` writes: its tests/ count.
+        self.fixture_tests(2)
+        self.badge(2)
         self.releases(preparing={"version": "0.9.0"})
         self.assertEqual(self.gb.last_release_badge_errors(self.root), [])
 

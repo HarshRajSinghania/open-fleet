@@ -67,8 +67,10 @@ The vocabulary has no rename, move or symlink tool. Every git call the replay ma
 [`runtime/scripts/gitexec.py`](../runtime/scripts/gitexec.py)'s hardened argv and environment,
 with no stdin. That means no global or system config and `core.fsmonitor=false`, plus
 overrides: hooks pointed at an empty directory, `core.sshCommand`, `diff.external`, credential
-helpers and signing off, `protocol.allow=never`, and attributes read from the empty tree, so no
-filter, textconv or diff driver runs. A hostile config planted some other way still runs nothing.
+helpers and signing off, `protocol.allow=never`, attributes read from the empty tree, and every
+filter, diff and merge driver the replay repo's own config declares blanked, so no filter,
+textconv or diff driver runs even where `.git/info/attributes`, which outranks the empty tree,
+selects one. A hostile config planted some other way still runs nothing.
 The verifier gates (`floor_guard.py`, `decisions.py`, `verify.py`) keep their own git hardening.
 
 | Stage | Guard (production code, loaded by path) | What it judges |

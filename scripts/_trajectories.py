@@ -787,24 +787,38 @@ class Run:
         self.base_sha = None
 
     # -- plumbing ---------------------------------------------------------
-    def env(self):
-        """The environment every child of the replay gets: built from scratch, git hardened."""
+    def env(self, blanks=()):
+        """The environment every child of the replay gets: built from scratch, git hardened, plus
+        a git call's driver ``blanks`` (gitexec.driver_blanks pairs)."""
         env = {k: v for k, v in os.environ.items() if k in _HOOK_ENV_KEEP or k.startswith("LC_")}
         env.update(HOME=str(self.home), GIT_ATTR_NOSYSTEM="1", GIT_ATTR_SOURCE=EMPTY_TREE,
                    **_GIT_IDENTITY)
-        return guards().gitexec.env(env)
+        return guards().gitexec.env(env, blanks=blanks)
 
     def git(self, *args, data=None):
         """One replay git call, inert whatever the repo's config says (PR #644 review, P1).
 
         gitexec.py's absolute git and hardened environment, the _GIT_OVERRIDES above, hooks
-        pointed at an empty directory, attributes read from the empty tree, and no stdin: a hook
-        or helper that did run could not even wait on the caller's terminal."""
+        pointed at an empty directory, attributes read from the empty tree, every filter, diff and
+        merge driver the repo's own config declares blanked, and no stdin: a hook or helper that
+        did run could not even wait on the caller's terminal. The empty tree alone is not enough:
+        a ``$GIT_DIR/info/attributes`` line outranks GIT_ATTR_SOURCE, so without the blanks a
+        filter planted in the config and selected there ran on ``add -A`` (2026-10-26 docs audit,
+        reproduced on git 2.43). ``init`` comes before there is a config to read."""
+        gitexec = guards().gitexec
         overrides = [*_GIT_OVERRIDES, f"core.hooksPath={self.no_hooks}"]
-        argv = guards().gitexec.argv("-C", str(self.repo),
-                                     *[arg for pair in overrides for arg in ("-c", pair)], *args)
+        argv = gitexec.argv("-C", str(self.repo),
+                            *[arg for pair in overrides for arg in ("-c", pair)], *args)
+        blanks = ()
+        if args[0] != "init":
+            try:
+                blanks = gitexec.driver_blanks(self.repo)
+            except gitexec.DriverQueryFailed as err:
+                raise RuntimeError(f"git {args[0]}: cannot neutralise the replay repo's drivers: "
+                                   f"{err}") from err
         stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
-        result = subprocess.run(argv, capture_output=True, env=self.env(), timeout=60, **stdin)
+        result = subprocess.run(argv, capture_output=True, env=self.env(blanks), timeout=60,
+                                **stdin)
         if result.returncode != 0:
             raise RuntimeError(f"git {args[0]} failed: {result.stderr.decode(errors='replace')}")
         return result.stdout

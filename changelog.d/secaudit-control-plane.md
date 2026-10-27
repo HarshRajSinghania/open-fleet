@@ -1,6 +1,7 @@
 - **The control plane no longer imports a graded tree's stdlib-named siblings, and on a sound
   lane it reads trust keys only at a commit id or the coordinator's own remote-tracking refs**
-  (2026-10-27 security audit, W3-01 to W3-11 except W3-07). A committed `runtime/scripts/json.py`
+  (2026-10-27 security audit, W3-01 to W3-11 but W3-07, which has its own entry). A committed
+  `runtime/scripts/json.py`
   used to be the verifier's `json` and turned a stale-review RED into GREEN (W3-01, P0): every
   control-plane entry point now drops its own directory from `sys.path` before any other import,
   `verify-gate.sh` runs the verifier with `-I`, `preflight.py` and `orca_cli.py` no longer put the
@@ -26,8 +27,6 @@
   `"gates": []` no longer passes the release gate, which also fails when main carries no store or
   carries a view the release deleted.
   A worker-writable `gitleaks` is not run on any lane claiming soundness
-  (W3-10), and a toolchain file that changes while the verifier runs fails the run (W3-11). Two
-  items wait on a human: tightening `decisions.py --pin-ref` (W3-07) changes two existing
-  assertions and needs a one-way floor-guard waiver first, and committing the dispatch pubkey that
-  switches enforcement on (W3-09, see
+  (W3-10), and a toolchain file that changes while the verifier runs fails the run (W3-11).
+  Committing the dispatch pubkey that switches enforcement on stays a human's step (W3-09, see
   [the verify gate](../docs/verify-gate.md#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135)).

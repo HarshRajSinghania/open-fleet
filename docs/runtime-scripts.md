@@ -283,7 +283,9 @@ the checked tree could have been written by a worker). `REF` must be a commit id
 final target, through any symbolic chain, is remote-tracking (`refs/remotes/origin/main`) — a local
 branch, tag, `HEAD`, or a `refs/remotes/…` name symbolic to a local branch is refused — and is
 resolved once, the reads naming that commit (W3-07). Remote-tracking means what the clone's own
-fetch wrote: run over a coordinator's clone, the checked change did not write it. Without
+fetch wrote: run over a coordinator's clone or a CI checkout, the checked change did not write it;
+in a worker's own clone `git update-ref refs/remotes/…` succeeds and a commit id names whatever the
+caller chose, so there the anchor is advisory. Without
 `--pin-ref` a working-tree pin is used with a stderr NOTE, and a caller that sets
 `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` (a sound lane) cannot run at all (exit 2). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes

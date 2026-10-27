@@ -27,35 +27,23 @@ from typing import Callable
 
 from .base import ProviderError, fence_state, normalize_show, parse_json_strict
 from .local_state import LocalStateStore
-from .posix import HOOK_ARTIFACTS, git_call_base, git_location, gitexec
+from .posix import HOOK_ARTIFACTS, populated_gitlinks, run_git
 
-def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = None) -> tuple[list[str], dict[str, str] | None, dict[str, Any]]:
-    """`(argv, env, stdin kwargs)` to launch one upstream command. A `git` an adapter runs is
-    COORDINATOR-side git over a worker's worktree — the shared `.git/config`, its `.gitattributes`,
-    the same-uid `~/.gitconfig` — so it launches the way posix.py launches one (W4-01 sweep):
-    gitexec.py's absolute git and floor, stdin closed, and EVERY launch carries the blanks for every
-    driver the config declares where it runs (`-C`, `--git-dir`, or the launch cwd): no subcommand
-    allowlist a future `commit`/`restore`/`rebase` could fall outside (re-attack P3). The listing
-    and the call run under one base env with every repository-selecting or config-injecting GIT_*
-    variable removed (posix.git_call_base), so a supplied GIT_DIR cannot aim the call at a
-    repository whose drivers were never listed (PR #720 Codex round 2). Anything that is not git
-    passes as is. GitAbsent (git missing at import) and DriverQueryFailed (an unreadable config)
-    are OSErrors."""
-    if not argv or argv[0] != "git":
-        return argv, env, {}
-    base = git_call_base(env)
-    repo, git_dir = git_location(argv[1:], cwd)
-    blanks = gitexec.driver_blanks(repo, git_dir=git_dir, base=base)
-    return gitexec.argv(*argv[1:]), gitexec.env(base, blanks=blanks), {"stdin": subprocess.DEVNULL}
 
-def _decoded(argv: list[str], proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
-    """A git launch's bytes, decoded with os.fsdecode: text mode turned a `\r` or `\r\n` in a path
-    into `\n` (and died on a non-UTF-8 byte), so the HEAD pin's "inside the worktree" test compared
-    a path that did not exist (PR #720 Codex round 3). Anything else is already text."""
-    if argv and argv[0] == "git":
-        return subprocess.CompletedProcess(proc.args, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
-    return proc
-
+def _run_git(argv: list[str], *, cwd: str | None, env: dict[str, str] | None, timeout: float,
+             input: str | None = None) -> subprocess.CompletedProcess:
+    """A `git` an adapter runs: COORDINATOR-side git over a worker's worktree (the shared
+    `.git/config` and `info/attributes`, the same-uid `~/.gitconfig`), so it runs through
+    posix.run_git's custody exactly as posix.py's own git does (W4-01): gitexec's absolute git and
+    floor, a repository-selecting GIT_* in `env` dropped, `status` /
+    `reset --hard` / `merge-tree` run against a coordinator-built git dir whose config declares no
+    driver (so a sibling cannot add one mid-call, PR #720 Codex round 3), and any other subcommand
+    that could apply an attribute-selected driver refused (GitCustodyRefused, an OSError), wherever
+    it runs. Output decoded byte-for-byte with os.fsdecode: a `\r`, `\r\n` or non-UTF-8 byte in a
+    path comes back as the same path (text mode turned `\r` into `\n`)."""
+    proc = run_git(argv[1:], cwd=cwd, env=env, timeout=timeout,
+                   input=os.fsencode(input) if input is not None else None)
+    return subprocess.CompletedProcess(argv, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
 
 # Files `posix.install_worktree_hooks` writes into a worktree: dirt limited to these paths is
 # ours, not the worker's, and never blocks a cleanup that has already preserved HEAD.
@@ -77,10 +65,10 @@ def real_worktree(path: Any) -> str | None:
 def run_cli(argv: list[str], *, provider: str, timeout: float = 60, cwd: str | None = None) -> dict[str, Any]:
     """Run an upstream CLI; every failure mode is a ProviderError (never a silent success)."""
     try:
-        launch, env, stdin = _git_launch(argv, None, cwd)
-        proc = _decoded(argv, subprocess.run(
-            launch, capture_output=True, text=not stdin, check=False, timeout=timeout, cwd=cwd, env=env, **stdin
-        ))
+        if argv and argv[0] == "git":
+            proc = _run_git(argv, cwd=cwd, env=None, timeout=timeout)
+        else:
+            proc = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} not found on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:
@@ -325,16 +313,18 @@ def run_cli_text(
 ) -> str:
     """Run an upstream CLI; any launch failure, timeout, or non-zero exit is a ProviderError."""
     try:
-        launch, env, stdin = _git_launch(argv, env)
-        proc = _decoded(argv, subprocess.run(
-            launch,
-            capture_output=True,
-            text=not stdin,
-            check=False,
-            timeout=timeout,
-            env=env,
-            **({"input": os.fsencode(input) if stdin else input} if input is not None else stdin),
-        ))
+        if argv and argv[0] == "git":
+            proc = _run_git(argv, cwd=None, env=env, timeout=timeout, input=input)
+        else:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+                env=env,
+                **({"input": input} if input is not None else {}),
+            )
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} is not installed or not on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:
@@ -429,8 +419,13 @@ def foreign_dirty_paths(
     `-z`: every path raw, NUL-terminated, a rename's source in the field after its destination.
     The line form C-quoted a path holding a newline and printed `x -> AGENTS.md` unquoted, which
     the ` -> ` split read as the artifact `AGENTS.md`, so a user's unsaved file counted as clean
-    (PR #720 Codex round 2)."""
+    (PR #720 Codex round 2).
+
+    A checked-out submodule always counts (posix.populated_gitlinks): the custody's `status` never
+    looks inside one, because git inspects it with a child git that drops the env floor and reads
+    the submodule's own config, whose clean filter ran as the coordinator (PR #720 Codex round 3)."""
     out = run(["git", "-C", worktree, "status", "--porcelain", "-z", "--untracked-files=all"])
+    staged = run(["git", "-C", worktree, "ls-files", "-s", "-z"])
     ignored = HOOK_ARTIFACT_PREFIXES + tuple(extra_ignored)
     dirty: list[str] = []
     fields = out.split("\0")
@@ -444,6 +439,9 @@ def foreign_dirty_paths(
         if "R" in status or "C" in status:
             i += 1  # the rename/copy source: the destination is what a removal would lose
         if not any(_artifact_match(path, p) for p in ignored):
+            dirty.append(path)
+    for path in populated_gitlinks(staged, worktree):
+        if path not in dirty and not any(_artifact_match(path, p) for p in ignored):
             dirty.append(path)
     return dirty
 

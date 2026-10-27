@@ -545,10 +545,13 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
                        check=True, env=clean)
         (other / ".git" / "info").mkdir(exist_ok=True)
         (other / ".git" / "info" / "attributes").write_text("* filter=evil\n", encoding="utf-8")
-        (self.wt / "a.txt").write_text("dirty\n", encoding="utf-8")
+        later = os.path.getmtime(self.wt / "a.txt") + 5
+        os.utime(self.wt / "a.txt", (later, later))  # stat changed: the status re-reads it
         env = {**os.environ, "GIT_DIR": str(other / ".git")}
-        self.ext.run_cli_text(["git", "-C", str(self.wt), "checkout", "--", "a.txt"], "adapter", env=env)
+        out = self.ext.run_cli_text(["git", "-C", str(self.wt), "status", "--porcelain"], "adapter", env=env)
         self.assertEqual(self.fired(), [], "a supplied GIT_DIR ran another repository's filter")
+        # Clean against wt's own HEAD ("a\n"); against `other` ("other\n") it would be ` M a.txt`.
+        self.assertEqual(out, "", "read from wt's own repo")
         self.assertEqual((self.wt / "a.txt").read_text(encoding="utf-8"), "a\n", "checked out from wt's own repo")
 
     def test_the_dirty_check_reads_paths_raw_never_quoted_or_split(self) -> None:
@@ -566,15 +569,21 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
         # Re-attack P3: blanks were computed only for an allowlist of subcommands, and only when
         # the argv named its repo with `-C`. A future `commit` (its `-a` re-stages through the
         # clean filter) or a `cwd=`-launched `checkout` (smudge) would have run the planted filter.
+        # Codex round 3: a subcommand the custody cannot run in its own git dir is now REFUSED,
+        # wherever it runs; one it can (`status`, cwd-launched too) runs nothing.
         for key, value in (("user.email", "t@e"), ("user.name", "t")):
             subprocess.run(["git", "-C", str(self.repo), "config", key, value], check=True)
         self.plant()
         (self.wt / "a.txt").write_text("changed\n", encoding="utf-8")
-        self.ext.run_cli(["git", "-C", str(self.wt), "commit", "-qam", "w"], provider="git")
+        with self.assertRaises(ProviderError) as ctx:
+            self.ext.run_cli(["git", "-C", str(self.wt), "commit", "-qam", "w"], provider="git")
+        self.assertIn("custody", ctx.exception.message)
         self.assertEqual(self.fired(), [], "a `-C` commit ran the planted clean filter")
-        (self.wt / "a.txt").write_text("dirty again\n", encoding="utf-8")
-        self.ext.run_cli(["git", "checkout", "--", "a.txt"], provider="git", cwd=str(self.wt))
+        with self.assertRaises(ProviderError):
+            self.ext.run_cli(["git", "checkout", "--", "a.txt"], provider="git", cwd=str(self.wt))
         self.assertEqual((self.wt / "a.txt").read_text(encoding="utf-8"), "changed\n")
+        out = self.ext.run_cli(["git", "status", "--porcelain"], provider="git", cwd=str(self.wt))
+        self.assertEqual(out["stdout"], " M a.txt\n")
         self.assertEqual(self.fired(), [], "a cwd-launched checkout ran the planted smudge filter")
 
     def test_the_head_pin_and_dirty_check_read_cr_and_non_utf8_paths_raw(self) -> None:
@@ -606,6 +615,143 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
             self.ext.foreign_dirty_paths(self.text_runner, str(self.wt))
             self.ext.preserve_worker_head(self.text_runner, str(self.wt), "disp-2")
         self.assertEqual(self.fired(), [], "an adapter's git read the worker-writable global config")
+
+
+def racing_sibling(case: Any, repo: Path, git: str) -> Any:
+    """Patch subprocess.run so a sibling worker adds a NEVER-SEEN driver to the shared config, and
+    selects it for every path through the shared `info/attributes`, immediately before EVERY launch
+    of the custody's absolute `git`: after any listing of declared drivers, before the command reads
+    its config (Codex round 3, P1)."""
+    real = subprocess.run
+    seq = case.__dict__.setdefault("_race_seq", [0])  # a name no earlier race declared either
+    common = repo / ".git"
+    (common / "info").mkdir(exist_ok=True)
+
+    def quoted(cmd: str) -> str:
+        return '"' + cmd.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def run(argv: Any, *a: Any, **kw: Any) -> Any:
+        if isinstance(argv, (list, tuple)) and argv and argv[0] == git:
+            seq[0] += 1
+            name = f"fresh{seq[0]}"
+            with open(common / "config", "a", encoding="utf-8") as fh:
+                fh.write(f'[filter "{name}"]\n\tsmudge = {quoted(case.probe(name + "-smudge"))}\n'
+                         f'\tclean = {quoted(case.probe(name + "-clean"))}\n'
+                         f'[diff "{name}"]\n\ttextconv = {quoted(case.probe(name + "-textconv", passthrough=False))}\n'
+                         f'[merge "{name}"]\n\tdriver = {quoted(case.probe(name + "-merge", passthrough=False))}\n')
+            with open(common / "info" / "attributes", "a", encoding="utf-8") as fh:
+                fh.write(f"* filter={name} diff={name} merge={name}\n")
+        return real(argv, *a, **kw)
+
+    return unittest.mock.patch.object(subprocess, "run", run)
+
+
+class TestAdapterGitRunsNoDriverAddedMidCall(_Base):
+    """Codex round 3 (P1), adapters: every git the adapters run in the coordinator (the dirty
+    check, the HEAD pin, t3code's worktree cut, worktrunk's merge prediction, vibe-kanban's status
+    poll) under a sibling that adds a new driver right before each launch. Each scenario ends with
+    a bare-git control under the same race, which DOES fire."""
+
+    probe = TestAdapterGitRunsNothingTheRepoNames.probe
+    fired = TestAdapterGitRunsNothingTheRepoNames.fired
+    text_runner = TestAdapterGitRunsNothingTheRepoNames.text_runner
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = importlib.import_module("runtime.providers._external")
+        self.posix = importlib.import_module("runtime.providers.posix")
+        self.marker = self.tmp / "pwned"
+        self.repo = self.tmp / "repo"
+        self.wt = self.tmp / "wt"
+        self.clean = {**GIT_ENV, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True, env=self.clean)
+        (self.repo / "a.txt").write_text("a\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", "a.txt"], check=True, env=self.clean)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "a"], check=True, env=self.clean)
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", "-b", "work", str(self.wt)],
+                       check=True, env=self.clean)
+
+    def race(self) -> Any:
+        return racing_sibling(self, self.repo, self.posix.gitexec.GIT)
+
+    def control(self, *args: str, cwd: Path) -> None:
+        self.marker.unlink(missing_ok=True)
+        with self.race():
+            subprocess.run([self.posix.gitexec.GIT, *args], cwd=cwd, env=self.clean, capture_output=True)
+        self.assertNotEqual(self.fired(), [], f"control `git {' '.join(args)}` ran no planted driver: the race is not live")
+
+    def bump(self, *paths: Path) -> None:
+        later = os.path.getmtime(paths[0]) + 5
+        for path in paths:
+            os.utime(path, (later, later))  # stat changed: a status refresh re-reads it
+
+    def test_the_dirty_check_status_poll_and_head_pin_run_no_driver_added_mid_call(self) -> None:
+        self.bump(self.wt / "a.txt")
+        (self.wt / "new.txt").write_text("unsaved\n", encoding="utf-8")
+        with self.race():
+            self.assertEqual(self.ext.foreign_dirty_paths(self.text_runner, str(self.wt)), ["new.txt"])
+            out = self.ext.run_cli(["git", "-C", str(self.wt), "status", "--porcelain", "--untracked-files=all"],
+                                   provider="git")
+            pinned = self.ext.preserve_worker_head(self.text_runner, str(self.wt), "disp-race")
+        self.assertEqual(out["stdout"], "?? new.txt\n")
+        self.assertEqual(pinned["ref"], "refs/open-fleet/preserved/disp-race")
+        self.assertEqual(self.fired(), [], "an adapter's git ran a driver a sibling added mid-call")
+        self.control("status", "--porcelain", cwd=self.wt)
+
+    def test_t3code_cut_runs_no_driver_added_mid_call(self) -> None:
+        tools = ToolScript({"t3_project_read": mcp({"id": "p-1", "title": "p", "workspaceRoot": str(self.repo)})})
+        env = {"OPEN_FLEET_T3_PROJECT_ID": "p-1", "OPEN_FLEET_T3_WORKTREE_ROOT": str(self.tmp / "t3-wts")}
+        prov = t3code.T3CodeProvider(state=self.state, runner=tools, env=env)
+        with self.race():
+            cut = prov._cut_worktree("t3-race", None)
+        self.assertEqual(self.fired(), [], "t3code's worktree cut ran a driver a sibling added mid-call")
+        self.assertEqual(Path(cut["path"], "a.txt").read_text(encoding="utf-8"), "a\n")
+        Path(cut["path"], "a.txt").unlink()
+        self.control("reset", "--hard", "-q", cwd=Path(cut["path"]))
+
+    def test_worktrunk_merge_prediction_runs_no_driver_added_mid_call(self) -> None:
+        for where, body in ((self.wt, "work side\n"), (self.repo, "main side\n")):
+            (where / "a.txt").write_text(body, encoding="utf-8")
+            subprocess.run(["git", "-C", str(where), "commit", "-qam", "edit"], check=True, env=self.clean)
+        worktrunk = importlib.import_module("runtime.providers.worktrunk")
+        prov = worktrunk.WorktrunkProvider(state=self.state)
+        with self.race():
+            conflicted = prov._predict_conflicts({"path": str(self.wt), "raw": {}}, "work", "main")
+            clean = prov._predict_conflicts({"path": str(self.wt), "raw": {}}, "work", "work~1")
+        self.assertTrue(conflicted, "both sides edited a.txt: the 3-way merge conflicts")
+        self.assertFalse(clean, "a branch merges cleanly onto its own parent")
+        self.assertEqual(self.fired(), [], "worktrunk's merge-tree ran a driver a sibling added mid-call")
+        self.control("merge-tree", "--write-tree", "--name-only", "main", "work", cwd=self.wt)
+
+    def test_the_dirty_check_never_recurses_into_a_submodule_and_counts_it_dirty(self) -> None:
+        # Codex round 3 sweep: `status` recursed into a populated submodule with a CHILD git that
+        # git starts without GIT_CONFIG_COUNT, reading the submodule's own config (in the shared
+        # `.git/modules/`), whose clean filter then ran as the coordinator. A populated submodule
+        # is never inspected and always counts as uncommitted work (git refuses `worktree remove`
+        # on one too).
+        sub = self.tmp / "sub"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(sub)], check=True, env=self.clean)
+        subprocess.run(["git", "-C", str(sub), "commit", "-q", "--allow-empty", "-m", "s"], check=True, env=self.clean)
+        subprocess.run(["git", "-C", str(self.wt), "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                        str(sub), "sm"], check=True, env=self.clean, capture_output=True)
+        subprocess.run(["git", "-C", str(self.wt), "commit", "-qm", "sm"], check=True, env=self.clean)
+        sm = self.wt / "sm"
+        subprocess.run(["git", "-C", str(sm), "config", "filter.sf.clean", self.probe("sub-clean")], check=True)
+        subgit = Path(subprocess.run(["git", "-C", str(sm), "rev-parse", "--absolute-git-dir"], capture_output=True,
+                                     text=True, check=True).stdout.strip())
+        (subgit / "info").mkdir(exist_ok=True)
+        (subgit / "info" / "attributes").write_text("* filter=sf\n", encoding="utf-8")
+        (sm / "f.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(sm), "add", "f.txt"], check=True, env={**self.clean, "PATH": os.environ["PATH"]},
+                       capture_output=True)
+        self.bump(sm / "f.txt")  # stat changed: a status inside the submodule re-reads it
+        self.marker.unlink(missing_ok=True)
+        self.assertEqual(self.ext.foreign_dirty_paths(self.text_runner, str(self.wt)), ["sm"])
+        out = self.ext.run_cli(["git", "-C", str(self.wt), "status", "--porcelain"], provider="git")
+        self.assertEqual(self.fired(), [], "the coordinator's status ran the submodule's clean filter")
+        self.assertEqual(out["stdout"], "")
+        subprocess.run(["git", "-C", str(self.wt), "status", "--porcelain"], capture_output=True, env=self.clean)
+        self.assertEqual(self.fired(), ["sub-clean"], "control: a bare status recurses and runs it")
 
 
 if __name__ == "__main__":

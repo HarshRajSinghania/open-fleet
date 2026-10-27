@@ -8,9 +8,11 @@ writes in <out>/.open-fleet-bundle.json, a rebuild deletes only those files, and
 where the build would write makes it refuse — exit 2, nothing deleted, nothing written.
 """
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -174,15 +176,154 @@ class RebuildsStillWork(unittest.TestCase):
             data = json.loads(marker.read_text(encoding="utf-8"))
             (out / "skills" / "retired-it").mkdir()
             (out / "skills" / "retired-it" / "SKILL.md").write_text("old\n", encoding="utf-8")
+            # A build records each file it wrote WITH the digest of its bytes (2026-10-27 audit,
+            # W5-10): the retired file and the stale copy are what an earlier build wrote.
             data["files"].append("skills/retired-it/SKILL.md")
-            marker.write_text(json.dumps(data), encoding="utf-8")
+            data["sha256"]["skills/retired-it/SKILL.md"] = hashlib.sha256(b"old\n").hexdigest()
             stale = out / "skills" / "ship-it" / "references" / "README.md"
             stale.write_text("stale copy\n", encoding="utf-8")
+            data["sha256"]["skills/ship-it/references/README.md"] = hashlib.sha256(b"stale copy\n").hexdigest()
+            marker.write_text(json.dumps(data), encoding="utf-8")
             self.assertEqual(bundle.build(out), (22, []))
             self.assertFalse((out / "skills" / "retired-it").exists(), "an owned dir was kept")
             self.assertEqual((out / "skills" / "mine" / "SKILL.md").read_text(), "mine\n")
             self.assertNotEqual(stale.read_text(encoding="utf-8"), "stale copy\n")
             self.assertEqual(run_main("--out", tmp)[0], 0)
+
+
+class AForgedMarkerDeletesNothing(unittest.TestCase):
+    """2026-10-27 audit, W5-10 / W5-11 (verify-v3 §C3). The marker sits inside the tree it
+    authorises deleting, and a well-formed list was obeyed: two forged names deleted
+    ~/.claude/settings.json and CLAUDE.md with exit 0, and a symlinked marker was followed and
+    its target rewritten. The tests above covered only malformed markers."""
+
+    def built(self, tmp):
+        code, err = run_main("--out", tmp)
+        self.assertEqual(code, 0, err)
+        return Path(tmp)
+
+    def forge(self, out, names, digests=()):
+        marker = out / bundle.MARKER
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        data["files"] += names
+        data.setdefault("sha256", {}).update(dict(digests))
+        marker.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_forged_names_outside_what_a_build_writes_delete_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            mine = {"settings.json": b"the completion-gate hook wiring\n", "CLAUDE.md": b"my instructions\n"}
+            for rel, data in mine.items():
+                (out / rel).write_bytes(data)
+            # The right digests too: a forger who can read a file can hash it.
+            self.forge(out, list(mine), {rel: hashlib.sha256(data).hexdigest() for rel, data in mine.items()})
+            before = snapshot(out)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("settings.json", err)
+            for rel, data in mine.items():
+                self.assertEqual((out / rel).read_bytes(), data, f"{rel} was deleted on a forged marker's word")
+            self.assertEqual(snapshot(out), before, "a refused rebuild changed --out")
+
+    def test_a_listed_file_the_build_did_not_write_is_not_deleted(self):
+        # A user's own skill sits where missions go, so its name alone cannot tell it apart: the
+        # recorded digest of what the build wrote must match its bytes.
+        for digests in ({}, {"skills/mine/SKILL.md": "0" * 64}):
+            with self.subTest(digests=digests), tempfile.TemporaryDirectory() as tmp:
+                out = self.built(tmp)
+                mine = out / "skills" / "mine" / "SKILL.md"
+                mine.parent.mkdir()
+                mine.write_text("mine\n", encoding="utf-8")
+                self.forge(out, ["skills/mine/SKILL.md"], digests)
+                before = snapshot(out)
+                code, err = run_main("--out", tmp)
+                self.assertEqual(code, 2, err)
+                self.assertIn("skills/mine/SKILL.md", err)
+                self.assertEqual(mine.read_text(encoding="utf-8"), "mine\n")
+                self.assertEqual(snapshot(out), before)
+
+    def test_a_changed_bundle_file_is_not_deleted_on_the_markers_word(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            note = out / "skills" / "ship-it" / "SKILL.md"
+            note.write_text("edited by hand\n", encoding="utf-8")
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(note.read_text(encoding="utf-8"), "edited by hand\n")
+
+    def test_a_marker_without_digests_refuses_rather_than_deletes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            marker = out / bundle.MARKER
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            data.pop("sha256", None)
+            marker.write_text(json.dumps(data), encoding="utf-8")
+            before = snapshot(out)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("digest", err)
+            self.assertEqual(snapshot(out), before)
+
+    def test_a_digested_entry_behind_a_symlinked_directory_still_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            out, elsewhere = self.built(tmp), Path(other)
+            (elsewhere / "SKILL.md").write_text("another checkout's mission\n", encoding="utf-8")
+            (out / "skills" / "retired-mission").symlink_to(elsewhere, target_is_directory=True)
+            self.forge(out, ["skills/retired-mission/SKILL.md"],
+                       {"skills/retired-mission/SKILL.md": hashlib.sha256(b"another checkout's mission\n").hexdigest()})
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertEqual((elsewhere / "SKILL.md").read_text(encoding="utf-8"), "another checkout's mission\n")
+
+    def test_a_symlinked_marker_is_never_followed(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            out, outside = self.built(tmp), Path(other) / "marker.json"
+            (out / "settings.json").write_text("mine\n", encoding="utf-8")
+            data = json.loads((out / bundle.MARKER).read_text(encoding="utf-8"))
+            data["files"].append("settings.json")
+            outside.write_text(json.dumps(data), encoding="utf-8")
+            (out / bundle.MARKER).unlink()
+            (out / bundle.MARKER).symlink_to(outside)
+            before = outside.read_bytes()
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("symlink", err)
+            self.assertEqual((out / "settings.json").read_text(encoding="utf-8"), "mine\n")
+            self.assertEqual(outside.read_bytes(), before, "the build wrote through the marker's link")
+
+    def test_the_marker_is_replaced_never_written_through(self):
+        # A link planted at the marker between the claim and the record is replaced, not followed.
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            out, victim = Path(tmp), Path(other) / "victim.json"
+            victim.write_text("victim\n", encoding="utf-8")
+            (out / bundle.MARKER).symlink_to(victim)
+            bundle._record(out, [])
+            self.assertEqual(victim.read_text(encoding="utf-8"), "victim\n")
+            self.assertFalse((out / bundle.MARKER).is_symlink())
+
+
+class GitControlFilesNeverShip(unittest.TestCase):
+    """2026-10-27 audit, W6-04 (the bundle half): the publish job commits the bundle with
+    `git add -A`, which obeys a `.gitignore` inside it. A mission carrying one shipped a `dist`
+    missing every file it matched while bundle-files.json still listed them, and --check, which
+    reads the filesystem, stayed green."""
+
+    def test_a_mission_carrying_a_git_control_file_fails_the_check(self):
+        for name, is_dir in ((".gitignore", False), (".gitattributes", False), (".gitmodules", False),
+                             (".git", True)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as src:
+                skills = Path(src) / "skills"
+                shutil.copytree(bundle.SKILLS_DIR / "ship-it", skills / "ship-it")
+                planted = skills / "ship-it" / name   # the audit's PoC: skills/<mission>/.gitignore
+                if is_dir:
+                    planted.mkdir()
+                    (planted / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+                else:
+                    planted.write_text("*.md\n", encoding="utf-8")
+                with mock.patch.object(bundle, "SKILLS_DIR", skills):
+                    code, err = run_main("--check")
+                self.assertEqual(code, 1, err)
+                self.assertIn(f"ship-it: ships {name},", err)
 
 
 class ReadsAreUtf8(unittest.TestCase):

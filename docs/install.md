@@ -169,7 +169,7 @@ python3 scripts/bundle.py --check   # Builds and verifies a temporary bundle; do
 ```
 
 - **Automated `dist` branch:** On every `v*` release tag, `.github/workflows/publish-dist.yml` runs `python3 scripts/bundle.py` and publishes the self-contained tree to the **`dist` branch** alongside `DIST-PROVENANCE.txt` ([first published at `v0.7.0`](https://github.com/ravidsrk/open-fleet/releases/tag/v0.7.0), [workflow run](https://github.com/ravidsrk/open-fleet/actions/runs/36700658706)).
-- **Safe rebuilds:** `bundle.py` tracks its generated files in `<out>/.open-fleet-bundle.json` and refuses (exit `2`) to overwrite untracked files or symlinks.
+- **Safe rebuilds:** `bundle.py` tracks its generated files, with the sha256 of each, in `<out>/.open-fleet-bundle.json` and refuses (exit `2`, nothing deleted) to overwrite untracked files or symlinks, to delete a listed file whose bytes changed since it was written, or to act on a marker that lists a name no build writes, lists a file without a digest, or is itself a symlink — the marker sits inside `--out`, so it is evidence, never authority. A `--out` built before digests were recorded refuses once: move it away and rebuild.
 
 ---
 

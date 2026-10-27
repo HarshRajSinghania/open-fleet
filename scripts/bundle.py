@@ -35,8 +35,12 @@ between edits. Build it at release time, or before running a copy installer.
     python3 scripts/bundle.py --out /tmp/x    # build somewhere else
     python3 scripts/bundle.py --check         # build to a temp dir and verify only
 
-A build records every file it writes in `<out>/.open-fleet-bundle.json`; a rebuild deletes only
-those, and refuses (exit 2, nothing deleted) when anything else sits where it would write.
+A build records every file it writes, with its sha256, in `<out>/.open-fleet-bundle.json`; a
+rebuild deletes only those whose bytes still match, and refuses (exit 2, nothing deleted) when
+anything else sits where it would write, or the marker lists a name no build writes, a file
+without a digest, or is itself a symlink. A mission shipping `.gitignore`, `.gitattributes`,
+`.gitmodules` or `.git` fails the build (exit 1): it would change what the publish job's
+`git add -A` records.
 
 Exit: 0 built and verified · 1 a reference could not be resolved · 2 could not run (or refused
 an --out holding content a previous build did not write).
@@ -54,11 +58,14 @@ if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sy
     del sys.path[0]
 
 import argparse
+import contextlib
+import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -312,14 +319,54 @@ def plugin_files():
 # root of --out; a rebuild deletes only files that marker lists, and never a directory tree.
 # Anything else where the build would write — a file the marker does not list, a symlink, a
 # symlinked parent — is a collision, and the build refuses before deleting or writing anything.
+#
+# The marker sits inside the tree it governs, so anything that can write there can write it
+# (2026-10-27 audit, W5-10/W5-11): two forged names in its list deleted ~/.claude/settings.json
+# and CLAUDE.md with exit 0. So the marker is evidence, not authority. It records the sha256 of
+# every file the build wrote, and a rebuild deletes a listed file only when its current bytes
+# still match; a listed name outside what a build writes (GENERATED), a listed file without a
+# digest, a changed listed file, or a marker that is a symlink or not a regular file refuses
+# the whole build. The marker is read and replaced without ever following a link.
 MARKER = ".open-fleet-bundle.json"
+MARKER_VERSION = 2
 # The marker's pre-rename name: read when MARKER is absent and replaced by MARKER on the next
 # build, so a tree an earlier build wrote keeps rebuilding (PR #633 review, P2).
 LEGACY_MARKER = ".orca-fleet-bundle.json"
+# Names that change what `git add -A` records from the tree they sit in: the publish job commits
+# the bundle with exactly that, so one of them inside a mission silently drops files from `dist`
+# while its own inventory still lists them (2026-10-27 audit, W6-04).
+GIT_CONTROL = frozenset({".gitignore", ".gitattributes", ".gitmodules", ".git"})
 
 
 class BundleRefused(Exception):
     """--out holds content this script did not write; nothing was deleted or written."""
+
+
+def _generated(rel):
+    """True when `rel` names a file some bundle build writes: a plugin file, a runtime file, or a
+    file inside a mission directory. A marker naming anything else is not one a build wrote."""
+    parts = Path(rel).parts
+    if rel in set(PLUGIN_MANIFESTS) | set(PLUGIN_LISTING.values()):
+        return True
+    if parts[0] == "runtime" and len(parts) > 1 and Path(rel).suffix in {".py", ".sh", ".json"}:
+        return True
+    return parts[0] == "skills" and len(parts) > 2 and not parts[1].startswith((".", "_"))
+
+
+def _sha256_nofollow(path):
+    """sha256 of a regular file's bytes, opened without following a link; None for anything else."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        digest = hashlib.sha256()
+        while chunk := fh.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _entries_under(path):
@@ -336,23 +383,43 @@ def _entries_under(path):
 
 
 def _owned(out):
-    """The out-relative files a previous build recorded (empty when there is no marker)."""
-    marker = out / MARKER
-    if not os.path.lexists(marker):
-        marker = out / LEGACY_MARKER
-    if not os.path.lexists(marker):
-        return set()
+    """{out-relative file: sha256} a previous build recorded (empty when there is no marker)."""
+    for marker in (out / MARKER, out / LEGACY_MARKER):
+        if os.path.lexists(marker):
+            break
+    else:
+        return {}
     try:
-        files = json.loads(marker.read_text(encoding="utf-8")).get("files")
+        fd = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise BundleRefused(f"{marker}: the ownership marker is not a regular file")
+        with os.fdopen(fd, "rb") as fh:
+            doc = json.loads(fh.read().decode("utf-8"))
+        files, digests = doc.get("files"), doc.get("sha256")
+    except BundleRefused:
+        raise
     except (OSError, UnicodeDecodeError, ValueError, AttributeError) as err:
-        raise BundleRefused(f"{marker}: unreadable ownership marker ({err}) — refusing to guess "
-                            "what a previous build wrote") from err
+        why = "a symlink, which is never followed" if os.path.islink(marker) else f"unreadable ({err})"
+        raise BundleRefused(f"{marker}: ownership marker is {why} — refusing to guess what a previous "
+                            "build wrote") from err
     if not isinstance(files, list) or not all(
             isinstance(f, str) and f and not Path(f).is_absolute() and ".." not in Path(f).parts
             for f in files):
         raise BundleRefused(f"{marker}: malformed ownership marker — refusing to guess what a "
                             "previous build wrote")
-    return set(files)
+    outside = sorted(f for f in files if not _generated(f))
+    if outside:
+        raise BundleRefused(f"{marker}: lists {len(outside)} path(s) no bundle build writes ({', '.join(outside[:5])})"
+                            " — a forged or foreign marker; bundle.py deletes nothing on its word")
+    if not isinstance(digests, dict):
+        digests = {}
+    undigested = sorted(f for f in files if not re.fullmatch(r"[0-9a-f]{64}", str(digests.get(f, ""))))
+    if undigested:
+        raise BundleRefused(f"{marker}: lists {len(undigested)} file(s) with no digest of what was written "
+                            f"({', '.join(undigested[:5])}) — a marker from before digests, or a forged entry; "
+                            "move the previous bundle away (or choose an empty --out) and rebuild")
+    return {f: digests[f] for f in files}
 
 
 def _claim(out, planned, files=frozenset()):
@@ -363,10 +430,15 @@ def _claim(out, planned, files=frozenset()):
         raise BundleRefused(f"--out {out} is not a directory")
     owned = _owned(out)
     foreign = []
+    # A listed file is the bundle's only while its bytes are the ones the marker recorded: a file
+    # changed since, or a name the marker never had a right to, is someone else's (W5-10).
+    for rel, digest in owned.items():
+        if os.path.lexists(out / rel) and _sha256_nofollow(out / rel) != digest:
+            foreign.append(out / rel)
     # Parents are checked for every path this build DELETES as well as every path it writes: a
     # retired mission stays in the marker after leaving `planned`, and a symlink swapped in for
     # its directory would aim the unlink below at another checkout's files (PR #631 review, P1).
-    for rel in sorted(set(planned) | owned):
+    for rel in sorted(set(planned) | set(owned)):
         parts = Path(rel).parts
         parents = [out.joinpath(*parts[:i]) for i in range(1, len(parts))]
         foreign += [p for p in parents if p.is_symlink() or (p.exists() and not p.is_dir())]
@@ -380,11 +452,12 @@ def _claim(out, planned, files=frozenset()):
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
         raise BundleRefused(
             f"--out {out}: {len(set(foreign))} path(s) where the bundle writes or deletes were not "
-            f"written by bundle.py (not listed in {MARKER}, or behind a symlink): {shown} — move "
-            "them away or choose an empty --out; bundle.py never deletes what it did not write")
+            f"written by bundle.py (not listed in {MARKER}, changed since it was written, or behind a "
+            f"symlink): {shown} — move them away or choose an empty --out; bundle.py never deletes "
+            "what it did not write")
     for rel in sorted(owned):
         path = out / rel
-        if path.is_symlink() or path.is_file():
+        if path.is_file() and not path.is_symlink():
             path.unlink()
         for parent in path.parents:
             if parent == out or not parent.is_relative_to(out):
@@ -396,10 +469,25 @@ def _claim(out, planned, files=frozenset()):
 
 
 def _record(out, planned):
-    files = sorted(entry.relative_to(out).as_posix()
-                   for rel in planned for entry in _entries_under(out / rel))
-    (out / MARKER).write_text(json.dumps({"generator": "scripts/bundle.py", "files": files},
-                                         indent=2) + "\n", encoding="utf-8")
+    """Write MARKER: every file this build wrote, with the sha256 of its bytes. Written beside
+    and renamed over the old one, so a link planted at MARKER is replaced, never followed (W5-11)."""
+    digests = {}
+    for rel in planned:
+        for entry in _entries_under(out / rel):
+            digest = _sha256_nofollow(entry)
+            if digest is not None:  # the build writes regular files only; anything else is not its
+                digests[entry.relative_to(out).as_posix()] = digest
+    doc = {"generator": "scripts/bundle.py", "version": MARKER_VERSION, "files": sorted(digests),
+           "sha256": dict(sorted(digests.items()))}
+    fd, tmp = tempfile.mkstemp(prefix=MARKER + ".", suffix=".tmp", dir=out)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(doc, indent=2) + "\n")
+        os.replace(tmp, out / MARKER)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     if os.path.lexists(out / LEGACY_MARKER):
         (out / LEGACY_MARKER).unlink()  # migrated: MARKER now lists everything this build owns
 
@@ -475,6 +563,7 @@ def _build_into(out, missions, protocols):
             json.dumps(sorted(inventory), indent=2) + "\n", encoding="utf-8")
         relink_vendored(target)   # after every copy: it needs to know what ended up beside it
         problems.extend(dangling(target))
+        problems.extend(git_controls(target))
         problems.extend(unbound_runtime(target, shipped))
         built += 1
     return built, problems
@@ -515,6 +604,18 @@ def relink_vendored(mission_dir):
         rewritten = RELATIVE_LINK_RE.sub(fix, absolutize_runtime(text, shipped))
         if rewritten != text:
             path.write_text(rewritten, encoding="utf-8")
+
+
+def git_controls(mission_dir):
+    """Files in a bundled mission that would change what `git add -A` publishes from the bundle.
+
+    The publish job commits the built tree with `git add -A`, which obeys a `.gitignore` or
+    `.gitattributes` inside it and records a nested `.git` as a gitlink: one committed under
+    skills/<mission>/ silently drops files from `dist` while bundle-files.json still lists them,
+    and a build on disk cannot show it (2026-10-27 audit, W6-04)."""
+    return [f"{mission_dir.name}: ships {path.relative_to(mission_dir).as_posix()}, which changes what "
+            "`git add -A` publishes from the bundle — remove it from the mission"
+            for path in sorted(mission_dir.rglob("*")) if path.name in GIT_CONTROL]
 
 
 def dangling(mission_dir):

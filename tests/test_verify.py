@@ -6737,3 +6737,60 @@ class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):
                 with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
                     self.assertIs(verify._gitleaks_scan(self.repo / "f.txt"), False)
                 self.assertEqual(run.call_args[0][0][0], "/x/gitleaks")
+
+
+class TheToolchainIsHashedBeforeTheControlRuns(unittest.TestCase):
+    """W3-11 (2026-10-27 security audit, P3): the transcript's toolchain hashes were taken AFTER
+    verify() returned — after the executed control ran worker code — while every check had run
+    with the modules loaded BEFORE it. A mid-run rewrite of a sibling was recorded as if it were
+    the verifier, and never detected. The toolchain is now hashed before verify() and again
+    after; any difference is a FAIL, and the transcript records the bytes that actually ran.
+
+    The seam: verify() itself is stubbed to do what an executed control can — write a sibling of
+    the verifier — so the test needs no control fixture; the toolchain is a temp copy."""
+
+    def setUp(self):
+        td = _temp_repo()
+        self.addCleanup(td.cleanup)
+        self.tmp = Path(td.name).resolve()
+        self.rs = self.tmp / "rs"
+        self.rs.mkdir()
+        for name in verify._Transcript.TOOLCHAIN:
+            shutil.copy2(ROOT / "runtime" / "scripts" / name, self.rs / name)
+        spec = importlib.util.spec_from_file_location("verify_w311", self.rs / "verify.py")
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+        self.mod._Authority.reset()
+        self.manifest = self.tmp / "m.json"
+        self.manifest.write_text('{"unit": "u"}', encoding="utf-8")
+        self.original = hashlib.sha256((self.rs / "diff_scope.py").read_bytes()).hexdigest()
+
+    def _main(self, rewrite):
+        def fake_verify(*_a, judged=None, **_k):
+            if rewrite:
+                with open(self.rs / "diff_scope.py", "a", encoding="utf-8") as fh:
+                    fh.write("\n# rewritten by the executed control\n")
+            if judged is not None:
+                judged["raw"] = self.manifest.read_bytes()
+            return ([], ["NOTE: stubbed"]), None
+        out = self.tmp / "t.json"
+        buf, errbuf = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.mod, "verify", side_effect=fake_verify), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+            rc = self.mod.main(["--manifest", str(self.manifest), "--unit-class", "report-only",
+                                "--transcript-out", str(out)])
+        return rc, errbuf.getvalue(), json.loads(out.read_text(encoding="utf-8"))
+
+    def test_a_sibling_rewritten_during_the_run_is_a_fail(self):
+        rc, err, record = self._main(rewrite=True)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("diff_scope.py", err)
+        self.assertIn("W3-11", err)
+        self.assertEqual(record["exit"], 2)
+        self.assertEqual(record["toolchain"]["files"]["diff_scope.py"], self.original,
+                         "the transcript must record the bytes that RAN, not the rewrite")
+
+    def test_an_untouched_toolchain_is_unchanged_behaviour(self):
+        rc, err, record = self._main(rewrite=False)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(record["toolchain"]["files"]["diff_scope.py"], self.original)

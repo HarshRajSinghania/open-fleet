@@ -3183,7 +3183,19 @@ class _Transcript:
         return cls.signer().canonical_transcript(record)
 
     @classmethod
-    def build(cls, args, exit_code, fatal, notes, raw=None):
+    def hash_files(cls):
+        """{toolchain file: sha256 hex, or None when it cannot be read} — the verifier's bytes."""
+        here = Path(__file__).resolve().parent
+        files = {}
+        for name in cls.TOOLCHAIN:
+            try:
+                files[name] = hashlib.sha256((here / name).read_bytes()).hexdigest()
+            except OSError:
+                files[name] = None  # an absent sibling signs an absence; run_report refuses it
+        return files
+
+    @classmethod
+    def build(cls, args, exit_code, fatal, notes, raw=None, files=None):
         """The verdict object: what was judged (manifest path AND bytes, the unit it names), with
         what (the full argument tuple — unset flags included, so an omitted authority is visibly
         omitted), what was found (the printed lists, verbatim), the exit code, the toolchain, when.
@@ -3201,13 +3213,10 @@ class _Transcript:
             except (ValueError, AttributeError):
                 unit = None
         _, git_version, _ = _run([_Authority.git_bin(), "--version"], env=_Authority.git_env())
-        here = Path(__file__).resolve().parent
-        files = {}
-        for name in cls.TOOLCHAIN:
-            try:
-                files[name] = hashlib.sha256((here / name).read_bytes()).hexdigest()
-            except OSError:
-                files[name] = None  # an absent sibling signs an absence; run_report refuses it
+        # W3-11: `files` is the toolchain as hashed BEFORE verify() ran — the bytes that judged.
+        # Hashed here, after the executed control had run worker code, a mid-run rewrite of a
+        # sibling was recorded as if it were the verifier.
+        files = cls.hash_files() if files is None else files
         return {
             "unit": unit,
             "manifest": args.manifest,
@@ -3705,18 +3714,29 @@ def main(argv=None):
     # executed negative control runs worker code — never looked up lazily after it.
     repo = _Authority.resolve(args.provenance,
                               bool(args.dispatch_record and args.dispatch_pubkey), args.repo)
+    # W3-11: the toolchain is hashed BEFORE verify() — before the executed control runs worker
+    # code — and again after; a sibling that changed in between is not the verifier that judged.
+    toolchain = _Transcript.hash_files()
     judged = {}
     out, load_err = verify(args.manifest, args.contract_source, args.contract_digest,
                            repo, args.base, args.symbol, args.execute_nc,
                            args.unit_class, args.no_gh, args.lighting,
                            args.dispatch_record, args.dispatch_pubkey, args.nc_command,
                            lane=args.lane, judged=judged, retention_pubkey=args.retention_pubkey)
+    drift = sorted(name for name, sha in _Transcript.hash_files().items() if sha != toolchain[name])
+    drifted = ([f"toolchain changed during this run: {drift} no longer hash as they did when the "
+                "verifier started — worker code (the executed control) ran in between, so the "
+                "verdict was not reached by the verifier a transcript would name; fail-closed "
+                "(W3-11)"] if drift else [])
     if load_err:
         print(f"FAIL: {load_err}", file=sys.stderr)
+        for f in drifted:
+            print(f"FAIL: {f}", file=sys.stderr)
         print("verify: evidence manifest malformed/unreadable — unit is NOT done", file=sys.stderr)
-        fatal, notes, code = [load_err], [], 2
+        fatal, notes, code = [load_err, *drifted], [], 2
     else:
         fatal, notes = out
+        fatal = [*fatal, *drifted]
         for n in notes:
             print(n)
         if fatal:
@@ -3728,7 +3748,7 @@ def main(argv=None):
             print("verify: OK — all required checks passed")
             code = 0
     if args.transcript_out is not None:
-        record = _Transcript.build(args, code, fatal, notes, raw=judged.get("raw"))
+        record = _Transcript.build(args, code, fatal, notes, raw=judged.get("raw"), files=toolchain)
         written = _Transcript.write(args.transcript_out, record, seed)
         if not written and code == 0:
             # A requested-and-missing artifact is fail-closed (#281/#386, round-1 R-3): the verdict

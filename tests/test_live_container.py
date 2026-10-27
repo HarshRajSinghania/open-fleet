@@ -93,6 +93,9 @@ if argv[:1] == ["create"]:
             fh.write("".join(json.dumps(line) + "\n" for line in scenario["ledger_lines"]))
 if argv[:1] == ["build"]:
     entry["context"] = sorted(os.listdir(argv[-1]))
+    if "--iidfile" in argv and not scenario.get("build_exit"):  # the id THIS build produced
+        with open(argv[argv.index("--iidfile") + 1], "w") as fh:
+            fh.write(scenario.get("built_id") or (scenario.get("image") or {}).get("Id") or "")
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as fh:
     fh.write(json.dumps(entry) + "\n")
 if argv[:1] == ["kill"] and "kill" in scenario.get("fail", []):
@@ -101,10 +104,11 @@ if argv[:1] == ["kill"] and "kill" in scenario.get("fail", []):
 if argv[:1] in (["kill"], ["rm"], ["create"]) and argv[0] in scenario.get("hang", []):
     time.sleep(scenario.get("hang_s", 5))  # a create that hangs has already made its container: `orphan`
 if argv[:2] == ["image", "inspect"]:
-    if scenario.get("image") is None:
+    image = scenario.get("images_by_ref", {}).get(argv[-1], scenario.get("image"))
+    if image is None:
         sys.stderr.write("Error: No such image\n")
         sys.exit(1)
-    print(json.dumps(scenario["image"]))
+    print(json.dumps(image))
 elif argv[:1] == ["ps"]:
     flt = argv[argv.index("--filter") + 1]
     if flt == "label=" + scenario["label"]:
@@ -629,6 +633,33 @@ class RefusalsCreateNothing(Harness):
         rc, err = self.launch()
         self.assertEqual(rc, 0, err)
         self.assertIs(self.receipt()["image"]["built_by_this_launcher"], True)
+
+    def test_the_build_records_the_id_it_produced_not_what_its_tag_names_after(self):
+        # Re-attack of 4b24dfde (W5-13): `build` recorded the id `docker image inspect <tag>` found
+        # once the build was over, so a tag moved to another image in between (a second build of a
+        # changed Dockerfile, a `docker tag`) was recorded as built from the committed Dockerfile.
+        built, moved = "sha256:" + "11" * 32, "sha256:" + "22" * 32
+        label = {lc.DOCKERFILE_LABEL: lc.sha256_file(lc.DOCKERFILE)}
+        self.scenario({"built_id": built,
+                       "images_by_ref": {built: {"Id": built, "RepoDigests": [], "Config": {"Labels": label}}},
+                       "image": {"Id": moved, "RepoDigests": [], "Config": {"Labels": label}}})
+        self.images.unlink()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(lc.main(["build"]), 0)
+        self.assertEqual(list(json.loads(self.images.read_text(encoding="utf-8"))), [built])
+        rc, err = self.launch()  # the tag names `moved` now, which no build of this launcher made
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not built by this launcher", err)
+        self.assertEqual(self.creates(), [])
+
+    def test_a_build_that_reports_no_image_id_records_nothing(self):
+        self.scenario({"built_id": "not-an-id"})
+        self.images.unlink()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(lc.main(["build"]), 2)
+        self.assertIn("image id", err.getvalue())
+        self.assertFalse(self.images.exists(), "a build whose id is unknown was recorded")
 
     def test_a_staging_path_docker_would_split_is_refused_before_anything_is_created(self):
         # W5-14: --results/--receipts/--token-file were comma-checked, the derived staging paths
@@ -1529,7 +1560,7 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         # connection mid-body in a loop grew the host's ledger without bound. Faults are counted,
         # and written per kind at most once a DROP_RECORD_S, like drops; the count rides every line.
         server = self.served_broker()
-        n = 200
+        n, started = 200, time.monotonic()
         for _ in range(n):
             sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
             sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 100\r\n\r\nx")
@@ -1545,7 +1576,10 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
             time.sleep(0.05)
         events = self.events()
         lines = [e for e in events if e["event"] in ("fault", "drop", "tally")]
-        self.assertLess(len(lines), 20, f"{n} resets wrote {len(lines)} ledger lines")
+        kinds = {(e["event"], e.get("where"), e.get("error"), e.get("why")) for e in lines}
+        # One line per kind per DROP_RECORD_S at most, however long a loaded host took over the flood.
+        bound = len(kinds) * ((time.monotonic() - started) / lb.DROP_RECORD_S + 1)
+        self.assertLessEqual(len(lines), min(bound, n / 4), f"{n} resets wrote {len(lines)} ledger lines")
         self.assertGreaterEqual(counted(events[-1]), n, f"the resets are not all counted on the ledger's last line: {events[-1]}")
 
     def test_a_body_whose_fields_have_the_wrong_type_is_refused_not_crashed_on(self):

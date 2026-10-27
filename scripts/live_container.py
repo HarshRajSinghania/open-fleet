@@ -75,6 +75,7 @@ import json
 import os
 import platform
 import posixpath
+import re
 import secrets
 import shutil
 import signal
@@ -681,24 +682,36 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
 
 
 def build(args):
-    """docker build of the committed Dockerfile, from an empty context, labelled with its digest."""
+    """docker build of the committed Dockerfile, from an empty context, labelled with its digest.
+
+    What is recorded (IMAGES, the launch gate) is the id THIS build wrote to its --iidfile, then
+    inspected by that id: inspecting the tag after the build recorded whatever the tag named by
+    then, so a tag moved in between (a second build of a changed Dockerfile, a `docker tag`) was
+    recorded as built from the committed one (2026-10-27 re-attack of 4b24dfde, W5-13)."""
     dockerfile = Path(args.dockerfile).resolve()
     if not dockerfile.is_file():
         raise Refused(f"no Dockerfile at {dockerfile}")
-    with tempfile.TemporaryDirectory(prefix="of-live-build-") as ctx:
+    digest = sha256_file(dockerfile)
+    with tempfile.TemporaryDirectory(prefix="of-live-build-") as ctx, \
+            tempfile.TemporaryDirectory(prefix="of-live-iid-") as meta:
         context = Path(args.context).resolve() if args.context else Path(ctx)
-        argv = ["build", "-f", str(dockerfile), "-t", args.image,
-                "--label", f"{DOCKERFILE_LABEL}={sha256_file(dockerfile)}", str(context)]
+        iidfile = Path(meta) / "image-id"  # beside the context, never in it: the context stays empty
+        argv = ["build", "-f", str(dockerfile), "-t", args.image, "--iidfile", str(iidfile),
+                "--label", f"{DOCKERFILE_LABEL}={digest}", str(context)]
         exe = shutil.which("docker")
         if not exe:
             raise Refused("no `docker` on PATH (OrbStack or Docker Engine)")
         rc = subprocess.run([exe, *argv], stdin=subprocess.DEVNULL).returncode
-    if rc == 0:  # the id this build produced, recorded outside the image: the launch gate (W5-13)
-        proc = docker("image", "inspect", "--format", "{{json .}}", args.image)
-        image_id = json.loads(proc.stdout).get("Id") if proc.returncode == 0 else None
+        built = iidfile.read_text(encoding="ascii", errors="replace").strip() if iidfile.is_file() else ""
+    if rc == 0:
+        image_id = None
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", built):
+            proc = docker("image", "inspect", "--format", "{{json .}}", built)
+            image_id = json.loads(proc.stdout).get("Id") if proc.returncode == 0 else None
         if not image_id:
-            raise Refused(f"the build of {args.image} succeeded, but its image id cannot be read to record it")
-        record_build(args.images, image_id, args.image, sha256_file(dockerfile))
+            raise Refused(f"the build of {args.image} succeeded, but the image id it produced ({built[:80]!r}) "
+                          "cannot be read, so it is not recorded and a launch will refuse it")
+        record_build(args.images, image_id, args.image, digest)
         print(f"live_container: built {args.image} as {image_id}, recorded in {args.images}", file=sys.stderr)
     return rc
 
@@ -727,7 +740,7 @@ def parser():
     r.add_argument("--receipts", default=RECEIPTS, help=f"where the receipt goes (default {RECEIPTS})")
     r.add_argument("--image", default=IMAGE)
     r.add_argument("--allow-foreign-image", action="store_true", dest="allow_foreign_image",
-                   help="run an image whose label does not name the committed Dockerfile's digest "
+                   help="run an image this launcher's `build` did not record from the committed Dockerfile "
                         "(recorded in the receipt as image.foreign_image_allowed)")
     r.add_argument("--lock", default=LOCK, help=argparse.SUPPRESS)
     r.add_argument("--images", default=IMAGES, help=argparse.SUPPRESS)

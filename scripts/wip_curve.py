@@ -1428,7 +1428,9 @@ class Run:
         return task
 
     def spawn(self, store_task, worktree: Path, title, profile, key=None, nonce=None):
-        env = {"PROFILE": profile}
+        # The named opt-out of spawn_worker.sh's arming gate (W4-06): the posix provider installs
+        # the guard inside worker-start, after the gate, so this flow names no registration.
+        env = {"PROFILE": profile, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
         dtag = secrets.token_hex(16)  # this dispatch's own marker, alongside the run's (C-b)

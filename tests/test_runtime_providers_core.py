@@ -538,6 +538,8 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
             "OPEN_FLEET_POSIX_MUX": "dry-run",
             "OPEN_FLEET_CLI_CWD": str(self.repo),
             "OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE": "1",
+            # the posix provider installs the guard inside worker-start (W4-06 named opt-out)
+            "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1",
             "PROFILE": "rw",
             "SP": str(scratch),
             "SETTLE_SECS": "0",

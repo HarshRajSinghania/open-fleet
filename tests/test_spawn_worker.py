@@ -34,6 +34,12 @@ def run(title, agent="claude", effort="high", task="task_test"):
     return p.returncode, p.stdout, p.stderr
 
 
+# The named opt-out of the deny-hook arming gate (W4-06): an unset ORCA_DENY_HOOK_SETTINGS refuses
+# every spawn without it. The spawn harnesses below exercise other behaviour, so they carry it;
+# TestSpawnWorkerRefusals asserts the refusal with it set to 0.
+UNVERIFIED_OK = {"OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
+
+
 def run_spawn(args, env_extra=None, task_list=None):
     """Invoke spawn_worker.sh past the selftest hook; return (rc, stdout, stderr).
 
@@ -42,7 +48,7 @@ def run_spawn(args, env_extra=None, task_list=None):
     (written to a file the stub cats, so no shell quoting of the JSON).
     """
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca"}
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca"}
         if task_list is not None:
             payload = Path(tmp) / "task-list.json"
             payload.write_text(json.dumps(task_list))
@@ -394,10 +400,31 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
             self.assert_refused(rc, err, "not armed")
 
     def test_unverified_arming_warns_but_proceeds_past_the_gate(self):
-        # Default (no REQUIRE flag): the spawn SAYS the guard is unverified and proceeds (then
-        # goes on to fail later for want of a real orca — the warning is what we pin).
+        # With the named opt-out run_spawn carries: the spawn SAYS the guard is unverified and
+        # proceeds (then goes on to fail later for want of a real orca — the warning is what we pin).
         _rc, _, err = run_spawn(self.BASE_ARGS, env_extra=dict(self.RW))
         self.assertIn("deny-hook arming UNVERIFIED", err)
+
+    def test_an_unset_guard_refuses_every_profile_without_the_optout(self):
+        # W4-06 (2026-10-27 audit): an unset settings var only WARNED, and ro skipped the gate,
+        # so a default spawn ran a worker on an unverified PreToolUse guard. Every profile
+        # refuses now unless the named opt-out is set; the legacy alias opts out too.
+        for env in (dict(self.RW), {"PROFILE": "ro"}):
+            with self.subTest(profile=env["PROFILE"]):
+                rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+                    **env, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "0"})
+                self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
+                self.assertIn("OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1", err)
+        _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            **self.RW, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "", "ORCA_ALLOW_UNVERIFIED_DENY_HOOK": "1"})
+        self.assertIn("deny-hook arming UNVERIFIED", err)
+        self.assertNotIn("SPAWN=REFUSED task=task_test deny-hook arming", err)
+
+    def test_require_deny_hook_ignores_the_optout(self):
+        # The hardened lock: with REQUIRE set an inherited opt-out cannot reopen the warning path.
+        rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            **self.RW, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1", "OPEN_FLEET_REQUIRE_DENY_HOOK": "1"})
+        self.assert_refused(rc, err, "no opt-out is honoured")
 
     def test_require_deny_hook_refuses_an_rw_spawn_with_an_unset_guard(self):
         # W4-06 (2026-10-27 audit): an unset settings var only WARNED, so a default rw spawn ran a
@@ -429,6 +456,7 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
             self.assert_refused(rc, err, "not armed")
 
     def test_a_ro_spawn_without_a_guard_proceeds_with_a_note(self):
+        # Under the named opt-out run_spawn carries (without it ro refuses, above).
         _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"PROFILE": "ro"})
         self.assertNotIn("SPAWN=REFUSED", err.split("\n")[0] if err else "")
         self.assertIn("PROFILE=ro", err)
@@ -572,7 +600,7 @@ esac
         return log
 
     def _run(self, tmp, args, env_extra=None):
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(SPAWN), *args], env=env,
@@ -941,7 +969,7 @@ esac
             shutil.copytree(ROOT / "runtime", root / "runtime",
                             ignore=shutil.ignore_patterns("__pycache__"))
         (root / "runtime" / "pins.json").write_text(json.dumps(pins))
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(root / "runtime" / "scripts" / "spawn_worker.sh"), *args],
@@ -1377,7 +1405,7 @@ provider_base = importlib.import_module("providers.base")
 def run_launch(agent, profile, env_extra=None, selector="path:/tmp/of-wt", effort="high", args=None):
     """Run spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) on a NON-Orca runtime."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", tmp), "SP": tmp,
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", tmp), "SP": tmp,
                "OPEN_FLEET_RUNTIME": "posix", "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s.db"),
                "SW_PRINT_LAUNCH": "1", "PROFILE": profile}
         env.update(env_extra or {})
@@ -1431,7 +1459,7 @@ class TestNonOrcaLaunchTableIsBasePy(unittest.TestCase):
 
     def test_orca_runtime_launch_rows_are_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+            env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                env=env, capture_output=True, text=True)
@@ -1478,7 +1506,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
@@ -1522,7 +1550,7 @@ case "$*" in
 esac
 """)
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
                    "ORCA_SANDBOX_RECIPE": "lane-7"}
@@ -1601,7 +1629,7 @@ class TestRuntimeNameIsCaseInsensitive(unittest.TestCase):
         for spelled in ("ORCA", "Orca", " orca "):
             for var in ("OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME"):
                 with self.subTest(runtime=spelled, var=var), tempfile.TemporaryDirectory() as tmp:
-                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+                    env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                            "SW_PRINT_LAUNCH": "1", "PROFILE": "ro", var: spelled}
                     p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                        env=env, capture_output=True, text=True)
@@ -1647,7 +1675,7 @@ esac
             repo = _git_repo(tmp)
             created = str(Path(tmp) / "wts" / "unit-1")
             stub, log = self.stub(tmp, created)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro"}
             if print_launch:
                 env["SW_PRINT_LAUNCH"] = "1"
@@ -1708,7 +1736,7 @@ esac
             (Path(tmp) / "ws.json").write_text(json.dumps({"result": {
                 "state": "ready", "dispatchId": "d1",
                 "launch": {"effective": {"args": "--dangerously-bypass-approvals-and-sandbox"}}}}))
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "current", "t", "codex", "high"],
                                env=env, capture_output=True, text=True, cwd=str(repo))
@@ -1727,7 +1755,7 @@ esac
         # base.py's ro line in a created worktree, carrying the task spec as its prompt.
         with tempfile.TemporaryDirectory() as tmp:
             repo = _git_repo(tmp)
-            env = {"PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "OPEN_FLEET_STATE_DB": str(Path(tmp) / "state" / "s.db"),
                    "OPEN_FLEET_POSIX_BACKEND": "dry-run", "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "--spec", "review the README", "new-child", "rev",
@@ -1745,7 +1773,7 @@ esac
 def run_orca_launch(agent, profile="ro", env_extra=None):
     """spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) ON ORCA: the custom-argv rows."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "PROFILE": profile, **(env_extra or {})}
         p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", agent, "high"],
                            env=env, capture_output=True, text=True)

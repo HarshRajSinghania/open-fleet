@@ -153,10 +153,14 @@
 #   ORCA_COORD_ALLOW_AUTONOMOUS_WRITE  must be 1 for PROFILE=rw (accept autonomous bypass workers)
 #   ORCA_DENY_HOOK_SETTINGS   settings file registering deny-hook.sh for workers; named →
 #                             verified armed (registration + live deny probe) or the spawn
-#                             refuses, for EVERY profile incl. ro (W4-06); unset → rw/danger
-#                             WARN and proceed (ro: NOTE and proceed)
-#   ORCA_REQUIRE_DENY_HOOK    1 (hardened coordinator): an unset ORCA_DENY_HOOK_SETTINGS REFUSES
-#                             an rw/danger spawn instead of warning (W4-06)
+#                             refuses, for EVERY profile incl. ro (W4-06); unset → the spawn
+#                             REFUSES, every profile, unless the opt-out below is set
+#   ORCA_ALLOW_UNVERIFIED_DENY_HOOK  the named opt-out: 1 lets a spawn with ORCA_DENY_HOOK_SETTINGS
+#                             unset proceed with an UNVERIFIED warning (W4-06). For a flow that
+#                             cannot name a registration before launch, e.g. off Orca, where the
+#                             provider installs the guard inside worker-start (first_run.py)
+#   ORCA_REQUIRE_DENY_HOOK    1 (hardened coordinator): the opt-out above is ignored, so an unset
+#                             ORCA_DENY_HOOK_SETTINGS always refuses (W4-06)
 #   ORCA_COORD_ALLOW_DANGER   must be 1 for PROFILE=danger (implies the above + ephemeral sandbox)
 #   ORCA_SANDBOX_RECIPE       PROFILE=danger only: the orca-per-workspace-env recipe id the lane
 #                             runs in. Required — the opt-in above is intent, this is evidence.
@@ -931,19 +935,20 @@ fi
 # probe. The gate now runs for EVERY profile including ro, so a wired guard is
 # verified rather than skipped (W4-06: ro skipped the block entirely, so a ro
 # worker -- which can still write through Bash, W4-05 -- never even saw the
-# warning). When the settings var is UNSET a hardened coordinator sets
-# OPEN_FLEET_REQUIRE_DENY_HOOK=1 (legacy ORCA_REQUIRE_DENY_HOOK) to make an
-# rw/danger spawn REFUSE rather than run a bypass worker on an unverified guard
-# (W4-06). The default stays a loud UNVERIFIED warning for compatibility: the
-# real coordinator flow installs the guard through the provider but does not yet
-# name it to this gate, so flipping the default to refuse is a coordinated change
-# across first_run.py and certification that this fix does not make -- the
-# REQUIRE flag is the per-coordinator refusal until then. ro without a wired
-# guard proceeds with a NOTE: its boundary is the tool filter plus the ro write
-# floor an operator wires with `--settings --readonly`.
+# warning). When the settings var is UNSET the spawn REFUSES, for every profile:
+# an unverified guard used to be a warning while every other property of the same
+# risk is a refusal (W4-06), and ro is no exception, since a ro claude/gemini worker
+# still writes through Bash (W4-05). A flow that cannot name a registration before
+# launch passes the explicit opt-out OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1 (legacy
+# ORCA_ALLOW_UNVERIFIED_DENY_HOOK) and gets the loud UNVERIFIED warning instead --
+# off Orca the provider installs the guard inside worker-start, after this gate,
+# and first_run.py verifies it after the launch. OPEN_FLEET_REQUIRE_DENY_HOOK=1
+# (legacy ORCA_REQUIRE_DENY_HOOK) is the hardened coordinator's lock: the opt-out
+# is then ignored, so an inherited value cannot reopen the warning path.
 step=deny-hook-arming
 DENY_HOOK_SETTINGS="${OPEN_FLEET_DENY_HOOK_SETTINGS:-${ORCA_DENY_HOOK_SETTINGS:-}}"
 REQUIRE_DENY_HOOK="${OPEN_FLEET_REQUIRE_DENY_HOOK:-${ORCA_REQUIRE_DENY_HOOK:-0}}"
+ALLOW_UNVERIFIED_HOOK="${OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK:-${ORCA_ALLOW_UNVERIFIED_DENY_HOOK:-0}}"
 if true; then
   if [ -n "$DENY_HOOK_SETTINGS" ]; then
     # The hook verifies its own registration: parses the settings, then runs
@@ -1007,13 +1012,18 @@ PY
       echo "SPAWN=REFUSED task=${task} deny-hook not armed: ${_arming} — wire it (deny-hook.sh --settings <worktree>) or unset ORCA_DENY_HOOK_SETTINGS to proceed UNVERIFIED" >&2
       exit 2
     fi
-  elif [ "$PROFILE" = "ro" ]; then
-    echo "spawn_worker: NOTE deny-hook arming UNVERIFIED for PROFILE=ro (ORCA_DENY_HOOK_SETTINGS unset) — ro relies on the tool filter; wire deny-hook.sh --settings <worktree> --readonly for the in-hook write floor (W4-05)" >&2
   elif [ "$REQUIRE_DENY_HOOK" != "0" ] && [ -n "$REQUIRE_DENY_HOOK" ]; then
-    echo "SPAWN=REFUSED task=${task} deny-hook arming UNVERIFIED for PROFILE=${PROFILE}: OPEN_FLEET_REQUIRE_DENY_HOOK is set and ORCA_DENY_HOOK_SETTINGS is unset, so the PreToolUse guard this tier's safety story names is not verified (W4-06). Wire it (deny-hook.sh --settings <worktree>) and name it with ORCA_DENY_HOOK_SETTINGS." >&2
+    echo "SPAWN=REFUSED task=${task} deny-hook arming UNVERIFIED for PROFILE=${PROFILE}: OPEN_FLEET_REQUIRE_DENY_HOOK is set and ORCA_DENY_HOOK_SETTINGS is unset, so the PreToolUse guard this tier's safety story names is not verified and no opt-out is honoured (W4-06). Wire it (deny-hook.sh --settings <worktree>) and name it with ORCA_DENY_HOOK_SETTINGS." >&2
     exit 2
+  elif [ "$ALLOW_UNVERIFIED_HOOK" != "0" ] && [ -n "$ALLOW_UNVERIFIED_HOOK" ]; then
+    if [ "$PROFILE" = "ro" ]; then
+      echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=ro (ORCA_DENY_HOOK_SETTINGS unset, OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK set) — ro relies on the tool filter, which a shell tier writes past; wire deny-hook.sh --settings <worktree> --readonly for the in-hook write floor (W4-05)" >&2
+    else
+      echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset, OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK set) — worktree + review are the only safety layer this gate can vouch for (W4-06)" >&2
+    fi
   else
-    echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset) — worktree + review are the safety layer for this spawn; set OPEN_FLEET_REQUIRE_DENY_HOOK=1 to make this a refusal (W4-06)" >&2
+    echo "SPAWN=REFUSED task=${task} deny-hook arming UNVERIFIED for PROFILE=${PROFILE}: ORCA_DENY_HOOK_SETTINGS is unset, so the PreToolUse guard this tier's safety story names is not verified (W4-06). Wire it (deny-hook.sh --settings <worktree>, --readonly for ro) and name it with ORCA_DENY_HOOK_SETTINGS, or set OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1 to proceed on an unverified guard (off Orca the provider installs one inside worker-start, after this gate)." >&2
+    exit 2
   fi
 fi
 

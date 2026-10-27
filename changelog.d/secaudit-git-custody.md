@@ -10,7 +10,8 @@
   worker gets pointer files and no `post-checkout` hook runs. Also: `gitexec.py` and
   `diff_scope.py` drop an inherited `GIT_CONFIG`/`GIT_CONFIG_PARAMETERS`, which blinded the driver
   listing or outranked the floor (W4-07), `worktree rm` decides from the repository's own worktree
-  list (W4-08), `diff_scope.py` fails closed when git is absent at import (W4-14), `wtree.sh
+  list and refuses when that list cannot be read (W4-08), `diff_scope.py` fails closed when git is
+  absent at import (W4-14), `wtree.sh
   predict-merge` runs `python3 -I`, a `-`-leading `terminal send` text reaches tmux/cmux,
   `--key=value` and `--` are understood, a non-identifier launch env key is refused (W2-01,
   W2-02), and nine git call sites refuse an option-shaped revision (W2-04).

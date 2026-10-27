@@ -1126,12 +1126,19 @@ class PosixWorktreeProvider(RuntimeProvider):
     @staticmethod
     def _linked_worktrees(root: Path) -> set[Path]:
         """Resolved paths of `root`'s LINKED worktrees, from the repository's own admin entries
-        (`worktree list`; the first entry is the main checkout). Empty when that cannot be read."""
+        (`worktree list`; the first entry is the main checkout); empty for a root with no `.git`.
+        A list git cannot produce (a malformed shared config makes it die) is a refusal, never
+        "none registered": that answer sent a registered worktree with a deleted pointer to
+        rmtree, its admin entry left behind (W4-08, PR #720 review)."""
         if not (root / ".git").exists():
             return set()
         proc = _git(["worktree", "list", "--porcelain"], cwd=root)
         if proc.returncode != 0:
-            return set()
+            raise ProviderError(
+                "worktree_list_unreadable",
+                f"cannot read {root}'s worktree list, so whether the target is a registered worktree "
+                f"is unknown; refusing to remove anything: {(proc.stderr or proc.stdout).strip()[:300]}",
+            )
         paths = [ln.split(" ", 1)[1] for ln in proc.stdout.splitlines() if ln.startswith("worktree ")]
         return {Path(p).resolve() for p in paths[1:]}
 

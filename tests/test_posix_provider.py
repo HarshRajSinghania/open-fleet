@@ -731,6 +731,23 @@ class TestWorktreeSafety(PosixRealProcessBase):
         self.assertIn(f"worktree {b}", listed)
         self.assertTrue(b.is_dir())
 
+    def test_rm_refuses_when_the_worktree_list_cannot_be_read(self):
+        # W4-08 review (PR #720): with the repository's worktree list unreadable (a malformed shared
+        # config makes git die), an empty answer read as "not registered" and a registered worktree
+        # whose pointer was deleted went to rmtree again. Unreadable is a refusal, forced or not.
+        wt = Path(self.prov.worktree_create("unreadable")["worktree"]["path"])
+        (wt / ".git").unlink()
+        (wt / "junk.txt").write_text("x", encoding="utf-8")
+        with open(self.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+            fh.write("[core\n\tbroken = = =\n")
+        for force in (False, True):
+            with self.subTest(force=force):
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    self.prov.worktree_rm(f"path:{wt}", force=force)
+                self.assertEqual(ctx.exception.code, "worktree_list_unreadable")
+                self.assertTrue((wt / "junk.txt").is_file(), "the tree went to rmtree")
+        self.assertTrue((self.repo / ".git" / "worktrees" / "unreadable").is_dir(), "admin entry kept")
+
     def test_rm_refuses_paths_outside_provider_base(self):
         stray = Path(self.tmp.name) / "stray"
         stray.mkdir()

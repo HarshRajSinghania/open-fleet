@@ -532,6 +532,17 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
         self.assertTrue(conflicted, "a driver that runs nothing leaves the 3-way merge conflicted")
         self.assertEqual(self.fired(), [], "worktrunk's merge-tree ran a repo-planted merge driver")
 
+    def test_the_dirty_check_reads_paths_raw_never_quoted_or_split(self) -> None:
+        # Codex round 2 sweep: `status --porcelain` without -z prints `x -> AGENTS.md` unquoted, and
+        # the ` -> ` rename split read it as the artifact `AGENTS.md`, so a user's unsaved file
+        # counted as clean; a newline-holding name came back C-quoted, never matching its path.
+        (self.wt / "x -> AGENTS.md").write_text("unsaved\n", encoding="utf-8")
+        (self.wt / "nl\nname").write_text("unsaved\n", encoding="utf-8")
+        (self.wt / "AGENTS.md").write_text("generated\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.wt), "mv", "a.txt", "moved.txt"], check=True)
+        dirty = self.ext.foreign_dirty_paths(self.text_runner, str(self.wt), ("AGENTS.md",))
+        self.assertEqual(sorted(dirty), ["moved.txt", "nl\nname", "x -> AGENTS.md"])
+
     def test_every_git_launch_is_blanked_whatever_its_subcommand_or_location(self) -> None:
         # Re-attack P3: blanks were computed only for an allowlist of subcommands, and only when
         # the argv named its repo with `-C`. A future `commit` (its `-a` re-stages through the

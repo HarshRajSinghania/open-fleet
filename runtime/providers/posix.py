@@ -795,6 +795,18 @@ def _git(
         return subprocess.CompletedProcess(full, 127, "", str(exc))
 
 
+def _parse_worktree_list(out: str) -> list[tuple[str, str]]:
+    """`[(path, branch ref or "")]` from `git worktree list --porcelain -z`: NUL-terminated
+    `attribute value` fields, a worktree per `worktree <path>` field, paths raw (never quoted)."""
+    entries: list[tuple[str, str]] = []
+    for field in out.split("\0"):
+        if field.startswith("worktree "):
+            entries.append((field[len("worktree "):], ""))
+        elif field.startswith("branch ") and entries:
+            entries[-1] = (entries[-1][0], field[len("branch "):])
+    return entries
+
+
 def _driver_blanks(code: str, repo: str | Path | None = None, *, git_dir: str | None = None) -> list[tuple[str, str]]:
     """gitexec.driver_blanks for one content-materialising call, read in the same place that call
     runs (an `includeIf gitdir:`/`onbranch:` resolves per worktree). A config that cannot be read
@@ -1095,20 +1107,14 @@ class PosixWorktreeProvider(RuntimeProvider):
         root = Path(repo).resolve() if repo else self.repo_root
         rows: list[dict[str, Any]] = []
         if (root / ".git").exists():
-            proc = _git(["worktree", "list", "--porcelain"], cwd=root)
+            proc = _git(["worktree", "list", "--porcelain", "-z"], cwd=root)
             if proc.returncode == 0:
-                for line in proc.stdout.splitlines():
-                    if line.startswith("worktree "):
-                        current_path = line.split(" ", 1)[1].strip()
-                        rows.append(
-                            {
-                                "id": f"{root.name}::{current_path}",
-                                "displayName": Path(current_path).name,
-                                "path": current_path,
-                            }
-                        )
-                    elif line.startswith("branch ") and rows:
-                        rows[-1]["branch"] = line.split(" ", 1)[1].strip().removeprefix("refs/heads/")
+                for current_path, branch in _parse_worktree_list(proc.stdout):
+                    row = {"id": f"{root.name}::{current_path}", "displayName": Path(current_path).name,
+                           "path": current_path}
+                    if branch:
+                        row["branch"] = branch.removeprefix("refs/heads/")
+                    rows.append(row)
         for child in sorted(self._worktree_base_dir().iterdir()):
             if child.is_dir() and not any(r.get("path") == str(child) for r in rows):
                 rows.append(
@@ -1148,20 +1154,21 @@ class PosixWorktreeProvider(RuntimeProvider):
     def _linked_worktrees(root: Path) -> set[Path]:
         """Resolved paths of `root`'s LINKED worktrees, from the repository's own admin entries
         (`worktree list`; the first entry is the main checkout); empty for a root with no `.git`.
-        A list git cannot produce (a malformed shared config makes it die) is a refusal, never
-        "none registered": that answer sent a registered worktree with a deleted pointer to
-        rmtree, its admin entry left behind (W4-08, PR #720 review)."""
+        A list git cannot produce (a malformed shared config makes it die; a git older than 2.36
+        has no `-z`) is a refusal, never "none registered": that answer sent a registered worktree
+        with a deleted pointer to rmtree, its admin entry left behind (W4-08, PR #720 review).
+        `-z` because without it a path holding a newline or another character git quotes came back
+        split or quoted, matched nothing, and read as unregistered (PR #720 Codex round 2)."""
         if not (root / ".git").exists():
             return set()
-        proc = _git(["worktree", "list", "--porcelain"], cwd=root)
+        proc = _git(["worktree", "list", "--porcelain", "-z"], cwd=root)
         if proc.returncode != 0:
             raise ProviderError(
                 "worktree_list_unreadable",
                 f"cannot read {root}'s worktree list, so whether the target is a registered worktree "
                 f"is unknown; refusing to remove anything: {(proc.stderr or proc.stdout).strip()[:300]}",
             )
-        paths = [ln.split(" ", 1)[1] for ln in proc.stdout.splitlines() if ln.startswith("worktree ")]
-        return {Path(p).resolve() for p in paths[1:]}
+        return {Path(path).resolve() for path, _ in _parse_worktree_list(proc.stdout)[1:]}
 
     def worktree_rm(self, selector: str, force: bool = False) -> dict[str, Any]:
         if not selector:

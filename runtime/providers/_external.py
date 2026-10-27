@@ -411,16 +411,25 @@ def foreign_dirty_paths(
     worktree: str,
     extra_ignored: tuple[str, ...] = (),
 ) -> list[str]:
-    """Uncommitted paths in `worktree` that are NOT open-fleet hook artifacts (work a removal would lose)."""
-    out = run(["git", "-C", worktree, "status", "--porcelain", "--untracked-files=all"])
+    """Uncommitted paths in `worktree` that are NOT open-fleet hook artifacts (work a removal would lose).
+
+    `-z`: every path raw, NUL-terminated, a rename's source in the field after its destination.
+    The line form C-quoted a path holding a newline and printed `x -> AGENTS.md` unquoted, which
+    the ` -> ` split read as the artifact `AGENTS.md`, so a user's unsaved file counted as clean
+    (PR #720 Codex round 2)."""
+    out = run(["git", "-C", worktree, "status", "--porcelain", "-z", "--untracked-files=all"])
     ignored = HOOK_ARTIFACT_PREFIXES + tuple(extra_ignored)
     dirty: list[str] = []
-    for line in out.splitlines():
-        if len(line) < 4:
+    fields = out.split("\0")
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        i += 1
+        if len(entry) < 4:
             continue
-        path = line[3:].strip().strip('"')
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
+        status, path = entry[:2], entry[3:]
+        if "R" in status or "C" in status:
+            i += 1  # the rename/copy source: the destination is what a removal would lose
         if not any(_artifact_match(path, p) for p in ignored):
             dirty.append(path)
     return dirty

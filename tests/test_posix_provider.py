@@ -731,6 +731,25 @@ class TestWorktreeSafety(PosixRealProcessBase):
         self.assertIn(f"worktree {b}", listed)
         self.assertTrue(b.is_dir())
 
+    def test_a_registered_worktree_under_a_quoted_path_is_still_recognised(self):
+        # Codex round 2 (P1): `worktree list --porcelain` without -z C-quotes a path holding a
+        # newline or backslash, so the parsed path matched nothing, the registered worktree looked
+        # unregistered, and a forced removal of one with a deleted pointer reached rmtree again.
+        odd = Path(self.tmp.name) / "st\nate\\x"
+        prov = self.providers.get_provider("posix", env={**self.env, "OPEN_FLEET_STATE_DB": str(odd / "runtime.db")})
+        wt = Path(prov.worktree_create("odd")["worktree"]["path"])
+        self.assertIn("\n", str(wt))
+        # A git-reported row carries its branch; the base-dir fallback row for the same dir does not.
+        rows = prov.worktree_list()["worktrees"]
+        self.assertTrue(any(Path(r["path"]) == wt and r.get("branch") == "fleet/odd" for r in rows),
+                        f"worktree list reported a quoted path: {rows}")
+        (wt / ".git").unlink()
+        (wt / "junk.txt").write_text("x", encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            prov.worktree_rm(f"path:{wt}", force=True)
+        self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+        self.assertTrue((wt / "junk.txt").is_file(), "a registered worktree went to rmtree")
+
     def test_rm_refuses_when_the_worktree_list_cannot_be_read(self):
         # W4-08 review (PR #720): with the repository's worktree list unreadable (a malformed shared
         # config makes git die), an empty answer read as "not registered" and a registered worktree

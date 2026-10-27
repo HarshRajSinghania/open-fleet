@@ -317,15 +317,17 @@ def literal_stand_in(source: str) -> str:
 # live harness's wrapper (scripts/live_container_bin/claude), which sends every call to the broker
 # that holds the token. It needs HOME, the arm's config home (inert runs get a private one), and
 # the image's DISABLE_AUTOUPDATER pin.
+# The locale names are listed, never matched as an `LC_` prefix: a prefix let `LC_GH_TOKEN` through.
 SANDBOX_ENV_ALLOW = frozenset({"HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TERM", "TMPDIR",
-                               "DISABLE_AUTOUPDATER", "PYTHONDONTWRITEBYTECODE"})
-SANDBOX_ENV_ALLOW_PREFIXES = ("LC_",)
+                               "DISABLE_AUTOUPDATER", "PYTHONDONTWRITEBYTECODE",
+                               "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES", "LC_MONETARY",
+                               "LC_NUMERIC", "LC_TIME", "LC_ADDRESS", "LC_IDENTIFICATION",
+                               "LC_MEASUREMENT", "LC_NAME", "LC_PAPER", "LC_TELEPHONE"})
 
 
 def sandbox_base_env(environ) -> dict:
-    """The allowlisted part of `environ` an on-host run starts from (W5-20)."""
-    return {k: v for k, v in environ.items()
-            if k in SANDBOX_ENV_ALLOW or k.startswith(SANDBOX_ENV_ALLOW_PREFIXES)}
+    """The allowlisted part of `environ` an on-host run starts from (W5-20): exact names only."""
+    return {k: v for k, v in environ.items() if k in SANDBOX_ENV_ALLOW}
 
 
 class Sandbox:

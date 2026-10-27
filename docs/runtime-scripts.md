@@ -650,7 +650,7 @@ when the run's PATH, which puts the interpreter's directory first, resolves the 
 different file than the operator's own PATH does (`harness_shadow`).
 Every command of a run, the worker included, gets an ALLOWLISTED environment
 (`runtime/scripts/first_run.py:SANDBOX_ENV_ALLOW`: `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`,
-`LC_*`, `TZ`, `TERM`, `TMPDIR`, `DISABLE_AUTOUPDATER`, `PYTHONDONTWRITEBYTECODE`) plus the run's own
+the POSIX/glibc locale names `LC_ALL`, `LC_CTYPE`, … `LC_TELEPHONE` by exact name, never an `LC_` prefix, `TZ`, `TERM`, `TMPDIR`, `DISABLE_AUTOUPDATER`, `PYTHONDONTWRITEBYTECODE`) plus the run's own
 settings, never the operator's whole environment (W5-20): an exported `ANTHROPIC_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` or `AWS_*` cannot reach the worker or the code it runs, the
 guarantee the container lane already gave. `--worker live` needs no credential from it: its

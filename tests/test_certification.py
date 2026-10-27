@@ -614,7 +614,9 @@ class TestTheOnHostSandboxHoldsNoCredential(Tripwired):
 
     SECRETS = {"ANTHROPIC_API_KEY": "sk-ant-x", "CLAUDE_CODE_OAUTH_TOKEN": "oat-x", "GH_TOKEN": "ghp-x",
                "GITHUB_TOKEN": "ghs-x", "AWS_SECRET_ACCESS_KEY": "aws-x", "AWS_SESSION_TOKEN": "aws-s",
-               "OPENAI_API_KEY": "sk-x", "SOME_VENDOR_PASSWORD": "pw", "HTTPS_PROXY": "http://u:p@proxy"}
+               "OPENAI_API_KEY": "sk-x", "SOME_VENDOR_PASSWORD": "pw", "HTTPS_PROXY": "http://u:p@proxy",
+               # re-attack of W5-20: an LC_ PREFIX allowlisted any name
+               "LC_GH_TOKEN": "ghp-lc", "LC_ANTHROPIC_API_KEY": "sk-ant-lc"}
 
     def sandbox(self, worker):
         env = dict(self.env, **self.SECRETS, LANG="C.UTF-8", LC_ALL="C.UTF-8", TZ="UTC",

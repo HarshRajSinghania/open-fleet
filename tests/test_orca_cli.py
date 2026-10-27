@@ -295,8 +295,7 @@ class OneResolverForTheOrcaBinary(unittest.TestCase):
         self.m = _load()
         sys.path.insert(0, str(ROOT))
         self.addCleanup(sys.path.remove, str(ROOT))
-        from runtime import providers
-        self.providers = providers
+        self.providers = importlib.import_module("runtime.providers")
 
     def test_the_provider_resolver_takes_the_same_precedence(self):
         for env, want in (({"OPEN_FLEET_CLI_COMMAND": self.PINNED, "ORCA_CLI_COMMAND": self.OLDER}, self.PINNED),

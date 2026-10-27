@@ -376,10 +376,148 @@ def _generated(rel):
     return parts[0] == "skills" and len(parts) > 2 and not parts[1].startswith((".", "_"))
 
 
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)  # a FIFO opens at once, and is then refused by fstat
+O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+READ_FLAGS = os.O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+
+
+def _valid_name(rel):
+    """True for an out-relative file name in canonical form: relative, no empty, `.` or `..`
+    component, no NUL, no trailing slash. Every listed name is held to it before anything changes."""
+    if not isinstance(rel, str) or not rel or "\x00" in rel or rel.startswith("/") or rel.endswith("/"):
+        return False
+    try:
+        rel.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return all(part not in ("", ".", "..") for part in rel.split("/"))
+
+
+class _Tree:
+    """--out, opened once. Every delete and write after the checks walks from this descriptor, one
+    component at a time with O_DIRECTORY|O_NOFOLLOW, and acts on a name relative to its own
+    directory's descriptor: nothing is re-resolved through a path, so a directory swapped for a
+    symlink after the checks cannot aim an unlink or a write outside --out (2026-10-27 re-attack,
+    W5-10). Such a swap refuses the rest of the build."""
+
+    def __init__(self, out):
+        self.out = out
+        self.fd = os.open(out, os.O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+
+    def close(self):
+        os.close(self.fd)
+
+    def dirs(self, parts, create=False):
+        """[fd of --out, fd of each directory in `parts`]; the caller closes them. None when one is
+        missing and not `create`; BundleRefused when one is not a real directory."""
+        fds = [os.dup(self.fd)]
+        try:
+            for name in parts:
+                try:
+                    fd = os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, dir_fd=fds[-1])
+                except FileNotFoundError:
+                    if not create:
+                        self._close(fds)
+                        return None
+                    os.mkdir(name, 0o777, dir_fd=fds[-1])
+                    fd = os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, dir_fd=fds[-1])
+                fds.append(fd)
+            return fds
+        except OSError as err:
+            self._close(fds)
+            raise BundleRefused(f"--out {self.out}: {'/'.join(parts)} is no longer a plain directory ({err.strerror}); "
+                                "something changed it during the build, which stopped there") from None
+
+    @staticmethod
+    def _close(fds):
+        for fd in fds:
+            os.close(fd)
+
+    def read(self, rel):
+        """A regular file's bytes, or None (missing, a link, a FIFO, a directory, or behind one)."""
+        *parts, name = rel.split("/")
+        try:
+            fds = self.dirs(parts)
+        except BundleRefused:
+            return None
+        if fds is None:
+            return None
+        try:
+            return _read_fd(lambda: os.open(name, READ_FLAGS, dir_fd=fds[-1]))
+        finally:
+            self._close(fds)
+
+    def unlink(self, rel, digest):
+        """Delete `rel` only while it is still the regular file whose sha256 was checked, then the
+        directories that leaves empty. True when it was deleted."""
+        *parts, name = rel.split("/")
+        fds = self.dirs(parts)
+        if fds is None:
+            return False
+        try:
+            data = _read_fd(lambda: os.open(name, READ_FLAGS, dir_fd=fds[-1]))
+            if data is None or hashlib.sha256(data).hexdigest() != digest:
+                return False
+            os.unlink(name, dir_fd=fds[-1])
+            for i in range(len(parts), 0, -1):  # only once empty: never a directory with content
+                try:
+                    os.rmdir(parts[i - 1], dir_fd=fds[i - 1])
+                except OSError:
+                    break
+            return True
+        finally:
+            self._close(fds)
+
+    def write(self, rel, data, mode, times=None):
+        """Write `rel` beside itself and rename it into place: a link or a FIFO at the name is
+        replaced, never followed, and a directory there refuses."""
+        *parts, name = rel.split("/")
+        fds = self.dirs(parts, create=True)
+        tmp = f".{name}.open-fleet-{os.getpid()}-{os.urandom(4).hex()}.tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600, dir_fd=fds[-1])
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fchmod(fd, mode)
+                if times is not None and os.utime in os.supports_fd:
+                    os.utime(fd, ns=times)
+            finally:
+                os.close(fd)
+            try:
+                os.replace(tmp, name, src_dir_fd=fds[-1], dst_dir_fd=fds[-1])
+            except OSError as err:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp, dir_fd=fds[-1])
+                raise BundleRefused(f"--out {self.out}: cannot write {rel} ({err.strerror})") from None
+        finally:
+            self._close(fds)
+
+
+def _read_fd(opener):
+    """The bytes of the regular file `opener()` opens, or None for anything else (or nothing)."""
+    try:
+        fd = opener()
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks = []
+        while chunk := os.read(fd, 1 << 20):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _sha256_nofollow(path):
     """sha256 of a regular file's bytes, opened without following a link; None for anything else."""
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, READ_FLAGS)
     except OSError:
         return None
     if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -413,7 +551,8 @@ def _owned(out):
     else:
         return {}
     try:
-        fd = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # O_NONBLOCK: a FIFO at the marker opens at once and is refused below, never waited on.
+        fd = os.open(marker, READ_FLAGS)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             os.close(fd)
             raise BundleRefused(f"{marker}: the ownership marker is not a regular file")
@@ -426,9 +565,9 @@ def _owned(out):
         why = "a symlink, which is never followed" if os.path.islink(marker) else f"unreadable ({err})"
         raise BundleRefused(f"{marker}: ownership marker is {why} — refusing to guess what a previous "
                             "build wrote") from err
-    if not isinstance(files, list) or not all(
-            isinstance(f, str) and f and not Path(f).is_absolute() and ".." not in Path(f).parts
-            for f in files):
+    # Every name is checked here, before anything is deleted or written: one a later step could not
+    # even form a path from (a NUL) used to traceback after earlier unlinks (re-attack, W5-11).
+    if not isinstance(files, list) or not all(_valid_name(f) for f in files):
         raise BundleRefused(f"{marker}: malformed ownership marker — refusing to guess what a "
                             "previous build wrote")
     outside = sorted(f for f in files if not _generated(f))
@@ -514,15 +653,7 @@ def _committed_at_source(rel, data, seen):
 
 def _read_nofollow(path):
     """A regular file's bytes, opened without following a link; None for anything else."""
-    try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
-        return None
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        os.close(fd)
-        return None
-    with os.fdopen(fd, "rb") as fh:
-        return fh.read()
+    return _read_fd(lambda: os.open(path, READ_FLAGS))
 
 
 def _claim(out, planned, produced, stage):
@@ -565,16 +696,18 @@ def _claim(out, planned, produced, stage):
     delete, left = [], []
     for rel in sorted(present):
         data = present[rel]
+        if data is None:
+            continue  # nothing regular there: nothing to delete, and the write replaces it
         if rel.startswith(whole):
             if rel not in produced:
-                delete.append(rel)
+                delete.append((rel, hashlib.sha256(data).hexdigest()))
         elif rel in needs_history and not (seen and _committed_at_source(rel, data, seen)):
             if rel in produced:
                 foreign.append(out / rel)  # a file the build must overwrite and cannot prove its own
             else:
                 left.append(rel)
         elif rel not in produced:
-            delete.append(rel)
+            delete.append((rel, hashlib.sha256(data).hexdigest()))
     if foreign:
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
         raise BundleRefused(
@@ -585,43 +718,26 @@ def _claim(out, planned, produced, stage):
     return delete, left, unavailable
 
 
-def _install(stage, out, produced, delete):
-    """Delete the provable stale files (and directories they leave empty), then copy the staged
-    build into --out."""
-    for rel in delete:
-        path = out / rel
-        if path.is_file() and not path.is_symlink():
-            path.unlink()
-        for parent in path.parents:
-            if parent == out or not parent.is_relative_to(out):
-                break
-            try:
-                parent.rmdir()  # only once empty: a directory is never removed with content
-            except OSError:
-                break
+def _install(tree, stage, produced, delete):
+    """Delete the provable stale files (each only while it is still the file that was checked),
+    then write the staged build into --out, all through `tree`'s directory descriptors."""
+    for rel, digest in delete:
+        tree.unlink(rel, digest)
     for rel in sorted(produced):
-        destination = out / rel
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(stage / rel, destination)
+        st = os.stat(stage / rel)
+        tree.write(rel, (stage / rel).read_bytes(), stat.S_IMODE(st.st_mode), (st.st_atime_ns, st.st_mtime_ns))
 
 
-def _record(out, produced):
-    """Write MARKER: every file this build wrote, with the sha256 of its bytes. Written beside
-    and renamed over the old one, so a link planted at MARKER is replaced, never followed (W5-11)."""
-    digests = {rel: digest for rel in produced if (digest := _sha256_nofollow(out / rel)) is not None}
+def _record(tree, produced):
+    """Write MARKER: every file this build wrote, with the sha256 of its bytes, read back through
+    `tree` (never through a link). Written beside and renamed over the old one, so a link or a
+    FIFO planted at MARKER is replaced, never followed (W5-11)."""
+    digests = {rel: hashlib.sha256(data).hexdigest() for rel in produced if (data := tree.read(rel)) is not None}
     doc = {"generator": "scripts/bundle.py", "version": MARKER_VERSION, "files": sorted(digests),
            "sha256": dict(sorted(digests.items()))}
-    fd, tmp = tempfile.mkstemp(prefix=MARKER + ".", suffix=".tmp", dir=out)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(doc, indent=2) + "\n")
-        os.replace(tmp, out / MARKER)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-    if os.path.lexists(out / LEGACY_MARKER):
-        (out / LEGACY_MARKER).unlink()  # migrated: MARKER now lists everything this build owns
+    tree.write(MARKER, (json.dumps(doc, indent=2) + "\n").encode("utf-8"), 0o644)
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(LEGACY_MARKER, dir_fd=tree.fd)  # migrated: MARKER now lists everything this build owns
 
 
 def build(out_dir):
@@ -646,10 +762,14 @@ def build(out_dir):
         produced = {path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file()}
         delete, left, unavailable = _claim(out, planned, produced, stage)
         out.mkdir(parents=True, exist_ok=True)
+        tree = _Tree(out)
         try:
-            _install(stage, out, produced, delete)
+            try:
+                _install(tree, stage, produced, delete)
+            finally:
+                _record(tree, produced)
         finally:
-            _record(out, {rel for rel in produced if os.path.lexists(out / rel)})
+            tree.close()
     if left:
         why = (f"provenance unavailable: {unavailable}" if unavailable
                else "provenance unproven: not a blob the source repository committed at its source path")

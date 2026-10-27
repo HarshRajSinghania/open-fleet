@@ -15,8 +15,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -306,7 +309,9 @@ class AForgedMarkerDeletesNothing(unittest.TestCase):
             out, victim = Path(tmp), Path(other) / "victim.json"
             victim.write_text("victim\n", encoding="utf-8")
             (out / bundle.MARKER).symlink_to(victim)
-            bundle._record(out, [])
+            tree = bundle._Tree(out)
+            self.addCleanup(tree.close)
+            bundle._record(tree, set())
             self.assertEqual(victim.read_text(encoding="utf-8"), "victim\n")
             self.assertFalse((out / bundle.MARKER).is_symlink())
 
@@ -392,6 +397,81 @@ class ADigestInTheMarkerIsNoProof(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertEqual((out / rel).read_bytes(), data)
             self.assertIn("provenance", err)
+
+
+class NothingIsReResolvedAfterItsCheck(unittest.TestCase):
+    """Re-attack of 82a2d00c (W5-10/W5-11). A directory swapped for a symlink to an outside tree
+    AFTER the checks aimed the deletes and the writes outside --out (5/5 on each). Every delete
+    and write now walks --out from one directory fd, a component at a time, never following a
+    link. A FIFO at the marker hung the build, and a NUL in a listed name tracebacked after
+    deleting what sorted before it."""
+
+    built = AForgedMarkerDeletesNothing.built
+    forge = AForgedMarkerDeletesNothing.forge
+
+    def swap_after_claim(self, out, mission, victim):
+        real = bundle._claim
+
+        def claim_then_swap(*args, **kwargs):
+            decided = real(*args, **kwargs)
+            (out / "skills" / mission).rename(out / f"{mission}.aside")
+            (out / "skills" / mission).symlink_to(victim, target_is_directory=True)
+            return decided
+
+        return mock.patch.object(bundle, "_claim", claim_then_swap)
+
+    def test_a_directory_swapped_after_the_checks_never_aims_a_write_outside(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            out, victim = self.built(tmp), Path(other)
+            (victim / "SKILL.md").write_text("PRECIOUS user file outside --out\n", encoding="utf-8")
+            with self.swap_after_claim(out, "speed-it", victim):
+                code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(sorted(p.name for p in victim.iterdir()), ["SKILL.md"], "the build wrote outside --out")
+            self.assertEqual((victim / "SKILL.md").read_text(encoding="utf-8"), "PRECIOUS user file outside --out\n")
+
+    def test_a_directory_swapped_after_the_checks_never_aims_a_delete_outside(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            out, victim = self.built(tmp), Path(other)
+            stale = out / "skills" / "speed-it" / "old-reference.md"
+            stale.write_bytes(b"a stale copy\n")
+            self.forge(out, ["skills/speed-it/old-reference.md"],
+                       {"skills/speed-it/old-reference.md": hashlib.sha256(b"a stale copy\n").hexdigest()})
+            (victim / "old-reference.md").write_text("PRECIOUS\n", encoding="utf-8")
+            (victim / "id_ed25519").write_text("PRECIOUS\n", encoding="utf-8")
+            self.forge(out, ["skills/speed-it/id_ed25519"], {"skills/speed-it/id_ed25519": "0" * 64})
+            with self.swap_after_claim(out, "speed-it", victim):
+                code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertEqual((victim / "old-reference.md").read_text(encoding="utf-8"), "PRECIOUS\n")
+            self.assertEqual((victim / "id_ed25519").read_text(encoding="utf-8"), "PRECIOUS\n")
+
+    def test_a_fifo_at_the_marker_or_a_listed_path_refuses_without_hanging(self):
+        for rel in (bundle.MARKER, "LICENSE"):
+            with self.subTest(rel=rel), tempfile.TemporaryDirectory() as tmp:
+                out = self.built(tmp)
+                (out / rel).unlink()
+                os.mkfifo(out / rel)
+                try:
+                    proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "bundle.py"), "--out", tmp],
+                                          capture_output=True, text=True, timeout=120)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"a FIFO at {rel} hung the build")
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertTrue(stat.S_ISFIFO(os.lstat(out / rel).st_mode))
+
+    def test_every_listed_name_is_checked_before_anything_changes(self):
+        for bad in ("skills/a\u0000b/c", "skills/x/./y", "skills/x//y", "skills/x/y/"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                out = self.built(tmp)
+                stale = out / "skills" / "ship-it" / "a-stale.md"   # sorts before the bad name
+                stale.write_bytes(b"stale\n")
+                self.forge(out, ["skills/ship-it/a-stale.md", bad],
+                           {"skills/ship-it/a-stale.md": hashlib.sha256(b"stale\n").hexdigest(), bad: "0" * 64})
+                before = snapshot(out)
+                code, err = run_main("--out", tmp)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(snapshot(out), before, "a refused build changed --out")
 
 
 class GitControlFilesNeverShip(unittest.TestCase):

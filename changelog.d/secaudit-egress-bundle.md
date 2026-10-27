@@ -12,15 +12,19 @@
   the run declares it sent nothing (`--allow-empty`). Pre-v2 ledgers keep verifying in the exact
   v1 form, as a prefix, and the docs say how to recover a broken ledger
   ([runtime-scripts](../docs/runtime-scripts.md#egresspy)). `bundle.py`'s ownership marker only
-  names candidates: outside a mission directory the build writes whole, a stale file is deleted
-  only when the source repository committed its exact bytes at the path the build copies it from,
-  and is otherwise left in place and reported; every delete and write walks `--out` from one
-  directory handle without following a link; a marker naming anything a build does not write,
-  carrying a malformed name, or that is a symlink or FIFO refuses; and a mission that ships
-  `.gitignore`, `.gitattributes`, `.gitmodules` or `.git` fails the build; a `--out` built before
-  digests refuses once ([install](../docs/install.md)). `external-ci-monitor.py` never re-sends
+  names candidates: a listed file is overwritten, or deleted once stale, only when a build record
+  kept outside `--out` (in the clone's git directory) holds its exact bytes, when the source
+  repository committed them at the path the build copies it from, or when they are the bytes the
+  build writes anyway, so a forged marker with true digests deletes or overwrites nothing, inside a
+  mission directory too; otherwise an overwrite refuses and a stale file is left in place and
+  reported; every check, delete and write walks `--out` from one directory handle without
+  following a link; a marker naming anything a build does not write, carrying a malformed name, or
+  that is a symlink or FIFO refuses; a mission that ships `.gitignore`, `.gitattributes`,
+  `.gitmodules` or `.git` fails the build; a `--out` built before digests or without a build record
+  refuses once if the build changes anything there ([install](../docs/install.md)).
+  `external-ci-monitor.py` never re-sends
   `GITHUB_TOKEN` on a redirect, refuses a foreign origin and an oversized body, and shape-checks
-  `--repo`. The live harness's broker bounds idle and trickling connections and `count_tokens`,
+  `--repo`; the orchestrator adapters' API keys (paperclip, OpenHands) never follow a redirect either. The live harness's broker bounds idle and trickling connections and `count_tokens`,
   settles every call and records every fault and dropped connection in its ledger; the launcher
   runs only an image its own `build` recorded from the committed Dockerfile unless
   `--allow-foreign-image` is passed, refuses any `--mount` path docker would split, and the image

@@ -21,6 +21,10 @@ anyone else never counts (PR #718 review, P1), nor does a drive-by COMMENTED
 GO (PR #460 review, P1), nor a fork author's GO on their own PR: being the
 PR's author is no trust tier (2026-10-27 security audit, W6-06).
 
+The LATEST trusted verdict bound to the head decides: a CHANGES_REQUESTED
+review, or any non-GO VERDICT line, from a trusted author at the head vetoes an
+earlier GO there, and a later GO clears it (PR #718 re-attack).
+
 A GO is a SHA binding, NOT evidence that anyone read the diff: it proves that a
 trusted account claimed to have checked this exact head, nothing more. With one
 human maintainer the owner's self-GO is the normal case, so the gate cannot
@@ -108,15 +112,59 @@ def _author_trusted(review, pr_author):
     return review.get("author_association") in TRUSTED_ASSOCIATIONS
 
 
+def _verdict_at(review, head, pr_author):
+    """"GO", "NO-GO" or None: what one review says about the head ``head`` (lowercase).
+
+    Only a trusted author's review is a verdict at all. A GO is an APPROVED or COMMENTED review
+    whose every VERDICT line reads exactly GO and whose full reviewed_sha is the head. A NO-GO is
+    a CHANGES_REQUESTED review, or a review with any other VERDICT line, bound to the head by its
+    reviewed_sha or, lacking one, by the commit GitHub recorded it on (``commit_id``). A
+    DISMISSED review, a review without a verdict, or one bound to another commit says nothing.
+    """
+    state = review.get("state")
+    if state not in ("APPROVED", "COMMENTED", "CHANGES_REQUESTED") \
+            or not _author_trusted(review, pr_author):
+        return None
+    body = review.get("body") or ""
+    lines = ANY_VERDICT_RE.findall(body)
+    match = SHA_RE.search(body)
+    bound = (match.group(1).lower() if match else (review.get("commit_id") or "").lower()) == head
+    if state == "CHANGES_REQUESTED" or any(v.strip() != "GO" for v in lines):
+        return "NO-GO" if bound and (state == "CHANGES_REQUESTED" or lines) else None
+    if lines and match and match.group(1).lower() == head:
+        return "GO"
+    return None
+
+
+def _latest_verdict(reviews, head_sha, pr_author=None):
+    """(verdict, review) for the latest trusted verdict bound to the head, or (None, None).
+
+    Latest by ``submitted_at``, then by list order (GitHub lists reviews oldest first): a later
+    trusted NO-GO vetoes an earlier GO, and a later GO clears an earlier NO-GO (PR #718
+    re-attack: an owner's CHANGES_REQUESTED after a GO left the gate green).
+    """
+    head = (head_sha or "").lower()
+    said = [(review.get("submitted_at") or "", i, verdict, review)
+            for i, review in enumerate(reviews)
+            if isinstance(review, dict) and (verdict := _verdict_at(review, head, pr_author))]
+    if not said:
+        return None, None
+    _when, _i, verdict, review = max(said, key=lambda entry: (entry[0], entry[1]))
+    return verdict, review
+
+
 def go_reviews_at_tip(reviews, head_sha, pr_author=None):
-    """Return the trusted GO reviews bound to ``head_sha``.
+    """Return the trusted GO reviews bound to ``head_sha``, or [] when the latest trusted
+    verdict bound to it is a NO-GO.
 
     ``reviews`` is a list of GitHub review objects (``state``, ``body``,
-    ``user.login``, ``author_association``, ``submitted_at`` keys).
+    ``user.login``, ``author_association``, ``submitted_at``, ``commit_id`` keys).
     The VERDICT line matches the exact uppercase literal; the SHA comparison
     is case-insensitive hex but must be a full 40 hex digits — short SHAs
     never match.
     """
+    if _latest_verdict(reviews, head_sha, pr_author)[0] == "NO-GO":
+        return []
     head = head_sha.lower()
     hits = []
     for review in reviews:
@@ -342,8 +390,14 @@ def main(argv=None):
         author = (hit.get("user") or {}).get("login", "?")
         print(f"  GO at tip by @{author} [{hit.get('state')}] "
               f"submitted_at={hit.get('submitted_at')}")
+    latest, veto = _latest_verdict(reviews, head_sha, pr_author)
     if hits:
         passed, reason = True, "GO verdict binds the merge tip"
+    elif latest == "NO-GO":
+        passed = False
+        reason = (f"the latest trusted verdict at the head is a NO-GO "
+                  f"(@{(veto.get('user') or {}).get('login', '?')}, {veto.get('state')}); "
+                  "a later GO at this head clears it")
     else:
         passed = False
         trusted = [r for r in gos if r.get("state") in ("APPROVED", "COMMENTED")

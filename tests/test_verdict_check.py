@@ -566,6 +566,68 @@ class AForkAuthorCannotGoTheirOwnPr(unittest.TestCase):
         self.assertIn("untrusted", err.getvalue())
 
 
+class TheLatestTrustedVerdictAtTheHeadDecides(unittest.TestCase):
+    """PR #718 re-attack (W6-06): a trusted NO-GO did not veto. An owner's CHANGES_REQUESTED, or a
+    `VERDICT: NO-GO` bound to the same head, posted after a GO left the gate green. The latest
+    trusted verdict bound to the head decides: a later NO-GO blocks, a later GO clears it."""
+
+    @staticmethod
+    def at(body, when, state="COMMENTED", association="OWNER", login="o", commit=HEAD):
+        r = review(body, state=state, login=login, association=association)
+        r["submitted_at"], r["commit_id"] = when, commit
+        return r
+
+    GO = staticmethod(lambda when, **kw: TheLatestTrustedVerdictAtTheHeadDecides.at(
+        go_body(HEAD), when, **kw))
+    NO_GO = f"Not yet.\n\nVERDICT: NO-GO\nreviewed_sha: {HEAD}\n"
+
+    def test_a_later_trusted_no_go_blocks(self):
+        for later in (self.at(self.NO_GO, "2026-10-27T02:00:00Z"),
+                      self.at("Needs work.", "2026-10-27T02:00:00Z", state="CHANGES_REQUESTED"),
+                      self.at("VERDICT: NO-GO\n", "2026-10-27T02:00:00Z"),  # bound by commit_id
+                      self.at(self.NO_GO, "2026-10-27T02:00:00Z", state="APPROVED",
+                              association="MEMBER", login="peer")):
+            with self.subTest(later=later["body"], state=later["state"]):
+                reviews = [self.GO("2026-10-27T01:00:00Z"), later]
+                self.assertFalse(verdict_at_tip(reviews, HEAD, pr_author="o"))
+
+    def test_a_later_go_clears_a_no_go(self):
+        reviews = [self.at(self.NO_GO, "2026-10-27T01:00:00Z"),
+                   self.at("Needs work.", "2026-10-27T01:30:00Z", state="CHANGES_REQUESTED"),
+                   self.GO("2026-10-27T02:00:00Z")]
+        self.assertTrue(verdict_at_tip(reviews, HEAD, pr_author="o"))
+
+    def test_only_a_trusted_verdict_at_this_head_can_veto(self):
+        go = self.GO("2026-10-27T01:00:00Z")
+        for later in (
+                self.at(self.NO_GO, "2026-10-27T02:00:00Z", association="NONE", login="x"),
+                self.at("Needs work.", "2026-10-27T02:00:00Z", state="CHANGES_REQUESTED",
+                        association="CONTRIBUTOR", login="x"),
+                self.at(self.NO_GO.replace(HEAD, OTHER), "2026-10-27T02:00:00Z"),
+                self.at("Needs work.", "2026-10-27T02:00:00Z", state="CHANGES_REQUESTED",
+                        commit=OTHER),
+                self.at("Needs work.", "2026-10-27T02:00:00Z", state="DISMISSED"),
+                self.at("A comment, no verdict.", "2026-10-27T02:00:00Z")):
+            with self.subTest(later=later["body"], state=later["state"]):
+                self.assertTrue(verdict_at_tip([go, later], HEAD, pr_author="o"))
+
+    def test_the_gate_names_the_veto(self):
+        pr = {"number": 7, "head": {"sha": HEAD}, "user": {"login": "o"},
+              "author_association": "OWNER", "changed_files": 0}
+        reviews = [self.GO("2026-10-27T01:00:00Z"), self.at(self.NO_GO, "2026-10-27T02:00:00Z")]
+
+        def fake_api(path, repo, paginate=False):
+            return {"pulls/7": pr, "pulls/7/reviews": reviews}.get(path, [])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api), \
+                mock.patch.object(verdict_check, "grader_refusal", return_value=([], None)):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("NO-GO", err.getvalue())
+
+
 class APrCannotChangeItsOwnGrader(unittest.TestCase):
     """2026-10-27 security audit, W6-01 (P1): a `pull_request` run loads its workflow from the
     PR's merge ref, so a fork PR that empties the `gates`, `guard` and `pinned-demo` jobs gets

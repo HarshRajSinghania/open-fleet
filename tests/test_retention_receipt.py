@@ -346,6 +346,14 @@ class ReceiptCase(unittest.TestCase):
         self.manifest(note="rewritten after the inventory was signed")  # same unit and head_sha
         return TRUSTED
 
+    def s_manifest_bytes_pinned_under_another_path(self):
+        """W3-04: a genuine, signed inventory that pins this manifest's exact BYTES — but as a
+        copy at another path. Digest equality alone bound it; the path story is wrong."""
+        self.write("run/copy-of-manifest.json", (self.repo / "run/manifest.json").read_bytes())
+        self.report(pins=("run/copy-of-manifest.json", "run/evidence.txt"))
+        self.receipt()
+        return TRUSTED
+
 
 class Accepted(ReceiptCase):
     """A complete, valid receipt binds — offline — and the verdict says what was not verified."""
@@ -358,6 +366,8 @@ class Accepted(ReceiptCase):
                        "NOT verified", "exists or is included in any transparency log",
                        "retention period", "legal or regulatory determination"):
             self.assertIn(phrase, out[0])
+        # W3-04: an auditor can see WHICH entry the receipt claims to cover.
+        self.assertIn("as its entry run/manifest.json", out[0])
 
     def test_the_coordinator_key_alone_claims_the_binding(self):
         # The run-close lifecycle: a graded manifest is final before its inventory is signed and
@@ -523,6 +533,10 @@ class Rejections(ReceiptCase):
 
     def test_a_manifest_edited_after_close_is_refused(self):
         self.refused("s_manifest_edited_after_close", "does not pin this manifest's exact bytes")
+
+    def test_the_manifests_bytes_pinned_under_another_path_are_refused(self):
+        self.refused("s_manifest_bytes_pinned_under_another_path",
+                     "run/copy-of-manifest.json", "not under this manifest's own path", "W3-04")
 
     # the v1 shape
     def test_every_off_shape_record_is_refused(self):
@@ -714,6 +728,7 @@ UNSIGNED_INVENTORY = INVENTORY_SIGNATURE + [(
 MANIFEST_PIN = [("verify.py",
                  "    if mine is None or all(pinned != mine for _idx, _path, pinned, _shape in entries):\n",
                  "    if False:\n")]
+MANIFEST_PATH = [("verify.py", "    if pinned_at and not named:\n", "    if False:\n")]
 DOC_READ_FAILS_CLOSED = [("verify.py",
                           '        return [f"retention receipt {receipt}: {err}; fail-closed (#608)"]\n',
                           "        return []\n")]
@@ -747,6 +762,8 @@ GUARDS = (
     ("s_replay_of_another_runs_chain", "another run's receipt",
      UNIT_BINDING + REVISION_BINDING + MANIFEST_PIN),
     ("s_manifest_edited_after_close", "does not pin this manifest's exact bytes", MANIFEST_PIN),
+    ("s_manifest_bytes_pinned_under_another_path", "not under this manifest's own path",
+     MANIFEST_PATH),
 )
 
 

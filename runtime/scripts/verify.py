@@ -187,9 +187,10 @@ def infer_repo():
 
 class _EvidenceManifest(dict):
     """One verification's immutable evidence snapshot; never supplied by manifest JSON."""
-    def __init__(self, data, raw):
+    def __init__(self, data, raw, path=None):
         super().__init__(data)
         self.raw = raw
+        self.path = path  # where these bytes were read (W3-04: a receipt binds a PATH, not a digest)
         self.artifact_bytes = {}
 
 
@@ -201,7 +202,7 @@ def load_manifest(path):
         return None, f"unreadable/invalid manifest: {err}"
     if not isinstance(obj, dict):
         return None, f"manifest must be a JSON object, got {type(obj).__name__}"
-    return _EvidenceManifest(obj, raw), None
+    return _EvidenceManifest(obj, raw, path), None
 
 
 def _toplevel():
@@ -3068,12 +3069,33 @@ def check_retention_receipt(m, pubkey_ref=None):
         return [f"retention receipt {receipt} refused: {record['inventory']} does not pin this "
                 f"manifest's exact bytes (sha256 {mine}) — the receipt covers some other record of "
                 "this unit (#608)"]
+    # W3-04: equal digests let a byte-copy of this manifest at ANOTHER path stand in for it, and
+    # the receipt's path story went unchecked. An entry binds only when it resolves — as
+    # inventory.py check resolves it: repo root first, then the inventory's own directory — to
+    # the very file this manifest was read from; the NOTE names that entry.
+    here = getattr(m, "path", None)
+    doc_path, top = _resolve(record["inventory"])[0], _evidence_toplevel()
+
+    def same_file(entry):
+        found = inv.resolve(entry, doc_path, Path(top) if top else None) if doc_path else None
+        try:
+            return found is not None and here is not None and found.resolve() == Path(here).resolve()
+        except OSError:
+            return False
+
+    pinned_at = [path for _idx, path, pinned, _shape in entries if pinned == mine]
+    named = [path for path in pinned_at if same_file(path)]
+    if pinned_at and not named:
+        return [f"retention receipt {receipt} refused: {record['inventory']} pins this manifest's "
+                f"bytes only as {pinned_at}, not under this manifest's own path {here!r} — a "
+                "byte-copy stands in for the record the receipt claims to cover (W3-04, #608)"]
     return [f"NOTE: retention receipt {receipt} verified OFFLINE against the supplied key — "
             f"{key_where} (W3-03) — (#608): "
             f"signed by {record['signer']} over the {inv.RECEIPT_SCHEMA} payload, binding unit "
             f"{record['unit']!r} at source revision {record['source_revision'][:12]} to inventory "
             f"digest {digest[:12]}… of {record['inventory']}, whose entries carry the same key's "
-            "signature and pin this manifest's bytes. NOT verified: that log entry "
+            f"signature and pin this manifest's bytes as its entry {named[0] if named else None} "
+            "(W3-04). NOT verified: that log entry "
             f"{record['entry_uuid'][:16]}… (index {record['log_index']}) exists or is included in "
             "any transparency log (a live lookup run out of band), any retention period or storage, "
             "that the listed files still hash to the inventory (inventory.py check / run_report.py), "

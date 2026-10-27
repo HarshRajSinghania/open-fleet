@@ -86,8 +86,12 @@ every link holds:
 5. The receipt's `inventory_sha256` is that signed digest. This refuses a receipt replayed
    against another inventory.
 6. That inventory pins this manifest's exact bytes. This refuses a manifest edited after close.
+7. It pins them **under this manifest's own path**: the matching entry must resolve (repo root
+   first, then the inventory's directory, as `inventory.py check` resolves it) to the file the
+   verifier read. A byte-copy at another path is refused (2026-10-27 audit, W3-04).
 
-The verdict NOTE names the signer, the unit, the revision and the digest that were bound.
+The verdict NOTE names the signer, the unit, the revision, the digest that were bound, the
+inventory entry that pinned the manifest, and where the trust key was read (W3-03).
 
 **What it does not verify.** Each of these needs separate evidence, and the NOTE says so:
 

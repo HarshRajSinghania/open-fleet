@@ -1037,13 +1037,14 @@ Single git resolution rule and hardened git environment for the read-side tools
 `runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`,
 `runtime/scripts/decisions.py` for `--pin-ref`, `runtime/scripts/hint_provenance.py`), the
 paid runners in `scripts/` (`ablation.py`, `_trajectories.py`, `wip_curve.py`,
-`live_container.py`), and the posix provider (`runtime/providers/posix.py`), whose worktree
-lifecycle and sandbox-git sync run coordinator-side over the shared `.git` a worker writes (W4-01).
-Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-71`; behavior pinned by `tests/test_inventory.py`,
+`live_container.py`), the posix provider (`runtime/providers/posix.py`), and the external
+adapters' shared CLI runners (`run_cli`/`run_cli_text` in `runtime/providers/_external.py`, which
+launch every adapter `git` through it), whose git runs coordinator-side over the shared `.git` a
+worker writes (W4-01). Import-only library — no CLI.
+Source `runtime/scripts/gitexec.py:1-72`; behavior pinned by `tests/test_inventory.py`,
 `tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`,
-`tests/test_diff_scope.py`, `tests/test_gitexec_config_commands.py`, and
-`tests/test_posix_provider.py`.
+`tests/test_diff_scope.py`, `tests/test_gitexec_config_commands.py`,
+`tests/test_posix_provider.py`, and `tests/test_orchestrator_providers_tier1.py`.
 
 API: `argv`, `env`, `driver_blanks`.
 
@@ -1086,9 +1087,10 @@ directory resolves (`--git-dir`) instead of discovering one from `repo`, for a c
 trusts a worktree's own `.git` pointer. A read that MATERIALISES working-tree
 content passes its pairs (`hint_provenance.py` on every `diff` and `log`, `_trajectories.py`'s replay
 on every call after `init`, beside attributes from the empty tree; the posix provider's checkout,
-`worktree remove`, sandbox seed refresh and sync `reset`, each read where that call runs; not
-`live_container.py`'s `status` of the catalog checkout); a read of committed objects alone selects
-no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError` and the posix provider's `ProviderError` (`worktree_create_failed`, `worktree_rm_failed`, `sandbox_git_failed`). It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+`worktree remove`, sandbox seed refresh and sync `reset`, each read where that call runs; an
+adapter's `status`, `worktree`, `reset`, `merge-tree` and the other content subcommands, read at
+its `-C <dir>`; not `live_container.py`'s `status` of the catalog checkout); a read of committed objects alone selects
+no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, the posix provider's `ProviderError` (`worktree_create_failed`, `worktree_rm_failed`, `sandbox_git_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
@@ -2162,7 +2164,9 @@ touched. Source `runtime/scripts/wtree.sh:1-50`; exercised by `tests/test_eviden
 Usage: `wtree.sh [repo-dir]` (default: current directory), or `wtree.sh predict-merge <base>
 <branch> [repo-dir]` (also `wtree.sh <repo-dir> predict-merge <base> <branch>`), which execs
 `runtime/scripts/diff_scope.py --predict-merge` for the in-memory three-way conflict prediction
-and exits as it does (2 when an argument is missing).
+and exits as it does (2 when an argument is missing). It execs `python3 -I`, so no PYTHONPATH,
+`PYTHON*` variable or user site (a planted `sitecustomize.py`, a `json.py` shadowing the stdlib)
+reaches the coordinator-side run (W4-13 sweep).
 
 Flags: none — positional arguments only.
 

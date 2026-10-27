@@ -26,7 +26,9 @@ Record (format v2: one canonical JSON object per line, mode 0600)::
 
 * **Where.** ``<repository root>/.orca/egress.jsonl`` -- the root is the nearest directory at or
   above the working directory holding ``.git``, so a send from a subdirectory lands in the same
-  ledger; outside a repository the default refuses. ``--ledger``, ``$OPEN_FLEET_EGRESS_LEDGER``
+  ledger; outside a repository the default refuses, and so does a root nested in another
+  repository unless it is a linked worktree of it (whose own ledger is then named on stderr): a
+  planted or vendored ``.git`` never moves it silently. ``--ledger``, ``$OPEN_FLEET_EGRESS_LEDGER``
   or ``$ORCA_EGRESS_LEDGER`` name another file, and ``write`` then says so on stderr (as it does
   when the path resolves through a symlink): a receipt never lands elsewhere silently. Only the
   ledger's own directory is created, never a tree above it. And ``verify`` never passes on no
@@ -34,8 +36,9 @@ Record (format v2: one canonical JSON object per line, mode 0600)::
 * **Content-free.** Never the payload text: a sha256 of the exact bytes sent
   and a byte count, and a ``payload_class`` that describes the KIND of thing
   sent ("pr-body", "issue-comment"). ``payload_sha256`` is null when a
-  subprocess owns the bytes and the fleet never saw them. Text fields are printable ASCII, and
-  ``consent`` names a grant (letters, digits, `` ._:/#()@+,=-``).
+  subprocess owns the bytes and the fleet never saw them. Text fields are printable ASCII on
+  every line, legacy ones included, ``consent`` written now names a grant (letters, digits,
+  `` ._:/#()@+,=-``), and everything printed has its control characters escaped.
 * **Every byte bound.** ``id`` is the sha256 of the record's canonical serialisation without
   ``id`` (fixed key order, ``","``/``":"`` separators, ASCII escapes), and a line must BE the
   canonical serialisation of exactly these keys: an extra key, a re-spaced line, a string where
@@ -103,6 +106,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -131,6 +135,18 @@ O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
 
+def _inert(text):
+    """`text` with every control, format or separator character escaped (\\x1b, \\u2028): what
+    egress.py prints is never a terminal command, whatever a field, a path or a reason holds
+    (2026-10-27 re-attack, W5-04)."""
+    return "".join(c if c == " " or unicodedata.category(c)[0] not in "CZ"
+                   else (f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}") for c in str(text))
+
+
+def _print(*parts, **kwargs):
+    print(*(_inert(part) for part in parts), **kwargs)
+
+
 class EgressError(Exception):
     """Fail-closed condition: the receipt could not be written, or the ledger cannot be trusted."""
 
@@ -141,30 +157,60 @@ def sha256_hex(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def repo_root(start=None):
-    """The nearest directory at or above `start` (default: the working directory) holding a `.git`
-    entry -- a linked worktree's `.git` file included -- or None."""
+def _repositories(start=None):
+    """(root, outer): the nearest directory at or above `start` (default: the working directory)
+    holding a `.git` entry -- a linked worktree's `.git` file included -- and the nearest one above
+    THAT, or None for either."""
     here = Path(os.path.abspath(start or os.getcwd()))
-    for directory in (here, *here.parents):
-        if os.path.lexists(directory / ".git"):
-            return directory
-    return None
+    found = [d for d in (here, *here.parents) if os.path.lexists(d / ".git")]
+    return (found[0] if found else None), (found[1] if len(found) > 1 else None)
+
+
+def repo_root(start=None):
+    return _repositories(start)[0]
+
+
+def _linked_worktree_of(root, outer):
+    """True when `root` is a linked worktree of `outer` (`git worktree add`): its `.git` is a file
+    naming a directory under `outer`'s own `.git/worktrees/`."""
+    gitfile, admin = root / ".git", outer / ".git" / "worktrees"
+    if gitfile.is_symlink() or not gitfile.is_file() or outer.joinpath(".git").is_symlink():
+        return False
+    try:
+        with open(gitfile, "rb") as fh:
+            text = fh.read(4096).decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not text.startswith("gitdir:"):
+        return False
+    target = Path(text[len("gitdir:"):].strip())
+    target = target if target.is_absolute() else root / target
+    return os.path.realpath(target).startswith(os.path.realpath(admin) + os.sep)
 
 
 def resolve_ledger(explicit=None):
     """(absolute ledger path, where it came from). The default is the repository's own ledger,
-    never one relative to wherever the command happens to run (W5-03)."""
+    never one relative to wherever the command happens to run (W5-03), and never a ledger a
+    `.git` below the repository moved silently: a nested root that is not a linked worktree of
+    the repository around it (a submodule, a vendored repository, a planted `.git`) refuses."""
     if explicit:
         return Path(os.path.abspath(explicit)), "--ledger"
     for var in (PRIMARY_LEDGER_ENV, LEDGER_ENV):
         env = os.environ.get(var)
         if env:
             return Path(os.path.abspath(env)), f"${var}"
-    root = repo_root()
+    root, outer = _repositories()
     if root is None:
         raise EgressError(f"no repository at or above {os.getcwd()} (no .git): the default ledger is "
                           f"<repository root>/{DEFAULT_LEDGER}; run from inside the repository, or name the "
                           f"ledger with --ledger or ${PRIMARY_LEDGER_ENV}")
+    if outer is not None:
+        if not _linked_worktree_of(root, outer):
+            raise EgressError(f"the nearest repository root {root} is nested inside the repository {outer} (a "
+                              "submodule, a vendored repository or a planted .git): refusing to pick a ledger "
+                              f"silently; run from {outer}, or name the ledger with --ledger or "
+                              f"${PRIMARY_LEDGER_ENV}")
+        return root / DEFAULT_LEDGER, f"the default of linked worktree {root}, inside the repository {outer}"
     return root / DEFAULT_LEDGER, "the repository default"
 
 
@@ -178,6 +224,8 @@ def _routing_note(path, source):
     via_link = os.path.islink(path.parent)
     if source == "the repository default" and not via_link:
         return None
+    if source.startswith("the default of linked worktree") and not via_link:
+        return f"egress: receipt written to {path}: {source}, not to that repository's ledger"
     root = repo_root()
     default = root / DEFAULT_LEDGER if root else None
     if default is not None and default == path and not via_link:
@@ -235,7 +283,9 @@ def json_scalar(value):
     return "" if value is None else str(value)
 
 
-def require_field(value, name):
+def require_field(value, name, grant_shape=True):
+    """`value` if it is a receipt text field: non-empty printable ASCII on one line, and, for a
+    consent written now (`grant_shape`), a grant's name."""
     if not isinstance(value, str) or not value.strip():
         raise EgressError(f"receipt requires a non-empty {name}")
     if "\n" in value or "\r" in value:
@@ -244,7 +294,7 @@ def require_field(value, name):
         raise EgressError(f"receipt {name} exceeds {MAX_FIELD_BYTES} bytes")
     if not TEXT_PATTERN.fullmatch(value):
         raise EgressError(f"receipt {name} must be printable ASCII with no leading or trailing space: {value!r}")
-    if name == "consent" and not CONSENT_PATTERN.fullmatch(value):
+    if grant_shape and name == "consent" and not CONSENT_PATTERN.fullmatch(value):
         raise EgressError(f"receipt consent must name a grant (letters, digits and ` ._:/#()@+,=-`, starting "
                           f"with a letter or digit, e.g. grant:pr-open-on-base): {value!r}")
     return value
@@ -261,16 +311,14 @@ def _field_problem(record, version):
         valid_ts(record["ts"])
     except ValueError:
         return "ts is not an ISO-8601 instant with an offset"
+    # The text rule holds on every line, legacy ones included: a v1 consent carrying terminal
+    # escapes verified and `grants` printed them raw (2026-10-27 re-attack, W5-04). Only the
+    # grant shape is v2's, since the v1 writer took prose consents.
     for name in TEXT_FIELDS:
-        value = record[name]
-        if version == FORMAT_VERSION:
-            try:
-                require_field(value, name)
-            except EgressError as err:
-                return str(err)
-        elif not isinstance(value, str) or not value.strip() or \
-                len(value.encode("utf-8", "surrogatepass")) > MAX_FIELD_BYTES:
-            return f"{name} is not a non-empty string of at most {MAX_FIELD_BYTES} bytes"
+        try:
+            require_field(record[name], name, grant_shape=version == FORMAT_VERSION)
+        except EgressError as err:
+            return str(err)
     if type(record["bytes"]) is not int or record["bytes"] < 0:
         return "bytes is not a non-negative integer"
     if record["payload_sha256"] is not None and not _is_sha256(record["payload_sha256"]):
@@ -527,7 +575,7 @@ def cmd_write(args):
         try:
             payload_sha, size = hash_file(args.payload_file)
         except OSError as err:
-            print(f"egress: payload file unreadable: {err}", file=sys.stderr)
+            _print(f"egress: payload file unreadable: {err}", file=sys.stderr)
             return EXIT_USAGE
         if nbytes is None:
             nbytes = size
@@ -536,8 +584,8 @@ def cmd_write(args):
         nbytes=nbytes or 0, payload_sha256=payload_sha, ts=args.ts,
     )
     if note := _routing_note(path, source):
-        print(note, file=sys.stderr)
-    print(record["id"])
+        _print(note, file=sys.stderr)
+    _print(record["id"])
     return EXIT_OK
 
 
@@ -550,7 +598,7 @@ def _anchored_value(raw):
 
 
 def _tamper(path, broken, reason, count):
-    print(f"egress: TAMPER at {path}:{broken} — {reason} ({count} line(s) read)", file=sys.stderr)
+    _print(f"egress: TAMPER at {path}:{broken} — {reason} ({count} line(s) read)", file=sys.stderr)
     return EXIT_FAIL_CLOSED
 
 
@@ -575,7 +623,7 @@ def cmd_verify(args):
             if want and want not in known:
                 gone = ("there is no ledger file at all" if not exists
                         else "a rewritten or truncated ledger loses the anchored line")
-                print(f"egress: TAMPER at {path} — the anchored receipt {want} is not in this chain "
+                _print(f"egress: TAMPER at {path} — the anchored receipt {want} is not in this chain "
                       f"({gone}). Appends since the anchor are fine; this is what an anchor kept off "
                       "the writer catches (#312)", file=sys.stderr)
                 return EXIT_FAIL_CLOSED
@@ -584,7 +632,7 @@ def cmd_verify(args):
         want = _anchored_value(expected)
         last = {head, receipts[-1][2]["id"]} if receipts else {""}
         if want not in last:
-            print(f"egress: TAMPER at {path} — the chain is internally intact, but its head is "
+            _print(f"egress: TAMPER at {path} — the chain is internally intact, but its head is "
                   f"{shown}, not the anchored {want or '(empty)'}. A ledger rewritten from scratch "
                   "chains perfectly to its own new genesis, so recomputing the chain can never "
                   "catch that; only a head kept where the writer cannot reach it can (#312)",
@@ -595,17 +643,17 @@ def cmd_verify(args):
     # --allow-empty, or a sealed empty head (--expect-head "(empty)").
     sealed_empty = expected is not None and _anchored_value(expected) == ""
     if count == 0 and not sealed_empty and not getattr(args, "allow_empty", False):
-        print(f"egress: NO RECEIPTS in {where} — a close that expects receipts must find them here; if this "
+        _print(f"egress: NO RECEIPTS in {where} — a close that expects receipts must find them here; if this "
               "run sent nothing, say so with --allow-empty", file=sys.stderr)
         return EXIT_NO_RECEIPTS
     if expected is not None:
-        print(f"egress: chain intact and anchored, {count} receipt(s) in {where} — head {shown}")
+        _print(f"egress: chain intact and anchored, {count} receipt(s) in {where} — head {shown}")
         return EXIT_OK
     if ancestors is not None:
-        print(f"egress: chain intact, anchored receipt(s) present, {count} receipt(s) "
+        _print(f"egress: chain intact, anchored receipt(s) present, {count} receipt(s) "
               f"in {where} — head {shown}")
         return EXIT_OK
-    print(f"egress: chain intact, {count} receipt(s) in {where} — head {shown} "
+    _print(f"egress: chain intact, {count} receipt(s) in {where} — head {shown} "
           "(UNANCHORED: edits are caught, a rewrite is not — anchor this head and each id `write` "
           "printed off the writer, and pass them back as --expect-ancestor, or --expect-head for a "
           "sealed ledger)")
@@ -623,7 +671,7 @@ def cmd_head(args):
     _exists, receipts, broken, reason, total = load_ledger(path)
     if broken is not None:
         return _tamper(path, broken, reason, total)
-    print(sha256_hex(receipts[-1][1]) if receipts else "(empty)")
+    _print(sha256_hex(receipts[-1][1]) if receipts else "(empty)")
     return EXIT_OK
 
 
@@ -648,12 +696,12 @@ def cmd_grants(args):
         for g in sorted(grants.values(), key=lambda g: g["consent"])
     ]
     if args.json:
-        print(json.dumps(rows, indent=2))
+        print(json.dumps(rows, indent=2))  # JSON escapes every control and non-ASCII character itself
     else:
         if not rows:
-            print(f"egress: no consents recorded in {path}")
+            _print(f"egress: no consents recorded in {path}")
         for row in rows:
-            print(f"{row['consent']}  uses={row['uses']}  sinks={','.join(row['sinks'])}  "
+            _print(f"{row['consent']}  uses={row['uses']}  sinks={','.join(row['sinks'])}  "
                   f"hosts={','.join(row['hosts'])}")
     return EXIT_OK
 
@@ -720,7 +768,7 @@ def main(argv=None):
     try:
         return handlers[args.command](args)
     except EgressError as err:
-        print(f"egress: EGRESS_RECEIPT_FAILED: {err}", file=sys.stderr)
+        _print(f"egress: EGRESS_RECEIPT_FAILED: {err}", file=sys.stderr)
         return EXIT_FAIL_CLOSED
 
 

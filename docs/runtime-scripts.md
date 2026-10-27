@@ -581,7 +581,7 @@ Exits: n/a (library).
 
 Content-free, hash-chained receipts for everything the fleet sends off-repo. One canonical JSON
 object per line in `<repository root>/.orca/egress.jsonl` (mode 0600), appended BEFORE the send.
-Source `runtime/scripts/egress.py:1-97`; behavior pinned by `tests/test_egress.py`.
+Source `runtime/scripts/egress.py:1-100`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -598,7 +598,9 @@ print the head to anchor), `grants` (verify, then list the consents).
 
 Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LEDGER`, else
 `.orca/egress.jsonl` under the repository root — the nearest directory at or above the working
-directory holding `.git`; outside a repository the default refuses, exit 3). A ledger named by
+directory holding `.git`; outside a repository the default refuses, exit 3, and so does a root
+nested inside another repository — a submodule, a vendored repository or a planted `.git` — unless
+it is a linked worktree of it, whose own ledger `write` then names on stderr). A ledger named by
 flag or variable, or reached through a symlinked directory, is reported on `write`'s stderr, and
 `verify` prints the absolute path and where it came from. Only the ledger's own directory is
 ever created. `write` takes
@@ -632,7 +634,24 @@ TAMPER (exit 3), `--allow-empty` or not.
 Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
 v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
 receipts chain onto it, and a legacy line after a v2 one is refused. A legacy line the v1 writer
-could not have produced was never bound and now reads as TAMPER.
+could not have produced was never bound and now reads as TAMPER — so does one whose text fields
+are not printable ASCII (a legacy consent carrying terminal escapes, 2026-10-27 re-attack).
+
+Recovery from a broken ledger. One appended byte that `verify` refuses stops every receipted send —
+each `egress.py write … &&`, and `merge_queue.py`'s merges and branch deletions — until a human
+acts. That is the fail-closed design, not a fault to route around, and the procedure is:
+1. *Inspect.* `egress.py verify` names the first broken line and why; read it and every line
+   after it. Do not send meanwhile.
+2. *Preserve, never edit.* Move the ledger aside whole, keeping it 0600:
+   `mv .orca/egress.jsonl .orca/egress.jsonl.broken-<UTC timestamp>`. Never truncate, re-chain or
+   correct a line in place: a repaired ledger cannot be told from a forged one.
+3. *Record.* In the run's loop-log (or `docs/DECISIONS.md` for a standing ledger) write the moved
+   file's name and sha256, the head digest of its last good line, the broken line's number and
+   reason, the receipt ids the coordinator holds for it, who moved it and why. The close that
+   follows reads the old file with those ids as anchors (`--ledger <moved file>`) and counts the
+   rotation as a RED leg until that record is reviewed.
+4. *Resume.* The next `write` starts a new chain at genesis; until it does, the close verifies the
+   new ledger with `--allow-empty`, and the next close anchors from the new chain's head.
 
 Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing) · 4 `verify` found no receipts and none was allowed.
 

@@ -823,6 +823,79 @@ class TestGrantsAnswerOnlyForAVerifiedChain(EgressBase):
         self.assertEqual(self.run_egress("verify").returncode, 0)
 
 
+class TestNothingPrintedIsATerminalCommand(EgressBase):
+    """Re-attack of 82a2d00c (W5-04): v1-prefix lines were not held to the text rule, so a v1
+    consent `grant\\x1b]0;PWNED\\x07\\x1b[31mRED` verified and `grants` printed the raw escapes to
+    the terminal. Every line is held to it on read, and everything printed is made inert."""
+
+    def test_a_legacy_line_with_control_characters_is_tamper_and_never_printed(self):
+        base = {"ts": "2026-01-01T00:00:00Z", "sink": "pr-open", "host": "h\x1b[2J", "payload_class": "pr-body",
+                "bytes": 3, "payload_sha256": None, "consent": "grant\x1b]0;PWNED\x07\x1b[31mRED", "prev": ""}
+        self.ledger.parent.mkdir(parents=True)
+        self.ledger.write_text(_v1_line(base) + "\n", encoding="utf-8")
+        for args in (("verify",), ("grants",), ("head",)):
+            with self.subTest(args=args):
+                r = self.run_egress(*args)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertNotIn("\x1b", r.stdout + r.stderr)
+                self.assertNotIn("\x07", r.stdout + r.stderr)
+
+    def test_a_path_with_control_characters_is_printed_inert(self):
+        ledger = Path(self.tmp) / "led\x1b[2Jger.jsonl"
+        w = self.run_egress("write", "--sink", "s", "--host", "h", "--payload-class", "c", "--consent", "k",
+                            ledger=ledger)
+        self.assertEqual(w.returncode, 0, w.stderr)
+        v = self.run_egress("verify", ledger=ledger)
+        for r in (w, v):
+            self.assertNotIn("\x1b", r.stdout + r.stderr)
+            self.assertIn("\\x1b", r.stdout + r.stderr, "the path is not shown at all")
+
+
+class TestANestedRepositoryNeverMovesTheLedgerSilently(EgressBase):
+    """Re-attack of 82a2d00c (W5-03): the default ledger stopped at the FIRST `.git` above the
+    working directory, so a `.git` file planted (or a vendored repository / submodule) in a
+    subdirectory silently moved receipts into `<subdir>/.orca` while the close verified the root."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = Path(self.tmp) / "repo"
+        (self.repo / ".git").mkdir(parents=True)
+        self.env = {k: v for k, v in os.environ.items() if k not in (egress.PRIMARY_LEDGER_ENV, egress.LEDGER_ENV)}
+
+    def bare(self, *args, cwd):
+        return subprocess.run([sys.executable, str(EGRESS), *args], capture_output=True, text=True, cwd=cwd,
+                              env=self.env)
+
+    WRITE = ("write", "--sink", "pr-open", "--host", "github.com", "--payload-class", "pr-body", "--consent", "k")
+
+    def test_a_planted_or_vendored_git_below_the_repository_refuses(self):
+        for kind in ("file", "dir"):
+            with self.subTest(kind=kind):
+                nested = self.repo / f"vendor-{kind}" / "x"
+                nested.mkdir(parents=True)
+                if kind == "file":
+                    (nested / ".git").write_text("gitdir: /nonexistent\n", encoding="utf-8")
+                else:
+                    (nested / ".git").mkdir()
+                r = self.bare(*self.WRITE, cwd=nested)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertIn(str(self.repo), r.stderr)
+                self.assertFalse((nested / ".orca").exists())
+                self.assertFalse((self.repo / ".orca").exists())
+
+    def test_a_linked_worktree_inside_the_repository_uses_its_own_ledger_and_says_so(self):
+        admin = self.repo / ".git" / "worktrees" / "wt"
+        admin.mkdir(parents=True)
+        worktree = self.repo / "wt"
+        worktree.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+        r = self.bare(*self.WRITE, cwd=worktree)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((worktree / ".orca" / "egress.jsonl").is_file())
+        self.assertIn("linked worktree", r.stderr)
+        self.assertIn(str(self.repo), r.stderr)
+
+
 class TestDurability(EgressBase):
     """W5-06: the receipt was flushed, never fsynced, so the send could leave the machine while
     the receipt sat in the page cache."""

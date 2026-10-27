@@ -3025,7 +3025,7 @@ def check_retention_receipt(m, pubkey_ref=None):
 
     The binding is CLAIMED by the manifest (`provenance.retention_receipt`, the schema id) or by the
     coordinator handing over trust material (--retention-pubkey: a path or path@ref, normally the
-    coordinator's .orca/dispatch-pubkey read at a ref the worker cannot move). Neither: [] — legacy
+    coordinator's .orca/dispatch-pubkey at refs/remotes/origin/main in its OWN clone). Neither: [] — legacy
     provenance keeps its documented presence-only check, and a run that never uploaded owes no
     receipt. A manifest claim with no key supplied fails closed: a key inside a receipt never
     establishes trust, so without the supplied one there is nothing to verify it against.
@@ -3701,8 +3701,8 @@ def main(argv=None):
                          "its artifacts[] sha256 pin, read from the evidence root")
     ap.add_argument("--retention-pubkey", default=None, metavar="PATH[@REF]",
                     help="the COORDINATOR's trust key for the provenance retention receipt (#608): "
-                         "a path or path@ref, normally .orca/dispatch-pubkey at a ref the worker "
-                         "cannot move (on a --provenance lane only path@<commit id> or a ref whose "
+                         "a path or path@ref, normally .orca/dispatch-pubkey@refs/remotes/origin/main "
+                         "in the coordinator's own clone (on a sound lane only path@<commit id> or a ref whose "
                          "final target is remote-tracking, read at one commit, W3-03). Supplied, provenance.retention must name a v1 receipt that "
                          "verifies OFFLINE under THIS key and binds its signed inventory and this "
                          "manifest — a key inside the receipt is never trusted. Absent, a manifest "

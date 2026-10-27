@@ -1007,8 +1007,9 @@ Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `sho
 
 Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path, for
 tests and scratch); `--pin-ref REF` (read the human grant key at that git ref through
-`decisions.py --pin-ref`; pass one the checked change cannot move — a remote-tracking ref or a
-commit id). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
+`decisions.py --pin-ref`; pass a commit id or a full `refs/remotes/…` name, and only in a clone
+the checked change cannot write refs in — the coordinator's own fetch or a CI checkout; in a
+worker's own clone any ref, `refs/remotes/*` included, is the worker's to move). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
 `--resolved`, `--resolved-file`, `--force-init-over-md`; `add` takes `--id`, `--title`,
 `--question`, `--question-file`, `--asked`, `--related`, `--blocking`; `answer` takes a
 gate id plus `--answer`, `--source human:<name>` (who answered; required), `--date`; `waive`

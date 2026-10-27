@@ -543,9 +543,10 @@ def build_parser():
                         help="explicit batch JSON path (tests, scratch)")
     parser.add_argument("--pin-ref", default=None, metavar="REF",
                         help="read the human grant key (.orca/human-grant-pubkey) at this git "
-                             "ref through decisions.py --pin-ref — pass one the checked change "
-                             "cannot move (a remote-tracking ref or a commit id); required on a "
-                             "sound lane (ORCA_PROVENANCE set) — W3-06")
+                             "ref through decisions.py --pin-ref — a commit id or a full "
+                             "refs/remotes/… name, trustworthy only in a clone the checked change "
+                             "cannot write refs in (the coordinator's fetch, a CI checkout); "
+                             "required on a sound lane (ORCA_PROVENANCE set) — W3-06")
     # The same flags after the subcommand (SUPPRESS keeps main-parser
     # values unless re-given): `list --run x` and `--run x list` both work.
     store = argparse.ArgumentParser(add_help=False)

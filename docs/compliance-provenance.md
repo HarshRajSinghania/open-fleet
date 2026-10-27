@@ -61,7 +61,13 @@ disk. It makes no network call: it records identifiers the upload already return
 **When the binding is claimed.** The manifest claims it with
 `"retention_receipt": "open-fleet/retention-receipt/v1"` in `provenance`, or the coordinator
 claims it by passing `verify.py --retention-pubkey <key>` — normally
-`.orca/dispatch-pubkey@origin/main`, a ref the worker cannot move. A run's graded manifest is
+`.orca/dispatch-pubkey@refs/remotes/origin/main`, the FULL remote-tracking name (a short
+`origin/main` is a local name a tag or branch can shadow, and a lane claiming soundness refuses
+it), followed through any symbolic ref and read at the one commit it resolves to. That ref is
+trustworthy only where the worker cannot write refs — the coordinator's own fetch or a CI
+checkout; in a worker's own clone `git update-ref refs/remotes/…` succeeds, so there the check is
+advisory ([the verify gate](verify-gate.md#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135)).
+A run's graded manifest is
 final before its inventory is signed and before the receipt exists, so the usual path is the
 second one: the manifest names the receipt's path, and the post-close audit re-run supplies the
 key.

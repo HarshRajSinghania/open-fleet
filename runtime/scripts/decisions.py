@@ -85,7 +85,7 @@ How to wire
     ``check`` over the file: a line that trips the one-way net without the class
     and the human source fails the run, which is the machine form of "one-way is
     never auto-resolved". Over a tree a worker could have written, it runs
-    ``decisions.py --pin-ref origin/<default> check`` so the grant key comes from the
+    ``decisions.py --pin-ref refs/remotes/origin/<default> check`` so the key comes from the
     trusted ref, not from a pin the change swapped in.
 
     Example: ``decisions.py append --id lens-tally:security --class mechanical

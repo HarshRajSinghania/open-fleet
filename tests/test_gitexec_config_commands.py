@@ -776,6 +776,16 @@ class WtreeTrustsNoSameUidConfigOrEnvironment(unittest.TestCase):
                 self.assertEqual(p.fired(), set())
         self.assertFalse(decoy_index.exists(), "wtree.sh seeded or wrote an inherited index")
 
+    def test_an_inherited_git_config_cannot_hide_a_repo_driver_from_the_listing(self):
+        # GIT_CONFIG names the one file `git config --list` reads: inherited, it emptied the
+        # driver listing while `add -A` still loaded the repo config and ran its filter.
+        p = self._repo()
+        p.arm_filter()
+        (p.repo / "tampered.txt").write_text("changed\n", encoding="utf-8")
+        r = self._wtree(p, GIT_CONFIG=os.devnull)
+        self.assertEqual(p.fired(), set(), "a repo filter ran behind an inherited GIT_CONFIG")
+        self.assertEqual(r.returncode, 3, r.stderr)
+
     def test_git_is_resolved_once_to_an_absolute_path(self):
         # gitexec.py's rule: every call runs the one absolute git found at startup.
         code = "\n".join(ln.split(" #", 1)[0] for ln in (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")

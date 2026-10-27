@@ -516,7 +516,7 @@ def gate2(ctx):
 
 def check_negative_control_demo(ctx):
     name = "gate3/negative-control-demo"
-    script = "demo/negative-control/run.sh"
+    script = "evals/demo/negative-control/run.sh"
     if not (ctx.repo / script).is_file():
         return (name, FAIL, f"{script} missing")
     sh = shutil.which("sh") or ("/bin/sh" if os.path.exists("/bin/sh") else None)

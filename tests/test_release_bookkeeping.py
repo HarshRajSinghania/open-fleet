@@ -102,7 +102,7 @@ class TheTestsBadgeBetweenReleases(unittest.TestCase):
         (self.badges / "missions.json").write_text("{}", encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.gb.write(include_tests=False)
-        self.assertIn("kept assets/badges/tests.json", out.getvalue())
+        self.assertIn("kept docs/assets/badges/tests.json", out.getvalue())
         self.assertEqual(json.loads((self.badges / "tests.json").read_text())["message"],
                          "12 in source")
         self.assertEqual(json.loads((self.badges / "missions.json").read_text()),
@@ -125,7 +125,7 @@ class TheTestsBadgeBetweenReleases(unittest.TestCase):
 
     def test_the_readme_badge_says_whose_count_it_is(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        badge = [ln for ln in readme.splitlines() if "assets/badges/tests.json" in ln]
+        badge = [ln for ln in readme.splitlines() if "docs/assets/badges/tests.json" in ln]
         self.assertEqual(len(badge), 1, badge)
         self.assertIn("label=test%20functions%20at%20last%20release", badge[0])
         self.assertIn('alt="contract test functions at the last release"', badge[0])
@@ -318,8 +318,7 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
         self.git("init", "-q")
         self.git("config", "user.email", "t@example.invalid")
         self.git("config", "user.name", "t")
-        (self.root / "assets" / "badges").mkdir(parents=True)
-        (self.root / "docs").mkdir()
+        (self.root / "docs" / "assets" / "badges").mkdir(parents=True)
         self.badge(3270)
         self.git("add", "-A")
         self.git("commit", "-qm", "the cut")
@@ -329,8 +328,8 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
     def badge(self, count):
         data = {"schemaVersion": 1, "label": "test functions", "message": f"{count} in source",
                 "color": "6e7781"}
-        (self.root / "assets" / "badges" / "tests.json").write_text(json.dumps(data, indent=2) + "\n",
-                                                                    encoding="utf-8")
+        (self.root / "docs" / "assets" / "badges" / "tests.json").write_text(
+            json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     def releases(self, preparing, commit=None):
         data = {"preparing": preparing, "releases": [
@@ -357,12 +356,29 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
         errors = self.gb.last_release_badge_errors(self.root)
         self.assertTrue(errors and "cannot read" in errors[0], errors)
 
+    def test_a_release_cut_before_the_move_is_read_at_the_old_path(self):
+        # The root clean-up moved assets/ to docs/assets/; v1.0.0 and earlier hold the badge at
+        # assets/badges/. The check must read the cut's own bytes there, and still refuse a change.
+        new = self.root / "docs" / "assets" / "badges" / "tests.json"
+        (self.root / "assets" / "badges").mkdir(parents=True)
+        self.git("mv", str(new), str(self.root / "assets" / "badges" / "tests.json"))
+        self.git("commit", "-qm", "a cut from before the move")
+        old_cut = self.git("rev-parse", "HEAD").strip()
+        self.git("mv", str(self.root / "assets" / "badges" / "tests.json"), str(new))
+        self.git("commit", "-qm", "the move")
+        self.releases(preparing=None, commit=old_cut)
+        self.assertEqual(self.gb.last_release_badge_errors(self.root), [])
+        self.badge(4714)
+        errors = self.gb.last_release_badge_errors(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(f"git show {old_cut}:assets/badges/tests.json > docs/assets/badges/tests.json", errors[0])
+
     def test_the_committed_badge_is_the_last_releases(self):
         self.assertEqual(self.gb.last_release_badge_errors(ROOT), [])
 
     def test_only_the_releases_own_bytes_pass(self):
         # Greptile (PR #671): a reformatted or reordered badge parsed equal and passed.
-        path = self.root / "assets" / "badges" / "tests.json"
+        path = self.root / "docs" / "assets" / "badges" / "tests.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         for label, text in {"reformatted": json.dumps(data) + "\n",
                             "reordered": json.dumps(dict(reversed(list(data.items()))), indent=2) + "\n",

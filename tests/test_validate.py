@@ -759,7 +759,7 @@ class TestCountAgnosticGuards(unittest.TestCase):
         # "one mission" / "two missions" in the identity discussion are NOT catalog counts.
         for s in ("are one mission (clean-sweep)", "two workflows are the same mission",
                   "each mission is one outcome", "the missions genuinely differ",
-                  "assets/badges/missions.json"):
+                  "docs/assets/badges/missions.json"):
             self.assertIsNone(validate.COUNT_LINT_RE.search(s), s)
 
     def test_check_doc_counts_flags_hardcoded_count(self):
@@ -865,7 +865,7 @@ class TestCountAgnosticGuards(unittest.TestCase):
     def test_gen_badges_rejects_unknown_arguments_without_writing(self):
         # #353: `if "--check" in sys.argv[1:]` treated a typo'd --chek as "write" — CI would
         # have mutated the committed badges instead of checking them.
-        badge = ROOT / "assets" / "badges" / "tests.json"
+        badge = ROOT / "docs" / "assets" / "badges" / "tests.json"
         before = badge.read_bytes()
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "gen-badges.py"), "--chek"],
                            capture_output=True, text=True)

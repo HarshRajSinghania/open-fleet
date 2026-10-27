@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#163: demo/negative-control/run.sh must compute its contract digest portably — sha256sum
+"""#163: evals/demo/negative-control/run.sh must compute its contract digest portably — sha256sum
 (GNU) or `shasum -a 256` (macOS), whichever exists. Each test runs the demo end-to-end under a
 hermetic PATH exposing exactly ONE spelling (a python shim computing the real digest), so both
 halves of the fallback are exercised on any host.
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUN_SH = ROOT / "demo" / "negative-control" / "run.sh"
+RUN_SH = ROOT / "evals" / "demo" / "negative-control" / "run.sh"
 
 # Accepts both spellings' argv shapes (`sha256sum FILE`, `shasum -a 256 FILE`); prints the
 # digest first, which is all run.sh's awk reads.
@@ -69,13 +69,13 @@ class NegativeControlIntegrityInventory(unittest.TestCase):
     committed bytes and require the table to say the same thing."""
 
     def test_head_to_head_hash_matches_the_committed_transcript(self):
-        d = ROOT / "demo" / "negative-control"
+        d = ROOT / "evals" / "demo" / "negative-control"
         digest = hashlib.sha256((d / "head-to-head.txt").read_bytes()).hexdigest()
         readme = (d / "README.md").read_text(encoding="utf-8")
         row = re.search(r"\|\s*`head-to-head\.txt`\s*\|\s*`([0-9a-f]{64})`\s*\|", readme)
         self.assertIsNotNone(row, "the integrity inventory row for head-to-head.txt is missing")
         self.assertEqual(row.group(1), digest,
-                         "integrity inventory is STALE — re-run demo/negative-control/run.sh, "
+                         "integrity inventory is STALE — re-run evals/demo/negative-control/run.sh, "
                          "commit the transcript, and re-stamp the sha256 in README.md")
 
     def test_the_committed_transcript_matches_a_fresh_run_modulo_timestamp(self):
@@ -84,7 +84,7 @@ class NegativeControlIntegrityInventory(unittest.TestCase):
         # timestamp moved.
         fresh = subprocess.run(["/bin/sh", str(RUN_SH)], capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(fresh.returncode, 0, fresh.stderr)
-        committed = (ROOT / "demo" / "negative-control" / "head-to-head.txt").read_text(
+        committed = (ROOT / "evals" / "demo" / "negative-control" / "head-to-head.txt").read_text(
             encoding="utf-8")
         # h409 R1/R2: authority custody is a host probe, so a fresh run on a host whose
         # git/gh/gitleaks sit in a user-writable dir emits advisory custody NOTEs the committed

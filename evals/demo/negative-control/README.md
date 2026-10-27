@@ -5,7 +5,7 @@ solution, a self-scoring completion gate returns **GREEN** while open-fleet's in
 returns **RED**. Run it yourself:
 
 ```sh
-sh demo/negative-control/run.sh
+sh evals/demo/negative-control/run.sh
 ```
 
 ## The trap (scope-shrink)
@@ -16,7 +16,7 @@ worker quietly **reported only `AC-1`** in its manifest. This is one of round-2'
 | Gate | What it does | Verdict on the trap |
 |---|---|---|
 | [`selfscore.py`](selfscore.py) — a faithful **self-scoring** stand-in | grades the worker's OWN self-reported criteria (no frozen denominator, no independent session, no negative control) | **GREEN** (exit 0) — it never sees the dropped `AC-2` |
-| [`verify.py`](../../runtime/scripts/verify.py) — open-fleet's **independent** verifier | re-derives the criterion set from the frozen source (`frozen-spec.md`) and checks the reported `criteria` cover it | **RED** (exit 2) — `scope: authoritative criteria not addressed in criteria[] … ['AC-2']` (the transcript also records the #310 empty-range refusal, which fires on the same manifest) |
+| [`verify.py`](../../../runtime/scripts/verify.py) — open-fleet's **independent** verifier | re-derives the criterion set from the frozen source (`frozen-spec.md`) and checks the reported `criteria` cover it | **RED** (exit 2) — `scope: authoritative criteria not addressed in criteria[] … ['AC-2']` (the transcript also records the #310 empty-range refusal, which fires on the same manifest) |
 
 Recorded run: [`head-to-head.txt`](head-to-head.txt). The delta is not the gate *mechanism* (anyone
 can ship a gate) — it is the **frozen denominator + independent re-derivation**, which a self-scorer

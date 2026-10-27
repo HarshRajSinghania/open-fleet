@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/absorb-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/absorb-it-light.jpg">
-    <img src="../../assets/diagrams/missions/absorb-it-light.jpg" alt="Mission contract for absorb-it: you give it an inbound pull-request queue; it interrupts you for closing a contribution without landing it, in a batch; design disagreements; you get back ABSORBED or ABSORBED-WITH-PARKED, plus landed commits with the contributor's authorship; RED-on-base, GREEN-on-head receipts; closing comments with credit; it stops at authorship is never rewritten — one follow-up, no nagging; phases ENUMERATE, CLASSIFY, ABSORB, RECEIPT, REVIEW, LAND, CLOSE" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/absorb-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/absorb-it-light.jpg">
+    <img src="../assets/diagrams/missions/absorb-it-light.jpg" alt="Mission contract for absorb-it: you give it an inbound pull-request queue; it interrupts you for closing a contribution without landing it, in a batch; design disagreements; you get back ABSORBED or ABSORBED-WITH-PARKED, plus landed commits with the contributor's authorship; RED-on-base, GREEN-on-head receipts; closing comments with credit; it stops at authorship is never rewritten — one follow-up, no nagging; phases ENUMERATE, CLASSIFY, ABSORB, RECEIPT, REVIEW, LAND, CLOSE" width="820">
   </picture>
 </p>
 

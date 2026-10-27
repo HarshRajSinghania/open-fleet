@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The suite never rewrites the live tree through scripts/gen-badges.py (2026-10-23 review, P2-24).
 
-gen-badges' write() ends by refreshing four generated surfaces: assets/badges/, the mission
+gen-badges' write() ends by refreshing four generated surfaces: docs/assets/badges/, the mission
 guides' Activation load callouts, ARCHITECTURE.md's table and README.md's proof sentence. Tests
 that patched some of those paths and not the rest rewrote the others in the checkout whenever
 they were stale — a no-op on a clean tree, so CI never showed it, and a silent edit to tracked
@@ -45,7 +45,7 @@ def load(path, name):
 def live_generated():
     return [ROOT / "README.md", ROOT / "ARCHITECTURE.md",
             *sorted((ROOT / "docs" / "missions").glob("*.md")),
-            *sorted((ROOT / "assets" / "badges").glob("*.json"))]
+            *sorted((ROOT / "docs" / "assets" / "badges").glob("*.json"))]
 
 
 def digest(paths):

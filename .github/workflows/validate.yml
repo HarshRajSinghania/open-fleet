@@ -253,7 +253,7 @@ jobs:
           echo "negative control: a planted credential in the waived file is still caught"
       - name: Ruff (syntax / undefined names)
         # Installed from the hashed lock above (#301), not re-resolved here.
-        run: ruff check scripts runtime/scripts tests bench demo
+        run: ruff check scripts runtime/scripts tests bench evals/demo
       - name: Publish the gate summary (proof rollup + routing score)
         # Observability only (#213): the numbers land in the run summary even
         # when a gate is red. The routing GATE is the step above; this one

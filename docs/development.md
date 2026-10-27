@@ -147,7 +147,7 @@ check guide parity. Verify section anchors and command examples as well.
 [`scripts/gen-badges.py`](../scripts/gen-badges.py) writes the badge JSON, mission-guide
 activation-load callouts, the architecture load table and the README proof summary. If their
 source changes, run `python3 scripts/gen-badges.py` and inspect the resulting diff. Keep the
-`BEGIN GENERATED` / `END GENERATED` markers. It leaves `assets/badges/tests.json` alone: that
+`BEGIN GENERATED` / `END GENERATED` markers. It leaves `docs/assets/badges/tests.json` alone: that
 count belongs to the release cut (`--release`), so a PR adding tests never edits it.
 
 Beside the tests badge, two more generated surfaces are written only by the release cut, from
@@ -159,7 +159,7 @@ files each PR adds on its own: `CHANGELOG.md`'s dated section from `changelog.d/
 
 [`scripts/bundle.py`](../scripts/bundle.py) writes `dist/`, which is ignored by Git. Use its
 `--check` mode for validation. Diagram assets have a separate
-[generator guide](../assets/diagrams/generator/README.md); a prose correction does not require
+[generator guide](assets/diagrams/generator/README.md); a prose correction does not require
 regenerating every image.
 
 If you add a test module, add its measured weight as its own file,

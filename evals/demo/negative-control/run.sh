@@ -9,11 +9,11 @@
 # which shipping tools were measured against it, and which take no unit manifest at all.
 set -u
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+ROOT=$(CDPATH= cd -- "$HERE/../../.." && pwd)
 M="$HERE/gamed-manifest.json"
 # The AUTHORITATIVE frozen contract is supplied by the coordinator (here: this script), NOT read
 # from the worker's manifest — that is what makes the denominator un-swappable.
-SRC="demo/negative-control/frozen-spec.md"
+SRC="evals/demo/negative-control/frozen-spec.md"
 # sha256sum is the GNU spelling, `shasum -a 256` the macOS one — take whichever exists (#163).
 if command -v sha256sum >/dev/null 2>&1; then
   sha256() { sha256sum "$@"; }

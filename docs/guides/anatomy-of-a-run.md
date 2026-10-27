@@ -9,9 +9,9 @@ which.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/run-timeline.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/run-timeline-light.jpg">
-    <img src="../../assets/diagrams/run-timeline-light.jpg" alt="Timeline of the chimely run: triage, a four-builder wave with a respawn incident, overlapping review rounds, the discovery of a parallel contributor's PRs, the pivot to assists and alternative PRs, and the closing state" width="860">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/run-timeline.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/run-timeline-light.jpg">
+    <img src="../assets/diagrams/run-timeline-light.jpg" alt="Timeline of the chimely run: triage, a four-builder wave with a respawn incident, overlapping review rounds, the discovery of a parallel contributor's PRs, the pivot to assists and alternative PRs, and the closing state" width="860">
   </picture>
 </p>
 

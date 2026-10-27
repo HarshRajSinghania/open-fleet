@@ -1,7 +1,7 @@
 const sharp = require('sharp');
 const path = require('path');
 
-const REPO = path.resolve(__dirname, '../../..');
+const REPO = path.resolve(__dirname, '../../../..');
 
 function escapeXml(str) {
   return String(str)
@@ -447,11 +447,11 @@ async function main() {
   for (const s of specs) {
     await sharp(Buffer.from(s.fn('dark')))
       .jpeg({ quality: 95, mozjpeg: true, chromaSubsampling: '4:4:4' })
-      .toFile(path.join(REPO, `assets/diagrams/${s.name}.jpg`));
+      .toFile(path.join(REPO, `docs/assets/diagrams/${s.name}.jpg`));
 
     await sharp(Buffer.from(s.fn('light')))
       .jpeg({ quality: 95, mozjpeg: true, chromaSubsampling: '4:4:4' })
-      .toFile(path.join(REPO, `assets/diagrams/${s.name}-light.jpg`));
+      .toFile(path.join(REPO, `docs/assets/diagrams/${s.name}-light.jpg`));
   }
 
   console.log('Rendered 8 architecture diagram files successfully.');

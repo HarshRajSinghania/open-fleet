@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/offload-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/offload-it-light.jpg">
-    <img src="../../assets/diagrams/missions/offload-it-light.jpg" alt="Mission contract for offload-it: you give it a repo, plus provider and agent accounts; it interrupts you for each paid checkpoint; the interactive agent login; merging the promotion PR — a one-way door; you get back OFFLOADED or OFFLOADED-WITH-PARKED, plus a recipe PR landed on BASE; a clear doctor transcript; an enacted provision transcript; an open promotion PR; it stops at money and login stay human — no paid step without an explicit OK; phases INSPECT, INTERVIEW, SCAFFOLD, SNAPSHOT, WIRE, DOCTOR, PROVISION, REVIEW, LAND, PROMOTE" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/offload-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/offload-it-light.jpg">
+    <img src="../assets/diagrams/missions/offload-it-light.jpg" alt="Mission contract for offload-it: you give it a repo, plus provider and agent accounts; it interrupts you for each paid checkpoint; the interactive agent login; merging the promotion PR — a one-way door; you get back OFFLOADED or OFFLOADED-WITH-PARKED, plus a recipe PR landed on BASE; a clear doctor transcript; an enacted provision transcript; an open promotion PR; it stops at money and login stay human — no paid step without an explicit OK; phases INSPECT, INTERVIEW, SCAFFOLD, SNAPSHOT, WIRE, DOCTOR, PROVISION, REVIEW, LAND, PROMOTE" width="820">
   </picture>
 </p>
 

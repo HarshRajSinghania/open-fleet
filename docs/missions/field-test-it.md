@@ -14,9 +14,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/field-test-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/field-test-it-light.jpg">
-    <img src="../../assets/diagrams/missions/field-test-it-light.jpg" alt="Mission contract for field-test-it: you give it the app, and a target on the tier ladder: device, emulator, browser, desktop or clean env; it interrupts you for device pairing, permission grants, store and account surfaces; you get back FIELD-PROVEN or FIELD-PROVEN-WITH-PARKED, plus repro recordings; on-device re-verify at the head SHA; a revert-to-red control; before and after baselines; it stops at a green desktop run is never device evidence; phases PAIR, BASELINE, REPRODUCE, FIX, RE-VERIFY, SNAPSHOT" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/field-test-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/field-test-it-light.jpg">
+    <img src="../assets/diagrams/missions/field-test-it-light.jpg" alt="Mission contract for field-test-it: you give it the app, and a target on the tier ladder: device, emulator, browser, desktop or clean env; it interrupts you for device pairing, permission grants, store and account surfaces; you get back FIELD-PROVEN or FIELD-PROVEN-WITH-PARKED, plus repro recordings; on-device re-verify at the head SHA; a revert-to-red control; before and after baselines; it stops at a green desktop run is never device evidence; phases PAIR, BASELINE, REPRODUCE, FIX, RE-VERIFY, SNAPSHOT" width="820">
   </picture>
 </p>
 

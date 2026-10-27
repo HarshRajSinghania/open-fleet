@@ -113,9 +113,9 @@ Every mission in `open-fleet` is therefore defined by:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/fleet-topology.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/fleet-topology-light.jpg">
-    <img src="../assets/diagrams/fleet-topology-light.jpg" alt="Fleet topology: a human answers one-way gates; the coordinator holds the ledger and verifier; builder, reviewer, and conductor workers receive dispatches and return evidence" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/fleet-topology.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/fleet-topology-light.jpg">
+    <img src="assets/diagrams/fleet-topology-light.jpg" alt="Fleet topology: a human answers one-way gates; the coordinator holds the ledger and verifier; builder, reviewer, and conductor workers receive dispatches and return evidence" width="820">
   </picture>
 </p>
 
@@ -131,9 +131,9 @@ Every mission separates coordination from execution:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
-    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/runtime-providers.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/runtime-providers-light.jpg">
+    <img src="assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
   </picture>
 </p>
 
@@ -213,9 +213,9 @@ Why grade manifests instead of terminal transcripts?
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/evidence-protocol.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/evidence-protocol-light.jpg">
-    <img src="../assets/diagrams/evidence-protocol-light.jpg" alt="Evidence protocol: a worker's claim travels as a manifest to a fresh-session verifier, which checks git, tests, and the deploy target before marking the unit verified — or re-dispatches it" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/evidence-protocol.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/evidence-protocol-light.jpg">
+    <img src="assets/diagrams/evidence-protocol-light.jpg" alt="Evidence protocol: a worker's claim travels as a manifest to a fresh-session verifier, which checks git, tests, and the deploy target before marking the unit verified — or re-dispatches it" width="820">
   </picture>
 </p>
 
@@ -233,9 +233,9 @@ An independent session (`runtime/scripts/verify.py` plus coordinator clean-env e
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/negative-control.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/negative-control-light.jpg">
-    <img src="../assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/negative-control.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/negative-control-light.jpg">
+    <img src="assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="820">
   </picture>
 </p>
 
@@ -247,9 +247,9 @@ A unit that fails any required check is not done — it returns to its state mac
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/decision-gates.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/decision-gates-light.jpg">
-    <img src="../assets/diagrams/decision-gates-light.jpg" alt="Three decision lanes: mechanical flows straight through automatically, taste batches cards and continues, one-way stops at a vault door only a human can open" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/decision-gates.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/decision-gates-light.jpg">
+    <img src="assets/diagrams/decision-gates-light.jpg" alt="Three decision lanes: mechanical flows straight through automatically, taste batches cards and continues, one-way stops at a vault door only a human can open" width="820">
   </picture>
 </p>
 
@@ -267,9 +267,9 @@ When the fleet's analysis disagrees with your stated direction (**user-challenge
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/merge-train.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/merge-train-light.jpg">
-    <img src="../assets/diagrams/merge-train-light.jpg" alt="A train of PR cars on a single track entering the BASE station; the conductor inspects the lead car; one stale car is diverted to a dashed re-review side track" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/merge-train.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/merge-train-light.jpg">
+    <img src="assets/diagrams/merge-train-light.jpg" alt="A train of PR cars on a single track entering the BASE station; the conductor inspects the lead car; one stale car is diverted to a dashed re-review side track" width="820">
   </picture>
 </p>
 
@@ -286,9 +286,9 @@ Parallel builders opening pull requests against `BASE` can cause merge races and
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/attention-budget.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/attention-budget-light.jpg">
-    <img src="../assets/diagrams/attention-budget-light.jpg" alt="Many worker terminals funnel toward a narrow neck where one human reviews; only three lanes pass the WIP gate while the rest queue; a single calm outflow is labeled merged" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/attention-budget.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/attention-budget-light.jpg">
+    <img src="assets/diagrams/attention-budget-light.jpg" alt="Many worker terminals funnel toward a narrow neck where one human reviews; only three lanes pass the WIP gate while the rest queue; a single calm outflow is labeled merged" width="820">
   </picture>
 </p>
 
@@ -303,9 +303,9 @@ Spawning workers is cheap; reviewing and verifying their output is the bottlenec
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/reviewed-sha-freshness.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/reviewed-sha-freshness-light.jpg">
-    <img src="../assets/diagrams/reviewed-sha-freshness-light.jpg" alt="A commit carries a glowing reviewed seal; the branch advances one commit and the seal over the new head turns dashed red and void; a loop arrow returns for a fresh review" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/reviewed-sha-freshness.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/reviewed-sha-freshness-light.jpg">
+    <img src="assets/diagrams/reviewed-sha-freshness-light.jpg" alt="A commit carries a glowing reviewed seal; the branch advances one commit and the seal over the new head turns dashed red and void; a loop arrow returns for a fresh review" width="820">
   </picture>
 </p>
 
@@ -317,9 +317,9 @@ The most common way unreviewed code slips into an automated branch is a commit l
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/liveness-resume.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/liveness-resume-light.jpg">
-    <img src="../assets/diagrams/liveness-resume-light.jpg" alt="A heartbeat line flatlines at a red X over a crashed terminal; below, the ledger document seeds a fresh coordinator terminal that reconnects to its workers" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/liveness-resume.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/liveness-resume-light.jpg">
+    <img src="assets/diagrams/liveness-resume-light.jpg" alt="A heartbeat line flatlines at a red X over a crashed terminal; below, the ledger document seeds a fresh coordinator terminal that reconnects to its workers" width="820">
   </picture>
 </p>
 
@@ -335,9 +335,9 @@ Long-running fleets must survive hung processes, closed terminals, and laptop sl
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/sandbox-profiles.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/sandbox-profiles-light.jpg">
-    <img src="../assets/diagrams/sandbox-profiles-light.jpg" alt="Three containment vessels: an open glass dome labeled ro, a workbench box labeled rw, and a sealed chamber labeled danger on a detached disposable platform, pushing a git branch to safety before teardown" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/sandbox-profiles.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/sandbox-profiles-light.jpg">
+    <img src="assets/diagrams/sandbox-profiles-light.jpg" alt="Three containment vessels: an open glass dome labeled ro, a workbench box labeled rw, and a sealed chamber labeled danger on a detached disposable platform, pushing a git branch to safety before teardown" width="820">
   </picture>
 </p>
 
@@ -357,9 +357,9 @@ Workers are dispatched with the minimum privilege required ([`runtime/sandbox-po
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/threat-boundaries.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/threat-boundaries-light.jpg">
-    <img src="../assets/diagrams/threat-boundaries-light.jpg" alt="The four security boundaries from threat-model.md — sandbox with isolated worktree, ro/rw/danger profiles, PreToolUse deny-hook and v1.4.229 OS process/memory ceiling; network with hash-chained egress.py receipts; supply chain with runtime/pins.json, pin_review.py rug-pull audit, one pack per worker and guard_text.py trust envelope; identity and access with ed25519 dispatch-sign.py contract digest, human-only one-way gates and an independent SHA-bound verifier — beside the five-rung response ladder from steer, reduce and stop to revoke and fail-closed quarantine" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/threat-boundaries.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/threat-boundaries-light.jpg">
+    <img src="assets/diagrams/threat-boundaries-light.jpg" alt="The four security boundaries from threat-model.md — sandbox with isolated worktree, ro/rw/danger profiles, PreToolUse deny-hook and v1.4.229 OS process/memory ceiling; network with hash-chained egress.py receipts; supply chain with runtime/pins.json, pin_review.py rug-pull audit, one pack per worker and guard_text.py trust envelope; identity and access with ed25519 dispatch-sign.py contract digest, human-only one-way gates and an independent SHA-bound verifier — beside the five-rung response ladder from steer, reduce and stop to revoke and fail-closed quarantine" width="820">
   </picture>
 </p>
 
@@ -379,9 +379,9 @@ When a boundary violation occurs, the coordinator steps through the **five-rung 
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/tracker-enumeration.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/tracker-enumeration-light.jpg">
-    <img src="../assets/diagrams/tracker-enumeration-light.jpg" alt="Four-stage pipeline for hosted trackers: GitHub Issues/PRs, Linear via orca linear, and Jira via orca jira at v1.4.229 enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus orca reference add/find backed by a verified merge SHA" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/tracker-enumeration.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/tracker-enumeration-light.jpg">
+    <img src="assets/diagrams/tracker-enumeration-light.jpg" alt="Four-stage pipeline for hosted trackers: GitHub Issues/PRs, Linear via orca linear, and Jira via orca jira at v1.4.229 enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus orca reference add/find backed by a verified merge SHA" width="820">
   </picture>
 </p>
 
@@ -397,9 +397,9 @@ When missions consume issues or PRs from GitHub (`gh`), Linear (`orca linear`), 
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/one-router-per-worker.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/one-router-per-worker-light.jpg">
-    <img src="../assets/diagrams/one-router-per-worker-light.jpg" alt="Three worker desks each hold exactly one glowing playbook; a fourth desk with two overlapping playbooks is struck through with a red X" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/one-router-per-worker.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/one-router-per-worker-light.jpg">
+    <img src="assets/diagrams/one-router-per-worker-light.jpg" alt="Three worker desks each hold exactly one glowing playbook; a fourth desk with two overlapping playbooks is struck through with a red X" width="820">
   </picture>
 </p>
 
@@ -411,9 +411,9 @@ Missions draw worker techniques from three upstream skill packs (`mattpocock/ski
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/mission-chaining.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/mission-chaining-light.jpg">
-    <img src="../assets/diagrams/mission-chaining-light.jpg" alt="A chain of mission links joined by gate valves; the first two glow with checkmarks; the gate before the dim third link is closed with a red bar and requires a human" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/mission-chaining.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/mission-chaining-light.jpg">
+    <img src="assets/diagrams/mission-chaining-light.jpg" alt="A chain of mission links joined by gate valves; the first two glow with checkmarks; the gate before the dim third link is closed with a red bar and requires a human" width="820">
   </picture>
 </p>
 
@@ -428,9 +428,9 @@ Broad goals like *"make this service production-ready"* span multiple missions (
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/proof-ladder.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/proof-ladder-light.jpg">
-    <img src="../assets/diagrams/proof-ladder-light.jpg" alt="The proof ladder: doctrine-only, then self-run, then external-run; advancing needs a run report that binds, with a RUN header, a manifest in the run's own directory and an inventory that re-hashes at the named commit; the live state is the archive at docs/runs/README.md, which names each mission's tier as its evidence lands" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/proof-ladder.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/proof-ladder-light.jpg">
+    <img src="assets/diagrams/proof-ladder-light.jpg" alt="The proof ladder: doctrine-only, then self-run, then external-run; advancing needs a run report that binds, with a RUN header, a manifest in the run's own directory and an inventory that re-hashes at the named commit; the live state is the archive at docs/runs/README.md, which names each mission's tier as its evidence lands" width="820">
   </picture>
 </p>
 
@@ -468,9 +468,9 @@ See **[ARCHITECTURE.md — Instruction budget](../ARCHITECTURE.md#instruction-bu
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/mission-identity.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/mission-identity-light.jpg">
-    <img src="../assets/diagrams/mission-identity-light.jpg" alt="The six-point mission-identity test: unit of work, per-unit state machine, convergence proof, ordering and isolation, parking and failure semantics, and the oracle; audit findings, tracker issues and doc claims are one mission, clean-sweep, while a perf breach is a different proof and therefore a different mission, speed-it" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/mission-identity.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/mission-identity-light.jpg">
+    <img src="assets/diagrams/mission-identity-light.jpg" alt="The six-point mission-identity test: unit of work, per-unit state machine, convergence proof, ordering and isolation, parking and failure semantics, and the oracle; audit findings, tracker issues and doc claims are one mission, clean-sweep, while a perf breach is a different proof and therefore a different mission, speed-it" width="820">
   </picture>
 </p>
 

@@ -34,6 +34,7 @@ NEW_ALT = {
 }
 
 def picture(prefix, name, alt, width):
+    """prefix: the path from the doc to docs/ -- "docs/" from the README, "" from docs/*.md, "../" one level down."""
     dark = f"{prefix}assets/diagrams/{name}.jpg"; light = f"{prefix}assets/diagrams/{name}-light.jpg"
     return ('<p align="center">\n  <picture>\n'
             f'    <source media="(prefers-color-scheme: dark)" srcset="{dark}">\n'
@@ -41,8 +42,8 @@ def picture(prefix, name, alt, width):
             f'    <img src="{light}" alt="{alt}" width="{width}">\n'
             '  </picture>\n</p>')
 
-IMG = re.compile(r'<p align="center">\n  <img src="((?:\.\./)*)assets/diagrams/([A-Za-z0-9/_-]+)\.jpg" alt="([^"]*)" width="(\d+)">\n</p>')
-PIC = re.compile(r'<p align="center">\n  <picture>\n    <source media="\(prefers-color-scheme: dark\)" srcset="((?:\.\./)*)assets/diagrams/([A-Za-z0-9/_-]+)\.jpg">\n'
+IMG = re.compile(r'<p align="center">\n  <img src="((?:\.\./)*(?:docs/)?)assets/diagrams/([A-Za-z0-9/_-]+)\.jpg" alt="([^"]*)" width="(\d+)">\n</p>')
+PIC = re.compile(r'<p align="center">\n  <picture>\n    <source media="\(prefers-color-scheme: dark\)" srcset="((?:\.\./)*(?:docs/)?)assets/diagrams/([A-Za-z0-9/_-]+)\.jpg">\n'
                  r'    <source media="\(prefers-color-scheme: light\)" srcset="[^"]*">\n    <img src="[^"]*" alt="([^"]*)" width="(\d+)">\n  </picture>\n</p>')
 
 def _alt_for(name, alt):
@@ -108,55 +109,55 @@ def readme(t):
         ascii_start = t.index("```\n YOU SAY")
         ascii_end = t.index("```\n", ascii_start + 4) + 4
         ascii = t[ascii_start:ascii_end].rstrip("\n")
-        t = (t[:ascii_start] + picture("", "you-say", NEW_ALT["you-say"], 1000) + "\n\n"
+        t = (t[:ascii_start] + picture("docs/", "you-say", NEW_ALT["you-say"], 1000) + "\n\n"
              "<details>\n<summary>Text version</summary>\n\n" + ascii + "\n\n</details>\n" + t[ascii_end:])
     # The README's intro sentences are prose now; each picture sits right after its own.
     t = insert_after(t, "Missions also hand work to one another, each handoff a separately authorized run:",
-        picture("", "mission-handoffs", NEW_ALT["mission-handoffs"], 900), "README")
-    t = insert_after(t, "([demo/negative-control/](demo/negative-control/README.md)):",
-        picture("", "negative-control", NEW_ALT["negative-control"], 900), "README")
+        picture("docs/", "mission-handoffs", NEW_ALT["mission-handoffs"], 900), "README")
+    t = insert_after(t, "([evals/demo/negative-control/](evals/demo/negative-control/README.md)):",
+        picture("docs/", "negative-control", NEW_ALT["negative-control"], 900), "README")
     t = insert_after(t, "## Proof status",
-        picture("", "proof-ladder", NEW_ALT["proof-ladder"], 900), "README")
+        picture("docs/", "proof-ladder", NEW_ALT["proof-ladder"], 900), "README")
     t = insert_after(t, "## Requirements",
-        picture("", "install-stack", NEW_ALT["install-stack"], 900), "README")
+        picture("docs/", "install-stack", NEW_ALT["install-stack"], 900), "README")
     return t
 
 def concepts(t):
     t = convert_existing(t)
     t = insert_after(t, "## Runtime-agnostic execution: the Runtime Provider Interface",
-        picture("../", "runtime-providers", NEW_ALT["runtime-providers"], 820), "concepts")
+        picture("", "runtime-providers", NEW_ALT["runtime-providers"], 820), "concepts")
     t = insert_before(t, "A unit that fails any required check is not done",
-        picture("../", "negative-control", NEW_ALT["negative-control"], 820), "concepts")
+        picture("", "negative-control", NEW_ALT["negative-control"], 820), "concepts")
     t = insert_after(t, "## Security boundaries and the response ladder",
-        picture("../", "threat-boundaries", NEW_ALT["threat-boundaries"], 820), "concepts")
+        picture("", "threat-boundaries", NEW_ALT["threat-boundaries"], 820), "concepts")
     t = insert_after(t, "## Hosted trackers and the trust envelope",
-        picture("../", "tracker-enumeration", NEW_ALT["tracker-enumeration"], 820), "concepts")
-    t = insert_after(t, "## Proof status", picture("../", "proof-ladder", NEW_ALT["proof-ladder"], 820), "concepts")
+        picture("", "tracker-enumeration", NEW_ALT["tracker-enumeration"], 820), "concepts")
+    t = insert_after(t, "## Proof status", picture("", "proof-ladder", NEW_ALT["proof-ladder"], 820), "concepts")
     t = insert_after(t, "## The mission-identity test",
-        picture("../", "mission-identity", NEW_ALT["mission-identity"], 820), "concepts")
+        picture("", "mission-identity", NEW_ALT["mission-identity"], 820), "concepts")
     return t
 
 def getting_started(t):
     t = convert_existing(t)
-    t = insert_after(t, "## Prerequisites", picture("../", "install-stack", NEW_ALT["install-stack"], 820), "getting-started")
-    t = insert_after(t, "## Where the evidence lands", picture("../", "artifacts-map", NEW_ALT["artifacts-map"], 820), "getting-started")
-    t = insert_after(t, "## Your side of the human gates", picture("../", "gates-terminal", NEW_ALT["gates-terminal"], 820), "getting-started")
+    t = insert_after(t, "## Prerequisites", picture("", "install-stack", NEW_ALT["install-stack"], 820), "getting-started")
+    t = insert_after(t, "## Where the evidence lands", picture("", "artifacts-map", NEW_ALT["artifacts-map"], 820), "getting-started")
+    t = insert_after(t, "## Your side of the human gates", picture("", "gates-terminal", NEW_ALT["gates-terminal"], 820), "getting-started")
     return t
 
 def verify_gate(t):
     t = convert_existing(t)
     return insert_before(t, "## Install paths, and which ones carry the gate",
-        picture("../", "verify-gate", NEW_ALT["verify-gate"], 820), "verify-gate")
+        picture("", "verify-gate", NEW_ALT["verify-gate"], 820), "verify-gate")
 
 def runtimes(t):
     t = convert_existing(t)
     return insert_before(t, "## Selecting a runtime provider",
-        picture("../", "runtime-providers", NEW_ALT["runtime-providers"], 820), "runtimes")
+        picture("", "runtime-providers", NEW_ALT["runtime-providers"], 820), "runtimes")
 
 def missions_index(t):
     t = convert_existing(t)
     return insert_before(t, "| Guide | One line |",
-        "How the missions hand work to one another:\n\n" + picture("../../", "mission-handoffs", NEW_ALT["mission-handoffs"], 820),
+        "How the missions hand work to one another:\n\n" + picture("../", "mission-handoffs", NEW_ALT["mission-handoffs"], 820),
         "missions/README")
 
 edit("README.md", readme)

@@ -232,6 +232,6 @@ The directory map lives once, in [README.md#repository-layout](README.md#reposit
 - [docs/distribution.md](docs/distribution.md) — discoverability, install paths, submission checklist.
 - [docs/verify-gate.md](docs/verify-gate.md) — `verify.py` as a fail-closed `Stop`/`TaskCompleted`
   gate, its fallbacks, and the signed-dispatch record (#135; the native hook stays advisory).
-- [demo/negative-control/](demo/negative-control/README.md) — a self-scoring gate GREEN on a
+- [evals/demo/negative-control/](evals/demo/negative-control/README.md) — a self-scoring gate GREEN on a
   scope-shrink trap while `verify.py` goes RED.
 - [bench/vf-bench/](bench/vf-bench/README.md) — a benchmark of verifier soundness (false-done rate).

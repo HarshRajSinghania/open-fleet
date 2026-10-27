@@ -46,7 +46,7 @@ not stating a number at all:
 |---|---|
 | `.claude-plugin/plugin.json` | opens *"Outcome-named autonomous fleets for coding agents across Orca, POSIX, and multi-runtime orchestrators…"* |
 | `.claude-plugin/marketplace.json` | *"Outcome-named autonomous fleets for coding agents across Orca, POSIX, and multi-runtime orchestrators"* |
-| README badge | reads the count from `assets/badges/missions.json`, regenerated from the catalog |
+| README badge | reads the count from `docs/assets/badges/missions.json`, regenerated from the catalog |
 
 That is not a stylistic preference; `check_doc_counts` in `scripts/validate.py`
 fails the build if a catalog count reappears in `README.md` or either manifest. The About

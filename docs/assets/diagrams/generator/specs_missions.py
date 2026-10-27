@@ -24,7 +24,7 @@ IT INTERRUPTS YOU FOR: {gates}
 YOU GET BACK: {hexes}; second line: {artifacts}
 IT STOPS AT: {stops}
 Phase strip: {phases}"""
-    return {"id": id_, "out": f"assets/diagrams/missions/{id_}.jpg", **D, "prompt": prompt,
+    return {"id": id_, "out": f"docs/assets/diagrams/missions/{id_}.jpg", **D, "prompt": prompt,
             "contract": {"outcome": outcome, "give": give, "gates": gates,
                          "states": [n for n, _ in states], "artifacts": artifacts,
                          "stops": stops, "phases": phases}}

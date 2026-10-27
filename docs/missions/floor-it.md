@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/floor-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/floor-it-light.jpg">
-    <img src="../../assets/diagrams/missions/floor-it-light.jpg" alt="Mission contract for floor-it: you give it a repo whose standards live in people's heads; it interrupts you for freezing CONSTRAINTS.md — a one-way gate; headless runs park here; you get back FLOORED or FLOORED-WITH-PARKED, plus CONSTRAINTS.md; one tool per dimension, proven RED; canary PRs; a guard against lowering the bar; it stops at violations injected only on throwaway branches, never on BASE; phases DETECT, FREEZE, WIRE, PROVE-FIRES, ENFORCE, GUARD" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/floor-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/floor-it-light.jpg">
+    <img src="../assets/diagrams/missions/floor-it-light.jpg" alt="Mission contract for floor-it: you give it a repo whose standards live in people's heads; it interrupts you for freezing CONSTRAINTS.md — a one-way gate; headless runs park here; you get back FLOORED or FLOORED-WITH-PARKED, plus CONSTRAINTS.md; one tool per dimension, proven RED; canary PRs; a guard against lowering the bar; it stops at violations injected only on throwaway branches, never on BASE; phases DETECT, FREEZE, WIRE, PROVE-FIRES, ENFORCE, GUARD" width="820">
   </picture>
 </p>
 

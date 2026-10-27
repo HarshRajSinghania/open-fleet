@@ -14,9 +14,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/document-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/document-it-light.jpg">
-    <img src="../../assets/diagrams/missions/document-it-light.jpg" alt="Mission contract for document-it: you give it a public surface — extracted by a script, not by hand; it interrupts you for freezing the gap list; which entities deserve a tutorial or an explanation; you get back DOCUMENTED or DOCUMENTED-WITH-PARKED, plus a page per cell with every claim anchored; rename-control transcripts; the coverage map re-derived at the final head; it stops at never inventing a why, never rewriting a diagram; phases EXTRACT, MAP, FREEZE, WRITE, CLAIM-VERIFY, REVIEW, LAND, RE-MAP, PUBLISH" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/document-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/document-it-light.jpg">
+    <img src="../assets/diagrams/missions/document-it-light.jpg" alt="Mission contract for document-it: you give it a public surface — extracted by a script, not by hand; it interrupts you for freezing the gap list; which entities deserve a tutorial or an explanation; you get back DOCUMENTED or DOCUMENTED-WITH-PARKED, plus a page per cell with every claim anchored; rename-control transcripts; the coverage map re-derived at the final head; it stops at never inventing a why, never rewriting a diagram; phases EXTRACT, MAP, FREEZE, WRITE, CLAIM-VERIFY, REVIEW, LAND, RE-MAP, PUBLISH" width="820">
   </picture>
 </p>
 

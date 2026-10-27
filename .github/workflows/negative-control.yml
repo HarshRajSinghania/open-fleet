@@ -1,6 +1,6 @@
 name: negative-control-demo
 
-# #413: demo/negative-control/ is the repo's executable elevator pitch, and demos rot faster
+# #413: evals/demo/negative-control/ is the repo's executable elevator pitch, and demos rot faster
 # than any other artifact. This job re-runs run.sh on every PR and fails on any drift
 # between fresh output and the checked-in head-to-head.txt. Separate file (not a job in
 # validate.yml) so the sibling vf-bench gate (#412) can land in either order conflict-free.
@@ -29,11 +29,11 @@ jobs:
           # pipeline and the diagnostic below never printed (2026-10-23 review, §5 CI). Suspend -e
           # for the pipeline alone and read PIPESTATUS before any other command resets it.
           set +e
-          sh demo/negative-control/run.sh 2>&1 | tee fresh-head-to-head.txt
+          sh evals/demo/negative-control/run.sh 2>&1 | tee fresh-head-to-head.txt
           rc="${PIPESTATUS[0]}"
           set -e
           if [ "$rc" -ne 0 ]; then
-            echo "::error::demo/negative-control/run.sh exited $rc — the demo itself is RED, not just drifted"
+            echo "::error::evals/demo/negative-control/run.sh exited $rc — the demo itself is RED, not just drifted"
             exit 1
           fi
           # Line 1 carries a run timestamp by design (README integrity-inventory note);
@@ -42,8 +42,8 @@ jobs:
           # turns them advisory) and are stripped exactly as tests/test_negative_control.py
           # strips them (#522).
           norm() { sed '1s/ — .*Z//' | grep -vE '^NOTE: (authority: advisory \((git|gh|gitleaks) at |redaction: gitleaks at )' || true; }
-          if ! diff <(norm < demo/negative-control/head-to-head.txt) <(norm < fresh-head-to-head.txt); then
-            echo "::error::demo/negative-control DRIFTED: fresh run.sh output differs from head-to-head.txt. To change expected output, change the demo AND explain why — see demo/negative-control/README.md."
+          if ! diff <(norm < evals/demo/negative-control/head-to-head.txt) <(norm < fresh-head-to-head.txt); then
+            echo "::error::evals/demo/negative-control DRIFTED: fresh run.sh output differs from head-to-head.txt. To change expected output, change the demo AND explain why — see evals/demo/negative-control/README.md."
             exit 1
           fi
           echo "negative-control demo matches pinned expectations"

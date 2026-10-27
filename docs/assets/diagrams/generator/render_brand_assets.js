@@ -1,7 +1,7 @@
 const sharp = require('sharp');
 const path = require('path');
 
-const REPO = path.resolve(__dirname, '../../..');
+const REPO = path.resolve(__dirname, '../../../..');
 
 function hexPoints(cx, cy, r, rotationDeg = 0) {
   const pts = [];
@@ -407,15 +407,15 @@ function buildPluginIconSvg() {
 async function main() {
   await sharp(Buffer.from(buildHeroSvg('dark')))
     .jpeg({ quality: 95, mozjpeg: true, chromaSubsampling: '4:4:4' })
-    .toFile(path.join(REPO, 'assets/hero-dark.jpg'));
+    .toFile(path.join(REPO, 'docs/assets/hero-dark.jpg'));
 
   await sharp(Buffer.from(buildHeroSvg('light')))
     .jpeg({ quality: 95, mozjpeg: true, chromaSubsampling: '4:4:4' })
-    .toFile(path.join(REPO, 'assets/hero-light.jpg'));
+    .toFile(path.join(REPO, 'docs/assets/hero-light.jpg'));
 
   await sharp(Buffer.from(buildSocialPreviewSvg()))
     .jpeg({ quality: 95, mozjpeg: true, chromaSubsampling: '4:4:4' })
-    .toFile(path.join(REPO, 'assets/social-preview.jpg'));
+    .toFile(path.join(REPO, 'docs/assets/social-preview.jpg'));
 
   await sharp(Buffer.from(buildPluginIconSvg()))
     .png({ compressionLevel: 9 })

@@ -27,5 +27,5 @@ dist/
 .coverage
 .coverage.*
 
-# Local Node dependencies installed under assets/diagrams/generator/.
+# Local Node dependencies installed under docs/assets/diagrams/generator/.
 node_modules/

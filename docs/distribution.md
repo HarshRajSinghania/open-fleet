@@ -88,7 +88,7 @@ Validation of `dist` at `f14253f` (`v0.8.0`) on 2026-10-25 reported:
   - the file count;
   - `verify-gate.sh` running other files.
   The bundle README (`.claude-plugin/bundle-README.md`) discloses each one. None blocks.
-- **26 warnings:** download-and-run commands, which in shipped code are the guard hook's own deny patterns, and *No icon*. The bundle now ships `.claude-plugin/icon.png` (1024 px, square, the autonomous-fleet emblem from `assets/hero-dark.jpg`). The portal takes the icon **once, at the first save or submission**, so never save a draft from a `dist` older than the cut that adds it.
+- **26 warnings:** download-and-run commands, which in shipped code are the guard hook's own deny patterns, and *No icon*. The bundle now ships `.claude-plugin/icon.png` (1024 px, square, the autonomous-fleet emblem from `docs/assets/hero-dark.jpg`). The portal takes the icon **once, at the first save or submission**, so never save a draft from a `dist` older than the cut that adds it.
 
 A submission still requires Anthropic's validation, security scan, and human review before a listing goes live:
 

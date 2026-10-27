@@ -134,7 +134,7 @@ class ValidatePyRunsTheLayerChecks(unittest.TestCase):
     genuinely untracked. These used to plant into the live checkout, which raced every other test
     reading the catalog under `pytest -n` (an orphan-playbook or validator test would see the
     probe) and left debris behind on a hard kill. validate.py resolves ROOT from its own location,
-    so a copied scripts/ validates the copied tree. The copy omits docs/ and assets/ (tens of MB),
+    so a copied scripts/ validates the copied tree. The copy omits docs/ (its images are tens of MB),
     so the copy's run fails for unrelated reasons; each test therefore asserts its message is
     ABSENT before the plant and PRESENT after — the plant, and nothing else, produced it.
     """

@@ -11,10 +11,10 @@ anything that looks wrong — it is wrong on purpose).
 
 ## Quick start
 
-Requirements: `uv`, `docker compose`. All commands run from `demo/target-app/`.
+Requirements: `uv`, `docker compose`. All commands run from `evals/demo/target-app/`.
 
 ```sh
-cd demo/target-app
+cd evals/demo/target-app
 uv run alembic upgrade 0002   # create app.db at the frozen schema (F3: 0003 stays pending)
 uv run uvicorn app.main:app   # serve on http://127.0.0.1:8000
 ```

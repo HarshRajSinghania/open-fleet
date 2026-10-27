@@ -7,12 +7,12 @@ name: fixture-target-app
 on:
   push:
     paths:
-      - "demo/target-app/**"
+      - "evals/demo/target-app/**"
       - ".github/workflows/fixture-target-app.yml"
       - ".github/ci-tools.lock"  # the ruff job installs from it: a lock bump re-runs the lint
   pull_request:
     paths:
-      - "demo/target-app/**"
+      - "evals/demo/target-app/**"
       - ".github/workflows/fixture-target-app.yml"
       - ".github/ci-tools.lock"  # the ruff job installs from it: a lock bump re-runs the lint
 
@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: demo/target-app
+        working-directory: evals/demo/target-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -49,7 +49,7 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           ruff --version
-      - run: ruff check demo/target-app
+      - run: ruff check evals/demo/target-app
 
   migrate:
     # F3 freeze proof: boot pins 0002 while 0003 sits pending on disk.
@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: demo/target-app
+        working-directory: evals/demo/target-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -99,7 +99,7 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: demo/target-app
+        working-directory: evals/demo/target-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
       - name: Build and start the stack

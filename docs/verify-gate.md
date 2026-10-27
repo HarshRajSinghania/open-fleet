@@ -13,9 +13,9 @@ On this page:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/verify-gate.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/verify-gate-light.jpg">
-    <img src="../assets/diagrams/verify-gate-light.jpg" alt="The completion gate: the coordinator sets the gate env (OPEN_FLEET_MANIFEST or ORCA_MANIFEST), a Stop or TaskCompleted hook fires verify-gate.sh, verify.py re-derives scope and review and reads the negative control, replaying it in a throwaway worktree when OPEN_FLEET_EXECUTE_NC or ORCA_EXECUTE_NC is set, then exit 0 allows or exit 2 blocks, fail-closed; the verdict is advisory inside the worker's own session and sound where CI, MCP-Task or an SDK subprocess owns the env" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/verify-gate.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/verify-gate-light.jpg">
+    <img src="assets/diagrams/verify-gate-light.jpg" alt="The completion gate: the coordinator sets the gate env (OPEN_FLEET_MANIFEST or ORCA_MANIFEST), a Stop or TaskCompleted hook fires verify-gate.sh, verify.py re-derives scope and review and reads the negative control, replaying it in a throwaway worktree when OPEN_FLEET_EXECUTE_NC or ORCA_EXECUTE_NC is set, then exit 0 allows or exit 2 blocks, fail-closed; the verdict is advisory inside the worker's own session and sound where CI, MCP-Task or an SDK subprocess owns the env" width="820">
   </picture>
 </p>
 

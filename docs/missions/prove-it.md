@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/prove-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/prove-it-light.jpg">
-    <img src="../../assets/diagrams/missions/prove-it-light.jpg" alt="Mission contract for prove-it: you give it a runnable suite and a coverage tool; it interrupts you for confirming the critical surface; behaviour calls on bugs the tests surface; you get back COVERED or COVERED-WITH-PARKED, plus merged tests that die under mutation; surfaced bugs fixed, parked, or handed off; it stops at never asserting buggy behaviour as correct; phases MAP, CONFIRM, CHARACTERIZE, MUTATION-AUDIT, REVIEW, LAND, RE-MAP" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/prove-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/prove-it-light.jpg">
+    <img src="../assets/diagrams/missions/prove-it-light.jpg" alt="Mission contract for prove-it: you give it a runnable suite and a coverage tool; it interrupts you for confirming the critical surface; behaviour calls on bugs the tests surface; you get back COVERED or COVERED-WITH-PARKED, plus merged tests that die under mutation; surfaced bugs fixed, parked, or handed off; it stops at never asserting buggy behaviour as correct; phases MAP, CONFIRM, CHARACTERIZE, MUTATION-AUDIT, REVIEW, LAND, RE-MAP" width="820">
   </picture>
 </p>
 

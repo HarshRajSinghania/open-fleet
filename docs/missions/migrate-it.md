@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/migrate-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/migrate-it-light.jpg">
-    <img src="../../assets/diagrams/missions/migrate-it-light.jpg" alt="Mission contract for migrate-it: you give it a table set and a phase list, each phase with its down path; it interrupts you for one-way gates: the freeze, each phase's promotion and deploy, and CONTRACT (the drop); bake windows the fleet cannot observe; you get back MIGRATED or MIGRATED-WITH-PARKED or ABANDONED, plus one PR per phase; up + down receipts with an empty schema diff; a parity archive; zero-use telemetry; it stops at one phase of one table in flight — nothing dropped before zero readers and zero writers; phases EXPAND, DUAL-WRITE, BACKFILL, SWITCH-READS, ZERO-READERS, RETIRE-WRITES, ZERO-WRITERS, CONTRACT" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/migrate-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/migrate-it-light.jpg">
+    <img src="../assets/diagrams/missions/migrate-it-light.jpg" alt="Mission contract for migrate-it: you give it a table set and a phase list, each phase with its down path; it interrupts you for one-way gates: the freeze, each phase's promotion and deploy, and CONTRACT (the drop); bake windows the fleet cannot observe; you get back MIGRATED or MIGRATED-WITH-PARKED or ABANDONED, plus one PR per phase; up + down receipts with an empty schema diff; a parity archive; zero-use telemetry; it stops at one phase of one table in flight — nothing dropped before zero readers and zero writers; phases EXPAND, DUAL-WRITE, BACKFILL, SWITCH-READS, ZERO-READERS, RETIRE-WRITES, ZERO-WRITERS, CONTRACT" width="820">
   </picture>
 </p>
 

@@ -17,7 +17,7 @@ header.
 
 Oracle (timing harness; verbatim from the `app/seed.py` docstring):
 
-1. `cd demo/target-app`
+1. `cd evals/demo/target-app`
 2. `rm -f /tmp/f1.db && DATABASE_URL=sqlite:////tmp/f1.db uv run python -m app.seed --count 1000`
 3. `DATABASE_URL=sqlite:////tmp/f1.db uv run uvicorn app.main:app --port 8123 & sleep 3`
 4. `time curl -s http://127.0.0.1:8123/issues -o /tmp/f1-issues.json`

@@ -2,7 +2,7 @@
 from specs import STYLE, D
 
 def n(id_, prompt, out=None):
-    return {"id": id_, "out": out or f"assets/diagrams/{id_}.jpg", **D, "prompt": STYLE + prompt}
+    return {"id": id_, "out": out or f"docs/assets/diagrams/{id_}.jpg", **D, "prompt": STYLE + prompt}
 
 NEW = [
 n("you-say", """Content: a plain three-column table drawn as three tall panels side by side, headed in uppercase: YOU SAY · THE FLEET RUNS · YOU GET, with four rows aligned across all three panels and one small arrow between the panels on every row.

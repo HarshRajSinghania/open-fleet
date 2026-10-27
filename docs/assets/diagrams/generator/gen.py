@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate this repository's images with Nano Banana Pro through OpenRouter.
 
-    OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py                 # everything
-    OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only mission-map,ship-it
+    OPENROUTER_API_KEY=... python3 docs/assets/diagrams/generator/gen.py                 # everything
+    OPENROUTER_API_KEY=... python3 docs/assets/diagrams/generator/gen.py --only mission-map,ship-it
 
 Prompts live next to this file: specs.py (concept diagrams + brand images), specs_missions.py
 (one developer-contract card per mission), specs_new.py (the README and deep-dive visuals) and
@@ -39,7 +39,7 @@ import specs  # noqa: E402
 
 API = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = os.environ.get("IMAGE_MODEL", "google/gemini-3-pro-image")
-REPO = HERE.parents[2]
+REPO = HERE.parents[3]
 
 
 def call(prompt, aspect, size, timeout=420, image_bytes=None, mime="image/jpeg"):

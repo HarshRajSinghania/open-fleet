@@ -14,9 +14,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/deflake-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/deflake-it-light.jpg">
-    <img src="../../assets/diagrams/missions/deflake-it-light.jpg" alt="Mission contract for deflake-it: you give it a suite nobody trusts; it interrupts you for quarantining a flake — only with a ticket you approve; you get back STABLE or STABLE-WITH-QUARANTINE, plus one PR per flake with a red-by-revert ratchet; a GREEN_STREAK, local and CI, at one SHA; it stops at no retry wrappers, ever — the diff is grepped for them; phases DETECT, DIAGNOSE, FIX, CLOSE, PROVE" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/deflake-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/deflake-it-light.jpg">
+    <img src="../assets/diagrams/missions/deflake-it-light.jpg" alt="Mission contract for deflake-it: you give it a suite nobody trusts; it interrupts you for quarantining a flake — only with a ticket you approve; you get back STABLE or STABLE-WITH-QUARANTINE, plus one PR per flake with a red-by-revert ratchet; a GREEN_STREAK, local and CI, at one SHA; it stops at no retry wrappers, ever — the diff is grepped for them; phases DETECT, DIAGNOSE, FIX, CLOSE, PROVE" width="820">
   </picture>
 </p>
 

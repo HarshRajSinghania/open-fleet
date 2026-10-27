@@ -4,7 +4,7 @@
   "base_sha": "HEAD",
   "head_sha": "HEAD",
   "contract": {
-    "source": "demo/negative-control/frozen-spec.md",
+    "source": "evals/demo/negative-control/frozen-spec.md",
     "digest": "",
     "criterion_ids": [
       "AC-1",

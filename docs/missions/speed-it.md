@@ -14,9 +14,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/speed-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/speed-it-light.jpg">
-    <img src="../../assets/diagrams/missions/speed-it-light.jpg" alt="Mission contract for speed-it: you give it the journeys and their budgets; it interrupts you for freezing the journeys and budgets; a metric that cannot be measured to its contract; parking a journey; promotion; you get back WITHIN-BUDGET or OPTIMIZED-WITH-PARKED, plus before, after on every fix PR; CI regression guards; a re-benchmark to the contract; it stops at never a weaker proxy metric, never a lucky single run; phases SCOPE, DECLARE, BASELINE, RANK, DIAGNOSE, FIX, PROVE, RE-BENCHMARK, KEEP-OR-REVERT" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/speed-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/speed-it-light.jpg">
+    <img src="../assets/diagrams/missions/speed-it-light.jpg" alt="Mission contract for speed-it: you give it the journeys and their budgets; it interrupts you for freezing the journeys and budgets; a metric that cannot be measured to its contract; parking a journey; promotion; you get back WITHIN-BUDGET or OPTIMIZED-WITH-PARKED, plus before, after on every fix PR; CI regression guards; a re-benchmark to the contract; it stops at never a weaker proxy metric, never a lucky single run; phases SCOPE, DECLARE, BASELINE, RANK, DIAGNOSE, FIX, PROVE, RE-BENCHMARK, KEEP-OR-REVERT" width="820">
   </picture>
 </p>
 

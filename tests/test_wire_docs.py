@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Contract tests for assets/diagrams/generator/wire_docs.py, the script that embeds the
+Contract tests for docs/assets/diagrams/generator/wire_docs.py, the script that embeds the
 generated images into the docs.
 
 PR #387 review: the README heading `## Proof status — honesty first` became `## Proof status`
@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "assets" / "diagrams" / "generator" / "wire_docs.py"
+SCRIPT = ROOT / "docs" / "assets" / "diagrams" / "generator" / "wire_docs.py"
 
 
 def wired_docs():
@@ -90,7 +90,7 @@ class WiringScriptAnchors(unittest.TestCase):
             readme = tmp / "README.md"
             text = readme.read_text(encoding="utf-8")
             start = text.index('<p align="center">\n  <picture>\n    <source media="(prefers-color-scheme: dark)" '
-                               'srcset="assets/diagrams/proof-ladder.jpg">')
+                               'srcset="docs/assets/diagrams/proof-ladder.jpg">')
             end = text.index("</p>\n", start) + len("</p>\n")
             stripped = text[:start] + text[end:].lstrip("\n")
             stripped = stripped.replace("## Proof status\n", "### Proof status (prefix decoy)\n\n## Proof status\n", 1)
@@ -99,7 +99,7 @@ class WiringScriptAnchors(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             wired = readme.read_text(encoding="utf-8")
             self.assertIn("## Proof status\n\n<p align=\"center\">\n  <picture>\n    <source media=\"(prefers-color-scheme: dark)\" "
-                          "srcset=\"assets/diagrams/proof-ladder.jpg\">", wired)
+                          "srcset=\"docs/assets/diagrams/proof-ladder.jpg\">", wired)
             self.assertNotIn("### Proof status (prefix decoy)\n\n<p align", wired)
 
     def test_the_unchanged_copy_passes(self):

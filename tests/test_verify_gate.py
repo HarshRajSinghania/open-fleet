@@ -539,6 +539,33 @@ class VerifyGateDispatchPinDiscovery(GateCase):
                             "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
         self.assertIn("PUBKEY=.orca/dispatch-pubkey@refs/remotes/origin/main\n", r.stderr)
 
+    def test_a_base_ref_that_is_a_symbolic_ref_to_a_local_branch_is_never_read(self):
+        # PR #719 review (P1): refs/remotes/origin/<BASE> was trusted by SPELLING — made a
+        # symbolic ref to the worker's local branch (which carries the worker's key), the gate
+        # handed it to verify.py as a reviewed blob. Its final target must be remote-tracking.
+        (_coordinator, worker) = self.use_repo(pin_blob=True, remote_head=False)
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/integration", "refs/heads/workerbranch")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": _require_system_tools("git", "python3"), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "dispatch",
+               "ORCA_DISPATCH_RECORD": rec, "ORCA_BASE": "integration"}
+        r = subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                            "--event", "task"], capture_output=True, text=True, cwd=self.repo,
+                           env=env)
+        self.assertNotIn("PUBKEY=.orca/dispatch-pubkey@", r.stderr)
+        self.assertIn("refs/heads/workerbranch", r.stderr)
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, r.stderr[-600:])
+
     def test_a_bare_path_env_key_is_refused_on_a_lane_claiming_soundness(self):
         # W3-03: ORCA_DISPATCH_PUBKEY=.orca/dispatch-pubkey (a bare path) is the graded worker's
         # working tree; on a sound lane verify.py refuses it rather than verify against it.

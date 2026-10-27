@@ -575,7 +575,8 @@ class Rejections(ReceiptCase):
 class SoundLaneTrustKey(ReceiptCase):
     """W3-03 (2026-10-27 security audit, P2): `--retention-pubkey keys/trusted.pub` (a bare path)
     is a file in the graded worker's tree. On a lane claiming soundness the trust key is read only
-    at a ref the worker cannot move; the advisory lane keeps the read and the NOTE says which."""
+    at a commit id or a ref whose final target is remote-tracking (what the coordinator's fetch
+    wrote); the advisory lane keeps the read and the NOTE says which."""
 
     def _pin(self):
         subprocess.run(["git", "add", TRUSTED], check=True)
@@ -603,6 +604,16 @@ class SoundLaneTrustKey(ReceiptCase):
         out = self.check(TRUSTED)
         self.assertBound(out)
         self.assertIn(f"working-tree file {TRUSTED}", out[0])
+
+    def test_a_remote_tracking_name_symbolic_to_a_local_branch_is_refused(self):
+        # PR #719 review (P1): spelling-only — refs/remotes/<x> as a symbolic ref to a local branch
+        # carrying another key was read as remote-tracking.
+        self._pin()
+        subprocess.run(["git", "branch", "local-key"], check=True)
+        subprocess.run(["git", "symbolic-ref", "refs/remotes/worker/key", "refs/heads/local-key"],
+                       check=True)
+        verify._Authority.lane = "provenance=ci"
+        self.assertRefused(self.check(f"{TRUSTED}@refs/remotes/worker/key"), "refs/heads/local-key")
 
 
 class LegacyProvenance(ReceiptCase):

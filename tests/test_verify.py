@@ -6652,7 +6652,7 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
     path) reads the WORKING TREE — the graded worker's to write — and was accepted on a lane
     claiming soundness, with a NOTE indistinguishable from a ref-pinned key's. The rule ("pass
     path@<reviewed ref>") lived only in prose. On a provenance lane a trust key is now read only
-    at a ref the worker cannot move — a remote-tracking ref or a commit id — and every NOTE names
+    at a commit id or a ref whose final target is remote-tracking (resolved once) — and every NOTE names
     where the key came from. The advisory lane keeps its working-tree read, said in so many words."""
 
     SEED = bytes(range(1, 33))
@@ -6701,6 +6701,40 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
         self.assertIn("working-tree file .orca/dispatch-pubkey", out[0])
         self.assertIn("the graded worker can write it", out[0])
+
+    def _worker_branch_key(self):
+        """The worker's own key and a record it signed, committed on a LOCAL branch."""
+        worker = bytes(range(50, 82))
+        self.git("checkout", "-q", "-b", "workerbranch")
+        record = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation"}
+        self.write(".orca/dispatch-record.json",
+                   json.dumps(verify._Transcript.signer().envelope(worker, record)))
+        self.write(".orca/dispatch-pubkey", verify._load_ed25519().publickey(worker).hex() + "\n")
+        return self.commit("the worker's own key")
+
+    def test_a_remote_tracking_name_that_is_a_symbolic_ref_to_a_local_branch_is_refused(self):
+        # PR #719 review (P1): the check was SPELLING-only. refs/remotes/worker/key made a
+        # symbolic ref to refs/heads/workerbranch passed as "remote-tracking", read_source followed
+        # it, and the worker's self-signed record verified on a lane claiming soundness.
+        self._worker_branch_key()
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/workerbranch")
+        out = self._check(".orca/dispatch-pubkey@refs/remotes/worker/key")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertIn("refs/heads/workerbranch", out[0])
+        self.assertNotIn("signature verified", out[0])
+
+    def test_a_symbolic_ref_whose_final_target_is_remote_tracking_is_read_at_one_commit(self):
+        # refs/remotes/origin/HEAD -> refs/remotes/origin/main is the ordinary shape; it is
+        # resolved ONCE and the key is read at that commit, never at the name a second time.
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        with mock.patch.object(verify, "read_source", wraps=verify.read_source) as spy:
+            out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/HEAD")
+        self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
+        self.assertIn("refs/remotes/origin/main", out[0])
+        self.assertIn(f"commit {self.pinned[:12]}", out[0])
+        keys = [c.args[0] for c in spy.call_args_list if "dispatch-pubkey" in c.args[0]]
+        self.assertEqual(keys, [f".orca/dispatch-pubkey@{self.pinned}"], spy.call_args_list)
 
 
 class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):

@@ -156,22 +156,33 @@ except Exception:
   [ "${#_sha}" -eq 40 ] || [ "${#_sha}" -eq 64 ] || return 1
   printf '%s' "$_sha"
 }
+# _remote_target REF — REF followed through any symbolic chain to its FINAL target, printed only
+# when that target is itself remote-tracking. A refs/remotes/… NAME proves nothing: it can be a
+# symbolic ref to a local branch the worker moves (PR #719 review). verify.py resolves what it is
+# handed again, once, to the commit it reads the key at. Remote-tracking means "what this clone's
+# fetch wrote" — the coordinator's or the CI runner's on a sound lane; on a worker's own machine
+# any ref is the worker's to write, which is why that lane stays advisory.
+_remote_target() {
+  _t=$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet "$1" 2>/dev/null) || _t=$1
+  case "$_t" in
+    refs/remotes/?*) printf '%s' "$_t" ;;
+    *) echo "verify-gate: NOTE — $1 points at '$_t', which is not a remote-tracking ref; no key is read there (a local branch is the graded worker's to move)." >&2
+       return 1 ;;
+  esac
+}
 KEY_BASE="$BASE"
 [ -n "$KEY_BASE" ] || [ "${GITHUB_ACTIONS:-}" != "true" ] || KEY_BASE="${GITHUB_BASE_REF:-}"
 if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
   TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$TOP" ]; then
     PR_BASE="$(_gh_pr_base || true)"
-    DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || echo refs/remotes/origin/HEAD)"
-    case "$DEF_REF" in
-      refs/remotes/?*) : ;;
-      *) echo "verify-gate: NOTE — refs/remotes/origin/HEAD points at '$DEF_REF', which is not a remote-tracking ref; no key is read there (a local branch is the graded worker's to move)." >&2
-         DEF_REF="" ;;
-    esac
+    DEF_REF="$(_remote_target refs/remotes/origin/HEAD || true)"
+    BASE_REF=""
+    [ -z "$KEY_BASE" ] || BASE_REF="$(_remote_target "refs/remotes/origin/$KEY_BASE" || true)"
     if [ -n "$DEF_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
-    elif [ -n "$KEY_BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "refs/remotes/origin/$KEY_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
-      PUBKEY=".orca/dispatch-pubkey@refs/remotes/origin/$KEY_BASE"
+    elif [ -n "$BASE_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$BASE_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@$BASE_REF"
     elif [ -n "$PR_BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$PR_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$PR_BASE"
     elif [ -f "$TOP/.orca/dispatch-pubkey" ]; then

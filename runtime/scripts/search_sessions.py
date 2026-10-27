@@ -32,8 +32,9 @@ MAX_FILE_BYTES and the whole scan up to MAX_RUN_BYTES (a skip is said on stderr;
 episodic hint's manifests too), regular files only (a link, FIFO or device is said and
 never read; a store, -wal or -shm swapped for one during SQLite's open fails it closed, and
 an open stalled past SQLITE_OPEN_SECONDS is abandoned), a SQLite store's plain tables'
-stored columns only (never a view, a virtual table or a computed column), every whole
-frame of a .zst (each frame charged; a damaged
+stored columns only (never a view, a virtual table or a computed column; a store over
+MAX_STORE_BYTES is never opened, and each row's stored size is charged as SQLite reads it,
+before any of its values reaches Python), every whole frame of a .zst (each frame charged; a damaged
 tail is said), and a record nested past the parser's depth skipped, never fatal. One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
@@ -112,6 +113,9 @@ DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "run
 # silent. A transcript's records are kept whole, so this is the memory a scan can hold.
 MAX_FILE_BYTES = 64 << 20
 MAX_RUN_BYTES = 512 << 20
+# A SQLite store (with its -wal) is never opened past this size. Its rows are charged as SQLite
+# reads them (_RowGate), so this bounds the time a scan spends in one store, not what it holds.
+MAX_STORE_BYTES = 1 << 30
 
 
 class _ReadBudget:
@@ -126,6 +130,7 @@ class _ReadBudget:
             what = {"file": f"a file over the per-file cap ({MAX_FILE_BYTES} bytes)",
                     "run": f"files past the scan's byte budget ({MAX_RUN_BYTES} bytes)",
                     "irregular": "a link or a file that is not a regular file (never followed or read)",
+                    "store": f"a SQLite store over {MAX_STORE_BYTES} bytes with its -wal (never opened)",
                     "damaged": "the rest of a damaged or truncated compressed transcript",
                     "stalled": f"a SQLite store whose open did not return in {SQLITE_OPEN_SECONDS} s (abandoned)",
                     "blocked": "SQLite stores after an open that is still blocked (it may hold SQLite's lock)",
@@ -1115,7 +1120,7 @@ def _open_watched(uri, names):
         try:
             conn = sqlite3.connect(uri, uri=True, factory=_Store, check_same_thread=False)
             conn.row_factory = sqlite3.Row
-            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()  # reads the schema, hands back no value
             with lock:
                 if not state["abandoned"]:
                     state["conn"], conn = conn, None
@@ -1190,8 +1195,15 @@ def _sqlite_ro(path):
         if not (stat.S_ISREG(checked.st_mode) and all(_regular_or_absent(name) for name in names[1:])):
             _BUDGET.omit(path, "irregular")
             return None
-        # Its rows are charged as _rows reads them, not by the file's size, which says nothing of
-        # what a query returns (W5-21).
+        try:
+            wal_size = os.stat(names[1], follow_symlinks=False).st_size
+        except FileNotFoundError:
+            wal_size = 0
+        if checked.st_size + wal_size > MAX_STORE_BYTES:
+            _BUDGET.omit(path, "store")
+            return None
+        # Its rows are charged as SQLite reads them (_RowGate), not by the file's size, which says
+        # nothing of what a query returns (W5-21); the size only bounds the time spent in it.
         suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
             else ("?mode=ro&immutable=1",)
         for suffix in suffixes:
@@ -1212,13 +1224,28 @@ def _sqlite_ro(path):
         os.close(fd)
 
 
+# The byte size of a stored value as SQLite knows it. octet_length (SQLite 3.43+) reads it from the
+# record header without loading the value; length(CAST(x AS BLOB)) loads it into SQLite's memory,
+# never Python's. Either way it is known before any value is handed to Python (W5-21).
+_OCTETS = "octet_length" if sqlite3.sqlite_version_info >= (3, 43, 0) else None
+# A name longer than this is not one recall reads (every table and column it asks for is a short
+# literal), so it is never fetched.
+_NAME_LIMIT = 256
+
+
+def _octets(expr):
+    return f"{_OCTETS}({expr})" if _OCTETS else f"length(CAST({expr} AS BLOB))"
+
+
 def _tables(conn):
     """The store's plain TABLES. Never its views: a view is any query, and a 4 KiB file can hold one
     that yields gigabytes (2026-10-27 re-attack, W5-21). Never a VIRTUAL table either: sqlite_master
     calls it a 'table', but its rows are whatever its module computes, and an fts5 table's external
-    content can be a view -- one that never yields held recall forever (re-check of 50b2615e)."""
+    content can be a view -- one that never yields held recall forever (re-check of 50b2615e). Only
+    a name of at most _NAME_LIMIT bytes is ever handed to Python (Codex round 2 on PR #723)."""
     return {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%'").fetchall()}
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%' "
+        f"AND {_octets('name')} <= {_NAME_LIMIT}").fetchall()}
 
 
 def _quoted(name):
@@ -1228,9 +1255,11 @@ def _quoted(name):
 def _stored_columns(conn, table):
     """`table`'s columns that hold stored data: a VIRTUAL generated column (table_xinfo hidden=2)
     is any expression, computed on each read -- hex(zeroblob(450000000)) in a 12 KiB store took
-    recall to 5.7 GB before a row could be charged -- so it is never selected."""
-    return [row[1] for row in conn.execute(f"PRAGMA table_xinfo({_quoted(table)})").fetchall()
-            if row[6] in (0, 3)]
+    recall to 5.7 GB before a row could be charged -- so it is never selected. Only each column's
+    name and kind are fetched, never its declared type or DEFAULT, which can be any size."""
+    return [row[0] for row in conn.execute(
+        f"SELECT name FROM pragma_table_xinfo(?) WHERE hidden IN (0, 3) AND {_octets('name')} <= {_NAME_LIMIT} "
+        "ORDER BY cid", (table,)).fetchall()]
 
 
 class _Store(sqlite3.Connection):
@@ -1238,34 +1267,60 @@ class _Store(sqlite3.Connection):
     path, used = None, 0
 
 
+class _RowGate:
+    """Charges each row's stored size as SQLite reads it, in the query's WHERE clause, so a row is
+    counted against MAX_FILE_BYTES (this store) and MAX_RUN_BYTES (the scan) BEFORE any of its
+    values is handed to Python, and a row that does not fit never is. The first refusal closes
+    the gate: no later row is admitted, and the refusal is said once the scan returns."""
+
+    def __init__(self, used):
+        self.used, self.why = used, None
+
+    def admit(self, size):
+        if self.why is not None:
+            return 0
+        size = int(size or 0)
+        if self.used + size > MAX_FILE_BYTES:
+            self.why = "file"
+        elif _BUDGET.used + size > MAX_RUN_BYTES:
+            self.why = "run"
+        else:
+            self.used += size
+            _BUDGET.used += size
+            return 1
+        return 0
+
+
 def _rows(conn, table):
-    """The rows of `table` (a table, never a view), fetched a few at a time and charged as they
-    arrive against MAX_FILE_BYTES for the store and MAX_RUN_BYTES for the scan; past either they
-    stop, and the skip is said."""
+    """The rows of `table` (a table, never a view), one at a time. SQLite charges each row's stored
+    size through _RowGate before handing over any of its values, so no value past either cap ever
+    reaches Python (Codex round 2 on PR #723: eight 450 MB values were fetched in one batch before
+    the cap refused the first); past either cap the rest are never fetched, and that is said."""
     where, used, out = getattr(conn, "path", None) or table, getattr(conn, "used", 0), []
+    gate = _RowGate(used)
     try:
         if table not in _tables(conn):
             return []
         columns = _stored_columns(conn, table)
         if not columns:
             return []
-        cursor = conn.execute(f"SELECT {', '.join(map(_quoted, columns))} FROM {_quoted(table)}")
-        while batch := cursor.fetchmany(8):
-            for row in batch:
-                cost = sum(len(v) if isinstance(v, (str, bytes)) else 8 for v in tuple(row))
-                if used + cost > MAX_FILE_BYTES:
-                    _BUDGET.omit(where, "file")
-                    return out
-                if not _charge(where, cost):
-                    return out
-                used += cost
-                out.append(dict(row))
+        quoted = [_quoted(column) for column in columns]
+        # Every value's bytes, and 8 for each value's own overhead (a NULL or a number included).
+        size = " + ".join(f"coalesce({_octets(q)}, 0) + 8" for q in quoted)
+        conn.create_function("_open_fleet_admit", 1, gate.admit)
+        cursor = conn.cursor()
+        cursor.row_factory = None
+        cursor.execute(f"SELECT {', '.join(quoted)} FROM {_quoted(table)} WHERE _open_fleet_admit({size})")
+        while (row := cursor.fetchone()) is not None:
+            out.append(dict(zip(columns, row, strict=True)))
         return out
     except sqlite3.Error:
         return []
     finally:
+        if gate.why is not None:
+            _BUDGET.omit(where, gate.why)
         if isinstance(conn, _Store):
-            conn.used = used
+            conn.used = gate.used
 
 
 def _json_col(value):

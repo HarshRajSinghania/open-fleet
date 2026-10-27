@@ -945,6 +945,122 @@ class TestStoresAreReadAsStoredData(_Base):
         self.assertEqual(len(hits), 1)
 
 
+class _SpyCursor:
+    """A cursor that records the largest str/bytes value any fetch hands Python."""
+
+    def __init__(self, spy, cursor):
+        object.__setattr__(self, "_spy", spy)
+        object.__setattr__(self, "_cursor", cursor)
+
+    def _seen(self, rows):
+        for row in rows:
+            for value in (tuple(row) if row is not None else ()):
+                if isinstance(value, (str, bytes)):
+                    self._spy.largest = max(self._spy.largest, len(value))
+        return rows
+
+    def execute(self, *args):
+        self._cursor.execute(*args)
+        return self
+
+    def fetchone(self):
+        return self._seen([self._cursor.fetchone()])[0]
+
+    def fetchmany(self, *args):
+        return self._seen(self._cursor.fetchmany(*args))
+
+    def fetchall(self):
+        return self._seen(self._cursor.fetchall())
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._cursor, name, value)
+
+
+class _SpyConnection:
+    """A connection whose every query result passes _SpyCursor, so a test sees what reached Python."""
+
+    def __init__(self, conn):
+        self.conn, self.largest = conn, 0
+
+    def cursor(self):
+        return _SpyCursor(self, self.conn.cursor())
+
+    def execute(self, *args):
+        return self.cursor().execute(*args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+class TestNoValueOverTheCapReachesPython(_Base):
+    """Codex round 2 on PR #723 (W5-21): _rows fetched eight rows at a time and charged them only
+    once Python held them, so eight stored 450 MB values were materialised before the 64 MiB cap
+    refused the first; the store-size guard was gone too. Each row's stored size is now charged as
+    SQLite reads it, before any of its values is handed to Python, and a store over its own cap is
+    never opened. The spy records the largest value any query hands Python."""
+
+    goose_db = TestSqliteAndManifestReadsAreBounded.goose_db
+    scan = TestSqliteAndManifestReadsAreBounded.scan
+
+    def store(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE messages (session_id TEXT, content_json)")
+        conn.executemany("INSERT INTO messages VALUES ('s1', ?)", [("small " * 10,)] * 3)
+        conn.execute("INSERT INTO messages SELECT 's1', zeroblob(300000) FROM (SELECT 1 UNION ALL SELECT 2)")
+        conn.execute("INSERT INTO messages SELECT 's1', hex(zeroblob(150000)) FROM (SELECT 1 UNION ALL SELECT 2)")
+        conn.commit()
+        return _SpyConnection(conn)
+
+    def test_an_over_cap_row_is_never_handed_to_python(self):
+        spy, err = self.store(), io.StringIO()
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 100_000, create=True), contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            rows = self.mod._rows(spy, "messages")
+        self.assertLess(spy.largest, 100_000, f"a {spy.largest}-byte value reached Python past a 100000-byte cap")
+        self.assertEqual(len(rows), 3, "the rows under the cap were not all read")
+        self.assertIn("skipped", err.getvalue())
+
+    def test_the_scans_budget_is_charged_before_a_value_arrives(self):
+        spy, err = self.store(), io.StringIO()
+        with mock.patch.object(self.mod, "MAX_RUN_BYTES", 120_000, create=True), contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            self.mod._BUDGET.used = 100_000
+            rows = self.mod._rows(spy, "messages")
+        self.assertLess(spy.largest, 20_000, f"a {spy.largest}-byte value reached Python past the scan's budget")
+        self.assertEqual(len(rows), 3)
+        self.assertIn("scan's byte budget", err.getvalue())
+
+    def test_schema_reads_never_hand_python_an_oversized_name_or_default(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute(f"CREATE TABLE messages (session_id TEXT, content_json TEXT DEFAULT '{'d' * 200_000}')")
+        conn.execute(f'CREATE TABLE "{"t" * 50_000}" (x TEXT)')
+        spy = _SpyConnection(conn)
+        self.assertIn("messages", self.mod._tables(spy))
+        self.assertEqual(self.mod._stored_columns(spy, "messages"), ["session_id", "content_json"])
+        self.assertLess(spy.largest, 1024, f"a {spy.largest}-byte schema value (a name or a DEFAULT) reached Python")
+
+    def test_a_store_over_its_size_cap_is_never_opened_and_that_is_said(self):
+        def build(conn):
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+            conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                         "json_array(json_object('type', 'text', 'text', 'sigma_token ' || hex(zeroblob(20000)))))")
+        env = self.goose_db(build)
+        self.assertEqual(len(self.scan("sigma_token", env)[0]), 1, "the store is read under its cap")
+        with mock.patch.object(self.mod, "MAX_STORE_BYTES", 8192, create=True):
+            hits, err = self.scan("sigma_token", env)
+        self.assertEqual(hits, [], "a store over MAX_STORE_BYTES was opened")
+        self.assertIn("a SQLite store over", err)
+
+
 class TestNestingNeverAbortsTheScan(_Base):
     """Re-check of W5-21: json.loads raises RecursionError, not JSONDecodeError, on a line nested
     100 000 deep, and _extract_text recursed once per level of a 1 400-deep list the parser

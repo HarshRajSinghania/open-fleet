@@ -1144,6 +1144,54 @@ class TestOldSqliteNeverSizesAValueByLoadingIt(_Base):
         self.assertIn("SQLite was told never to load", proc.stderr)
 
 
+class TestTheLimitsComeBeforeTheSchemaIsRead(_Base):
+    """Codex round 4 on PR #723 (W5-21): the length limit was set after _open_watched's
+    sqlite_master probe, and SQLite parses the schema on that first read, so a store under the
+    1 GiB guard whose CREATE TABLE holds a 450 MiB DEFAULT was loaded whole first. _connect, the
+    only way recall opens a store, now sets SQLITE_LIMIT_LENGTH and SQLITE_LIMIT_SQL_LENGTH before
+    any statement. The child lowers the cap through the module's knob (4 MiB) against a 48 MiB
+    DEFAULT and measures its own peak RSS across the open."""
+
+    CHILD = ("import importlib.util, io, json, resource, sys, contextlib\n"
+             "from pathlib import Path\n"
+             "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+             "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+             "mod.MAX_FILE_BYTES = 4 << 20\n"
+             "scale = 1024 if sys.platform == 'darwin' else 1\n"
+             "base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             "err = io.StringIO()\n"
+             "with contextlib.redirect_stderr(err):\n"
+             "    conn = mod._sqlite_ro(Path(sys.argv[2]))\n"
+             "peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             "print(json.dumps({'opened': conn is not None, 'grew_kib': peak - base, 'said': err.getvalue()}))\n")
+
+    def test_a_store_whose_schema_is_over_the_cap_is_refused_without_loading_it(self):
+        db = self.tmp / "big-schema" / "sessions.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE messages (session_id TEXT, content_json TEXT DEFAULT '"
+                         + "d" * (48 << 20) + "')")
+            conn.commit()
+        self.assertLess(db.stat().st_size, self.mod.MAX_STORE_BYTES, "the store must pass the store-size guard")
+        proc = subprocess.run([sys.executable, "-I", "-c", self.CHILD, str(SEARCH_PY), str(db)],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertLess(got["grew_kib"], 24 * 1024,
+                        f"recall's memory grew {got['grew_kib']} KiB: SQLite loaded the 48 MiB schema first")
+        self.assertFalse(got["opened"], "a store whose schema is over the cap was opened")
+        self.assertIn("schema holds a statement over", got["said"])
+
+    def test_every_recall_connection_is_opened_by_the_one_helper(self):
+        source = SEARCH_PY.read_text(encoding="utf-8")
+        self.assertEqual(source.count("sqlite3.connect("), 1, "a recall path opens SQLite outside _connect")
+        helper = source[source.index("def _connect("):source.index("def _open_watched(")]
+        self.assertIn("sqlite3.connect(", helper)
+        first = helper.index("sqlite3.connect(")
+        self.assertLess(helper.index("SQLITE_LIMIT_LENGTH"), helper.index("return conn"))
+        self.assertGreater(helper.index("SQLITE_LIMIT_SQL_LENGTH"), first)
+
+
 class TestNestingNeverAbortsTheScan(_Base):
     """Re-check of W5-21: json.loads raises RecursionError, not JSONDecodeError, on a line nested
     100 000 deep, and _extract_text recursed once per level of a 1 400-deep list the parser

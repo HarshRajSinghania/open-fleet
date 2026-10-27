@@ -547,14 +547,15 @@ def check_negative_control_demo(ctx):
 _BLOCK_SCALAR_RE = re.compile(r"^[|>](?:[1-9]?[+-]?|[+-]?[1-9]?)$")
 _JOB_KEY_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
 _STEP_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z_-]+):\s*(.*?)\s*$")
-# A job or step carrying either key may not run, or may not fail the build, so it proves
-# nothing about what CI runs. No real job or step that runs a gate-3 script carries one, so none
-# is allowlisted: a condition's truth is GitHub's to decide at run time, not this check's.
-_DISQUALIFYING_KEYS = frozenset({"if", "continue-on-error"})
-_INTERPRETERS = frozenset({"python3", "python", "sh", "bash"})
-_SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "|&", ";;"})
-_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# A step or job carrying one of these may not run its line, may not fail the build, or may run
+# it some other way than the line says (`shell: bash -n {0}`; `working-directory` or `defaults`
+# deciding which file the path names). None of the real gate-3 steps or jobs carries one, so
+# none is allowlisted: a condition's truth is GitHub's to decide at run time, not this check's.
+_STEP_DISQUALIFIERS = frozenset({"if", "continue-on-error", "shell", "working-directory"})
+_JOB_DISQUALIFIERS = frozenset({"if", "continue-on-error", "defaults"})
+_GATE3_INTERPRETERS = frozenset({"python3", "bash", "sh"})
+# Anything that could make the line more than one command, redirect it or expand into one.
+_SHELL_METACHARACTERS = re.compile(r"[;&|<>`\n\r]|\$\(")
 
 
 def _indent(line):
@@ -562,8 +563,11 @@ def _indent(line):
 
 
 def workflow_steps(text):
-    """[(job, [step lines])] for every step of every job under the top-level `jobs:` key, a job
-    carrying `if:` or `continue-on-error:` excluded. Stdlib only: no YAML parser in CI."""
+    """[(job, [step lines])] for every step of every job under the top-level `jobs:` key. A job
+    carrying a disqualifying key is left out, and so is every job of a workflow with top-level
+    `defaults:`. Stdlib only: no YAML parser in CI."""
+    if re.search(r"(?m)^defaults:", text):
+        return []
     jobs, current, in_jobs = {}, None, False
     for line in text.splitlines():
         if line.startswith("jobs:"):
@@ -580,7 +584,7 @@ def workflow_steps(text):
     out = []
     for job, lines in jobs.items():
         if any((m := _STEP_KEY_RE.match(ln)) and _indent(ln) == 4
-               and m.group(2) in _DISQUALIFYING_KEYS for ln in lines):
+               and m.group(2) in _JOB_DISQUALIFIERS for ln in lines):
             continue
         step, in_steps = None, False
         for line in lines:
@@ -600,104 +604,108 @@ def workflow_steps(text):
 
 
 def _step_run(step):
-    """(the step's `run:` lines, whether they are a folded scalar), or None when the step has no
-    `run:` or carries `if:` or `continue-on-error:`. Keys are read at the step's own key indent,
-    so a nested map cannot pose as one."""
+    """The step's whole `run:` value, as the shell receives it (a folded scalar joined with
+    spaces), or None when the step has no `run:` or carries a disqualifying key. Keys are read at
+    the step's own key indent, so a nested map cannot pose as one."""
     key_indent = len(step[0]) - len(step[0].lstrip(" -"))
-    script = None
+    value = None
     for i, line in enumerate(step):
         m = _STEP_KEY_RE.match(line)
         if not m or (i and _indent(line) != key_indent):
             continue
-        key, value = m.group(2), m.group(3)
-        if key in _DISQUALIFYING_KEYS:
+        key, inline = m.group(2), m.group(3)
+        if key in _STEP_DISQUALIFIERS:
             return None
         if key == "run":
-            block = _BLOCK_SCALAR_RE.match(value)
-            body = [] if block else [value]
+            if not _BLOCK_SCALAR_RE.match(inline):
+                value = inline
+                continue
+            body = []
             for nxt in step[i + 1:]:
                 if nxt.strip() and _indent(nxt) <= key_indent:
                     break
-                body.append(nxt)
-            script = (body, bool(block) and value.startswith(">"))
-    return script
+                body.append(nxt.strip())
+            value = (" " if inline.startswith(">") else "\n").join(body)
+    return value
 
 
-def _tokens(text):
-    """Shell tokens of `text` (operators split out, comments dropped), or None when a quote is
-    left open."""
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    lexer.commenters = "#"
+def runs_on_every_pull_request(text):
+    """Whether the workflow's `on:` map holds a bare `pull_request:`: every pull request runs it,
+    with no `branches`, `paths` or `types` filter under the key. Both real gate-3 workflows
+    trigger that way (and on pushes to main); a dispatch- or schedule-only workflow proves
+    nothing about what gates a merge."""
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if re.match(r"^on:\s*(?:#.*)?$", ln)), None)
+    if start is None:
+        return False
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            return False
+        if re.match(r"^  pull_request:\s*(?:#.*)?$", line):
+            rest = (ln for ln in lines[i + 1:] if ln.strip() and not ln.lstrip().startswith("#"))
+            return _indent(next(rest, "")) <= 2
+    return False
+
+
+def invoked_script(run_value):
+    """The script path when `run_value`, stripped, is exactly one invocation, else None.
+
+    One invocation: one line, `<interpreter> <script> [args...]` with the interpreter python3,
+    bash or sh and no option between it and the script, or `./<script> [args...]`, and no shell
+    metacharacter anywhere (`;`, `&`, `|`, `<`, `>`, a backtick, `$(`, a line break). Shell
+    reachability is undecidable, so nothing more permissive is read: no setup line, no prefix, no
+    second command, no option that could stop the interpreter before the script (`-h`, `-c`, `-n`).
+    """
+    text = (run_value or "").strip()
+    if not text or _SHELL_METACHARACTERS.search(text):
+        return None
     try:
-        return list(lexer)
+        words = shlex.split(text)
     except ValueError:
         return None
-
-
-def invoked_scripts(script_lines, folded=False):
-    """The script paths a run: script invokes at command position.
-
-    Counted only from a line that opens with the invocation: the interpreter (python3, python,
-    sh, bash) and the script as its first non-option argument, or the script executed directly,
-    with at most `time` and VAR=value assignments before it. The line must start outside a
-    quoted string, a heredoc body and a backslash-continued line; nothing on it may swallow the
-    script's failure (`||`) or background it (`&`). A folded scalar (`run: >`) is one line.
-    What the shell does with the exit status afterwards (`set +e`, a pipeline) is not read.
-    """
-    lines = [" ".join(ln.strip() for ln in script_lines if ln.strip())] if folded else script_lines
-    found, before, heredoc = [], "", None
-    for line in lines:
-        if heredoc is not None:  # data, not commands, until the delimiter line
-            if line.strip() == heredoc:
-                heredoc = None
-            continue
-        at_start = _tokens(before) is not None and not before.rstrip().endswith("\\")
-        before += line + "\n"
-        if m := _HEREDOC_RE.search(line):
-            heredoc = m.group(2)
-        tokens = _tokens(line) if at_start else None
-        if not tokens or "||" in tokens or "&" in tokens:
-            continue
-        command = []
-        for token in tokens:
-            if token in _SHELL_SEPARATORS:
-                break
-            command.append(token)
-        while command and (command[0] == "time" or _ASSIGNMENT_RE.match(command[0])):
-            command.pop(0)
-        if command and command[0] in _INTERPRETERS:
-            found += [arg for arg in command[1:] if not arg.startswith("-")][:1]
-        elif command and command[0].endswith((".py", ".sh")):
-            found.append(command[0])
-    return [path[2:] if path.startswith("./") else path for path in found]
+    if len(words) >= 2 and words[0] in _GATE3_INTERPRETERS and not words[1].startswith("-"):
+        return words[1][2:] if words[1].startswith("./") else words[1]
+    if words and words[0].startswith("./") and len(words[0]) > 2:
+        return words[0][2:]
+    return None
 
 
 def check_workflows_mention(ctx, name, patterns, landed):
-    """PASS iff some workflow job step invokes a script matching one of `patterns`.
+    """PASS iff some workflow job step's whole `run:` is one invocation of a script matching one
+    of `patterns`.
 
-    "CI runs X" was satisfied by X anywhere in a workflow file — a comment, a step name, an
-    `if:` (2026-10-23 review, §5) — then by X anywhere in a `run:` line, so `echo X` passed with
-    the real job deleted (2026-10-27 security audit, W6-10), then by a job or step under any
-    `if:` that was not a literal false, and by `true || X` (PR #718 review). What counts now: a
-    step under a top-level job, neither of which carries `if:` or `continue-on-error:`, whose
-    `run:` script has a line opening with the invocation (invoked_scripts says exactly how).
+    "CI runs X" was satisfied by X anywhere in a workflow file (2026-10-23 review, §5), then by X
+    anywhere in a `run:` line (`echo X`, 2026-10-27 security audit, W6-10), then by lines a shell
+    never reaches (`true || X`, `exit 0` or `if false; then` before X) and by options that stop
+    the interpreter (`bash -n X`), PR #718 reviews. Shell reachability is undecidable, so the rule
+    is a decidable one: a step under a top-level job counts only when its whole `run:` value,
+    stripped, is one invocation (invoked_script says exactly what that is), neither the step nor
+    its job carries `if:` or `continue-on-error:`, the step sets no `shell:` or
+    `working-directory:`, neither its job nor the workflow sets `defaults:`, and the workflow
+    runs on every pull request (runs_on_every_pull_request; a dispatch-only workflow counted, PR
+    #718 re-attack). Not read: the environment (`env:`, or `$GITHUB_ENV` written by an earlier
+    step), the runner or a container.
     """
     wf_dir = ctx.repo / ".github" / "workflows"
     files = sorted(p for p in wf_dir.iterdir() if p.is_file()) if wf_dir.is_dir() else []
     hits = []
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace")
-        runs = [run for _job, step in workflow_steps(text) if (run := _step_run(step)) is not None]
-        if any(re.search(pat, invoked) for script, folded in runs
-               for invoked in invoked_scripts(script, folded) for pat in patterns):
+        if not runs_on_every_pull_request(text):
+            continue
+        invoked = [script for _job, step in workflow_steps(text)
+                   if (script := invoked_script(_step_run(step)))]
+        if any(re.search(pat, script) for script in invoked for pat in patterns):
             hits.append(path.name)
     what = " or ".join(patterns)
     if hits:
-        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} invoke {what} from an "
-                            f"unconditional job step ({landed} landed)")
-    return (name, FAIL, f"no unconditional job step under .github/workflows/ invokes {what} "
-                        f"({landed} has not landed)")
+        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} run {what} as the whole of "
+                            f"an unconditional job step ({landed} landed)")
+    return (name, FAIL, f"no unconditional job step under .github/workflows/ is exactly one "
+                        f"invocation of {what} ({landed} has not landed)")
 
 
 def gate3(ctx):

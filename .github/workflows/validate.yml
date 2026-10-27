@@ -415,10 +415,10 @@ jobs:
         # corpus drift off VERSION+CANARY, any skipped trap, verify.py false_done
         # > 0, or any valid-control failure. RED means fix the verifier, never
         # the corpus. ~11s locally; stays in the PR gate by design, no nightly
-        # waiver without an issue.
-        run: |
-          set -euo pipefail
-          time python3 bench/vf-bench/gate.py
+        # waiver without an issue. One invocation and nothing else: release_check.py gate 3
+        # counts only a step whose whole run: is that (PR #718 review). The runner's own
+        # `bash -e -o pipefail` wraps it, and the step's duration is in the run log.
+        run: python3 bench/vf-bench/gate.py
   vfbench_replay:
     # #601: the second environment. bench/vf-bench/replay-reference.json is a replay published from
     # a developer machine at a pinned revision; this job replays that revision under the same

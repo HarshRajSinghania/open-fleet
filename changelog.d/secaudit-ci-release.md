@@ -11,5 +11,6 @@
   `uses:` and every demo-stack image is pinned by test. The publishers check the tag before
   fetching it, `release.yml` marks only the newest tag Latest, and `publish-dist` stages the
   bundle exactly. `gen-badges.py` checks a claimed cut's badge and the release commit's shape,
-  release gate 3 needs a job step that runs the script, gates 0 and 4 read CI on the branch
+  release gate 3 counts only an unconditional step of a pull-request workflow whose whole
+  `run:` is one line running the script under python3, bash or sh, gates 0 and 4 read CI on the branch
   being cut, and both bookkeeping writers refuse raw HTML.

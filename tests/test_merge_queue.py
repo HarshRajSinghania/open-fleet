@@ -578,6 +578,36 @@ class OfflineAndPromotion(QueueCase):
         self.assertEqual([(x["sink"], x["payload_class"], x["consent"]) for x in lines],
                          [("merge-queue", kind, "grant:merge-to-integration") for kind in ("pr-merge", "branch-delete") * 2])
 
+    def test_every_egress_receipt_id_leaves_the_ledger_so_a_close_can_bind_it(self):
+        # Re-attack of 82a2d00c (W5-05): merge_queue wrote its receipts and discarded the record,
+        # so no id of them ever left the ledger, and a rewrite of the newest one (host, payload
+        # hash, recomputed id) verified clean against every anchor a close held. Each id is now
+        # recorded in the queue's own store (and printed), where the close takes it from.
+        token = self.acquire()
+        self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
+        self.w.cli("release", "--token", token)
+        self.assertEqual(self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")[0], 0)
+        rc, out = self.w.cli("--repo", self.repo, "receipts", "--base", W.BASE)
+        self.assertEqual(rc, 0, out)
+        recorded = [r["body"] for r in out["receipts"] if r["kind"] == "egress_receipt"]
+        ledger = [json.loads(x) for x in self.w.ledger.read_text().splitlines()]
+        self.assertEqual([r["id"] for r in recorded], [x["id"] for x in ledger],
+                         "an egress receipt the queue wrote has no id outside the ledger")
+        self.assertEqual({r["ledger"] for r in recorded}, {str(self.w.ledger)})
+        verify = [sys.executable, str(ROOT / "runtime" / "scripts" / "egress.py"), "--ledger", str(self.w.ledger),
+                  "verify"]
+        anchors = [a for r in recorded for a in ("--expect-ancestor", r["id"])]
+        honest = subprocess.run([*verify, *anchors], capture_output=True, text=True)
+        self.assertEqual(honest.returncode, 0, honest.stderr)
+        lines = self.w.ledger.read_text().splitlines()
+        rec = json.loads(lines[-1])
+        rec.update(host="gitlab.example", payload_sha256="0" * 64)
+        rec["id"] = egress.record_id(rec)
+        lines[-1] = egress.canonical_line(rec)
+        self.w.ledger.write_text("\n".join(lines) + "\n")
+        forged = subprocess.run([*verify, *anchors], capture_output=True, text=True)
+        self.assertEqual(forged.returncode, 3, forged.stdout + forged.stderr)
+
     def test_no_receipt_means_no_send(self):
         token = self.acquire()
         (entry,) = self.board(token, self.w.unit("alpha"))

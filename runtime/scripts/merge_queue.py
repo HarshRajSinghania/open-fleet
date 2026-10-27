@@ -1500,7 +1500,7 @@ class MergeQueue:
                           e["entry_id"], lease)
         e = {**e, "state": MERGING, "accepted_head": accepted, "expected_base": base_head, "teardown": teardown}
         try:
-            self._egress(cfg, e)
+            receipt_id = self._egress(cfg, e, token)
         except egress.EgressError as exc:
             with self.store.tx() as conn:
                 lease = self._fence(conn, token)
@@ -1528,7 +1528,7 @@ class MergeQueue:
             self._boundary("merged_recorded", info)
             branch = self._teardown_branch(token, cfg, e, lock)
             return {"ok": True, "result": "merged", "entry": e["entry_id"], "unit": e["unit"], **decision,
-                    "noGh": cfg["mode"] == "git", "branch": branch}
+                    "noGh": cfg["mode"] == "git", "branch": branch, "egressReceipt": receipt_id}
         if decision["resolution"] == "unknown":
             raise QueueError("merge_outcome_unknown", "the merge was sent but its outcome cannot be read yet; it is "
                              "reconciled before anything else merges", decision)
@@ -1637,11 +1637,8 @@ class MergeQueue:
             return "skipped: another command already owns or finished this deletion", False, None
         body = json.dumps({"repo": cfg["repo"], "branch": e["branch"], "head": e["accepted_head"]},
                           sort_keys=True).encode()
-        explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
         try:
-            egress.write_receipt(Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER,
-                                 "merge-queue", cfg["host"], "branch-delete", cfg["consent"], nbytes=len(body),
-                                 payload_sha256=hashlib.sha256(body).hexdigest())
+            self._egress_receipt(token, cfg, e, "branch-delete", body)
         except egress.EgressError:
             self._claim_deletion(token, e, "deleting", "delete")  # nothing was sent: still owed
             raise
@@ -1687,14 +1684,35 @@ class MergeQueue:
                                 remote, f"{local_merge}:refs/heads/{cfg['base']}", check=False, pass_fds=fds)
         return proc.returncode == 0, {"exit": proc.returncode, "stderr": (proc.stderr or "")[-300:]}
 
-    def _egress(self, cfg: dict[str, Any], e: dict[str, Any]) -> None:
-        """egress.py's fail-closed receipt, appended BEFORE the send (#368)."""
-        explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
-        path = Path(explicit) if explicit else self.repo_dir / egress.DEFAULT_LEDGER
+    def _egress(self, cfg: dict[str, Any], e: dict[str, Any], token: str) -> str:
+        """egress.py's fail-closed receipt, appended BEFORE the send (#368); returns its id."""
         body = json.dumps({"repo": cfg["repo"], "base": cfg["base"], "entry": e["entry_id"], "pr": e["pr"],
                            "head": e["accepted_head"], "expectedBase": e["expected_base"]}, sort_keys=True).encode()
-        egress.write_receipt(path, "merge-queue", cfg["host"], "pr-merge" if cfg["mode"] == "gh" else "base-push",
-                             cfg["consent"], nbytes=len(body), payload_sha256=hashlib.sha256(body).hexdigest())
+        return self._egress_receipt(token, cfg, e, "pr-merge" if cfg["mode"] == "gh" else "base-push", body)
+
+    def _egress_receipt(self, token: str, cfg: dict[str, Any], e: dict[str, Any], payload_class: str,
+                        body: bytes) -> str:
+        """Write one egress receipt, then keep its id OFF the ledger: in this queue's own store (an
+        `egress_receipt` receipt, which `receipts` lists) and on stderr. An id that never leaves the
+        ledger binds nothing: a receipt rewritten after the last close, id recomputed, verified
+        clean against every anchor a close held (2026-10-27 re-attack, W5-05). A ledger routed by
+        $OPEN_FLEET_EGRESS_LEDGER / $ORCA_EGRESS_LEDGER is said too, never silent (W5-03)."""
+        explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
+        default = self.repo_dir / egress.DEFAULT_LEDGER
+        path = Path(os.path.abspath(explicit)) if explicit else default
+        record = egress.write_receipt(path, "merge-queue", cfg["host"], payload_class, cfg["consent"],
+                                      nbytes=len(body), payload_sha256=hashlib.sha256(body).hexdigest())
+        if explicit:
+            print(f"merge_queue: egress receipt written to {path} (from the environment), not the repository "
+                  f"ledger {default}", file=sys.stderr)
+        print(f"merge_queue: egress receipt {record['id']} ({payload_class}, {e['entry_id']}) in {path}",
+              file=sys.stderr)
+        with self.store.tx() as conn:
+            lease = self._fence(conn, token)
+            self._receipt(conn, cfg["repo"], cfg["base"], "egress_receipt",
+                          {"id": record["id"], "payloadClass": payload_class, "ledger": str(path),
+                           "routed": bool(explicit)}, e["entry_id"], lease)
+        return record["id"]
 
     def _record(self, token: str, cfg: dict[str, Any], e: dict[str, Any], kind: str, body: dict[str, Any]) -> None:
         with self.store.tx() as conn:

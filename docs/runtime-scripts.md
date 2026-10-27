@@ -1569,7 +1569,10 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   deleted, as a compare-and-swap, only when GitHub merged that PR into BASE and reports its head
   branch in the queue's own repository: a fork's branch, or a same-named branch of the queue's
   repository behind a cross-repository PR, is never touched. The deletion is fenced and
-  egress-receipted like the merge, and its push inherits the merge boundary's lock as the merge's
+  egress-receipted like the merge. Each egress receipt's id is kept off the ledger, as an
+  `egress_receipt` in the queue's own receipts (`receipts`), on stderr, and as `egressReceipt` in a
+  merge's result, so run close can anchor it; a ledger routed by `$OPEN_FLEET_EGRESS_LEDGER` is said
+  on stderr (2026-10-27 re-attack, W5-05/W5-03). Its push inherits the merge boundary's lock as the merge's
   send does, so a conductor killed mid-deletion holds the boundary until that push ends and the
   next owner records the branch as gone. Owed teardowns are read only once the boundary is held,
   and each deletion is claimed (`deleting`) in a fenced transaction that re-reads the entry just

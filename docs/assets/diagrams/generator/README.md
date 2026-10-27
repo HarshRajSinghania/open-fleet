@@ -1,20 +1,20 @@
 # Image generator
 
-Source of every image under `assets/` — the hero banners, the social preview, the concept
+Source of every image under `docs/assets/` — the hero banners, the social preview, the concept
 diagrams, the README and deep-dive visuals, and one developer-contract card per mission, each
 diagram in a dark and a light variant. The prompts are the diagram source the same way the
 mermaid blocks in the README are: edit the prompt, rerun, review the render.
 
 ```bash
-npm --prefix assets/diagrams/generator install                                       # one-time sharp setup for SVG renderers
-OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py                      # everything (image model)
-OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only ship-it       # one dark
-OPENROUTER_API_KEY=... python3 assets/diagrams/generator/gen.py --only ship-it-light # its light variant
-python3 assets/diagrams/generator/render_svg.py                                      # deterministic SVG + sharp mission cards (all 22 pairs)
-node assets/diagrams/generator/render_brand_assets.js                                # deterministic SVG + sharp hero/social/icon assets
-node assets/diagrams/generator/render_architecture_diagrams.js                       # deterministic SVG + sharp verify-gate, install-stack, runtime-providers, tracker-enumeration
-node assets/diagrams/generator/replace_corner_whales.js                              # 3-node constellation corner mark patch on concept diagrams
-python3 assets/diagrams/generator/wire_docs.py .                                     # embed into the docs
+npm --prefix docs/assets/diagrams/generator install                                       # one-time sharp setup for SVG renderers
+OPENROUTER_API_KEY=... python3 docs/assets/diagrams/generator/gen.py                      # everything (image model)
+OPENROUTER_API_KEY=... python3 docs/assets/diagrams/generator/gen.py --only ship-it       # one dark
+OPENROUTER_API_KEY=... python3 docs/assets/diagrams/generator/gen.py --only ship-it-light # its light variant
+python3 docs/assets/diagrams/generator/render_svg.py                                      # deterministic SVG + sharp mission cards (all 22 pairs)
+node docs/assets/diagrams/generator/render_brand_assets.js                                # deterministic SVG + sharp hero/social/icon assets
+node docs/assets/diagrams/generator/render_architecture_diagrams.js                       # deterministic SVG + sharp verify-gate, install-stack, runtime-providers, tracker-enumeration
+node docs/assets/diagrams/generator/replace_corner_whales.js                              # 3-node constellation corner mark patch on concept diagrams
+python3 docs/assets/diagrams/generator/wire_docs.py .                                     # embed into the docs
 ```
 
 - `specs.py` — the shared style block, the brand images, and the concept diagrams.

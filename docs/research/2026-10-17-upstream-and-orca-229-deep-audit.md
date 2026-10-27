@@ -8,9 +8,9 @@ pins to current upstream `HEAD` / latest releases, with disposition (`ADOPT`, `P
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/tracker-enumeration.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/tracker-enumeration-light.jpg">
-    <img src="../../assets/diagrams/tracker-enumeration-light.jpg" alt="Four-stage tracker enumeration pipeline: hosted trackers (GitHub Issues/PRs, Linear --workspace, Jira --site in v1.4.229) feed a T0 twin-query denominator, pass through guard_text.py trust fencing, and close via single-attempt writes verified against merge SHAs" width="860">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/tracker-enumeration.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/tracker-enumeration-light.jpg">
+    <img src="../assets/diagrams/tracker-enumeration-light.jpg" alt="Four-stage tracker enumeration pipeline: hosted trackers (GitHub Issues/PRs, Linear --workspace, Jira --site in v1.4.229) feed a T0 twin-query denominator, pass through guard_text.py trust fencing, and close via single-attempt writes verified against merge SHAs" width="860">
   </picture>
 </p>
 

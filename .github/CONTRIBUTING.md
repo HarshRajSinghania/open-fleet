@@ -80,8 +80,8 @@ A mission PR must include:
 3. An entry in the README mission table and in [AGENTS.md](../AGENTS.md)'s intent → mission mapping.
 4. A guide at `docs/missions/<name>.md` following the structure of
    [docs/missions/ship-it.md](../docs/missions/ship-it.md). The guide embeds the mission's contract
-   card from `assets/diagrams/missions/<name>.jpg` (dark) and `<name>-light.jpg`, rendered from a
-   spec in `assets/diagrams/generator/specs_missions.py` — a test holds guides and assets to parity
+   card from `docs/assets/diagrams/missions/<name>.jpg` (dark) and `<name>-light.jpg`, rendered from a
+   spec in `docs/assets/diagrams/generator/specs_missions.py` — a test holds guides and assets to parity
    in both directions.
 5. An updated `EXPECTED_MISSIONS` set in `tests/test_architecture.py` AND `tests/test_evals.py` —
    the mission set is locked on purpose; changing it is a deliberate act.
@@ -152,7 +152,7 @@ touches; the release cut ([ops guide](../docs/ops.md#release-cut)) folds them in
 | making a change worth a release note | `changelog.d/<slug>.md`, the entry text ([format](../changelog.d/README.md)) | `CHANGELOG.md` — CI fails a new `[Unreleased]` entry |
 | adding a test module `tests/test_<name>.py` | `tests/shard-weights/test_<name>.json` (`python3 scripts/shard-tests.py --measure test_<name> --scale 2`) | another module's weight file, unless your PR is a rebalance |
 | filing a run report under `docs/runs/` | `docs/runs/index/<run>.json`, its index row ([format](../scripts/run_index.py)) | the table or the yes-count in `docs/runs/README.md` — the cut renders them |
-| changing the test count | nothing | `assets/badges/tests.json` — it is the count at the last release, and the README badge says so |
+| changing the test count | nothing | `docs/assets/badges/tests.json` — it is the count at the last release, and the README badge says so |
 
 ## Before you open the PR
 

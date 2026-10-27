@@ -18,9 +18,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/clean-sweep.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/clean-sweep-light.jpg">
-    <img src="../../assets/diagrams/missions/clean-sweep-light.jpg" alt="Mission contract for clean-sweep: you give it an audit report, an issue tracker, or docs that lie; it interrupts you for batch approval of refuted and duplicate closes; the promotion PR; you get back DRY or DRY-WITH-PARKED, plus one merged PR per finding; a test that failed pre-fix; the final enumeration pasted in the ledger; it stops at the promotion PR — every close backed by a merge SHA, never by worker memory; phases ENUMERATE, TRIAGE, FIX, REVIEW, LAND, CLOSE, RE-ENUMERATE" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/clean-sweep.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/clean-sweep-light.jpg">
+    <img src="../assets/diagrams/missions/clean-sweep-light.jpg" alt="Mission contract for clean-sweep: you give it an audit report, an issue tracker, or docs that lie; it interrupts you for batch approval of refuted and duplicate closes; the promotion PR; you get back DRY or DRY-WITH-PARKED, plus one merged PR per finding; a test that failed pre-fix; the final enumeration pasted in the ledger; it stops at the promotion PR — every close backed by a merge SHA, never by worker memory; phases ENUMERATE, TRIAGE, FIX, REVIEW, LAND, CLOSE, RE-ENUMERATE" width="820">
   </picture>
 </p>
 

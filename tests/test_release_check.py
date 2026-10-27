@@ -369,7 +369,7 @@ class GatesFailOnAFixtureThatViolatesThem(unittest.TestCase):
             wf.mkdir(parents=True)
             (wf / "validate.yml").write_text("run: python3 bench/vf-bench/gate.py\n",
                                              encoding="utf-8")
-            (wf / "negative-control.yml").write_text("run: sh demo/negative-control/run.sh\n",
+            (wf / "negative-control.yml").write_text("run: sh evals/demo/negative-control/run.sh\n",
                                                      encoding="utf-8")
             (root / "README.md").write_text("git clone … && sh scripts/install.sh\n",
                                             encoding="utf-8")
@@ -622,7 +622,7 @@ class TheChecklistPointsAtTheScript(unittest.TestCase):
                 "python3 runtime/scripts/proof_status.py --check",
                 "python3 runtime/scripts/run_report.py",
                 "python3 bench/vf-bench/gate.py",
-                "sh demo/negative-control/run.sh",
+                "sh evals/demo/negative-control/run.sh",
                 "gh run list --workflow validate --branch main",
                 "gh run list --workflow install --branch main",
                 "gh pr view 406 --json state",

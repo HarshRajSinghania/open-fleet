@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/attest-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/attest-it-light.jpg">
-    <img src="../../assets/diagrams/missions/attest-it-light.jpg" alt="Mission contract for attest-it: you give it a standard at a version, and a codebase; it interrupts you for freezing the obligation catalog — a one-way gate; accepting any residual gap; you get back CONFORMANT or CONFORMANT-WITH-GAPS, plus evidence per obligation, re-derived in a fresh session; gaps with a named owner; it stops at read-only — remediation is a separate ship-it or clean-sweep run; phases FREEZE, EVIDENCE, RE-DERIVE, AGGREGATE, PUBLISH" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/attest-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/attest-it-light.jpg">
+    <img src="../assets/diagrams/missions/attest-it-light.jpg" alt="Mission contract for attest-it: you give it a standard at a version, and a codebase; it interrupts you for freezing the obligation catalog — a one-way gate; accepting any residual gap; you get back CONFORMANT or CONFORMANT-WITH-GAPS, plus evidence per obligation, re-derived in a fresh session; gaps with a named owner; it stops at read-only — remediation is a separate ship-it or clean-sweep run; phases FREEZE, EVIDENCE, RE-DERIVE, AGGREGATE, PUBLISH" width="820">
   </picture>
 </p>
 

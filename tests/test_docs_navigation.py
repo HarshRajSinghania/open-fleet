@@ -1058,7 +1058,7 @@ class MissionGuidesEmbedTheirDiagram(unittest.TestCase):
 
     modernize-it.jpg sat in the assets directory while its guide never referenced it, and four
     guides had no diagram at all; sixteen others embedded theirs. Every guide the mission index
-    links must embed its own asset from assets/diagrams/missions/, and every asset there must be
+    links must embed its own asset from docs/assets/diagrams/missions/, and every asset there must be
     embedded by the guide of the same name. A `<name>-light.jpg` beside `<name>.jpg` is the same
     diagram rendered for a light theme (PR #394): it belongs to the guide `<name>`, which embeds
     both through a `<picture>` block, so it is held to the same parity.
@@ -1070,11 +1070,11 @@ class MissionGuidesEmbedTheirDiagram(unittest.TestCase):
     # PR #394 regenerated every mission's contract card from a committed prompt, so the set is empty.
     KNOWN_GAPS = []
     INDEX = DOCS / "missions" / "README.md"
-    ASSETS = ROOT / "assets" / "diagrams" / "missions"
-    # `src="../../assets/diagrams/missions/x.jpg"`, a `<picture>` source's `srcset="…"`, and
-    # `](../../assets/diagrams/missions/x.jpg)`.
+    ASSETS = ROOT / "docs" / "assets" / "diagrams" / "missions"
+    # `src="../assets/diagrams/missions/x.jpg"`, a `<picture>` source's `srcset="…"`, and
+    # `](../assets/diagrams/missions/x.jpg)`.
     EMBED = re.compile(
-        r"""(?:srcset=["']|src=["']|\]\()\.\./\.\./assets/diagrams/missions/([^"')\s]+)""")
+        r"""(?:srcset=["']|src=["']|\]\()\.\./assets/diagrams/missions/([^"')\s]+)""")
 
     @staticmethod
     def _guide_of(asset_name):
@@ -1116,12 +1116,12 @@ class MissionGuidesEmbedTheirDiagram(unittest.TestCase):
     def _fixture(self, tmp, index_links, unlinked=()):
         """A parity check over a throwaway repo: sixteen bare-linked guides that embed their own
         diagram, plus the extra index lines given, a diagram-less `gap.md`, and `unlinked` guides."""
-        missions, assets = tmp / "docs" / "missions", tmp / "assets" / "diagrams" / "missions"
+        missions, assets = tmp / "docs" / "missions", tmp / "docs" / "assets" / "diagrams" / "missions"
         missions.mkdir(parents=True)
         assets.mkdir(parents=True)
         embedded = [f"g{i:02d}" for i in range(16)]
         for stem in embedded:
-            (missions / f"{stem}.md").write_text(f'<img src="../../assets/diagrams/missions/{stem}.jpg">\n')
+            (missions / f"{stem}.md").write_text(f'<img src="../assets/diagrams/missions/{stem}.jpg">\n')
             (assets / f"{stem}.jpg").write_bytes(b"")
         for stem in ("gap", *unlinked):
             (missions / f"{stem}.md").write_text("no diagram yet\n")
@@ -1157,8 +1157,8 @@ class MissionGuidesEmbedTheirDiagram(unittest.TestCase):
                 check.test_every_diagram_asset_is_embedded_by_its_guide()
             guide = check.INDEX.parent / "g00.md"
             guide.write_text('<picture><source media="(prefers-color-scheme: light)" '
-                             'srcset="../../assets/diagrams/missions/g00-light.jpg">'
-                             '<img src="../../assets/diagrams/missions/g00.jpg"></picture>\n')
+                             'srcset="../assets/diagrams/missions/g00-light.jpg">'
+                             '<img src="../assets/diagrams/missions/g00.jpg"></picture>\n')
             check.test_every_diagram_asset_is_embedded_by_its_guide()
             check.test_every_indexed_guide_embeds_its_own_diagram()
 

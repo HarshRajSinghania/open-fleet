@@ -184,7 +184,7 @@ newest preparing heading has no cut SHA. Green checks do not authorize publicati
 set -eu
 python3 -c 'import json, os; assert json.load(open("docs/releases.json"))["preparing"]["version"] == os.environ["RELEASE_VERSION"]'
 git add CHANGELOG.md changelog.d .claude-plugin/plugin.json .claude-plugin/marketplace.json \
-    docs/releases.json assets/badges/tests.json docs/runs/README.md
+    docs/releases.json docs/assets/badges/tests.json docs/runs/README.md
 git commit -m "Prepare release $RELEASE_VERSION"
 )
 ```

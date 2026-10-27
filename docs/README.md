@@ -14,7 +14,7 @@
 | **Compare `open-fleet` with `gstack`, `agent-skills`, `mattpocock`, & `superpowers`** | [Ecosystem comparison & pack composition](comparison.md) | [Concepts & glossary](concepts.md#one-router-per-worker) |
 | **Run without the Orca app (`posix`) or on another orchestrator** | [Multi-runtime & harness guide](runtimes.md) | [Provider & harness certification](certification.md) |
 | **Understand what a run produces and what its verdict proves** | [Concepts & glossary](concepts.md#read-a-run-result) | [Anatomy of a real run](guides/anatomy-of-a-run.md) |
-| **Wire or debug the native completion gate (`verify-gate.sh`)** | [Verify gate & trust boundary](verify-gate.md) | [Negative-control demo](../demo/negative-control/README.md) |
+| **Wire or debug the native completion gate (`verify-gate.sh`)** | [Verify gate & trust boundary](verify-gate.md) | [Negative-control demo](../evals/demo/negative-control/README.md) |
 | **Diagnose a stalled worker, gate block, or setup error** | [Troubleshooting](troubleshooting.md) | [Runtime scripts CLI reference](runtime-scripts.md) |
 | **Edit missions, playbooks, or docs and run local tests** | [Local development](development.md) | [Contributing guide](../.github/CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md) |
 | **Submit evidence from a real mission run** | [Call for runs](call-for-runs.md) | [Run submission guide](run-submission-guide.md) |

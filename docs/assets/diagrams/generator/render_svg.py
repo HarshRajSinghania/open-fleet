@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 GEN_DIR = Path(__file__).resolve().parent
-REPO = GEN_DIR.parents[2]
+REPO = GEN_DIR.parents[3]
 
 
 def load_mission_specs() -> list[dict]:

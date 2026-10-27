@@ -17,9 +17,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/oss-contribute.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/oss-contribute-light.jpg">
-    <img src="../../assets/diagrams/missions/oss-contribute-light.jpg" alt="Mission contract for oss-contribute: you give it issues on an upstream repo you can only fork; it interrupts you for refuted and stand-down closes, in a batch; assist vs stand-down, yours to veto; CLA and DCO signatures; you get back CONTRIBUTED or CONTRIBUTED-WITH-PARKED, plus open, reviewed, etiquette-correct upstream PRs; review-assist comments; every thread answered; it stops at the maintainer merges, never the fleet; phases ENUMERATE, TRIAGE, BUILD ON THE FORK, REVIEW, OPEN PR, FOLLOW UP" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/oss-contribute.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/oss-contribute-light.jpg">
+    <img src="../assets/diagrams/missions/oss-contribute-light.jpg" alt="Mission contract for oss-contribute: you give it issues on an upstream repo you can only fork; it interrupts you for refuted and stand-down closes, in a batch; assist vs stand-down, yours to veto; CLA and DCO signatures; you get back CONTRIBUTED or CONTRIBUTED-WITH-PARKED, plus open, reviewed, etiquette-correct upstream PRs; review-assist comments; every thread answered; it stops at the maintainer merges, never the fleet; phases ENUMERATE, TRIAGE, BUILD ON THE FORK, REVIEW, OPEN PR, FOLLOW UP" width="820">
   </picture>
 </p>
 

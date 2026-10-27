@@ -11,9 +11,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
-    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/runtime-providers.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/runtime-providers-light.jpg">
+    <img src="assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
   </picture>
 </p>
 

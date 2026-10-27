@@ -4,14 +4,14 @@ Generate shields.io endpoint-badge JSON from repo state, so the README badges
 never drift as missions and tests are added.
 
 Writes:
-  assets/badges/missions.json  — count of skills/<name>/ mission dirs
-  assets/badges/tests.json     — source inventory of `def test_*` definitions under tests/;
-                                 no test execution or pass/fail result
+  docs/assets/badges/missions.json  — count of skills/<name>/ mission dirs
+  docs/assets/badges/tests.json     — source inventory of `def test_*` definitions under tests/;
+                                      no test execution or pass/fail result
   docs/missions/<name>.md      — the "Activation load" callout, measured by
                                  scripts/validate.py's transitive_load (issue #276)
 
 The README references these via a shields ENDPOINT badge
-(https://img.shields.io/endpoint?url=<raw>/assets/badges/<name>.json), and the
+(https://img.shields.io/endpoint?url=<raw>/docs/assets/badges/<name>.json), and the
 version badge reads .claude-plugin/plugin.json directly via a shields DYNAMIC
 badge — so no count lives in hand-written prose or in the badge markup.
 
@@ -24,7 +24,7 @@ badge — so no count lives in hand-written prose or in the badge markup.
     python3 scripts/gen-badges.py --check --release  # the cut's check: the test count too
 
 The test count is the one exception (CI speed and bookkeeping change). Every PR changed it, so
-every PR rewrote assets/badges/tests.json and conflicted with every other open PR. It is now the
+every PR rewrote docs/assets/badges/tests.json and conflicted with every other open PR. It is now the
 inventory AT THE LAST RELEASE: only `--release` writes it, the release cut runs that, and the
 README badge is labelled "at last release", so between releases it shows an older number under a
 label that says so, never a stale one presented as current. Between releases CI holds it to its
@@ -41,7 +41,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT / "skills"
 TESTS_DIR = ROOT / "tests"
-BADGES_DIR = ROOT / "assets" / "badges"
+BADGES_REL = "docs/assets/badges"
+BADGES_DIR = ROOT / BADGES_REL
+# Where the badges lived until the root clean-up moved assets/ under docs/: a release cut before
+# that move holds its tests badge here, so the last-release check reads it at this path.
+LEGACY_BADGES_REL = "assets/badges"
 
 GUIDES_DIR = ROOT / "docs" / "missions"
 # The callout sits directly under the Autonomy one in every mission guide.
@@ -348,13 +352,13 @@ def tests_badge_shape(have) -> list[str]:
     """
     want = badge("test functions", "0 in source", "6e7781")
     if not isinstance(have, dict):
-        return [f"assets/badges/{TESTS_BADGE} is not a badge object"]
+        return [f"{BADGES_REL}/{TESTS_BADGE} is not a badge object"]
     wrong = sorted(k for k in want if k != "message" and have.get(k) != want[k])
     wrong += sorted(set(have) - set(want))
     if not TESTS_MESSAGE_RE.match(str(have.get("message", ""))):
         wrong.append("message")
     if wrong:
-        return [f"assets/badges/{TESTS_BADGE} is malformed ({', '.join(wrong)}: have "
+        return [f"{BADGES_REL}/{TESTS_BADGE} is malformed ({', '.join(wrong)}: have "
                 f"{have.get('message')!r}) — the release cut regenerates it: "
                 "python3 scripts/gen-badges.py --release"]
     return []
@@ -371,9 +375,13 @@ def last_release_badge_errors(root: Path = ROOT) -> list[str]:
     if data.get("preparing") or not data.get("releases"):
         return []
     last = data["releases"][-1]
-    rel = f"assets/badges/{TESTS_BADGE}"
-    shown = subprocess.run(["git", "-C", str(root), "show", f"{last['commit']}:{rel}"],
-                           capture_output=True)
+    rel = f"{BADGES_REL}/{TESTS_BADGE}"
+    # The cut's own badge path: today's, or the pre-move one for a release cut before the move.
+    for src in (rel, f"{LEGACY_BADGES_REL}/{TESTS_BADGE}"):
+        shown = subprocess.run(["git", "-C", str(root), "show", f"{last['commit']}:{src}"],
+                               capture_output=True)
+        if not shown.returncode:
+            break
     if shown.returncode:
         return [f"cannot read {last['tag']}'s {rel} at {last['commit'][:12]} (a shallow clone? "
                 f"fetch the release commit): {shown.stderr.decode(errors='replace').strip()[:200]}"]
@@ -386,7 +394,7 @@ def last_release_badge_errors(root: Path = ROOT) -> list[str]:
                 return "unparseable"
         return [f"{rel} is not byte for byte {last['tag']}'s ({last['commit'][:12]}): it says "
                 f"{message(have)!r} where the release says {message(shown.stdout)!r} — restore it "
-                f"with: git show {last['commit']}:{rel} > {rel}"]
+                f"with: git show {last['commit']}:{src} > {rel}"]
     return []
 
 
@@ -404,19 +412,19 @@ def check(include_test_count: bool = True) -> list[str]:
     for name, want in wanted.items():
         path = BADGES_DIR / name
         if not path.exists():
-            errors.append(f"assets/badges/{name} missing — run scripts/gen-badges.py")
+            errors.append(f"{BADGES_REL}/{name} missing — run scripts/gen-badges.py")
             continue
         try:
             have = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as err:
-            errors.append(f"assets/badges/{name}: invalid JSON ({err})")
+            errors.append(f"{BADGES_REL}/{name}: invalid JSON ({err})")
             continue
         if name == TESTS_BADGE and not include_test_count:
             errors += tests_badge_shape(have)
         elif have != want:
             fix = " --release" if name == TESTS_BADGE else ""
             errors.append(
-                f"assets/badges/{name} is stale (have {have.get('message')!r}, "
+                f"{BADGES_REL}/{name} is stale (have {have.get('message')!r}, "
                 f"want {want.get('message')!r}) — run scripts/gen-badges.py{fix}"
             )
     return errors + check_guides() + check_architecture() + check_readme()
@@ -427,11 +435,11 @@ def write(include_tests: bool = True) -> None:
     BADGES_DIR.mkdir(parents=True, exist_ok=True)
     for name, data in compute().items():
         if name == TESTS_BADGE and not include_tests:
-            print(f"kept assets/badges/{name}: the count at the last release "
+            print(f"kept {BADGES_REL}/{name}: the count at the last release "
                   "(the release cut rewrites it with --release)")
             continue
         (BADGES_DIR / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote assets/badges/{name}: {data['message']}")
+        print(f"wrote {BADGES_REL}/{name}: {data['message']}")
     write_guides()
     write_architecture()
     write_readme()

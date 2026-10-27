@@ -14,9 +14,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/reshape-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/reshape-it-light.jpg">
-    <img src="../../assets/diagrams/missions/reshape-it-light.jpg" alt="Mission contract for reshape-it: you give it git history and the import graph; it interrupts you for confirming the target surface; any public-API break; you get back RESHAPED or RESHAPED-WITH-PARKED, plus a characterization net pinned first; before, after interface measurements; one PR per module; it stops at the target list never grows on its own; phases SCAN, CONFIRM, CHARACTERIZE, DEEPEN, REVIEW, RE-SCAN" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/reshape-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/reshape-it-light.jpg">
+    <img src="../assets/diagrams/missions/reshape-it-light.jpg" alt="Mission contract for reshape-it: you give it git history and the import graph; it interrupts you for confirming the target surface; any public-API break; you get back RESHAPED or RESHAPED-WITH-PARKED, plus a characterization net pinned first; before, after interface measurements; one PR per module; it stops at the target list never grows on its own; phases SCAN, CONFIRM, CHARACTERIZE, DEEPEN, REVIEW, RE-SCAN" width="820">
   </picture>
 </p>
 

@@ -71,9 +71,9 @@ Pick the mission that matches your immediate engineering goal. Each guide displa
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/mission-map.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/mission-map-light.jpg">
-    <img src="../../assets/diagrams/mission-map-light.jpg" alt="Decision map: a goal to build routes to map-it then ship-it; known problems route to clean-sweep, oss-contribute, absorb-it, harden-it, speed-it, modernize-it, migrate-it, prove-it, deflake-it, floor-it, reshape-it, attest-it, access-it, oncall-it, document-it, field-test-it, or offload-it; a question routes to review-it or root-cause; drifted tooling routes to pin-it" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/mission-map.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/mission-map-light.jpg">
+    <img src="../assets/diagrams/mission-map-light.jpg" alt="Decision map: a goal to build routes to map-it then ship-it; known problems route to clean-sweep, oss-contribute, absorb-it, harden-it, speed-it, modernize-it, migrate-it, prove-it, deflake-it, floor-it, reshape-it, attest-it, access-it, oncall-it, document-it, field-test-it, or offload-it; a question routes to review-it or root-cause; drifted tooling routes to pin-it" width="820">
   </picture>
 </p>
 
@@ -81,9 +81,9 @@ How the missions hand work to one another:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/mission-handoffs.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/mission-handoffs-light.jpg">
-    <img src="../../assets/diagrams/mission-handoffs-light.jpg" alt="How missions hand off: map-it to ship-it with a frozen map and DAG; root-cause to ship-it or clean-sweep with a fix handoff brief; modernize-it and ship-it to migrate-it for stateful changes; deflake-it and prove-it to clean-sweep for deterministic and surfaced bugs; attest-it to ship-it for remediation; oncall-it to root-cause for telemetry; and a chain harden-it, prove-it, ship-it gated by each verified terminal" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/mission-handoffs.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/mission-handoffs-light.jpg">
+    <img src="../assets/diagrams/mission-handoffs-light.jpg" alt="How missions hand off: map-it to ship-it with a frozen map and DAG; root-cause to ship-it or clean-sweep with a fix handoff brief; modernize-it and ship-it to migrate-it for stateful changes; deflake-it and prove-it to clean-sweep for deterministic and surfaced bugs; attest-it to ship-it for remediation; oncall-it to root-cause for telemetry; and a chain harden-it, prove-it, ship-it gated by each verified terminal" width="820">
   </picture>
 </p>
 

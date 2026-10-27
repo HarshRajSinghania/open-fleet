@@ -1,7 +1,7 @@
 const sharp = require('sharp');
 const path = require('path');
 
-const REPO = path.resolve(__dirname, '../../..');
+const REPO = path.resolve(__dirname, '../../../..');
 
 const CONCEPT_DIAGRAMS = [
   'three-layers',
@@ -108,8 +108,8 @@ async function processDiagram(filePath, isDark) {
 async function main() {
   let count = 0;
   for (const name of CONCEPT_DIAGRAMS) {
-    const darkPath = path.join(REPO, `assets/diagrams/${name}.jpg`);
-    const lightPath = path.join(REPO, `assets/diagrams/${name}-light.jpg`);
+    const darkPath = path.join(REPO, `docs/assets/diagrams/${name}.jpg`);
+    const lightPath = path.join(REPO, `docs/assets/diagrams/${name}-light.jpg`);
     await processDiagram(darkPath, true);
     await processDiagram(lightPath, false);
     count += 2;

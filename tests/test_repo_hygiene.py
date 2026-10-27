@@ -118,7 +118,7 @@ class EveryScriptCompilesWithoutWarnings(unittest.TestCase):
                              "the compile scan flags a raw string that is perfectly legal")
 
     def test_no_source_file_compiles_with_a_warning(self):
-        roots = ("scripts", "runtime/scripts", "tests", "bench", "demo")
+        roots = ("scripts", "runtime/scripts", "tests", "bench", "evals/demo")
         files = [f for r in roots for f in sorted((ROOT / r).rglob("*.py"))
                  if "__pycache__" not in f.parts]
         self.assertGreater(len(files), 40, "the scan found almost no sources to compile")
@@ -573,7 +573,7 @@ class EveryWorkflowToolComesFromAHashedLock(unittest.TestCase):
         scripts = "\n".join(s for _, s in _run_scripts("\n".join(_jobs(text)["ruff"])))
         self.assertIn("--require-hashes", scripts)
         self.assertIn(".github/ci-tools.lock", scripts)
-        self.assertRegex(scripts, r"(?m)^\s*ruff check demo/target-app\s*$")
+        self.assertRegex(scripts, r"(?m)^\s*ruff check evals/demo/target-app\s*$")
 
     def test_the_scan_can_actually_see_one(self):
         for line in ("uvx ruff check .", "pip install ruff==0.16.7",
@@ -650,13 +650,13 @@ class TheNegativeControlDiagnosticIsReachable(unittest.TestCase):
         text = (ROOT / ".github" / "workflows" / "negative-control.yml").read_text(
             encoding="utf-8")
         steps = [s for s in _steps(_jobs(text)["pinned-demo"])
-                 if "demo/negative-control/run.sh" in "\n".join(s)]
+                 if "evals/demo/negative-control/run.sh" in "\n".join(s)]
         self.assertEqual(len(steps), 1, "the demo step is gone")
         return _step_script(steps[0])
 
     def _run(self, stub_body, pinned):
         with tempfile.TemporaryDirectory() as tmp:
-            demo = Path(tmp) / "demo" / "negative-control"
+            demo = Path(tmp) / "evals" / "demo" / "negative-control"
             demo.mkdir(parents=True)
             (demo / "run.sh").write_text(stub_body, encoding="utf-8")
             (demo / "head-to-head.txt").write_text(pinned, encoding="utf-8")

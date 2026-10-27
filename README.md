@@ -1,16 +1,16 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/hero-light.jpg">
-    <img alt="open-fleet — an orchestrated formation of autonomous agent nodes converging along a directed DAG into an emerald verified seal" src="assets/hero-light.jpg" width="1000">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-light.jpg">
+    <img alt="open-fleet — an orchestrated formation of autonomous agent nodes converging along a directed DAG into an emerald verified seal" src="docs/assets/hero-light.jpg" width="1000">
   </picture>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://agentskills.io/specification"><img src="https://img.shields.io/badge/spec-agentskills.io-orange.svg" alt="agentskills.io spec"></a>
-  <a href="skills/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/assets/badges/missions.json" alt="missions"></a>
-  <a href="tests/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/assets/badges/tests.json&label=test%20functions%20at%20last%20release" alt="contract test functions at the last release"></a>
+  <a href="skills/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/docs/assets/badges/missions.json" alt="missions"></a>
+  <a href="tests/"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/docs/assets/badges/tests.json&label=test%20functions%20at%20last%20release" alt="contract test functions at the last release"></a>
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/ravidsrk/open-fleet/main/.claude-plugin/plugin.json&query=$.version&label=version&color=8957e5" alt="version"></a>
 </p>
 
@@ -50,9 +50,9 @@ Each **mission** is a complete engineering workflow: a coordinator decomposes yo
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/you-say.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/you-say-light.jpg">
-    <img src="assets/diagrams/you-say-light.jpg" alt="Three columns, what you say, what the fleet runs, what you get: ship this becomes freeze, build, review and PROMOTION_READY with evidence; close every issue becomes triage, fix, re-enumerate and a backlog at zero, SHA-linked; harden this becomes audit, exploit, re-attack and a CLEAN re-audit or named gaps; why is this flaky becomes reproduce, falsify, prove and a demonstrated root cause" width="1000">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/you-say.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/you-say-light.jpg">
+    <img src="docs/assets/diagrams/you-say-light.jpg" alt="Three columns, what you say, what the fleet runs, what you get: ship this becomes freeze, build, review and PROMOTION_READY with evidence; close every issue becomes triage, fix, re-enumerate and a backlog at zero, SHA-linked; harden this becomes audit, exploit, re-attack and a CLEAN re-audit or named gaps; why is this flaky becomes reproduce, falsify, prove and a demonstrated root cause" width="1000">
   </picture>
 </p>
 
@@ -173,9 +173,9 @@ Understand the operational boundary before dispatching workers on a repository:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/install-stack.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/install-stack-light.jpg">
-    <img src="assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: coding-agent harnesses, the runtime provider interface across 14 runtimes including standalone posix and orca, runtime policies and the independent verifier, the outcome-named open-fleet missions, and the upstream worker packs, one per worker; three install paths: sh scripts/install.sh symlink with the completion gate wired via settings snippet, the Claude Code plugin with the gate on by construction, and the dist/ bundle built by scripts/bundle.py for copy installers" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/install-stack.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/install-stack-light.jpg">
+    <img src="docs/assets/diagrams/install-stack-light.jpg" alt="The stack, bottom to top: coding-agent harnesses, the runtime provider interface across 14 runtimes including standalone posix and orca, runtime policies and the independent verifier, the outcome-named open-fleet missions, and the upstream worker packs, one per worker; three install paths: sh scripts/install.sh symlink with the completion gate wired via settings snippet, the Claude Code plugin with the gate on by construction, and the dist/ bundle built by scripts/bundle.py for copy installers" width="900">
   </picture>
 </p>
 
@@ -250,9 +250,9 @@ Every mission represents a distinct engineering outcome with its own unit of wor
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/proof-ladder.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/proof-ladder-light.jpg">
-    <img src="assets/diagrams/proof-ladder-light.jpg" alt="The proof ladder: doctrine-only, then self-run, then external-run; advancing needs a run report that binds, with a RUN header, a manifest in the run's own directory and an inventory that re-hashes at the named commit; the live state is the archive at docs/runs/README.md, which names each mission's tier as its evidence lands" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/proof-ladder.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/proof-ladder-light.jpg">
+    <img src="docs/assets/diagrams/proof-ladder-light.jpg" alt="The proof ladder: doctrine-only, then self-run, then external-run; advancing needs a run report that binds, with a RUN header, a manifest in the run's own directory and an inventory that re-hashes at the named commit; the live state is the archive at docs/runs/README.md, which names each mission's tier as its evidence lands" width="900">
   </picture>
 </p>
 
@@ -276,9 +276,9 @@ Browse all retained runs in the [run archive](docs/runs/README.md). Note the sco
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/mission-map.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/mission-map-light.jpg">
-    <img src="assets/diagrams/mission-map-light.jpg" alt="Decision map: a goal to build routes to map-it then ship-it; known problems route to clean-sweep, oss-contribute, absorb-it, harden-it, speed-it, modernize-it, migrate-it, prove-it, deflake-it, floor-it, reshape-it, attest-it, access-it, oncall-it, document-it, field-test-it, or offload-it; a question routes to review-it or root-cause; drifted tooling routes to pin-it" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/mission-map.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/mission-map-light.jpg">
+    <img src="docs/assets/diagrams/mission-map-light.jpg" alt="Decision map: a goal to build routes to map-it then ship-it; known problems route to clean-sweep, oss-contribute, absorb-it, harden-it, speed-it, modernize-it, migrate-it, prove-it, deflake-it, floor-it, reshape-it, attest-it, access-it, oncall-it, document-it, field-test-it, or offload-it; a question routes to review-it or root-cause; drifted tooling routes to pin-it" width="900">
   </picture>
 </p>
 
@@ -297,9 +297,9 @@ Missions also hand work to one another, each handoff a separately authorized run
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/mission-handoffs.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/mission-handoffs-light.jpg">
-    <img src="assets/diagrams/mission-handoffs-light.jpg" alt="How missions hand off: map-it to ship-it with a frozen map and DAG; root-cause to ship-it or clean-sweep with a fix handoff brief; modernize-it and ship-it to migrate-it for stateful changes; deflake-it and prove-it to clean-sweep for deterministic and surfaced bugs; attest-it to ship-it for remediation; oncall-it to root-cause for telemetry; and a chain harden-it, prove-it, ship-it gated by each verified terminal" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/mission-handoffs.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/mission-handoffs-light.jpg">
+    <img src="docs/assets/diagrams/mission-handoffs-light.jpg" alt="How missions hand off: map-it to ship-it with a frozen map and DAG; root-cause to ship-it or clean-sweep with a fix handoff brief; modernize-it and ship-it to migrate-it for stateful changes; deflake-it and prove-it to clean-sweep for deterministic and surfaced bugs; attest-it to ship-it for remediation; oncall-it to root-cause for telemetry; and a chain harden-it, prove-it, ship-it gated by each verified terminal" width="900">
   </picture>
 </p>
 
@@ -311,9 +311,9 @@ Every mission runs the same topology: a **coordinator** that manages the ledger 
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/fleet-topology.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/fleet-topology-light.jpg">
-    <img src="assets/diagrams/fleet-topology-light.jpg" alt="Fleet topology: a human answers one-way gates; the coordinator holds the ledger and verifier; builder, reviewer, and conductor workers receive dispatches and return evidence" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/fleet-topology.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/fleet-topology-light.jpg">
+    <img src="docs/assets/diagrams/fleet-topology-light.jpg" alt="Fleet topology: a human answers one-way gates; the coordinator holds the ledger and verifier; builder, reviewer, and conductor workers receive dispatches and return evidence" width="900">
   </picture>
 </p>
 
@@ -332,19 +332,19 @@ Agent traces prove an action was *attempted*, not that the resulting repository 
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/evidence-protocol.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/evidence-protocol-light.jpg">
-    <img src="assets/diagrams/evidence-protocol-light.jpg" alt="Evidence protocol: a worker's claim travels as a manifest to a fresh-session verifier, which checks git, tests, and the deploy target before marking the unit verified — or re-dispatches it" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/evidence-protocol.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/evidence-protocol-light.jpg">
+    <img src="docs/assets/diagrams/evidence-protocol-light.jpg" alt="Evidence protocol: a worker's claim travels as a manifest to a fresh-session verifier, which checks git, tests, and the deploy target before marking the unit verified — or re-dispatches it" width="900">
   </picture>
 </p>
 
-On a gamed manifest that omits an acceptance criterion, a self-scoring check passes while `open-fleet`'s independent verifier fails reproducibly ([demo/negative-control/](demo/negative-control/README.md)):
+On a gamed manifest that omits an acceptance criterion, a self-scoring check passes while `open-fleet`'s independent verifier fails reproducibly ([evals/demo/negative-control/](evals/demo/negative-control/README.md)):
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/negative-control.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/negative-control-light.jpg">
-    <img src="assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/negative-control.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/negative-control-light.jpg">
+    <img src="docs/assets/diagrams/negative-control-light.jpg" alt="Head-to-head on the same gamed manifest that reports only AC-1 of a two-criterion spec: a self-scoring gate grades the worker's own list and returns GREEN; open-fleet's verifier re-derives the criterion set from the frozen spec in a fresh session and returns RED, AC-2 not addressed; and for every fix the negative control reverts it and the proof must go RED" width="900">
   </picture>
 </p>
 
@@ -360,9 +360,9 @@ On a gamed manifest that omits an acceptance criterion, a self-scoring check pas
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/three-layers.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/diagrams/three-layers-light.jpg">
-    <img src="assets/diagrams/three-layers-light.jpg" alt="Three layers: MISSIONS (discoverable, one outcome each) compose PLAYBOOKS (callable phase protocols), which run on RUNTIME (invisible policies and primitives)" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/three-layers.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/diagrams/three-layers-light.jpg">
+    <img src="docs/assets/diagrams/three-layers-light.jpg" alt="Three layers: MISSIONS (discoverable, one outcome each) compose PLAYBOOKS (callable phase protocols), which run on RUNTIME (invisible policies and primitives)" width="900">
   </picture>
 </p>
 
@@ -428,10 +428,10 @@ hooks/           Completion-gate hook wiring (plugin hooks.json + settings snipp
 .github/         CI workflows, PR and issue templates, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT
 scripts/         Catalog validator, badge generator, eval runner, bundler
 tests/           Contract and negative-path test suite (Python stdlib unittest)
-evals/ & bench/  Routing evals and vf-bench verifier-soundness benchmark
-demo/            Reproducible negative-control head-to-head demo
-docs/            Documentation hub, mission guides, run archive, research
-assets/          Diagrams (dark + light), generated badges, diagram generator
+evals/ & bench/  Routing evals, the negative-control demo and target app (evals/demo/), and the
+                 vf-bench verifier-soundness benchmark
+docs/            Documentation hub, mission guides, run archive, research; diagrams, badges
+                 and the diagram generator under docs/assets/
 ```
 
 ## Validate and test

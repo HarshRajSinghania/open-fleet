@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/oncall-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/oncall-it-light.jpg">
-    <img src="../../assets/diagrams/missions/oncall-it-light.jpg" alt="Mission contract for oncall-it: you give it a path set, with 2–4 on-call questions per path; it interrupts you for freezing the questions; cardinality and cost decisions; who gets paged; you get back OPERABLE or OPERABLE-WITH-PARKED, plus instrumentation PRs; test-fired alerts with runbooks; a source-blind worker's manifest and its removal control; it stops at a missing staging or alert channel parks — the oracle is never downgraded; phases FREEZE, INSTRUMENT, ALERT, RUNBOOK, TEST-FIRE, INDUCE" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/oncall-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/oncall-it-light.jpg">
+    <img src="../assets/diagrams/missions/oncall-it-light.jpg" alt="Mission contract for oncall-it: you give it a path set, with 2–4 on-call questions per path; it interrupts you for freezing the questions; cardinality and cost decisions; who gets paged; you get back OPERABLE or OPERABLE-WITH-PARKED, plus instrumentation PRs; test-fired alerts with runbooks; a source-blind worker's manifest and its removal control; it stops at a missing staging or alert channel parks — the oracle is never downgraded; phases FREEZE, INSTRUMENT, ALERT, RUNBOOK, TEST-FIRE, INDUCE" width="820">
   </picture>
 </p>
 

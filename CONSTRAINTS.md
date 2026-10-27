@@ -26,8 +26,8 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
 > current state, and is never refreshed** — rewriting a number in this file trips the floor
 > guard by design. D2's threshold cell ("21/21 missions") means *every
 > mission in the catalog*, which has grown since. Read the live values from their generators:
-> mission count — `python3 scripts/validate.py` and `assets/badges/missions.json`; test count —
-> `assets/badges/tests.json` (as of the last release); proof mix — the generated proof-status sentence in
+> mission count — `python3 scripts/validate.py` and `docs/assets/badges/missions.json`; test count —
+> `docs/assets/badges/tests.json` (as of the last release); proof mix — the generated proof-status sentence in
 > [README.md](README.md#proof-status) and `python3 runtime/scripts/proof_status.py`; bound
 > reports — `python3 runtime/scripts/run_report.py`; coverage — the `coverage report` step of
 > [validate CI](.github/workflows/validate.yml) (D9 status: see its row note).
@@ -36,7 +36,7 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
 |---|---|---|---|---|--- |---|
 | D1 | suite-green | `unittest` exit 0 (0 failures, 0 errors) | `python3 -m unittest discover -s tests` | validate.yml `gates`: "Run the contract test suite without Gitleaks" | 1490 pass, OK | FROZEN+PROVEN |
 | D2 | catalog-valid | `validate.py` exit 0 (21/21 missions, separation holds) | `python3 scripts/validate.py` | validate.yml `gates`: "Validate missions, playbooks, and evals" | 21/21 ok | FROZEN+PROVEN |
-| D3 | lint-clean | `ruff check` 0 findings on `scripts runtime/scripts tests bench demo` | `ruff check scripts runtime/scripts tests bench demo` (select E9,F63,F7,F82 per ruff.toml) | validate.yml `gates`: "Ruff (syntax / undefined names)" | 0 findings | FROZEN+PROVEN |
+| D3 | lint-clean | `ruff check` 0 findings on `scripts runtime/scripts tests bench evals/demo` | `ruff check scripts runtime/scripts tests bench evals/demo` (select E9,F63,F7,F82 per ruff.toml) | validate.yml `gates`: "Ruff (syntax / undefined names)" | 0 findings | FROZEN+PROVEN |
 | D4 | secrets-clean | `gitleaks detect` 0 unwaived leaks | `gitleaks detect --redact --no-banner --source .` (pinned 8.30.1) | validate.yml `gates`: "Secret scan (gitleaks, pinned)" | exit 0 on main history; 3 waived fingerprints | FROZEN+PROVEN |
 | D5 | routing-eval | score >= 1.0 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | validate.yml `gates`: "Routing eval gate (description-based router)" | 94/94 (100%) | FROZEN+PROVEN |
 | D6 | proof-honesty | `proof_status.py --check` AND `run_report.py` exit 0 | both scripts (see row notes) | validate.yml `gates`: "Check proof-evidence honesty" + "Proof tiers bind to artifacts, not filenames" | exit 0; 19 doctrine-only / 2 self-run; 2 bound | FROZEN+PROVEN |

@@ -9,7 +9,7 @@ reproductions end to end (P1-9, P1-10) and the hidden-mission refusal (P2-19).
 
 The tree is a COPY in a tempdir (scripts, skills, playbooks, runtime, evals, hooks, the plugin
 manifest and the root docs, plus the run reports the trajectory suite's bound live rows cite). The
-copy omits the rest of docs/ and assets/, so its run fails for unrelated reasons; each test
+copy omits the rest of docs/ (images included), so its run fails for unrelated reasons; each test
 asserts its message is ABSENT before the edit and PRESENT after — the edit, and nothing else,
 produced it. runtime/quarantine.json is only ever edited in the copy: the
 live deny-list is a human-only file.

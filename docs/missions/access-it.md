@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/access-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/access-it-light.jpg">
-    <img src="../../assets/diagrams/missions/access-it-light.jpg" alt="Mission contract for access-it: you give it a page, flow or component set and a WCAG 2.2 AA target; it interrupts you for a one-way freeze of the surface; the human-AT park for screen-reader and cognitive criteria; promotion; you get back CONFORMANT or CONFORMANT-WITH-MANUAL-PARKED, plus an axe-core clean report; revert-to-violation controls; parked criteria with reasons; it stops at never passing a criterion on the oracle's silence; phases FREEZE, DETECT, FIX, LAND, RE-VERIFY, PARK" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/access-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/access-it-light.jpg">
+    <img src="../assets/diagrams/missions/access-it-light.jpg" alt="Mission contract for access-it: you give it a page, flow or component set and a WCAG 2.2 AA target; it interrupts you for a one-way freeze of the surface; the human-AT park for screen-reader and cognitive criteria; promotion; you get back CONFORMANT or CONFORMANT-WITH-MANUAL-PARKED, plus an axe-core clean report; revert-to-violation controls; parked criteria with reasons; it stops at never passing a criterion on the oracle's silence; phases FREEZE, DETECT, FIX, LAND, RE-VERIFY, PARK" width="820">
   </picture>
 </p>
 

@@ -29,7 +29,7 @@ SCOPE_PROMPTS    *prompt*, *system_prompt*, SKILL.md, AGENTS.md, *.prompt,
                  */skills/*, */playbooks/*  ·  content: "You are a", "system prompt"
 SCOPE_TESTS      *.test.*, *.spec.*, *_test.*, test_*.py, test/ tests/ spec/
                  __tests__/ cypress/ e2e/
-SCOPE_DOCS       *.md, *.rst, *.adoc, docs/*, assets/badges/{tests,missions}.json
+SCOPE_DOCS       *.md, *.rst, *.adoc, docs/*, docs/assets/badges/{tests,missions}.json
 SCOPE_CONFIG     package.json, lockfiles, *.yml/*.yaml/*.toml/*.ini/*.cfg,
                  .github/*, requirements.txt, go.mod, Cargo.toml, Dockerfile
 SCOPE_MIGRATIONS db/migrate/*, migrations/*, alembic/*, prisma/migrations/*,
@@ -128,9 +128,10 @@ PATH_RULES = [
     ("PROMPTS", re.compile(r"prompt|(^|/)(skills|playbooks)/|(^|/)(SKILL|AGENTS)\.md$|\.prompt$")),
     ("TESTS", re.compile(r"\.(test|spec)\.|_(test|spec)\.|(^|/)test_[^/]*$|(^|/)(tests?|spec|__tests__|cypress|e2e)/")),
     ("DOCS", re.compile(r"(^|/)docs?/")),
-    # Exact public README payloads emitted by scripts/gen-badges.py; other JSON
-    # and assets still need their own review signals.
-    ("DOCS", re.compile(r"^assets/badges/(tests|missions)\.json$")),
+    # Exact public README payloads emitted by scripts/gen-badges.py. This repository keeps them
+    # under docs/assets/badges/, which the docs rule above also covers; elsewhere a JSON file
+    # still needs its own review signal.
+    ("DOCS", re.compile(r"^docs/assets/badges/(tests|missions)\.json$")),
     ("CONFIG", re.compile(r"(^|/)\.github/|(^|/)\.circleci/|(^|/)ci/")),
     ("MIGRATIONS", re.compile(r"(^|/)(db/migrate|migrations|alembic|prisma/migrations|db/data|data_migrations)/")),
     ("API", re.compile(r"(^|/)api/|controller|route|endpoint|handler|\.(graphql|gql)$|(^|/)(openapi|swagger)\.")),

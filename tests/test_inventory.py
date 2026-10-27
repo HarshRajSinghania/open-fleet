@@ -20,7 +20,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = ROOT / "runtime" / "scripts" / "inventory.py"
 SHIP_RUN = ROOT / "docs" / "runs" / "2026-08-28-ship-it-self-run.md"
-NEGCTRL = ROOT / "demo" / "negative-control" / "README.md"
+NEGCTRL = ROOT / "evals" / "demo" / "negative-control" / "README.md"
 
 
 def sha(text):

@@ -344,9 +344,9 @@ class TestGeneratedBadges(ScopeBase):
                     write(self.repo, name, "changed\n")
             for with_badge in (False, True):
                 with self.subTest(source=source, with_badge=with_badge):
-                    badge = self.repo / "assets/badges/tests.json"
+                    badge = self.repo / "docs/assets/badges/tests.json"
                     if with_badge:
-                        write(self.repo, "assets/badges/tests.json", "{}\n")
+                        write(self.repo, "docs/assets/badges/tests.json", "{}\n")
                     try:
                         data, r = self.flags("--strict")
                         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
@@ -362,7 +362,7 @@ class TestGeneratedBadges(ScopeBase):
         # The expected classification is independent of the classifier's rule table.
         for name in ("tests.json", "missions.json"):
             with self.subTest(name=name):
-                badge = write(self.repo, f"assets/badges/{name}", '{"schemaVersion": 1}\n')
+                badge = write(self.repo, f"docs/assets/badges/{name}", '{"schemaVersion": 1}\n')
                 data, r = self.flags("--strict")
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertTrue(data["flags"]["DOCS"])
@@ -370,7 +370,7 @@ class TestGeneratedBadges(ScopeBase):
                 badge.unlink()
 
     def test_generated_badge_does_not_exempt_unknown_neighbors(self):
-        write(self.repo, "assets/badges/tests.json", "{}\n")
+        write(self.repo, "docs/assets/badges/tests.json", "{}\n")
         unknown = ["assets/badges/other.json", "assets/badges/tests.json.bak",
                    "assets/other.json", "nested/assets/badges/missions.json", "odd/thing.qqq"]
         for path in unknown:

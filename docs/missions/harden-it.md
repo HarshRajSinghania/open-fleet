@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/harden-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/harden-it-light.jpg">
-    <img src="../../assets/diagrams/missions/harden-it-light.jpg" alt="Mission contract for harden-it: you give it a system and its trust boundaries; it interrupts you for one-way remediations you perform yourself, like a secret rotation; the danger-sandbox grant; you get back CLEAN or HARDENED-WITH-OPEN-ITEMS, plus exploit tests; class-wide fixes on BASE; re-attack transcripts; a fresh full audit; it stops at parked P0/P1 named per item — no host-unsafe PoC ever runs on your machine; phases THREAT-MODEL, AUDIT, FIX, LAND, RE-ATTACK, RE-AUDIT" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/harden-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/harden-it-light.jpg">
+    <img src="../assets/diagrams/missions/harden-it-light.jpg" alt="Mission contract for harden-it: you give it a system and its trust boundaries; it interrupts you for one-way remediations you perform yourself, like a secret rotation; the danger-sandbox grant; you get back CLEAN or HARDENED-WITH-OPEN-ITEMS, plus exploit tests; class-wide fixes on BASE; re-attack transcripts; a fresh full audit; it stops at parked P0/P1 named per item — no host-unsafe PoC ever runs on your machine; phases THREAT-MODEL, AUDIT, FIX, LAND, RE-ATTACK, RE-AUDIT" width="820">
   </picture>
 </p>
 

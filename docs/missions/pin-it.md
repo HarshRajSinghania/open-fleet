@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/pin-it.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/pin-it-light.jpg">
-    <img src="../../assets/diagrams/missions/pin-it-light.jpg" alt="Mission contract for pin-it: you give it runtime doctrine and the installed Orca binary; it interrupts you for probes that are one-way — paid, remote, or human-only; you get back PINNED or PINNED-WITH-PARKED, plus a receipt per claim; an archive of refuted claims; doctrine patched with citations; it stops at a substrate failure never rewrites doctrine; phases FREEZE, RE-WITNESS, CLASSIFY, PATCH, LAND" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/missions/pin-it.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/missions/pin-it-light.jpg">
+    <img src="../assets/diagrams/missions/pin-it-light.jpg" alt="Mission contract for pin-it: you give it runtime doctrine and the installed Orca binary; it interrupts you for probes that are one-way — paid, remote, or human-only; you get back PINNED or PINNED-WITH-PARKED, plus a receipt per claim; an archive of refuted claims; doctrine patched with citations; it stops at a substrate failure never rewrites doctrine; phases FREEZE, RE-WITNESS, CLASSIFY, PATCH, LAND" width="820">
   </picture>
 </p>
 

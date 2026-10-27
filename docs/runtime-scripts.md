@@ -279,7 +279,11 @@ Flags: `--file` (log path, default `$OPEN_FLEET_DECISIONS_FILE`, then `$ORCA_DEC
 then `docs/DECISIONS.md`), `--doors` (door registry,
 default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
-the checked tree could have been written by a worker). `append` takes `--id`, `--class`, `--answer`,
+the checked tree could have been written by a worker). `REF` must be a remote-tracking ref
+(`refs/remotes/origin/main`) or a commit id — a local branch, tag or `HEAD` is refused, since the
+checked change can move it — and is resolved once, the reads naming that commit (W3-07). Without
+`--pin-ref` a working-tree pin is used with a stderr NOTE, and a caller that sets
+`ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` (a sound lane) cannot run at all (exit 2). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes
 `--lens`, `--json`; `check` takes `--since YYYY-MM-DD` (records stamped earlier are counted, not
 judged — the repository's own ledger predates the human-source and class rules, so CI runs

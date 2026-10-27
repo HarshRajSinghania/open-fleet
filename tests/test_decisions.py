@@ -1172,6 +1172,74 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
                 self.assertIn(why, r.stderr)
 
 
+class TestPinRefIsCoordinatorOwnedW307(TestPinRefIsTheTrustAnchor):
+    """W3-07 (2026-10-27 security audit, P2): the #635 anchor degraded three ways. (a) A local
+    branch (`--pin-ref main`) is one the checked change can `update-ref`; (b) the ref was resolved
+    by `rev-parse` and then re-resolved by `ls-tree` and `cat-file`, so it could move in between;
+    (c) with no --pin-ref the working-tree pin was used silently, also where the caller claims a
+    sound lane. Now: only a remote-tracking ref or a commit id anchors, it is resolved ONCE and
+    that commit is what is read, and a sound lane without --pin-ref cannot run."""
+
+    def test_a_local_branch_or_tag_is_not_a_trust_anchor(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        self.git("tag", "pin-tag", "main")
+        for ref in ("main", "refs/heads/main", "pin-tag", "HEAD"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("remote-tracking", r.stderr)
+                self.assertIn("W3-07", r.stderr)
+
+    def test_a_commit_id_is_a_trust_anchor(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        sha = self.git("rev-parse", "main^{commit}").stdout.strip()
+        r = self.run_dec("--pin-ref", sha, "check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.swap_pin()
+        r = self.run_dec("--pin-ref", sha, "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("differs", r.stderr)
+
+    def test_the_ref_is_resolved_once_and_the_commit_is_what_is_read(self):
+        sha = self.git("rev-parse", "refs/remotes/origin/main^{commit}").stdout.strip()
+        seen = []
+        real = subprocess.run
+
+        def spy(argv, *a, **k):
+            seen.append(list(argv))
+            return real(argv, *a, **k)
+
+        with mock.patch.object(decisions.subprocess, "run", side_effect=spy):
+            decisions._pin_at_ref(Path(self.tmp), "refs/remotes/origin/main")
+        reads = [argv for argv in seen if any(op in argv for op in ("ls-tree", "cat-file"))]
+        self.assertTrue(reads, seen)
+        for argv in reads:
+            self.assertFalse(any("refs/remotes/origin/main" in tok for tok in argv),
+                             f"the ref is re-resolved after validation: {argv}")
+            self.assertTrue(any(tok == sha or tok.startswith(sha + ":") for tok in argv), argv)
+
+    def test_a_sound_lane_without_a_pin_ref_cannot_run(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+            with self.subTest(var=var):
+                env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+                env[var] = "ci"
+                r = subprocess.run([sys.executable, str(DECISIONS), "--file", str(self.log),
+                                    "check"], capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("--pin-ref", r.stderr)
+                self.assertIn("W3-07", r.stderr)
+
+    def test_the_working_tree_default_is_never_silent(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        r = subprocess.run([sys.executable, str(DECISIONS), "--file", str(self.log), "check"],
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("NOTE", r.stderr)
+        self.assertIn("working tree", r.stderr)
+
+
 class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):
     """P2-3: a signature binds when the decision was taken, so it cannot be re-dated."""
 

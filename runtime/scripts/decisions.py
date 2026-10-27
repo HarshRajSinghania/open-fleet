@@ -85,8 +85,8 @@ How to wire
     ``check`` over the file: a line that trips the one-way net without the class
     and the human source fails the run, which is the machine form of "one-way is
     never auto-resolved". Over a tree a worker could have written, it runs
-    ``decisions.py --pin-ref refs/remotes/origin/<default> check`` so the key comes from the
-    trusted ref, not from a pin the change swapped in.
+    ``decisions.py --pin-ref refs/remotes/origin/<default> check`` (W3-07) in its own clone,
+    so the key comes from the coordinator's fetch, not from a pin the change swapped in.
 
     Example: ``decisions.py append --id lens-tally:security --class mechanical
     --answer 0 --why "diff touched no auth surface" --task t-14``
@@ -297,7 +297,21 @@ def grant_pubkey(log_path, pin_ref=None):
     from it (or exists where the ref pins none) is could-not-run: a change under check that swaps
     `.orca/human-grant-pubkey` would otherwise verify grants it signed for itself. floor_guard.py
     already reads the pin at its base ref; `--pin-ref` gives `check`, `active` and `append` the
-    same trust anchor when they run over a tree a worker could have written."""
+    same trust anchor when they run over a tree a worker could have written.
+
+    W3-07: `pin_ref` must be a remote-tracking ref or a commit id, resolved once (_pin_at_ref).
+    Without it the working-tree pin — present, swapped or deleted — is the anchor, so it is never
+    used silently: a NOTE says so, and a caller that claims a sound lane (ORCA_PROVENANCE /
+    OPEN_FLEET_PROVENANCE set, as for verify-gate.sh) cannot run without one."""
+    if pin_ref is None:
+        lane = next((f"{var}={os.environ[var]}" for var in ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
+                     if (os.environ.get(var) or "").strip()), None)
+        if lane:
+            raise DecisionsError(
+                f"{lane} claims a sound lane, but no --pin-ref names the trust anchor: the human-"
+                "grant key would come from the working tree the checked change writes (a swapped "
+                "or deleted pin included). Pass --pin-ref refs/remotes/origin/<default> or a commit "
+                "id (W3-07, #635)")
     resolved = Path(log_path).resolve()
     root = Path(__file__).resolve().parent.parent.parent
     for parent in resolved.parents:
@@ -314,6 +328,11 @@ def grant_pubkey(log_path, pin_ref=None):
             raise DecisionsError(f"{pin} is unreadable: {err}") from err
         tree = parse_grant_pubkey(text, pin)
     if pin_ref is None:
+        if tree is not None:
+            print(f"decisions.py: NOTE — the human-grant key was read from the working tree "
+                  f"({root / GRANT_PUBKEY_REL}), which a change under check can swap or delete; "
+                  "pass --pin-ref refs/remotes/origin/<default> (or a commit id) to anchor it "
+                  "(W3-07, #635)", file=sys.stderr)
         return tree
     trusted = _pin_at_ref(root, pin_ref)
     if tree != trusted:
@@ -342,19 +361,31 @@ def _pin_at_ref(root, ref):
         except (OSError, subprocess.SubprocessError) as err:
             raise DecisionsError(f"git {args[0]} failed to run: {err}") from err
 
-    if git("rev-parse", "--verify", "-q", ref + "^{commit}").returncode != 0:
+    resolved = git("rev-parse", "--verify", "-q", ref + "^{commit}")
+    if resolved.returncode != 0:
         raise DecisionsError(f"--pin-ref {ref!r} does not resolve to a commit in {root}")
+    # W3-07: an anchor the checked change cannot move — a remote-tracking ref or a commit id. A
+    # local branch, tag or HEAD is the change's own to `update-ref` (the trajectory harness does,
+    # one line from where it used to pass `main`), so it anchors nothing.
+    if not (ref.startswith("refs/remotes/") or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", ref)):
+        raise DecisionsError(
+            f"--pin-ref {ref!r} is not a remote-tracking ref (refs/remotes/…) or a commit id — a "
+            "local branch, tag or HEAD is one the change under check can move, so it anchors "
+            "nothing (W3-07)")
+    # Resolved ONCE: every read below names this commit, never the ref, which could otherwise
+    # move between the validation above and the reads (W3-07).
+    commit = resolved.stdout.decode("utf-8", "replace").strip()
     rel = GRANT_PUBKEY_REL.as_posix()
     # Presence comes from the TREE listing, which never needs the blob: `cat-file -e` fails the
     # same way for an absent path and for a pinned blob this clone cannot read (a partial clone,
     # a pruned object), and reading the second as "unpinned" let a tree with its pin deleted pass
     # unsigned one-way grants (PR #635 review, P1). Listed but unreadable is could-not-run.
-    listing = git("ls-tree", "--name-only", "--full-tree", ref, "--", rel)
+    listing = git("ls-tree", "--name-only", "--full-tree", commit, "--", rel)
     if listing.returncode != 0:
-        raise DecisionsError(f"cannot list {rel} at {ref}")
+        raise DecisionsError(f"cannot list {rel} at {ref} ({commit[:12]})")
     if rel not in listing.stdout.decode("utf-8", "replace").splitlines():
         return None
-    blob = git("cat-file", "blob", f"{ref}:{rel}")
+    blob = git("cat-file", "blob", f"{commit}:{rel}")
     if blob.returncode != 0:
         raise DecisionsError(f"{ref}:{rel} is pinned but its blob is unreadable here")
     return parse_grant_pubkey(blob.stdout.decode("utf-8", "replace"), f"{ref}:{rel}")
@@ -846,9 +877,11 @@ def build_parser():
                    help=f"DECISIONS log path (default ${PRIMARY_DECISIONS_ENV}, ${DECISIONS_ENV}, or {DEFAULT_LOG})")
     p.add_argument("--doors", default=None, help="one-way door registry (default runtime/one-way-doors.json)")
     p.add_argument("--pin-ref", default=None,
-                   help="read .orca/human-grant-pubkey from this git ref (e.g. origin/main) and "
-                        "refuse a working tree whose pin differs; use it whenever the tree "
-                        "being checked could have been written by a worker")
+                   help="read .orca/human-grant-pubkey from this git ref and refuse a working "
+                        "tree whose pin differs; use it whenever the tree being checked could "
+                        "have been written by a worker. Must be a remote-tracking ref "
+                        "(refs/remotes/origin/main) or a commit id, resolved once (W3-07); "
+                        "required when ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims a sound lane")
     sub = p.add_subparsers(dest="command", required=True)
 
     a = sub.add_parser("append", help="validate and append one decision line")

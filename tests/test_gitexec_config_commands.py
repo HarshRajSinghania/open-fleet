@@ -697,6 +697,91 @@ class FilteredFileFidelity(unittest.TestCase):
         self.assertNotIn("STALE", errs[0])
 
 
+class WtreeTrustsNoSameUidConfigOrEnvironment(unittest.TestCase):
+    """W4-02 (P1): on a single-host fleet the worker runs as the coordinator's uid, so
+    `~/.gitconfig` is as much the worker's to write as `.git/config`. A global clean filter both
+    ran in the coordinator and CHOSE the fingerprint: `printf 'v1'` mapped a tampered file back to
+    its committed blob, so a tree no test saw printed `HEAD^{tree}` and verify graded it FRESH.
+    W4-07: the environment pointers that outrank `-C` (GIT_DIR, GIT_INDEX_FILE, ...) are the
+    caller's, not the fingerprint's. HOME is a scratch dir; nothing touches the real one."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        (p.repo / ".gitattributes").write_text("tampered.txt filter=evil\n", encoding="utf-8")
+        p.commit("tampered.txt", "v1\n")
+        self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        self.home = p.dir / "home"
+        self.home.mkdir()
+        clean = f"sh -c 'echo clean >> {_sh(p.marker)}; printf \"v1\\n\"'"
+        subprocess.run(["git", "config", "-f", str(self.home / ".gitconfig"), "filter.evil.clean", clean],
+                       check=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(("GIT_CONFIG", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"))}
+        self.env.update(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"))
+        return p
+
+    def _wtree(self, p, **extra):
+        return subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env={**self.env, **extra},
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_a_global_filter_neither_runs_nor_chooses_a_tampered_fingerprint(self):
+        p = self._repo()
+        (p.repo / "tampered.txt").write_text("COMPLETELY DIFFERENT TAMPERED CONTENT\n", encoding="utf-8")
+        r = self._wtree(p)
+        self.assertEqual(p.fired(), set(), "wtree.sh ran a filter from the worker-writable ~/.gitconfig")
+        self.assertNotEqual(r.stdout.strip(), self.head_tree, "a tampered tree fingerprinted as HEAD")
+        # The path IS selected by a driver some config declares: comparing it to the committed blob
+        # would need that command, so it is unverifiable (exit 3), never a value.
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn(_UNVERIFIABLE, r.stderr)
+        self.assertIn("tampered.txt", r.stderr)
+
+    def test_an_untouched_tree_still_fingerprints_as_head_under_a_global_filter(self):
+        p = self._repo()
+        r = self._wtree(p)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree), r.stderr)
+        self.assertEqual(p.fired(), set())
+
+    def test_an_untracked_file_still_changes_the_fingerprint(self):
+        # Global config off must not hide content: a new file is still counted (the drop is
+        # not a blanket "ignore everything"), and the global filter still does not run.
+        p = self._repo()
+        (p.repo / "new.txt").write_text("new\n", encoding="utf-8")
+        r = self._wtree(p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), self.head_tree)
+        self.assertEqual(p.fired(), set())
+
+    def test_an_inherited_git_dir_or_index_cannot_redirect_the_fingerprint(self):
+        p = self._repo()
+        other = _Probe(tempfile.mkdtemp(dir=str(p.dir)))
+        other.commit("elsewhere.txt", "another repository\n")
+        decoy_index = p.dir / "decoy.index"
+        for extra in ({"GIT_DIR": str(other.repo / ".git")},
+                      {"GIT_WORK_TREE": str(other.repo)},
+                      {"GIT_INDEX_FILE": str(decoy_index)},
+                      {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='" + str(p.probe) + " fsmonitor'"},
+                      {"GIT_CONFIG": os.devnull}):
+            with self.subTest(extra=sorted(extra)):
+                r = self._wtree(p, **extra)
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree), r.stderr)
+                self.assertEqual(p.fired(), set())
+        self.assertFalse(decoy_index.exists(), "wtree.sh seeded or wrote an inherited index")
+
+    def test_git_is_resolved_once_to_an_absolute_path(self):
+        # gitexec.py's rule: every call runs the one absolute git found at startup.
+        code = "\n".join(ln.split(" #", 1)[0] for ln in (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
+                         .splitlines() if not ln.lstrip().startswith("#"))
+        # `git` in a command-word position: a line start, `$(`, a pipe, `;`/`&&`, or env's argv.
+        bare = r'(?m)(^\s*|\$\(\s*|\|\s*|;\s*|&&\s*|env "\$@"\s+)git\s'
+        self.assertNotRegex(code, bare, "a bare, PATH-resolved git call is left")
+        self.assertIn('"$GIT" -C', code)
+        self.assertIn("command -v git", code)
+
+
 # PR #649 review (PRRT_kwDOTWxN9c6vxaeq): an `includeIf` makes the effective config depend on WHERE
 # and in WHAT ref state git runs — `gitdir:` (a linked worktree's own git dir), `onbranch:` (the
 # checked-out branch), `hasconfig:remote.*.url:` (another key's value). The rule is to read the

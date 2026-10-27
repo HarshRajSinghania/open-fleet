@@ -40,14 +40,14 @@
 # Exit 1 outside a git repo, or in a repo with no commits and no usable index — callers MUST treat
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.
 # Exit 3, with the reason on stderr, when a path staged differently from HEAD is selected by a
-# filter driver the REPOSITORY declares (#629, PR #649 review). Such a filter is never run here: it
-# is a command the worker wrote. But without it, a smudged file's bytes cannot be mapped back to
+# filter driver a config DECLARES — the repository's, or a global/system file, which on a one-uid
+# host the worker can write as well (#629, PR #649 review, W4-02). No filter ever runs here: the
+# command is the worker's to name. But without it, a smudged file's bytes cannot be mapped back to
 # the committed clean blob, so for that path the comparison is genuinely unverifiable — touching
 # an unchanged expanded file would otherwise fingerprint it as different from HEAD and a good run
 # would read as STALE. Exit 3 says so instead of printing a misleading value. An untouched file is
-# never re-hashed (the stat cache holds), so a clean checkout still fingerprints normally; a filter
-# declared in the coordinator's OWN global/system config is trusted and still runs. The
-# coordinator's clean-env re-run at head_sha remains the authority for a unit this refuses.
+# never re-hashed (the stat cache holds), so a clean checkout still fingerprints normally (Git LFS
+# included). The coordinator's clean-env re-run at head_sha remains the authority for such a unit.
 set -eu
 
 if [ "${1:-}" = "predict-merge" ]; then
@@ -69,31 +69,53 @@ if [ "${2:-}" = "predict-merge" ]; then
 fi
 
 # #629: this script runs git over a repo it does not own (evidence-run.py, verify.py predict-merge
-# both point it at a worker's worktree), so close the repo-config command channels before any git
+# both point it at a worker's worktree), so close the config command channels before any git
 # call. Set at command-line precedence (GIT_CONFIG_COUNT), which overrides the repo's own
 # .git/config: core.fsmonitor (a program git runs on `add`/`status`), core.hooksPath (every hook),
 # and the ext:: transport; plus replacement objects and grafts off, so a planted refs/replace or
-# .git/info/grafts cannot change the tree this fingerprints. A filter the REPOSITORY declares is
-# blanked below and never runs (exit 3 covers what that costs). Global/system config is left in
-# force for fidelity — it is the coordinator's own (a global core.excludesFile governs what the
-# committed tree omits, and a global filter such as Git LFS still maps content to its committed
-# form). The coordinator's clean-env re-run is the backstop.
+# .git/info/grafts cannot change the tree this fingerprints. A filter a config declares is
+# blanked below and never runs (exit 3 covers what that costs). W4-02: global and system config
+# are off as well, as in gitexec.py. On a one-uid host ~/.gitconfig is the worker's to write, and
+# a global clean filter both ran here and CHOSE the fingerprint (it mapped a tampered file back to
+# its committed blob, so verify graded a tree no test saw as FRESH). `safe.directory=*` stands in
+# for the one legitimate use of the dropped global file, as gitexec's does. A global
+# core.excludesFile is dropped with it, so an untracked file only it hid now counts (fails STALE).
+# W4-07: the environment pointers that outrank `-C` (GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR,
+# GIT_INDEX_FILE, the object directories, GIT_ATTR_SOURCE) and the inherited config channels that
+# outrank or blind this belt (GIT_CONFIG_PARAMETERS is read after the GIT_CONFIG_COUNT pairs;
+# GIT_CONFIG is the one file `git config --list` reads) are the caller's, never the fingerprint's.
+# And git is resolved ONCE, to an absolute path (gitexec.py's rule), not per call against PATH.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_SOURCE GIT_EXTERNAL_DIFF GIT_CONFIG GIT_CONFIG_PARAMETERS
+GIT=$(command -v git 2>/dev/null) || GIT=
+case "$GIT" in
+  /*) ;;
+  *) echo "wtree: no git on PATH that resolves to an absolute path; no fingerprint" >&2; exit 1 ;;
+esac
+# The caller's own global/system view, kept for ONE read below: the driver NAMES those files
+# declare, so a changed path one selects is reported unverifiable (exit 3), never staged raw.
+_CALLER_GLOBAL=${GIT_CONFIG_GLOBAL-}; _CALLER_GLOBAL_SET=${GIT_CONFIG_GLOBAL+1}
+_CALLER_NOSYSTEM=${GIT_CONFIG_NOSYSTEM-}; _CALLER_NOSYSTEM_SET=${GIT_CONFIG_NOSYSTEM+1}
 GIT_TERMINAL_PROMPT=0
 GIT_NO_REPLACE_OBJECTS=1
 GIT_GRAFT_FILE=/dev/null
-GIT_CONFIG_COUNT=3
+GIT_CONFIG_GLOBAL=/dev/null
+GIT_CONFIG_NOSYSTEM=1
+GIT_CONFIG_COUNT=4
 GIT_CONFIG_KEY_0=core.fsmonitor;   GIT_CONFIG_VALUE_0=false
 GIT_CONFIG_KEY_1=core.hooksPath;   GIT_CONFIG_VALUE_1=/dev/null
 GIT_CONFIG_KEY_2=protocol.ext.allow; GIT_CONFIG_VALUE_2=never
+GIT_CONFIG_KEY_3=safe.directory;   GIT_CONFIG_VALUE_3='*'
 export GIT_TERMINAL_PROMPT GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE GIT_CONFIG_COUNT
+export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
 export GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
-export GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
+export GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2 GIT_CONFIG_KEY_3 GIT_CONFIG_VALUE_3
 # No git call (nor any hook or filter one runs) may read this script's stdin: an inherited pipe
 # that never closes would block the fingerprint, and the gate behind it, forever (#629).
 exec </dev/null
 
 TARGET="${1:-.}"
-TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
+TOP=$("$GIT" -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
 
 # #629: `git add -A` below materialises worktree content, running a repo-config clean/smudge
 # filter a .gitattributes selects. The command comes only from a declared filter.<n>.* key, and
@@ -105,14 +127,13 @@ TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
 # `tr` aborts at the first invalid byte and drops every key after it), split on newline with
 # globbing off, and collected as GIT_CONFIG_KEY_n/VALUE_n pairs: an env pair keeps key and value
 # apart, where `-c <key>=` splits a name holding `=` at its first `=` and blanks another key.
-# The pairs are POSITIONAL `NAME=value` arguments that `env "$@" git ...` applies to each call
+# The pairs are POSITIONAL `NAME=value` arguments that `env "$@" "$GIT" ...` applies to each call
 # that can run a filter: env(1) splits each one at its first `=` (the variable name holds none),
 # so the key's bytes reach git intact and no shell text is ever built from them and re-parsed.
-# Only a key the REPOSITORY supplies is blanked: `--show-scope` names each key's origin, a key a
-# repo config includes from elsewhere is reported in the including file's scope, and a key from
-# the coordinator's own global/system file is trusted. A repo key that merely shadows a global
-# driver's name still blanks that driver whole. DECLARED keeps the blanked filter names, one per
-# line, for the exit-3 check after staging.
+# The listing alone reads the CALLER's global/system view (W4-02): every git call that stages
+# content runs with those files off, so a driver they declare never runs, but its NAME is
+# collected with the repository's — DECLARED keeps every blanked filter name, one per line, for
+# the exit-3 check after staging, whichever scope (`--show-scope`) declared it.
 LC_ALL=C
 export LC_ALL
 NL='
@@ -129,7 +150,13 @@ set --
 _n=$GIT_CONFIG_COUNT
 CFG=$(mktemp "${TMPDIR:-/tmp}/orca-wtree-cfg-XXXXXX") || exit 1
 trap 'rm -f "$CFG"' EXIT INT TERM
-if ! git -C "$TOP" config --list --show-scope -z --name-only >"$CFG" 2>/dev/null; then
+if ! (
+  if [ -n "$_CALLER_GLOBAL_SET" ]; then GIT_CONFIG_GLOBAL=$_CALLER_GLOBAL; export GIT_CONFIG_GLOBAL
+  else unset GIT_CONFIG_GLOBAL; fi
+  if [ -n "$_CALLER_NOSYSTEM_SET" ]; then GIT_CONFIG_NOSYSTEM=$_CALLER_NOSYSTEM; export GIT_CONFIG_NOSYSTEM
+  else unset GIT_CONFIG_NOSYSTEM; fi
+  exec "$GIT" -C "$TOP" config --list --show-scope -z --name-only
+) >"$CFG" 2>/dev/null; then
   echo "wtree: cannot read $TOP's config, so its filter drivers cannot be neutralised; no fingerprint (#629)" >&2
   exit 1
 fi
@@ -148,9 +175,7 @@ for _k in $BLANK_KEYS; do
     _scope=$_k
     continue
   fi
-  _from=$_scope
   _scope=
-  case "$_from" in system|global) continue ;; esac
   case "$_k" in
     filter.*.*)
       # A filter is neutralised WHOLE: commands blank AND required=false, since git dies on a
@@ -180,7 +205,7 @@ set -- "$@" "GIT_CONFIG_COUNT=$_n"
 
 # Resolve the REAL index path BEFORE exporting GIT_INDEX_FILE: with the variable set,
 # `rev-parse --git-path index` returns the temp index itself and the stat-cache seed self-copies.
-REAL_INDEX=$(git -C "$TOP" rev-parse --git-path index 2>/dev/null || true)
+REAL_INDEX=$("$GIT" -C "$TOP" rev-parse --git-path index 2>/dev/null || true)
 case "$REAL_INDEX" in
   ""|/*) ;;
   *) REAL_INDEX="$TOP/$REAL_INDEX" ;;
@@ -193,7 +218,7 @@ export GIT_INDEX_FILE
 
 seed_from_head() {
   rm -f "$TMPIDX" 2>/dev/null || true
-  git -C "$TOP" read-tree HEAD 2>/dev/null || return 1
+  "$GIT" -C "$TOP" read-tree HEAD 2>/dev/null || return 1
 }
 
 if [ -n "$REAL_INDEX" ] && [ -f "$REAL_INDEX" ] && cp "$REAL_INDEX" "$TMPIDX" 2>/dev/null; then
@@ -204,23 +229,23 @@ else
   seed_from_head || exit 1
 fi
 
-env "$@" git -C "$TOP" add -A 2>/dev/null || exit 1
+env "$@" "$GIT" -C "$TOP" add -A 2>/dev/null || exit 1
 # write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
 # above makes likely) is re-hashed here, which re-runs the clean filter — so the blanks (#629)
 # ride this call as well, not only `add -A`.
-TREE=$(env "$@" git -C "$TOP" write-tree 2>/dev/null) || exit 1
+TREE=$(env "$@" "$GIT" -C "$TOP" write-tree 2>/dev/null) || exit 1
 
-# Exit 3 (see the header): a path staged differently from HEAD that a repo-declared driver filters.
+# Exit 3 (see the header): a path staged differently from HEAD that a declared driver filters.
 # `diff-index --cached` compares the temp index to HEAD's tree and `check-attr` reads attributes;
 # neither runs any command. check-attr -z prints `path NUL filter NUL value NUL`: NUL and newline
 # are swapped so each field is one line (a newline inside a path becomes a NUL that `read` drops,
 # which keeps every third line the value). A value is never a path, and holds no whitespace.
 if [ -n "$DECLARED" ]; then
-  HEAD_TREE=$(git -C "$TOP" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null) \
-    || HEAD_TREE=$(git -C "$TOP" hash-object -t tree /dev/null)
-  HIT=$(git -C "$TOP" diff-index --cached -z --name-only --no-renames --diff-filter=AMT \
-          "$HEAD_TREE" -- 2>/dev/null \
-        | git -C "$TOP" check-attr --stdin -z filter 2>/dev/null \
+  HEAD_TREE=$("$GIT" -C "$TOP" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null) \
+    || HEAD_TREE=$("$GIT" -C "$TOP" hash-object -t tree /dev/null)
+  HIT=$("$GIT" -C "$TOP" diff-index --cached --no-ext-diff -z --name-only --no-renames \
+          --diff-filter=AMT "$HEAD_TREE" -- 2>/dev/null \
+        | "$GIT" -C "$TOP" check-attr --stdin -z filter 2>/dev/null \
         | tr '\0\n' '\n\0' \
         | { _i=0; _path=
             while IFS= read -r _f; do
@@ -234,7 +259,7 @@ if [ -n "$DECLARED" ]; then
               _i=$((_i + 1))
             done; }) || HIT=
   if [ -n "$HIT" ]; then
-    printf 'wtree: %s: filtered by repo-declared driver %s and staged differently from HEAD; its content cannot be compared to the committed tree without running repository-supplied commands, so no fingerprint (#629)\n' \
+    printf 'wtree: %s: filtered by declared driver %s and staged differently from HEAD; its content cannot be compared to the committed tree without running repository-supplied commands, so no fingerprint (#629)\n' \
       "${HIT#*"$TAB"}" "${HIT%%"$TAB"*}" >&2
     exit 3
   fi

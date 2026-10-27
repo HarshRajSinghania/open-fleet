@@ -272,26 +272,35 @@ def check_pr_merged(ctx, gate, number, why):
 
 
 def check_workflow_green_at_head(ctx, gate, workflow):
-    """The latest `<workflow>` run on main must be a success AT this HEAD —
-    a stale green from another SHA does not count."""
+    """The latest `<workflow>` run on the branch being cut must be a success AT this HEAD —
+    a stale green from another SHA does not count.
+
+    docs/ops.md cuts on a release branch, whose HEAD never has a run on main, so asking main
+    could only FAIL at a cut (2026-10-27 security audit, W6-12). The branch is HEAD's own; a
+    detached HEAD reads main, as every run of this check did before."""
     name = f"{gate}/gh-{workflow}-run-green-at-head"
-    data, err = gh_json(ctx, ["run", "list", "--workflow", workflow, "--branch", "main",
-                              "--limit", "1", "--json", "conclusion,headSha"])
-    if err:
-        return (name, err[0], err[1])
+    reason = gh_unavailable(ctx)
+    if reason:
+        return (name, SKIP, reason)
     head_probe = ctx.run(["git", "rev-parse", "HEAD"])
     if head_probe.missing:
         return (name, SKIP, "no git")
     if not head_probe.ok:
         return (name, FAIL, f"git rev-parse HEAD: {tail(head_probe.stderr, 1)}")
     head = head_probe.stdout.strip()
+    branch_probe = ctx.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"])
+    branch = branch_probe.stdout.strip() if branch_probe.ok and branch_probe.stdout.strip() else "main"
+    data, err = gh_json(ctx, ["run", "list", "--workflow", workflow, "--branch", branch,
+                              "--limit", "1", "--json", "conclusion,headSha"])
+    if err:
+        return (name, err[0], err[1])
     if not isinstance(data, list) or not data:
-        return (name, FAIL, f"no `{workflow}` workflow run recorded on main")
+        return (name, FAIL, f"no `{workflow}` workflow run recorded on {branch}")
     run = data[0] if isinstance(data[0], dict) else {}
     conclusion, sha = run.get("conclusion"), run.get("headSha")
     if conclusion == "success" and sha == head:
-        return (name, PASS, f"`{workflow}` bound GREEN at {sha}")
-    return (name, FAIL, f"latest `{workflow}` run on main is {conclusion or 'unfinished'} at "
+        return (name, PASS, f"`{workflow}` bound GREEN at {sha} on {branch}")
+    return (name, FAIL, f"latest `{workflow}` run on {branch} is {conclusion or 'unfinished'} at "
                         f"{sha}; HEAD is {head} — a stale green from another SHA does not count")
 
 

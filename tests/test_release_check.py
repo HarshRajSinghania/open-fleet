@@ -502,6 +502,75 @@ class GitHubAnswersAreVerdicts(unittest.TestCase):
             self.assertNotIn(rc.SKIP, {status for _, status, _ in gh_rows})
 
 
+class TheGreenRunIsOnTheBranchBeingCut(unittest.TestCase):
+    """2026-10-27 security audit, W6-12: gates 0 and 4 asked for the latest run on `main` and
+    bound it to HEAD, while docs/ops.md cuts on a release branch, whose HEAD never has a run on
+    main: the gate could only FAIL at a cut. The run is now read on the branch being cut (main
+    when HEAD is detached), and a green at another SHA still does not count."""
+
+    LOGGING_GH = ("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_ARGV_LOG\"\n"
+                  "case \"$1 $2\" in\n  \"auth status\") exit 0 ;;\n"
+                  "  \"run list\") printf '%s\\n' \"$GH_RUN_JSON\" ;;\n"
+                  "  *) exit 9 ;;\nesac\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = make_fixture(Path(self.tmp.name) / "repo")
+        git_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        self.git = lambda *a: subprocess.run(["git", *a], cwd=str(self.root), env=git_env,
+                                             check=True, capture_output=True, text=True).stdout
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "fixture")
+        self.git("switch", "-q", "-c", "release/9.9.9")
+        self.git("commit", "-q", "--allow-empty", "-m", "Prepare release 9.9.9")
+        self.head = self.git("rev-parse", "HEAD").strip()
+        bin_dir = Path(self.tmp.name) / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(self.LOGGING_GH, encoding="utf-8")
+        (bin_dir / "gh").chmod(0o755)
+        self.log = Path(self.tmp.name) / "gh-argv.log"
+        self.path = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+    def check(self, runs):
+        self.log.unlink(missing_ok=True)
+        env = {"PATH": self.path, "GH_ARGV_LOG": str(self.log), "GH_RUN_JSON": json.dumps(runs)}
+        with mock.patch.dict(os.environ, env):
+            ctx = rc.Context(self.root, fast=True, skip_github=False)
+            result = rc.check_workflow_green_at_head(ctx, "gate4", "install")
+        asked = [ln for ln in self.log.read_text(encoding="utf-8").splitlines()
+                 if ln.startswith("run list")]
+        self.assertEqual(len(asked), 1, asked)
+        return result, asked[0].split()
+
+    def test_a_green_run_at_the_release_branch_head_passes(self):
+        (name, status, detail), argv = self.check([{"conclusion": "success",
+                                                    "headSha": self.head}])
+        self.assertEqual(argv[argv.index("--branch") + 1], "release/9.9.9")
+        self.assertEqual((name, status), ("gate4/gh-install-run-green-at-head", rc.PASS), detail)
+        self.assertIn("release/9.9.9", detail)
+
+    def test_a_stale_green_on_the_branch_still_fails(self):
+        parent = self.git("rev-parse", "HEAD~1").strip()
+        (_, status, detail), _ = self.check([{"conclusion": "success", "headSha": parent}])
+        self.assertEqual(status, rc.FAIL)
+        self.assertIn("stale green", detail)
+        (_, status, detail), _ = self.check([])
+        self.assertEqual(status, rc.FAIL)
+        self.assertIn("no `install` workflow run recorded on release/9.9.9", detail)
+
+    def test_main_and_a_detached_head_read_main(self):
+        self.git("switch", "-q", "main")
+        _, argv = self.check([])
+        self.assertEqual(argv[argv.index("--branch") + 1], "main")
+        self.git("switch", "-q", "--detach", "release/9.9.9")
+        _, argv = self.check([])
+        self.assertEqual(argv[argv.index("--branch") + 1], "main")
+
+
 class SkipsNeverPass(unittest.TestCase):
     def test_skip_github_skips_every_gh_backed_check_with_the_flag_as_reason(self):
         with tempfile.TemporaryDirectory() as tmp:

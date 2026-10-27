@@ -648,6 +648,14 @@ operator's real harness. That run spends, and its receipt reads
 `live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
 when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
 different file than the operator's own PATH does (`harness_shadow`).
+Every command of a run, the worker included, gets an ALLOWLISTED environment
+(`runtime/scripts/first_run.py:SANDBOX_ENV_ALLOW`: `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`,
+`LC_*`, `TZ`, `TERM`, `TMPDIR`, `DISABLE_AUTOUPDATER`, `PYTHONDONTWRITEBYTECODE`) plus the run's own
+settings, never the operator's whole environment (W5-20): an exported `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` or `AWS_*` cannot reach the worker or the code it runs, the
+guarantee the container lane already gave. `--worker live` needs no credential from it: its
+`claude` is the live harness's wrapper, whose broker holds the token. Inert runs also get a
+private `HOME`.
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the

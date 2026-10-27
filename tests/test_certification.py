@@ -606,6 +606,57 @@ class TestFirstRunFixture(Tripwired):
         self.assertEqual([s["step"] for s in receipt["steps"]], ["prereqs"], "nothing ran after the refusal")
 
 
+class TestTheOnHostSandboxHoldsNoCredential(Tripwired):
+    """W5-20 (2026-10-27 audit): the on-host Sandbox handed its wrappers and the worker
+    `{**os.environ, ...}`, so a CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / GH_TOKEN exported on
+    the operator's host reached every command the worker ran, while the container lane
+    (scripts/live_container.py) deliberately holds none. The environment is an allowlist now."""
+
+    SECRETS = {"ANTHROPIC_API_KEY": "sk-ant-x", "CLAUDE_CODE_OAUTH_TOKEN": "oat-x", "GH_TOKEN": "ghp-x",
+               "GITHUB_TOKEN": "ghs-x", "AWS_SECRET_ACCESS_KEY": "aws-x", "AWS_SESSION_TOKEN": "aws-s",
+               "OPENAI_API_KEY": "sk-x", "SOME_VENDOR_PASSWORD": "pw", "HTTPS_PROXY": "http://u:p@proxy"}
+
+    def sandbox(self, worker):
+        env = dict(self.env, **self.SECRETS, LANG="C.UTF-8", LC_ALL="C.UTF-8", TZ="UTC",
+                   DISABLE_AUTOUPDATER="1", HOME="/home/operator")
+        with mock.patch.dict(os.environ, env, clear=True):
+            return first_run.Sandbox(self.tmp / f"sb-{worker}", worker, "claude")
+
+    def test_no_operator_credential_reaches_the_sandbox_environment(self):
+        for worker in ("inert", "live"):
+            with self.subTest(worker=worker):
+                sb = self.sandbox(worker)
+                self.assertEqual(sorted(set(sb.env) & set(self.SECRETS)), [])
+                for kept in ("LANG", "LC_ALL", "TZ", "PATH", "SHELL", "OPEN_FLEET_RUNTIME",
+                             first_run.containment.CALL_MARKER):
+                    self.assertIn(kept, sb.env)
+
+    def test_live_keeps_exactly_what_its_harness_needs(self):
+        # --worker live runs the live harness's claude wrapper, which takes its credential from the
+        # broker, never from this environment: it needs the container's HOME and its updater pin.
+        live, inert = self.sandbox("live"), self.sandbox("inert")
+        self.assertEqual(live.env["HOME"], "/home/operator")
+        self.assertEqual(live.env["DISABLE_AUTOUPDATER"], "1")
+        self.assertEqual(inert.env["HOME"], str(inert.home))
+
+    def test_the_worker_process_itself_sees_no_credential(self):
+        probe = first_run.INERT_WORKER.replace(
+            'harness, argv = sys.argv[1], sys.argv[2:]\n',
+            'harness, argv = sys.argv[1], sys.argv[2:]\n'
+            '(Path(sys.argv[0]).resolve().parent / "env-keys.json").write_text(json.dumps(sorted(os.environ)))\n')
+        self.assertNotEqual(probe, first_run.INERT_WORKER, "the probe must change the stand-in")
+        buf = io.StringIO()
+        with mock.patch.object(first_run, "INERT_WORKER", probe), \
+                mock.patch.dict(os.environ, dict(self.env, **self.SECRETS), clear=True), \
+                contextlib.redirect_stdout(buf):
+            rc = first_run.main(["--profile", "ro", "--workdir", str(self.tmp / "run"), "--keep", "--json"])
+        receipt = json.loads(buf.getvalue())
+        self.assertEqual(rc, 0, json.dumps(receipt.get("failure"), indent=1))
+        seen = json.loads((self.tmp / "run" / "inert" / "env-keys.json").read_text())
+        self.assertIn("OPEN_FLEET_DISPATCH_ID", seen, "the probe did not run as the worker")
+        self.assertEqual(sorted(set(seen) & set(self.SECRETS)), [])
+
+
 class TestNegativeProbes(Tripwired):
     REQUIRED = {"unsupported-profile", "privilege-escalation", "unarmed-deny-hook",
                 "malformed-upstream-response", "missing-capability"}

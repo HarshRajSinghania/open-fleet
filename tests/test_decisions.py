@@ -1106,6 +1106,10 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
         self.git("branch", "unpinned")
         self.git("add", ".orca")
         self.git("commit", "-q", "-m", "pin the human grant key")
+        # The trusted refs as a coordinator's clone carries them: remote-tracking, fetched — the
+        # form a checked change cannot move (W3-07), unlike its own local branches.
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.git("update-ref", "refs/remotes/origin/unpinned", "unpinned")
 
     def git(self, *args):
         return subprocess.run(["git", "-C", self.tmp, "-c", "user.name=t", "-c", "user.email=t@x",
@@ -1120,25 +1124,25 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
 
     def test_a_pin_matching_the_ref_checks_as_before(self):
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
-        r = self.run_dec("--pin-ref", "main", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("gate-pin", self.run_dec("--pin-ref", "main", "active").stdout)
+        self.assertIn("gate-pin", self.run_dec("--pin-ref", "refs/remotes/origin/main", "active").stdout)
 
     def test_a_pin_swapped_in_the_tree_is_refused_against_the_ref(self):
         self.swap_pin()
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
         # Without a trusted ref the swapped key verifies its own grant: the gap.
         self.assertEqual(self.run_dec("check").returncode, 0)
-        r = self.run_dec("--pin-ref", "main", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("differs from the one pinned at main", r.stderr)
-        r = self.run_dec("--pin-ref", "main", "active")
+        self.assertIn("differs from the one pinned at refs/remotes/origin/main", r.stderr)
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "active")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertNotIn("gate-pin", r.stdout)
 
     def test_a_tree_pin_where_the_ref_pins_none_is_refused(self):
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
-        r = self.run_dec("--pin-ref", "unpinned", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/unpinned", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("differs", r.stderr)
 
@@ -1151,10 +1155,10 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
         shutil.rmtree(Path(self.tmp) / ".orca")
         self.seed(["2026-09-01T00:00:00Z · gate-pin · one-way · approved · deploy to production "
                    "[source=human:lia] · t-1"])
-        r = self.run_dec("--pin-ref", "main", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("blob is unreadable", r.stderr)
-        r = self.run_dec("--pin-ref", "main", "active")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "active")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertNotIn("gate-pin", r.stdout)
 

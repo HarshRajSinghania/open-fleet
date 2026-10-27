@@ -190,6 +190,9 @@ orca_json() {
   "$ORCA_BIN" "$@" --json > "$out"
   python3 -I - "$out" <<'PY'
 import json, sys
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
 d = json.load(open(sys.argv[1]))
 err = None
 if isinstance(d, dict):
@@ -198,7 +201,7 @@ if isinstance(d, dict):
     if not err and isinstance(res, dict):
         err = res.get("error")
 if err:
-    print(f"orca error envelope: {err}", file=sys.stderr)
+    print(f"orca error envelope: {_f(err)}", file=sys.stderr)
     raise SystemExit(1)
 PY
 }
@@ -1005,6 +1008,9 @@ tid = (r.get("task") or {}).get("id") if isinstance(r, dict) else None
 if not tid or not isinstance(tid, str):
     print("task-create returned no task id", file=sys.stderr)
     raise SystemExit(1)
+if not all(c.isprintable() and not c.isspace() for c in tid):
+    print("task-create returned a task id that is not one printable token", file=sys.stderr)
+    raise SystemExit(1)
 print(tid)
 PY
 )
@@ -1021,10 +1027,15 @@ tl_out=$(python3 -I - "$tl" "$task" <<'PY'
 import json, sys
 
 
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
+
+
 def emit(status, unmet):
     """unmet on line 1, status on line 2 — the shell reads lines, never words."""
     print(unmet)
-    print(str(status).replace("\n", " ").replace("\r", " "))
+    print(_f(status))
     raise SystemExit(0)
 
 
@@ -1174,6 +1185,11 @@ POLICY_CODES = {
 }
 
 
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
+
+
 def _launch_tokens(eff):
     """Every argument token in a launch.effective, whatever shape the host reports it in."""
     if isinstance(eff, str):
@@ -1207,11 +1223,11 @@ if not isinstance(r, dict):
 err = d.get("error") or r.get("error") or {}
 if not isinstance(err, dict):
     err = {}
-code = err.get("code") or ""
+code = _f(err.get("code") or "")
 data = err.get("data") if isinstance(err.get("data"), dict) else {}
 # Older hosts may omit `data` entirely — treat every field as optional.
 for s in data.get("nextSteps") or []:
-    print(f"nextStep: {s}", file=sys.stderr)
+    print(f"nextStep: {_f(s)}", file=sys.stderr)
 if code in POLICY_CODES:
     print(f"VERDICT=refused CODE={code}")
     raise SystemExit(0)
@@ -1234,13 +1250,13 @@ if state == "outcome_unknown":
     # NOT a failure: the start neither proved nor disproved the worker. The receipt names the
     # exact inspection commands; a respawn here is the dual-writer class.
     for c in r.get("nextCommands") or []:
-        print(f"nextCommand: {c}", file=sys.stderr)
-    print(f"VERDICT=unknown STATE={state}")
-    print(f"HANDLE={h} READY={state}")
-    print(f"DISPATCH={did}")
+        print(f"nextCommand: {_f(c)}", file=sys.stderr)
+    print(f"VERDICT=unknown STATE={_f(state)}")
+    print(f"HANDLE={_f(h)} READY={_f(state)}")
+    print(f"DISPATCH={_f(did)}")
     raise SystemExit(0)
 if state is not None and state != "ready":
-    print(f"VERDICT=failed STATE={state}")
+    print(f"VERDICT=failed STATE={_f(state)}")
     raise SystemExit(0)
 
 if state is None:
@@ -1252,8 +1268,8 @@ if state is None:
     # UNKNOWN, not FAILED: worker-start exited 0, so a worker may well be live, and the one thing
     # a coordinator must not do here is respawn beside it (liveness-resume.md, dual-writer).
     print("VERDICT=unknown STATE=absent")
-    print(f"HANDLE={h} READY=absent")
-    print(f"DISPATCH={did}")
+    print(f"HANDLE={_f(h)} READY=absent")
+    print(f"DISPATCH={_f(did)}")
     raise SystemExit(0)
 
 launch = r.get("launch") if isinstance(r.get("launch"), dict) else {}
@@ -1276,23 +1292,23 @@ if want:
     if eff is None:
         why = "LAUNCH_EFFECTIVE_ABSENT=1"
     elif not _contains_seq(_launch_tokens(eff), want):
-        why = "LAUNCH_FLAG_MISSING=" + " ".join(want)
+        why = "LAUNCH_FLAG_MISSING=" + _f(" ".join(want))
     else:
         why = ""
     if why:
         print("VERDICT=unusable " + why)
-        print(f"HANDLE={h} READY={state}")
-        print(f"DISPATCH={did}")
+        print(f"HANDLE={_f(h)} READY={_f(state)}")
+        print(f"DISPATCH={_f(did)}")
         if eff is not None:
-            print("LAUNCH_EFFECTIVE=" + (eff if isinstance(eff, str)
-                                         else json.dumps(eff, sort_keys=True)))
+            print("LAUNCH_EFFECTIVE=" + _f(eff if isinstance(eff, str)
+                                           else json.dumps(eff, sort_keys=True)))
         raise SystemExit(0)
 
-print(f"VERDICT=ready STATE={state}")
-print(f"HANDLE={h} READY={state}")
-print(f"DISPATCH={did}")
+print(f"VERDICT=ready STATE={_f(state)}")
+print(f"HANDLE={_f(h)} READY={_f(state)}")
+print(f"DISPATCH={_f(did)}")
 if eff is not None:
-    print("LAUNCH_EFFECTIVE=" + (eff if isinstance(eff, str) else json.dumps(eff, sort_keys=True)))
+    print("LAUNCH_EFFECTIVE=" + _f(eff if isinstance(eff, str) else json.dumps(eff, sort_keys=True)))
 PY
 )
   verdict_line=$(printf '%s\n' "$ws_out" | head -n 1)
@@ -1426,12 +1442,16 @@ else
 import json, sys
 d = json.load(open(sys.argv[1]))
 if d.get("error"):
-    print(f"terminal create error: {d['error']}", file=sys.stderr)
+    print("terminal create error: " + "".join(c if c.isprintable() else f"\\u{ord(c):04x}"
+                                              for c in str(d["error"])), file=sys.stderr)
     raise SystemExit(1)
 r = d.get("result", d)
 h = (r.get("terminal") or {}).get("handle") or r.get("handle")
 if not h or h == "None":
     print("terminal create returned no handle", file=sys.stderr)
+    raise SystemExit(1)
+if not isinstance(h, str) or not all(c.isprintable() and not c.isspace() for c in h):
+    print("terminal create returned a handle that is not one printable token", file=sys.stderr)
     raise SystemExit(1)
 print(h)
 PY
@@ -1504,6 +1524,13 @@ PY
 import json, sys
 POLICY_CODES = {"task_not_found", "task_not_startable", "inject_rejected",
                 "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive"}
+
+
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
+
+
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
@@ -1518,10 +1545,10 @@ if not isinstance(err, dict):
     err = {"code": str(err)}
 data = err.get("data") if isinstance(err.get("data"), dict) else {}
 for step in data.get("nextSteps") or []:
-    print(f"nextStep: {step}", file=sys.stderr)
-code = str(err.get("code") or "unknown")
-reason = data.get("reason") if isinstance(data.get("reason"), str) else ""
-msg = " ".join(str(err.get("message") or "").split())[:300]
+    print(f"nextStep: {_f(step)}", file=sys.stderr)
+code = _f(err.get("code") or "unknown")
+reason = _f(data.get("reason")) if isinstance(data.get("reason"), str) else ""
+msg = _f(" ".join(str(err.get("message") or "").split())[:300])
 verdict = "refused" if code in POLICY_CODES else "failed"
 print(f"{verdict} CODE={code}" + (f" reason={reason}" if reason else "") + f" — {msg}")
 PY
@@ -1629,6 +1656,9 @@ PY
   read_stages() {
     python3 -I - "$1" <<'PY'
 import json, sys
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
@@ -1645,9 +1675,10 @@ if not isinstance(p, dict):
 if not isinstance(p, dict):
     p = {}
 stages = p.get("stages")
-stages = [s for s in stages if isinstance(s, str)] if isinstance(stages, list) else []
+stages = [_f(s).replace(",", "\\u002c").replace(" ", "\\u0020") for s in stages
+          if isinstance(s, str)] if isinstance(stages, list) else []
 req = p.get("requestId")
-print("STAGES=" + ",".join(stages) + " REQUEST=" + (req if isinstance(req, str) else ""))
+print("STAGES=" + ",".join(stages) + " REQUEST=" + (_f(req).replace(" ", "\\u0020") if isinstance(req, str) else ""))
 PY
   }
   rcpt=$(read_stages "$dj")

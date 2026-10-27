@@ -34,7 +34,7 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
-from pm import _visible
+from pm import _visible_line as _line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -151,12 +151,6 @@ def build_argv(ns):
     return argv
 
 
-def _line(value):
-    """One receipt field, inert and on one line (W4-11): pm._visible escapes controls and bidi,
-    and the newline it keeps for bodies is folded, so a field cannot forge another KEY= line."""
-    return _visible(value).replace("\n", "\\n")
-
-
 def format_create(result):
     if not isinstance(result, dict):
         raise Failed("terminal create receipt is not an object")
@@ -195,7 +189,7 @@ def format_read(result, want_screen=False):
     lines = [f"SOURCE={_line(source)}",
              f"TRUNCATED={'yes' if term.get('truncated') else 'no'}",
              "--- tail"]
-    lines.extend(_visible(line) for line in tail)
+    lines.extend(_line(line) for line in tail)  # one item, one line
     return lines
 
 

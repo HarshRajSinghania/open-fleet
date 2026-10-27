@@ -189,6 +189,11 @@ class TestSenderIdentityIsSaidPlainly(unittest.TestCase):
         self.assertNotIn("\u202e", lines[0])
         self.assertTrue(lines[0].startswith("MESSAGE_ID=msg_1"), lines[0])
 
+    def test_a_tab_in_the_message_id_is_escaped(self):
+        # W4-11 re-attack: a TAB stayed raw in single-line fields.
+        line = self.m.format_send({"relay": {"messageId": "msg_1\tFORGED=1"}})[0]
+        self.assertNotIn("\t", line)
+
     def test_the_cli_prints_exactly_one_receipt_line(self):
         rc, out, err, _calls = run_cli(["--subject", "s"], payload={
             "result": {"relay": {"messageId": "msg_1\nMESSAGE_ID=msg_forged"}}})

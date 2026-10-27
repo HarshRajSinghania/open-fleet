@@ -263,6 +263,17 @@ class TestEveryReceiptFieldPrintsInert(unittest.TestCase):
         self.assert_inert(self.m.format_list({"terminals": [{"handle": h, "title": h}]}))
         self.assert_inert(self.m.format_show({"terminal": {"handle": h, "title": h}}))
 
+    def test_a_tail_item_cannot_forge_a_line_and_tabs_and_surrogates_are_escaped(self):
+        # W4-11 re-attack: tail items kept their newlines, single-line fields their TABs, and a
+        # lone surrogate crashed the printer.
+        out = "\n".join(self.m.format_read({"terminal": {"source": "stream\t",
+                                                         "tail": ["a\nHANDLE=forged", "b\ud800"]}}))
+        self.assertNotIn("\nHANDLE=forged", out)
+        self.assertNotIn("\t", out)
+        self.assertIn("\\ud800", out)
+        out.encode("utf-8")
+        self.assertNotIn("\t", "\n".join(self.m.format_create({"terminal": {"handle": "t\tx"}})))
+
 
 if __name__ == "__main__":
     unittest.main()

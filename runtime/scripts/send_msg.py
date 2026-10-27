@@ -41,7 +41,7 @@ except ImportError:  # loaded by file path (tests): the resolver sits beside thi
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pm import _visible
+from pm import _visible_line as _line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -75,11 +75,6 @@ def _nonempty(value, flag):
     if not isinstance(value, str) or not value:
         raise Refused(f"{flag} needs a non-empty value")
     return value
-
-
-def _line(value):
-    """A printed field, inert and on one line: pm._visible plus a folded newline (W5-19)."""
-    return _visible(value).replace("\n", "\\n")
 
 
 def resolve_from(explicit, env):

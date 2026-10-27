@@ -36,7 +36,8 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
-from pm import _visible
+from pm import _indent_continuations, _visible
+from pm import _visible_line as _line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -150,12 +151,6 @@ def build_argv(ns):
     return argv
 
 
-def _line(value):
-    """One receipt field, inert and on one line (W4-11): pm._visible escapes controls and bidi,
-    and the newline it keeps for bodies is folded, so a field cannot forge another KEY= line."""
-    return _visible(value).replace("\n", "\\n")
-
-
 def format_show(result):
     """Minimal worker-show consumption: verdict + wait + next action."""
     if not isinstance(result, dict):
@@ -230,14 +225,16 @@ def format_read(result, want="auto"):
                 b.get("text", "") for b in m.get("blocks", [])
                 if isinstance(b, dict) and b.get("type") == "text"
                 and isinstance(b.get("text"), str))
-            lines.append(_bounded(_visible(text if text else "(no text blocks)")))
+            # A body keeps its lines, indented off column 0, so it cannot pass for a header.
+            lines.append(_indent_continuations(_bounded(_visible(text if text else "(no text blocks)")),
+                                               ("--- ",)))
     else:
         term = result.get("terminal")
         tail = term.get("tail") if isinstance(term, dict) else None
         if not isinstance(tail, list):
             raise Failed("worker-read receipt names no terminal tail")
         lines.append("--- tail")
-        lines.extend(_visible(line) for line in tail)
+        lines.extend(_line(line) for line in tail)  # one item, one line
     return lines
 
 

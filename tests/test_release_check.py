@@ -695,6 +695,53 @@ class CiRunsMeansARunStep(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.assertEqual(self.gate3(workflow), rc.PASS)
 
+    def test_a_mention_that_runs_nothing_fails(self):
+        """2026-10-27 security audit, W6-10: `- run: echo negative-control` passed gate 3 with the
+        real jobs deleted. A run: line counts only when a job step hands the script to an
+        interpreter (or executes it), in a job and a step that are not switched off."""
+        step = "jobs:\n  gates:\n    steps:\n      - run: {}\n"
+        for workflow in (
+            step.format("echo python3 bench/vf-bench/gate.py"),
+            step.format('echo "bench/vf-bench/gate.py"'),
+            step.format("printf '%s' 'python3 bench/vf-bench/gate.py'"),
+            step.format("true  # python3 bench/vf-bench/gate.py"),
+            step.format("cat bench/vf-bench/gate.py"),
+            "run: python3 bench/vf-bench/gate.py\n",  # outside any job: GitHub never runs it
+            "jobs:\n  gates:\n    if: false\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    if: ${{ false }}\n    steps:\n"
+            "      - run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - if: false\n"
+            "        run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        if: ${{ false }}\n"
+            "        run: |\n          time python3 bench/vf-bench/gate.py\n",
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_a_real_invocation_passes_in_any_shell_shape(self):
+        step = "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n{}"
+        for body in ("          set -euo pipefail\n          time python3 bench/vf-bench/gate.py\n",
+                     "          FOO=1 python3 -u bench/vf-bench/gate.py --strict\n",
+                     "          cd . && ./bench/vf-bench/gate.py | tee out.txt\n",
+                     "          if ! python3 bench/vf-bench/gate.py; then exit 1; fi\n"):
+            with self.subTest(body=body):
+                self.assertEqual(self.gate3(step.format(body)), rc.PASS)
+
+    def test_the_demo_check_wants_the_demo_script_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fixture(tmp)
+            wf = root / ".github" / "workflows"
+            wf.mkdir(parents=True)
+            for body, want in (("echo negative-control", rc.FAIL),
+                               ("sh evals/demo/negative-control/other.sh", rc.FAIL),
+                               ("sh evals/demo/negative-control/run.sh 2>&1 | tee x.txt", rc.PASS)):
+                with self.subTest(body=body):
+                    (wf / "negative-control.yml").write_text(
+                        "jobs:\n  pinned-demo:\n    steps:\n      - run: " + body + "\n",
+                        encoding="utf-8")
+                    check = find(rc.gate3(ctx_for(root)), "gate3/ci-runs-negative-control")
+                    self.assertEqual(check[1], want, check)
+
     def test_the_live_workflows_run_both_checks(self):
         for patterns in (VF_BENCH, (r"negative-control",)):
             check = rc.check_workflows_mention(ctx_for(ROOT), "live", patterns, "landed")

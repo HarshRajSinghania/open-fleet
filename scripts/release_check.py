@@ -48,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -534,47 +535,134 @@ def check_negative_control_demo(ctx):
     return (name, FAIL, f"sh {script}: exit {r.returncode}: {tail(r.stdout + r.stderr, 2)}")
 
 
-_RUN_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?run:\s*(.*?)\s*$")
 _BLOCK_SCALAR_RE = re.compile(r"^[|>](?:[1-9]?[+-]?|[+-]?[1-9]?)$")
+_JOB_KEY_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
+_STEP_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z_-]+):\s*(.*?)\s*$")
+# An `if:` that can never be true switches its job or step off; GitHub skips it.
+_NEVER_RE = re.compile(r"^(?:false|'false'|\"false\"|\$\{\{\s*false\s*\}\})(?:\s+#.*)?$")
+_INTERPRETERS = frozenset({"python3", "python", "sh", "bash"})
+_SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "|&", ";;"})
+_SHELL_PREFIXES = frozenset({"time", "exec", "command", "!", "if", "then", "else", "elif",
+                             "do", "while", "until", "{", "nohup"})
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def workflow_run_text(text):
-    """The shell a workflow actually runs: every `run:` step's script, comment lines dropped.
+def _indent(line):
+    return len(line) - len(line.lstrip(" "))
 
-    "CI runs X" was satisfied by X anywhere in a workflow file — a comment, a step name, an
-    `if:` — so a gate could read PASS for a check CI never executes (2026-10-23 review, §5).
-    """
-    lines = text.splitlines()
-    scripts = []
-    i = 0
-    while i < len(lines):
-        m = _RUN_KEY_RE.match(lines[i])
-        i += 1
-        if not m:
+
+def workflow_steps(text):
+    """[(job, [step lines])] for every step of every job under the top-level `jobs:` key, a
+    job switched off by a never-true `if:` excluded. Stdlib only: no YAML parser in CI."""
+    jobs, current, in_jobs = {}, None, False
+    for line in text.splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
             continue
-        indent, value = len(m.group(1)), m.group(2)
-        body = [] if _BLOCK_SCALAR_RE.match(value) else [value]
-        while i < len(lines) and (not lines[i].strip()
-                                  or len(lines[i]) - len(lines[i].lstrip()) > indent):
-            body.append(lines[i])
-            i += 1
-        scripts.extend(line for line in body if line.strip() and not line.lstrip().startswith("#"))
-    return "\n".join(scripts)
+        if in_jobs and line and not line[0].isspace() and not line.startswith("#"):
+            in_jobs = False
+        if not in_jobs:
+            continue
+        if m := _JOB_KEY_RE.match(line):
+            current = jobs.setdefault(m.group(1), [])
+        elif current is not None:
+            current.append(line)
+    out = []
+    for job, lines in jobs.items():
+        if any((m := _STEP_KEY_RE.match(ln)) and _indent(ln) == 4 and m.group(2) == "if"
+               and _NEVER_RE.match(m.group(3)) for ln in lines):
+            continue
+        step, in_steps = None, False
+        for line in lines:
+            if re.match(r"^    steps:\s*$", line):
+                in_steps = True
+                continue
+            if in_steps and re.match(r"^    \S", line):
+                in_steps = False
+            if not in_steps:
+                continue
+            if re.match(r"^      - ", line):
+                step = [line]
+                out.append((job, step))
+            elif step is not None:
+                step.append(line)
+    return out
+
+
+def _step_run(step):
+    """The step's `run:` script lines, or None when the step has none or an `if:` that is
+    never true. Keys are read at the step's own key indent, so a nested map cannot pose as one."""
+    key_indent = len(step[0]) - len(step[0].lstrip(" -"))
+    script = None
+    for i, line in enumerate(step):
+        m = _STEP_KEY_RE.match(line)
+        if not m or (i and _indent(line) != key_indent):
+            continue
+        key, value = m.group(2), m.group(3)
+        if key == "if" and _NEVER_RE.match(value):
+            return None
+        if key == "run":
+            body = [] if _BLOCK_SCALAR_RE.match(value) else [value]
+            for nxt in step[i + 1:]:
+                if nxt.strip() and _indent(nxt) <= key_indent:
+                    break
+                body.append(nxt)
+            script = body
+    return script
+
+
+def invoked_scripts(script_lines):
+    """The script paths a run: script hands to an interpreter (python3, python, sh, bash) or
+    executes directly (./x.sh, bin/y.py), command by command. An `echo` or a quoted string that
+    names a script invokes nothing."""
+    found = []
+    for line in script_lines:
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError:  # an unbalanced quote: a heredoc body or a continued line, not a command
+            continue
+        command = []
+        for token in tokens + [";"]:
+            if token not in _SHELL_SEPARATORS:
+                command.append(token)
+                continue
+            while command and (command[0] in _SHELL_PREFIXES or _ASSIGNMENT_RE.match(command[0])):
+                command.pop(0)
+            if command and command[0] in _INTERPRETERS:
+                found += [arg for arg in command[1:] if not arg.startswith("-")][:1]
+            elif command and command[0].endswith((".py", ".sh")):
+                found.append(command[0])
+            command = []
+    return [path[2:] if path.startswith("./") else path for path in found]
 
 
 def check_workflows_mention(ctx, name, patterns, landed):
+    """PASS iff some workflow job step really runs a script matching one of `patterns`.
+
+    "CI runs X" was satisfied by X anywhere in a workflow file — a comment, a step name, an
+    `if:` (2026-10-23 review, §5) — and then by X anywhere in a `run:` line, so `echo X` passed
+    with the real job deleted (2026-10-27 security audit, W6-10). Now a job's step must hand the
+    script to an interpreter or execute it, and neither the job nor the step may be switched off
+    by a never-true `if:`.
+    """
     wf_dir = ctx.repo / ".github" / "workflows"
     files = sorted(p for p in wf_dir.iterdir() if p.is_file()) if wf_dir.is_dir() else []
     hits = []
     for path in files:
-        text = workflow_run_text(path.read_text(encoding="utf-8", errors="replace"))
-        if any(re.search(pat, text) for pat in patterns):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        runs = [script for _job, step in workflow_steps(text)
+                if (script := _step_run(step)) is not None]
+        if any(re.search(pat, invoked) for script in runs for invoked in invoked_scripts(script)
+               for pat in patterns):
             hits.append(path.name)
     what = " or ".join(patterns)
     if hits:
-        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} run {what} in a `run:` "
+        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} invoke {what} from a job "
                             f"step ({landed} landed)")
-    return (name, FAIL, f"no `run:` step under .github/workflows/ runs {what} "
+    return (name, FAIL, f"no job step under .github/workflows/ invokes {what} "
                         f"({landed} has not landed)")
 
 
@@ -588,9 +676,9 @@ def gate3(ctx):
     add(check_tool_exit0(ctx, "gate3/vf-bench-gate", "bench/vf-bench/gate.py"))
     add(check_negative_control_demo(ctx))
     add(check_workflows_mention(ctx, "gate3/ci-runs-vf-bench",
-                                (r"vfbench\.py", r"vf-bench/gate\.py"), "#412"))
+                                (r"^bench/vf-bench/(gate|vfbench)\.py$",), "#412"))
     add(check_workflows_mention(ctx, "gate3/ci-runs-negative-control",
-                                (r"negative-control",), "#413"))
+                                (r"^evals/demo/negative-control/run\.sh$",), "#413"))
     return checks
 
 

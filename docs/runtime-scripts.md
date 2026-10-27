@@ -581,7 +581,7 @@ Exits: n/a (library).
 
 Content-free, hash-chained receipts for everything the fleet sends off-repo. One canonical JSON
 object per line in `<repository root>/.orca/egress.jsonl` (mode 0600), appended BEFORE the send.
-Source `runtime/scripts/egress.py:1-94`; behavior pinned by `tests/test_egress.py`.
+Source `runtime/scripts/egress.py:1-97`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -604,8 +604,9 @@ flag or variable, or reached through a symlinked directory, is reported on `writ
 ever created. `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
-else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
-`--expect-ancestor` (repeatable; close-to-close, appends tolerated); `grants` takes `--json`.
+else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger),
+`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--allow-empty` (this run
+sent nothing); `grants` takes `--json`.
 Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
 starting with a letter or digit).
 
@@ -622,15 +623,18 @@ Anchors: the head digest `head` prints, and the `id` each `write` prints, each n
 for byte and, through `prev`, every line before it. Keep them off the writer (the loop-log, a
 ledger row) and pass them back: `--expect-ancestor` requires each still in the chain,
 `--expect-head` requires the ledger to end there. A receipt written since the last close is bound
-only by the id its `write` printed — the close head alone cannot see a rewrite after it. A missing
-ledger is reported as "no ledger file there", and any non-empty anchor against it is TAMPER.
+only by the id its `write` printed — the close head alone cannot see a rewrite after it. No
+receipts — no ledger file ("no ledger file there") or an empty one — is never a pass: `verify`
+exits 4 (`NO RECEIPTS`) unless the caller says none were expected with `--allow-empty` or a
+sealed empty head (`--expect-head "(empty)"`), and any anchor naming a receipt against it is
+TAMPER (exit 3), `--allow-empty` or not.
 
 Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
 v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
 receipts chain onto it, and a legacy line after a v2 one is refused. A legacy line the v1 writer
 could not have produced was never bound and now reads as TAMPER.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing).
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing) · 4 `verify` found no receipts and none was allowed.
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)

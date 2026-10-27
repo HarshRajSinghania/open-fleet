@@ -264,7 +264,9 @@ class TestVerify(EgressBase):
         self.assertIn("2 receipt(s)", r.stdout)
 
     def test_a_missing_ledger_is_an_empty_intact_chain(self):
-        r = self.run_egress("verify")
+        # Only when the caller says no receipts were expected (Codex review of 82a2d00c): by
+        # default no receipts is EXIT_NO_RECEIPTS, never a pass (TestTheLedgerIsWhereItSays).
+        r = self.run_egress("verify", "--allow-empty")
         self.assertEqual(r.returncode, 0)
         self.assertIn("0 receipt(s)", r.stdout)
 
@@ -762,12 +764,31 @@ class TestTheLedgerIsWhereItSays(EgressBase):
         self.assertFalse((Path(self.tmp) / "a").exists())
 
     def test_no_ledger_is_not_reported_as_an_intact_chain(self):
-        r = self.run_egress("verify")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("no ledger file there", r.stdout)
-        anchored = self.run_egress("verify", "--expect-ancestor", "ab" * 32)
-        self.assertEqual(anchored.returncode, 3, "the anchor says a receipt exists; no ledger is not intact")
-        self.assertIn("no ledger file at all", anchored.stderr)
+        # Codex review of 82a2d00c: a missing (or empty) canonical ledger still verified with exit 0,
+        # so a close whose receipts went elsewhere passed. No receipts is now its own non-passing
+        # exit unless the caller says none were expected; an anchor naming a receipt always fails.
+        for setup in ("no ledger file", "an empty ledger file"):
+            with self.subTest(setup=setup):
+                if setup == "an empty ledger file":
+                    self.ledger.parent.mkdir(parents=True, exist_ok=True)
+                    self.ledger.write_bytes(b"")
+                r = self.run_egress("verify")
+                self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
+                self.assertNotEqual(egress.EXIT_NO_RECEIPTS, 0)
+                self.assertNotIn("chain intact", r.stdout + r.stderr)
+                self.assertIn("NO RECEIPTS", r.stderr)
+                for anchors in (("--expect-ancestor", "(empty)"),):
+                    self.assertEqual(self.run_egress("verify", *anchors).returncode, egress.EXIT_NO_RECEIPTS,
+                                     "an empty PREVIOUS close says nothing about this one")
+                allowed = self.run_egress("verify", "--allow-empty")
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                self.assertIn("0 receipt(s)", allowed.stdout)
+                sealed_empty = self.run_egress("verify", "--expect-head", "(empty)")
+                self.assertEqual(sealed_empty.returncode, 0, "an anchored empty head is an explicit none-expected")
+                for anchors in (("--expect-ancestor", "ab" * 32), ("--expect-head", "ab" * 32)):
+                    anchored = self.run_egress("verify", "--allow-empty", *anchors)
+                    self.assertEqual(anchored.returncode, 3, "an anchor names a receipt; none is not intact")
+                    self.assertIn("TAMPER", anchored.stderr)
 
 
 class TestGrantsAnswerOnlyForAVerifiedChain(EgressBase):

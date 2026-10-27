@@ -59,11 +59,14 @@ def commits(root, base, head):
     """[(sha, message)] for BASE..HEAD, newest first. Raises ValueError if either end is
     unresolvable and OSError if git is absent."""
     for name, rev in (("base", base), ("head", head)):
+        if not rev or rev.startswith("-"):
+            # Both ends sit in option position below (W2-04): an option is never a revision.
+            raise ValueError(f"{name} {rev!r} must name a revision, not an option")
         if not _resolves(root, rev):
             raise ValueError(f"{name} {rev!r} does not resolve to a commit "
                              "(fetch full history: actions/checkout fetch-depth: 0)")
     proc = _git(root, "log", "--no-show-signature", "--no-color", "-z", "--format=%H%n%B",
-                f"{base}..{head}")
+                f"{base}..{head}", "--")
     if proc.returncode != 0:
         raise ValueError(f"git log {base}..{head} failed: {proc.stderr.strip()}")
     out = []

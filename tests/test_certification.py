@@ -445,6 +445,26 @@ class TestHarnessCellsMatchTheLaunchTable(unittest.TestCase):
 
 # --- the first run ----------------------------------------------------------------------------
 
+class TestFirstRunRangeIsRevisionsNotOptions(Tripwired):
+    """W2-04: `--base`/`--head` reach `rev-parse --verify <rev>^{commit}` and `git diff <base>
+    <head>` in option position; `--base=--show-toplevel` is refused as an option before git."""
+
+    def test_an_option_shaped_end_is_refused_before_git_reads_it(self):
+        for base_rev, head_rev in (("--show-toplevel", "HEAD"), ("HEAD~1", "--all"), ("-h", "HEAD")):
+            with self.subTest(base=base_rev, head=head_rev):
+                work = Path(tempfile.mkdtemp(dir=self.tmp))
+                sandbox = argparse.Namespace(target=work / "target", dir=work,
+                                             env={**self.env, "GIT_CONFIG_GLOBAL": os.devnull,
+                                                  "GIT_CONFIG_NOSYSTEM": "1"})
+                args = argparse.Namespace(target=None, base=base_rev, head=head_rev)
+                fr = first_run.FirstRun(args, sandbox)
+                with self.assertRaises(first_run.StepFailed) as ctx:
+                    fr.target()
+                self.assertIn("not an option", str(ctx.exception))
+                self.assertFalse([c for c in fr.rec.commands if "rev-parse" in c["argv"]],
+                                 "the option reached git")
+
+
 class TestFirstRunFixture(Tripwired):
     STEPS = ["prereqs", "target", "preflight", "create", "dispatch", "guard", "delivery", "result",
              "evidence", "verify", "release", "isolation"]

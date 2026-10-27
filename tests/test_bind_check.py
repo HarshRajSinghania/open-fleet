@@ -131,6 +131,22 @@ class BindCheckPrRange(unittest.TestCase):
         _commit(self.repo, "report + envelope")
         return rev
 
+    def test_an_option_shaped_base_is_refused_never_read_as_a_flag(self):
+        # W2-04: `merge-base HEAD <base>` read a `-`-leading base as an option: `--fork-point`
+        # answered with HEAD itself, so the PR range was HEAD..HEAD — empty — and an unbound core
+        # report passed as "no candidate run reports changed".
+        self._bound_core(with_envelope=False)
+        for base in ("--fork-point", "--all", "-h"):
+            with self.subTest(base=base):
+                with self.assertRaises(ValueError) as ctx:
+                    bind_check.changed_entries(self.repo, base)
+                self.assertIn("not an option", str(ctx.exception))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    code = bind_check.main([f"--base={base}", "--root", str(self.repo)])
+                self.assertEqual(code, 2, out.getvalue())
+                self.assertNotIn("no candidate run reports changed", out.getvalue())
+
     def test_no_candidates_passes(self):
         (self.repo / "docs" / "concepts.md").parent.mkdir(parents=True, exist_ok=True)
         (self.repo / "docs" / "concepts.md").write_text("prose\n", encoding="utf-8")

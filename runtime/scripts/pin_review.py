@@ -113,6 +113,9 @@ class PinReviewError(Exception):
 
 
 def resolve(repo: Path, ref: str) -> str:
+    # The ref sits in option position (W2-04): an option is refused, never handed to git.
+    if not ref or ref.startswith("-"):
+        raise PinReviewError(f"{ref!r} must name a git ref, not an option")
     return _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
 
 
@@ -128,7 +131,7 @@ def changed_paths(repo: Path, old: str | None, new: str) -> list[tuple[str, str]
     if old is None:
         out = _git(repo, "ls-tree", "-r", "-z", "--name-only", new)
         return [("A", name) for name in out.split("\0") if name]
-    out = _git(repo, "diff", "--name-status", "-z", "--no-renames", f"{old}..{new}")
+    out = _git(repo, "diff", "--name-status", "-z", "--no-renames", f"{old}..{new}", "--")
     tokens = [t for t in out.split("\0") if t]
     pairs = []
     it = iter(tokens)

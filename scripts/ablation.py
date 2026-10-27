@@ -949,6 +949,10 @@ def bound_status(prereg):
 
 def _prereg_at(commit):
     """The CompletedProcess of `ablation.py prereg` as `commit` has it, on `commit`'s own tree."""
+    # `archive` takes the commit in option position: anything but a full SHA (`--remote=…`, `-o`)
+    # is refused before git reads it — bound_status reaches here without bound_errors (W2-04).
+    if not isinstance(commit, str) or not _FULL_SHA.fullmatch(commit):
+        raise AblationError(f"{BOUND_KEY}.commit must be a full 40-hex commit, not {commit!r}")
     with tempfile.TemporaryDirectory(prefix="of-ablation-bound-") as tmp:
         try:
             archive = _git("archive", "--format=tar", commit, "--", *BOUND_PATHS,

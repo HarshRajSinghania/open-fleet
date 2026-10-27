@@ -734,6 +734,36 @@ class MutationControls(unittest.TestCase):
         self.assertNotIn("Coordinator grant attached", "\n".join(packet))
 
 
+class CorpusNamesNeverReachGitAsOptions(unittest.TestCase):
+    """W2-04: build_repo hands a scenario's branch and live names to `git checkout` in option
+    position: `live: "--detach"` detached HEAD where the scenario named a ref, silently, and a
+    `-`-leading branch reached `checkout -b`. A rename/delete path rides after `--`."""
+
+    def build(self, **scn):
+        tmp = Path(tempfile.mkdtemp(prefix="hint-w204-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        return replay_mod.build_repo(scenario(runs=[], **scn), tmp / "repo"), tmp / "repo"
+
+    def test_an_option_shaped_live_ref_or_branch_is_a_corpus_error(self):
+        base = {"name": "c0", "files": BASE}
+        for scn in ({"commits": [base], "live": "--detach"},
+                    {"commits": [base, {"name": "c1", "branch": "-B", "files": {"x": "1"}}],
+                     "branches": {"-B": "c0"}}):
+            with self.subTest(scn=sorted(scn)):
+                with self.assertRaises(replay_mod.CorpusError) as ctx:
+                    self.build(**scn)
+                self.assertIn("not an option", str(ctx.exception))
+
+    def test_a_dash_leading_path_is_renamed_and_deleted_as_a_path(self):
+        commits = [{"name": "c0", "files": {**BASE, "-k": "keep\n", "-f": "gone\n"}},
+                   {"name": "c1", "rename": {"-k": "kept.txt"}, "delete": ["-f"]}]
+        shas, repo = self.build(commits=commits)
+        self.assertEqual((repo / "kept.txt").read_text(encoding="utf-8"), "keep\n")
+        self.assertFalse((repo / "-k").exists())
+        self.assertFalse((repo / "-f").exists())
+        self.assertEqual(set(shas), {"c0", "c1"})
+
+
 class Helpers(unittest.TestCase):
     def test_symbol_block_python_and_braces(self):
         py = "def a():\n    x = 1\n    return x\n\n\ndef b():\n    return 2\n"

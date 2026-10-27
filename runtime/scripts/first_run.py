@@ -539,6 +539,9 @@ class FirstRun:
             (t / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
             git(self.rec, "add", "-f", "--", "app.py", cwd=t)
             git(self.rec, "commit", "-q", "-m", "add greet()", cwd=t)
+        for flag, rev in (("--base", self.args.base), ("--head", self.args.head)):
+            if not rev or rev.startswith("-"):  # git reads both in option position (W2-04)
+                raise StepFailed(f"{flag} {rev!r} must name a revision, not an option", f"pass {flag}=<commit>")
         base = git(self.rec, "rev-parse", "--verify", f"{self.args.base}^{{commit}}", cwd=t)
         head = git(self.rec, "rev-parse", "--verify", f"{self.args.head}^{{commit}}", cwd=t)
         if base == head:
@@ -552,8 +555,8 @@ class FirstRun:
         # mode), and the spec alone let a worker that never saw the change copy the header to a
         # GO (#596 review). It is frozen with the contract, so it is the evidence range's BASE and
         # never part of the result; its last line is the read receipt no other channel carries.
-        diff = self.rec.run(["git", "-c", "core.quotePath=false", "diff", base, head], cwd=t)
-        names = self.rec.run(["git", "-c", "core.quotePath=false", "diff", "--name-only", base, head], cwd=t)
+        diff = self.rec.run(["git", "-c", "core.quotePath=false", "diff", base, head, "--"], cwd=t)
+        names = self.rec.run(["git", "-c", "core.quotePath=false", "diff", "--name-only", base, head, "--"], cwd=t)
         if diff.returncode != 0 or names.returncode != 0:
             raise StepFailed(f"git diff {base} {head} failed: {(diff.stderr or names.stderr).strip()[:300]}")
         # Byte-exact: a reviewed file in an older encoding reaches the worker as git wrote it.

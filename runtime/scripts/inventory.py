@@ -244,6 +244,8 @@ def sha256_at(rev, path_text, cwd):
     later, and it is the only form of the check a fabricated report cannot pass:
     the bytes have to have existed at a commit that exists.
     """
+    if not rev or rev.startswith("-"):
+        return None  # an option is not a revision; it never reaches git's option position (W2-04)
     proc = subprocess.run(
         gitexec.argv("cat-file", "blob", f"{rev}:{path_text}"),
         cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=gitexec.env(),
@@ -256,6 +258,8 @@ def sha256_at(rev, path_text, cwd):
 
 def rev_exists(rev, cwd):
     """True iff `rev` names a real commit in the repo at `cwd`."""
+    if not rev or rev.startswith("-"):
+        return False  # an option is not a revision (W2-04)
     return subprocess.run(
         gitexec.argv("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"),
         cwd=str(cwd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=gitexec.env(),

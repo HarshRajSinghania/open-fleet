@@ -160,8 +160,15 @@ def build_repo(scenario, repo):
     repo.mkdir(parents=True)
     _git(repo, "init", "-q", "-b", "main")
     shas, known, current = {}, {"main"}, "main"
+
+    def ref(name, what):
+        # `checkout` takes these in option position (W2-04): `live: "--detach"` detached HEAD where
+        # the scenario named a ref. An option is never a ref name.
+        if not isinstance(name, str) or not name or name.startswith("-"):
+            raise CorpusError(f"{scenario['id']}: {what} {name!r} must name a git ref, not an option")
+        return name
     for i, commit in enumerate(scenario["commits"]):
-        branch = commit.get("branch", "main")
+        branch = ref(commit.get("branch", "main"), "branch")
         if branch not in known:
             start = scenario.get("branches", {}).get(branch)
             if start not in shas:
@@ -174,13 +181,13 @@ def build_repo(scenario, repo):
         _write(repo, commit.get("files", {}))
         for old, new in commit.get("rename", {}).items():
             (repo / new).parent.mkdir(parents=True, exist_ok=True)
-            _git(repo, "mv", old, new)
+            _git(repo, "mv", "--", old, new)
         for gone in commit.get("delete", []):
-            _git(repo, "rm", "-q", gone)
+            _git(repo, "rm", "-q", "--", gone)
         _git(repo, "add", "-A")
         _git(repo, "commit", "-q", "--allow-empty", "-m", commit["name"], when=i)
         shas[commit["name"]] = _git(repo, "rev-parse", "HEAD")
-    live = scenario.get("live", "main")
+    live = ref(scenario.get("live", "main"), "live")
     _git(repo, "checkout", "-q", shas.get(live, live))
     _write(repo, scenario.get("worktree_edits", {}))
     return shas

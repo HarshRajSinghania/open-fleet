@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import runpy
@@ -834,6 +835,34 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
         unnamed["base"] = {"repo": {"full_name": "o/r"}}  # no ref, no sha: nothing to compare
         code, posted, out = self._run(files, pr=unnamed)
         self.assertEqual((code, posted[0]["state"]), (0, "success"), out)
+
+    def test_an_owner_pr_whose_grader_read_hangs_still_gets_its_status(self):
+        # A failed read was covered, a hung one was not: `gh api` ran with no timeout, so a
+        # compare read that never answered held the gate job to its 10-minute limit and the
+        # owner's PR got no status at all. Each read is bounded and a timeout is a failed read.
+        owner = self._pr(login="o", association="OWNER", changed=1)
+        posted, timeouts = [], []
+
+        def fake_run(cmd, **kw):
+            path = cmd[-1]
+            if any("/statuses/" in arg for arg in cmd):
+                posted.append(dict(c.split("=", 1) for i, c in enumerate(cmd)
+                                   if i and cmd[i - 1] == "-f"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            timeouts.append(kw.get("timeout"))
+            if "/compare/" in path:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            body = [[self.OWNER_GO]] if path.endswith("/reviews") else owner
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check.subprocess, "run", side_effect=fake_run):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r", "--post-status"])
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        self.assertEqual(posted[0]["state"], "success", err.getvalue())
+        self.assertTrue(timeouts and all(isinstance(t, (int, float)) and 0 < t <= 120
+                                         for t in timeouts), timeouts)
 
     def test_a_failed_read_fails_any_other_pr_closed_with_a_posted_status(self):
         # Not a missing status: a clear failure the PR's checks list shows.

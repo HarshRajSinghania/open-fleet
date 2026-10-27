@@ -89,6 +89,10 @@ ANY_VERDICT_RE = re.compile(r"^\s*VERDICT\s*:(.*)$", re.MULTILINE)
 SHA_RE = re.compile(r"^reviewed_sha:\s*([0-9a-fA-F]{40})\s*$", re.MULTILINE)
 
 GH_API = "gh api"
+# Seconds one `gh api` read may take. Unbounded, a read that never answered held the gate job
+# to its 10-minute limit with no status posted, the owner's own PR included; bounded, it is a
+# failed read like any other (an owner's own-branch PR survives one, any other PR fails closed).
+GH_API_TIMEOUT = 90
 
 
 # GitHub-computed review author trust tiers that may carry a COMMENTED GO.
@@ -246,7 +250,11 @@ def _gh_api(path, repo, paginate=False):
     if paginate:
         cmd += ["--paginate", "--slurp"]
     cmd += ["-H", "Accept: application/vnd.github+json", f"repos/{repo}/{path.lstrip('/')}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                              timeout=GH_API_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{GH_API} {path} gave no answer in {GH_API_TIMEOUT}s") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"{GH_API} {path} failed: {proc.stderr.strip()}")
     try:

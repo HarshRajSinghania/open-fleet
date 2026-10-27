@@ -6701,3 +6701,39 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
         self.assertIn("working-tree file .orca/dispatch-pubkey", out[0])
         self.assertIn("the graded worker can write it", out[0])
+
+
+class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):
+    """W3-10 (2026-10-27 security audit, P3): a worker-writable gitleaks was consulted on every
+    lane — on a sound one too, where it is a binary the graded worker could have replaced, run by
+    the coordinator's verifier, and its "clean" was framed as additive. On a lane claiming
+    soundness it is now not run at all, and the NOTE says only the built-in floor scanned."""
+
+    def _pinned(self, custody, lane):
+        verify._Authority.git_bin()
+        verify._Authority.gitleaks, verify._Authority.gitleaks_custody = "/x/gitleaks", custody
+        verify._Authority.lane = lane
+
+    def test_a_worker_writable_gitleaks_is_never_run_on_a_lane_claiming_soundness(self):
+        self._pinned("worker-writable", "provenance=ci")
+        with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
+            self.assertIsNone(verify._gitleaks_scan(self.repo / "f.txt"))
+        self.assertEqual([c for c in run.call_args_list if c.args[0][0] == "/x/gitleaks"], [])
+        notes = verify._Authority.authority_leg()
+        self.assertTrue(any(n.startswith("NOTE: redaction:") and "NOT run" in n
+                            and "only the built-in floor" in n for n in notes), notes)
+
+    def test_the_built_in_floor_still_refuses_on_that_lane(self):
+        self._pinned("worker-writable", "provenance=ci")
+        art = self.artifact("token ghp_" + "Z" * 30 + "\n")
+        with mock.patch.object(verify, "_run", return_value=(0, "", "")):
+            errs = verify.check_redaction({"artifacts": [self.pin(art)]}, None)
+        self.assertTrue(errs and "github-token" in errs[0], errs)
+
+    def test_a_system_gitleaks_and_the_advisory_lane_still_consult_it(self):
+        for custody, lane in (("system", "provenance=ci"), ("worker-writable", None)):
+            with self.subTest(custody=custody, lane=lane):
+                self._pinned(custody, lane)
+                with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
+                    self.assertIs(verify._gitleaks_scan(self.repo / "f.txt"), False)
+                self.assertEqual(run.call_args[0][0][0], "/x/gitleaks")

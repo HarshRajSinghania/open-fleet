@@ -89,6 +89,18 @@ _BARE_URL_RE = re.compile(r"://|www\.", re.IGNORECASE)
 _LOOSE_NAME_RE = re.compile(r"<[a-z][^ \t\n\f\r/>]*", re.IGNORECASE)
 _LOOSE_ATTR_RE = re.compile(r"""[ \t\n\f\r/]*([^ \t\n\f\r/>][^ \t\n\f\r/>=]*)"""
                             r"""([ \t\n\f\r]*=[ \t\n\f\r]*(?:"[^"]*"|'[^']*'|[^ \t\n\f\r>]*))?""")
+# Raw HTML that is no tag (CommonMark 0.31, "Raw HTML"): a comment, a processing instruction, a
+# declaration or CDATA. And an autolink (URI or e-mail), which CommonMark reads before raw HTML,
+# so raw_html() steps over it rather than reading it as a tag (2026-10-27 security audit, W6-14).
+_RAW_OTHER_RE = re.compile(r"<!--|<\?|<![A-Za-z]|<!\[CDATA\[")
+# A line that may be a GFM table's delimiter row (`--- | ---`, `|:-:|`), past quote and list
+# marks. GFM splits a row into cells, before it reads a code span, only inside a table, and a
+# table needs one: without such a line a "|" is plain text and a code span holding one is code.
+_DELIMITER_ROW_RE = re.compile(r"(?m)^[ \t>]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+)?"
+                               r"(?=[^\n]*\|)(?=[^\n]*-)[|:\- \t]+$")
+_AUTOLINK_RE = re.compile(r"<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^\x00-\x20<>]*>"
+                          r"|<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}"
+                          r"[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*>")
 
 
 def _opens_html(line):
@@ -127,13 +139,13 @@ def _quote_views(text):
     return ["".join(strip(line, k) for line in lines) for k in range(1, max(map(depth, lines), default=0) + 1)]
 
 
-def _loose_link(text, i, open_ok):
+def _loose_link(text, i, open_ok, any_tag=False):
     """The tag at text[i] when a browser reading it as raw HTML finds an href or src attribute
     with a value in it, else None; with `open_ok` (inside a raw HTML block) closed or not. Past a point where renderers may disagree, text may reach the
     page as raw HTML, so link tags there are read this loosely."""
     if not (name := _LOOSE_NAME_RE.match(text, i)):
         return None
-    pos, link = name.end(), False
+    pos, link = name.end(), any_tag  # any_tag: every tag counts, a link attribute or not
     while attr := _LOOSE_ATTR_RE.match(text, pos):
         link = link or (attr.group(1).lower() in ("href", "src") and attr.group(2) is not None)
         pos = attr.end()
@@ -181,8 +193,19 @@ def html_link(text):
     return next((found for view in (text, *_quote_views(text)) if (found := _first_link(view))), None)
 
 
-def _first_link(text):
-    """html_link's one pass over one view of `text`."""
+def raw_html(text):
+    """The first raw HTML in Markdown `text`, or None: any tag, open or closing, with or without
+    an href or src, a comment, a processing instruction, a declaration or CDATA, read the way
+    html_link reads a link tag (skipped only inside an escape or a one-line code span before any
+    point where renderers may disagree). Both writers emit a cell or a fragment verbatim into a
+    published page, so a tag with no link in it (`<script>`) reaches it too (2026-10-27 security
+    audit, W6-14). Identical in scripts/changelog.py and scripts/run_index.py."""
+    return next((found for view in (text, *_quote_views(text))
+                 if (found := _first_link(view, any_tag=True))), None)
+
+
+def _first_link(text, any_tag=False):
+    """html_link's one pass over one view of `text` (raw_html's, with `any_tag`)."""
     lines = [m.span() for m in _LINE_RE.finditer(text)]
     starts = [start for start, _end in lines]
     # Backticks and escapes are text from the first line that may open raw HTML, from the first
@@ -194,6 +217,8 @@ def _first_link(text):
     # these, where a span or construct ends depends on the renderer, and a link tag is read as a
     # browser reads raw HTML (_loose_link).
     literal = html = next((start for start, end in lines if _opens_html(text[start:end])), len(text))
+    # html_link reads every "|" as a table cell's edge; raw_html only where a table can exist.
+    tables = not any_tag or bool(_DELIMITER_ROW_RE.search(text))
     i = 0
     while i < len(text):
         inline = i < literal
@@ -201,21 +226,26 @@ def _first_link(text):
             i += 2
         elif inline and text[i] == "[":
             literal, i = i, i + 1  # a link's text, destination or title may hold a backtick (Codex at d16ff6e5cc)
-        elif inline and (_BARE_URL_RE.match(text, i) or text[i] in "|$"):
+        elif inline and (_BARE_URL_RE.match(text, i) or text[i] == "$" or text[i] == "|" and tables):
             literal, i = i, i + 1  # a bare URL, a table cell's edge, or Pandoc's $math$ (Codex at 737bef7213, b897354b7b)
         elif inline and text[i] == "`":
             line_end = lines[bisect.bisect_right(starts, i) - 1][1]
             run = len(text[i:line_end]) - len(text[i:line_end].lstrip("`"))
             close = re.compile(f"(?<!`){'`' * run}(?!`)").search(text, i + run, line_end)
-            if close and "|" not in text[i + run:close.start()]:
+            if close and not (tables and "|" in text[i + run:close.start()]):
                 i = close.end()
             else:  # left open, or holding a "|" that may split it into table cells (Codex at 0527c08900)
                 literal, i = i, i + run
         elif text[i] == "<":
+            if any_tag and (auto := _AUTOLINK_RE.match(text, i)):
+                literal, i = min(literal, i), auto.end()  # a link, not raw HTML; past it, read loosely
+                continue
             tag = _tag(text, i)
-            if tag and tag[1]:
+            if tag and (tag[1] or any_tag):
                 return text[i:tag[0]]
-            if not inline and (loose := _loose_link(text, i, open_ok=i >= html)):
+            if any_tag and (other := _RAW_OTHER_RE.match(text, i)):
+                return other.group()
+            if not inline and (loose := _loose_link(text, i, open_ok=i >= html, any_tag=any_tag)):
                 return loose
             if inline and tag and not _UNCLEAR_RE.search(text, i + 1, tag[0]):
                 i = tag[0]  # a whole one-line tag holding no backtick and no "<": skipping it hides nothing
@@ -256,6 +286,9 @@ def fragment_errors(path):
     if html_link(text):  # the whole fragment: a tag may span lines (PR #670 review)
         errors.append(f"{where}: write each link as a Markdown link ([text](../path)); an HTML "
                       "href or src is not rewritten for CHANGELOG.md")
+    elif raw := raw_html(text):
+        errors.append(f"{where}: raw HTML ({raw[:40]!r}) would reach CHANGELOG.md verbatim; put "
+                      "it in a code span or escape the '<'")
     lines = text.rstrip("\n").split("\n")
     if not lines[0].startswith("- "):
         errors.append(f"{where}:1: an entry opens with '- ' at column 0")

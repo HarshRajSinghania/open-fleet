@@ -498,6 +498,16 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(len(self.errors(text)), 1, text)
 
+    def test_the_run_index_check_reads_raw_html_the_same_way(self):
+        spec = importlib.util.spec_from_file_location("_run_index_raw_html",
+                                                      ROOT / "scripts" / "run_index.py")
+        ri = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ri)
+        for text in (self.ACCEPTED + self.REFUSED + RawHtmlIsRefused.REFUSED
+                     + RawHtmlIsRefused.ACCEPTED):
+            with self.subTest(text=text):
+                self.assertEqual(ri.raw_html(text), cl.raw_html(text))
+
     def test_the_run_index_check_reads_html_the_same_way(self):
         # scripts/run_index.py carries its own copy (it runs alone: tests copy it into a bare root).
         spec = importlib.util.spec_from_file_location("_run_index_for_changelog",
@@ -507,6 +517,61 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         for text in self.ACCEPTED + self.REFUSED:
             with self.subTest(text=text):
                 self.assertEqual(ri.html_link(text), cl.html_link(text))
+
+
+class RawHtmlIsRefused(unittest.TestCase):
+    """2026-10-27 security audit, W6-14: the cut copies a fragment verbatim into CHANGELOG.md, and
+    only a tag carrying href or src was refused, so `<script>alert(1)</script>` passed. Any raw
+    HTML outside a code span or an escape is refused now; a link tag keeps its own message."""
+
+    REFUSED = (
+        "- **Change** <script>alert(1)</script>.\n",
+        "- **Change** <b>bold</b> words.\n",
+        "- **Change** a <!-- hidden --> comment.\n",
+        "- **Change** </div> closes something.\n",
+        '- **Change** a tag\n  <span\n  class="x">split across lines</span>.\n',
+        "- **Change** <?php echo 1; ?> an instruction.\n",
+        # a delimiter row makes it a table: GFM splits the cells before it reads the span
+        "- **Change** `a | <b>x</b>`\n  --- | ---\n",
+    )
+    ACCEPTED = (
+        "- **Change** `<script>` is named as code.\n",
+        "- **Change** a double span ``<b>`` is code too.\n",
+        "- **Change** an escaped \\<script> is text.\n",
+        "- **Change** see <https://example.org/x> for more.\n",
+        "- **Change** mail <a@b.example> for more.\n",
+        "- **Change** 3 < 5, x<5 and a -> b.\n",
+        # no table without a delimiter row, so a "|" inside a span leaves it a span (the fragment
+        # changelog.d/deep-adversarial-hardening.md reads this way)
+        "- **Change** flags (`1|true|yes|on`), then\n  `--source human:<name>` as code.\n",
+    )
+
+    def errors(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            return [e for e in cl.check_fragments(d) if "raw HTML" in e]
+
+    def test_raw_html_with_no_link_in_it_is_refused(self):
+        for text in self.REFUSED:
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_code_escapes_autolinks_and_comparisons_are_text(self):
+        for text in self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+    def test_a_link_tag_is_reported_once_as_a_link(self):
+        text = '- **Change** <a href="../docs/ops.md">ops</a>.\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            errors = cl.check_fragments(d)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("Markdown link", errors[0])
 
 
 if __name__ == "__main__":

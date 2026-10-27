@@ -288,6 +288,22 @@ class TheTranscriptCannotDisagreeWithItself(unittest.TestCase):
         clear, reason, _ = self.assess('{"recipe": "other", "failures": [], "recipe": "web"}', "web")
         self.assertFalse(clear, reason)
 
+    def test_two_spellings_of_one_key_refuse(self):
+        # Codex round 2 (P2): `{"recipe": {"id": "other", "ID": "web"}}` certified `web` — the raw
+        # keys differ, so the duplicate check passed, then both normalised to `id` and the LAST
+        # won; the key order flipped the verdict. Same for recipeId / recipe-id.
+        for raw in ('{"recipe": {"id": "other", "ID": "web"}, "failures": []}',
+                    '{"recipe": {"ID": "web", "id": "other"}, "failures": []}',
+                    '{"recipeId": "other", "recipe-id": "web", "failures": []}',
+                    '{"recipe-id": "web", "recipeId": "other", "failures": []}'):
+            with self.subTest(raw=raw):
+                clear, reason, _ = self.assess(raw, "web")
+                self.assertFalse(clear, reason)
+                self.assertIn("names one key twice", reason)
+        raw = json.dumps(GOOD["docker"])[:-1] + ', "Ephemeral": true}'
+        self.assertFalse(self.assess(raw)[0])
+        self.assertFalse(sandbox_doctor.placement_bound(raw))
+
     def test_claim_spellings_are_all_read(self):
         for where, key in (("isolation", "Ephemeral"), ("isolation", "prelaunchPlacementBound"),
                            ("top", "PRELAUNCH-PLACEMENT-BOUND"), ("top", "Ephemeral")):
@@ -296,8 +312,18 @@ class TheTranscriptCannotDisagreeWithItself(unittest.TestCase):
                 (doc if where == "top" else doc["isolation"])[key] = False
                 clear, reason, exposes = self.assess(doc)
                 self.assertFalse(clear)
-                self.assertTrue(exposes, reason)
+                if where == "top":  # beside the canonical key: two spellings of one key (round 2)
+                    self.assertIn("names one key twice", reason)
+                else:
+                    self.assertTrue(exposes, reason)
                 self.assertFalse(sandbox_doctor.placement_bound(json.dumps(doc)))
+                alone = copy.deepcopy(GOOD["docker"])
+                (alone if where == "top" else alone["isolation"]).pop(
+                    "ephemeral" if key == "Ephemeral" else "prelaunch_placement_bound", None)
+                (alone if where == "top" else alone["isolation"])[key] = False
+                clear, reason, exposes = self.assess(alone)
+                self.assertFalse(clear)
+                self.assertTrue(exposes, reason)
 
     def test_recipe_spellings_are_all_read(self):
         for key in ("recipe-id", "Recipe-ID", "recipe.id", "RecipeName"):

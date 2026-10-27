@@ -306,15 +306,18 @@ def _norm(key) -> str:
 
 
 class DuplicateKey(ValueError):
-    """A JSON object that names one key twice: which value holds is the parser's choice."""
+    """A JSON object that names one key twice, as written or in two spellings the reader takes as
+    one (`id`/`ID`, `recipeId`/`recipe-id`): which value holds would be an accident of order."""
 
 
 def _no_duplicates(pairs):
-    out = {}
+    out, spelled = {}, {}
     for key, value in pairs:
-        if key in out:
-            raise DuplicateKey(key)
+        norm = _norm(key)
+        if key in out or norm in spelled:
+            raise DuplicateKey(f"{spelled.get(norm, key)!r} and {key!r}")
         out[key] = value
+        spelled[norm] = key
     return out
 
 
@@ -541,8 +544,9 @@ def assess(raw, recipe):
     try:
         parsed = _parse(raw)
     except DuplicateKey as exc:
-        return False, (f"doctor output repeats the key {exc.args[0]!r} in one object: which value "
-                       "holds would be the parser's choice, not the doctor's"), False
+        return False, (f"doctor output names one key twice in one object ({exc.args[0]}): it "
+                       "repeats the key or spells it two ways, and which value holds would be an "
+                       "accident of order, not the doctor's"), False
     except ValueError:
         parsed = None
     doc = _portable_doc(parsed) if parsed is not None else None

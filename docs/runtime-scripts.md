@@ -1763,7 +1763,7 @@ a portable backend must declare one, and only a report with no recipe field at a
 to its `id`/`name` fields outside checks, findings and mounts, all of which must be the id
 (W4-10). A recipe field that is present but declares nothing (null, a number, an empty value, a
 list holding a non-string, an object without a usable id) is refused as malformed, never read
-past to that fallback. JSON that repeats a key inside one object is refused (which value wins
+past to that fallback. JSON that names a key twice inside one object, as written or in two spellings the reader takes as one (`id`/`ID`, `recipeId`/`recipe-id`), is refused at every level (which value wins
 would be the parser's choice), placement claims are read in every spelling
 (`prelaunchPlacementBound`, `Ephemeral`) and at every level, and an `{ok, result}` envelope
 around the report is held to it: its own `ok:false`, `error` or a false claim refuses. JSON transcripts read structurally (empty
